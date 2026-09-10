@@ -557,8 +557,16 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 } else {
                     self.rebuild_instantiated(rhs)?
                 };
-                let left = self.multiply(lhs_derivative, rhs_value, provenance)?;
-                let right = self.multiply(rhs_derivative, lhs_value, provenance)?;
+                let left = self.multiply(
+                    lhs_derivative,
+                    Derivative::Expression(rhs_value),
+                    provenance,
+                )?;
+                let right = self.multiply(
+                    Derivative::Expression(lhs_value),
+                    rhs_derivative,
+                    provenance,
+                )?;
                 self.combine_sum(dae::BinaryOperator::Add, left, right, provenance)
             }
             dae::BinaryOperator::Multiply if order == 2 => self.differentiate_second_product(
@@ -571,8 +579,16 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             dae::BinaryOperator::Divide if order == 1 => {
                 let lhs_value = self.rebuild_instantiated(lhs)?;
                 let rhs_value = self.rebuild_instantiated(rhs)?;
-                let left = self.multiply(lhs_derivative, rhs_value, provenance)?;
-                let right = self.multiply(rhs_derivative, lhs_value, provenance)?;
+                let left = self.multiply(
+                    lhs_derivative,
+                    Derivative::Expression(rhs_value),
+                    provenance,
+                )?;
+                let right = self.multiply(
+                    Derivative::Expression(lhs_value),
+                    rhs_derivative,
+                    provenance,
+                )?;
                 let numerator =
                     self.combine_sum(dae::BinaryOperator::Subtract, left, right, provenance)?;
                 let Derivative::Expression(numerator) = numerator else {
@@ -690,8 +706,8 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         }
         let y_value = self.rebuild_instantiated(y)?;
         let x_value = self.rebuild_instantiated(x)?;
-        let x_dy = self.multiply(y_derivative, x_value, provenance)?;
-        let y_dx = self.multiply(x_derivative, y_value, provenance)?;
+        let x_dy = self.multiply(y_derivative, Derivative::Expression(x_value), provenance)?;
+        let y_dx = self.multiply(x_derivative, Derivative::Expression(y_value), provenance)?;
         let numerator = self.combine_sum(dae::BinaryOperator::Subtract, x_dy, y_dx, provenance)?;
         let Derivative::Expression(numerator) = numerator else {
             return Ok(Derivative::Zero);
@@ -763,8 +779,8 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         let rhs_value = self.rebuild_instantiated(rhs)?;
         let lhs_first = self.differentiate_order(lhs, 1, provenance)?;
         let rhs_first = self.differentiate_order(rhs, 1, provenance)?;
-        let left = self.multiply(lhs_second, rhs_value, provenance)?;
-        let right = self.multiply(rhs_second, lhs_value, provenance)?;
+        let left = self.multiply(lhs_second, Derivative::Expression(rhs_value), provenance)?;
+        let right = self.multiply(Derivative::Expression(lhs_value), rhs_second, provenance)?;
         let middle = self.multiply_derivatives(lhs_first, rhs_first, provenance)?;
         let outer = self.combine_sum(dae::BinaryOperator::Add, left, right, provenance)?;
         self.combine_sum(dae::BinaryOperator::Add, outer, middle, provenance)
@@ -842,16 +858,16 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
 
     fn multiply(
         &mut self,
-        derivative: Derivative<'target>,
-        value: dae::ExprId<'target>,
+        lhs: Derivative<'target>,
+        rhs: Derivative<'target>,
         provenance: dae::DaeProvenance,
     ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
-        let Derivative::Expression(derivative) = derivative else {
+        let (Derivative::Expression(lhs), Derivative::Expression(rhs)) = (lhs, rhs) else {
             return Ok(Derivative::Zero);
         };
         self.target
             .at(provenance)
-            .binary(dae::BinaryOperator::Multiply, derivative, value)
+            .binary(dae::BinaryOperator::Multiply, lhs, rhs)
             .map(Derivative::Expression)
     }
 

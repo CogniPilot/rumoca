@@ -193,3 +193,186 @@ DAE-construction failures, one runtime-contract failure, and one instantiation
 failure. Evidence is in `target/msl/multibody-function-shape-after` and
 `.git/multibody-campaign/function-shape-multibody-delta.json`; producer hashes
 are in `.git/multibody-campaign/function-shape-proof.json`.
+
+The complete 566-model Tier 2 sweep at
+`3bc697611242f10c19d93dcc3e93eb26d55172aa` passes: 130 models compared,
+all strict-high, 9659 channels compared with zero deviations, and zero missing
+traces. The same 17 reviewed policy exclusions remain skipped and unsupported.
+No model changes agreement band relative to the complete run at `3dec54b6`.
+The tracked source remained unchanged throughout this sweep. Evidence is in
+`target/msl/multibody-function-shape-full` and
+`.git/multibody-campaign/function-shape-full-receipt.json`.
+
+## State definitions through exact coordinate aliases
+
+`SpringMassSystem` reaches a balanced DAE after the shape fixes but originally
+matches only 1394 of 1406 structural rows. The direct state-definition search
+accepts a state on the left of a kinematic equation, but the model gives its
+kinematics through `p1.frame_b.r_0`, an algebraic coordinate exactly equal to
+`body1.frame_a.r_0`. The unique causal-definition map cannot supply this fact:
+the geometry equation and the alias equation both define that coordinate.
+
+The structural change consumes the existing exact value-equality
+anchor, preserving its sign, before applying the existing state-demotion
+checks. It accepts either equation orientation and reconstructs a checked DAE.
+This is SPEC_0007/SPEC_0040 STRUCT-T04, with MLS §§8.3.1, 8.6 and `der`
+semantics; it does not implement general state selection or alias elimination.
+
+The real model now matches all 1406 rows. Its 644 variables, 445 continuous
+equation owners and source map keep their original order and provenance.
+Six body-coordinate arrays become algebraics; the four fixed joint initial
+values remain 0.1, 0, 0.1, 0. At this step runtime still exceeds the 12-second
+simulation budget. The subsequent tensor assignment repairs below let the
+same model complete in 2.134 seconds with every compared channel strict-high
+in `target/msl/multibody-gravity-complete-examples`. An independent analytic
+check of both prismatic joints uses
+`s = 0.1 + g/30*(1-cos(sqrt(30)*time))`, with `g = 9.80665`.
+Maximum displacement, velocity, and acceleration errors over all 501 samples
+are 1.94e-5, 1.08e-4, and 5.79e-4, respectively, under the model's original
+1e-6 tolerance.
+
+Three analytic kinematic regressions cover vector coordinates, a signed alias,
+and reversed equation orientation, including the initial displacement and
+velocity. All 141 structural tests and 13 initial-value alias-transfer runtime
+tests pass. Five holonomic-specific fixtures now declare `StateSelect.always`
+to continue exercising their intended reduction; their proof assertions are
+unchanged. Focused structural/core Clippy and formatting passed.
+
+The diagnostic canary in `target/msl/multibody-alias-state-canary` adds
+`FirstGrounded` with every compared channel high and leaves its other members
+unchanged. The subsequent 42-example run at
+`target/msl/multibody-alias-state-after` exposes the counterexample below.
+These are focused working-tree measurements, not complete cohort claims. The
+state-demotion change was held until that counterexample was closed.
+
+## Receiver function redeclaration counterexample
+
+The originating model is
+`Modelica.Mechanics.MultiBody.Examples.Elementary.UserDefinedGravityField`.
+The state-demotion work enables it to complete, but the comparison reports
+48 deviating channels among 193, including five at initialization. Rumoca
+keeps gravity and the pendulum motion zero; OpenModelica's initial vertical
+gravity is -9.780263581798753. This paused unrelated capability work until the
+closure recorded below.
+
+The source redeclares `world.gravityAcceleration` to
+`theoreticalNormalGravityWGS84(phi=geodeticLatitude)`. Before the receiver fix,
+Flat equation 27 still calls the default `standardGravityAcceleration`
+implementation with `world.gravityType=NoGravity`. That explains zero gravity
+without invoking a solver, initialization, or mechanical-reduction hypothesis.
+
+The minimal receiver regression replaces a default `Double` with `Triple`.
+Instantiate records the correct slot and implementation DefIds, but Flatten
+selects `Double` through direct and inner/outer receivers. The first divergent
+producer is Flatten's function override selection: it only consults the
+caller's modification environment. MLS §§5.4, 7.2.2 and 7.3, SPEC_0001 and
+SPEC_0007 Stage 2 govern the repair.
+
+The working repair supplies the receiver's instance modification environment
+and retains the enclosing instance scope of bound modifier arguments. Three
+Flat identity regressions pass. Two runtime regressions check direct and
+inner/outer calls across every sample, including nested instances with distinct
+parameter values. The nested test caught a second defect in the intermediate
+repair: both instances used the declaration's default value. Carrying the
+modifier's enclosing instance identity and path closes that focused regression.
+The complete Flatten test suite passes (687 tests across its unit, integration,
+and documentation groups), as does Flatten's all-feature, all-target Clippy
+check. The originating model's Flat output now selects only the WGS84
+implementation and carries the latitude argument from the correct instance.
+
+The normal 12-second run in `target/msl/multibody-receiver-gravity` and a
+separate 60-second diagnostic run both reach consistent initialization, then
+time out without a complete trace. The extended diagnostic changes no supported
+coverage count or benchmark budget. Public live stepping through 0.5 seconds
+produces nonzero pendulum motion and the expected initial gravity, but it is
+not a replacement for the complete OMC comparison. Algebraic output observation
+is expensive: at 0.02 and 0.04 seconds it takes 26 and 32 full projection
+sweeps respectively. Diagnostic tracing identifies two unsettled singleton
+blocks; the exact producer and assignment certificates are under investigation.
+The missing proof was in Solve's exact-assignment constructor: scalar additive
+residuals admitted an isolator, but the equivalent `TensorBinary` sum did not.
+The repair projects the operands of the requested tensor element through the
+existing stride/lane checks and applies the same additive proof. It retains
+the compact program and rejects cancelled targets and unisolated dependencies.
+Both positive tests failed before this change; all five tensor shape tests now
+pass, including stride identity and negative controls.
+
+That repair reduced the full simulation to 1.69 seconds, but the comparison in
+`target/msl/multibody-gravity-tensor-isolators` still found five torque-channel
+deviations. The generated assignment builder allocated new registers after the
+largest destination **start**, overwriting live tensor lanes. A standalone
+materialization regression reproduced `-1` instead of `4`. The builder now
+uses the existing checked register-flow extent. Its single-output and grouped
+assignment regression passes; the Solve IR, evaluator, and solver unit suites
+pass all 823 tests.
+
+`target/msl/multibody-gravity-register-ranges` completes the originating model
+under the unchanged normal budget: 193/193 channels high, all 193 initial
+channels high, zero missing, skipped, excluded, or deviating channels. Runtime
+is 1.690 seconds and build plus runtime is 3.396 seconds. This closes the
+originating counterexample. An independent two-state pendulum calculation uses
+`phi_dot = w` and
+`w_dot = (-10000*g(20 + 10*sin(phi))*cos(phi) - 0.1*w)/100000.001`, with the
+source WGS84 gravity function. SciPy DOP853 at `rtol=1e-12`, `atol=1e-14`
+agrees at all 501 samples: maximum angle, speed, and acceleration errors are
+below 5.88e-7; gravity error is below 9.81e-12; all eight checked transverse
+torque channels are exactly zero. The fixed 20-model canary in
+`target/msl/multibody-gravity-complete-canary` retains nine compared models,
+all strict-high, with zero missing, skipped, excluded, or deviating comparisons.
+Every member's compilation and simulation status is unchanged from the earlier
+state-alias canary. The additional repeated-prefix receiver regression passes,
+bringing the receiver identity suite to four tests. The full-cohort milestone
+remains pending. The affected packages pass all-target, all-feature Clippy.
+
+## Moving drive angular-acceleration counterexample (closed)
+
+The combined 42-example validation in
+`target/msl/multibody-gravity-complete-examples` completes ten models. All ten
+have reference comparisons, with zero missing, skipped, or excluded models.
+Nine are strict-high. `MovingActuatedDrive` has one deviating channel among
+624: `bodyCylinder.body.z_a[3]`; all 624 initial channels are high. The other
+32 examples still fail before producing a complete trace. This counterexample
+paused unrelated capability work and the milestone commit until closure.
+
+The model's angular velocity satisfies
+`w_a[3] = -r1.w*sin(revolute.phi)`, and its source declares `z_a = der(w_a)`.
+Rumoca's acceleration instead satisfies
+`z_a[3] = r1.a*sin(revolute.phi) - r1.w*cos(revolute.phi)*revolute.w`
+to 8.89e-16 over the complete candidate trace. The first term has the wrong
+sign under the product rule. Before structural reduction, DAE owner 401 retains
+`z_a = der(w_a)`. After reduction its product-rule expansion puts
+`(r1.a*r1.e)*revolute.R_rel.T` where the source requires
+`revolute.R_rel.T*(r1.a*r1.e)`. Structural differentiation treated multiplication
+as commutative in the second term of the product rule. Both forms typecheck for
+a square matrix and vector, so shape checks alone cannot establish correctness.
+
+Three polynomial regressions reproduce wrong derivatives for matrix–vector,
+vector–matrix, and matrix–matrix products. The repair preserves both
+operand positions in the first- and second-order product rules and tests the
+value plus both derivatives over every sample. These fixtures construct dynamic
+matrices from fixed parameter matrices and time coefficients, within the
+existing differentiability rules; no unsupported operation is admitted to make
+the test pass. All 419 core integration tests pass, including these three
+regressions. This follows SPEC_0007's structural transformation contract and
+MLS §3.7.2 (`der`) and §10.6.4 (ordered vector and matrix multiplication).
+
+The originating run in `target/msl/multibody-moving-drive-product-order`
+compares all 624 channels as strict-high, including all 624 initial channels,
+with zero missing, skipped, excluded, or deviating comparisons. Runtime is
+3.220 seconds under the unchanged normal budget. Its corrected acceleration
+satisfies `z_a[3] = -r1.a*sin(phi) - r1.w*cos(phi)*revolute.w` to 8.89e-16
+over all 501 candidate samples. This closes the originating counterexample;
+the regenerated structural DAE retains owner 401 and residual 4450, while
+product node 4446 now has the required matrix on the left. All 141 structural
+tests and the affected packages' all-target, all-feature Clippy checks pass.
+The fixed canary in `target/msl/multibody-product-order-canary` retains nine
+compared models, all strict-high, with zero missing, skipped, excluded, or
+deviating comparisons. All 20 members' stage and simulation statuses are
+unchanged from `multibody-gravity-complete-canary`. The full example-set
+regression run in `target/msl/multibody-product-order-examples` compares all
+ten completed models as strict-high: 3759 channels, including initialization,
+with zero missing, skipped, excluded, or deviating comparisons. All 42 stage
+and simulation statuses are unchanged from the preceding example run; the
+angular-acceleration channel changes from deviating to high. The other 32
+examples remain failures. The named-commit full 566-model milestone is next;
+these focused runs do not establish a cohort claim or baseline promotion.

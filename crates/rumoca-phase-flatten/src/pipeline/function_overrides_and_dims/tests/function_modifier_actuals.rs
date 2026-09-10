@@ -473,6 +473,7 @@ fn inherited_exposure_and_explicit_redeclare_use_exact_precedence() {
             active: true,
             function_slot: FunctionSlot::Unrelated,
             modifier_args: vec![FunctionModifierArg {
+                scope: None,
                 name: "g0".to_string(),
                 value: rumoca_ir_ast::Expression::Terminal {
                     terminal_type: rumoca_ir_ast::TerminalType::UnsignedReal,

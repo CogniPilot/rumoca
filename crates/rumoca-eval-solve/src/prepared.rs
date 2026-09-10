@@ -1089,11 +1089,7 @@ pub(crate) fn assignment_shape_reads_y_index(
 
 impl<'a> AssignmentProgramBuilder<'a> {
     fn new(program: &'a mut Vec<LinearOp>) -> Option<Self> {
-        let next_register = program
-            .iter()
-            .filter_map(LinearOp::dst_register)
-            .max()
-            .map_or(Some(0), |register| register.checked_add(1))?;
+        let next_register = u32::try_from(required_registers(program).ok()?).ok()?;
         Some(Self {
             program,
             next_register,

@@ -600,11 +600,18 @@ fn direct_state_constraint<'dae>(
     else {
         return None;
     };
-    let dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) =
-        view.expression(lhs)?.operation()
-    else {
-        return None;
-    };
+    direct_state_definition(view, facts, lhs, rhs, owner)
+        .or_else(|| direct_state_definition(view, facts, rhs, lhs, owner))
+}
+
+fn direct_state_definition<'dae>(
+    view: dae::DaeView<'dae>,
+    facts: &DifferentiationFacts,
+    lhs: dae::ExprId<'dae>,
+    rhs: dae::ExprId<'dae>,
+    owner: dae::DaeProvenance,
+) -> Option<DirectStateConstraint> {
+    let (state, rhs_sign) = exact_state_anchor(view, &facts.equalities, lhs)?;
     let variable = view.variable(view.variable_id(state.index() as usize)?)?;
     if variable.state_select() == StateSelect::Always
         || variable.value_type().scalar_type() != dae::ScalarType::Real
@@ -623,9 +630,37 @@ fn direct_state_constraint<'dae>(
     Some(DirectStateConstraint {
         state: state.index(),
         rhs: rhs.index(),
-        rhs_sign: EqualitySign::Same,
+        rhs_sign,
         owner,
     })
+}
+
+fn exact_state_anchor<'dae>(
+    view: dae::DaeView<'dae>,
+    equalities: &SystemEqualities,
+    expression: dae::ExprId<'dae>,
+) -> Option<(dae::StateId<'dae>, EqualitySign)> {
+    match view.expression(expression)?.operation() {
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) => {
+            Some((state, EqualitySign::Same))
+        }
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
+            let (EqualityAnchor::State(state), sign) =
+                equalities.value_anchor_of(algebraic.index())?
+            else {
+                return None;
+            };
+            let dae::VariableIdentity::State(state) =
+                view.variable(view.variable_id(state as usize)?)?.identity()
+            else {
+                return None;
+            };
+            // lhs = sign*state and lhs = rhs imply der(state) = sign*der(rhs).
+            // Both source equalities remain owners in the reconstructed DAE.
+            Some((state, sign))
+        }
+        _ => None,
+    }
 }
 
 /// Whether the definition closure of `root` names `der(demoted)`.

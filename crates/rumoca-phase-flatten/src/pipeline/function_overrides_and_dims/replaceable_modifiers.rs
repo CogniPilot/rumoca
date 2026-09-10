@@ -17,12 +17,14 @@ pub(super) fn append_replaceable_function_modifier_args(
                 .iter()
                 .filter(|arg| !existing_names.contains(arg.name.as_str()))
                 .map(|arg| {
-                    named_function_arg(
-                        &arg.name,
-                        qualify_redeclare_function_arg(&arg.value, &receiver_scope, ctx),
-                        arg.span,
-                    )
-                }),
+                    let scope = arg.scope.as_ref().map_or(&receiver_scope, |(_, path)| path);
+                    let mut value = qualify_redeclare_function_arg(&arg.value, scope, ctx);
+                    if let Some((owner, _)) = &arg.scope {
+                        attach_reference_scope(&mut value, *owner)?;
+                    }
+                    Ok(named_function_arg(&arg.name, value, arg.span))
+                })
+                .collect::<Result<Vec<_>, FlattenError>>()?,
         );
     }
     let existing_names = named_function_arg_names(&args);
@@ -85,11 +87,15 @@ fn exact_override_function_target_and_receiver_scope<'a>(
     ctx: &'a FunctionOverrideRewriteContext<'a>,
     span: rumoca_core::Span,
 ) -> Result<Option<(&'a OverrideTarget, ComponentPath)>, FlattenError> {
-    let mut matches = ctx.override_functions.values().filter(|target| {
-        target.class_type == rumoca_core::ClassType::Function
-            && target.def_id == selection.implementation
-            && !target.modifier_args.is_empty()
-    });
+    let (overrides, _) = ctx.function_override_scope(current_ref);
+    let mut matches = overrides
+        .into_iter()
+        .flat_map(|map| map.values())
+        .filter(|target| {
+            target.class_type == rumoca_core::ClassType::Function
+                && target.def_id == selection.implementation
+                && !target.modifier_args.is_empty()
+        });
     let target = matches.next();
     if matches.next().is_some() {
         return Err(FlattenError::missing_function_selection_identity(

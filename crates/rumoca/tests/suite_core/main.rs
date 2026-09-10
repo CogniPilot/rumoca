@@ -89,17 +89,20 @@ mod override_promoted_array_mask;
 mod periodic_source_counter_regression;
 mod pipeline_test;
 mod prepared_vectors_refresh;
+mod receiver_function_redeclare;
 mod replaceable_function_redeclare;
 mod semi_linear_zero_flow;
 // quadrotor_se23_regression_test.rs lives in `suite_heavy_solve`
 // (required-features = ["heavy-solve-tests"]): until the compact Solve
 // function-fold owner lands, its guards grind through ~139 MB of
 // scalarized IR for minutes instead of failing fast.
+mod noncommutative_product_derivatives;
 mod record_array_member_slice_test;
 mod record_connector_equation_test;
 mod reverse_vjp_test;
 mod scoped_import_flatten;
 mod solve_model_round_trip;
+mod state_demotion_through_alias;
 mod state_select_enclosing_constant_test;
 mod steady_adjoint_test;
 mod steady_state_sensitivity_test;

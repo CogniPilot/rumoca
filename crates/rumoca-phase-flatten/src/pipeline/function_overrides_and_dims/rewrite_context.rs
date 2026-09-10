@@ -7,6 +7,7 @@ pub(crate) struct FunctionOverrideRewriteContext<'a> {
     pub(super) class_index: &'a rumoca_ir_ast::ClassDefIndex<'a>,
     pub(super) override_packages: &'a [OverrideTarget],
     pub(super) override_functions: &'a OverrideFunctionMap,
+    component_overrides: Option<&'a ComponentOverrideMap>,
     pub(super) component_members: Option<&'a component_member_scope::ComponentMemberScopes>,
     pub(super) active_scope: ComponentPath,
     pub(super) local_def_ids: FxHashSet<rumoca_core::DefId>,
@@ -18,7 +19,7 @@ pub(crate) struct FunctionOverrideRewriteContext<'a> {
 }
 
 impl<'a> FunctionOverrideRewriteContext<'a> {
-    pub(super) fn new(
+    pub(crate) fn new(
         tree: &'a ClassTree,
         class_index: &'a rumoca_ir_ast::ClassDefIndex<'a>,
         override_packages: &'a [OverrideTarget],
@@ -29,6 +30,7 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
             class_index,
             override_packages,
             override_functions,
+            component_overrides: None,
             component_members: None,
             active_scope: ComponentPath::root(),
             local_def_ids: FxHashSet::default(),
@@ -44,12 +46,51 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
         self.predefined_callables.contains(def_id)
     }
 
-    pub(super) fn with_active_scope(mut self, active_scope: ComponentPath) -> Self {
+    pub(crate) fn with_active_scope(mut self, active_scope: ComponentPath) -> Self {
         self.active_scope = active_scope;
         self
     }
 
-    pub(super) fn with_component_member_scope(
+    pub(crate) fn with_component_overrides(mut self, overrides: &'a ComponentOverrideMap) -> Self {
+        self.component_overrides = Some(overrides);
+        self
+    }
+
+    /// MLS §7.3: qualified calls use the receiver's modification environment.
+    /// The slot is still selected by DefId; the structured occurrence path
+    /// separates receivers instantiated from the same declaration.
+    pub(super) fn function_override_scope(
+        &self,
+        reference: &rumoca_core::Reference,
+    ) -> (Option<&OverrideFunctionMap>, ComponentPath) {
+        let lexical = || (Some(self.override_functions), self.active_scope.clone());
+        let Some(overrides) = self.component_overrides else {
+            return lexical();
+        };
+        let Some(scope) = reference.component_scope() else {
+            return lexical();
+        };
+        let Some(receiver) = scope.prefix_parts().last() else {
+            return lexical();
+        };
+        if self.class_index.get(receiver.def_id).is_some() {
+            return lexical();
+        }
+        let relative = ComponentPath::from_reference(reference)
+            .parent()
+            .expect("a receiver has at least one path part");
+        let mut enclosing = Some(self.active_scope.clone());
+        while let Some(scope) = enclosing {
+            let path = scope.join(&relative);
+            if let Some(selected) = overrides.get(&path) {
+                return (Some(selected), path);
+            }
+            enclosing = scope.parent();
+        }
+        (None, relative)
+    }
+
+    pub(crate) fn with_component_member_scope(
         mut self,
         component_members: &'a component_member_scope::ComponentMemberScopes,
     ) -> Self {

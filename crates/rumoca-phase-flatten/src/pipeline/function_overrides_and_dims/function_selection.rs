@@ -267,10 +267,14 @@ fn exact_redeclared_function_rewrite(
     ctx: &FunctionOverrideRewriteContext<'_>,
     span: rumoca_core::Span,
 ) -> Result<Option<ResolvedFunctionRewrite>, FlattenError> {
-    let mut matches = ctx.override_functions.values().filter(|target| {
-        target.class_type == rumoca_core::ClassType::Function
-            && target.function_slot == FunctionSlot::Exact(selection.exposure)
-    });
+    let (overrides, _) = ctx.function_override_scope(reference);
+    let mut matches = overrides
+        .into_iter()
+        .flat_map(|map| map.values())
+        .filter(|target| {
+            target.class_type == rumoca_core::ClassType::Function
+                && target.function_slot == FunctionSlot::Exact(selection.exposure)
+        });
     let target = matches.next();
     if matches.next().is_some() {
         return Err(FlattenError::missing_function_selection_identity(
@@ -338,10 +342,13 @@ fn refuse_unresolved_function_redeclare(
     else {
         return Ok(());
     };
-    let governs = ctx.override_functions.get(leaf).is_some_and(|target| {
-        target.class_type == rumoca_core::ClassType::Function
-            && target.function_slot == FunctionSlot::Unresolved
-    });
+    let (overrides, _) = ctx.function_override_scope(reference);
+    let governs = overrides
+        .and_then(|map| map.get(leaf))
+        .is_some_and(|target| {
+            target.class_type == rumoca_core::ClassType::Function
+                && target.function_slot == FunctionSlot::Unresolved
+        });
     if governs {
         return Err(FlattenError::unhonored_function_redeclare(
             reference.as_str(),

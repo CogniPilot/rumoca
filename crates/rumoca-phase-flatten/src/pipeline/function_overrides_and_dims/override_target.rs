@@ -14,6 +14,7 @@ pub(super) struct FunctionModifierArg {
     pub(super) name: String,
     pub(super) value: rumoca_ir_ast::Expression,
     pub(super) span: rumoca_core::Span,
+    pub(super) scope: Option<(rumoca_core::InstanceId, ComponentPath)>,
 }
 
 pub(super) struct ResolvedClassRef<'a> {
@@ -109,6 +110,7 @@ pub(super) fn function_modifier_arg_from_ast(
                 name: name.text.to_string(),
                 value: value.as_ref().clone(),
                 span: *span,
+                scope: None,
             })
         }
         rumoca_ir_ast::Expression::Modification {
@@ -119,6 +121,7 @@ pub(super) fn function_modifier_arg_from_ast(
             name: single_component_ref_name(target)?,
             value: value.as_ref().clone(),
             span: *span,
+            scope: None,
         }),
         _ => None,
     }

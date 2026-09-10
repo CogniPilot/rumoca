@@ -46,6 +46,14 @@ fn process_class_instance_body(
     let class_scope = class_data.qualified_name.to_component_path();
     let (override_packages, override_functions) =
         override_context_for_component_path(&class_scope, component_override_map);
+    let rewrite_ctx = FunctionOverrideRewriteContext::new(
+        tree,
+        class_index,
+        &override_packages,
+        &override_functions,
+    )
+    .with_active_scope(class_scope.clone())
+    .with_component_overrides(component_override_map);
     let override_package_names = override_package_names(&override_packages);
     let override_aliases =
         override_aliases_for_component_path(&class_scope, component_override_map);
@@ -76,13 +84,7 @@ fn process_class_instance_body(
         let chain = when_equations::flatten_when_equation(ctx, &inst_eq, prefix, def_map)?;
         if let Some(mut chain) = chain {
             attach_when_chain_reference_scopes(&mut chain, class_data.instance_id)?;
-            rewrite_function_overrides_in_when_chain(
-                &mut chain,
-                tree,
-                class_index,
-                &override_packages,
-                &override_functions,
-            )?;
+            rewrite_function_overrides_in_when_chain_with_ctx(&mut chain, &rewrite_ctx)?;
             flat.when_chains.push(chain);
         }
 
@@ -90,13 +92,7 @@ fn process_class_instance_body(
         let mut flattened =
             equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map)?;
         attach_equation_reference_scopes(&mut flattened, class_data.instance_id)?;
-        rewrite_function_overrides_in_flattened(
-            &mut flattened,
-            tree,
-            class_index,
-            &override_packages,
-            &override_functions,
-        )?;
+        rewrite_function_overrides_in_flattened(&mut flattened, &rewrite_ctx)?;
         let equation_base = flat.equations.len();
         for eq in flattened.equations {
             flat.add_equation(eq);
@@ -143,13 +139,7 @@ fn process_class_instance_body(
         let mut flattened =
             equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map)?;
         attach_equation_reference_scopes(&mut flattened, class_data.instance_id)?;
-        rewrite_function_overrides_in_flattened(
-            &mut flattened,
-            tree,
-            class_index,
-            &override_packages,
-            &override_functions,
-        )?;
+        rewrite_function_overrides_in_flattened(&mut flattened, &rewrite_ctx)?;
         let equation_base = flat.initial_equations.len();
         for eq in flattened.equations {
             flat.add_initial_equation(eq);
@@ -207,13 +197,7 @@ fn process_class_instance_body(
                     &mut flat_alg.statements,
                     class_data.instance_id,
                 )?;
-                rewrite_function_overrides_in_algorithm(
-                    &mut flat_alg,
-                    tree,
-                    class_index,
-                    &override_packages,
-                    &override_functions,
-                )?;
+                rewrite_function_overrides_in_algorithm(&mut flat_alg, &rewrite_ctx)?;
                 lowered.push(flat_alg);
             }
             Ok(lowered)

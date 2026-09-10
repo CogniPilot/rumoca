@@ -11,10 +11,10 @@ enum OffsetKind {
     NonUnitCoefficient,
 }
 
-const ZERO_TEXT: &str = "Real x; Real w; Real y; Real v; Real port_x; Real port_y; Real support; Real shifted; Real acc_x; Real acc_y; equation x = port_x; y = port_y; support = 0; shifted = port_x - support; shifted = 2*port_y; der(x) = w; der(y) = v; der(w) = acc_x; der(v) = acc_y; acc_x = 1;";
-const HALF_TEXT: &str = "Real x; Real w; Real y; Real v; Real port_x; Real port_y; Real support; Real shifted; Real acc_x; Real acc_y; equation x = port_x; y = port_y; support = 0.5; shifted = port_x - support; shifted = 2*port_y; der(x) = w; der(y) = v; der(w) = acc_x; der(v) = acc_y; acc_x = 1;";
-const VARYING_TEXT: &str = "Real x; Real w; Real y; Real v; Real port_x; Real port_y; Real support; Real shifted; Real acc_x; Real acc_y; equation x = port_x; y = port_y; support = v; shifted = port_x - support; shifted = 2*port_y; der(x) = w; der(y) = v; der(w) = acc_x; der(v) = acc_y; acc_x = 1;";
-const NON_UNIT_TEXT: &str = "Real x; Real w; Real y; Real v; Real port_x; Real port_y; Real support; Real shifted; Real acc_x; Real acc_y; equation x = port_x; y = port_y; support = 0; shifted = 2*port_x - support; shifted = 2*port_y; der(x) = w; der(y) = v; der(w) = acc_x; der(v) = acc_y; acc_x = 1;";
+const ZERO_TEXT: &str = "Real x(stateSelect=StateSelect.always); Real w(stateSelect=StateSelect.always); Real y(stateSelect=StateSelect.always); Real v(stateSelect=StateSelect.always); Real port_x; Real port_y; Real support; Real shifted; Real acc_x; Real acc_y; equation x = port_x; y = port_y; support = 0; shifted = port_x - support; shifted = 2*port_y; der(x) = w; der(y) = v; der(w) = acc_x; der(v) = acc_y; acc_x = 1;";
+const HALF_TEXT: &str = "Real x(stateSelect=StateSelect.always); Real w(stateSelect=StateSelect.always); Real y(stateSelect=StateSelect.always); Real v(stateSelect=StateSelect.always); Real port_x; Real port_y; Real support; Real shifted; Real acc_x; Real acc_y; equation x = port_x; y = port_y; support = 0.5; shifted = port_x - support; shifted = 2*port_y; der(x) = w; der(y) = v; der(w) = acc_x; der(v) = acc_y; acc_x = 1;";
+const VARYING_TEXT: &str = "Real x(stateSelect=StateSelect.always); Real w(stateSelect=StateSelect.always); Real y(stateSelect=StateSelect.always); Real v(stateSelect=StateSelect.always); Real port_x; Real port_y; Real support; Real shifted; Real acc_x; Real acc_y; equation x = port_x; y = port_y; support = v; shifted = port_x - support; shifted = 2*port_y; der(x) = w; der(y) = v; der(w) = acc_x; der(v) = acc_y; acc_x = 1;";
+const NON_UNIT_TEXT: &str = "Real x(stateSelect=StateSelect.always); Real w(stateSelect=StateSelect.always); Real y(stateSelect=StateSelect.always); Real v(stateSelect=StateSelect.always); Real port_x; Real port_y; Real support; Real shifted; Real acc_x; Real acc_y; equation x = port_x; y = port_y; support = 0; shifted = 2*port_x - support; shifted = 2*port_y; der(x) = w; der(y) = v; der(w) = acc_x; der(v) = acc_y; acc_x = 1;";
 
 struct OffsetVariables<'dae> {
     x: dae::StateId<'dae>,
@@ -69,11 +69,16 @@ fn declare_offset_variables<'dae>(
 ) -> Result<OffsetVariables<'dae>, dae::DaeConstructionError> {
     model.variables(|variables| {
         let attributes = dae::VariableAttributes::default();
+        // These fixtures test manifold certificates while preserving all states.
+        let state_attributes = dae::VariableAttributes {
+            state_select: rumoca_core::StateSelect::Always,
+            ..attributes.clone()
+        };
         Ok(OffsetVariables {
-            x: variables.state(VarName::new("x"), real, at, attributes.clone())?,
-            w: variables.state(VarName::new("w"), real, at, attributes.clone())?,
-            y: variables.state(VarName::new("y"), real, at, attributes.clone())?,
-            v: variables.state(VarName::new("v"), real, at, attributes.clone())?,
+            x: variables.state(VarName::new("x"), real, at, state_attributes.clone())?,
+            w: variables.state(VarName::new("w"), real, at, state_attributes.clone())?,
+            y: variables.state(VarName::new("y"), real, at, state_attributes.clone())?,
+            v: variables.state(VarName::new("v"), real, at, state_attributes)?,
             port_x: variables.algebraic(VarName::new("port_x"), real, at, attributes.clone())?,
             port_y: variables.algebraic(VarName::new("port_y"), real, at, attributes.clone())?,
             support: variables.algebraic(VarName::new("support"), real, at, attributes.clone())?,

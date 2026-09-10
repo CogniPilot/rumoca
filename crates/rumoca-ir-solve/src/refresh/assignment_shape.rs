@@ -119,7 +119,7 @@ fn affine_assignment_shapes(
     dependencies: &ScalarProgramYDependency<'_>,
 ) -> Vec<TargetAssignmentShape> {
     let (output, output_scale) = strip_affine_output_wrappers(program, output);
-    let Some(LinearOp::Binary { op, lhs, rhs, .. }) = producer(program, output) else {
+    let Some((op, lhs, rhs)) = binary_operands(program, output) else {
         return Vec::new();
     };
     let (lhs_scale, rhs_scale) = match op {
@@ -128,22 +128,22 @@ fn affine_assignment_shapes(
         _ => return Vec::new(),
     };
     let mut shapes = Vec::new();
-    for (target, coefficient) in affine_target_terms(program, *lhs).into_iter().flatten() {
+    for (target, coefficient) in affine_target_terms(program, lhs).into_iter().flatten() {
         push_affine_assignment_shape(
             &mut shapes,
             program,
             (target, coefficient, lhs_scale),
-            *rhs,
+            rhs,
             rhs_scale,
             dependencies,
         );
     }
-    for (target, coefficient) in affine_target_terms(program, *rhs).into_iter().flatten() {
+    for (target, coefficient) in affine_target_terms(program, rhs).into_iter().flatten() {
         push_affine_assignment_shape(
             &mut shapes,
             program,
             (target, coefficient, rhs_scale),
-            *lhs,
+            lhs,
             lhs_scale,
             dependencies,
         );
@@ -264,6 +264,17 @@ fn additive_target_coefficient(
     if !dependencies.depends_on(register, target_y_index) {
         return Some(0.0);
     }
+    if let Some((op @ (BinaryOp::Add | BinaryOp::Sub), lhs, rhs)) =
+        binary_operands(program, register)
+    {
+        let lhs = additive_target_coefficient(program, lhs, target_y_index, dependencies)?;
+        let rhs = additive_target_coefficient(program, rhs, target_y_index, dependencies)?;
+        return Some(if op == BinaryOp::Add {
+            lhs + rhs
+        } else {
+            lhs - rhs
+        });
+    }
     match producer(program, register)? {
         _ if target_load_index(program, register) == Some(target_y_index) => Some(1.0),
         LinearOp::Move { src, .. } => {
@@ -275,24 +286,6 @@ fn additive_target_coefficient(
             ..
         } => additive_target_coefficient(program, *arg, target_y_index, dependencies)
             .map(|value| -value),
-        LinearOp::Binary {
-            op: BinaryOp::Add,
-            lhs,
-            rhs,
-            ..
-        } => Some(
-            additive_target_coefficient(program, *lhs, target_y_index, dependencies)?
-                + additive_target_coefficient(program, *rhs, target_y_index, dependencies)?,
-        ),
-        LinearOp::Binary {
-            op: BinaryOp::Sub,
-            lhs,
-            rhs,
-            ..
-        } => Some(
-            additive_target_coefficient(program, *lhs, target_y_index, dependencies)?
-                - additive_target_coefficient(program, *rhs, target_y_index, dependencies)?,
-        ),
         _ => None,
     }
 }
@@ -304,6 +297,11 @@ fn collect_affine_y_loads(
     loads: &mut Vec<(usize, u32)>,
 ) {
     if !visited.insert(register) {
+        return;
+    }
+    if let Some((BinaryOp::Add | BinaryOp::Sub, lhs, rhs)) = binary_operands(program, register) {
+        collect_affine_y_loads(program, lhs, visited, loads);
+        collect_affine_y_loads(program, rhs, visited, loads);
         return;
     }
     if let Some(index) = target_load_index(program, register) {
@@ -319,15 +317,6 @@ fn collect_affine_y_loads(
             arg: src,
             ..
         }) => collect_affine_y_loads(program, *src, visited, loads),
-        Some(LinearOp::Binary {
-            op: BinaryOp::Add | BinaryOp::Sub,
-            lhs,
-            rhs,
-            ..
-        }) => {
-            collect_affine_y_loads(program, *lhs, visited, loads);
-            collect_affine_y_loads(program, *rhs, visited, loads);
-        }
         _ => {}
     }
 }
@@ -461,6 +450,41 @@ fn assignment_expression_registers(
             subtraction_assignment_registers(program, lhs, rhs, 1.0)
         }),
         _ => [None, None],
+    }
+}
+
+fn binary_operands(program: &[LinearOp], output: u32) -> Option<(BinaryOp, u32, u32)> {
+    match *producer(program, output)? {
+        LinearOp::Binary { op, lhs, rhs, .. } => Some((op, lhs, rhs)),
+        LinearOp::TensorBinary {
+            dst_start,
+            op,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            lanes,
+        } => {
+            let (lhs, rhs) = tensor_binary_operands(
+                output,
+                dst_start,
+                (
+                    StridedOperand {
+                        start: lhs_start,
+                        stride: lhs_stride,
+                    },
+                    StridedOperand {
+                        start: rhs_start,
+                        stride: rhs_stride,
+                    },
+                ),
+                count,
+                lanes,
+            )?;
+            Some((op, lhs, rhs))
+        }
+        _ => None,
     }
 }
 

@@ -147,15 +147,16 @@ pub(crate) fn process_component_instance(
     let receiver_scope = instance_scope
         .parent()
         .unwrap_or_else(rumoca_core::ComponentPath::root);
-    rewrite_function_overrides_in_flat_variable(
-        &mut flat_var,
+    let rewrite_ctx = FunctionOverrideRewriteContext::new(
         request.tree,
         request.class_index,
         &override_packages,
         &override_functions,
-        &receiver_scope,
-        request.component_members,
-    )?;
+    )
+    .with_active_scope(receiver_scope)
+    .with_component_member_scope(request.component_members)
+    .with_component_overrides(request.component_override_map);
+    rewrite_function_overrides_in_flat_variable(&mut flat_var, &rewrite_ctx)?;
     request.flat.variable_type_names.insert(
         var_name.clone(),
         variables::flat_output_type_name(

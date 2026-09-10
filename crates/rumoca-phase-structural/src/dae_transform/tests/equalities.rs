@@ -42,7 +42,7 @@ impl<'dae> Declared<'dae> {
 }
 
 /// Declare `names` in order, reading the role off a one-character prefix:
-/// `p` parameter, `s` state, `a` algebraic.
+/// `p` parameter, `s` state, `S` always-selected state, `a` algebraic.
 fn declare<'dae>(
     model: &mut dae::DaeConstruction<'dae>,
     real: dae::ValueTypeId<'dae>,
@@ -55,7 +55,14 @@ fn declare<'dae>(
             .map(|entry| {
                 let (role, name) = entry.split_at(1);
                 let name = VarName::new(name);
-                let attributes = dae::VariableAttributes::default();
+                let attributes = dae::VariableAttributes {
+                    state_select: if role == "S" {
+                        rumoca_core::StateSelect::Always
+                    } else {
+                        rumoca_core::StateSelect::Default
+                    },
+                    ..dae::VariableAttributes::default()
+                };
                 Ok(match role {
                     "p" => Declared::Parameter(variables.parameter(
                         name,
@@ -63,7 +70,9 @@ fn declare<'dae>(
                         declaration,
                         attributes,
                     )?),
-                    "s" => Declared::State(variables.state(name, real, declaration, attributes)?),
+                    "s" | "S" => {
+                        Declared::State(variables.state(name, real, declaration, attributes)?)
+                    }
                     _ => Declared::Algebraic(variables.algebraic(
                         name,
                         real,
@@ -216,9 +225,9 @@ fn alias_chain_model() -> dae::Dae {
 /// The position constraint is written entirely in connector algebraics. The
 /// two adjacent component equations prove which state each endpoint names,
 /// while the acceleration equations make the second derivative exact.
-const HIDDEN_HOLONOMIC_TEXT: &str = "Real phi1; Real w1; Real phi2; Real w2; Real angle1; Real angle2; Real acc1; Real acc2; equation phi1 = angle1; phi2 = angle2; angle1 = 2*angle2; der(phi1) = w1; der(phi2) = w2; der(w1) = acc1; der(w2) = acc2; acc1 = 1;";
+const HIDDEN_HOLONOMIC_TEXT: &str = "Real phi1(stateSelect=StateSelect.always); Real w1(stateSelect=StateSelect.always); Real phi2(stateSelect=StateSelect.always); Real w2(stateSelect=StateSelect.always); Real angle1; Real angle2; Real acc1; Real acc2; equation phi1 = angle1; phi2 = angle2; angle1 = 2*angle2; der(phi1) = w1; der(phi2) = w2; der(w1) = acc1; der(w2) = acc2; acc1 = 1;";
 const HIDDEN_HOLONOMIC_NAMES: &[&str] = &[
-    "sphi1", "sw1", "sphi2", "sw2", "aangle1", "aangle2", "aacc1", "aacc2",
+    "Sphi1", "Sw1", "Sphi2", "Sw2", "aangle1", "aangle2", "aacc1", "aacc2",
 ];
 const HIDDEN_HOLONOMIC_EQUATIONS: &[&str] = &[
     "phi1 = angle1",
@@ -304,12 +313,12 @@ fn hidden_holonomic_model() -> dae::Dae {
 
 /// Two independent connector-hidden position constraints. Replacing either
 /// one alone cuts the unmatched residue from four to two; only the accumulated
-/// pair is sortable. The non-unit scale keeps either constraint out of the
-/// direct state-equality demotion lane.
-const INDEPENDENT_HOLONOMIC_TEXT: &str = "Real phi1; Real w1; Real phi2; Real w2; Real angle1; Real angle2; Real acc1; Real acc2; Real phi3; Real w3; Real phi4; Real w4; Real angle3; Real angle4; Real acc3; Real acc4; equation phi1 = angle1; phi2 = angle2; angle1 = 2*angle2; der(phi1) = w1; der(phi2) = w2; der(w1) = acc1; der(w2) = acc2; acc1 = 1; phi3 = angle3; phi4 = angle4; angle3 = 2*angle4; der(phi3) = w3; der(phi4) = w4; der(w3) = acc3; der(w4) = acc4; acc3 = 1;";
+/// pair is sortable. Explicit StateSelect.always declarations preserve coverage
+/// of the holonomic path even when the direct lane can follow connector aliases.
+const INDEPENDENT_HOLONOMIC_TEXT: &str = "Real phi1(stateSelect=StateSelect.always); Real w1(stateSelect=StateSelect.always); Real phi2(stateSelect=StateSelect.always); Real w2(stateSelect=StateSelect.always); Real angle1; Real angle2; Real acc1; Real acc2; Real phi3(stateSelect=StateSelect.always); Real w3(stateSelect=StateSelect.always); Real phi4(stateSelect=StateSelect.always); Real w4(stateSelect=StateSelect.always); Real angle3; Real angle4; Real acc3; Real acc4; equation phi1 = angle1; phi2 = angle2; angle1 = 2*angle2; der(phi1) = w1; der(phi2) = w2; der(w1) = acc1; der(w2) = acc2; acc1 = 1; phi3 = angle3; phi4 = angle4; angle3 = 2*angle4; der(phi3) = w3; der(phi4) = w4; der(w3) = acc3; der(w4) = acc4; acc3 = 1;";
 const INDEPENDENT_HOLONOMIC_NAMES: &[&str] = &[
-    "sphi1", "sw1", "sphi2", "sw2", "aangle1", "aangle2", "aacc1", "aacc2", "sphi3", "sw3",
-    "sphi4", "sw4", "aangle3", "aangle4", "aacc3", "aacc4",
+    "Sphi1", "Sw1", "Sphi2", "Sw2", "aangle1", "aangle2", "aacc1", "aacc2", "Sphi3", "Sw3",
+    "Sphi4", "Sw4", "aangle3", "aangle4", "aacc3", "aacc4",
 ];
 const INDEPENDENT_HOLONOMIC_EQUATIONS: &[&str] = &[
     "phi1 = angle1",

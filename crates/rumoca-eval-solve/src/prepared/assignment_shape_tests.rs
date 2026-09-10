@@ -9,6 +9,221 @@ fn fixture_span() -> rumoca_core::Span {
     )
 }
 
+fn vector_load(
+    dst_start: u32,
+    input: rumoca_ir_solve::TensorInputKind,
+    input_start: usize,
+) -> LinearOp {
+    LinearOp::TensorLoad {
+        dst_start,
+        input,
+        input_start,
+        count: 3,
+        seed_start: None,
+        lanes: 1,
+    }
+}
+
+fn vector_binary(dst_start: u32, op: BinaryOp, lhs_start: u32, rhs_start: u32) -> LinearOp {
+    LinearOp::TensorBinary {
+        dst_start,
+        op,
+        lhs_start,
+        rhs_start,
+        count: 3,
+        lhs_stride: 1,
+        rhs_stride: 1,
+        lanes: 1,
+    }
+}
+
+fn tensor_sum_residual(nested: bool, force_start: usize) -> Vec<LinearOp> {
+    use rumoca_ir_solve::TensorInputKind;
+    let mut row = vec![
+        vector_load(0, TensorInputKind::Y, 0),
+        vector_load(3, TensorInputKind::Y, 3),
+        vector_binary(6, BinaryOp::Add, 0, 3),
+    ];
+    let output = if nested {
+        row.extend([
+            vector_load(9, TensorInputKind::P, 0),
+            vector_load(12, TensorInputKind::Y, force_start),
+            LinearOp::TensorCross {
+                dst_start: 15,
+                lhs_start: 9,
+                rhs_start: 12,
+                lanes: 1,
+            },
+            vector_binary(18, BinaryOp::Add, 6, 15),
+            LinearOp::Const {
+                dst: 21,
+                value: 0.0,
+            },
+            LinearOp::TensorFill {
+                dst_start: 22,
+                value_start: 21,
+                count: 3,
+                lanes: 1,
+            },
+            vector_binary(25, BinaryOp::Sub, 22, 18),
+        ]);
+        25
+    } else {
+        6
+    };
+    row.push(LinearOp::StoreOutputRange {
+        start: output,
+        count: 3,
+        stride: 1,
+    });
+    row
+}
+
+#[test]
+fn compact_tensor_sum_isolates_each_force_coordinate() {
+    let prepared = PreparedScalarProgramBlock::new(
+        ScalarProgramBlock::with_source_span(
+            vec![tensor_sum_residual(false, 6)],
+            fixture_span().require_provenance("tensor sum").unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let y = [101.0, 102.0, 103.0, 3.0, -4.0, 5.0];
+    for (output, expected) in [-3.0, 4.0, -5.0].into_iter().enumerate() {
+        assert!(prepared.certifies_exact_target_assignment_output(0, output, output));
+        assert_eq!(
+            prepared
+                .eval_target_assignment_output_unchecked_with_context(
+                    TargetAssignmentOutputRequest {
+                        row_idx: 0,
+                        output_offset: output,
+                        target_y_index: output,
+                        y: &y,
+                        p: &[],
+                        t: 0.0,
+                        context: RowEvalContext::default()
+                    }
+                )
+                .unwrap(),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn compact_tensor_moment_sum_keeps_cross_product_independent_of_target() {
+    let prepared = PreparedScalarProgramBlock::new(
+        ScalarProgramBlock::with_source_span(
+            vec![tensor_sum_residual(true, 6)],
+            fixture_span()
+                .require_provenance("tensor moment sum")
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    // [1,2,3] cross [4,5,6] = [-3,6,-3].
+    let y = [101.0, 102.0, 103.0, 3.0, -4.0, 5.0, 4.0, 5.0, 6.0];
+    for (output, expected) in [0.0, -2.0, -2.0].into_iter().enumerate() {
+        assert!(prepared.certifies_exact_target_assignment_output(0, output, output));
+        assert_eq!(
+            prepared
+                .eval_target_assignment_output_unchecked_with_context(
+                    TargetAssignmentOutputRequest {
+                        row_idx: 0,
+                        output_offset: output,
+                        target_y_index: output,
+                        y: &y,
+                        p: &[1.0, 2.0, 3.0],
+                        t: 0.0,
+                        context: RowEvalContext::default()
+                    }
+                )
+                .unwrap(),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn compact_tensor_sum_does_not_certify_a_target_in_an_unisolated_cross_product() {
+    assert!(
+        rumoca_ir_solve::derive_target_assignment_shape_for_output(
+            &tensor_sum_residual(true, 0),
+            0,
+            1
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn compact_tensor_sum_uses_the_operand_stride_for_target_identity() {
+    let mut row = tensor_sum_residual(false, 6);
+    let LinearOp::TensorBinary { lhs_stride, .. } = &mut row[2] else {
+        unreachable!()
+    };
+    *lhs_stride = 0;
+    for output in 0..3 {
+        assert!(
+            rumoca_ir_solve::derive_target_assignment_shape_for_output(&row, output, 0).is_some()
+        );
+    }
+    assert!(rumoca_ir_solve::derive_target_assignment_shape_for_output(&row, 1, 1).is_none());
+}
+
+#[test]
+fn compact_tensor_difference_rejects_a_cancelled_target() {
+    let mut row = tensor_sum_residual(false, 6);
+    row[2] = vector_binary(6, BinaryOp::Sub, 0, 0);
+    for output in 0..3 {
+        assert!(
+            rumoca_ir_solve::derive_target_assignment_shape_for_output(&row, output, output)
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn materialized_tensor_assignments_preserve_every_live_register_lane() {
+    let source = PreparedScalarProgramBlock::new(
+        ScalarProgramBlock::with_source_span(
+            vec![tensor_sum_residual(false, 6)],
+            fixture_span()
+                .require_provenance("materialized tensor sum")
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let y = [101.0, 102.0, 103.0, 3.0, -4.0, 5.0];
+    for outputs in [vec![(1, 1)], vec![(0, 0), (1, 1), (2, 2)]] {
+        let program = source
+            .exact_target_assignment_group_program(0, &outputs)
+            .unwrap();
+        let materialized = PreparedScalarProgramBlock::new(
+            ScalarProgramBlock::with_source_span(
+                vec![program],
+                fixture_span()
+                    .require_provenance("assignment result")
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut actual = vec![0.0; outputs.len()];
+        materialized
+            .eval_with_context(&y, &[], 0.0, RowEvalContext::default(), &mut actual)
+            .unwrap();
+        let expected: Vec<_> = outputs.iter().map(|(output, _)| -y[3 + output]).collect();
+        assert_eq!(
+            actual, expected,
+            "materialized assignment must retain each source tensor lane"
+        );
+    }
+}
+
 // Regression: `reg_depends_on_y_index` used to recurse over the register DAG
 // without memoization, so a row whose affine coefficient/offset is a deeply
 // shared sub-expression (typical of inlined matrix products) took O(2^depth)

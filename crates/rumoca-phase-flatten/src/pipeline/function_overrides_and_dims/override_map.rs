@@ -45,7 +45,7 @@ fn component_overrides_with_cache(
                     class_override.alias.clone(),
                     target_ref,
                     active,
-                    class_override_modifier_args(&class_override.modifier_args),
+                    class_override_modifier_args(&class_override.modifier_args, instance),
                 )
                 .with_function_slot(function_slot),
             );
@@ -54,9 +54,22 @@ fn component_overrides_with_cache(
     overrides
 }
 
-fn class_override_modifier_args(args: &[rumoca_ir_ast::Expression]) -> Vec<FunctionModifierArg> {
+fn class_override_modifier_args(
+    args: &[rumoca_ir_ast::Expression],
+    instance: &rumoca_ir_ast::InstanceData,
+) -> Vec<FunctionModifierArg> {
+    let scope = instance.owner_class_id.map(|owner| {
+        let path = instance.qualified_name.to_component_path();
+        (owner, path.parent().unwrap_or_else(ComponentPath::root))
+    });
     args.iter()
         .filter_map(function_modifier_arg_from_ast)
+        .map(|mut arg| {
+            // MLS §7.2.2: actuals of an instance modification belong to the
+            // enclosing instance, not to the component being modified.
+            arg.scope = scope.clone();
+            arg
+        })
         .collect()
 }
 
@@ -158,6 +171,13 @@ pub(crate) fn build_component_override_map(
             instance.qualified_name.to_component_path(),
             component_overrides_with_cache(instance, tree, class_index, &mut constructor_cache),
         );
+    }
+    // MLS §5.4: an outer receiver denotes the corresponding inner instance,
+    // including that instance's selected function modification environment.
+    for (outer, inner) in &overlay.outer_prefix_to_inner {
+        if let Some(overrides) = map.get(inner).cloned() {
+            map.insert(outer.clone(), overrides);
+        }
     }
     Ok(map)
 }
