@@ -20,12 +20,39 @@ impl Resolver {
     /// This ensures that when resolving extends for a nested class that needs
     /// inherited member lookup, all sibling classes at the same or higher level
     /// have had their extends resolved, making their inheritance edges available.
-    pub(crate) fn resolve_extends_all(&mut self, def: &mut ast::StoredDefinition, prefix: &str) {
+    pub(crate) fn resolve_extends_all(
+        &mut self,
+        def: &mut ast::StoredDefinition,
+        prefix: &str,
+        emit_errors: bool,
+    ) {
         // Process level by level using recursive depth-limited traversal
         let max_depth = self.compute_max_nesting_depth_stored(def);
 
         for depth in 0..=max_depth {
-            self.resolve_extends_at_depth(def, prefix, 0, depth);
+            self.resolve_extends_at_depth(def, prefix, 0, depth, emit_errors);
+        }
+    }
+
+    /// Resolve every class's imports as one idempotent scope update.
+    pub(crate) fn resolve_imports_all(&mut self, def: &ast::StoredDefinition, emit_errors: bool) {
+        for class in def.classes.values() {
+            self.resolve_class_imports(class, emit_errors);
+        }
+    }
+
+    fn resolve_class_imports(&mut self, class: &ast::ClassDef, emit_errors: bool) {
+        let scope = class
+            .scope_id
+            .expect("class scope must be constructed during registration");
+        let imports = class
+            .imports
+            .iter()
+            .filter_map(|import| self.resolve_import(import, emit_errors))
+            .collect();
+        self.scope_tree.set_imports(scope, imports);
+        for nested in class.classes.values() {
+            self.resolve_class_imports(nested, emit_errors);
         }
     }
 
@@ -59,6 +86,7 @@ impl Resolver {
         prefix: &str,
         current_depth: usize,
         target_depth: usize,
+        emit_errors: bool,
     ) {
         for (name, class) in def.classes.iter_mut() {
             let qualified_name = if prefix.is_empty() {
@@ -71,6 +99,7 @@ impl Resolver {
                 &qualified_name,
                 current_depth,
                 target_depth,
+                emit_errors,
             );
         }
     }
@@ -82,10 +111,11 @@ impl Resolver {
         qualified_name: &str,
         current_depth: usize,
         target_depth: usize,
+        emit_errors: bool,
     ) {
         if current_depth == target_depth {
             // At target depth - resolve imports and extends for this class
-            self.resolve_extends_single(class, qualified_name);
+            self.resolve_extends_single(class, qualified_name, emit_errors);
         } else if current_depth < target_depth {
             // Not deep enough yet - recurse into nested classes
             for (nested_name, nested) in class.classes.iter_mut() {
@@ -95,6 +125,7 @@ impl Resolver {
                     &nested_qualified,
                     current_depth + 1,
                     target_depth,
+                    emit_errors,
                 );
             }
         }
@@ -102,18 +133,18 @@ impl Resolver {
     }
 
     /// Resolve imports and extends for a single class (no recursion).
-    fn resolve_extends_single(&mut self, class: &mut ast::ClassDef, qualified_name: &str) {
+    fn resolve_extends_single(
+        &mut self,
+        class: &mut ast::ClassDef,
+        qualified_name: &str,
+        emit_errors: bool,
+    ) {
         let class_scope = class
             .scope_id
             .expect("Class scope should be set in registration phase");
         let class_def_id = class
             .def_id
             .expect("Class DefId should be set in registration phase");
-
-        // Resolve imports first (MLS §13.2) - they may be needed for extends resolution
-        for import in &class.imports {
-            self.resolve_import(import, class_scope);
-        }
 
         // Add this class to the resolving set for circular inheritance detection
         self.resolving_extends.insert(class_def_id);
@@ -123,10 +154,37 @@ impl Resolver {
         // The `exclude` parameter in resolve_qualified_name_excluding handles self-references
         // (e.g., `record ThermodynamicState extends ThermodynamicState` won't find itself).
         for extend in class.extends.iter_mut() {
-            self.resolve_extends(extend, class_scope, qualified_name, class_def_id);
+            self.resolve_extends(
+                extend,
+                class_scope,
+                qualified_name,
+                class_def_id,
+                emit_errors,
+            );
         }
 
-        // Remove from resolving set after extends are processed
+        if class.is_redeclare {
+            let class_name = class.name.text.as_ref();
+            let class_extends_target = class.extends.iter().find_map(|extend| {
+                let extends_same_slot = extend
+                    .base_name
+                    .name
+                    .last()
+                    .is_some_and(|part| part.text.as_ref() == class_name);
+                extends_same_slot.then_some(extend.base_def_id).flatten()
+            });
+            // MLS §5.3.2 / §7.3: a `redeclare` element without an `extends`
+            // clause of its own replaces the same-named element inherited by
+            // the *enclosing* class. That enclosing class is the owner of the
+            // parent scope (SPEC_0002), addressed by its `DefId` (SPEC_0001).
+            let inherited_target = self
+                .enclosing_class_def_id(class_def_id)
+                .and_then(|container| self.lookup_inherited_class_member(container, class_name));
+            class.redeclare_target_def_id = class_extends_target
+                .or(inherited_target)
+                .filter(|target| *target != class_def_id);
+        }
+
         self.resolving_extends.remove(&class_def_id);
     }
 
@@ -141,7 +199,11 @@ impl Resolver {
         scope: ScopeId,
         class_name: &str,
         current_class_def_id: DefId,
+        emit_errors: bool,
     ) {
+        if extend.base_def_id.is_some() {
+            return;
+        }
         let base_name = &extend.base_name;
 
         // Handle qualified names (e.g., "Package.SubPackage.Model")
@@ -160,42 +222,74 @@ impl Resolver {
             self.resolve_qualified_name_excluding(base_name, scope, Some(current_class_def_id));
 
         match def_id {
-            Some(base_def_id) => {
-                // Check if this base class is part of an inheritance chain being resolved.
-                // This catches indirect cycles like: model A extends B; model B extends A;
-                if self.resolving_extends.contains(&base_def_id) {
-                    self.emit_circular_extends(&extend.location, class_name, base_name);
-                    self.stats.extends_unresolved += 1;
-                } else {
-                    extend.base_def_id = Some(base_def_id);
-                    // Record edge for Phase 3 cycle detection and O(1) lookup
-                    self.add_inheritance_edge(
-                        current_class_def_id,
-                        base_def_id,
-                        extend.location.clone(),
-                    );
-                    self.stats.extends_resolved += 1;
-                }
-            }
+            Some(base_def_id) => self.record_resolved_base(
+                extend,
+                class_name,
+                current_class_def_id,
+                base_def_id,
+                emit_errors,
+            ),
             None => {
-                // Normal lookup failed - try inherited member lookup for simple names
-                if let Some(inherited_def_id) =
-                    self.try_inherited_member_lookup(base_name, current_class_def_id)
-                {
-                    self.record_extends_result(
-                        extend,
-                        class_name,
-                        current_class_def_id,
-                        inherited_def_id,
-                    );
-                    self.stats.extends_inherited += 1;
-                    return;
-                }
+                self.resolve_base_by_inheritance(
+                    extend,
+                    class_name,
+                    current_class_def_id,
+                    emit_errors,
+                );
+            }
+        }
+    }
 
-                // Base class not found - emit diagnostic
-                self.emit_base_class_not_found(&extend.location, base_name);
+    /// Bind `extend` to an already-resolved base class, unless that base is
+    /// itself mid-resolution and would close an inheritance cycle.
+    fn record_resolved_base(
+        &mut self,
+        extend: &mut ast::Extend,
+        class_name: &str,
+        current_class_def_id: DefId,
+        base_def_id: DefId,
+        emit_errors: bool,
+    ) {
+        // Catches indirect cycles like: model A extends B; model B extends A;
+        if self.resolving_extends.contains(&base_def_id) {
+            if emit_errors {
+                self.emit_circular_extends(&extend.location, class_name, &extend.base_name);
                 self.stats.extends_unresolved += 1;
             }
+            return;
+        }
+        extend.base_def_id = Some(base_def_id);
+        // Record edge for Phase 3 cycle detection and O(1) lookup
+        self.add_inheritance_edge(current_class_def_id, base_def_id, extend.location.clone());
+        self.stats.extends_resolved += 1;
+    }
+
+    /// Normal lookup failed: fall back to inherited member lookup for simple
+    /// names, and report the base class as missing when that also fails.
+    fn resolve_base_by_inheritance(
+        &mut self,
+        extend: &mut ast::Extend,
+        class_name: &str,
+        current_class_def_id: DefId,
+        emit_errors: bool,
+    ) {
+        if let Some(inherited_def_id) =
+            self.try_inherited_member_lookup(&extend.base_name, current_class_def_id)
+        {
+            self.record_extends_result(
+                extend,
+                class_name,
+                current_class_def_id,
+                inherited_def_id,
+                emit_errors,
+            );
+            self.stats.extends_inherited += 1;
+            return;
+        }
+
+        if emit_errors {
+            self.emit_base_class_not_found(&extend.location, &extend.base_name);
+            self.stats.extends_unresolved += 1;
         }
     }
 
@@ -225,11 +319,9 @@ impl Resolver {
 
         // The containing class, found through the scope tree rather than by
         // re-parsing the qualified name.
-        let class_scope = *self.class_def_scopes.get(&current_class_def_id)?;
-        let enclosing_scope = self.scope_tree.parent(class_scope)?;
-        let container_name = self.enclosing_class_names_from(enclosing_scope).next()?;
+        let container = self.enclosing_class_def_id(current_class_def_id)?;
 
-        self.lookup_inherited_member(container_name, member_name)
+        self.lookup_inherited_class_member(container, member_name)
     }
 
     /// Record a successful extends resolution, checking for cycles.
@@ -239,9 +331,12 @@ impl Resolver {
         class_name: &str,
         current_class_def_id: DefId,
         base_def_id: DefId,
+        emit_errors: bool,
     ) {
         if self.resolving_extends.contains(&base_def_id) {
-            self.emit_circular_extends(&extend.location, class_name, &extend.base_name);
+            if emit_errors {
+                self.emit_circular_extends(&extend.location, class_name, &extend.base_name);
+            }
         } else {
             extend.base_def_id = Some(base_def_id);
             self.add_inheritance_edge(current_class_def_id, base_def_id, extend.location.clone());
@@ -292,29 +387,42 @@ impl Resolver {
         ));
     }
 
+    /// Report an import whose path did not resolve, when diagnostics are enabled.
+    ///
+    /// The `emit_errors` check lives here so the call sites stay flat: this
+    /// runs inside per-variant `let`-`else` arms that are already three levels
+    /// deep (SPEC_0021 nesting budget).
+    fn note_unresolved_import(&mut self, import: &ast::Import, emit_errors: bool) {
+        if emit_errors {
+            self.emit_unresolved_import(import);
+        }
+    }
+
+    /// Report an import that resolved to something that cannot be imported.
+    fn note_invalid_import_target(&mut self, import: &ast::Import, emit_errors: bool) {
+        if emit_errors {
+            self.emit_invalid_import_target(import);
+        }
+    }
+
     /// Resolve an import clause (MLS §13.2).
     ///
-    /// Converts AST `Import` to `scope::Import` with resolved DefIds,
-    /// and adds it to the scope's imports list.
+    /// Converts an AST import to a scope import carrying resolved identities.
     /// Returns None if resolution fails.
-    pub(crate) fn resolve_import(&mut self, import: &ast::Import, scope: ScopeId) -> Option<()> {
-        // Determine the starting scope for resolution
-        // For global scope imports (leading dot), start from global scope
-        let resolve_scope = if import.is_global_scope() {
-            ScopeId(0) // Global scope
-        } else {
-            scope
-        };
-
+    pub(crate) fn resolve_import(
+        &mut self,
+        import: &ast::Import,
+        emit_errors: bool,
+    ) -> Option<ast::scope::Import> {
         let scope_import = match import {
             ast::Import::Qualified { path, .. } => {
                 // import A.B.C; -> makes C available as C
-                let Some((path_ids, def_id)) = self.resolve_import_path(path, resolve_scope) else {
-                    self.emit_unresolved_import(import);
+                let Some((path_ids, def_id)) = self.resolve_import_path(path) else {
+                    self.note_unresolved_import(import, emit_errors);
                     return None;
                 };
                 if !self.qualified_import_target_is_valid(&path_ids) {
-                    self.emit_invalid_import_target(import);
+                    self.note_invalid_import_target(import, emit_errors);
                     return None;
                 }
                 let path_strs: Vec<String> = path.name.iter().map(|t| t.text.to_string()).collect();
@@ -325,12 +433,12 @@ impl Resolver {
             }
             ast::Import::Renamed { alias, path, .. } => {
                 // import D = A.B.C; -> makes C available as D
-                let Some((path_ids, def_id)) = self.resolve_import_path(path, resolve_scope) else {
-                    self.emit_unresolved_import(import);
+                let Some((path_ids, def_id)) = self.resolve_import_path(path) else {
+                    self.note_unresolved_import(import, emit_errors);
                     return None;
                 };
                 if !self.qualified_import_target_is_valid(&path_ids) {
-                    self.emit_invalid_import_target(import);
+                    self.note_invalid_import_target(import, emit_errors);
                     return None;
                 }
                 ast::scope::Import::Renamed {
@@ -341,20 +449,15 @@ impl Resolver {
             }
             ast::Import::Unqualified { path, .. } => {
                 // import A.B.*; -> imports all public names from A.B
-                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path, resolve_scope)
-                else {
-                    self.emit_unresolved_import(import);
+                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path) else {
+                    self.note_unresolved_import(import, emit_errors);
                     return None;
                 };
                 if !self.package_import_target_is_valid(&path_ids) {
-                    self.emit_invalid_import_target(import);
+                    self.note_invalid_import_target(import, emit_errors);
                     return None;
                 }
-                let Some(pkg_qualified) = self.def_names.get(&pkg_def_id) else {
-                    self.emit_unresolved_import(import);
-                    return None;
-                };
-                let names = self.collect_package_children(pkg_qualified);
+                let names = self.collect_package_children(pkg_def_id);
                 ast::scope::Import::Unqualified {
                     path: path.name.iter().map(|t| t.text.to_string()).collect(),
                     names,
@@ -362,22 +465,16 @@ impl Resolver {
             }
             ast::Import::Selective { path, names, .. } => {
                 // import A.B.{C, D}; -> imports specific names from A.B
-                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path, resolve_scope)
-                else {
-                    self.emit_unresolved_import(import);
+                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path) else {
+                    self.note_unresolved_import(import, emit_errors);
                     return None;
                 };
                 if !self.package_import_target_is_valid(&path_ids) {
-                    self.emit_invalid_import_target(import);
+                    self.note_invalid_import_target(import, emit_errors);
                     return None;
                 }
-                let Some(pkg_qualified) = self.def_names.get(&pkg_def_id) else {
-                    self.emit_unresolved_import(import);
-                    return None;
-                };
-                let pkg_qualified = pkg_qualified.clone();
                 let resolved_names =
-                    self.resolve_selective_import_entries(import, &pkg_qualified, names)?;
+                    self.resolve_selective_import_entries(import, pkg_def_id, names, emit_errors)?;
                 ast::scope::Import::Unqualified {
                     path: path.name.iter().map(|t| t.text.to_string()).collect(),
                     names: resolved_names,
@@ -385,28 +482,23 @@ impl Resolver {
             }
         };
 
-        let Some(scope_node) = self.scope_tree.get_mut(scope) else {
-            self.emit_unresolved_import(import);
-            return None;
-        };
-        scope_node.imports.push(scope_import);
-        Some(())
+        Some(scope_import)
     }
 
-    fn resolve_import_path(&self, path: &ast::Name, scope: ScopeId) -> Option<(Vec<DefId>, DefId)> {
+    fn resolve_import_path(&self, path: &ast::Name) -> Option<(Vec<DefId>, DefId)> {
         if path.name.is_empty() {
             return None;
         }
 
         let first_part = &path.name[0].text;
         let first_path = ComponentPath::from_flat_path(first_part);
-        let mut current_def_id = self.scope_tree.lookup_excluding(scope, &first_path, None)?;
+        // MLS §13.2.2: unlike ordinary lexical lookup, every import path
+        // starts by resolving its first segment in the top-level scope.
+        let mut current_def_id = self.scope_tree.lookup_local(ScopeId::GLOBAL, &first_path)?;
         let mut path_ids = vec![current_def_id];
 
         for part in path.name.iter().skip(1) {
-            let current_qualified = self.def_names.get(&current_def_id)?;
-            let next_qualified = format!("{}.{}", current_qualified, part.text);
-            current_def_id = *self.name_to_def.get(&next_qualified)?;
+            current_def_id = self.lookup_class_member(current_def_id, &part.text)?;
             path_ids.push(current_def_id);
         }
 
@@ -492,21 +584,36 @@ impl Resolver {
         ));
     }
 
+    /// Report a selective-import member that the package does not declare.
+    ///
+    /// Gated here rather than at the call site, which sits inside a loop and a
+    /// branch already at the SPEC_0021 nesting budget.
+    fn note_unresolved_selective_import_member(
+        &mut self,
+        import: &ast::Import,
+        name_token: &rumoca_core::Token,
+        emit_errors: bool,
+    ) {
+        if emit_errors {
+            self.emit_unresolved_selective_import_member(import, name_token);
+        }
+    }
+
     fn resolve_selective_import_entries(
         &mut self,
         import: &ast::Import,
-        pkg_qualified: &str,
+        package: DefId,
         names: &[rumoca_core::Token],
+        emit_errors: bool,
     ) -> Option<IndexMap<ComponentPath, DefId>> {
         let mut resolved_names = IndexMap::default();
         let mut has_missing_name = false;
         for name_token in names {
-            let full_name = format!("{pkg_qualified}.{}", name_token.text);
-            if let Some(&def_id) = self.name_to_def.get(&full_name) {
+            if let Some(def_id) = self.lookup_class_member(package, &name_token.text) {
                 resolved_names.insert(ComponentPath::from_flat_path(&name_token.text), def_id);
             } else {
                 has_missing_name = true;
-                self.emit_unresolved_selective_import_member(import, name_token);
+                self.note_unresolved_selective_import_member(import, name_token, emit_errors);
             }
         }
         if has_missing_name {
@@ -563,18 +670,11 @@ impl Resolver {
         }
     }
 
-    /// Collect all direct children of a package.
-    ///
-    /// Uses O(1) lookup via pre-computed package_children map.
-    fn collect_package_children(&self, pkg_qualified: &str) -> IndexMap<ComponentPath, DefId> {
-        self.package_children
-            .get(pkg_qualified)
-            .map(|children| {
-                children
-                    .iter()
-                    .map(|(name, def_id)| (ComponentPath::from_flat_path(name), *def_id))
-                    .collect()
-            })
+    /// Collect the authoritative direct-and-inherited member view of a package.
+    fn collect_package_children(&self, package: DefId) -> IndexMap<ComponentPath, DefId> {
+        self.class_def_scopes
+            .get(&package)
+            .map(|scope| self.scope_tree.effective_members(*scope))
             .unwrap_or_default()
     }
 }

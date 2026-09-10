@@ -26,6 +26,12 @@ impl Resolver {
             if class.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
             }
+            if class.is_replaceable || class.is_redeclare {
+                self.dynamic_member_root_ids.insert(def_id);
+            }
+            if class.expandable {
+                self.expandable_connector_ids.insert(def_id);
+            }
         }
 
         // Recursively register nested classes
@@ -46,18 +52,9 @@ impl Resolver {
         enclosing: ScopeId,
         qualified_name: &str,
     ) {
-        // Create a scope for this class
-        let scope_kind = if class.encapsulated {
-            ast::ScopeKind::Encapsulated
-        } else {
-            ast::ScopeKind::Class
-        };
+        let scope_kind = class_scope_kind(class);
         let class_scope = self.scope_tree.create_scope(enclosing, scope_kind);
         class.scope_id = Some(class_scope);
-        if class.encapsulated {
-            self.encapsulated_class_names
-                .insert(qualified_name.to_string());
-        }
         if let Some(class_def_id) = class.def_id {
             self.scope_to_class_def.insert(class_scope, class_def_id);
             self.class_def_scopes.insert(class_def_id, class_scope);
@@ -72,6 +69,9 @@ impl Resolver {
             if comp.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
             }
+            if comp.is_replaceable || comp.is_redeclare {
+                self.dynamic_member_root_ids.insert(def_id);
+            }
         }
 
         // Register nested class names
@@ -84,6 +84,26 @@ impl Resolver {
             if nested.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
             }
+            if nested.is_replaceable || nested.is_redeclare {
+                self.dynamic_member_root_ids.insert(def_id);
+            }
+            if nested.expandable {
+                self.expandable_connector_ids.insert(def_id);
+            }
+        }
+
+        // Enumeration literals are declared by the enumeration type rather
+        // than receiving independent DefIds. Register each literal as a
+        // structured member whose exact declaration identity is the owning
+        // enum class, so `L.U` proves its full path without textual fallback.
+        if let Some(class_def_id) = class.def_id {
+            for literal in &class.enum_literals {
+                self.scope_tree.add_member(
+                    class_scope,
+                    ComponentPath::from_flat_path(&literal.ident.text),
+                    class_def_id,
+                );
+            }
         }
 
         // Recursively register nested classes
@@ -91,5 +111,22 @@ impl Resolver {
             let nested_qualified = format!("{}.{}", qualified_name, name);
             self.register_class(nested, class_scope, &nested_qualified);
         }
+    }
+}
+
+fn class_scope_kind(class: &ast::ClassDef) -> ast::ScopeKind {
+    if class.encapsulated {
+        return ast::ScopeKind::Encapsulated;
+    }
+    match class.class_type {
+        rumoca_core::ClassType::Package => ast::ScopeKind::Package,
+        rumoca_core::ClassType::Function => ast::ScopeKind::Function,
+        rumoca_core::ClassType::Model
+        | rumoca_core::ClassType::Class
+        | rumoca_core::ClassType::Block
+        | rumoca_core::ClassType::Connector
+        | rumoca_core::ClassType::Record
+        | rumoca_core::ClassType::Type
+        | rumoca_core::ClassType::Operator => ast::ScopeKind::Class,
     }
 }
