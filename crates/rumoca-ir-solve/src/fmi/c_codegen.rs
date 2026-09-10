@@ -28,6 +28,11 @@ impl FmiCodegenView {
         validate_variables(&self.metadata)?;
         super::parameter_updates::validate(&self.model.problem, &self.model.pure_calls)
             .map_err(FmiCCodegenError)?;
+        if !self.event_indicators.sources().is_empty() {
+            return Err(FmiCCodegenError(
+                "continuous event indicators require general event support; the C profile supports only event-free models and parameter assertions",
+            ));
+        }
         if crate::solve_event_class(&self.model.problem).is_none() {
             return self
                 .try_event_free()
@@ -35,11 +40,6 @@ impl FmiCodegenView {
                 .map_err(|_| FmiCCodegenError("event-free narrowing failed"));
         }
         super::static_assertions::validate(&self.model).map_err(FmiCCodegenError)?;
-        if !self.event_indicators.sources().is_empty() {
-            return Err(FmiCCodegenError(
-                "static assertions cannot own event indicators",
-            ));
-        }
         Ok(FmiCCodegenView(Profile::StaticAssertions(self)))
     }
 }
