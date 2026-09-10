@@ -1,8 +1,8 @@
 //! Shared eFMU-container XML inspection helpers for the packaging suites
 //! (`cli_target_galec.rs`, `cli_target_galec_production.rs`).
 //!
-//! Included per suite via `#[path = "galec_cli_support/container_xml.rs"]`
-//! — see `galec_cli_support/cli.rs` for the include-pattern rationale.
+//! Declared once by `suite_galec_fmu/main.rs` as `container_xml_support` and reached
+//! by the feature-gated container suites through `super`.
 //! All XML readers work over the exact on-disk bytes (quick-xml), because
 //! the eFMI checksum web is defined over written bytes, never re-serialized
 //! documents.
@@ -12,17 +12,80 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The vendored eFMI Beta-1 schema tree (GAL-023). Lives beside the generic
-/// container build step in the `rumoca` crate now that the eFMI packaging crate is
-/// dissolved (contract §6).
-pub(super) fn vendored_schemas_dir() -> PathBuf {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/efmi-schemas");
+/// The eFMI Beta-1 schema tree a target ships (GAL-023).
+///
+/// A target that declares `shared_from` on its `schemas` asset bundle keeps no
+/// tree of its own: it emits the owning target's bytes, so that is the tree its
+/// container must mirror and validate against. Following the declaration here
+/// keeps the assertion about the emitted bytes rather than about which
+/// directory they were vendored in.
+pub(super) fn vendored_schemas_dir(target: &str) -> PathBuf {
+    let templates =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../rumoca-phase-codegen/src/templates");
+    let owner = schemas_bundle_owner(&templates.join(target).join("target.toml"));
+    let dir = templates
+        .join(owner.as_deref().unwrap_or(target))
+        .join("schemas");
     assert!(
         dir.is_dir(),
         "vendored schema tree missing at {}",
         dir.display()
     );
     dir
+}
+
+/// The target a manifest's **`schemas`** asset bundle borrows from, when it
+/// borrows one rather than vendoring its own.
+///
+/// A manifest may declare several `[[assets]]` bundles, so each table's `source`
+/// is checked before its `shared_from` is believed: answering with some other
+/// bundle's lender would silently point every schema assertion in these suites
+/// at the wrong tree.
+fn schemas_bundle_owner(manifest_path: &Path) -> Option<String> {
+    let manifest = fs::read_to_string(manifest_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display()));
+    let mut in_assets = false;
+    let mut source = None;
+    let mut shared_from = None;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            // A new table header ends the one just scanned. Answer if that was
+            // the schemas bundle, then start the next one with empty slots.
+            if in_assets && source.as_deref() == Some("schemas") {
+                return shared_from;
+            }
+            in_assets = line == "[[assets]]";
+            source = None;
+            shared_from = None;
+            continue;
+        }
+        if !in_assets {
+            continue;
+        }
+        if let Some(value) = manifest_string_value(line, "source") {
+            source = Some(value);
+        } else if let Some(value) = manifest_string_value(line, "shared_from") {
+            shared_from = Some(value);
+        }
+    }
+    if in_assets && source.as_deref() == Some("schemas") {
+        return shared_from;
+    }
+    None
+}
+
+/// One `key = "value"` line of a target manifest, when it names exactly `key`.
+///
+/// The `=` must follow the key, so `source_root = "..."` is not read as
+/// `source`.
+fn manifest_string_value(line: &str, key: &str) -> Option<String> {
+    let rest = line
+        .strip_prefix(key)?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim();
+    Some(rest.strip_prefix('"')?.split('"').next()?.to_owned())
 }
 
 /// Validate an XML file against an XSD by shelling out to `xmllint`
