@@ -13,7 +13,7 @@ pub(crate) struct ReviewPacketArgs {
     /// Head git ref for the diff packet
     #[arg(long, default_value = "HEAD")]
     head: String,
-    /// Roadmap phase or milestone identifier
+    /// Review milestone identifier
     #[arg(long)]
     phase: String,
     /// Markdown output path
@@ -377,7 +377,7 @@ mod tests {
                 },
                 ChangedFile {
                     status: "A".to_string(),
-                    path: "dev/review.md".to_string(),
+                    path: "notes/review.md".to_string(),
                 },
             ],
             &[Numstat {
@@ -479,6 +479,45 @@ rumoca-ir-dae = { workspace = true }
                     },
                 },
             ]
+        );
+    }
+
+    /// `git diff --name-status` and `--numstat` are both tab-separated, and a
+    /// rename line carries a status like `R100`: the parsers must keep the
+    /// full status text, split on tabs only, and drop lines that do not have
+    /// the expected field count instead of fabricating half-filled rows.
+    #[test]
+    fn git_diff_lines_parse_by_tab_and_reject_short_rows() {
+        let changed = parse_changed_file("M\tcrates/xtask/src/main.rs").expect("modified row");
+        assert_eq!(changed.status, "M");
+        assert_eq!(changed.path, "crates/xtask/src/main.rs");
+
+        let renamed = parse_changed_file("R100\tcrates/old name.rs").expect("rename row");
+        assert_eq!(renamed.status, "R100", "the similarity score is kept");
+        assert_eq!(
+            renamed.path, "crates/old name.rs",
+            "spaces in paths survive because only tabs delimit"
+        );
+        assert!(parse_changed_file("just-a-path-no-tab").is_none());
+
+        let stat = parse_numstat("12\t3\tcrates/xtask/src/main.rs").expect("numstat row");
+        assert_eq!(
+            (
+                stat.added.as_str(),
+                stat.deleted.as_str(),
+                stat.path.as_str()
+            ),
+            ("12", "3", "crates/xtask/src/main.rs")
+        );
+        let binary = parse_numstat("-\t-\tassets/logo.png").expect("binary numstat row");
+        assert_eq!(
+            (binary.added.as_str(), binary.deleted.as_str()),
+            ("-", "-"),
+            "binary files keep git's dash markers verbatim"
+        );
+        assert!(
+            parse_numstat("12\t3").is_none(),
+            "a truncated row is dropped"
         );
     }
 }

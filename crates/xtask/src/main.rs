@@ -10,6 +10,7 @@ mod modelica_dependency_cache;
 mod playground_cmd;
 mod release_cmd;
 mod repo_cli_cmd;
+mod resource_budget;
 mod review_packet_cmd;
 mod review_scan_cmd;
 mod static_server;
@@ -29,12 +30,13 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use completion_cmd::CompletionsArgs;
 use coverage_analysis::{
     CallsiteIndex, build_workspace_callsite_index, count_callsites_same_file,
-    is_opaque_symbol_name, owner_decision_for_label, render_coverage_trim_report,
+    cov_function_identity, demangle_cov_function_name, extract_symbol_name, is_opaque_symbol_name,
+    owner_decision_for_label, package_for_filename, relativize_path, render_coverage_trim_report,
 };
 use coverage_gate::CoverageGateArgs;
 use crate_dag_cmd::CrateDagArgs;
 use docs_cmd::DocsArgs;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -633,6 +635,7 @@ pub(crate) fn exe_name(base: &str) -> String {
 }
 
 pub(crate) fn run_status(mut command: Command) -> Result<()> {
+    resource_budget::apply_to_child(&mut command);
     let rendered = format!("{command:?}");
     let status = command
         .status()
@@ -644,6 +647,7 @@ pub(crate) fn run_status(mut command: Command) -> Result<()> {
 }
 
 pub(crate) fn run_status_quiet(mut command: Command) -> Result<()> {
+    resource_budget::apply_to_child(&mut command);
     let rendered = format!("{command:?}");
     let output = command
         .output()
@@ -663,6 +667,7 @@ pub(crate) fn run_status_quiet(mut command: Command) -> Result<()> {
 }
 
 fn run_capture(mut command: Command) -> Result<String> {
+    resource_budget::apply_to_child(&mut command);
     let rendered = format!("{command:?}");
     let output = command
         .output()
@@ -1250,8 +1255,28 @@ fn zero_count_candidates_by_package(
         .and_then(serde_json::Value::as_array)
         .context("full JSON missing data[0].functions")?;
 
+    // Each library function is instrumented once per binary that links it
+    // (the lib copy and the crate's own test harness at least), and the
+    // profile keeps the copies as separate entries whose mangled names differ
+    // only in the crate-disambiguator hash. A function exercised by only one
+    // kind of suite therefore leaves a zero-count twin, which is a property
+    // of the build graph, not of test coverage. Count a function as
+    // uncovered only when EVERY copy of its demangled identity is zero.
+    let covered_identities: HashSet<(String, String)> = functions
+        .iter()
+        .filter(|function| {
+            function
+                .get("count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+                != 0
+        })
+        .filter_map(cov_function_identity)
+        .collect();
+
     let mut zero_totals_by_package: ZeroCoverageTotalsByPackage = HashMap::new();
     let mut candidates_by_package: CandidateListsByPackage = HashMap::new();
+    let mut counted_zero_identities: HashSet<(String, String)> = HashSet::new();
     for function in functions {
         if function
             .get("count")
@@ -1260,6 +1285,16 @@ fn zero_count_candidates_by_package(
             != 0
         {
             continue;
+        }
+        if let Some(identity) = cov_function_identity(function) {
+            if covered_identities.contains(&identity) {
+                continue;
+            }
+            // Both copies of a genuinely uncovered function are zero; count
+            // the identity once, not once per linked binary.
+            if !counted_zero_identities.insert(identity) {
+                continue;
+            }
         }
         let Some((package_name, candidate)) = zero_count_candidate_for_function(
             root,
@@ -1355,17 +1390,6 @@ fn zero_count_candidate_for_function(
     ))
 }
 
-fn package_for_filename<'a>(
-    root: &Path,
-    package_infos: &'a [WorkspacePackageInfo],
-    filename: &str,
-) -> Option<&'a WorkspacePackageInfo> {
-    let rel = relativize_path(root, filename);
-    package_infos
-        .iter()
-        .find(|package| rel.starts_with(&package.root_prefix))
-}
-
 fn candidate_symbol_metadata(
     root: &Path,
     filename: &str,
@@ -1411,12 +1435,6 @@ fn candidate_symbol_metadata(
         visibility,
         callsites_same_file,
     ))
-}
-
-fn relativize_path(root: &Path, filename: &str) -> String {
-    let path = Path::new(filename);
-    let rel = path.strip_prefix(root).unwrap_or(path);
-    rel.to_string_lossy().replace('\\', "/")
 }
 
 #[derive(Debug, Clone)]
@@ -1487,33 +1505,6 @@ fn classify_candidate(
         return "dead_likely";
     }
     "needs_targeted_test"
-}
-
-fn demangle_cov_function_name(name: &str) -> String {
-    if let Some(index) = name.rfind("::h") {
-        let suffix = &name[(index + 3)..];
-        if suffix.len() >= 8 && suffix.chars().all(|ch| ch.is_ascii_hexdigit()) {
-            return name[..index].to_string();
-        }
-    }
-    name.to_string()
-}
-
-fn extract_symbol_name(name: &str) -> Option<String> {
-    for segment in name.rsplit("::") {
-        let trimmed = segment.trim();
-        if trimmed.is_empty() || trimmed.contains("{{closure}}") {
-            continue;
-        }
-        let symbol = trimmed
-            .chars()
-            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-            .collect::<String>();
-        if !symbol.is_empty() {
-            return Some(symbol);
-        }
-    }
-    None
 }
 
 fn unix_timestamp_seconds() -> u64 {

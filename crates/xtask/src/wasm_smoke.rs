@@ -279,16 +279,21 @@ fn http_get_ok(port: u16, path: &str) -> bool {
 }
 
 fn detect_browser_binary() -> Result<String> {
-    ["google-chrome", "chromium", "chromium-browser"]
-        .into_iter()
-        .find(|program| {
-            Command::new(program)
-                .arg("--version")
-                .output()
-                .is_ok_and(|output| output.status.success())
-        })
-        .map(ToOwned::to_owned)
-        .context("missing browser for wasm smoke (expected google-chrome/chromium)")
+    [
+        "google-chrome",
+        "chromium",
+        "chromium-browser",
+        "microsoft-edge",
+    ]
+    .into_iter()
+    .find(|program| {
+        Command::new(program)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    })
+    .map(ToOwned::to_owned)
+    .context("missing Chromium browser for wasm smoke (Chrome, Chromium, or Edge)")
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
