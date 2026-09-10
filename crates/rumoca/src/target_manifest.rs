@@ -1096,7 +1096,9 @@ end FmiUndelayedDecay;
                 .downcast_ref::<rumoca_ir_solve::fmi::FmiCCodegenError>()
                 .expect("state events must fail the checked C profile before rendering");
             assert!(
-                profile_error.to_string().contains("relation memory"),
+                profile_error
+                    .to_string()
+                    .contains("continuous event indicators require general event support"),
                 "{target}: {error:#}"
             );
         }

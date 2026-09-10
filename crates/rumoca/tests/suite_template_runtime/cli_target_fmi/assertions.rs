@@ -59,9 +59,55 @@ end ChangingAssertion;
                 work.path().join(target),
             )
             .expect_err("a changing predicate requires general event support");
+            let diagnostic = format!("{error:#}");
             assert!(
-                format!("{error:#}").contains("assertion depends on"),
-                "{target}/{argument}: {error:#}"
+                diagnostic.contains("assertion depends on")
+                    || diagnostic
+                        .contains("continuous event indicators require general event support"),
+                "{target}/{argument}: {diagnostic}"
+            );
+        }
+    }
+}
+
+#[test]
+fn packaged_fmi_reports_state_events_independently_of_a_static_assertion() {
+    for assertion in ["", "assert(mass > 0, \"mass must be positive\");"] {
+        let source = format!(
+            r#"
+model StaticAssertConditional
+ parameter Real mass=1;
+ Real z(start=0);
+equation
+ {assertion}
+ der(z)=if z < 0 then 1 else -1;
+end StaticAssertConditional;
+"#
+        );
+        let compiled = rumoca::Compiler::new()
+            .model("StaticAssertConditional")
+            .compile_str(&source, "StaticAssertConditional.mo")
+            .unwrap();
+        let work = tempdir().unwrap();
+        for target in ["fmi2", "fmi3"] {
+            let destination = work.path().join(target);
+            let error = rumoca::compile_packaged_target(
+                &compiled,
+                "StaticAssertConditional",
+                target,
+                destination.clone(),
+            )
+            .expect_err(
+                "the state-dependent branch requires event support with or without assertions",
+            );
+            let diagnostic = format!("{error:#}");
+            assert!(
+                diagnostic.contains("continuous event indicators require general event support"),
+                "{target}: {diagnostic}"
+            );
+            assert!(
+                !destination.exists() || destination.read_dir().unwrap().next().is_none(),
+                "a refused event-bearing model must not leave a successful-looking package"
             );
         }
     }
