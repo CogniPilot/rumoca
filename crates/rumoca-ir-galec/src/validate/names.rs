@@ -18,7 +18,7 @@
 //! reserved things (builtin calls, predefined signals) and are covered by
 //! resolution in the other analyses. Matching `end` names (S-2.1) are
 //! guaranteed by construction: the AST stores each block/compartment/
-//! function name exactly once and the printer emits it at both ends.
+//! function name exactly once and templates render that identity at both ends.
 
 use crate::ast::{
     Condition, Identifier, InterfaceKind, Name, Spanned, Statement, UserFunction,
@@ -67,10 +67,6 @@ pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
         check_body_names(ctx, &body, diags);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Identifier and quoted-identifier legality
-// ---------------------------------------------------------------------------
 
 /// Check a declared [`Name`] (plain or quoted) at a location.
 fn check_name(
@@ -217,10 +213,6 @@ fn is_positive_integer(text: &str) -> bool {
     chars.next().is_some_and(|c| c.is_ascii_digit() && c != '0')
         && chars.all(|c| c.is_ascii_digit())
 }
-
-// ---------------------------------------------------------------------------
-// Section checks
-// ---------------------------------------------------------------------------
 
 fn check_interface(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
     let rank = |kind: InterfaceKind| match kind {
@@ -444,10 +436,6 @@ fn check_if_declarations(
         check_statement_declarations(else_body, &else_path, diags);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn note_duplicate(
     seen: &mut Vec<String>,

@@ -186,10 +186,6 @@ impl<'a> EffectChecker<'a, '_> {
         });
     }
 
-    // -----------------------------------------------------------------
-    // Stateful-call isolation (sibling rule) and if-expression ban
-    // -----------------------------------------------------------------
-
     /// Summarize an expression bottom-up, reporting the sibling-isolation
     /// rule at every node with two or more operand subtrees.
     fn summarize(&mut self, expression: &'a Expression) -> Summary {

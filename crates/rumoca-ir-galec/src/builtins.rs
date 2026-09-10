@@ -3,9 +3,9 @@
 //! lists.
 //!
 //! This module is the normative parity source (SPEC_0034 GAL-005): the
-//! future validator checks name collisions and call signatures against it,
-//! and the Phase 3 Modelica→GALEC mapping table renders only names present
-//! here. Signatures were authored independently from the standard's catalog
+//! validator checks name collisions and call signatures against it, and the
+//! Modelica→GALEC mapping renders only names present here. Signatures were
+//! authored independently from the standard's catalog
 //! description (no standard text is reproduced).
 //!
 //! Only four builtins can signal (trap T14): `integer` (`NAN`, `OVERFLOW`)
