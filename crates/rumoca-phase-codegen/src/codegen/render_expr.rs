@@ -92,11 +92,11 @@ pub(crate) fn render_expression(expr: &Value, cfg: &ExprConfig) -> RenderResult 
 
 fn render_binary(binary: &Value, cfg: &ExprConfig) -> RenderResult {
     let lhs = get_field(binary, "lhs")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Binary expression missing 'lhs' field"))?;
+        .map_err(|_| render_err("Binary expression missing 'lhs' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let rhs = get_field(binary, "rhs")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Binary expression missing 'rhs' field"))?;
+        .map_err(|_| render_err("Binary expression missing 'rhs' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let op_value =
         get_field(binary, "op").map_err(|_| render_err("Binary expression missing 'op' field"))?;
     if is_mul_elem_op(&op_value)
@@ -188,8 +188,8 @@ pub(crate) fn get_binop_string(op: &Value, cfg: &ExprConfig) -> RenderResult {
 
 fn render_unary(unary: &Value, cfg: &ExprConfig) -> RenderResult {
     let rhs = get_field(unary, "rhs")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Unary expression missing 'rhs' field"))?;
+        .map_err(|_| render_err("Unary expression missing 'rhs' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let op =
         get_field(unary, "op").map_err(|_| render_err("Unary expression missing 'op' field"))?;
     // Use function-call form for Not when not_op is a qualified function name.
@@ -430,64 +430,37 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
             // Smooth: arg[1] is the expression (arg[0] is smoothness order)
             // Homotopy: arg[0] is the actual expression (arg[1] is simplified)
             // NoEvent: arg[0] is the expression
+            //
+            // Homotopy renders as `actual`: MLS 3.6 §3.7.4.3 defines the
+            // operator through `lambda*actual + (1 - lambda)*simplified` and
+            // explicitly permits the trivial implementation
+            // `homotopy(actual, simplified) = actual`. A rendered backend has no
+            // initialization continuation to sweep lambda with, so `actual` is
+            // the whole of its semantics.
+            //
+            // This is the same reading the Solve runtime gives at simulation
+            // time: it allocates a hidden `P` slot for lambda and seeds it to
+            // 1.0, and `lambda*actual + (1 - lambda)*simplified` at lambda = 1
+            // is exactly `actual`. The one place the two differ is
+            // *initialization* of a multi-rooted system, where the Solve runtime
+            // additionally walks lambda from 0 to 1 and so may select a
+            // different root than a cold solve from `actual` alone would. Both
+            // are conforming; the continuation is rumoca policy for the Solve
+            // runtime, not an MLS requirement on every backend.
             let idx = if func_name == "Smooth" { 1 } else { 0 };
             let inner = required_arg(&args_val, idx, &format!("BuiltinCall {func_name}"))?;
             return render_expression(&inner, cfg);
         }
         "Sample" => {
-            let args_val = get_field(builtin, "args")?;
-            match args_val.len() {
-                Some(0) => {
-                    return Err(render_err("BuiltinCall Sample missing required argument 0"));
-                }
-                Some(1) => {
-                    let inner = required_arg(&args_val, 0, "BuiltinCall Sample")?;
-                    return render_expression(&inner, cfg);
-                }
-                Some(count) => {
-                    return Err(render_err(format!(
-                        "BuiltinCall Sample with {count} arguments must be lowered before template rendering"
-                    )));
-                }
-                None => {
-                    return Err(render_err(
-                        "BuiltinCall Sample args field is not a sequence",
-                    ));
-                }
-            }
+            return Err(render_err(
+                "BuiltinCall Sample must be lowered into clock/event metadata and ordinary equations before template rendering",
+            ));
         }
-        "Clock" => {
-            // Clock() constructor (MLS §16.3). In continuous simulation
-            // context this is not meaningful; return 0 as a stub.
-            return Ok("0".to_string());
-        }
-        "Previous" => {
-            // previous(x) — clocked partition operator (MLS §16.4).
-            // In continuous simulation, treat like pre(): return the
-            // argument unchanged.
-            let args_val = get_field(builtin, "args")?;
-            let inner = required_arg(&args_val, 0, "BuiltinCall Previous")?;
-            return render_expression(&inner, cfg);
-        }
-        "Hold" => {
-            // hold(x) — clocked-to-continuous (MLS §16.5.1).
-            // Pass through the argument.
-            let args_val = get_field(builtin, "args")?;
-            let inner = required_arg(&args_val, 0, "BuiltinCall Hold")?;
-            return render_expression(&inner, cfg);
-        }
-        "FirstTick" => {
-            // firstTick(u) — true at the first clock tick (MLS §16.10).
-            // Stub: return false for continuous simulation.
-            require_min_arg_count(builtin, 1, "BuiltinCall FirstTick")?;
-            return Ok(cfg.false_val.clone());
-        }
-        "NoClock" | "SubSample" | "SuperSample" | "ShiftSample" | "BackSample" => {
-            // Clocked partition operators (MLS §16). In continuous
-            // simulation, pass through the first argument.
-            let args_val = get_field(builtin, "args")?;
-            let inner = required_arg(&args_val, 0, &format!("BuiltinCall {func_name}"))?;
-            return render_expression(&inner, cfg);
+        "Clock" | "Previous" | "Hold" | "FirstTick" | "NoClock" | "SubSample" | "SuperSample"
+        | "ShiftSample" | "BackSample" => {
+            return Err(render_err(format!(
+                "BuiltinCall {func_name} must be lowered with its clock schedule before template rendering"
+            )));
         }
         _ => {}
     }
@@ -511,17 +484,10 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
         // ArrayComprehension argument for C targets: unroll to chained sum
         if func_name == "Sum"
             && matches!(cfg.if_style, super::IfStyle::Ternary)
-            && get_field(&first_arg, "ArrayComprehension").is_ok()
+            && let Ok(comprehension) = get_field(&first_arg, "ArrayComprehension")
+            && let Ok(elements) = try_unroll_c_comprehension_elements(&comprehension, cfg)
         {
-            let unrolled = render_expression(&first_arg, cfg)?;
-            // If the comprehension unrolled to a scalar (e.g., REAL_C(0.0)
-            // for empty range), return it directly
-            if !unrolled.starts_with(&cfg.array_start) {
-                return Ok(unrolled);
-            }
-            // Otherwise it's a C array literal — not valid for __rumoca_sum
-            // since it needs (arr, n). For now, return 0 for empty results.
-            return Ok(format!("({unrolled})"));
+            return render_chained_minmaxsum_elements(&func_name, elements, cfg);
         }
     }
 
@@ -530,7 +496,7 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
     if cfg.modelica_builtins {
         return Ok(render_builtin_modelica(&func_name, &args, cfg));
     }
-    Ok(render_builtin_python(&func_name, &args, cfg))
+    render_builtin_python(&func_name, &args, cfg)
 }
 
 fn render_builtin_name(builtin: &Value) -> RenderResult {
@@ -563,20 +529,6 @@ fn required_arg(args: &Value, index: usize, context: &str) -> Result<Value, mini
         )));
     }
     Ok(arg)
-}
-
-fn require_min_arg_count(call: &Value, min: usize, context: &str) -> Result<(), minijinja::Error> {
-    let args = get_field(call, "args")
-        .map_err(|err| render_err(format!("{context} missing 'args' field: {err}")))?;
-    let len = args
-        .len()
-        .ok_or_else(|| render_err(format!("{context} args is not a sequence")))?;
-    if len < min {
-        return Err(render_err(format!(
-            "{context} expected at least {min} argument(s), got {len}"
-        )));
-    }
-    Ok(())
 }
 
 /// Render builtins using Modelica names (abs, min, max, etc.).
@@ -614,13 +566,16 @@ fn render_builtin_modelica(func_name: &str, args: &str, _cfg: &ExprConfig) -> St
         "Div" => format!("div({})", args),
         "Mod" => format!("mod({})", args),
         "Rem" => format!("rem({})", args),
+        // MLS §3.7.4.5 spells the operator in camel case; the lowercase fallback
+        // below would emit Modelica that no longer names the builtin.
+        "SemiLinear" => format!("semiLinear({})", args),
         _ => format!("{}({})", func_name.to_lowercase(), args),
     }
 }
 
 /// Render builtins using Python/CasADi names (fabs, fmin, fmax, etc.).
-fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> String {
-    match func_name {
+fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> RenderResult {
+    Ok(match func_name {
         "Der" => format!("der({})", args),
         "Pre" => format!("pre({})", args),
         "Abs" => format!("{}fabs({})", cfg.prefix, args),
@@ -640,7 +595,7 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
         "Log" => format!("{}log({})", cfg.prefix, args),
         "Log10" => format!("{}log10({})", cfg.prefix, args),
         "Floor" => format!("{}floor({})", cfg.prefix, args),
-        "Integer" => format!("{}trunc({})", cfg.prefix, args),
+        "Integer" => format!("{}floor({})", cfg.prefix, args),
         "Ceil" => format!("{}ceil({})", cfg.prefix, args),
         "Min" => format!("{}fmin({})", cfg.prefix, args),
         "Max" => format!("{}fmax({})", cfg.prefix, args),
@@ -653,7 +608,10 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
                 format!("{}({})", cfg.sum_fn, args)
             }
         }
-        "Transpose" => format!("({}).T", args),
+        // MLS transpose exchanges only axes zero and one. Python's `.T`
+        // reverses every axis for rank greater than two, so emit the exact
+        // permutation explicitly for tensor-capable targets.
+        "Transpose" => format!("{}swapaxes({}, 0, 1)", cfg.prefix, args),
         "Zeros" => format!("{}zeros({})", cfg.prefix, args),
         "Ones" => format!("{}ones({})", cfg.prefix, args),
         "Identity" => format!("{}eye({})", cfg.prefix, args),
@@ -662,16 +620,14 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
         "Mod" => format!("{}fmod({})", cfg.prefix, args),
         "Rem" => format!("{}remainder({})", cfg.prefix, args),
         "Fill" => {
-            // fill(val, n) → val (scalar broadcast; array fill not supported yet)
-            if let Some(comma_pos) = args.find(',') {
-                args[..comma_pos].trim().to_string()
-            } else {
-                format!("{}fill({})", cfg.prefix, args)
-            }
+            return Err(render_err(format!(
+                "fill({args}) is not lowerable on this expression path"
+            )));
         }
         "Size" => {
-            // size(arr, dim) — not directly representable in Python, return 0
-            "0".to_string()
+            return Err(render_err(format!(
+                "size({args}) is not lowerable on this expression path"
+            )));
         }
         "Interval" => {
             // interval(u) — clocked partition intrinsic (MLS §16.10)
@@ -679,7 +635,7 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
             "0.0".to_string()
         }
         _ => format!("{}({})", func_name.to_lowercase(), args),
-    }
+    })
 }
 
 /// Expand `min({a,b,c})` → `fmin(fmin(a,b),c)` (or `fmax`, or `((a)+(b)+(c))` for sum).
@@ -707,9 +663,17 @@ fn render_chained_minmaxsum(
             }
         }
     }
+    render_chained_minmaxsum_elements(func_name, elem_strs, cfg)
+}
+
+fn render_chained_minmaxsum_elements(
+    func_name: &str,
+    mut elem_strs: Vec<String>,
+    cfg: &ExprConfig,
+) -> RenderResult {
     if elem_strs.is_empty() {
         if func_name == "Sum" {
-            return Ok("0".to_string());
+            return Ok("REAL_C(0.0)".to_string());
         }
         return Err(render_err(format!("{func_name} array argument is empty")));
     }
@@ -742,10 +706,27 @@ fn render_chained_minmaxsum(
 fn render_function_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
     let raw_name = render_name_field(func_call, "name", "FunctionCall")?;
 
+    if matches!(
+        raw_name.as_str(),
+        "Clock"
+            | "previous"
+            | "hold"
+            | "firstTick"
+            | "noClock"
+            | "subSample"
+            | "superSample"
+            | "shiftSample"
+            | "backSample"
+    ) {
+        return Err(render_err(format!(
+            "FunctionCall {raw_name} must be lowered with its clock schedule before template rendering"
+        )));
+    }
+
     // Map Modelica standard library math functions to builtins
     if let Some(builtin) = resolve_modelica_math_function(&raw_name) {
         let args = render_args(func_call, cfg)?;
-        return Ok(render_builtin_python(builtin, &args, cfg));
+        return render_builtin_python(builtin, &args, cfg);
     }
 
     let name = super::emitted_symbol(&raw_name, cfg)?;
@@ -962,11 +943,11 @@ fn render_tuple(tuple: &Value, cfg: &ExprConfig) -> RenderResult {
 /// or `range(start, end + 1, step)` since Modelica ranges are 1-based inclusive.
 fn render_range(range: &Value, cfg: &ExprConfig) -> RenderResult {
     let start = get_field(range, "start")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Range missing 'start' field"))?;
+        .map_err(|_| render_err("Range missing 'start' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let end = get_field(range, "end")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Range missing 'end' field"))?;
+        .map_err(|_| render_err("Range missing 'end' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     if cfg.python_range {
         let end_plus1 = python_range_end(&end);
         if let Ok(step) = get_field(range, "step") {
@@ -1006,14 +987,22 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
     // For C targets, try to unroll the comprehension at render time
     if matches!(cfg.if_style, super::IfStyle::Ternary)
         && len == 1
-        && let Ok(unrolled) = try_unroll_c_comprehension(array_comp, cfg)
+        && let Ok(elements) = try_unroll_c_comprehension_elements(array_comp, cfg)
     {
-        return Ok(unrolled);
+        if elements.is_empty() {
+            return Ok("REAL_C(0.0)".to_string());
+        }
+        return Ok(format!(
+            "{}{}{}",
+            cfg.array_start,
+            elements.join(", "),
+            cfg.array_end
+        ));
     }
 
     let body = get_field(array_comp, "expr")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("ArrayComprehension missing 'expr' field"))?;
+        .map_err(|_| render_err("ArrayComprehension missing 'expr' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
 
     let mut index_clauses = Vec::new();
     for i in 0..len {
@@ -1024,8 +1013,8 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
             .map(|v| v.to_string())
             .map_err(|_| render_err("ArrayComprehension index missing 'name' field"))?;
         let range = get_field(&index, "range")
-            .and_then(|v| render_expression(&v, cfg))
-            .map_err(|_| render_err("ArrayComprehension index missing 'range' field"))?;
+            .map_err(|_| render_err("ArrayComprehension index missing 'range' field"))
+            .and_then(|v| render_expression(&v, cfg))?;
         index_clauses.push(format!("{name} in {range}"));
     }
 
@@ -1051,17 +1040,16 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
 /// Try to unroll an array comprehension for C targets.
 /// Returns the unrolled expression if the range is statically known,
 /// or Err if unrolling is not possible.
-fn try_unroll_c_comprehension(
+fn try_unroll_c_comprehension_elements(
     array_comp: &Value,
     cfg: &ExprConfig,
-) -> Result<String, minijinja::Error> {
+) -> Result<Vec<String>, minijinja::Error> {
     let indices = get_field(array_comp, "indices")?;
     let index = indices.get_item(&Value::from(0))?;
     let var_name = get_field(&index, "name")
         .map(|v| v.to_string())
         .unwrap_or_else(|_| "i".to_string());
 
-    // Get the range and try to extract integer bounds
     let range_val = get_field(&index, "range")?;
     let range_str = render_expression(&range_val, cfg)?;
     let parts: Vec<&str> = range_str.splitn(2, ':').collect();
@@ -1079,7 +1067,7 @@ fn try_unroll_c_comprehension(
 
     // Empty range
     if start > end {
-        return Ok("REAL_C(0.0)".to_string());
+        return Ok(Vec::new());
     }
 
     // Get the body expression node (not yet rendered — we need to re-render per iteration)
@@ -1094,12 +1082,7 @@ fn try_unroll_c_comprehension(
         elements.push(render_expression(&body_node, &iter_cfg)?);
     }
 
-    Ok(format!(
-        "{}{}{}",
-        cfg.array_start,
-        elements.join(", "),
-        cfg.array_end
-    ))
+    Ok(elements)
 }
 
 /// Render an index expression as `base[subscripts]`.
@@ -1108,8 +1091,8 @@ fn try_unroll_c_comprehension(
 /// which are 1-based naming).
 fn render_index(index: &Value, cfg: &ExprConfig) -> RenderResult {
     let base = get_field(index, "base")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Index missing 'base' field"))?;
+        .map_err(|_| render_err("Index missing 'base' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let subs = get_field(index, "subscripts")
         .map_err(|_| render_err("Index missing 'subscripts' field"))?;
     let len = subs.len().unwrap_or(0);
@@ -1135,8 +1118,8 @@ fn render_index(index: &Value, cfg: &ExprConfig) -> RenderResult {
 /// Render a field access expression as `base.field`.
 fn render_field_access(fa: &Value, cfg: &ExprConfig) -> RenderResult {
     let base = get_field(fa, "base")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("FieldAccess missing 'base' field"))?;
+        .map_err(|_| render_err("FieldAccess missing 'base' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let field = get_field(fa, "field")
         .map(|v| v.to_string())
         .map_err(|_| render_err("FieldAccess missing 'field'"))?;
@@ -1146,8 +1129,37 @@ fn render_field_access(fa: &Value, cfg: &ExprConfig) -> RenderResult {
 #[cfg(test)]
 mod tests {
     use super::{render_c_float_literal, render_expression};
-    use crate::codegen::ExprConfig;
+    use crate::codegen::{ExprConfig, IfStyle};
     use minijinja::Value;
+
+    fn c_sum_comprehension(start: i64, end: i64) -> rumoca_core::Expression {
+        let integer = |value| rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span: rumoca_core::Span::DUMMY,
+        };
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sum,
+            args: vec![rumoca_core::Expression::ArrayComprehension {
+                expr: Box::new(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("i"),
+                    subscripts: Vec::new(),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                indices: vec![rumoca_core::ComprehensionIndex {
+                    name: "i".to_string(),
+                    range: rumoca_core::Expression::Range {
+                        start: Box::new(integer(start)),
+                        step: None,
+                        end: Box::new(integer(end)),
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                }],
+                filter: None,
+                span: rumoca_core::Span::DUMMY,
+            }],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
 
     #[test]
     fn test_render_c_float_literal_preserves_scientific_notation() {
@@ -1164,25 +1176,14 @@ mod tests {
     #[test]
     fn test_render_expr_can_inline_condition_aliases_at_backend_boundary() {
         let condition_ref = rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::generated_component(
-                "c",
-                Vec::new(),
-                rumoca_core::Span::DUMMY,
-            ),
-            subscripts: vec![rumoca_core::Subscript::generated_index(
-                1,
-                rumoca_core::Span::DUMMY,
-            )],
+            name: rumoca_core::Reference::generated("c"),
+            subscripts: vec![rumoca_core::Subscript::index(1, rumoca_core::Span::DUMMY)],
             span: rumoca_core::Span::DUMMY,
         };
         let relation = rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Lt,
             lhs: Box::new(rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::generated_component(
-                    "time",
-                    Vec::new(),
-                    rumoca_core::Span::DUMMY,
-                ),
+                name: rumoca_core::Reference::generated("time"),
                 subscripts: Vec::new(),
                 span: rumoca_core::Span::DUMMY,
             }),
@@ -1212,5 +1213,114 @@ mod tests {
 
         let rendered = render_expression(&Value::from_serialize(&condition_ref), &cfg).unwrap();
         assert_eq!(rendered, "(time < 1)");
+    }
+
+    #[test]
+    fn test_render_expr_rejects_unlowered_clock_semantics() {
+        let expression = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Clock"),
+            args: Vec::new(),
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        };
+        let error = render_expression(&Value::from_serialize(&expression), &ExprConfig::default())
+            .expect_err("clock constructors must never render as numeric stubs");
+        assert!(
+            error
+                .to_string()
+                .contains("must be lowered with its clock schedule")
+        );
+    }
+
+    #[test]
+    fn test_render_expr_rejects_unlowered_fill_and_size() {
+        // `fill(v, n)` used to render as its first argument and `size(a, d)`
+        // as the literal `0` — silent wrong code on any expression that
+        // reaches this path unlowered. Both must fail closed instead.
+        let array_ref = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("arr"),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        };
+        let one = rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(1),
+            span: rumoca_core::Span::DUMMY,
+        };
+        for (function, args) in [
+            (
+                rumoca_core::BuiltinFunction::Fill,
+                vec![one.clone(), one.clone()],
+            ),
+            (rumoca_core::BuiltinFunction::Size, vec![array_ref, one]),
+        ] {
+            let expression = rumoca_core::Expression::BuiltinCall {
+                function,
+                args,
+                span: rumoca_core::Span::DUMMY,
+            };
+            let error =
+                render_expression(&Value::from_serialize(&expression), &ExprConfig::default())
+                    .expect_err("unlowered fill/size must never render as numeric stubs");
+            assert!(
+                error.to_string().contains("not lowerable"),
+                "unexpected error text: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_render_python_transpose_swaps_only_the_first_two_axes() {
+        let expression = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Transpose,
+            args: vec![rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("tensor"),
+                subscripts: Vec::new(),
+                span: rumoca_core::Span::DUMMY,
+            }],
+            span: rumoca_core::Span::DUMMY,
+        };
+        let cfg = ExprConfig {
+            prefix: "jnp.".to_owned(),
+            ..ExprConfig::default()
+        };
+
+        assert_eq!(
+            render_expression(&Value::from_serialize(&expression), &cfg).unwrap(),
+            "jnp.swapaxes(tensor, 0, 1)"
+        );
+    }
+
+    #[test]
+    fn c_sum_of_static_comprehension_is_a_scalar_expression() {
+        let cfg = ExprConfig {
+            if_style: IfStyle::Ternary,
+            array_start: "{".to_string(),
+            array_end: "}".to_string(),
+            ..ExprConfig::default()
+        };
+
+        let rendered = render_expression(&Value::from_serialize(c_sum_comprehension(1, 3)), &cfg)
+            .expect("render static comprehension sum");
+
+        assert_eq!(rendered, "((1) + (2) + (3))");
+        assert!(
+            !rendered.contains('{'),
+            "a scalar sum must not be an initializer"
+        );
+    }
+
+    #[test]
+    fn c_sum_of_empty_static_comprehension_is_the_additive_identity() {
+        let cfg = ExprConfig {
+            if_style: IfStyle::Ternary,
+            array_start: "{".to_string(),
+            array_end: "}".to_string(),
+            ..ExprConfig::default()
+        };
+
+        let rendered = render_expression(&Value::from_serialize(c_sum_comprehension(3, 1)), &cfg)
+            .expect("render empty comprehension sum");
+
+        assert_eq!(rendered, "REAL_C(0.0)");
     }
 }
