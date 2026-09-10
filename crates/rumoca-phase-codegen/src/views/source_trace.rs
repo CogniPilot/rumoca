@@ -20,6 +20,7 @@
 //! equivalence. The offsets are cached per source so the conversion is one
 //! binary search per trace rather than a scan of the file.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
@@ -34,7 +35,7 @@ use serde::Serialize;
 /// keep a hash-only fallback rather than assume the path is present.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct SourceTrace {
-    /// Source path as the compiler was given it, or `None` when unresolvable.
+    /// Source path with Windows separators normalized, or `None` when unresolvable.
     path: Option<String>,
     /// 1-based line of the first byte.
     line: Option<u32>,
@@ -86,7 +87,7 @@ pub(super) struct TraceLegend {
 /// view built from it; copying a whole model's Modelica sources to answer line
 /// numbers would be pure waste.
 struct SourceLines<'a> {
-    path: &'a str,
+    path: Cow<'a, str>,
     text: &'a str,
     /// Byte offset of the first character of each line; always starts with 0.
     line_starts: Vec<usize>,
@@ -94,6 +95,15 @@ struct SourceLines<'a> {
 
 impl<'a> SourceLines<'a> {
     fn new(path: &'a str, text: &'a str) -> Self {
+        // Display normalization must not change the source name used for SourceId.
+        let windows_path = cfg!(windows)
+            || path.starts_with(r"\\")
+            || matches!(path.as_bytes(), [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic());
+        let path = if windows_path {
+            Cow::Owned(path.replace('\\', "/"))
+        } else {
+            Cow::Borrowed(path)
+        };
         let mut line_starts = vec![0usize];
         for (offset, byte) in text.bytes().enumerate() {
             if byte == b'\n' {
@@ -172,7 +182,7 @@ impl<'a> SourceTraceResolver<'a> {
         // pointing one past its own text.
         let (end_line, end_column) = lines.position(byte_end.max(byte_start.saturating_add(1)) - 1);
         Some(SourceTrace {
-            path: Some(lines.path.to_owned()),
+            path: Some(lines.path.to_string()),
             line: Some(line),
             column: Some(column),
             end_line: Some(end_line),
@@ -191,7 +201,7 @@ impl<'a> SourceTraceResolver<'a> {
         let cache = self.lines.borrow();
         let mut paths: Vec<&str> = cache
             .values()
-            .filter_map(|lines| lines.as_ref().map(|lines| lines.path))
+            .filter_map(|lines| lines.as_ref().map(|lines| lines.path.as_ref()))
             .collect();
         paths.sort_unstable();
         let root = common_directory_prefix(&paths);

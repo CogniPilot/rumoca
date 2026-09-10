@@ -365,10 +365,9 @@ fn generated_statements_trace_to_a_modelica_path_and_line() {
 /// and with it the SHA-1 the eFMU manifest records for the code file.
 #[test]
 fn generated_c_is_byte_identical_from_two_checkout_locations() {
-    let render_from = |prefix: &str| {
-        let name = format!("{prefix}/{TRACE_SOURCE_NAME}");
+    let render_from = |name: &str| {
         let mut sources = rumoca_core::SourceMap::new();
-        sources.add(&name, TRACE_SOURCE_TEXT);
+        sources.add(name, TRACE_SOURCE_TEXT);
         let mut block = galec::Block::new(galec::Name::ident(MODEL));
         block.interface = vec![interface(
             galec::InterfaceKind::Output,
@@ -381,7 +380,7 @@ fn generated_c_is_byte_identical_from_two_checkout_locations() {
                 target: state("selected"),
                 value: galec::Expression::Real(1.0),
             },
-            traced_span(&name),
+            traced_span(name),
         )];
         let checked = CheckedAlgorithmBlock::construct(block).expect("fixture must be valid");
         rumoca_phase_codegen::render_checked_algorithm_block_template_with_sources(
@@ -394,12 +393,20 @@ fn generated_c_is_byte_identical_from_two_checkout_locations() {
         )
         .expect("fixture must render")
     };
-    let alice = render_from("/home/alice/git/models");
-    let ci = render_from("/builds/ci/9f2a/checkout");
-    assert_eq!(
-        alice, ci,
-        "generated C must not depend on where the source tree lives"
-    );
+    let alice = render_from("/home/alice/git/models/trace/Controller.mo");
+    for name in [
+        "/builds/ci/9f2a/checkout/trace/Controller.mo",
+        r"C:\Users\Alice\models\trace\Controller.mo",
+        r"D:\runner\checkout\trace\Controller.mo",
+        r"\\server\share\models\trace\Controller.mo",
+        r"C:\Users\Alice/models/trace\Controller.mo",
+    ] {
+        assert_eq!(
+            alice,
+            render_from(name),
+            "generated C must not depend on the source checkout: {name}"
+        );
+    }
     assert!(
         !alice.contains("/home/alice") && !alice.contains("/builds/ci"),
         "no build-machine path may reach the artifact:\n{alice}"
