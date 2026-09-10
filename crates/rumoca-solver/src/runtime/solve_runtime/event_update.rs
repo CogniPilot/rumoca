@@ -12,12 +12,6 @@ pub enum EventUpdateRowFilter {
     /// the semantic tick. In both cases typed ownership, not row position,
     /// decides which rows execute.
     UnownedOnly,
-    /// Re-evaluate the rows whose meaning changes after `initial()` is cleared.
-    ///
-    /// A periodic clock that ticks at the simulation start owns rows at that
-    /// same instant. Unowned Fixed/EventEntry rows remain part of the completed
-    /// initialization event and must not execute a second time.
-    PostInitialClockTick,
     /// No discrete row is re-evaluated; only the continuous projection moves.
     ///
     /// MLS Appendix B changes discrete values, conditions, and relation memory
@@ -33,7 +27,6 @@ impl EventUpdateRowFilter {
             Self::All => true,
             Self::FollowCurrentOnly => mode == EventPreMode::FollowCurrent,
             Self::UnownedOnly => !clock_owned,
-            Self::PostInitialClockTick => clock_owned || mode == EventPreMode::FollowCurrent,
             Self::Hold => false,
         }
     }
@@ -95,7 +88,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_clock_tick_filters_follow_typed_ownership() {
+    fn initialization_defers_clock_owned_rows_until_the_first_tick() {
         assert!(
             EventUpdateRowFilter::UnownedOnly.accepts(EventPreMode::EventEntry, false),
             "an unowned event-entry row remains part of initialization"
@@ -103,22 +96,6 @@ mod tests {
         assert!(
             !EventUpdateRowFilter::UnownedOnly.accepts(EventPreMode::EventEntry, true),
             "the typed clock row waits for its first superdense tick"
-        );
-        assert!(
-            EventUpdateRowFilter::PostInitialClockTick.accepts(EventPreMode::EventEntry, true),
-            "the typed clock row executes after initial() clears"
-        );
-        assert!(
-            !EventUpdateRowFilter::PostInitialClockTick.accepts(EventPreMode::EventEntry, false),
-            "an unowned event-entry row cannot execute a second time"
-        );
-        assert!(
-            EventUpdateRowFilter::PostInitialClockTick.accepts(EventPreMode::FollowCurrent, false),
-            "the established post-initial refresh remains active"
-        );
-        assert!(
-            !EventUpdateRowFilter::PostInitialClockTick.accepts(EventPreMode::Fixed, false),
-            "fixed initialization rows remain settled"
         );
     }
 }

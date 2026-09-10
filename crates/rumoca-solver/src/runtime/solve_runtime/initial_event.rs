@@ -255,10 +255,11 @@ impl SolveRuntime {
             EventUpdateRowFilter::Hold
         } else if event.pre_mode == EventPreMode::EventEntry {
             // A phase-zero periodic schedule ticks at the simulation start,
-            // after initialization has settled. Its EventEntry rows must see
-            // `initial() = false` at that same semantic instant. Fixed rows are
-            // initialization actions and remain excluded from this projection.
-            EventUpdateRowFilter::PostInitialClockTick
+            // after initialization has settled. MLS §16.5.1 allows a held
+            // clock value to activate an unclocked when at this instant, so
+            // the tick needs the complete SOLVE-C22 event pass. Pre-read mode
+            // does not determine activation; the checked guards do.
+            EventUpdateRowFilter::All
         } else {
             EventUpdateRowFilter::FollowCurrentOnly
         };

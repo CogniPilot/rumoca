@@ -376,3 +376,68 @@ and simulation statuses are unchanged from the preceding example run; the
 angular-acceleration channel changes from deviating to high. The other 32
 examples remain failures. The named-commit full 566-model milestone is next;
 these focused runs do not establish a cohort claim or baseline promotion.
+
+The full 566-model gate in `target/msl/multibody-state-tensor-full` passed at
+`4716a8291f26302853aef2010b97b5e8d84e4fa2` (tree
+`5161f078ed87db562a551d149c351b83cc660da9`). It compares 138 models, all in
+the high trajectory band, with 12126 channels and zero deviating channels or
+missing traces. Sixteen completed models retain reviewed comparator exclusions.
+Every previously high model remains high. Eight additional models enter that
+band: MultiBody `DoublePendulum`, `ForceAndTorque`, `Pendulum`,
+`SpringMassSystem`, `UserDefinedGravityField`, `MovingActuatedDrive`, plus
+Rotational `FirstGrounded` and Translational `Sensors`.
+
+This result needs two explicit qualifications before further breadth work:
+
+- `DCPM_Drive`, previously completed under a reviewed comparator exclusion,
+  now fails Solve lowering: continuous algebraic row 133 cannot substitute
+  `der(dcpm1.airGapDC.flange.phi)` because its matched state residual is not a
+  subtraction. Its disappearance from the completed set explains the exclusion
+  count changing from 17 to 16; the policy file is unchanged. This is a new
+  execution regression to repair, not improved comparator coverage.
+- `Clocked.Examples.Elementary.RealSignals.AssignClockToTriggerHold` retains
+  an existing near initial channel: `triggeredSampler.y` is 0 while OMC gives
+  0.1 after the first clock tick at time zero. The error persists until the
+  next tick at 0.02 seconds. Its trajectory score still falls in the high band,
+  but that aggregate must not hide a potential clock/event semantic defect.
+  Rumoca already samples the sine and toggles/holds the Boolean at time zero;
+  the triggered non-clocked sampler fails to respond. The following repair
+  closes this counterexample before resuming the MultiBody compile frontier.
+
+The full run takes 272.260 seconds. Source files were unchanged during the
+sweep; artifact digests and exact counts are recorded in
+`.git/multibody-campaign/state-tensor-full-receipt.json`. No baseline is promoted.
+
+## Complete event iteration after the first clock tick
+
+A minimal held-Boolean-clock fixture reproduces the missing sample at time
+zero. The same fixture with a first tick shifted to 0.01 seconds passes. Both
+include an independent initialization counter that must remain one, and their
+analytic sample oracle preserves exact event timestamps rather than moving a
+nearby sample across a tick.
+
+DAE retains the `hold`, `change`, and Boolean `when` semantics in its typed
+temporal owners. Solve scalar row 2 computes `trigger = held != pre(held)`
+with a `Fixed` pre-read policy; guarded assignment owner 0 correctly reads
+the current input on the trigger's rising edge and otherwise holds the
+sampler output. The first wrong operation is the runtime's
+`PostInitialClockTick` filter: it excludes the `Fixed` trigger equation even
+after the held clock value changes. A pre-read policy does not identify an
+initialization-only equation.
+
+The runtime now uses the complete SOLVE-C22 event pass after initialization
+clears for the first clock tick, as required by MLS §§16.3, 16.5.1 and 8.3.5.
+Initialization still defers clock-owned equations, and the existing event
+history commit and once-per-tick clock execution remain authoritative. The
+obsolete filter is removed. Both focused tests pass, along with all 421 core
+integration tests and all 417 solver unit tests.
+
+The originating comparison in `target/msl/multibody-clock-trigger-repair`
+is high on all eight channels, including all eight initial channels with zero
+initial error. There are no missing, skipped, excluded, or deviating
+comparisons. This closes the clock-trigger counterexample; its fixed canary
+in `target/msl/multibody-clock-trigger-canary` retains all nine compared models
+as strict-high, with zero missing, skipped, excluded, or deviating comparisons.
+All 20 stage and simulation statuses are unchanged. Formatting and the affected
+packages' all-target, all-feature Clippy checks pass. The `DCPM_Drive`
+execution-regression repair remains pending.

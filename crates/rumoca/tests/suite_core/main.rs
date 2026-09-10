@@ -36,6 +36,7 @@ mod cli_diagnostic_rendering;
 mod cli_emit;
 mod cli_fmt_lint;
 mod cli_target_acceptance;
+mod clock_trigger_initial_tick;
 mod clocked_coincident_exchange;
 mod clocked_sample_regression;
 mod connection_normalization_golden;
