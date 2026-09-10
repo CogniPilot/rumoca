@@ -1,8 +1,10 @@
 use super::{
     IntegerEvalEnv, MAX_EXPR_EVAL_DEPTH, ast, eval_integer_binary, eval_integer_function_call,
-    evaluate_component_condition_with_depth, try_eval_bool_expr_with_depth_and_locals,
+    evaluate_component_condition_with_depth, evaluate_enum_equality_with_depth,
     try_eval_bool_expr_with_local_values, try_eval_integer_expr_with_depth_and_locals,
 };
+use crate::ast_scalar::{self, AstScalarContext};
+use crate::function_control::FunctionStmtFlow;
 use rustc_hash::FxHashMap;
 
 const MAX_FUNCTION_LOOP_ITERATIONS: usize = 4096;
@@ -10,226 +12,62 @@ const MAX_FUNCTION_LOOP_ITERATIONS: usize = 4096;
 enum LocalValue {
     Integer(i64),
     Bool(bool),
+    Real(f64),
+    /// A rank-1 Real vector. Higher ranks and non-Real element types stay
+    /// outside this interpreter and fail closed.
+    Reals(Vec<f64>),
 }
 
 #[derive(Default)]
 struct MixedLocals {
     ints: FxHashMap<String, i64>,
     bools: FxHashMap<String, bool>,
+    reals: FxHashMap<String, f64>,
+    real_arrays: FxHashMap<String, Vec<f64>>,
 }
 
-#[derive(Copy, Clone)]
+impl MixedLocals {
+    fn contains(&self, name: &str) -> bool {
+        self.ints.contains_key(name)
+            || self.bools.contains_key(name)
+            || self.reals.contains_key(name)
+            || self.real_arrays.contains_key(name)
+    }
+}
+
+#[derive(Copy, Clone, Default)]
 struct MixedCallerLocals<'a> {
     ints: Option<&'a FxHashMap<String, i64>>,
     bools: Option<&'a FxHashMap<String, bool>>,
 }
 
-pub(super) fn bind_function_inputs(
+pub(super) fn eval_user_defined_integer_function(
     function_def: &ast::ClassDef,
     args: &[ast::Expression],
     env: IntegerEvalEnv<'_>,
     depth: usize,
     caller_locals: Option<&FxHashMap<String, i64>>,
-    local_values: &mut FxHashMap<String, i64>,
-) -> Option<()> {
-    let inputs: Vec<_> = function_def
-        .components
-        .iter()
-        .filter(|(_, comp)| matches!(comp.causality, rumoca_core::Causality::Input(_)))
-        .collect();
-
-    let mut positional_idx = 0usize;
-    for arg in args {
-        if matches!(arg, ast::Expression::NamedArgument { .. }) {
-            continue;
-        }
-        if let Some((name, _)) = inputs.get(positional_idx) {
-            let value = try_eval_integer_expr_with_depth_and_locals(
-                arg,
-                env.mod_env,
-                env.effective_components,
-                env.tree,
-                env.resolve_class_components,
-                depth,
-                caller_locals,
-            )?;
-            local_values.insert((*name).clone(), value);
-        }
-        positional_idx += 1;
-    }
-
-    for arg in args {
-        if let ast::Expression::NamedArgument { name, value, .. } = arg
-            && let Some((param_name, _)) = inputs
-                .iter()
-                .find(|(input_name, _)| input_name.as_str() == name.text.as_ref())
-        {
-            let input_value = try_eval_integer_expr_with_depth_and_locals(
-                value,
-                env.mod_env,
-                env.effective_components,
-                env.tree,
-                env.resolve_class_components,
-                depth,
-                caller_locals,
-            )?;
-            local_values.insert((*param_name).clone(), input_value);
-        }
-    }
-
-    for (input_name, input_component) in inputs {
-        if local_values.contains_key(input_name.as_str()) {
-            continue;
-        }
-        if let Some(binding) = &input_component.binding
-            && let Some(value) = try_eval_integer_expr_with_depth_and_locals(
-                binding,
-                env.mod_env,
-                env.effective_components,
-                env.tree,
-                env.resolve_class_components,
-                depth,
-                Some(local_values),
-            )
-        {
-            local_values.insert(input_name.clone(), value);
-            continue;
-        }
-        if let Some(value) = try_eval_integer_expr_with_depth_and_locals(
-            &input_component.start,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth,
-            Some(local_values),
-        ) {
-            local_values.insert(input_name.clone(), value);
-        }
-    }
-
-    Some(())
-}
-
-pub(super) fn initialize_function_locals(
-    function_def: &ast::ClassDef,
-    env: IntegerEvalEnv<'_>,
-    depth: usize,
-    local_values: &mut FxHashMap<String, i64>,
-) {
-    for (name, component) in &function_def.components {
-        if local_values.contains_key(name.as_str()) {
-            continue;
-        }
-        if let Some(binding) = &component.binding
-            && let Some(value) = try_eval_integer_expr_with_depth_and_locals(
-                binding,
-                env.mod_env,
-                env.effective_components,
-                env.tree,
-                env.resolve_class_components,
-                depth,
-                Some(local_values),
-            )
-        {
-            local_values.insert(name.clone(), value);
-            continue;
-        }
-        if let Some(value) = try_eval_integer_expr_with_depth_and_locals(
-            &component.start,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth,
-            Some(local_values),
-        ) {
-            local_values.insert(name.clone(), value);
-        }
-    }
-}
-
-pub(super) fn find_function_output_name(function_def: &ast::ClassDef) -> Option<String> {
-    function_def
-        .components
-        .iter()
-        .find(|(_, comp)| matches!(comp.causality, rumoca_core::Causality::Output(_)))
-        .map(|(name, _)| name.clone())
-}
-
-pub(super) fn find_scalar_function_output_name(function_def: &ast::ClassDef) -> Option<String> {
-    function_def
-        .components
-        .iter()
-        .find(|(_, comp)| {
-            matches!(comp.causality, rumoca_core::Causality::Output(_))
-                && comp.shape.is_empty()
-                && comp.shape_expr.is_empty()
-        })
-        .map(|(name, _)| name.clone())
-}
-
-pub(super) fn interpret_function_statements(
-    statements: &[ast::Statement],
-    env: IntegerEvalEnv<'_>,
-    depth: usize,
-    local_values: &mut FxHashMap<String, i64>,
-) -> Option<bool> {
-    for statement in statements {
-        if interpret_function_statement(statement, env, depth, local_values)? {
-            return Some(true);
-        }
-    }
-    Some(false)
-}
-
-fn interpret_function_statement(
-    statement: &ast::Statement,
-    env: IntegerEvalEnv<'_>,
-    depth: usize,
-    local_values: &mut FxHashMap<String, i64>,
-) -> Option<bool> {
-    if depth > MAX_EXPR_EVAL_DEPTH {
+) -> Option<i64> {
+    if !function_def.pure || function_def.external.is_some() || depth >= MAX_EXPR_EVAL_DEPTH {
         return None;
     }
 
-    match statement {
-        ast::Statement::Assignment { comp, value } => {
-            let evaluated = try_eval_integer_expr_with_depth_and_locals(
-                value,
-                env.mod_env,
-                env.effective_components,
-                env.tree,
-                env.resolve_class_components,
-                depth + 1,
-                Some(local_values),
-            )?;
-            local_values.insert(comp.to_string(), evaluated);
-            Some(false)
-        }
-        ast::Statement::If {
-            cond_blocks,
-            else_block,
-        } => interpret_function_if(cond_blocks, else_block.as_deref(), env, depth, local_values),
-        ast::Statement::For { indices, equations } => {
-            interpret_function_for(indices, equations, env, depth, local_values)
-        }
-        ast::Statement::FunctionCall {
-            comp,
-            args,
-            outputs,
-        } => {
-            handle_function_call_statement(comp, args, outputs, env, depth, local_values);
-            Some(false)
-        }
-        ast::Statement::Return { .. } => Some(true),
-        ast::Statement::Empty
-        | ast::Statement::Break { .. }
-        | ast::Statement::While(_)
-        | ast::Statement::When(_)
-        | ast::Statement::Reinit { .. }
-        | ast::Statement::Assert { .. } => Some(false),
-    }
+    let mut locals = MixedLocals::default();
+    bind_mixed_function_inputs(
+        function_def,
+        args,
+        env,
+        depth + 1,
+        MixedCallerLocals {
+            ints: caller_locals,
+            bools: None,
+        },
+        &mut locals,
+    )?;
+    initialize_mixed_function_locals(function_def, env, depth + 1, &mut locals);
+    let output_name = find_scalar_function_output_name(function_def)?;
+    interpret_function_algorithms(function_def, env, depth + 1, &mut locals)?;
+    locals.ints.get(&output_name).copied()
 }
 
 pub(super) fn eval_user_defined_bool_function(
@@ -257,15 +95,37 @@ pub(super) fn eval_user_defined_bool_function(
         &mut locals,
     )?;
     initialize_mixed_function_locals(function_def, env, depth + 1, &mut locals);
-    let output_name = find_function_output_name(function_def)?;
+    let output_name = find_scalar_function_output_name(function_def)?;
+    interpret_function_algorithms(function_def, env, depth + 1, &mut locals)?;
+    locals.bools.get(&output_name).copied()
+}
 
+fn find_scalar_function_output_name(function_def: &ast::ClassDef) -> Option<String> {
+    function_def
+        .components
+        .iter()
+        .find(|(_, comp)| {
+            matches!(comp.causality, rumoca_core::Causality::Output(_))
+                && comp.shape.is_empty()
+                && comp.shape_expr.is_empty()
+        })
+        .map(|(name, _)| name.clone())
+}
+
+fn interpret_function_algorithms(
+    function_def: &ast::ClassDef,
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &mut MixedLocals,
+) -> Option<()> {
     for algorithm in &function_def.algorithms {
-        if interpret_bool_function_statements(algorithm, env, depth + 1, &mut locals)? {
-            break;
+        match interpret_function_statements(algorithm, env, depth + 1, locals)? {
+            FunctionStmtFlow::Continue => {}
+            FunctionStmtFlow::Return => return Some(()),
+            FunctionStmtFlow::Break => return None,
         }
     }
-
-    locals.bools.get(&output_name).copied()
+    Some(())
 }
 
 fn bind_mixed_function_inputs(
@@ -287,35 +147,36 @@ fn bind_mixed_function_inputs(
         if matches!(arg, ast::Expression::NamedArgument { .. }) {
             continue;
         }
-        if let Some((name, _)) = inputs.get(positional_idx) {
-            let value =
-                eval_mixed_local_value(arg, env, depth, caller_locals.ints, caller_locals.bools)?;
-            insert_local_value(name, value, locals);
-        }
+        let (name, component) = inputs.get(positional_idx)?;
+        let value =
+            eval_mixed_local_value(arg, env, depth, caller_locals.ints, caller_locals.bools)?;
+        insert_checked_local_value(name, component, value, env, locals)?;
         positional_idx += 1;
     }
 
     for arg in args {
-        if let ast::Expression::NamedArgument { name, value, .. } = arg
-            && let Some((param_name, _)) = inputs
+        if let ast::Expression::NamedArgument { name, value, .. } = arg {
+            let (param_name, param_component) = inputs
                 .iter()
                 .find(|(input_name, _)| input_name.as_str() == name.text.as_ref())
-        {
+                .copied()?;
+            if locals.contains(param_name.as_str()) {
+                return None;
+            }
             let input_value =
                 eval_mixed_local_value(value, env, depth, caller_locals.ints, caller_locals.bools)?;
-            insert_local_value(param_name, input_value, locals);
+            insert_checked_local_value(param_name, param_component, input_value, env, locals)?;
         }
     }
 
     for (input_name, input_component) in inputs {
-        if locals.ints.contains_key(input_name.as_str())
-            || locals.bools.contains_key(input_name.as_str())
-        {
+        if locals.contains(input_name.as_str()) {
             continue;
         }
         if assign_component_default(input_name, input_component, env, depth, locals) {
             continue;
         }
+        return None;
     }
 
     Some(())
@@ -328,13 +189,22 @@ fn initialize_mixed_function_locals(
     locals: &mut MixedLocals,
 ) {
     for (name, component) in &function_def.components {
-        if locals.ints.contains_key(name.as_str()) || locals.bools.contains_key(name.as_str()) {
+        if locals.contains(name.as_str()) {
             continue;
         }
         assign_component_default(name, component, env, depth, locals);
     }
 }
 
+/// Seed `name` from its declaration binding (MLS §12.4.1 default argument /
+/// declaration assignment).
+///
+/// The `start` attribute is deliberately not consulted. The parser seeds every
+/// `Real`/`Integer`/`Boolean` declaration with `0.0`/`0`/`false`, so reading it
+/// would hand an unsupplied input or an unassigned local a value the function
+/// never defined — a fabricated result rather than an undecided one
+/// (SPEC_0008). Without a binding this returns `false` and the caller abandons
+/// the fold.
 fn assign_component_default(
     name: &str,
     component: &ast::Component,
@@ -342,19 +212,105 @@ fn assign_component_default(
     depth: usize,
     locals: &mut MixedLocals,
 ) -> bool {
-    for expr in component
-        .binding
-        .iter()
-        .chain(std::iter::once(&component.start))
-    {
-        if let Some(value) =
-            eval_mixed_local_value(expr, env, depth, Some(&locals.ints), Some(&locals.bools))
-        {
-            insert_local_value(name, value, locals);
-            return true;
+    let Some(binding) = component.binding.as_ref() else {
+        return false;
+    };
+    // The binding runs in the callee frame: MLS §12.4.4 lets a protected
+    // `Integer n = size(v1, 1)` read the already-bound inputs.
+    let Some(value) = eval_function_expr(binding, env, depth, locals) else {
+        return false;
+    };
+    insert_checked_local_value(name, component, value, env, locals).is_some()
+}
+
+/// Insert a value into the typed frame only when it satisfies the formal's
+/// checked declaration contract.
+///
+/// The scalar Integer/Bool lanes keep their long-standing behavior. The new
+/// Real lanes are validated against the declaration before binding:
+/// a Real scalar needs a declared-scalar, provably Real formal; a rank-1
+/// Real vector needs a declared rank-1, provably Real formal whose extent —
+/// when the declaration states one statically — matches the value's length
+/// (a declared `[:]` accepts any length). Real-ness is proven only by the
+/// type name's resolved identity equalling the tree's registered predefined
+/// `Real` DefId; absent identity on either side — and every derived alias —
+/// fails closed rather than binding a value the declaration never admitted.
+fn insert_checked_local_value(
+    name: &str,
+    component: &ast::Component,
+    value: LocalValue,
+    env: IntegerEvalEnv<'_>,
+    locals: &mut MixedLocals,
+) -> Option<()> {
+    match &value {
+        LocalValue::Integer(_) | LocalValue::Bool(_) => {}
+        LocalValue::Real(_) => {
+            if !component_is_predefined_real(component, env) || declared_rank(component) != 0 {
+                return None;
+            }
+        }
+        LocalValue::Reals(values) => {
+            if !component_is_predefined_real(component, env) || declared_rank(component) != 1 {
+                return None;
+            }
+            match declared_vector_extent(component) {
+                DeclaredExtent::Any => {}
+                DeclaredExtent::Fixed(extent) if extent == values.len() => {}
+                DeclaredExtent::Fixed(_) | DeclaredExtent::Unproved => return None,
+            }
         }
     }
-    false
+    insert_local_value(name, value, locals);
+    Some(())
+}
+
+fn component_is_predefined_real(component: &ast::Component, env: IntegerEvalEnv<'_>) -> bool {
+    // Identity only, never spelling: the declared type must carry the exact
+    // DefId the tree registered for predefined `Real`. Absent identity on
+    // either side fails closed — an unresolved or user-owned declaration
+    // spelled `Real` must not acquire predefined semantics. Derived Real
+    // aliases are a stated fail-closed coverage boundary of this slice.
+    let predefined_real = env
+        .tree
+        .scope_tree
+        .predefined_member(&rumoca_core::ComponentPath::from_flat_path("Real"));
+    match (component.type_name.def_id, predefined_real) {
+        (Some(declared), Some(real)) => declared == real,
+        _ => false,
+    }
+}
+
+fn declared_rank(component: &ast::Component) -> usize {
+    component.shape.len().max(component.shape_expr.len())
+}
+
+enum DeclaredExtent {
+    Any,
+    Fixed(usize),
+    Unproved,
+}
+
+fn declared_vector_extent(component: &ast::Component) -> DeclaredExtent {
+    if let [extent] = component.shape.as_slice() {
+        return DeclaredExtent::Fixed(*extent);
+    }
+    match component.shape_expr.as_slice() {
+        // `[:]` parses as the colon Range subscript; Empty is the
+        // no-subscript placeholder synthetic declarations carry. Both state
+        // an unknown extent that any length satisfies (MLS §12.4.5).
+        [ast::Subscript::Empty] | [ast::Subscript::Range { .. }] => DeclaredExtent::Any,
+        [
+            ast::Subscript::Expression(ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::UnsignedInteger,
+                token,
+                ..
+            }),
+        ] => token
+            .text
+            .parse::<usize>()
+            .map_or(DeclaredExtent::Unproved, DeclaredExtent::Fixed),
+        _ => DeclaredExtent::Unproved,
+    }
 }
 
 fn eval_mixed_local_value(
@@ -375,66 +331,349 @@ fn eval_mixed_local_value(
     ) {
         return Some(LocalValue::Integer(value));
     }
-    try_eval_bool_expr_with_local_values(expr, env, depth + 1, local_ints, local_bools)
-        .map(LocalValue::Bool)
+    if let Some(value) =
+        try_eval_bool_expr_with_local_values(expr, env, depth + 1, local_ints, local_bools)
+    {
+        return Some(LocalValue::Bool(value));
+    }
+    // Real scalars and rank-1 Real vector literals. Call arguments cannot
+    // read the callee's locals, so the empty typed frame is the correct
+    // scope; only Real-typed results are accepted from it, the scalar paths
+    // above having already answered for int/bool.
+    let empty = MixedLocals::default();
+    match eval_function_expr(expr, env, depth + 1, &empty) {
+        Some(value @ (LocalValue::Real(_) | LocalValue::Reals(_))) => Some(value),
+        _ => None,
+    }
 }
 
 fn insert_local_value(name: &str, value: LocalValue, locals: &mut MixedLocals) {
+    locals.ints.remove(name);
+    locals.bools.remove(name);
+    locals.reals.remove(name);
+    locals.real_arrays.remove(name);
     match value {
         LocalValue::Integer(value) => {
-            locals.bools.remove(name);
             locals.ints.insert(name.to_string(), value);
         }
         LocalValue::Bool(value) => {
-            locals.ints.remove(name);
             locals.bools.insert(name.to_string(), value);
+        }
+        LocalValue::Real(value) => {
+            locals.reals.insert(name.to_string(), value);
+        }
+        LocalValue::Reals(values) => {
+            locals.real_arrays.insert(name.to_string(), values);
         }
     }
 }
 
-fn interpret_bool_function_statements(
+/// Evaluate a function-body expression over the typed local frame.
+///
+/// This carries the value forms ordinary pure AST function interpretation
+/// needs beyond the scalar int/bool paths: Real literals and arithmetic,
+/// rank-1 Real vector literals, references to typed locals (including a
+/// one-subscript indexed read of a local vector), `size` of a local vector,
+/// `abs`, mixed-type comparisons, and if-expressions. The existing scalar
+/// evaluators answer first; every unsupported form fails closed.
+fn eval_function_expr(
+    expr: &ast::Expression,
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &MixedLocals,
+) -> Option<LocalValue> {
+    if depth > MAX_EXPR_EVAL_DEPTH {
+        return None;
+    }
+    // The scalar paths receive `depth` unincremented: this dispatcher is not
+    // a semantic recursion level, and adding one here shortened the shared
+    // MAX_EXPR_EVAL_DEPTH budget enough to break recursive-function folds
+    // that fit before it existed. Structural descent below still increments.
+    if let Some(value) = try_eval_integer_expr_with_depth_and_locals(
+        expr,
+        env.mod_env,
+        env.effective_components,
+        env.tree,
+        env.resolve_class_components,
+        depth,
+        Some(&locals.ints),
+    ) {
+        return Some(LocalValue::Integer(value));
+    }
+    if let Some(value) = try_eval_bool_expr_with_local_values(
+        expr,
+        env,
+        depth,
+        Some(&locals.ints),
+        Some(&locals.bools),
+    ) {
+        return Some(LocalValue::Bool(value));
+    }
+    match expr {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedReal,
+            token,
+            ..
+        } => token
+            .text
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .map(LocalValue::Real),
+        ast::Expression::Array {
+            elements,
+            is_matrix: false,
+            ..
+        } => {
+            let mut values = Vec::with_capacity(elements.len());
+            for element in elements {
+                values.push(function_expr_real(element, env, depth + 1, locals)?);
+            }
+            Some(LocalValue::Reals(values))
+        }
+        ast::Expression::ComponentReference(reference) => {
+            local_reference_value(reference, env, depth, locals)
+        }
+        ast::Expression::Unary { op, rhs, .. } => {
+            let value = function_expr_real(rhs, env, depth + 1, locals)?;
+            match op {
+                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => {
+                    Some(LocalValue::Real(-value))
+                }
+                rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => {
+                    Some(LocalValue::Real(value))
+                }
+                _ => None,
+            }
+        }
+        ast::Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = function_expr_real(lhs, env, depth + 1, locals)?;
+            let rhs = function_expr_real(rhs, env, depth + 1, locals)?;
+            eval_real_binary(op, lhs, rhs)
+        }
+        ast::Expression::FunctionCall {
+            comp,
+            args,
+            is_partial_application: false,
+            ..
+        } => eval_function_builtin_call(comp, args, env, depth, locals),
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                match eval_function_expr(condition, env, depth + 1, locals)? {
+                    LocalValue::Bool(true) => {
+                        return eval_function_expr(value, env, depth + 1, locals);
+                    }
+                    LocalValue::Bool(false) => {}
+                    _ => return None,
+                }
+            }
+            eval_function_expr(else_branch, env, depth + 1, locals)
+        }
+        _ => None,
+    }
+}
+
+/// A function-body condition through the typed frame: the scalar bool path
+/// answers first inside `eval_function_expr`; a non-Bool result fails closed.
+fn eval_function_condition(
+    expr: &ast::Expression,
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &MixedLocals,
+) -> Option<bool> {
+    match eval_function_expr(expr, env, depth, locals)? {
+        LocalValue::Bool(value) => Some(value),
+        _ => None,
+    }
+}
+
+fn function_expr_real(
+    expr: &ast::Expression,
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &MixedLocals,
+) -> Option<f64> {
+    match eval_function_expr(expr, env, depth, locals)? {
+        LocalValue::Real(value) => Some(value),
+        // MLS §10.6.2: Integer operands promote in a Real expression.
+        LocalValue::Integer(value) => Some(value as f64),
+        _ => None,
+    }
+}
+
+fn eval_real_binary(op: &rumoca_core::OpBinary, lhs: f64, rhs: f64) -> Option<LocalValue> {
+    use rumoca_core::OpBinary;
+    // A structural fold must never manufacture a value from an undefined
+    // operation: a zero divisor is rejected before dividing, and any
+    // non-finite arithmetic result (overflow, 0/0) refuses to fold instead
+    // of flowing into a comparison as Inf/NaN — the same fail-closed
+    // posture as the checked DAE numeric owner.
+    let checked_real = |value: f64| value.is_finite().then_some(LocalValue::Real(value));
+    match op {
+        OpBinary::Add | OpBinary::AddElem => checked_real(lhs + rhs),
+        OpBinary::Sub | OpBinary::SubElem => checked_real(lhs - rhs),
+        OpBinary::Mul | OpBinary::MulElem => checked_real(lhs * rhs),
+        OpBinary::Div | OpBinary::DivElem => {
+            if rhs == 0.0 {
+                return None;
+            }
+            checked_real(lhs / rhs)
+        }
+        OpBinary::Lt => Some(LocalValue::Bool(lhs < rhs)),
+        OpBinary::Le => Some(LocalValue::Bool(lhs <= rhs)),
+        OpBinary::Gt => Some(LocalValue::Bool(lhs > rhs)),
+        OpBinary::Ge => Some(LocalValue::Bool(lhs >= rhs)),
+        // Real equality inside a function body is legal MLS §8.5; both
+        // operands are exact evaluated values here.
+        OpBinary::Eq => Some(LocalValue::Bool(lhs == rhs)),
+        OpBinary::Neq => Some(LocalValue::Bool(lhs != rhs)),
+        _ => None,
+    }
+}
+
+fn local_reference_value(
+    reference: &ast::ComponentReference,
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &MixedLocals,
+) -> Option<LocalValue> {
+    let [part] = reference.parts.as_slice() else {
+        return None;
+    };
+    let name = part.ident.text.as_ref();
+    let subs = part.subs.as_deref().unwrap_or(&[]);
+    match subs {
+        [] => {
+            if let Some(value) = locals.reals.get(name) {
+                return Some(LocalValue::Real(*value));
+            }
+            locals
+                .real_arrays
+                .get(name)
+                .map(|values| LocalValue::Reals(values.clone()))
+        }
+        [ast::Subscript::Expression(index_expr)] => {
+            let values = locals.real_arrays.get(name)?;
+            let LocalValue::Integer(index) =
+                eval_function_expr(index_expr, env, depth + 1, locals)?
+            else {
+                return None;
+            };
+            let index = usize::try_from(index).ok()?.checked_sub(1)?;
+            values.get(index).copied().map(LocalValue::Real)
+        }
+        _ => None,
+    }
+}
+
+fn eval_function_builtin_call(
+    comp: &ast::ComponentReference,
+    args: &[ast::Expression],
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &MixedLocals,
+) -> Option<LocalValue> {
+    let [part] = comp.parts.as_slice() else {
+        return None;
+    };
+    if part.subs.as_ref().is_some_and(|subs| !subs.is_empty()) {
+        return None;
+    }
+    // The predefined operation may answer only a call whose identity is the
+    // tree's own checked predefined member for this spelling (or an
+    // identity-free synthetic spelling). A resolved identity pointing at any
+    // other declaration selected a user function, and its body must never
+    // be replaced by the predefined operation.
+    if let Some(selected) = part.def_id {
+        let predefined =
+            env.tree
+                .scope_tree
+                .predefined_member(&rumoca_core::ComponentPath::from_flat_path(
+                    part.ident.text.as_ref(),
+                ));
+        if predefined != Some(selected) {
+            return None;
+        }
+    }
+    match part.ident.text.as_ref() {
+        "size" => {
+            let [ast::Expression::ComponentReference(array_ref), dimension] = args else {
+                return None;
+            };
+            let [array_part] = array_ref.parts.as_slice() else {
+                return None;
+            };
+            if array_part
+                .subs
+                .as_ref()
+                .is_some_and(|subs| !subs.is_empty())
+            {
+                return None;
+            }
+            let values = locals.real_arrays.get(array_part.ident.text.as_ref())?;
+            let LocalValue::Integer(1) = eval_function_expr(dimension, env, depth + 1, locals)?
+            else {
+                return None;
+            };
+            i64::try_from(values.len()).ok().map(LocalValue::Integer)
+        }
+        "abs" => {
+            let [argument] = args else {
+                return None;
+            };
+            function_expr_real(argument, env, depth + 1, locals)
+                .map(|value| LocalValue::Real(value.abs()))
+        }
+        _ => None,
+    }
+}
+
+fn interpret_function_statements(
     statements: &[ast::Statement],
     env: IntegerEvalEnv<'_>,
     depth: usize,
     locals: &mut MixedLocals,
-) -> Option<bool> {
+) -> Option<FunctionStmtFlow> {
     for statement in statements {
-        if interpret_bool_function_statement(statement, env, depth, locals)? {
-            return Some(true);
+        let flow = interpret_function_statement(statement, env, depth, locals)?;
+        if flow != FunctionStmtFlow::Continue {
+            return Some(flow);
         }
     }
-    Some(false)
+    Some(FunctionStmtFlow::Continue)
 }
 
-fn interpret_bool_function_statement(
+fn interpret_function_statement(
     statement: &ast::Statement,
     env: IntegerEvalEnv<'_>,
     depth: usize,
     locals: &mut MixedLocals,
-) -> Option<bool> {
+) -> Option<FunctionStmtFlow> {
     if depth > MAX_EXPR_EVAL_DEPTH {
         return None;
     }
 
     match statement {
         ast::Statement::Assignment { comp, value } => {
-            let evaluated = eval_mixed_local_value(
-                value,
-                env,
-                depth + 1,
-                Some(&locals.ints),
-                Some(&locals.bools),
-            )?;
+            let evaluated = eval_function_expr(value, env, depth + 1, locals)?;
             insert_local_value(&comp.to_string(), evaluated, locals);
-            Some(false)
+            Some(FunctionStmtFlow::Continue)
         }
         ast::Statement::If {
             cond_blocks,
             else_block,
-        } => interpret_bool_function_if(cond_blocks, else_block.as_deref(), env, depth, locals),
-        ast::Statement::While(block) => interpret_bool_function_while(block, env, depth, locals),
-        ast::Statement::Return { .. } => Some(true),
-        ast::Statement::Empty | ast::Statement::Break { .. } => Some(false),
+        } => interpret_function_if(cond_blocks, else_block.as_deref(), env, depth, locals),
+        ast::Statement::For { indices, equations } => {
+            interpret_function_for(indices, equations, env, depth, locals)
+        }
+        ast::Statement::While(block) => interpret_function_while(block, env, depth, locals),
+        ast::Statement::Break { .. } => Some(FunctionStmtFlow::Break),
+        ast::Statement::Return { .. } => Some(FunctionStmtFlow::Return),
+        ast::Statement::Empty => Some(FunctionStmtFlow::Continue),
         ast::Statement::Assert { condition, .. } => try_eval_bool_expr_with_local_values(
             condition,
             env,
@@ -443,7 +682,7 @@ fn interpret_bool_function_statement(
             Some(&locals.bools),
         )
         .filter(|condition_holds| *condition_holds)
-        .map(|_| false),
+        .map(|_| FunctionStmtFlow::Continue),
         ast::Statement::FunctionCall {
             comp,
             args,
@@ -460,59 +699,14 @@ fn interpret_bool_function_statement(
                 )
             })
             .filter(|condition_holds| *condition_holds)
-            .map(|_| false),
-        ast::Statement::For { .. }
-        | ast::Statement::When(_)
-        | ast::Statement::FunctionCall { .. }
-        | ast::Statement::Reinit { .. } => None,
+            .map(|_| FunctionStmtFlow::Continue),
+        ast::Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+        } => interpret_function_call(comp, args, outputs, env, depth, locals),
+        ast::Statement::When(_) | ast::Statement::Reinit { .. } => None,
     }
-}
-
-fn interpret_bool_function_if(
-    cond_blocks: &[rumoca_ir_ast::StatementBlock],
-    else_block: Option<&[ast::Statement]>,
-    env: IntegerEvalEnv<'_>,
-    depth: usize,
-    locals: &mut MixedLocals,
-) -> Option<bool> {
-    for block in cond_blocks {
-        if try_eval_bool_expr_with_local_values(
-            &block.cond,
-            env,
-            depth + 1,
-            Some(&locals.ints),
-            Some(&locals.bools),
-        )? {
-            return interpret_bool_function_statements(&block.stmts, env, depth + 1, locals);
-        }
-    }
-    if let Some(else_stmts) = else_block {
-        return interpret_bool_function_statements(else_stmts, env, depth + 1, locals);
-    }
-    Some(false)
-}
-
-fn interpret_bool_function_while(
-    block: &rumoca_ir_ast::StatementBlock,
-    env: IntegerEvalEnv<'_>,
-    depth: usize,
-    locals: &mut MixedLocals,
-) -> Option<bool> {
-    for _ in 0..MAX_FUNCTION_LOOP_ITERATIONS {
-        if !try_eval_bool_expr_with_local_values(
-            &block.cond,
-            env,
-            depth + 1,
-            Some(&locals.ints),
-            Some(&locals.bools),
-        )? {
-            return Some(false);
-        }
-        if interpret_bool_function_statements(&block.stmts, env, depth + 1, locals)? {
-            return Some(true);
-        }
-    }
-    None
 }
 
 fn interpret_function_if(
@@ -520,63 +714,83 @@ fn interpret_function_if(
     else_block: Option<&[ast::Statement]>,
     env: IntegerEvalEnv<'_>,
     depth: usize,
-    local_values: &mut FxHashMap<String, i64>,
-) -> Option<bool> {
+    locals: &mut MixedLocals,
+) -> Option<FunctionStmtFlow> {
     for block in cond_blocks {
-        if try_eval_bool_expr_with_depth_and_locals(
-            &block.cond,
-            env,
-            depth + 1,
-            Some(local_values),
-        )? {
-            return interpret_function_statements(&block.stmts, env, depth + 1, local_values);
+        if eval_function_condition(&block.cond, env, depth + 1, locals)? {
+            return interpret_function_statements(&block.stmts, env, depth + 1, locals);
         }
     }
     if let Some(else_stmts) = else_block {
-        return interpret_function_statements(else_stmts, env, depth + 1, local_values);
+        return interpret_function_statements(else_stmts, env, depth + 1, locals);
     }
-    Some(false)
+    Some(FunctionStmtFlow::Continue)
 }
 
 fn interpret_function_for(
     indices: &[rumoca_ir_ast::ForIndex],
-    equations: &[ast::Statement],
+    statements: &[ast::Statement],
     env: IntegerEvalEnv<'_>,
     depth: usize,
-    local_values: &mut FxHashMap<String, i64>,
-) -> Option<bool> {
+    locals: &mut MixedLocals,
+) -> Option<FunctionStmtFlow> {
     if indices.len() != 1 {
-        return Some(false);
+        return None;
     }
     let index = &indices[0];
     let loop_name = index.ident.text.to_string();
-    let values = evaluate_for_index_values(&index.range, env, depth + 1, Some(local_values))?;
+    let values = evaluate_for_index_values(&index.range, env, depth + 1, Some(&locals.ints))?;
     for value in values {
-        local_values.insert(loop_name.clone(), value);
-        if interpret_function_statements(equations, env, depth + 1, local_values)? {
-            local_values.remove(&loop_name);
-            return Some(true);
+        locals.ints.insert(loop_name.clone(), value);
+        match interpret_function_statements(statements, env, depth + 1, locals)? {
+            FunctionStmtFlow::Continue => {}
+            FunctionStmtFlow::Break => {
+                locals.ints.remove(&loop_name);
+                return Some(FunctionStmtFlow::Continue);
+            }
+            FunctionStmtFlow::Return => {
+                locals.ints.remove(&loop_name);
+                return Some(FunctionStmtFlow::Return);
+            }
         }
     }
-    local_values.remove(&loop_name);
-    Some(false)
+    locals.ints.remove(&loop_name);
+    Some(FunctionStmtFlow::Continue)
 }
 
-fn handle_function_call_statement(
+fn interpret_function_while(
+    block: &rumoca_ir_ast::StatementBlock,
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &mut MixedLocals,
+) -> Option<FunctionStmtFlow> {
+    for _ in 0..MAX_FUNCTION_LOOP_ITERATIONS {
+        if !eval_function_condition(&block.cond, env, depth + 1, locals)? {
+            return Some(FunctionStmtFlow::Continue);
+        }
+        match interpret_function_statements(&block.stmts, env, depth + 1, locals)? {
+            FunctionStmtFlow::Continue => {}
+            FunctionStmtFlow::Break => return Some(FunctionStmtFlow::Continue),
+            FunctionStmtFlow::Return => return Some(FunctionStmtFlow::Return),
+        }
+    }
+    None
+}
+
+fn interpret_function_call(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
     outputs: &[ast::Expression],
     env: IntegerEvalEnv<'_>,
     depth: usize,
-    local_values: &mut FxHashMap<String, i64>,
-) {
-    let result = eval_integer_function_call(comp, args, env, depth + 1, Some(local_values));
-    if let Some(value) = result
-        && outputs.len() == 1
-        && let ast::Expression::ComponentReference(output_ref) = &outputs[0]
-    {
-        local_values.insert(output_ref.to_string(), value);
-    }
+    locals: &mut MixedLocals,
+) -> Option<FunctionStmtFlow> {
+    let [ast::Expression::ComponentReference(output_ref)] = outputs else {
+        return None;
+    };
+    let value = eval_integer_function_call(comp, args, env, depth + 1, Some(&locals.ints))?;
+    insert_local_value(&output_ref.to_string(), LocalValue::Integer(value), locals);
+    Some(FunctionStmtFlow::Continue)
 }
 
 fn evaluate_for_index_values(
@@ -623,21 +837,7 @@ fn evaluate_for_index_values(
             if step_value == 0 {
                 return None;
             }
-
-            let mut values = Vec::new();
-            let mut current = start_value;
-            if step_value > 0 {
-                while current <= end_value {
-                    values.push(current);
-                    current += step_value;
-                }
-            } else {
-                while current >= end_value {
-                    values.push(current);
-                    current += step_value;
-                }
-            }
-            Some(values)
+            collect_integer_range(start_value, step_value, end_value)
         }
         _ => {
             let end_value = try_eval_integer_expr_with_depth_and_locals(
@@ -649,9 +849,30 @@ fn evaluate_for_index_values(
                 depth + 1,
                 local_ints,
             )?;
-            (end_value >= 1).then(|| (1..=end_value).collect())
+            (end_value >= 1 && end_value <= MAX_FUNCTION_LOOP_ITERATIONS as i64)
+                .then(|| (1..=end_value).collect())
         }
     }
+}
+
+fn collect_integer_range(start: i64, step: i64, end: i64) -> Option<Vec<i64>> {
+    let mut values = Vec::new();
+    let mut current = start;
+    while if step > 0 {
+        current <= end
+    } else {
+        current >= end
+    } {
+        if values.len() == MAX_FUNCTION_LOOP_ITERATIONS {
+            return None;
+        }
+        values.push(current);
+        if current == end {
+            break;
+        }
+        current = current.checked_add(step)?;
+    }
+    Some(values)
 }
 
 /// Evaluate array dimensions from shape_expr subscripts.
@@ -767,79 +988,105 @@ fn try_eval_integer_shape_expr_with_depth(
     if depth > MAX_EXPR_EVAL_DEPTH {
         return None;
     }
-
-    let recurse = |e| {
-        try_eval_integer_shape_expr_with_depth(
-            e,
-            mod_env,
-            effective_components,
-            tree,
-            resolve_class_components,
-            depth + 1,
-        )
+    let adapter = ShapeScalarAdapter {
+        mod_env,
+        effective_components,
+        tree,
+        resolve_class_components,
     };
+    ast_scalar::eval_integer(expr, &adapter, "", depth)
+}
 
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedInteger,
-            token,
-            ..
-        } => token.text.parse::<i64>().ok(),
-        ast::Expression::ComponentReference(comp_ref) => eval_integer_shape_component_ref(
-            comp_ref,
-            mod_env,
-            effective_components,
-            tree,
-            resolve_class_components,
+struct ShapeScalarAdapter<'a> {
+    mod_env: &'a ast::ModificationEnvironment,
+    effective_components: &'a ast::AstIndexMap<String, ast::Component>,
+    tree: &'a ast::ClassTree,
+    resolve_class_components:
+        fn(&ast::ClassTree, &ast::ClassDef) -> ast::AstIndexMap<String, ast::Component>,
+}
+
+impl AstScalarContext for ShapeScalarAdapter<'_> {
+    fn expression_depth_limit(&self) -> Option<usize> {
+        Some(MAX_EXPR_EVAL_DEPTH)
+    }
+
+    fn lookup_integer(&self, expr: &ast::Expression, _scope: &str, depth: usize) -> Option<i64> {
+        let ast::Expression::ComponentReference(reference) = expr else {
+            return None;
+        };
+        eval_integer_shape_component_ref(
+            reference,
+            self.mod_env,
+            self.effective_components,
+            self.tree,
+            self.resolve_class_components,
             depth,
-        ),
-        ast::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, branch_expr) in branches {
-                if !shape_condition_uses_static_components(cond, mod_env, effective_components) {
-                    return None;
-                }
-                let condition_value = evaluate_component_condition_with_depth(
-                    cond,
-                    mod_env,
-                    effective_components,
-                    tree,
-                    resolve_class_components,
-                    depth + 1,
-                )?;
-                if condition_value {
-                    return recurse(branch_expr);
-                }
-            }
-            recurse(else_branch)
-        }
-        ast::Expression::Binary { op, lhs, rhs, .. } => {
-            let l = recurse(lhs)?;
-            let r = recurse(rhs)?;
-            eval_integer_binary(op, l, r)
-        }
-        ast::Expression::Unary { op, rhs, .. } => {
-            let value = recurse(rhs)?;
-            match op {
-                rumoca_core::OpUnary::Minus => value.checked_neg(),
-                rumoca_core::OpUnary::Plus => Some(value),
-                _ => None,
-            }
-        }
-        ast::Expression::Parenthesized { inner, .. } => recurse(inner),
-        ast::Expression::FunctionCall { .. } => try_eval_integer_expr_with_depth_and_locals(
+        )
+    }
+
+    fn lookup_boolean(&self, expr: &ast::Expression, _scope: &str, depth: usize) -> Option<bool> {
+        evaluate_component_condition_with_depth(
             expr,
-            mod_env,
-            effective_components,
-            tree,
-            resolve_class_components,
-            depth + 1,
+            self.mod_env,
+            self.effective_components,
+            self.tree,
+            self.resolve_class_components,
+            depth,
+        )
+    }
+
+    fn call_integer(
+        &self,
+        function: &ast::ComponentReference,
+        args: &[ast::Expression],
+        _scope: &str,
+        depth: usize,
+        _span: rumoca_core::Span,
+    ) -> Option<i64> {
+        eval_integer_function_call(
+            function,
+            args,
+            IntegerEvalEnv {
+                mod_env: self.mod_env,
+                effective_components: self.effective_components,
+                tree: self.tree,
+                resolve_class_components: self.resolve_class_components,
+            },
+            depth,
             None,
-        ),
-        _ => None,
+        )
+    }
+
+    fn enum_equal(
+        &self,
+        lhs: &ast::Expression,
+        rhs: &ast::Expression,
+        _scope: &str,
+        depth: usize,
+    ) -> Option<bool> {
+        evaluate_enum_equality_with_depth(
+            lhs,
+            rhs,
+            self.mod_env,
+            self.effective_components,
+            self.tree,
+            self.resolve_class_components,
+            depth,
+        )
+    }
+
+    fn integer_binary(
+        &self,
+        op: &rumoca_core::OpBinary,
+        lhs: i64,
+        rhs: i64,
+        _span: rumoca_core::Span,
+    ) -> Option<i64> {
+        eval_integer_binary(op, lhs, rhs)
+    }
+
+    fn boolean_expression_allowed(&self, expr: &ast::Expression) -> bool {
+        shape_condition_uses_static_components(expr, self.mod_env, self.effective_components)
     }
 }
 
@@ -991,867 +1238,5 @@ fn shape_component_ref_is_static(
     true
 }
 
-/// Generate all array indices for multi-dimensional arrays.
-/// For dims = `[2, 3]`, generates: `[[1,1], [1,2], [1,3], [2,1], [2,2], [2,3]]`.
-/// Uses 1-based indexing per Modelica semantics (MLS §10.1).
-pub fn generate_array_indices(dims: &[i64]) -> Vec<Vec<i64>> {
-    if dims.is_empty() {
-        return vec![]; // Scalar, no indices needed
-    }
-
-    let total: usize = dims.iter().map(|&d| d as usize).product();
-    let mut result = Vec::with_capacity(total);
-
-    // Generate all combinations using iterative approach
-    let mut indices = vec![1i64; dims.len()];
-    loop {
-        result.push(indices.clone());
-
-        // Increment indices from right to left (like counting)
-        let mut i = dims.len();
-        while i > 0 {
-            i -= 1;
-            indices[i] += 1;
-            if indices[i] <= dims[i] {
-                break;
-            }
-            // Carry over
-            if i == 0 {
-                return result; // All combinations generated
-            }
-            indices[i] = 1;
-        }
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::super::{
-        InstantiateEvalCtx, enum_values_equal, eval_integer_binary, evaluate_component_condition,
-        try_eval_integer_expr,
-    };
-    use super::evaluate_array_dimensions;
-    use rumoca_ir_ast as ast;
-    use rumoca_ir_ast::AstIndexMap as IndexMap;
-
-    fn no_op_resolve_class_components(
-        _tree: &ast::ClassTree,
-        class: &ast::ClassDef,
-    ) -> ast::AstIndexMap<String, ast::Component> {
-        class.components.clone()
-    }
-
-    #[test]
-    fn enum_values_equal_accepts_different_qualification_prefixes() {
-        let a = "sensor_frame_a2.MultiBody.Types.ResolveInFrameA.frame_resolve";
-        let b = "Modelica.Mechanics.MultiBody.Types.ResolveInFrameA.frame_resolve";
-        assert!(enum_values_equal(a, b));
-    }
-
-    #[test]
-    fn enum_values_equal_rejects_different_enum_types() {
-        let a = "Modelica.Blocks.Types.SimpleController.PI";
-        let b = "Modelica.Blocks.Types.Init.PI";
-        assert!(!enum_values_equal(a, b));
-    }
-
-    fn token(text: &str) -> rumoca_core::Token {
-        rumoca_core::Token {
-            text: Arc::from(text),
-            ..rumoca_core::Token::default()
-        }
-    }
-
-    fn test_span() -> rumoca_core::Span {
-        rumoca_core::Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("instantiate_function_eval_test.mo"),
-            1,
-            2,
-        )
-    }
-
-    fn cref(path: &str) -> ast::ComponentReference {
-        ast::ComponentReference {
-            local: false,
-            parts: rumoca_core::ComponentPath::from_flat_path(path)
-                .into_parts()
-                .into_iter()
-                .map(|part| ast::ComponentRefPart {
-                    ident: token(&part),
-                    subs: None,
-                })
-                .collect(),
-            def_id: None,
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn eq_expr(lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression {
-        ast::Expression::Binary {
-            op: rumoca_core::OpBinary::Eq,
-            lhs: Arc::new(lhs),
-            rhs: Arc::new(rhs),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn add_expr(lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression {
-        ast::Expression::Binary {
-            op: rumoca_core::OpBinary::Add,
-            lhs: Arc::new(lhs),
-            rhs: Arc::new(rhs),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn mul_expr(lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression {
-        ast::Expression::Binary {
-            op: rumoca_core::OpBinary::Mul,
-            lhs: Arc::new(lhs),
-            rhs: Arc::new(rhs),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn lt_expr(lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression {
-        ast::Expression::Binary {
-            op: rumoca_core::OpBinary::Lt,
-            lhs: Arc::new(lhs),
-            rhs: Arc::new(rhs),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn func_call(path: &str, args: Vec<ast::Expression>) -> ast::Expression {
-        ast::Expression::FunctionCall {
-            comp: cref(path),
-            args,
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn if_expr(
-        branches: Vec<(ast::Expression, ast::Expression)>,
-        else_branch: ast::Expression,
-    ) -> ast::Expression {
-        ast::Expression::If {
-            branches,
-            else_branch: Arc::new(else_branch),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn int_expr(value: i64) -> ast::Expression {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedInteger,
-            token: token(&value.to_string()),
-
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn bool_expr(value: bool) -> ast::Expression {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::Bool,
-            token: token(if value { "true" } else { "false" }),
-
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn input_int_component(name: &str) -> ast::Component {
-        ast::Component {
-            name: name.to_string(),
-            causality: rumoca_core::Causality::Input(token("input")),
-            variability: rumoca_core::Variability::Parameter(token("parameter")),
-            ..ast::Component::empty_with_span(test_span())
-        }
-    }
-
-    fn output_bool_component(name: &str) -> ast::Component {
-        ast::Component {
-            name: name.to_string(),
-            causality: rumoca_core::Causality::Output(token("output")),
-            start: bool_expr(false),
-            ..ast::Component::empty_with_span(test_span())
-        }
-    }
-
-    fn output_int_component(name: &str) -> ast::Component {
-        ast::Component {
-            name: name.to_string(),
-            causality: rumoca_core::Causality::Output(token("output")),
-            start: int_expr(0),
-            ..ast::Component::empty_with_span(test_span())
-        }
-    }
-
-    fn local_int_component(name: &str, start: i64) -> ast::Component {
-        ast::Component {
-            name: name.to_string(),
-            start: int_expr(start),
-            ..ast::Component::empty_with_span(test_span())
-        }
-    }
-
-    fn assignment(path: &str, value: ast::Expression) -> ast::Statement {
-        ast::Statement::Assignment {
-            comp: cref(path),
-            value,
-        }
-    }
-
-    fn msl_math_tree() -> ast::ClassTree {
-        let modelica_id = rumoca_core::DefId::new(1);
-        let math_id = rumoca_core::DefId::new(2);
-        let function_id = rumoca_core::DefId::new(3);
-
-        let function = msl_is_power_of_two_function(function_id);
-
-        let mut math = ast::ClassDef {
-            def_id: Some(math_id),
-            name: token("Math"),
-            class_type: rumoca_core::ClassType::Package,
-            ..ast::ClassDef::default()
-        };
-        math.classes.insert("isPowerOf2".to_string(), function);
-
-        let mut modelica = ast::ClassDef {
-            def_id: Some(modelica_id),
-            name: token("Modelica"),
-            class_type: rumoca_core::ClassType::Package,
-            ..ast::ClassDef::default()
-        };
-        modelica.classes.insert("Math".to_string(), math);
-
-        let mut tree = ast::ClassTree::new();
-        tree.definitions
-            .classes
-            .insert("Modelica".to_string(), modelica);
-        tree.def_map.insert(modelica_id, "Modelica".to_string());
-        tree.def_map.insert(math_id, "Modelica.Math".to_string());
-        tree.def_map
-            .insert(function_id, "Modelica.Math.isPowerOf2".to_string());
-        tree.name_map.insert("Modelica".to_string(), modelica_id);
-        tree.name_map.insert("Modelica.Math".to_string(), math_id);
-        tree.name_map
-            .insert("Modelica.Math.isPowerOf2".to_string(), function_id);
-        tree
-    }
-
-    fn msl_is_power_of_two_function(function_id: rumoca_core::DefId) -> ast::ClassDef {
-        let mut function = ast::ClassDef {
-            def_id: Some(function_id),
-            name: token("isPowerOf2"),
-            class_type: rumoca_core::ClassType::Function,
-            pure: true,
-            ..ast::ClassDef::default()
-        };
-        function
-            .components
-            .insert("i".to_string(), input_int_component("i"));
-        function
-            .components
-            .insert("result".to_string(), output_bool_component("result"));
-        function
-            .components
-            .insert("target".to_string(), local_int_component("target", 0));
-        function
-            .components
-            .insert("powOf2".to_string(), local_int_component("powOf2", 1));
-        function.algorithms.push(msl_is_power_of_two_algorithm());
-        function
-    }
-
-    fn msl_is_power_of_two_algorithm() -> Vec<ast::Statement> {
-        vec![
-            ast::Statement::FunctionCall {
-                comp: cref("assert"),
-                args: vec![
-                    rumoca_ir_ast::Expression::Binary {
-                        op: rumoca_core::OpBinary::Ge,
-                        lhs: Arc::new(ast::Expression::ComponentReference(cref("i"))),
-                        rhs: Arc::new(int_expr(1)),
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                    bool_expr(true),
-                ],
-                outputs: Vec::new(),
-            },
-            ast::Statement::If {
-                cond_blocks: vec![ast::StatementBlock {
-                    cond: eq_expr(
-                        func_call(
-                            "mod",
-                            vec![ast::Expression::ComponentReference(cref("i")), int_expr(2)],
-                        ),
-                        int_expr(1),
-                    ),
-                    stmts: vec![assignment(
-                        "result",
-                        eq_expr(ast::Expression::ComponentReference(cref("i")), int_expr(1)),
-                    )],
-                }],
-                else_block: Some(msl_is_power_of_two_even_branch()),
-            },
-        ]
-    }
-
-    fn msl_is_power_of_two_even_branch() -> Vec<ast::Statement> {
-        vec![
-            assignment(
-                "target",
-                func_call(
-                    "div",
-                    vec![ast::Expression::ComponentReference(cref("i")), int_expr(2)],
-                ),
-            ),
-            assignment("powOf2", int_expr(1)),
-            ast::Statement::While(ast::StatementBlock {
-                cond: lt_expr(
-                    ast::Expression::ComponentReference(cref("powOf2")),
-                    ast::Expression::ComponentReference(cref("target")),
-                ),
-                stmts: vec![assignment(
-                    "powOf2",
-                    mul_expr(
-                        ast::Expression::ComponentReference(cref("powOf2")),
-                        int_expr(2),
-                    ),
-                )],
-            }),
-            assignment(
-                "result",
-                eq_expr(
-                    ast::Expression::ComponentReference(cref("target")),
-                    ast::Expression::ComponentReference(cref("powOf2")),
-                ),
-            ),
-        ]
-    }
-
-    #[test]
-    fn integer_div_operator_requires_exact_quotient() {
-        assert_eq!(
-            eval_integer_binary(&rumoca_core::OpBinary::Div, 8, 2),
-            Some(4)
-        );
-        assert_eq!(eval_integer_binary(&rumoca_core::OpBinary::Div, 7, 2), None);
-    }
-
-    #[test]
-    fn integer_div_builtin_remains_truncating() {
-        let expr = ast::Expression::FunctionCall {
-            comp: cref("div"),
-            args: vec![int_expr(7), int_expr(2)],
-            span: rumoca_core::Span::DUMMY,
-        };
-        let ctx = InstantiateEvalCtx {
-            tree: &ast::ClassTree::new(),
-            mod_env: &ast::ModificationEnvironment::new(),
-            effective_components: &IndexMap::default(),
-            resolve_class_components: no_op_resolve_class_components,
-        };
-
-        assert_eq!(try_eval_integer_expr(&ctx, &expr), Some(3));
-    }
-
-    #[test]
-    fn unqualified_unique_function_call_evaluates_without_def_id() {
-        let tree = msl_math_tree();
-        let ctx = InstantiateEvalCtx {
-            tree: &tree,
-            mod_env: &ast::ModificationEnvironment::new(),
-            effective_components: &IndexMap::default(),
-            resolve_class_components: no_op_resolve_class_components,
-        };
-        let expr = if_expr(
-            vec![(
-                ast::Expression::FunctionCall {
-                    comp: cref("isPowerOf2"),
-                    args: vec![int_expr(8)],
-                    span: rumoca_core::Span::DUMMY,
-                },
-                int_expr(1),
-            )],
-            int_expr(0),
-        );
-
-        assert_eq!(try_eval_integer_expr(&ctx, &expr), Some(1));
-    }
-
-    #[test]
-    fn scalar_integer_eval_rejects_array_output_functions() {
-        let function_id = rumoca_core::DefId::new(1);
-        let mut function = ast::ClassDef {
-            def_id: Some(function_id),
-            name: token("arrayInteger"),
-            class_type: rumoca_core::ClassType::Function,
-            pure: true,
-            ..ast::ClassDef::default()
-        };
-        let mut output = output_int_component("y");
-        output.shape_expr = vec![ast::Subscript::Expression(int_expr(2))];
-        function.components.insert("y".to_string(), output);
-        function
-            .algorithms
-            .push(vec![assignment("y[1]", int_expr(1))]);
-
-        let mut tree = ast::ClassTree::new();
-        tree.definitions
-            .classes
-            .insert("arrayInteger".to_string(), function);
-        tree.def_map.insert(function_id, "arrayInteger".to_string());
-        tree.name_map
-            .insert("arrayInteger".to_string(), function_id);
-
-        let expr = func_call("arrayInteger", Vec::new());
-        let ctx = InstantiateEvalCtx {
-            tree: &tree,
-            mod_env: &ast::ModificationEnvironment::new(),
-            effective_components: &IndexMap::default(),
-            resolve_class_components: no_op_resolve_class_components,
-        };
-
-        assert_eq!(try_eval_integer_expr(&ctx, &expr), None);
-    }
-
-    #[test]
-    fn evaluate_component_condition_with_resolved_enum_ref() {
-        let mut components = IndexMap::default();
-        let mut model_structure = ast::Component {
-            name: "modelStructure".to_string(),
-            ..ast::Component::empty_with_span(test_span())
-        };
-        model_structure.start =
-            ast::Expression::ComponentReference(cref("Types.ModelStructure.a_vb"));
-        components.insert("modelStructure".to_string(), model_structure);
-
-        let condition = eq_expr(
-            ast::Expression::ComponentReference(cref("modelStructure")),
-            ast::Expression::ComponentReference(cref("Types.ModelStructure.a_vb")),
-        );
-        let ctx = InstantiateEvalCtx {
-            tree: &ast::ClassTree::new(),
-            mod_env: &ast::ModificationEnvironment::new(),
-            effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
-        };
-        let value = evaluate_component_condition(&ctx, &condition);
-
-        assert_eq!(value, Some(true));
-    }
-
-    #[test]
-    fn evaluate_component_condition_uses_declaration_binding() {
-        let mut components = IndexMap::default();
-        components.insert(
-            "use_numberPort".to_string(),
-            ast::Component {
-                name: "use_numberPort".to_string(),
-                type_name: ast::Name::from_string("Boolean"),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                binding: Some(bool_expr(true)),
-                has_explicit_binding: true,
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-
-        let condition = ast::Expression::ComponentReference(cref("use_numberPort"));
-        let ctx = InstantiateEvalCtx {
-            tree: &ast::ClassTree::new(),
-            mod_env: &ast::ModificationEnvironment::new(),
-            effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
-        };
-
-        assert_eq!(evaluate_component_condition(&ctx, &condition), Some(true));
-    }
-
-    #[test]
-    fn evaluate_component_condition_unknown_modifier_blocks_declaration_default() {
-        let mut components = IndexMap::default();
-        components.insert(
-            "condition".to_string(),
-            ast::Component {
-                name: "condition".to_string(),
-                type_name: ast::Name::from_string("Boolean"),
-                binding: Some(bool_expr(true)),
-                has_explicit_binding: true,
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-        let mut mod_env = ast::ModificationEnvironment::new();
-        mod_env.add(
-            ast::QualifiedName::from_ident("condition"),
-            ast::ModificationValue::simple(ast::Expression::ComponentReference(cref("start"))),
-        );
-
-        let condition = ast::Expression::ComponentReference(cref("condition"));
-        let ctx = InstantiateEvalCtx {
-            tree: &ast::ClassTree::new(),
-            mod_env: &mod_env,
-            effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
-        };
-
-        assert_eq!(evaluate_component_condition(&ctx, &condition), None);
-    }
-
-    #[test]
-    fn evaluate_component_condition_with_unresolved_enum_ref_is_unknown() {
-        let mut components = IndexMap::default();
-        let model_structure = ast::Component {
-            name: "modelStructure".to_string(),
-            ..ast::Component::empty_with_span(test_span())
-        };
-        components.insert("modelStructure".to_string(), model_structure);
-
-        let condition = eq_expr(
-            ast::Expression::ComponentReference(cref("modelStructure")),
-            ast::Expression::ComponentReference(cref("Types.ModelStructure.a_vb")),
-        );
-        let ctx = InstantiateEvalCtx {
-            tree: &ast::ClassTree::new(),
-            mod_env: &ast::ModificationEnvironment::new(),
-            effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
-        };
-        let value = evaluate_component_condition(&ctx, &condition);
-
-        assert_eq!(value, None);
-    }
-
-    #[test]
-    fn evaluate_array_dimensions_supports_structural_if_shape_refs() {
-        let mut components = IndexMap::default();
-        components.insert(
-            "useLumpedPressure".to_string(),
-            ast::Component {
-                name: "useLumpedPressure".to_string(),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                start: bool_expr(false),
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-        components.insert(
-            "nFMLumped".to_string(),
-            ast::Component {
-                name: "nFMLumped".to_string(),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                start: int_expr(2),
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-        components.insert(
-            "nFMDistributed".to_string(),
-            ast::Component {
-                name: "nFMDistributed".to_string(),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                start: int_expr(1),
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-        components.insert(
-            "nFM".to_string(),
-            ast::Component {
-                name: "nFM".to_string(),
-                start: if_expr(
-                    vec![(
-                        ast::Expression::ComponentReference(cref("useLumpedPressure")),
-                        ast::Expression::ComponentReference(cref("nFMLumped")),
-                    )],
-                    ast::Expression::ComponentReference(cref("nFMDistributed")),
-                ),
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-
-        let dims = evaluate_array_dimensions(
-            &[1],
-            &[ast::Subscript::Expression(add_expr(
-                ast::Expression::ComponentReference(cref("nFM")),
-                int_expr(1),
-            ))],
-            &ast::ModificationEnvironment::new(),
-            &components,
-            &ast::ClassTree::new(),
-            no_op_resolve_class_components,
-        );
-
-        assert_eq!(dims, Some(vec![2]));
-    }
-
-    #[test]
-    fn evaluate_array_dimensions_rejects_runtime_if_shape_condition() {
-        let mut components = IndexMap::default();
-        components.insert(
-            "runtimeSwitch".to_string(),
-            ast::Component {
-                name: "runtimeSwitch".to_string(),
-                start: bool_expr(false),
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-        components.insert(
-            "nA".to_string(),
-            ast::Component {
-                name: "nA".to_string(),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                start: int_expr(2),
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-        components.insert(
-            "nB".to_string(),
-            ast::Component {
-                name: "nB".to_string(),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                start: int_expr(1),
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-        components.insert(
-            "n".to_string(),
-            ast::Component {
-                name: "n".to_string(),
-                start: if_expr(
-                    vec![(
-                        ast::Expression::ComponentReference(cref("runtimeSwitch")),
-                        ast::Expression::ComponentReference(cref("nA")),
-                    )],
-                    ast::Expression::ComponentReference(cref("nB")),
-                ),
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-
-        let dims = evaluate_array_dimensions(
-            &[1],
-            &[ast::Subscript::Expression(add_expr(
-                ast::Expression::ComponentReference(cref("n")),
-                int_expr(1),
-            ))],
-            &ast::ModificationEnvironment::new(),
-            &components,
-            &ast::ClassTree::new(),
-            no_op_resolve_class_components,
-        );
-
-        // Non-compile-time condition should keep dimension-expression evaluation
-        // disabled and preserve the precomputed shape.
-        assert_eq!(dims, Some(vec![1]));
-    }
-
-    #[test]
-    fn try_eval_integer_expr_prefers_binding_over_start_for_component_refs() {
-        let mut components = IndexMap::default();
-        components.insert(
-            "n".to_string(),
-            ast::Component {
-                name: "n".to_string(),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                // Unresolvable start should not override explicit binding.
-                start: ast::Expression::ComponentReference(cref("missing.scope.value")),
-                binding: Some(int_expr(1)),
-                has_explicit_binding: true,
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-        let ctx = InstantiateEvalCtx {
-            tree: &ast::ClassTree::new(),
-            mod_env: &ast::ModificationEnvironment::new(),
-            effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
-        };
-
-        let value = try_eval_integer_expr(
-            &ctx,
-            &add_expr(ast::Expression::ComponentReference(cref("n")), int_expr(1)),
-        );
-
-        assert_eq!(value, Some(2));
-    }
-
-    #[test]
-    fn evaluate_array_dimensions_prefers_binding_over_start_for_shape_refs() {
-        let mut components = IndexMap::default();
-        components.insert(
-            "m".to_string(),
-            ast::Component {
-                name: "m".to_string(),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                // Keep start unresolved and provide the structural value via binding.
-                start: ast::Expression::ComponentReference(cref("missing.scope.value")),
-                binding: Some(int_expr(1)),
-                has_explicit_binding: true,
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-
-        let dims = evaluate_array_dimensions(
-            &[0],
-            &[ast::Subscript::Expression(add_expr(
-                ast::Expression::ComponentReference(cref("m")),
-                int_expr(1),
-            ))],
-            &ast::ModificationEnvironment::new(),
-            &components,
-            &ast::ClassTree::new(),
-            no_op_resolve_class_components,
-        );
-
-        assert_eq!(dims, Some(vec![2]));
-    }
-
-    #[test]
-    fn evaluate_array_dimensions_reads_record_field_from_class_modification() {
-        let mut components = IndexMap::default();
-        components.insert(
-            "stackData".to_string(),
-            ast::Component {
-                name: "stackData".to_string(),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-
-        let mut mod_env = ast::ModificationEnvironment::new();
-        let stack_data_mod = ast::Expression::ClassModification {
-            target: cref("StackData"),
-            modifications: vec![
-                ast::Expression::NamedArgument {
-                    name: token("Ns"),
-                    value: Arc::new(int_expr(3)),
-
-                    span: rumoca_core::Span::DUMMY,
-                },
-                ast::Expression::NamedArgument {
-                    name: token("Np"),
-                    value: Arc::new(int_expr(2)),
-
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ],
-
-            each_flags: vec![false, false],
-            final_flags: vec![false, false],
-            redeclare_flags: vec![false, false],
-            span: rumoca_core::Span::DUMMY,
-        };
-        mod_env.add(
-            ast::QualifiedName::from_ident("stackData"),
-            ast::ModificationValue::simple(stack_data_mod),
-        );
-
-        let dims = evaluate_array_dimensions(
-            &[1, 1],
-            &[
-                ast::Subscript::Expression(ast::Expression::ComponentReference(cref(
-                    "stackData.Ns",
-                ))),
-                ast::Subscript::Expression(ast::Expression::ComponentReference(cref(
-                    "stackData.Np",
-                ))),
-            ],
-            &mod_env,
-            &components,
-            &ast::ClassTree::new(),
-            no_op_resolve_class_components,
-        );
-
-        assert_eq!(dims, Some(vec![3, 2]));
-    }
-
-    #[test]
-    fn try_eval_integer_expr_resolves_enclosing_scope_component_ref() {
-        let mut components = IndexMap::default();
-        components.insert(
-            "pipe2.nFM".to_string(),
-            ast::Component {
-                name: "pipe2.nFM".to_string(),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                start: int_expr(1),
-                binding: Some(int_expr(1)),
-                has_explicit_binding: true,
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-        let ctx = InstantiateEvalCtx {
-            tree: &ast::ClassTree::new(),
-            mod_env: &ast::ModificationEnvironment::new(),
-            effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
-        };
-
-        let value = try_eval_integer_expr(
-            &ctx,
-            &add_expr(
-                ast::Expression::ComponentReference(cref("pipe2.flowModel.nFM")),
-                int_expr(1),
-            ),
-        );
-
-        assert_eq!(value, Some(2));
-    }
-
-    #[test]
-    fn try_eval_integer_expr_evaluates_if_expressions() {
-        let expr = if_expr(vec![(bool_expr(true), int_expr(2))], int_expr(1));
-        let ctx = InstantiateEvalCtx {
-            tree: &ast::ClassTree::new(),
-            mod_env: &ast::ModificationEnvironment::new(),
-            effective_components: &IndexMap::default(),
-            resolve_class_components: no_op_resolve_class_components,
-        };
-        let value = try_eval_integer_expr(&ctx, &expr);
-
-        assert_eq!(value, Some(2));
-    }
-
-    #[test]
-    fn try_eval_integer_expr_evaluates_parameterized_if_expressions() {
-        let mut components = IndexMap::default();
-        components.insert(
-            "ParDesired".to_string(),
-            ast::Component {
-                name: "ParDesired".to_string(),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                binding: Some(int_expr(2)),
-                has_explicit_binding: true,
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-        components.insert(
-            "mSystems".to_string(),
-            ast::Component {
-                name: "mSystems".to_string(),
-                variability: rumoca_core::Variability::Parameter(token("parameter")),
-                binding: Some(int_expr(2)),
-                has_explicit_binding: true,
-                ..ast::Component::empty_with_span(test_span())
-            },
-        );
-        let expr = if_expr(
-            vec![(
-                func_call(
-                    "Modelica.Math.isPowerOf2",
-                    vec![ast::Expression::ComponentReference(cref("ParDesired"))],
-                ),
-                ast::Expression::ComponentReference(cref("ParDesired")),
-            )],
-            ast::Expression::ComponentReference(cref("mSystems")),
-        );
-        let tree = msl_math_tree();
-        let ctx = InstantiateEvalCtx {
-            tree: &tree,
-            mod_env: &ast::ModificationEnvironment::new(),
-            effective_components: &components,
-            resolve_class_components: no_op_resolve_class_components,
-        };
-
-        assert_eq!(try_eval_integer_expr(&ctx, &expr), Some(2));
-    }
-}
+mod tests;

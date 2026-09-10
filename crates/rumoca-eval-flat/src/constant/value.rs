@@ -51,14 +51,6 @@ impl Value {
         }
     }
 
-    /// Try to get this value as a String.
-    pub fn as_string(&self) -> Option<&str> {
-        match self {
-            Self::String(s) => Some(s),
-            _ => None,
-        }
-    }
-
     /// Try to get this value as an Enum (returns type_name.literal_name).
     pub fn as_enum(&self) -> Option<(&str, &str)> {
         match self {

@@ -3,7 +3,7 @@ use super::*;
 /// Try to infer array dimensions from a binding expression.
 pub fn infer_dimensions_from_binding(
     expr: &Expression,
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
 ) -> Option<Vec<usize>> {
     infer_dimensions_from_binding_with_scope(expr, ctx, "")
 }
@@ -15,7 +15,7 @@ pub fn infer_dimensions_from_binding(
 /// the parent component path so we can resolve `table` correctly.
 pub fn infer_dimensions_from_binding_with_scope(
     expr: &Expression,
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<Vec<usize>> {
     match expr {
@@ -43,9 +43,8 @@ pub fn infer_dimensions_from_binding_with_scope(
 
         Expression::ComponentReference(cr) => {
             let indexed_path = cr.to_string();
-            if let Some(dims) = lookup_structural_with_scope(&indexed_path, scope, &ctx.dimensions)
-            {
-                return Some(dims.clone());
+            if let Some(dims) = ctx.lookup_dimensions(&indexed_path, scope) {
+                return Some(dims);
             }
 
             let unindexed_path = cr
@@ -54,12 +53,11 @@ pub fn infer_dimensions_from_binding_with_scope(
                 .map(|p| p.ident.text.as_ref())
                 .collect::<Vec<_>>()
                 .join(".");
-            let Some(base_dims) =
-                lookup_structural_with_scope(&unindexed_path, scope, &ctx.dimensions)
-            else {
-                return scalar_value_known_with_scope(&unindexed_path, ctx, scope).then(Vec::new);
+            let Some(base_dims) = ctx.lookup_dimensions(&unindexed_path, scope) else {
+                return ctx
+                    .scalar_value_known(&unindexed_path, scope)
+                    .then(Vec::new);
             };
-            let base_dims = base_dims.clone();
             Some(apply_component_subscripts_to_dims(
                 base_dims, cr, ctx, scope,
             ))
@@ -88,7 +86,7 @@ pub fn infer_dimensions_from_binding_with_scope(
         Expression::FieldAccess { base, field, .. } => {
             let base_path = extract_simple_component_path(base)?;
             let full_path = format!("{base_path}.{field}");
-            lookup_structural_with_scope(&full_path, scope, &ctx.dimensions).cloned()
+            ctx.lookup_dimensions(&full_path, scope)
         }
 
         // ArrayComprehension: `{expr for i in range}` -> `[range_len, inner_dims...]`.
@@ -102,14 +100,6 @@ pub fn infer_dimensions_from_binding_with_scope(
     }
 }
 
-fn scalar_value_known_with_scope(name: &str, ctx: &TypeCheckEvalContext, scope: &str) -> bool {
-    lookup_with_scope(name, scope, &ctx.integers).is_some()
-        || lookup_with_scope(name, scope, &ctx.reals).is_some()
-        || lookup_with_scope(name, scope, &ctx.booleans).is_some()
-        || lookup_with_scope(name, scope, &ctx.enums).is_some()
-        || lookup_with_scope(name, scope, &ctx.enum_ordinals).is_some()
-}
-
 /// Apply component-reference subscripts to a base dimension vector.
 ///
 /// MLS §10.1: scalar indexing consumes one dimension (`a[i]` -> scalar from `[n]`),
@@ -117,7 +107,7 @@ fn scalar_value_known_with_scope(name: &str, ctx: &TypeCheckEvalContext, scope: 
 fn apply_component_subscripts_to_dims(
     mut dims: Vec<usize>,
     cr: &rumoca_ir_ast::ComponentReference,
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Vec<usize> {
     // `pos` tracks the dimension the next subscript applies to. Scalar
@@ -142,7 +132,7 @@ fn apply_subscript_to_dims(
     sub: &Subscript,
     dims: &mut Vec<usize>,
     pos: &mut usize,
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) {
     match sub {
@@ -162,34 +152,13 @@ fn apply_subscript_to_dims(
 }
 
 fn extract_simple_component_path(expr: &Expression) -> Option<String> {
-    match expr {
-        Expression::ComponentReference(cr) => (!cr.parts.is_empty()).then(|| cr.to_string()),
-        Expression::FieldAccess { base, field, .. } => {
-            let base_path = extract_simple_component_path(base)?;
-            Some(format!("{base_path}.{field}"))
-        }
-        Expression::ArrayIndex {
-            base, subscripts, ..
-        } => {
-            let base_path = extract_simple_component_path(base)?;
-            let rendered_subs: Vec<String> = subscripts
-                .iter()
-                .map(|sub| match sub {
-                    rumoca_ir_ast::Subscript::Expression(sub_expr) => sub_expr.to_string(),
-                    rumoca_ir_ast::Subscript::Range { token } => token.text.to_string(),
-                    rumoca_ir_ast::Subscript::Empty => ":".to_string(),
-                })
-                .collect();
-            Some(format!("{base_path}[{}]", rendered_subs.join(",")))
-        }
-        _ => None,
-    }
+    rumoca_ir_ast::expression_component_path(expr).map(|path| path.to_flat_string())
 }
 
 fn infer_dims_from_array_comprehension(
     inner_expr: &Expression,
     indices: &[rumoca_ir_ast::ForIndex],
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<Vec<usize>> {
     if indices.is_empty() {
@@ -206,7 +175,7 @@ fn infer_dims_from_array_comprehension(
 
 fn infer_range_length(
     range: &Expression,
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<usize> {
     if let Expression::Range {
@@ -215,7 +184,8 @@ fn infer_range_length(
     {
         infer_range_len_numeric(start, step.as_deref(), end, ctx, scope)
     } else {
-        eval_integer_with_scope(range, ctx, scope).map(|n| n as usize)
+        ctx.eval_integer(range, scope)
+            .and_then(|n| usize::try_from(n).ok())
     }
 }
 
@@ -223,7 +193,7 @@ fn infer_dims_from_binary_with_scope(
     op: &OpBinary,
     lhs: &Expression,
     rhs: &Expression,
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<Vec<usize>> {
     let lhs_dims = infer_dimensions_from_binding_with_scope(lhs, ctx, scope);
@@ -255,7 +225,7 @@ fn infer_dims_from_binary_with_scope(
 fn infer_dims_from_if_with_scope(
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<Vec<usize>> {
     if let Some(dims) = try_eval_if_condition_with_scope(branches, else_branch, ctx, scope) {
@@ -273,11 +243,11 @@ fn infer_dims_from_if_with_scope(
 fn try_eval_if_condition_with_scope(
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<Vec<usize>> {
     for (cond, then_expr) in branches {
-        match eval_boolean_with_scope(cond, ctx, scope) {
+        match ctx.eval_boolean(cond, scope) {
             Some(true) => return infer_dimensions_from_binding_with_scope(then_expr, ctx, scope),
             Some(false) => continue,
             None => return None,
