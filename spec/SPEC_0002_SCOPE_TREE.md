@@ -96,10 +96,19 @@ splitting, or hashing names that were already resolved earlier in the pipeline.
 
 1. Check direct members of the current scope
 2. Check imports in the current scope
-3. Move to parent scope and repeat
-4. Stop at global scope (return None if not found)
+3. Check effective inherited members of the current class scope; semantically
+   equivalent declarations inherited from multiple bases share the first
+   deterministic identity, while conflicting inherited names stop lookup
+   without selecting an arbitrary declaration
+4. Move to parent scope and repeat
+5. Stop at global scope (return None if not found)
 
 Encapsulated scopes (`ScopeKind::Encapsulated`) block upward lookup — names must be found locally or via imports.
+
+Imports are not inherited. Effective inherited-member entries are populated
+from resolved `extends` edges before class contents are resolved. Direct
+members and current-scope imports therefore retain their precedence, while an
+unrelated declaration in an enclosing scope cannot shadow an inherited member.
 
 ## Rationale
 - Tree structure handles Modelica's extends semantics
