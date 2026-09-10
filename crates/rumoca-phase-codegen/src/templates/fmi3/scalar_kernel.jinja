@@ -1,0 +1,165 @@
+{%- macro scalar_const(op) -%}
+{%- if op.value_class == "finite" -%}{{ op.value }}
+{%- elif op.value_class == "positive_infinity" -%}INFINITY
+{%- elif op.value_class == "negative_infinity" -%}(-INFINITY)
+{%- else -%}NAN
+{%- endif -%}
+{%- endmacro %}
+{%- macro unary(operator, arg) -%}
+{%- if operator == "Neg" -%}(-r[{{ arg }}])
+{%- elif operator == "Not" -%}(r[{{ arg }}] == 0.0 ? 1.0 : 0.0)
+{%- elif operator == "Abs" -%}fabs(r[{{ arg }}])
+{%- elif operator == "Sign" -%}(r[{{ arg }}] > 0.0 ? 1.0 : (r[{{ arg }}] < 0.0 ? -1.0 : 0.0))
+{%- elif operator == "Sqrt" -%}sqrt(r[{{ arg }}])
+{%- elif operator == "Floor" -%}floor(r[{{ arg }}])
+{%- elif operator == "Ceil" -%}ceil(r[{{ arg }}])
+{%- elif operator == "Trunc" -%}trunc(r[{{ arg }}])
+{%- elif operator in ["Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Sinh", "Cosh", "Tanh", "Exp"] -%}{{ operator | lower }}(r[{{ arg }}])
+{%- elif operator == "Log" -%}log(r[{{ arg }}])
+{%- elif operator == "Log10" -%}log10(r[{{ arg }}])
+{%- else -%}{{ fail("unsupported-feature:scalar.unary." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+{%- macro binary(operator, lhs, rhs) -%}
+{%- if operator == "Add" -%}(r[{{ lhs }}] + r[{{ rhs }}])
+{%- elif operator == "Sub" -%}(r[{{ lhs }}] - r[{{ rhs }}])
+{%- elif operator == "Mul" -%}(r[{{ lhs }}] * r[{{ rhs }}])
+{%- elif operator == "Div" -%}(r[{{ lhs }}] / r[{{ rhs }}])
+{%- elif operator == "Pow" -%}pow(r[{{ lhs }}], r[{{ rhs }}])
+{%- elif operator == "And" -%}((r[{{ lhs }}] != 0.0 && r[{{ rhs }}] != 0.0) ? 1.0 : 0.0)
+{%- elif operator == "Or" -%}((r[{{ lhs }}] != 0.0 || r[{{ rhs }}] != 0.0) ? 1.0 : 0.0)
+{%- elif operator == "Atan2" -%}atan2(r[{{ lhs }}], r[{{ rhs }}])
+{%- elif operator == "Min" -%}fmin(r[{{ lhs }}], r[{{ rhs }}])
+{%- elif operator == "Max" -%}fmax(r[{{ lhs }}], r[{{ rhs }}])
+{%- else -%}{{ fail("unsupported-feature:scalar.binary." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+{%- macro compare(operator, lhs, rhs) -%}
+{%- if operator == "Lt" -%}(r[{{ lhs }}] < r[{{ rhs }}] ? 1.0 : 0.0)
+{%- elif operator == "Le" -%}(r[{{ lhs }}] <= r[{{ rhs }}] ? 1.0 : 0.0)
+{%- elif operator == "Gt" -%}(r[{{ lhs }}] > r[{{ rhs }}] ? 1.0 : 0.0)
+{%- elif operator == "Ge" -%}(r[{{ lhs }}] >= r[{{ rhs }}] ? 1.0 : 0.0)
+{%- elif operator == "Eq" -%}(r[{{ lhs }}] == r[{{ rhs }}] ? 1.0 : 0.0)
+{%- elif operator == "Ne" -%}(r[{{ lhs }}] != r[{{ rhs }}] ? 1.0 : 0.0)
+{%- else -%}{{ fail("unsupported-feature:scalar.compare." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+{%- macro scalar_op(op, output="m->derivative", error_status="fmi3Error", targets=none) %}
+{%- if op.kind == "Const" %}    r[{{ op.dst }}] = {{ scalar_const(op) }};
+{%- elif op.kind == "LoadTime" %}    r[{{ op.dst }}] = m->time;
+{%- elif op.kind == "LoadY" %}    r[{{ op.dst }}] = m->y[{{ op.index }}];
+{%- elif op.kind == "LoadP" %}    r[{{ op.dst }}] = m->p[{{ op.index }}];
+{%- elif op.kind == "LoadIndexedP" %}    r[{{ op.dst }}] = m->p[{{ op.base }} + (size_t)fmin(fmax(round(r[{{ op.index_ref }}]), 0.0), {{ op.count - 1 if op.count > 0 else 0 }}.0)];
+{%- elif op.kind == "Move" %}    r[{{ op.dst }}] = r[{{ op.src }}];
+{%- elif op.kind == "Unary" %}    r[{{ op.dst }}] = {{ unary(op.operator, op.arg) }};
+{%- elif op.kind == "Binary" %}    r[{{ op.dst }}] = {{ binary(op.operator, op.lhs, op.rhs) }};
+{%- elif op.kind == "Compare" %}    r[{{ op.dst }}] = {{ compare(op.operator, op.lhs, op.rhs) }};
+{%- elif op.kind == "Select" %}    r[{{ op.dst }}] = r[{{ op.cond }}] != 0.0 ? r[{{ op.if_true }}] : r[{{ op.if_false }}];
+{%- elif op.kind == "PureCall" %}    if (rumoca_scalar_pure_{{ op.owner }}((const double*[]){ {% for start in op.input_starts %}&r[{{ start }}],{% else %}NULL{% endfor %} }, &r[{{ op.dst }}])) return {{ error_status }};
+{%- elif op.kind == "TensorLoad" and op.lanes == 1 %}    for (size_t k=0; k<{{ op.count }}; ++k) r[{{ op.dst }}+k] = m->{{ op.input | lower }}[{{ op.input_start }}+k];
+{%- elif op.kind == "TensorBinary" and op.lanes == 1 %}    for (size_t k=0; k<{{ op.count }}; ++k) r[{{ op.dst }}+k] = {{ binary(op.operator, op.lhs_start ~ "+k*" ~ op.lhs_stride, op.rhs_start ~ "+k*" ~ op.rhs_stride) }};
+{%- elif op.kind == "TensorCross" and op.lanes == 1 %}{%- for i in range(3) %}    r[{{ op.dst + i }}] = r[{{ op.lhs_start + (i+1)%3 }}]*r[{{ op.rhs_start + (i+2)%3 }}] - r[{{ op.lhs_start + (i+2)%3 }}]*r[{{ op.rhs_start + (i+1)%3 }}];
+{%- endfor %}
+{%- elif op.kind == "StoreOutput" %}    {{ output }}[{{ targets[op.output_index].P.index if targets is not none else op.output_index }}] = r[{{ op.src }}];
+{%- elif op.kind == "StoreOutputRange" %}{%- for output_index in op.output_indices %}    {{ output }}[{{ targets[output_index].P.index if targets is not none else output_index }}] = r[{{ op.start + loop.index0 * op.stride }}];
+{%- endfor %}
+{%- else %}{{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
+{%- endif %}
+{%- endmacro %}
+
+{%- macro refresh_algebraics(solve, prefix) %}
+static {{ prefix }}Status refresh_parameters(ModelInstance* m) {
+    if (!m->parameters_dirty) return {{ prefix }}OK;
+{%- for program in solve.initialization.update_plan.programs %}
+    {
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "m->p", prefix ~ "Error", solve.initialization.update_targets) }}
+{%- endfor %}
+    }
+{%- endfor %}
+    m->parameters_dirty = false;
+    return {{ prefix }}OK;
+}
+static {{ prefix }}Status refresh_algebraics(ModelInstance* m) {
+    if (refresh_parameters(m) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- if solve.continuous.algebraic_assignment_plan.programs|length == 0 %}
+    (void)m;
+{%- endif %}
+{%- for program in solve.continuous.algebraic_assignment_plan.programs %}
+    {
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "m->y", prefix ~ "Error") }}
+{%- if op.kind == "StoreOutput" %}    if (!isfinite(m->y[{{ op.output_index }}])) return {{ prefix }}Error;
+{%- elif op.kind == "StoreOutputRange" %}{%- for output_index in op.output_indices %}    if (!isfinite(m->y[{{ output_index }}])) return {{ prefix }}Error;
+{%- endfor %}
+{%- endif %}
+{%- endfor %}
+    }
+{%- endfor %}
+    return {{ prefix }}OK;
+}
+{%- endmacro %}
+
+{%- macro c_string(bytes) -%}"{% for byte in bytes %}\{{ byte // 64 }}{{ (byte // 8) % 8 }}{{ byte % 8 }}{% endfor %}"{%- endmacro %}
+
+{%- macro assertions(solve, fmi, messages, prefix) %}
+static {{ prefix }}Status check_assertions(ModelInstance* m) {
+    (void)m;
+{%- if fmi.assertions %}
+    if (m->assertion_failed) return {{ prefix }}Error;
+    double actions[{{ solve.events.actions|length }}];
+{%- for program in solve.events.action_plan.programs %}
+    {
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "actions", prefix ~ "Error") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- for action in solve.events.actions %}
+    if (actions[{{ loop.index0 }}] != 0.0) {
+        log_assertion(m, {{ c_string(messages[loop.index0]) }});
+        m->assertion_failed = true;
+        return {{ prefix }}Error;
+    }
+{%- endfor %}
+{%- endif %}
+    return {{ prefix }}OK;
+}
+static {{ prefix }}Status update_assertion_memory(ModelInstance* m) {
+    (void)m;
+{%- if fmi.assertions and solve.discrete.update_targets|length > 0 %}
+    double current[{{ solve.discrete.update_targets|length }}];
+{%- for program in solve.discrete.rhs_plan.programs %}
+    {
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "current", prefix ~ "Error") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- for target in solve.discrete.update_targets %}
+    m->p[{{ target.P.index }}] = current[{{ loop.index0 }}];
+{%- endfor %}
+{%- endif %}
+    return {{ prefix }}OK;
+}
+{%- endmacro %}
+
+{%- macro assertion_lifecycle(prefix) %}
+static {{ prefix }}Status settle_values(ModelInstance* m) {
+    if (refresh_algebraics(m) != {{ prefix }}OK) return {{ prefix }}Error;
+    return m->assertions_initialized ? check_assertions(m) : {{ prefix }}OK;
+}
+static {{ prefix }}Status initialize_assertions(ModelInstance* m) {
+    if (refresh_algebraics(m) != {{ prefix }}OK || update_assertion_memory(m) != {{ prefix }}OK) return {{ prefix }}Error;
+    m->assertions_initialized = true;
+    return check_assertions(m);
+}
+static {{ prefix }}Status settle_assertion_event(ModelInstance* m) {
+    if (settle_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
+    return update_assertion_memory(m);
+}
+{%- endmacro %}

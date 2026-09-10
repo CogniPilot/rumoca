@@ -1,0 +1,68 @@
+version = 1
+ir = "fmi"
+name = "fmi-ls-wasm"
+description = "Experimental FMI 3 Co-Simulation WebAssembly component using the pinned FMI-LS-Wasm WIT draft"
+execution_mode = "compiled"
+deployment_class = "wasm-component"
+readiness_level = 0
+completion_message = """Experimental FMI-LS-Wasm component crate written to: {{ out_dir }}
+Build for wasm32-wasip2, then validate the component with wasm-tools.
+Contract: modelica/fmi-ls-wasm@c1aac17d392bec989fe2d059db3cc57bb7a0fff5 (non-normative draft)."""
+
+[package]
+root = "{{ model_name }}"
+required_files = ["Cargo.toml", "src/lib.rs", "src/model.rs", "wit/world.wit", "UPSTREAM.md", "upstream/LICENSE.txt"]
+
+[capabilities]
+continuous_states = true
+residual_equations = false
+scalar_fallback = true
+external_functions = false
+external_tables = false
+random = false
+initialization = false
+events = false
+runtime_events = false
+clocks = false
+dynamic_ranges = false
+dynamic_derivative_subscripts = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+[capabilities.tensor]
+matmul = "scalar"
+linsolve = "scalar"
+elementwise = "scalar"
+stencil = "scalar"
+reductions = "scalar"
+layout = "row-major"
+supports_dynamic_shapes = false
+sparse = false
+dtypes = ["f64"]
+
+[[assets]]
+source = "wit"
+dest = "wit/"
+
+[[assets]]
+source = "upstream"
+dest = "upstream/"
+
+[[files]]
+path = "Cargo.toml"
+template = "Cargo.toml.jinja"
+id = "fmu"
+
+[[files]]
+path = "src/lib.rs"
+template = "lib.rs.jinja"
+
+[[files]]
+path = "src/model.rs"
+template = "model.rs.jinja"
+
+[[files]]
+path = "UPSTREAM.md"
+template = "UPSTREAM.md.jinja"

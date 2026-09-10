@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	<xs:include schemaLocation="./efmiDimensions.xsd"/>
+	<xs:element name="Typedefs">
+		<xs:annotation>
+			<xs:documentation>List of all typedef statments.</xs:documentation>
+		</xs:annotation>
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element name="Typedef" minOccurs="1" maxOccurs="unbounded">
+					<xs:complexType>
+						<xs:choice>
+							<xs:element name="Alias">
+								<xs:annotation>
+									<xs:documentation>Alias means renaming of types, e.g. "typedef unsigned char MyUint8_t;". Therefore the targetTypeRefId is always set and references the certain TargetType in the target type list and in cases of cascaded Typedefs, also the typeDefRefId is set. Usually, a TargetType is referenced by a most one Typedef statement. If a basetype is renamed (e.g. Int16 -> MyInt16) or a user type based on an existing type is defined, two or more Typedef statements may point to a single TargetType.</xs:documentation>
+								</xs:annotation>
+								<xs:complexType>
+									<xs:attribute name="targetTypeRefId" type="efmiIdentifierType" use="required"/>
+									<xs:attribute name="typeDefRefId" type="efmiIdentifierType" use="optional"/>
+								</xs:complexType>
+							</xs:element>
+							<xs:element name="Pointer">
+								<xs:annotation>
+									<xs:documentation>Represents pointer type definition.</xs:documentation>
+								</xs:annotation>
+								<xs:complexType>
+									<xs:attribute name="typeDefRefId" type="efmiIdentifierType" use="required"/>
+								</xs:complexType>
+							</xs:element>
+							<xs:element name="Components">
+								<xs:annotation>
+									<xs:documentation>A Typedef with Components represents a struct. Structs in structs are allowed but Dimensions have to be specified at variable definitions only.</xs:documentation>
+								</xs:annotation>
+								<xs:complexType>
+									<xs:sequence>
+										<xs:element name="Component" minOccurs="1" maxOccurs="unbounded">
+											<xs:complexType>
+												<xs:sequence>
+													<xs:element ref="Dimensions" minOccurs="0" maxOccurs="1"/>
+												</xs:sequence>
+												<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+												<xs:attribute name="name" type="xs:normalizedString" use="required"/>
+												<xs:attribute name="typeDefRefId" type="efmiIdentifierType" use="required"/>
+												<xs:attribute name="pointer" type="xs:boolean" use="optional" default="false"/>
+											</xs:complexType>
+										</xs:element>
+									</xs:sequence>
+								</xs:complexType>
+							</xs:element>
+							<xs:element name="EnumerationItems">
+								<xs:annotation>
+									<xs:documentation>A Typedef with Items represents enums. Enum items consist of name,value and optionally a representing value.</xs:documentation>
+								</xs:annotation>
+								<xs:complexType>
+									<xs:sequence>
+										<xs:element name="EnumerationItem" minOccurs="1" maxOccurs="unbounded">
+											<xs:complexType>
+												<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+												<xs:attribute name="name" type="xs:normalizedString" use="required"/>
+												<xs:attribute name="value" type="xs:normalizedString" use="optional"/>
+											</xs:complexType>
+										</xs:element>
+									</xs:sequence>
+									<xs:attribute name="typeDefRefId" type="efmiIdentifierType" use="required">
+										<xs:annotation>
+											<xs:documentation>Id of typedef statement for integer type, even if implemented as a C enum.</xs:documentation>
+										</xs:annotation>
+									</xs:attribute>
+								</xs:complexType>
+							</xs:element>
+						</xs:choice>
+						<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+						<xs:attribute name="name" type="xs:normalizedString" use="required"/>
+					</xs:complexType>
+				</xs:element>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+</xs:schema>

@@ -1,0 +1,59 @@
+{%- from "fmi-typed-arithmetic.jinja" import copy %}
+{%- macro bounds(index, extent) %}
+if (r{{ index }}[0]<1 || r{{ index }}[0]>{{ extent }}) return 1;
+{%- endmacro %}
+
+{%- macro tensor(op, program) %}
+{% set dst = "r" ~ op.destination %}
+{% set ty = program.register_types[op.destination] %}
+{% if op.operation in ["scale", "matrix_multiply", "cross"] and (ty.scalar.kind != "real" or ty.scalar.profile.format != "binary64") %}{{ fail("unsupported-feature:fmi.c.pure-call: non-Real tensor arithmetic") }}{% endif %}
+{% if op.operation == "fill" %}
+for (size_t k=0; k<{{ ty.scalar_count }}; ++k) {{ dst }}[k]=r{{ op.value }}[0];
+{% elif op.operation == "construct_aggregate" %}
+{% for element in op.elements %}
+memcpy(&{{ dst }}[{{ loop.index0 * program.register_types[element].scalar_count }}], r{{ element }}, sizeof(r{{ element }}));
+{% endfor %}
+{% elif op.operation == "scale" %}
+for (size_t k=0; k<{{ ty.scalar_count }}; ++k) {{ dst }}[k]=r{{ op.aggregate }}[k]*r{{ op.scalar }}[0];
+{% elif op.operation == "transpose" %}
+{% set shape = program.register_types[op.operand].dimensions %}
+{% set rows = shape[0] %}{% set columns = shape[1] %}{% set trailing = shape[2:]|product %}
+for (size_t i=0; i<{{ rows }}; ++i) for (size_t j=0; j<{{ columns }}; ++j) for (size_t k=0; k<{{ trailing }}; ++k) {{ dst }}[(j*{{ rows }}+i)*{{ trailing }}+k]=r{{ op.operand }}[(i*{{ columns }}+j)*{{ trailing }}+k];
+{% elif op.operation == "matrix_multiply" %}
+{% set a = program.register_types[op.lhs].dimensions %}{% set b = program.register_types[op.rhs].dimensions %}
+{% set rows = 1 if a|length == 1 else a[0] %}{% set inner = a[0] if a|length == 1 else a[1] %}{% set columns = 1 if b|length == 1 else b[1] %}
+for (size_t i=0; i<{{ rows }}; ++i) for (size_t j=0; j<{{ columns }}; ++j) { double sum=0.0; for (size_t k=0; k<{{ inner }}; ++k) sum+=r{{ op.lhs }}[i*{{ inner }}+k]*r{{ op.rhs }}[k*{{ columns }}+j]; {{ dst }}[i*{{ columns }}+j]=sum; }
+{% elif op.operation == "cross" %}
+{% for i in range(3) %}{{ dst }}[{{ i }}]=r{{ op.lhs }}[{{ (i+1)%3 }}]*r{{ op.rhs }}[{{ (i+2)%3 }}]-r{{ op.lhs }}[{{ (i+2)%3 }}]*r{{ op.rhs }}[{{ (i+1)%3 }}];{% endfor %}
+{% elif op.operation in ["project_element", "project_element_dynamic", "update_element"] %}
+{% set shape = program.register_types[op.aggregate].dimensions %}
+{ size_t index=0;
+{% for index in op.indices %}
+{% if op.operation == "project_element" %}
+index=index*{{ shape[loop.index0] }}+{{ index }};
+{% else %}
+{{ bounds(index, shape[loop.index0]) }}
+index=index*{{ shape[loop.index0] }}+(size_t)(r{{ index }}[0]-1);
+{% endif %}
+{% endfor %}
+{% if op.operation == "update_element" %}
+{{ copy(dst, "r" ~ op.aggregate) }}
+{{ dst }}[index]=r{{ op.value }}[0];
+{% else %}{{ dst }}[0]=r{{ op.aggregate }}[index];{% endif %}
+}
+{% elif op.operation in ["project_view", "update_view"] %}
+{% set shape = program.register_types[op.aggregate].dimensions %}
+{% set count = program.register_types[op.value].scalar_count if op.operation == "update_view" else ty.scalar_count %}
+{% if op.operation == "update_view" %}{{ copy(dst, "r" ~ op.aggregate) }}{% endif %}
+{% for axis in op.axes %}{% if axis.index is defined %}{{ bounds(axis.index, shape[loop.index0]) }}{% endif %}{% endfor %}
+for (size_t k=0; k<{{ count }}; ++k) { size_t rest=k; size_t offset=0; (void)rest;
+{% for i in range(op.axes|length)|reverse %}
+{% set axis = op.axes[i] %}{% set stride = shape[i+1:]|product %}
+{% if axis.index is defined %}offset+=(size_t)(r{{ axis.index }}[0]-1)*{{ stride }};
+{% else %}offset+=({{ axis.span.origin }}+rest%{{ axis.span.extent }})*{{ stride }}; rest/={{ axis.span.extent }};{% endif %}
+{% endfor %}
+{% if op.operation == "update_view" %}{{ dst }}[offset]=r{{ op.value }}[k];
+{% else %}{{ dst }}[k]=r{{ op.aggregate }}[offset];{% endif %}
+}
+{% else %}{{ fail("unsupported-feature:fmi.c.pure-call: tensor " ~ op.operation) }}{% endif %}
+{%- endmacro %}

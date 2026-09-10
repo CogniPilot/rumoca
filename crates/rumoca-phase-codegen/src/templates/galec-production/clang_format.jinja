@@ -1,0 +1,7 @@
+{% extends "galec-clang-format.jinja" %}
+{#- The formatter standard is target-agnostic: this representation's C is the
+    same shared body the `embedded-c-galec` target emits, so it must be
+    formatted by the same rules or the two tracks would diverge on whitespace
+    alone. The file is declared in ProductionCode/manifest.xml with
+    role="other" and a real SHA-1, so it is a manifested part of the container
+    rather than a stray file beside it. -#}

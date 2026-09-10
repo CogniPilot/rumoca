@@ -1,0 +1,91 @@
+{%- from "fmi-typed-arithmetic.jinja" import integer, declaration, copy, import_scalars, arithmetic %}
+{%- from "fmi-typed-tensors.jinja" import tensor %}
+
+{%- macro call(name, inputs, outputs) %}
+if ({{ name }}((const void*[]){ {% for input in inputs %}r{{ input }},{% else %}NULL{% endfor %} }, (void*[]){ {% for output in outputs %}r{{ output }},{% else %}NULL{% endfor %} })) return 1;
+{%- endmacro %}
+
+{%- macro operation(op, program, region_name) %}
+{% if op.operation in ["constant", "unary", "binary", "compare", "convert"] %}
+{{ arithmetic(op, program) }}
+{% elif op.operation == "load" %}{{ copy("r" ~ op.destination, "s" ~ op.slot) }}
+{% elif op.operation == "store" %}{{ copy("s" ~ op.slot, "r" ~ op.source) }}
+{% elif op.operation == "select" %}{{ copy("r" ~ op.destination, "(r" ~ op.condition ~ "[0] ? r" ~ op.if_true ~ " : r" ~ op.if_false ~ ")") }}
+{% elif op.operation == "conditional" %}
+if (r{{ op.condition }}[0]) { {{ call(region_name ~ "_true", op.captures, op.destinations) }} }
+else { {{ call(region_name ~ "_false", op.captures, op.destinations) }} }
+{% elif op.operation == "call" %}{{ call("rumoca_pure_" ~ op.owner, op.arguments, op.destinations) }}
+{% elif op.operation == "fold" %}
+{
+{% for dst in op.destinations %}{{ copy("r" ~ dst, "r" ~ op.initial[loop.index0]) }}{% endfor %}
+{% for binder in op.domain.binders %}
+{% set count = 0 if (binder.step > 0 and binder.lower > binder.upper) or (binder.step < 0 and binder.lower < binder.upper) else (binder.upper - binder.lower)//binder.step + 1 %}
+int64_t b{{ loop.index0 }}[1]={ {{ integer(binder.lower) }} };
+for (size_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }}; ++i{{ loop.index0 }}) {
+if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
+{% endfor %}
+if ({{ region_name }}_fold((const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %} }, (void*[]){ {% for output in op.destinations %}r{{ output }},{% else %}NULL{% endfor %} })) return 1;
+{% for binder in op.domain.binders %} } {% endfor %}
+}
+{% else %}{{ tensor(op, program) }}{% endif %}
+{%- endmacro %}
+
+{%- macro definition(program, name) %}
+{% for issued in program.operations %}
+{% set op = issued.operation %}{% set child = name ~ "_region_" ~ loop.index0 %}
+{% if op.operation == "conditional" %}
+{{ definition(op.if_true.body, child ~ "_true") }}
+{{ definition(op.if_false.body, child ~ "_false") }}
+{% elif op.operation == "fold" %}{{ definition(op.transition.body, child ~ "_fold") }}{% endif %}
+{% endfor %}
+static int {{ name }}(const void* const in[], void* const out[]) {
+(void)in; (void)out;
+{% set input = namespace(index=0) %}
+{% for slot in program.slots %}
+{{ declaration("s" ~ slot.id, slot.value_type) }}
+{% if slot.storage == "input" %}
+memcpy(s{{ slot.id }}, in[{{ input.index }}], sizeof(s{{ slot.id }}));
+{% set input.index = input.index + 1 %}
+{% endif %}
+{% endfor %}
+{% for ty in program.register_types %}{{ declaration("r" ~ loop.index0, ty) }}{% endfor %}
+{% for issued in program.operations %}{{ operation(issued.operation, program, name ~ "_region_" ~ loop.index0) }}{% endfor %}
+{% set output = namespace(index=0) %}
+{% for slot in program.slots %}
+{% if slot.storage == "output" %}
+memcpy(out[{{ output.index }}], s{{ slot.id }}, sizeof(s{{ slot.id }}));
+{% set output.index = output.index + 1 %}
+{% endif %}
+{% endfor %}
+return 0;
+}
+{%- endmacro %}
+
+{%- macro wrapper(owner) %}
+static inline int rumoca_scalar_pure_{{ owner.id }}(const double* const in[], double* out) {
+(void)in; (void)out;
+{% for ty in owner.inputs %}
+{{ declaration("a" ~ loop.index0, ty) }}
+{{ import_scalars("a" ~ loop.index0, "in[" ~ loop.index0 ~ "]", ty) }}
+{% endfor %}
+{% for output in owner.outputs %}{{ declaration("b" ~ loop.index0, output.value_type) }}{% endfor %}
+if (rumoca_pure_{{ owner.id }}((const void*[]){ {% for ty in owner.inputs %}a{{ loop.index0 }},{% else %}NULL{% endfor %} }, (void*[]){ {% for output in owner.outputs %}b{{ loop.index0 }},{% else %}NULL{% endfor %} })) return 1;
+{% set offset = namespace(value=0) %}
+{% for output in owner.outputs %}
+for (size_t k=0; k<{{ output.value_type.scalar_count }}; ++k) out[{{ offset.value }}+k]=(double)b{{ loop.index0 }}[k];
+{% set offset.value = offset.value + output.value_type.scalar_count %}
+{% endfor %}
+return 0;
+}
+{%- endmacro %}
+
+{%- macro functions(table) %}
+{% if table.owners|length > 0 %}
+static inline double rumoca_real64(uint64_t bits) { double value; memcpy(&value, &bits, sizeof(value)); return value; }
+{% endif %}
+{% for owner in table.owners %}static int rumoca_pure_{{ owner.id }}(const void* const in[], void* const out[]);{% endfor %}
+{% for owner in table.owners %}
+{{ definition(owner.body, "rumoca_pure_" ~ owner.id) }}
+{{ wrapper(owner) }}
+{% endfor %}
+{%- endmacro %}
