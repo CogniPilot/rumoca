@@ -88,6 +88,7 @@ fn skipped_omc_result() -> SimModelResult {
         rumoca_sim_wall_seconds: None,
         rumoca_trace_file: None,
         rumoca_trace_error: None,
+        failed_attempts: 0,
     }
 }
 

@@ -1,21 +1,35 @@
 //! Contract Registry backed by a compile-time static contract table.
 
+pub mod formal;
+
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-/// Unique identifier for a contract.
+/// Unique identifier for a contract, e.g. `DECL-001` (SPEC_0022).
+///
+/// The spelling is the identity here — a contract id is a spec-assigned label,
+/// not a compiler-assigned `DefId` — so it is interned: the registry and the
+/// runner both key `IndexMap`s on it, and the interner makes every lookup hash
+/// a `u32` while collapsing the repeated ids to one allocation each. The
+/// representation is private so the id cannot be treated as raw text; the
+/// serialized form is unchanged, since `VarName` serializes as its spelling.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ContractId(pub String);
+pub struct ContractId(rumoca_core::VarName);
 
 impl ContractId {
     pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+        Self(rumoca_core::VarName::new(id))
+    }
+
+    /// The contract's spec label.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
     }
 }
 
 impl std::fmt::Display for ContractId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        f.write_str(self.as_str())
     }
 }
 
@@ -85,28 +99,41 @@ impl ContractCategory {
         }
     }
 
-    /// Get the MLS section reference.
-    pub fn mls_section(&self) -> &'static str {
-        match self {
-            ContractCategory::Lexical => "§2",
-            ContractCategory::Declaration => "§4",
-            ContractCategory::Instantiation => "§5, §7",
-            ContractCategory::Expression => "§3",
-            ContractCategory::Equation => "§8",
-            ContractCategory::Algorithm => "§11",
-            ContractCategory::Connection => "§9",
-            ContractCategory::Function => "§12",
-            ContractCategory::Type => "§6",
-            ContractCategory::Array => "§10",
-            ContractCategory::Package => "§13",
-            ContractCategory::OperatorRecord => "§14",
-            ContractCategory::Simulation => "§8.6, App B",
-            ContractCategory::Clock => "§16",
-            ContractCategory::Stream => "§15",
-            ContractCategory::StateMachine => "§17",
-            ContractCategory::Annotation => "§18",
-            ContractCategory::Unit => "§19",
-        }
+    /// Every category, in SPEC_0022 order.
+    ///
+    /// [`ContractCategory::from_prefix`] reads this, so a new category enters
+    /// both the forward and the reverse mapping in one edit.
+    pub const ALL: [ContractCategory; 18] = [
+        ContractCategory::Lexical,
+        ContractCategory::Declaration,
+        ContractCategory::Instantiation,
+        ContractCategory::Expression,
+        ContractCategory::Equation,
+        ContractCategory::Algorithm,
+        ContractCategory::Connection,
+        ContractCategory::Function,
+        ContractCategory::Type,
+        ContractCategory::Array,
+        ContractCategory::Package,
+        ContractCategory::OperatorRecord,
+        ContractCategory::Simulation,
+        ContractCategory::Clock,
+        ContractCategory::Stream,
+        ContractCategory::StateMachine,
+        ContractCategory::Annotation,
+        ContractCategory::Unit,
+    ];
+
+    /// The category a contract-id prefix names, e.g. `EQN` for
+    /// [`ContractCategory::Equation`].
+    ///
+    /// This is the inverse of [`ContractCategory::prefix`], and it is what lets
+    /// an identifier carry its own category instead of restating it in a field
+    /// that could disagree.
+    pub fn from_prefix(prefix: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|category| category.prefix() == prefix)
     }
 }
 
@@ -219,16 +246,6 @@ impl ContractRegistry {
     /// Get contracts by status.
     pub fn by_status(&self, status: ContractStatus) -> impl Iterator<Item = &Contract> {
         self.contracts.values().filter(move |c| c.status == status)
-    }
-
-    /// Count contracts by category.
-    pub fn count_by_category(&self, category: ContractCategory) -> usize {
-        self.by_category(category).count()
-    }
-
-    /// Count contracts by status.
-    pub fn count_by_status(&self, status: ContractStatus) -> usize {
-        self.by_status(status).count()
     }
 
     /// Get total number of contracts.

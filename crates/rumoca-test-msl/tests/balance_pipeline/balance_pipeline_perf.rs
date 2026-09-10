@@ -5,7 +5,6 @@ static PERF_WARNED: AtomicBool = AtomicBool::new(false);
 
 pub(super) enum PerfRecordTarget {
     Process(u32),
-    Thread(u32),
 }
 
 pub(super) struct PerfSession {
@@ -42,53 +41,12 @@ fn request_perf_stop(pid: u32) {
     }
 }
 
-pub(super) fn env_flag_enabled(key: &str) -> bool {
-    std::env::var(key).ok().is_some_and(|raw| {
-        matches!(
-            raw.trim(),
-            "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
-        )
-    })
-}
-
 pub(super) fn env_nonnegative_f64(key: &str, default: f64) -> f64 {
     std::env::var(key)
         .ok()
         .and_then(|raw| raw.trim().parse::<f64>().ok())
         .filter(|secs| secs.is_finite() && *secs >= 0.0)
         .unwrap_or(default)
-}
-
-pub(super) fn env_positive_usize_or(key: &str, default: usize) -> usize {
-    std::env::var(key)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
-}
-
-pub(super) fn current_thread_perf_id() -> Option<u32> {
-    let path = std::fs::read_link("/proc/thread-self").ok()?;
-    path.file_name()?.to_str()?.parse::<u32>().ok()
-}
-
-pub(super) fn start_current_thread_perf_record_session(
-    profile_path: &Path,
-    frequency: usize,
-    warning_context: &str,
-) -> Option<PerfSession> {
-    let Some(thread_id) = current_thread_perf_id() else {
-        warn_perf_once(format!(
-            "{warning_context} perf profiling requested but /proc/thread-self is unavailable; running without profiles"
-        ));
-        return None;
-    };
-    start_perf_record_session(
-        PerfRecordTarget::Thread(thread_id),
-        profile_path,
-        frequency,
-        warning_context,
-    )
 }
 
 pub(super) fn start_perf_record_session(
@@ -115,9 +73,6 @@ pub(super) fn start_perf_record_session(
     match target {
         PerfRecordTarget::Process(pid) => {
             cmd.arg("-p").arg(pid.to_string());
-        }
-        PerfRecordTarget::Thread(tid) => {
-            cmd.arg("-t").arg(tid.to_string());
         }
     }
     cmd.stdout(std::process::Stdio::null())
@@ -158,12 +113,5 @@ mod tests {
     #[test]
     fn nonnegative_f64_env_parser_uses_default_for_missing_values() {
         assert_eq!(env_nonnegative_f64("__RUMOCA_MISSING_ENV__", 3.5), 3.5);
-    }
-
-    #[test]
-    fn current_thread_perf_id_is_available_on_linux_procfs() {
-        if Path::new("/proc/thread-self").exists() {
-            assert!(current_thread_perf_id().is_some());
-        }
     }
 }

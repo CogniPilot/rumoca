@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "mls_version": "3.7",
+  "contract_catalog": "spec/SPEC_0022_MLS_COMPILER_COMPLIANCE.md",
+  "issues": [
+    {
+      "id": "MLS-GAP-001",
+      "status": "proposal_drafted",
+      "formal_statement_ids": ["FS-SIM-015"],
+      "contract_ids": ["SIM-009"],
+      "mls_clauses": "MLS 3.7 §8.6 and Appendix B",
+      "counterexample": "Two tools integrate the same model to the same trajectory, one after reducing it to an explicit ODE and one while retaining an equivalent implicit DAE. The MLS constrains the solution but does not say whether either internal system form is required.",
+      "proposed_clarification": "State that the internal equation-system form and reduction strategy are tool choices provided the reported solution satisfies the initialization, event-iteration, and equation semantics."
+    },
+    {
+      "id": "MLS-GAP-002",
+      "status": "proposal_drafted",
+      "formal_statement_ids": ["FS-SIM-018"],
+      "contract_ids": ["SIM-001"],
+      "mls_clauses": "MLS 3.7 §8.5 and §8.6",
+      "counterexample": "At a scheduled event, one result writer emits only the settled right-limit sample while another emits adjacent left- and right-limit samples. Both trajectories have the MLS-required limits and settled event state, but their result rows differ.",
+      "proposed_clarification": "State whether result interchange is required to expose both superdense limits at an event, only the settled right limit, or whether this remains a result-format convention outside the language semantics."
+    },
+    {
+      "id": "MLS-GAP-003",
+      "status": "proposal_drafted",
+      "formal_statement_ids": ["FS-EXPR-007"],
+      "contract_ids": ["EQN-033"],
+      "mls_clauses": "MLS 3.7 §3.7.4.5",
+      "counterexample": "Three semiLinear ports meet at zero flow with three distinct enthalpy-flow variables constrained only by their sum. Rule 1 defines a two-ended chain but does not select a value for this junction.",
+      "proposed_clarification": "Define whether Rule 1 extends to multi-way junctions and, if it does, give the equation set or selection rule at exactly zero flow; otherwise explicitly classify the junction as underdetermined."
+    },
+    {
+      "id": "MLS-GAP-004",
+      "status": "proposal_drafted",
+      "formal_statement_ids": ["FS-EXPR-008"],
+      "contract_ids": ["EQN-033"],
+      "mls_clauses": "MLS 3.7 §3.7.4.5",
+      "counterexample": "Reversing a semiLinear chain exchanges its two endpoints while preserving the section's stated identity. The two orientations agree away from zero but may select different endpoint slopes at exactly zero flow.",
+      "proposed_clarification": "Specify an orientation-independent value at zero flow or define a canonical endpoint ordering for Rule 1 so algebraically identical chain orientations cannot select different zero-flow values."
+    },
+    {
+      "id": "MLS-GAP-005",
+      "status": "proposal_drafted",
+      "formal_statement_ids": ["FS-EQN-019"],
+      "contract_ids": ["SIM-001"],
+      "mls_clauses": "MLS 3.7 Appendix B and §8.5",
+      "counterexample": "A live condition cascade requires re-evaluation inside one event instant, while a self-rescheduling condition whose body advances its own threshold has no inner fixed point with pre-values held fixed. A blanket latch breaks the cascade and an unrestricted inner fixed point does not terminate.",
+      "proposed_clarification": "Define the evaluation and convergence rule for condition variables whose event bodies modify their own or other conditions' operands, including the required treatment when the inner equation system has no fixed point."
+    },
+    {
+      "id": "MLS-GAP-006",
+      "status": "proposal_drafted",
+      "formal_statement_ids": ["FS-SIM-017"],
+      "contract_ids": ["EQN-023", "EQN-035"],
+      "mls_clauses": "MLS 3.7 §8.6",
+      "counterexample": "Reading v = pre(v) as making pre an identity operator throughout initialization makes edge(initial()) false and prevents an explicitly initial-enabled when-clause from firing, contradicting the same section's activation rule.",
+      "proposed_clarification": "State that v = pre(v) constrains the values used to seed pre before event iteration rather than replacing the operator semantics, and define how initial()-dependent condition memories are seeded."
+    }
+  ]
+}

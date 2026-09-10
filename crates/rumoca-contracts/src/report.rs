@@ -103,7 +103,6 @@ impl ComplianceReport {
         let registry = runner.registry();
         let results = runner.results();
 
-        // Build per-category stats
         let mut categories = IndexMap::new();
         for category in all_categories() {
             let contracts: Vec<_> = registry.by_category(category).collect();
@@ -142,7 +141,6 @@ impl ComplianceReport {
             );
         }
 
-        // Build summary
         let total_contracts = registry.len();
         let implemented = registry
             .all()
@@ -179,7 +177,6 @@ impl ComplianceReport {
         // Build tier stats (placeholder - would need tier assignment in contracts)
         let tiers = TierStats::default();
 
-        // Build individual results
         let mut result_entries = Vec::new();
         for contract in registry.all() {
             let test_result = results.get(&contract.id);
