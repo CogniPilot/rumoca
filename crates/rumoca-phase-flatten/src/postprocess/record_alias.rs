@@ -38,10 +38,16 @@ pub(super) fn canonicalize_record_alias_when_equations(
                 canonicalize_record_alias_expr(value, ctx, known_variables);
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 canonicalize_record_alias_expr(condition, ctx, known_variables);
                 canonicalize_record_alias_expr(message, ctx, known_variables);
+                if let Some(level) = level {
+                    canonicalize_record_alias_expr(level, ctx, known_variables);
+                }
             }
             flat::WhenEquation::Conditional {
                 branches,
@@ -56,7 +62,9 @@ pub(super) fn canonicalize_record_alias_when_equations(
                         known_variables,
                     );
                 }
-                canonicalize_record_alias_when_equations(else_branch, ctx, known_variables);
+                if let Some(else_branch) = else_branch {
+                    canonicalize_record_alias_when_equations(else_branch, ctx, known_variables);
+                }
             }
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 canonicalize_record_alias_expr(function, ctx, known_variables);

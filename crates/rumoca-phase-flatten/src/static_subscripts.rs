@@ -1,40 +1,40 @@
 use rumoca_ir_ast as ast;
 
-pub(crate) fn try_constant_integer(expr: &ast::Expression) -> Option<i64> {
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedInteger,
-            token,
-            ..
-        } => token.text.parse().ok(),
-        ast::Expression::Unary { op, rhs, .. } => {
-            let value = try_constant_integer(rhs)?;
-            match op {
-                rumoca_core::OpUnary::Empty
-                | rumoca_core::OpUnary::Plus
-                | rumoca_core::OpUnary::DotPlus => Some(value),
-                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => value.checked_neg(),
-                rumoca_core::OpUnary::Not => None,
-            }
-        }
-        ast::Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = try_constant_integer(lhs)?;
-            let rhs = try_constant_integer(rhs)?;
-            match op {
-                rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => lhs.checked_add(rhs),
-                rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => lhs.checked_sub(rhs),
-                rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => lhs.checked_mul(rhs),
-                rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => {
-                    (rhs != 0 && lhs % rhs == 0).then_some(lhs / rhs)
-                }
-                rumoca_core::OpBinary::Exp | rumoca_core::OpBinary::ExpElem => {
-                    u32::try_from(rhs).ok().and_then(|exp| lhs.checked_pow(exp))
-                }
-                _ => None,
-            }
-        }
-        _ => None,
+struct LiteralIntegerContext;
+
+impl rumoca_eval_ast::ast_scalar::AstScalarContext for LiteralIntegerContext {
+    fn lookup_integer(&self, _expr: &ast::Expression, _scope: &str, _depth: usize) -> Option<i64> {
+        None
     }
+
+    fn lookup_boolean(&self, _expr: &ast::Expression, _scope: &str, _depth: usize) -> Option<bool> {
+        None
+    }
+
+    fn call_integer(
+        &self,
+        _function: &ast::ComponentReference,
+        _args: &[ast::Expression],
+        _scope: &str,
+        _depth: usize,
+        _span: rumoca_core::Span,
+    ) -> Option<i64> {
+        None
+    }
+
+    fn integer_binary(
+        &self,
+        op: &rumoca_core::OpBinary,
+        lhs: i64,
+        rhs: i64,
+        _span: rumoca_core::Span,
+    ) -> Option<i64> {
+        rumoca_core::eval_ast_integer_binary(op, lhs, rhs)
+    }
+}
+
+pub(crate) fn try_constant_integer(expr: &ast::Expression) -> Option<i64> {
+    rumoca_eval_ast::ast_scalar::eval_integer(expr, &LiteralIntegerContext, "", 0)
 }
 
 #[cfg(test)]
