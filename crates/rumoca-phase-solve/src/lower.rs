@@ -1801,7 +1801,19 @@ fn derivative_rhs<'dae>(
 ) -> Result<DerivativeRhs<'dae>, LowerError> {
     let selector = ScalarSelector::new(view, domain_point);
     let (residual, scalar) = selector.select_array_element(residual, scalar)?;
-    let residual = selector.structural_branch(residual, scalar)?;
+    let mut residual = selector.structural_branch(residual, scalar)?;
+    // MLS Appendix B.1: a sign around the complete zero residual preserves
+    // the equation. Structural reconstruction may retain these unary nodes.
+    while let dae::ExpressionOperation::Unary {
+        operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
+        operand,
+    } = view
+        .expression(residual)
+        .expect("branded residual expression resolves")
+        .operation()
+    {
+        residual = selector.structural_branch(operand, scalar)?;
+    }
     let node = view
         .expression(residual)
         .expect("branded residual expression resolves");

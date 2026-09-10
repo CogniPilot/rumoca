@@ -441,3 +441,47 @@ as strict-high, with zero missing, skipped, excluded, or deviating comparisons.
 All 20 stage and simulation statuses are unchanged. Formatting and the affected
 packages' all-target, all-feature Clippy checks pass. The `DCPM_Drive`
 execution-regression repair remains pending.
+
+## Signed derivative residuals
+
+The `DCPM_Drive` failure comes from its matched state equation 491. Prepared
+DAE residual 4335 is `+(der(dcpm1.airGapDC.flange.phi) -
+dcpm1.inertiaRotor.w)`: a unary plus around subtractive residual 4334.
+The state variable is 278 and its right-hand side is state 235. This is a
+valid equation under MLS Appendix B.1; neither the DAE nor structural
+reconstruction has lost its derivative definition. Solve's `derivative_rhs`
+requires a subtraction at the root and incorrectly rejects the unary wrapper
+when algebraic row 133 needs that derivative.
+
+Solve lowering now reads through unary plus and negation around a complete
+zero residual before applying its existing derivative-isolation checks.
+This preserves the equation's solution and keeps executable derivative
+analysis in the SPEC_0007 Solve owner. Three checked-DAE regressions cover
+positive, negative, and nested wrappers. All fail with the original refusal
+before the repair. Afterward they verify both the derivative and its algebraic
+use at four assignments, including one outside the solution manifold.
+All 113 Solve tests and all 421 core integration tests pass, as do formatting
+and the affected packages' all-target, all-feature Clippy checks.
+
+The originating run in `target/msl/multibody-derivative-wrapper-repair`
+restores `DCPM_Drive` completion in 11.839 seconds, including 6.597 seconds
+of simulation preparation and 5.224 seconds of integration. The unchanged
+reviewed comparator exclusion still applies. A separate diagnostic using the
+same production comparator and fresh OMC reference checks all 590 common
+channels: 586 are high and all 590 initial values agree exactly. The four
+non-high channels remain precisely the previously reviewed
+`idealDcDc.feedback.y` and `idealDcDc.powerController.u` aliases in the two
+inverters. Against this reference, the prior candidate has four near channels;
+the restored candidate has two near and two deviating channels, all inside
+that existing integration-residual boundary. No other channel becomes
+non-high. The exclusion is unchanged and this model does not count as
+strict-high.
+
+The clock model in that same originating run remains high on all eight
+channels with exact initial values. The fixed canary in
+`target/msl/multibody-derivative-wrapper-canary` retains nine compared models,
+all strict-high, with zero missing, skipped, excluded, or deviating
+comparisons. All 175 initial channels are high and all 20 stage and simulation
+statuses are unchanged from `multibody-clock-trigger-canary`. The execution
+regression is closed; the complete 566-model milestone follows at the repair
+commit. No baseline is promoted from these focused results.

@@ -259,7 +259,7 @@ fn translation_time_guard_that_deletes_the_derivative_is_rejected() {
 /// Only one row can be the derivative's definition; the other reads it, and
 /// reading it recovers the defining right-hand side rather than a coordinate
 /// with no Solve storage.
-fn derivative_alias_model(read_from_discrete: bool) -> dae::Dae {
+fn derivative_alias_model(read_from_discrete: bool, wrappers: &[dae::UnaryOperator]) -> dae::Dae {
     let source = TestSource::new("Real x; Real a; discrete Real d; a=der(x); der(x)=-x; d=der(x);");
     let state_at = source.at(0, 6);
     let algebraic_at = source.at(8, 14);
@@ -318,11 +318,14 @@ fn derivative_alias_model(read_from_discrete: bool) -> dae::Dae {
             let negated = expressions
                 .at(definition_at)
                 .unary(dae::UnaryOperator::Negate, value)?;
-            let definition = expressions.at(definition_at).binary(
+            let mut definition = expressions.at(definition_at).binary(
                 dae::BinaryOperator::Subtract,
                 derivative,
                 negated,
             )?;
+            for wrapper in wrappers {
+                definition = expressions.at(definition_at).unary(*wrapper, definition)?;
+            }
             Ok((alias, definition))
         })?;
         model.continuous(|continuous| continuous.value_equation(alias_at, alias))?;
@@ -352,7 +355,7 @@ fn derivative_alias_model(read_from_discrete: bool) -> dae::Dae {
 
 #[test]
 fn algebraic_row_reads_a_derivative_through_its_defining_equation() {
-    let model = derivative_alias_model(false);
+    let model = derivative_alias_model(false, &[]);
     let solve = lower_solve_problem(&model).unwrap();
     solve
         .validate()
@@ -386,7 +389,7 @@ fn algebraic_row_reads_a_derivative_through_its_defining_equation() {
 
 #[test]
 fn discrete_row_still_rejects_a_derivative_coordinate() {
-    let model = derivative_alias_model(true);
+    let model = derivative_alias_model(true, &[]);
     let error = lower_solve_problem(&model).unwrap_err();
     assert!(
         matches!(
@@ -396,6 +399,53 @@ fn discrete_row_still_rejects_a_derivative_coordinate() {
         ),
         "only continuous algebraic and initial rows resolve a derivative: {error:?}"
     );
+}
+
+#[test]
+fn positive_derivative_residual_wrapper_preserves_the_derivative_alias() {
+    check_wrapped_derivative_alias(&[dae::UnaryOperator::Plus]);
+}
+
+#[test]
+fn negated_derivative_residual_wrapper_preserves_the_derivative_alias() {
+    check_wrapped_derivative_alias(&[dae::UnaryOperator::Negate]);
+}
+
+#[test]
+fn nested_derivative_residual_wrappers_preserve_the_derivative_alias() {
+    check_wrapped_derivative_alias(&[
+        dae::UnaryOperator::Plus,
+        dae::UnaryOperator::Negate,
+        dae::UnaryOperator::Plus,
+    ]);
+}
+
+fn check_wrapped_derivative_alias(wrappers: &[dae::UnaryOperator]) {
+    // MLS Appendix B.1: R=0, +R=0, and -R=0 define the same state derivative.
+    let model = derivative_alias_model(false, wrappers);
+    let solve =
+        lower_solve_problem(&model).expect("signed equation wrappers preserve computability");
+    assert_eq!(solve.solve_layout.solver_maps.names, ["x", "a"]);
+    let derivative = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.derivative_rhs)
+        .expect("derivative has a checked execution view");
+    let residual = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.residual)
+        .expect("algebraic alias has a checked execution view");
+    let parameters = vec![0.0; solve.solve_layout.compiled_parameter_len];
+    for (state, alias) in [(2.0, -2.0), (-3.0, 3.0), (0.0, 0.0), (2.0, 1.0)] {
+        for (program, expected) in [(&derivative, -state), (&residual, alias + state)] {
+            let mut output = [f64::NAN];
+            rumoca_eval_solve::eval_scalar_program_block(
+                program,
+                &[state, alias],
+                &parameters,
+                0.0,
+                None,
+                &mut output,
+            )
+            .expect("the derivative and its algebraic use evaluate");
+            assert_eq!(output, [expected]);
+        }
+    }
 }
 
 fn scaled_state_model(source: TestSource, coefficient: f64) -> dae::Dae {
