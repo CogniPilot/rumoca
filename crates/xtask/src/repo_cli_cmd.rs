@@ -647,4 +647,57 @@ mod tests {
             "#!/bin/sh\nexec cargo run -- \"$@\"\n"
         );
     }
+
+    /// PowerShell escapes an embedded quote by doubling it, not with a
+    /// backslash; a POSIX-style escape would splice the user's path into the
+    /// command line as two arguments.
+    #[test]
+    fn powershell_quoting_doubles_embedded_quotes() {
+        use super::powershell_single_quote;
+
+        assert_eq!(powershell_single_quote("C:\\bin"), "'C:\\bin'");
+        assert_eq!(
+            powershell_single_quote("it's here"),
+            "'it''s here'",
+            "an embedded quote doubles instead of terminating the string"
+        );
+    }
+
+    /// Profile updates must be idempotent: re-running the installer appends
+    /// the PATH snippet at most once, terminates an unterminated profile
+    /// before appending, and creates a missing profile from scratch.
+    #[test]
+    fn profile_snippet_appends_exactly_once() {
+        use super::append_unique_snippet;
+
+        let dir = new_temp_dir("append-unique-snippet");
+        let path = dir.join("profile/.bashrc");
+        let snippet = "export PATH='/repo/bin':\"$PATH\"";
+
+        assert!(append_unique_snippet(&path, snippet).expect("first append"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("profile text"),
+            format!("{snippet}\n"),
+            "a missing profile is created holding just the snippet"
+        );
+
+        assert!(
+            !append_unique_snippet(&path, snippet).expect("second append"),
+            "an already-present snippet is not appended again"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("profile text"),
+            format!("{snippet}\n")
+        );
+
+        fs::write(&path, "# unterminated profile").expect("seed profile");
+        assert!(append_unique_snippet(&path, snippet).expect("append to unterminated"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("profile text"),
+            format!("# unterminated profile\n{snippet}\n"),
+            "the snippet lands on its own line even when the profile lacked a newline"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -1184,7 +1184,7 @@ fn build_and_stage_vscode_lsp(root: &Path, vscode_dir: &Path, release: bool) -> 
         .arg("--bin")
         .arg("rumoca-lsp")
         .arg("--bin")
-        .arg("rumoca-galec-lsp")
+        .arg("rumoca-lsp-galec")
         .arg("--bin")
         .arg("rumoca");
     if release {
@@ -1210,7 +1210,7 @@ fn build_and_stage_vscode_lsp(root: &Path, vscode_dir: &Path, release: bool) -> 
     };
 
     stage_bin("rumoca-lsp")?;
-    stage_bin("rumoca-galec-lsp")?;
+    stage_bin("rumoca-lsp-galec")?;
     stage_bin("rumoca")?;
     Ok(())
 }
@@ -1334,7 +1334,7 @@ fn build_vscode_release_binaries(root: &Path, target: VscodePackageTarget) -> Re
         .arg("--bin")
         .arg("rumoca-lsp")
         .arg("--bin")
-        .arg("rumoca-galec-lsp")
+        .arg("rumoca-lsp-galec")
         .arg("--bin")
         .arg("rumoca")
         .current_dir(root)
@@ -1394,8 +1394,8 @@ fn stage_vscode_release_binaries(
     stage_named_binary(
         &release_dir,
         &bin_dir,
-        "rumoca-galec-lsp",
-        "rumoca-galec-lsp",
+        "rumoca-lsp-galec",
+        "rumoca-lsp-galec",
     )?;
     stage_named_binary(&release_dir, &bin_dir, "rumoca", "rumoca")?;
     Ok(())
