@@ -9,9 +9,6 @@ use crate::generated::modelica_grammar_trait;
 use rumoca_core::Span;
 use std::sync::Arc;
 
-//-----------------------------------------------------------------------------
-// Helper functions to reduce nesting in operator conversions.
-
 fn empty_expr(span: Span) -> rumoca_ir_ast::Expression {
     rumoca_ir_ast::Expression::Empty { span }
 }
@@ -19,6 +16,13 @@ fn empty_expr(span: Span) -> rumoca_ir_ast::Expression {
 fn call_span(comp: &rumoca_ir_ast::ComponentReference, args: &[rumoca_ir_ast::Expression]) -> Span {
     args.last()
         .map_or(comp.span, |last| merge_spans(comp.span, last.span()))
+}
+
+fn parsed_call_span(
+    comp: &rumoca_ir_ast::ComponentReference,
+    args: &FunctionCallArguments,
+) -> Span {
+    merge_spans(comp.span, args.delimiter_span)
 }
 
 fn binary_span(lhs: &rumoca_ir_ast::Expression, rhs: &rumoca_ir_ast::Expression) -> Span {
@@ -94,7 +98,6 @@ fn extract_for_indices(
 fn convert_expression_function_args(
     def: &modelica_grammar_trait::FunctionArgumentsExpressionFunctionArgumentsOpt,
 ) -> anyhow::Result<ExpressionList> {
-    // Check for for-comprehension first
     if let Some(for_clause) = extract_for_indices(&def.function_arguments_opt) {
         return process_for_comprehension(&def.expression, for_clause);
     }
@@ -148,7 +151,6 @@ fn add_op_span(op: &modelica_grammar_trait::AddOperator) -> anyhow::Result<Span>
     }
 }
 
-//-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
 
 pub struct ArraySubscripts {
@@ -184,9 +186,6 @@ impl TryFrom<&modelica_grammar_trait::Subscript> for rumoca_ir_ast::Subscript {
     }
 }
 
-//-----------------------------------------------------------------------------
-/// Represents a modification argument with optional `each`, `final`, `redeclare`,
-/// and `replaceable` prefixes.
 #[derive(Debug, Clone)]
 pub struct ModificationArg {
     pub expression: rumoca_ir_ast::Expression,
@@ -212,6 +211,16 @@ pub struct ExpressionList {
     pub redeclare_flags: Vec<bool>,
     /// Parallel to args - true if the corresponding arg is an element replaceable declaration
     pub replaceable_flags: Vec<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionCallArguments {
+    pub args: Vec<rumoca_ir_ast::Expression>,
+    pub each_flags: Vec<bool>,
+    pub final_flags: Vec<bool>,
+    pub redeclare_flags: Vec<bool>,
+    pub replaceable_flags: Vec<bool>,
+    pub delimiter_span: Span,
 }
 
 /// Convert a NamedArgument to a NamedArgument expression
@@ -271,7 +280,12 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgument> for rumoca_ir_ast::Expre
                 };
 
                 let span = call_span(&comp, &args);
-                Ok(rumoca_ir_ast::Expression::FunctionCall { comp, args, span })
+                Ok(rumoca_ir_ast::Expression::FunctionCall {
+                    comp,
+                    args,
+                    is_partial_application: true,
+                    span,
+                })
             }
         }
     }
@@ -308,9 +322,9 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
                     span: call_span(&comp, &func_args),
                     comp,
                     args: func_args,
+                    is_partial_application: true,
                 };
 
-                // Start with the partial application as the first arg
                 let mut args = vec![func_call_expr];
 
                 // Collect additional arguments if present
@@ -390,9 +404,6 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionL
     }
 }
 
-//-----------------------------------------------------------------------------
-// Helper functions for Argument conversion to reduce function complexity.
-
 fn ast_name_to_comp_ref_with_local(
     name: &rumoca_ir_ast::Name,
     local: bool,
@@ -407,13 +418,14 @@ fn ast_name_to_comp_ref_with_local(
         .map(|token| rumoca_ir_ast::ComponentRefPart {
             ident: token.clone(),
             subs: None,
+            def_id: None,
         })
         .collect();
     Ok(rumoca_ir_ast::ComponentReference {
         local,
         span: token_span(first_ident)?,
         parts,
-        def_id: None,
+        qualified_display_name: None,
     })
 }
 
@@ -426,6 +438,36 @@ fn ast_name_to_comp_ref(
     ast_name_to_comp_ref_with_local(name, false, context)
 }
 
+/// Build the redeclared component's name reference, keeping the array
+/// dimensions the redeclaration states.
+///
+/// MLS §A.2.5 gives an `element-redeclaration` a full `component-clause1`, whose
+/// `declaration` is `IDENT [ array-subscripts ] [ modification ]`. So
+/// `redeclare C a[2]` restates the component's dimensions just as its original
+/// declaration did, and those subscripts are the redeclaration's statement about
+/// the component's shape (MLS §7.3). Dropping them here silently reshapes the
+/// component to whatever the *replaced* declaration said, which is how a
+/// dimension-raising redeclaration used to reach typecheck as a rank-zero
+/// component and be rejected against its own subscripts.
+///
+/// The subscripts ride on the redeclared name's own `ComponentRefPart`, which is
+/// what [`rumoca_ir_ast::ComponentRefPart::subs`] is for: it keeps them attached
+/// to the name they dimension and leaves the redeclared *type* reference
+/// untouched. A redeclaration that states no subscripts leaves `subs` `None`, so
+/// this is a strict addition — for every source that never dimensions a
+/// redeclaration (all of MSL 4.1.0) the produced AST is unchanged.
+fn redeclared_name_ref(
+    decl: &modelica_grammar_trait::Declaration,
+) -> anyhow::Result<rumoca_ir_ast::ComponentReference> {
+    let mut name_ref = ident_to_comp_ref(&decl.ident)?;
+    if let Some(decl_opt) = &decl.declaration_opt
+        && let Some(part) = name_ref.parts.first_mut()
+    {
+        part.subs = Some(decl_opt.array_subscripts.subscripts.clone());
+    }
+    Ok(name_ref)
+}
+
 /// Build a single-part ComponentReference from an identifier token.
 fn ident_to_comp_ref(
     ident: &rumoca_core::Token,
@@ -436,8 +478,9 @@ fn ident_to_comp_ref(
         parts: vec![rumoca_ir_ast::ComponentRefPart {
             ident: ident.clone(),
             subs: None,
+            def_id: None,
         }],
-        def_id: None,
+        qualified_display_name: None,
     })
 }
 
@@ -494,6 +537,7 @@ fn convert_enum_class_specifier_inner(
         span: name_ref.span,
         comp: name_ref,
         args: vec![],
+        is_partial_application: false,
     })
 }
 
@@ -534,6 +578,7 @@ fn convert_function_partial_specifier_inner(
         span: call_span(&base_func_ref, &args),
         comp: base_func_ref,
         args,
+        is_partial_application: true,
     };
     Ok(rumoca_ir_ast::Expression::Modification {
         span: merge_spans(name_ref.span, function_call.span()),
@@ -558,7 +603,6 @@ fn extract_component_mod_args(
             modelica_grammar_trait::Modification::EquModificationExpression(eq_mod) => {
                 match &eq_mod.modification_expression {
                     modelica_grammar_trait::ModificationExpression::Expression(expr) => {
-                        // Return value modification as a direct assignment
                         Ok((vec![], Some(expr.expression.clone())))
                     }
                     modelica_grammar_trait::ModificationExpression::Break(_) => Ok((vec![], None)),
@@ -604,7 +648,7 @@ fn convert_component_clause_redecl_inner(
         ));
     }
 
-    let name_ref = ident_to_comp_ref(&decl.ident)?;
+    let name_ref = redeclared_name_ref(decl)?;
     let new_type_ref =
         ast_name_to_comp_ref(&cc1.type_specifier.name, "component clause redeclaration")?;
 
@@ -673,7 +717,7 @@ fn convert_replaceable_component_clause_inner(
     cc1: &modelica_grammar_trait::ComponentClause1,
 ) -> Result<rumoca_ir_ast::Expression, anyhow::Error> {
     let decl = &cc1.component_declaration1.declaration;
-    let name_ref = ident_to_comp_ref(&decl.ident)?;
+    let name_ref = redeclared_name_ref(decl)?;
     let new_type_ref =
         ast_name_to_comp_ref(&cc1.type_specifier.name, "replaceable component clause")?;
 
@@ -848,7 +892,6 @@ fn convert_element_mod_or_replaceable(
     }
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::ArgumentList> for ExpressionList {
     type Error = anyhow::Error;
 
@@ -900,7 +943,6 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ModificationArg {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Argument) -> std::result::Result<Self, Self::Error> {
-        // Extract the modifier flags from the argument structure.
         let (each, r#final, redeclare, replaceable) = match ast {
             modelica_grammar_trait::Argument::ElementModificationOrReplaceable(modif) => {
                 let emor = &modif.element_modification_or_replaceable;
@@ -939,7 +981,6 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ModificationArg {
     }
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
     type Error = anyhow::Error;
 
@@ -949,11 +990,15 @@ impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
         let mut v = Vec::new();
         if let Some(opt) = &ast.output_expression_list_opt {
             v.push(opt.expression.clone());
+        } else if let Some(first) = ast.output_expression_list_list.first() {
+            v.push(empty_expr(token_span(&first.comma)?));
         }
         for expr in &ast.output_expression_list_list {
-            if let Some(opt) = &expr.output_expression_list_opt0 {
-                v.push(opt.expression.clone());
-            }
+            let output = match &expr.output_expression_list_opt0 {
+                Some(opt) => opt.expression.clone(),
+                None => empty_expr(token_span(&expr.comma)?),
+            };
+            v.push(output);
         }
         let each_flags = vec![false; v.len()];
         let final_flags = vec![false; v.len()];
@@ -969,39 +1014,39 @@ impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for ExpressionList {
+impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for FunctionCallArguments {
     type Error = anyhow::Error;
 
     fn try_from(
         ast: &modelica_grammar_trait::FunctionCallArgs,
     ) -> std::result::Result<Self, Self::Error> {
+        let delimiter_span = merge_spans(token_span(&ast.l_paren)?, token_span(&ast.r_paren)?);
         if let Some(opt) = &ast.function_call_args_opt {
             let args = opt.function_arguments.args.clone();
             let each_flags = opt.function_arguments.each_flags.clone();
             let final_flags = opt.function_arguments.final_flags.clone();
             let redeclare_flags = opt.function_arguments.redeclare_flags.clone();
             let replaceable_flags = opt.function_arguments.replaceable_flags.clone();
-            Ok(ExpressionList {
+            Ok(FunctionCallArguments {
                 args,
                 each_flags,
                 final_flags,
                 redeclare_flags,
                 replaceable_flags,
+                delimiter_span,
             })
         } else {
-            Ok(ExpressionList {
+            Ok(FunctionCallArguments {
                 args: vec![],
                 each_flags: vec![],
                 final_flags: vec![],
                 redeclare_flags: vec![],
                 replaceable_flags: vec![],
+                delimiter_span,
             })
         }
     }
 }
-
-//-----------------------------------------------------------------------------
-// Helper functions for Primary conversion to reduce function complexity.
 
 /// Convert ExpressionList to Vec<Expression>.
 fn expr_list_to_vec(el: &modelica_grammar_trait::ExpressionList) -> Vec<rumoca_ir_ast::Expression> {
@@ -1094,6 +1139,7 @@ fn convert_output_primary(
                     span: merge_spans(base.span(), token_span(&field.ident)?),
                     base: Arc::new(base),
                     field: field.ident.text.to_string(),
+                    field_def_id: None,
                 })
             }
         }
@@ -1118,18 +1164,20 @@ fn convert_global_function_call(
     let part = rumoca_ir_ast::ComponentRefPart {
         ident: tok.clone().into(),
         subs: None,
+        def_id: None,
     };
     let comp = rumoca_ir_ast::ComponentReference {
         local: false,
         span: token_span(&tok.clone().into())?,
         parts: vec![part],
-        def_id: None,
+        qualified_display_name: None,
     };
     let args = gfc.function_call_args.args.clone();
     let func_call = rumoca_ir_ast::Expression::FunctionCall {
-        span: call_span(&comp, &args),
+        span: parsed_call_span(&comp, &gfc.function_call_args),
         comp,
         args,
+        is_partial_application: false,
     };
 
     // If there are subscripts, wrap in ArrayIndex
@@ -1143,7 +1191,6 @@ fn convert_global_function_call(
     })
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
     type Error = anyhow::Error;
 
@@ -1156,9 +1203,10 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
                         let comp_ref = comp.component_primary.component_reference.clone();
                         let args_vec = args.function_call_args.args.clone();
                         let func_call = rumoca_ir_ast::Expression::FunctionCall {
-                            span: call_span(&comp_ref, &args_vec),
+                            span: parsed_call_span(&comp_ref, &args.function_call_args),
                             comp: comp_ref,
                             args: args_vec,
+                            is_partial_application: false,
                         };
                         // Check for optional subscripts: f(x)[i]
                         match &args.component_primary_opt0 {
@@ -1251,6 +1299,13 @@ impl TryFrom<&modelica_grammar_trait::Factor> for rumoca_ir_ast::Expression {
     fn try_from(ast: &modelica_grammar_trait::Factor) -> std::result::Result<Self, Self::Error> {
         if ast.factor_list.is_empty() {
             Ok(ast.primary.clone())
+        } else if ast.factor_list.len() > 1 {
+            // Modelica's factor grammar permits at most one exponentiation
+            // operator.  The recovery grammar is more permissive, so reject
+            // the extra operators here instead of silently dropping them.
+            Err(anyhow::anyhow!(
+                "multiple exponentiation operators require explicit parentheses"
+            ))
         } else {
             let op = match &ast.factor_list[0].factor_list_group {
                 modelica_grammar_trait::FactorListGroup::Circumflex(_) => {
@@ -1299,7 +1354,6 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for rumoca_ir_ast::E
     fn try_from(
         ast: &modelica_grammar_trait::ArithmeticExpression,
     ) -> std::result::Result<Self, Self::Error> {
-        // handle first term
         let mut lhs = match &ast.arithmetic_expression_opt {
             Some(opt) => rumoca_ir_ast::Expression::Unary {
                 op: add_op_to_unary(&opt.add_operator),

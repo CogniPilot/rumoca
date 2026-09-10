@@ -2,7 +2,6 @@
 
 use crate::generated::modelica_grammar_trait;
 
-//-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
 
 pub struct EquationSection {
@@ -37,7 +36,6 @@ impl TryFrom<&modelica_grammar_trait::EquationSection> for EquationSection {
     }
 }
 
-//-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
 
 pub struct AlgorithmSection {

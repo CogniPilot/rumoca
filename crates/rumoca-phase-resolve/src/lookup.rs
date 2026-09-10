@@ -5,14 +5,13 @@
 
 use crate::Resolver;
 use rumoca_core::{ComponentPath, DefId, ScopeId};
-use std::collections::HashSet;
 
 impl Resolver {
     /// Resolve a qualified name (e.g., "Package.Model" or "Model").
     ///
     /// For simple names, uses scope lookup.
-    /// For qualified names, resolves the first part via scope lookup,
-    /// then uses O(1) map lookup for subsequent parts.
+    /// For qualified names, resolves the first part via lexical scope lookup,
+    /// then traverses exact class scopes for subsequent parts.
     pub(crate) fn resolve_qualified_name(
         &self,
         name: &rumoca_ir_ast::Name,
@@ -42,7 +41,6 @@ impl Resolver {
             return None;
         }
 
-        // Get the first part of the name
         let first_part = &name.name[0].text;
         let first_path = ComponentPath::from_flat_path(first_part);
 
@@ -56,123 +54,40 @@ impl Resolver {
             self.scope_tree
                 .lookup_excluding(scope, &first_path, effective_exclude)?;
 
-        // If there are more parts, navigate nested classes using O(1) lookup
+        // Once the head is a declaration, every tail segment is a member lookup
+        // in that declaration's exact class scope. The scope owns both direct
+        // and effective inherited members, including ambiguity.
         for part in name.name.iter().skip(1) {
-            // Get the current qualified name
-            let current_qualified = self.def_names.get(&current_def_id)?;
-
-            // Build the next qualified name
-            let next_qualified = format!("{}.{}", current_qualified, part.text);
-
-            // O(1) lookup using the inverse map
-            if let Some(next_def_id) = self.name_to_def.get(&next_qualified) {
-                current_def_id = *next_def_id;
-                continue;
-            }
-
-            // Fallback: the current node may be a short class definition alias
-            // (e.g. `package PS = PhaseSystem;`) where members are inherited from
-            // the aliased base class. Those inherited members are not explicitly
-            // declared under `current_qualified.*` in `name_to_def`.
-            //
-            // MLS §7.3 semantics require dotted access like `PS.j` to resolve.
-            // Reuse inherited-member lookup for this dotted navigation step.
-            if self.class_types.contains_key(&current_def_id)
-                && let Some(inherited_def_id) =
-                    self.lookup_inherited_member(current_qualified, &part.text)
-            {
-                current_def_id = inherited_def_id;
-                continue;
-            }
-
-            return None;
+            current_def_id = self.lookup_class_member(current_def_id, &part.text)?;
         }
 
         Some(current_def_id)
     }
 
-    /// Look up a member name in a class's inheritance chain (recursive).
-    ///
-    /// MLS §7.3: Used for the "redeclare extends SameName" pattern where a nested
-    /// class extends an INHERITED class with the same short name. Since inherited
-    /// members aren't in our scope tree, we search the containing class's base
-    /// classes for the member.
-    ///
-    /// Example:
-    /// ```modelica
-    /// package Base
-    ///     record State end State;
-    /// end Base;
-    /// package Derived extends Base
-    ///     redeclare record extends State end State;  // State from Base
-    /// end Derived;
-    /// ```
-    ///
-    /// When resolving `State` in `Derived.State extends State`, normal lookup fails
-    /// because `State` is inherited (not directly declared). This function searches
-    /// `Derived`'s base classes (`Base`) for a member named `State`.
-    ///
-    /// For deep inheritance chains (e.g., WaterIF97_pT → WaterIF97_base →
-    /// PartialTwoPhaseMedium → PartialPureSubstance → PartialMedium), the search
-    /// is recursive to find members from any ancestor class.
-    pub(crate) fn lookup_inherited_member(
-        &self,
-        container_qualified_name: &str,
-        member_name: &str,
-    ) -> Option<DefId> {
-        self.lookup_inherited_member_recursive(
-            container_qualified_name,
-            member_name,
-            &mut HashSet::new(),
-        )
+    /// Look up one member in a declaration's authoritative class scope.
+    pub(crate) fn lookup_class_member(&self, container: DefId, member_name: &str) -> Option<DefId> {
+        let scope = self.class_def_scopes.get(&container).copied()?;
+        self.scope_tree
+            .lookup_member(scope, &ComponentPath::from_parts([member_name]))
     }
 
-    /// Recursive helper for inherited member lookup with cycle detection.
+    /// Look up only the effective inherited slot in one class scope.
     ///
-    /// Uses the `class_to_bases` index for O(1) base class lookup instead of
-    /// iterating through all inheritance edges.
-    fn lookup_inherited_member_recursive(
+    /// Redeclaration must see through the redeclaring direct member to the
+    /// inherited declaration it replaces. The scope tree already owns the
+    /// reconciled unique/ambiguous state, so this query does not walk bases.
+    pub(crate) fn lookup_inherited_class_member(
         &self,
-        container_qualified_name: &str,
+        container: DefId,
         member_name: &str,
-        visited: &mut HashSet<String>,
     ) -> Option<DefId> {
-        // Avoid infinite loops in case of circular inheritance
-        if !visited.insert(container_qualified_name.to_string()) {
-            return None;
+        let scope = self.class_def_scopes.get(&container).copied()?;
+        match self
+            .scope_tree
+            .inherited_member(scope, &ComponentPath::from_parts([member_name]))?
+        {
+            rumoca_ir_ast::InheritedMember::Unique(def_id) => Some(def_id),
+            rumoca_ir_ast::InheritedMember::Ambiguous => None,
         }
-
-        // Get container class's DefId
-        let container_def_id = self.name_to_def.get(container_qualified_name)?;
-
-        // O(1) lookup of base classes using the index
-        let base_ids = self.class_to_bases.get(container_def_id)?;
-
-        for base_id in base_ids {
-            if let Some(result) = self.check_base_for_member(base_id, member_name, visited) {
-                return Some(result);
-            }
-        }
-
-        None
-    }
-
-    /// Check a single base class for an inherited member.
-    fn check_base_for_member(
-        &self,
-        base_id: &DefId,
-        member_name: &str,
-        visited: &mut HashSet<String>,
-    ) -> Option<DefId> {
-        let base_qualified = self.def_names.get(base_id)?;
-
-        // Check if base_qualified.member_name exists directly
-        let inherited_name = format!("{}.{}", base_qualified, member_name);
-        if let Some(&inherited_def_id) = self.name_to_def.get(&inherited_name) {
-            return Some(inherited_def_id);
-        }
-
-        // Recursively search the base class's inheritance chain
-        self.lookup_inherited_member_recursive(base_qualified, member_name, visited)
     }
 }

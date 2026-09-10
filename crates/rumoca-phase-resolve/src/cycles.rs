@@ -32,8 +32,13 @@ impl Resolver {
         let mut in_path: HashSet<DefId> = HashSet::new();
         let mut path: Vec<DefId> = Vec::new();
 
-        // Check each class for cycles
-        let all_classes: Vec<DefId> = graph.keys().copied().collect();
+        let mut seen_classes = HashSet::new();
+        let all_classes: Vec<DefId> = self
+            .inheritance_edges
+            .iter()
+            .map(|(class_id, _, _)| *class_id)
+            .filter(|class_id| seen_classes.insert(*class_id))
+            .collect();
         for start in all_classes {
             if !visited.contains(&start) {
                 self.detect_cycle_dfs(start, &graph, &mut visited, &mut in_path, &mut path);
