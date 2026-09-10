@@ -5,7 +5,7 @@ use rumoca_ir_solve::RandomGenerator;
 
 use crate::{EvalSolveError, RowEvalContext, get};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct ImpureRandomState {
     streams: HashMap<i64, ImpureRandomStream>,
 }
@@ -14,11 +14,35 @@ impl ImpureRandomState {
     pub(super) fn clear(&mut self) {
         self.streams.clear();
     }
+
+    pub(super) fn bit_eq(&self, other: &Self) -> bool {
+        self.streams.len() == other.streams.len()
+            && self.streams.iter().all(|(id, stream)| {
+                other
+                    .streams
+                    .get(id)
+                    .is_some_and(|candidate| stream.bit_eq(candidate))
+            })
+    }
 }
 
+#[derive(Clone)]
 struct ImpureRandomStream {
     state: u64,
     cached_by_event_call: HashMap<(u64, u64), f64>,
+}
+
+impl ImpureRandomStream {
+    fn bit_eq(&self, other: &Self) -> bool {
+        self.state == other.state
+            && self.cached_by_event_call.len() == other.cached_by_event_call.len()
+            && self.cached_by_event_call.iter().all(|(key, value)| {
+                other
+                    .cached_by_event_call
+                    .get(key)
+                    .is_some_and(|candidate| value.to_bits() == candidate.to_bits())
+            })
+    }
 }
 
 pub(super) fn impure_random_mutex<'a>(

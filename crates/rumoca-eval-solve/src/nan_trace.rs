@@ -74,78 +74,6 @@ pub fn report_nonfinite<F: Fn(usize) -> String>(
     report_nonfinite_cold(context, t, values, &name_of)
 }
 
-/// Report non-finite Jacobian entries with full directional context: for each
-/// non-finite output row `i`, names the differentiated row variable and each
-/// seeded column variable (`∂(row)/∂(col) = NaN`). `row_name`/`col_name` should
-/// include source spans so the offending pair is traceable to the model.
-///
-/// Seed vectors containing non-finite entries are skipped: those are the
-/// solver's NaN-propagation sparsity probes, where a non-finite output is
-/// expected and not a defect. Effectively free when tracing is disabled.
-#[inline]
-pub fn report_nonfinite_jacobian<R, C>(
-    context: &str,
-    t: f64,
-    seed: &[f64],
-    out: &[f64],
-    row_name: R,
-    col_name: C,
-) -> bool
-where
-    R: Fn(usize) -> String,
-    C: Fn(usize) -> String,
-{
-    if !nan_trace_enabled() {
-        return false;
-    }
-    report_nonfinite_jacobian_cold(context, t, seed, out, &row_name, &col_name)
-}
-
-#[cold]
-fn report_nonfinite_jacobian_cold(
-    context: &str,
-    t: f64,
-    seed: &[f64],
-    out: &[f64],
-    row_name: &dyn Fn(usize) -> String,
-    col_name: &dyn Fn(usize) -> String,
-) -> bool {
-    if out.iter().all(|value| value.is_finite()) {
-        return false;
-    }
-    // A non-finite seed is the solver's NaN-propagation sparsity probe: a
-    // non-finite output there is expected (it reveals the dependency structure
-    // rather than a defect), so tag it distinctly.
-    let probe = seed.iter().any(|value| !value.is_finite());
-    let tag = if probe { " [sparsity probe]" } else { "" };
-    // Seeded columns are the perturbation directions (non-zero, or the probed
-    // NaN column) — i.e. the variables being differentiated against.
-    let seeded_columns = seed
-        .iter()
-        .enumerate()
-        .filter(|(_, value)| **value != 0.0 || !value.is_finite())
-        .map(|(index, _)| col_name(index))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let columns = if seeded_columns.is_empty() {
-        "<no seeded column>".to_string()
-    } else {
-        seeded_columns
-    };
-    let mut found = false;
-    for (index, value) in out.iter().enumerate() {
-        if !value.is_finite() {
-            found = true;
-            let kind = if value.is_nan() { "NaN" } else { "inf" };
-            eprintln!(
-                "[nan-trace] {context}{tag} @ t={t}: \u{2202}({row}) / \u{2202}({columns}) = {kind}",
-                row = row_name(index),
-            );
-        }
-    }
-    found
-}
-
 /// Report non-finite state-derivative inputs (the projected `solver_y`) and
 /// outputs (`der(state)`), each named by solver variable. Effectively free when
 /// tracing is off.
@@ -176,36 +104,6 @@ pub fn report_state_derivative(
             |name| format!("der({name})"),
         )
     });
-}
-
-/// Report non-finite state-Jacobian entries with directional context, naming the
-/// differentiated state derivative and the seeded column(s) with their source
-/// spans. Effectively free when tracing is off.
-pub fn report_state_jacobian(model: &solve::SolveModel, t: f64, seed: &[f64], jacobian_v: &[f64]) {
-    if !nan_trace_enabled() {
-        return;
-    }
-    report_nonfinite_jacobian(
-        "state-derivative Jacobian (finite difference)",
-        t,
-        seed,
-        jacobian_v,
-        |row| format!("der({})", solver_var_label(model, row)),
-        |col| solver_var_label(model, col),
-    );
-}
-
-/// Human-readable label for a solver slot: variable name plus source span
-/// (looked up from `variable_meta`) so traces are traceable back to source.
-fn solver_var_label(model: &solve::SolveModel, index: usize) -> String {
-    let names = &model.problem.solve_layout.solver_maps.names;
-    let Some(name) = names.get(index) else {
-        return format!("y[{index}]");
-    };
-    match model.variable_meta.iter().find(|meta| &meta.name == name) {
-        Some(meta) => format!("{name} @ {:?}", meta.source_span),
-        None => name.clone(),
-    }
 }
 
 /// Out-of-line slow path so the enabled-only work stays out of the caller's hot
