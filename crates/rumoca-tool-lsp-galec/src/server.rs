@@ -74,7 +74,7 @@ impl LanguageServer for GalecLanguageServer {
         Ok(InitializeResult {
             capabilities: Self::server_capabilities(),
             server_info: Some(ServerInfo {
-                name: "rumoca-galec-lsp".to_string(),
+                name: "rumoca-lsp-galec".to_string(),
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
             }),
         })
@@ -82,7 +82,7 @@ impl LanguageServer for GalecLanguageServer {
 
     async fn initialized(&self, _params: InitializedParams) {
         self.client
-            .log_message(MessageType::INFO, "rumoca-galec-lsp ready")
+            .log_message(MessageType::INFO, "rumoca-lsp-galec ready")
             .await;
     }
 
@@ -214,7 +214,7 @@ mod tests {
             ));
             assert_eq!(
                 result.server_info.expect("server info").name,
-                "rumoca-galec-lsp"
+                "rumoca-lsp-galec"
             );
         });
     }

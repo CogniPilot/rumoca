@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -14,8 +15,9 @@ wasm-bindgen = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 rumoca-ir-solve = { workspace = true }
+rumoca-phase-solve = { workspace = true }
 rumoca-solver = { workspace = true }
-rumoca-solver-diffsol = { workspace = true }
+rumoca-sim = { workspace = true, default-features = false, features = ["solver-diffsol"] }
 # Enable the wasm_js getrandom backend (diffsol/rand pull getrandom); mirrors
 # rumoca-bind-wasm. The `.cargo/config.toml` cfg selects the backend; this
 # enables its feature when the addon is built on its own.

@@ -2,8 +2,8 @@
 //!
 //! Two layers, mirroring `rumoca-tool-lsp`:
 //! - a **WASM-safe** core ([`diagnostics`] + [`navigation`]) over `lsp-types`,
-//!   the GALEC language module, and the shared `rumoca-lsp-position` byte↔UTF-16
-//!   converter, usable from a future in-browser `.alg` editor;
+//!   the GALEC language module, and protocol-neutral byte↔UTF-16 conversion
+//!   from `rumoca-core`, usable from a future in-browser `.alg` editor;
 //! - a native stdio [`tower_lsp`] server behind the default `server` feature.
 //!
 //! It answers `textDocument/publishDiagnostics` (positioned parse and validator
@@ -13,6 +13,7 @@
 
 pub mod diagnostics;
 pub mod navigation;
+mod text_position;
 
 pub use diagnostics::compute_diagnostics;
 

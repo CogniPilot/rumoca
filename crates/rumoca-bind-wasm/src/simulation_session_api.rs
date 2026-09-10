@@ -1,8 +1,8 @@
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    compile_requested_model, qualify_input_model_name, simulation_api::build_simulation_options,
-    with_singleton_session,
+    WasmError, compile_requested_model, qualify_input_model_name,
+    simulation_api::build_simulation_options, with_singleton_session,
 };
 
 /// Opaque handle to a real-time simulation session running in WASM.
@@ -22,8 +22,8 @@ impl WasmSimulationSession {
     /// to simulate. The model's experiment metadata supplies default simulation
     /// options.
     #[wasm_bindgen(constructor)]
-    pub fn new(source: &str, model_name: &str) -> Result<WasmSimulationSession, JsValue> {
-        Self::with_interactive_options(source, model_name, 0.0, "", 0.0, 0.0)
+    pub fn new(source: &str, model_name: &str) -> Result<WasmSimulationSession, WasmError> {
+        Self::with_interactive_options(source, model_name, 0.0, "", 0.0, 0.0, "[]")
     }
 
     /// Compile a Modelica model and create a user-terminated interactive session.
@@ -35,7 +35,8 @@ impl WasmSimulationSession {
         solver: &str,
         atol: f64,
         rtol: f64,
-    ) -> Result<WasmSimulationSession, JsValue> {
+        initial_inputs_json: &str,
+    ) -> Result<WasmSimulationSession, WasmError> {
         let (dae, mut opts) = with_singleton_session(|session| {
             session.update_document("input.mo", source);
             let requested_model = qualify_input_model_name(session, model_name);
@@ -49,34 +50,49 @@ impl WasmSimulationSession {
         if rtol.is_finite() && rtol > 0.0 {
             opts.rtol = rtol;
         }
+        opts.initial_inputs = serde_json::from_str(initial_inputs_json)
+            .map_err(|e| WasmError::new(format!("Invalid initial inputs: {e}")))?;
 
         let session = rumoca_sim::SimulationSession::new(&dae, opts)
-            .map_err(|e| JsValue::from_str(&format!("Session creation error: {e}")))?;
+            .map_err(|e| WasmError::new(format!("Session creation error: {e}")))?;
 
         Ok(WasmSimulationSession { session })
     }
 
     /// Set an input value by name. Takes effect on the next advance.
-    pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), JsValue> {
+    pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), WasmError> {
         self.session
             .set_input(name, value)
-            .map_err(|e| JsValue::from_str(&format!("{e}")))
+            .map_err(|e| WasmError::new(format!("{e}")))
+    }
+
+    /// Apply one atomic input frame encoded as `[["name", value], ...]`.
+    pub fn set_inputs(&mut self, inputs_json: &str) -> Result<(), WasmError> {
+        let inputs: Vec<(String, f64)> = serde_json::from_str(inputs_json)
+            .map_err(|e| WasmError::new(format!("Invalid input frame: {e}")))?;
+        let batch: Vec<_> = inputs
+            .iter()
+            .map(|(name, value)| (name.as_str(), *value))
+            .collect();
+        self.session
+            .set_inputs(&batch)
+            .map_err(|e| WasmError::new(format!("{e}")))
     }
 
     /// Advance the simulation to an absolute target time in seconds.
-    pub fn advance_to(&mut self, target_time: f64) -> Result<(), JsValue> {
+    pub fn advance_to(&mut self, target_time: f64) -> Result<(), WasmError> {
         self.session.ensure_end_time(target_time);
         self.session
             .advance_to(target_time)
-            .map_err(|e| JsValue::from_str(&format!("Advance error: {e}")))
+            .map_err(|e| WasmError::new(format!("Advance error: {e}")))
     }
 
     /// Advance the simulation by a relative time step in seconds.
-    pub fn step(&mut self, dt: f64) -> Result<(), JsValue> {
+    pub fn step(&mut self, dt: f64) -> Result<(), WasmError> {
         self.session.ensure_end_time(self.session.time() + dt);
         self.session
             .step(dt)
-            .map_err(|e| JsValue::from_str(&format!("Step error: {e}")))
+            .map_err(|e| WasmError::new(format!("Step error: {e}")))
     }
 
     /// Get the current simulation time.
@@ -85,42 +101,42 @@ impl WasmSimulationSession {
     }
 
     /// Read a single variable value by name.
-    pub fn get(&self, name: &str) -> Result<Option<f64>, JsValue> {
+    pub fn get(&self, name: &str) -> Result<Option<f64>, WasmError> {
         self.session
             .get(name)
-            .map_err(|e| JsValue::from_str(&format!("Session read error: {e}")))
+            .map_err(|e| WasmError::new(format!("Session read error: {e}")))
     }
 
     /// Get all current variable values as a JSON string `{"time": t, "values": {...}}`.
-    pub fn state_json(&self) -> Result<String, JsValue> {
+    pub fn state_json(&self) -> Result<String, WasmError> {
         let state = self
             .session
             .state()
-            .map_err(|e| JsValue::from_str(&format!("Session state error: {e}")))?;
+            .map_err(|e| WasmError::new(format!("Session state error: {e}")))?;
         serde_json::to_string(&serde_json::json!({
             "time": state.time,
             "values": state.values,
         }))
-        .map_err(|e| JsValue::from_str(&format!("Session state serialization error: {e}")))
+        .map_err(|e| WasmError::new(format!("Session state serialization error: {e}")))
     }
 
     /// Get available input names as a JSON array string.
-    pub fn input_names(&self) -> Result<String, JsValue> {
+    pub fn input_names(&self) -> Result<String, WasmError> {
         serde_json::to_string(self.session.input_names())
-            .map_err(|e| JsValue::from_str(&format!("Input name serialization error: {e}")))
+            .map_err(|e| WasmError::new(format!("Input name serialization error: {e}")))
     }
 
     /// Get all solver variable names as a JSON array string.
-    pub fn variable_names(&self) -> Result<String, JsValue> {
+    pub fn variable_names(&self) -> Result<String, WasmError> {
         serde_json::to_string(self.session.variable_names())
-            .map_err(|e| JsValue::from_str(&format!("Variable name serialization error: {e}")))
+            .map_err(|e| WasmError::new(format!("Variable name serialization error: {e}")))
     }
 
     /// Reset the simulation to initial conditions.
-    pub fn reset(&mut self) -> Result<(), JsValue> {
+    pub fn reset(&mut self) -> Result<(), WasmError> {
         self.session
             .reset(0.0)
-            .map_err(|e| JsValue::from_str(&format!("Reset failed: {e}")))?;
+            .map_err(|e| WasmError::new(format!("Reset failed: {e}")))?;
         Ok(())
     }
 }

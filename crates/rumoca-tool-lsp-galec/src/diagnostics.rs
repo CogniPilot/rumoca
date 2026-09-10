@@ -4,17 +4,14 @@
 //!
 //! [`compute_diagnostics`] parses the source; a parse error is reported alone
 //! (there is no AST to analyse), otherwise the validator's findings are each
-//! positioned by resolving their structural location against the parsed AST
-//! ([`rumoca_ir_galec::span_of`]). Every diagnostic carries its stable `EG0xx`
-//! code and points at the offending source range.
+//! positioned by the parse phase's opaque document query. Every diagnostic
+//! carries its stable `EG0xx` code and points at the offending source range.
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Range};
 
-use rumoca_ir_galec::ast::Block;
-use rumoca_ir_galec::parse::{GalecParseError, parse};
-use rumoca_ir_galec::{GalecError, span_of, validate};
+use rumoca_phase_parse_galec::{DocumentDiagnostic, GalecSyntaxError, parse_document};
 
-use rumoca_lsp_position::span_to_range;
+use crate::text_position::span_to_range;
 
 /// The `source` label attached to every GALEC diagnostic (shown by editors).
 const DIAGNOSTIC_SOURCE: &str = "rumoca-galec";
@@ -24,20 +21,18 @@ const DIAGNOSTIC_SOURCE: &str = "rumoca-galec";
 /// validator findings, or none when it is well-formed.
 #[must_use]
 pub fn compute_diagnostics(source: &str, file_name: &str) -> Vec<Diagnostic> {
-    match parse(source, file_name) {
+    match parse_document(source, file_name) {
         Err(error) => vec![parse_error_to_diagnostic(&error, source)],
-        Ok(block) => match validate(&block) {
-            Ok(()) => Vec::new(),
-            Err(errors) => errors
-                .iter()
-                .map(|error| validator_error_to_diagnostic(error, &block, source))
-                .collect(),
-        },
+        Ok(document) => document
+            .diagnostics()
+            .iter()
+            .map(|error| validator_error_to_diagnostic(error, source))
+            .collect(),
     }
 }
 
 /// A parse error, positioned by its byte offsets when parol supplied them.
-fn parse_error_to_diagnostic(error: &GalecParseError, source: &str) -> Diagnostic {
+fn parse_error_to_diagnostic(error: &GalecSyntaxError, source: &str) -> Diagnostic {
     let range = match error.span() {
         Some((start, end)) => span_to_range(source, start, end),
         None => first_line_range(source),
@@ -47,12 +42,12 @@ fn parse_error_to_diagnostic(error: &GalecParseError, source: &str) -> Diagnosti
 
 /// A validator finding, positioned by resolving its structural location to a
 /// source span over the parsed AST.
-fn validator_error_to_diagnostic(error: &GalecError, block: &Block, source: &str) -> Diagnostic {
-    let range = match span_of(block, error.location()) {
+fn validator_error_to_diagnostic(error: &DocumentDiagnostic, source: &str) -> Diagnostic {
+    let range = match error.span() {
         Some(span) => span_to_range(source, span.start.0, span.end.0),
         None => first_line_range(source),
     };
-    diagnostic(range, error.code(), error.to_string())
+    diagnostic(range, error.code(), error.message().to_owned())
 }
 
 /// Assemble an error-severity diagnostic with a stable string code.
@@ -80,11 +75,22 @@ mod tests {
 
     #[test]
     fn well_formed_document_has_no_diagnostics() {
-        // Print a minimal valid block, then diagnose its text.
-        let block = rumoca_ir_galec::ast::Block::new(rumoca_ir_galec::ast::Name::ident("Ok"));
-        let text = rumoca_ir_galec::print_block(&block).expect("prints");
+        let text = "block Ok
+protected
+public
+method Startup
+algorithm
+end Startup;
+method Recalibrate
+algorithm
+end Recalibrate;
+method DoStep
+algorithm
+end DoStep;
+end Ok;
+";
         assert!(
-            compute_diagnostics(&text, "ok.alg").is_empty(),
+            compute_diagnostics(text, "ok.alg").is_empty(),
             "a well-formed block should produce no diagnostics"
         );
     }
@@ -132,20 +138,24 @@ mod tests {
     #[test]
     fn validator_error_is_reported_and_positioned() {
         // Two interface inputs named `u` -> EG012 duplicate name.
-        use rumoca_ir_galec::ast::{
-            Block, InterfaceKind, InterfaceVariable, Name, ScalarType, VariableDeclaration,
-        };
-        let input = |name: &str| InterfaceVariable {
-            kind: InterfaceKind::Input,
-            decl: VariableDeclaration::scalar(ScalarType::Real, Name::ident(name)),
-            start: None,
-        };
-        let mut block = Block::new(Name::ident("Dup"));
-        block.interface.push(input("u"));
-        block.interface.push(input("u"));
-        let text = rumoca_ir_galec::print_block(&block).expect("prints");
+        let text = "block Dup
+input Real u;
+input Real u;
+protected
+public
+method Startup
+algorithm
+end Startup;
+method Recalibrate
+algorithm
+end Recalibrate;
+method DoStep
+algorithm
+end DoStep;
+end Dup;
+";
 
-        let diags = compute_diagnostics(&text, "dup.alg");
+        let diags = compute_diagnostics(text, "dup.alg");
         let dup = diags
             .iter()
             .find(|d| matches!(&d.code, Some(NumberOrString::String(c)) if c == "EG012"))

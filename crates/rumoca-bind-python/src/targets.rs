@@ -13,7 +13,7 @@ use rumoca_compile::codegen::templates::builtin_targets;
 pub struct Target {
     #[pyo3(get)]
     pub id: String,
-    /// IR stage this target consumes: `"ast" | "flat" | "dae" | "solve"`.
+    /// IR stage this target consumes.
     #[pyo3(get)]
     pub ir: String,
     #[pyo3(get)]
@@ -45,13 +45,15 @@ fn ir_str(ir: TargetTemplateIr) -> &'static str {
         TargetTemplateIr::Flat => "flat",
         TargetTemplateIr::Dae => "dae",
         TargetTemplateIr::Solve => "solve",
+        TargetTemplateIr::Fmi => "fmi",
+        TargetTemplateIr::AlgorithmCode => "algorithm-code",
     }
 }
 
 fn capabilities_dict(py: Python<'_>, caps: Option<&TargetCapabilities>) -> PyObject {
     let dict = PyDict::new_bound(py);
     if let Some(c) = caps {
-        let pairs: [(&str, Option<bool>); 7] = [
+        let pairs: [(&str, Option<bool>); 8] = [
             ("events", c.events),
             ("runtime_events", c.runtime_events),
             ("initialization", c.initialization),
@@ -59,6 +61,7 @@ fn capabilities_dict(py: Python<'_>, caps: Option<&TargetCapabilities>) -> PyObj
             ("reverse_ad", c.reverse_ad),
             ("continuous_states", c.continuous_states),
             ("residual_equations", c.residual_equations),
+            ("exact_algebraic_assignments", c.exact_algebraic_assignments),
         ];
         for (key, value) in pairs {
             if let Some(v) = value {
@@ -127,7 +130,5 @@ pub(crate) fn list_solvers() -> Vec<SolverInfo> {
             available: true,
         },
         implicit("bdf"),
-        implicit("esdirk34"),
-        implicit("trbdf2"),
     ]
 }

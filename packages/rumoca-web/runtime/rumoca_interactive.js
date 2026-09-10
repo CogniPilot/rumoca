@@ -329,7 +329,7 @@ export function createInputRuntime(config) {
     }
     if (action === 'toggle') {
       const state = trimMaybeString(binding.state);
-      locals.set(state, !Boolean(locals.get(state)));
+      locals.set(state, !locals.get(state));
     } else if (action === 'signal') {
       signal(binding.signal);
     }
@@ -879,7 +879,7 @@ function buildModelInputs(config, input, session, runtime) {
   const routes = config?.signals?.model_inputs || {};
   return sortedEntries(routes).map(([name, route]) => [
     name,
-    routeValue(route, input.locals, session, runtime),
+    Number(routeValue(route, input.locals, session, runtime)),
   ]);
 }
 
@@ -927,7 +927,7 @@ export function scenarioUsesInputRuntime(config) {
   return Boolean(config?.input);
 }
 
-async function createInteractiveSession(options, onStatus) {
+async function createInteractiveSession(options, input, onStatus) {
   const {
     wasm,
     source,
@@ -957,6 +957,13 @@ async function createInteractiveSession(options, onStatus) {
   }
   onStatus('compiling session');
   const simConfig = config?.sim || {};
+  const initialModel = {
+    time: () => 0,
+    get: (name) => {
+      throw new Error(`Initial input route requires model '${name}' before initialization. Use a local or constant source.`);
+    },
+  };
+  const initialInputs = buildModelInputs(config, input, initialModel, input.runtimeFields(0, 0));
   return wasm.WasmSimulationSession.withInteractiveOptions(
     source,
     modelName,
@@ -964,6 +971,7 @@ async function createInteractiveSession(options, onStatus) {
     trimMaybeString(simConfig.solver),
     finiteNumber(simConfig.atol, 0),
     finiteNumber(simConfig.rtol, 0),
+    JSON.stringify(initialInputs),
   );
 }
 
@@ -1139,9 +1147,7 @@ class InteractiveSimulationController {
       return false;
     }
     const runtime = this.input.runtimeFields(this.frameNum, this.session.time());
-    for (const [name, value] of buildModelInputs(this.config, this.input, this.session, runtime)) {
-      this.session.set_input(name, finiteNumber(value, 0));
-    }
+    this.session.set_inputs(JSON.stringify(buildModelInputs(this.config, this.input, this.session, runtime)));
     if (typeof this.session.step === 'function') {
       this.session.step(this.simDt);
     } else {
@@ -1522,6 +1528,8 @@ class InteractiveControls {
     );
     this.speedReadout = this.createElement('span', 'rumoca-interactive-key-echo rumoca-interactive-speed-readout');
     this.runStateReadout = this.createElement('span', 'rumoca-interactive-key-echo rumoca-interactive-run-state');
+    this.armedReadout = this.createElement('span', 'rumoca-interactive-key-echo rumoca-interactive-armed-state');
+    this.armedReadout.hidden = !this.config?.viewer?.show_armed;
     this.fullscreenToggle = this.createElement(
       'button',
       'rumoca-interactive-fullscreen-toggle',
@@ -1531,6 +1539,7 @@ class InteractiveControls {
       this.captureToggle,
       this.pacingToggle,
       this.runStateReadout,
+      this.armedReadout,
       this.speedReadout,
       this.fullscreenToggle,
     ]) {
@@ -1553,6 +1562,11 @@ class InteractiveControls {
     this.pacingToggle.setAttribute('aria-pressed', mode === 'as_fast_as_possible' ? 'true' : 'false');
     this.pacingToggle.classList.toggle('is-fast', mode === 'as_fast_as_possible');
     this.speedReadout.textContent = `Speed ${speedRatioLabel(this.controller.currentSpeedRatio())}`;
+    if (!this.armedReadout.hidden) {
+      const value = this.controller.viewerSignals.get('armed');
+      const state = value == null ? 'unavailable' : (value ? 'Armed' : 'Disarmed');
+      this.armedReadout.textContent = `${this.config?.viewer?.status_title || 'Status'}: ${state}`;
+    }
   }
 
   updateFullscreenUi() {
@@ -1643,7 +1657,7 @@ export async function createInteractiveSimulation(options) {
     onError = () => {},
   } = options || {};
   const input = createInputRuntime(config);
-  const session = await createInteractiveSession(options || {}, onStatus);
+  const session = await createInteractiveSession(options || {}, input, onStatus);
   const viewerSignals = new Map();
   const pointer = createPointerState();
   const viewer = createViewerRuntime({

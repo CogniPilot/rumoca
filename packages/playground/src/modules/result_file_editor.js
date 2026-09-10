@@ -105,17 +105,6 @@ function arrayBufferForBytes(bytes) {
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
-function fileSizeLabel(content) {
-    const bytes = bytesForContent(content);
-    const size = bytes ? bytes.byteLength : String(content || '').length;
-    if (size < 1024) {
-        return `${size} B`;
-    }
-    if (size < 1024 * 1024) {
-        return `${(size / 1024).toFixed(1)} KiB`;
-    }
-    return `${(size / 1024 / 1024).toFixed(1)} MiB`;
-}
 
 function contentSignature(content) {
     const bytes = bytesForContent(content);

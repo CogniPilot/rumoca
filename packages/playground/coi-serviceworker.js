@@ -96,7 +96,6 @@ if (typeof window === 'undefined') {
                     : coi.coepCredentialless(),
             });
             if (reloadToDegrade) {
-                !coi.quiet && console.log("Reloading page to degrade COEP.");
                 window.sessionStorage.setItem("coiReloadedBySelf", "coepdegrade");
                 coi.doReload("coepdegrade");
             }
@@ -111,7 +110,6 @@ if (typeof window === 'undefined') {
         if (window.crossOriginIsolated !== false || !coi.shouldRegister()) return;
 
         if (!window.isSecureContext) {
-            !coi.quiet && console.log("COOP/COEP Service Worker not registered, a secure context is required.");
             return;
         }
 
@@ -123,17 +121,14 @@ if (typeof window === 'undefined') {
 
         n.serviceWorker.register(window.document.currentScript.src).then(
             (registration) => {
-                !coi.quiet && console.log("COOP/COEP Service Worker registered", registration.scope);
 
                 registration.addEventListener("updatefound", () => {
-                    !coi.quiet && console.log("Reloading page to make use of updated COOP/COEP Service Worker.");
                     window.sessionStorage.setItem("coiReloadedBySelf", "updatefound");
                     coi.doReload();
                 });
 
                 // If the registration is active, but it's not controlling the page
                 if (registration.active && !n.serviceWorker.controller) {
-                    !coi.quiet && console.log("Reloading page to make use of COOP/COEP Service Worker.");
                     window.sessionStorage.setItem("coiReloadedBySelf", "notcontrolling");
                     coi.doReload();
                 }

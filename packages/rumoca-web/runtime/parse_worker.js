@@ -17,12 +17,10 @@ async function initialize() {
     }
 }
 
-// Initialize immediately
 initialize().then(success => {
     self.postMessage({ ready: true, success });
 });
 
-// Handle parse requests
 self.onmessage = async (e) => {
     const { id, files } = e.data;
 
@@ -31,7 +29,6 @@ self.onmessage = async (e) => {
         return;
     }
 
-    // Parse all files assigned to this worker
     const results = [];
     for (let i = 0; i < files.length; i++) {
         const [filename, source] = files[i];

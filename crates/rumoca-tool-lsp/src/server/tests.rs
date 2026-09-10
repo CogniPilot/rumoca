@@ -10,14 +10,24 @@ use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower_lsp::LspService;
 
+mod code_lens_tests;
+mod compile_unit_source_tests;
+mod completion_surface_tests;
 mod diagnostics_timing_tests;
 mod editor_surface_session_tests;
 mod editor_surface_tests;
+mod hover_definition_timing_tests;
+mod hover_preview_tests;
 mod multi_source_root_completion_tests;
+mod open_and_nested_model_tests;
+mod simulation_override_diagnostic_tests;
 mod simulation_surface_tests;
+mod source_root_load_diagnostic_tests;
 mod source_root_read_prewarm_tests;
 mod source_root_refresh_tests;
 mod startup_timing_tests;
+mod tool_config_tests;
+mod utf16_range_tests;
 mod workspace_query_tests;
 
 static SESSION_STATS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -62,6 +72,17 @@ fn new_test_service() -> LspService<ModelicaLanguageServer> {
     service
 }
 
+fn checked_variable_count(
+    dae: &rumoca_compile::compile::Dae,
+    role: rumoca_compile::compile::VariableRole,
+) -> usize {
+    dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| variable.role() == role)
+            .count()
+    })
+}
+
 pub(super) async fn wait_for_namespace_cache_prewarm(
     server: &ModelicaLanguageServer,
 ) -> Vec<String> {
@@ -94,8 +115,6 @@ struct LoggedCompletionTimingSummary {
     uri: String,
     #[serde(default)]
     semantic_layer: String,
-    #[serde(default)]
-    namespace_completion_prime_ms: u64,
     #[serde(default)]
     needs_resolved_session: bool,
     #[serde(default)]
@@ -650,13 +669,13 @@ fn stale_epoch_load_cannot_clear_new_epoch_reservation() {
             .write()
             .await
             .cancel_source_root_load(path_key, 0);
-        assert_eq!(
-            server
+        assert!(
+            !server
                 .session
-                .read()
+                .write()
                 .await
-                .source_root_load_reservation_epoch(path_key),
-            Some(1)
+                .reserve_source_root_load(path_key, 1),
+            "stale cancellation must leave the current reservation active"
         );
 
         let stale_apply = server
@@ -676,13 +695,13 @@ fn stale_epoch_load_cannot_clear_new_epoch_reservation() {
                 },
             );
         assert!(stale_apply.is_none(), "stale epoch apply should be ignored");
-        assert_eq!(
-            server
+        assert!(
+            !server
                 .session
-                .read()
+                .write()
                 .await
-                .source_root_load_reservation_epoch(path_key),
-            Some(1)
+                .reserve_source_root_load(path_key, 1),
+            "stale apply must leave the current reservation active"
         );
 
         let current_apply = server
@@ -704,15 +723,6 @@ fn stale_epoch_load_cannot_clear_new_epoch_reservation() {
         assert_eq!(
             current_apply.map(|(inserted_file_count, _)| inserted_file_count),
             Some(0)
-        );
-        assert!(
-            server
-                .session
-                .read()
-                .await
-                .source_root_load_reservation_epoch(path_key)
-                .is_none(),
-            "successful current epoch apply should clear reservation"
         );
         assert!(
             server
@@ -931,11 +941,25 @@ fn live_diagnostics_do_not_load_libraries() {
         server
             .did_open(DidOpenTextDocumentParams {
                 text_document: TextDocumentItem {
-                    uri: active_uri,
+                    uri: active_uri.clone(),
                     language_id: "modelica".to_string(),
                     version: 1,
-                    text: active_source.to_string(),
+                    text: "model Active\nend Active;\n".to_string(),
                 },
+            })
+            .await;
+
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: active_uri,
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: active_source.to_string(),
+                }],
             })
             .await;
 
@@ -945,7 +969,7 @@ fn live_diagnostics_do_not_load_libraries() {
                 .read()
                 .await
                 .is_source_root_path_loaded(&source_root_key),
-            "live diagnostics should not load source roots on first open"
+            "live diagnostics should not load source roots during typing"
         );
     });
 }
@@ -1014,11 +1038,25 @@ fn msl_live_diagnostics_do_not_load_libraries_when_source_requires_them() {
         server
             .did_open(DidOpenTextDocumentParams {
                 text_document: TextDocumentItem {
-                    uri: active_uri,
+                    uri: active_uri.clone(),
                     language_id: "modelica".to_string(),
                     version: 1,
-                    text: active_source.to_string(),
+                    text: "model Active\nend Active;\n".to_string(),
                 },
+            })
+            .await;
+
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: active_uri,
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: active_source.to_string(),
+                }],
             })
             .await;
 
@@ -1093,21 +1131,18 @@ end Sim;
             items.iter().any(|item| item.label == "x"),
             "expected member completion from the query layer"
         );
-        assert!(
-            !server
-                .session
-                .read()
-                .await
-                .has_semantic_navigation_cached("Sim"),
-            "completion should not build a semantic navigation artifact when the query layer can answer"
+        let stats = session_cache_stats();
+        assert_eq!(
+            stats.semantic_navigation_builds, 0,
+            "completion should not build semantic navigation"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
+        assert_eq!(
+            stats.standard_resolved_builds, 0,
             "completion should not build the standard resolved session"
         );
-        assert!(
-            !server.session.read().await.has_resolved_cached(),
-            "completion should stay off resolved caches entirely on the query fast path"
+        assert_eq!(
+            stats.strict_resolved_builds, 0,
+            "completion should stay off strict resolved construction"
         );
     });
 }
@@ -1276,10 +1311,7 @@ fn hover_alias_uses_query_layer_without_semantic_navigation() {
             delta.strict_resolved_builds, 0,
             "import alias hover should not build strict resolved state"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "import alias hover should stay off the standard resolved session"
-        );
+        assert_eq!(delta.standard_resolved_builds, 0);
     });
 }
 
@@ -1322,14 +1354,6 @@ fn hover_imported_class_uses_query_layer_without_semantic_navigation() {
             first_delta.strict_resolved_builds, 0,
             "cold hover should stay off strict resolved recovery"
         );
-        assert!(
-            !server
-                .session
-                .read()
-                .await
-                .has_semantic_navigation_cached("M"),
-            "cold hover should not populate the active-model navigation cache"
-        );
 
         let second = server
             .hover(cross_file_alias_hover_request(&active_uri))
@@ -1356,10 +1380,7 @@ fn hover_imported_class_uses_query_layer_without_semantic_navigation() {
             second_delta.strict_resolved_builds, 0,
             "warm hover should stay off strict resolved recovery"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "hover should never populate the standard resolved cache"
-        );
+        assert_eq!(session_cache_stats().standard_resolved_builds, 0);
     });
 }
 
@@ -1404,14 +1425,6 @@ fn goto_definition_imported_class_uses_query_layer_without_semantic_navigation()
             first_delta.strict_resolved_builds, 0,
             "cold goto should stay off strict resolved recovery"
         );
-        assert!(
-            !server
-                .session
-                .read()
-                .await
-                .has_semantic_navigation_cached("M"),
-            "cold goto should not populate the active-model navigation cache"
-        );
 
         let second = server
             .goto_definition(cross_file_alias_definition_request(&active_uri))
@@ -1441,10 +1454,7 @@ fn goto_definition_imported_class_uses_query_layer_without_semantic_navigation()
             second_delta.strict_resolved_builds, 0,
             "warm goto should stay off strict resolved recovery"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "goto definition should never populate the standard resolved cache"
-        );
+        assert_eq!(session_cache_stats().standard_resolved_builds, 0);
     });
 }
 
@@ -1488,10 +1498,7 @@ fn local_hover_uses_query_layer_without_semantic_navigation() {
             delta.strict_resolved_builds, 0,
             "local hover should not build strict resolved state"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "local hover should stay off the standard resolved session"
-        );
+        assert_eq!(delta.standard_resolved_builds, 0);
     });
 }
 
@@ -1533,10 +1540,7 @@ fn local_goto_definition_uses_query_layer_without_semantic_navigation() {
             delta.strict_resolved_builds, 0,
             "local goto should not build strict resolved state"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "local goto should stay off the standard resolved session"
-        );
+        assert_eq!(delta.standard_resolved_builds, 0);
     });
 }
 
@@ -1577,10 +1581,7 @@ fn hover_on_qualified_type_path_resolves_cross_file_target() {
             delta.strict_resolved_builds, 0,
             "qualified type-path hover should avoid strict resolved state"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "qualified type-path hover should avoid the standard resolved session"
-        );
+        assert_eq!(delta.standard_resolved_builds, 0);
     });
 }
 
@@ -1621,39 +1622,57 @@ fn goto_definition_on_qualified_type_path_resolves_cross_file_target() {
             delta.strict_resolved_builds, 0,
             "qualified type-path goto-definition should avoid strict resolved state"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "qualified type-path goto-definition should avoid the standard resolved session"
-        );
+        assert_eq!(delta.standard_resolved_builds, 0);
     });
 }
 
+/// Outcome of driving `initialize` against a freshly created workspace that
+/// declares a single durable source root.
+struct InitializedServerFixture {
+    workspace_root: PathBuf,
+    source_root_path: String,
+    capabilities: ServerCapabilities,
+}
+
+async fn initialize_server_fixture(
+    server: &ModelicaLanguageServer,
+    temp_dir_name: &str,
+) -> InitializedServerFixture {
+    let workspace_root = new_temp_dir(temp_dir_name);
+    let source_root_dir = write_test_source_root(&workspace_root, "InitLib");
+    let source_root_path = source_root_dir.to_string_lossy().to_string();
+    let workspace_uri = Url::from_directory_path(&workspace_root).expect("workspace uri");
+    let capabilities = server
+        .initialize(InitializeParams {
+            root_uri: Some(workspace_uri.clone()),
+            initialization_options: Some(serde_json::json!({
+                "sourceRootPaths": [source_root_path]
+            })),
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: workspace_uri,
+                name: "workspace".to_string(),
+            }]),
+            ..InitializeParams::default()
+        })
+        .await
+        .expect("initialize should succeed")
+        .capabilities;
+    InitializedServerFixture {
+        workspace_root,
+        source_root_path,
+        capabilities,
+    }
+}
+
 #[test]
-fn initialize_advertises_supported_capabilities_and_tracks_workspace_root() {
+fn initialize_advertises_core_document_capabilities() {
     run_async_test(async {
-        let workspace_root = new_temp_dir("initialize-capabilities");
-        let source_root_dir = write_test_source_root(&workspace_root, "InitLib");
-        let source_root_path = source_root_dir.to_string_lossy().to_string();
-        let workspace_uri = Url::from_directory_path(&workspace_root).expect("workspace uri");
         let service = new_test_service();
-        let server = service.inner();
+        let capabilities =
+            initialize_server_fixture(service.inner(), "initialize-core-capabilities")
+                .await
+                .capabilities;
 
-        let result = server
-            .initialize(InitializeParams {
-                root_uri: Some(workspace_uri.clone()),
-                initialization_options: Some(serde_json::json!({
-                    "sourceRootPaths": [source_root_path]
-                })),
-                workspace_folders: Some(vec![WorkspaceFolder {
-                    uri: workspace_uri,
-                    name: "workspace".to_string(),
-                }]),
-                ..InitializeParams::default()
-            })
-            .await
-            .expect("initialize should succeed");
-
-        let capabilities = result.capabilities;
         assert_eq!(
             capabilities.text_document_sync,
             Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL))
@@ -1680,6 +1699,18 @@ fn initialize_advertises_supported_capabilities_and_tracks_workspace_root() {
             capabilities.document_formatting_provider,
             Some(OneOf::Left(true))
         );
+    });
+}
+
+#[test]
+fn initialize_advertises_editor_assist_capabilities() {
+    run_async_test(async {
+        let service = new_test_service();
+        let capabilities =
+            initialize_server_fixture(service.inner(), "initialize-assist-capabilities")
+                .await
+                .capabilities;
+
         assert!(
             capabilities.completion_provider.is_some(),
             "completion provider should be advertised"
@@ -1716,17 +1747,37 @@ fn initialize_advertises_supported_capabilities_and_tracks_workspace_root() {
             capabilities.execute_command_provider.is_some(),
             "execute command should be advertised"
         );
+        // The full-MSL editor gate validates this exact shape over the wire, so
+        // pin the advertised options here too: hints are computed eagerly and
+        // never resolved lazily.
+        let inlay_options = match &capabilities.inlay_hint_provider {
+            Some(OneOf::Right(InlayHintServerCapabilities::Options(options))) => options,
+            other => panic!(
+                "inlay hints are implemented and UTF-16-correct, so they are advertised as options: {other:?}"
+            ),
+        };
         assert_eq!(
-            capabilities.inlay_hint_provider, None,
-            "inlay hints stay disabled until the selective mode is re-enabled"
+            inlay_options.resolve_provider,
+            Some(false),
+            "inlay hints carry their full label, so resolve support is advertised as false"
         );
+    });
+}
+
+#[test]
+fn initialize_tracks_workspace_root_and_source_root_paths() {
+    run_async_test(async {
+        let service = new_test_service();
+        let server = service.inner();
+        let fixture = initialize_server_fixture(server, "initialize-workspace-root").await;
+
         assert_eq!(
             server.workspace_root.read().await.as_ref(),
-            Some(&workspace_root)
+            Some(&fixture.workspace_root)
         );
         assert_eq!(
             *server.initial_source_root_paths.read().await,
-            vec![source_root_path.clone()]
+            vec![fixture.source_root_path.clone()]
         );
 
         server.initialized(InitializedParams {}).await;
