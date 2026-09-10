@@ -1,3 +1,4 @@
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #![allow(clippy::excessive_nesting)]
 //! Interactive real-time session demo.
 //!
