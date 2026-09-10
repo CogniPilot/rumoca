@@ -47,7 +47,7 @@ pub(crate) struct Context {
     pub target_def_names: rustc_hash::FxHashMap<rumoca_core::DefId, String>,
     /// Exact Resolve identity of the predefined `String` declaration.
     pub predefined_string_declaration: Option<rumoca_core::DefId>,
-    /// Exact Resolve identities of synchronous predefined intrinsics.
+    /// Exact Resolve identities of predefined intrinsics and array constructors.
     pub predefined_intrinsics: crate::ast_lower::PredefinedIntrinsicIds,
     /// Fully qualified constant names explicitly modified by extends clauses.
     /// These must not be overwritten by inherited declaration defaults.

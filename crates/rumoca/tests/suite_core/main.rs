@@ -27,6 +27,7 @@
 mod history_operator_checked;
 
 mod algorithm_parameter_range;
+mod array_constructor_equation_shape;
 mod array_der_coupling_test;
 mod array_subscript_test;
 mod backend_executor_differential;

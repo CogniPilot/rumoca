@@ -21,10 +21,19 @@ pub(crate) struct LoweringContext<'a> {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct PredefinedIntrinsicIds {
     identities: [Option<DefId>; rumoca_core::BuiltinFunction::PREDEFINED_IDENTITY_REQUIRED.len()],
+    array_constructors: [Option<DefId>; Self::ARRAY_CONSTRUCTORS.len()],
     assertion: Option<DefId>,
 }
 
 impl PredefinedIntrinsicIds {
+    const ARRAY_CONSTRUCTORS: [rumoca_core::BuiltinFunction; 5] = [
+        rumoca_core::BuiltinFunction::Zeros,
+        rumoca_core::BuiltinFunction::Ones,
+        rumoca_core::BuiltinFunction::Fill,
+        rumoca_core::BuiltinFunction::Identity,
+        rumoca_core::BuiltinFunction::Linspace,
+    ];
+
     pub(crate) fn from_tree(tree: &ast::ClassTree) -> Self {
         Self {
             identities: std::array::from_fn(|index| {
@@ -33,10 +42,27 @@ impl PredefinedIntrinsicIds {
                         rumoca_core::BuiltinFunction::PREDEFINED_IDENTITY_REQUIRED[index].name(),
                     ))
             }),
+            array_constructors: std::array::from_fn(|index| {
+                tree.scope_tree
+                    .predefined_member(&rumoca_core::ComponentPath::from_flat_path(
+                        Self::ARRAY_CONSTRUCTORS[index].name(),
+                    ))
+            }),
             assertion: tree
                 .scope_tree
                 .predefined_member(&rumoca_core::ComponentPath::from_flat_path("assert")),
         }
+    }
+
+    pub(crate) fn array_constructor(
+        self,
+        target: Option<DefId>,
+    ) -> Option<rumoca_core::BuiltinFunction> {
+        let target = target?;
+        self.array_constructors
+            .into_iter()
+            .zip(Self::ARRAY_CONSTRUCTORS)
+            .find_map(|(identity, intrinsic)| (identity == Some(target)).then_some(intrinsic))
     }
 
     fn resolve(self, target: Option<DefId>) -> Option<rumoca_core::BuiltinFunction> {
