@@ -56,7 +56,7 @@ function bodies stay structured, and Modelica operators (`der`, `pre`,
 ## Seeing It
 
 ```bash
-rumoca compile Model.mo --emit ast-mo    # what the parser saw
+rumoca compile Model.mo --emit ast-json  # checked semantic tree
 rumoca compile Model.mo --emit flat-mo   # what flattening produced
 ```
 

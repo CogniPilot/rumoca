@@ -46,7 +46,8 @@ cargo run -p rumoca --release -- \
 the HTTP / WS viewer servers, and enters the realtime pacing loop.
 Then open [http://localhost:8080](http://localhost:8080).
 
-The aircraft starts **at rest on the runway**. Press **Space** to arm, hold
+The aircraft starts **at rest on the runway**. In the user guide, press
+**Capture** in the viewer first to enable keyboard controls. Press **Space** to arm, hold
 **W** for full throttle to accelerate down the runway, and ease back (**↑**) to
 rotate and climb away around 10 m/s. To land, reduce throttle and descend —
 the tricycle gear absorbs the touchdown and the aircraft rolls out.
@@ -68,7 +69,9 @@ the tricycle gear absorbs the touchdown and the aircraft rolls out.
 | Gamepad **South** (A) | reset |
 
 `[input].mode = "auto"` — a plugged-in gamepad wins; otherwise the browser
-keyboard drives the aircraft when the viewer page has focus.
+keyboard drives the aircraft. In the user guide, **Capture** enables keyboard
+control and **Esc** releases it. Arming requires throttle at or below 5%; press
+**R** to reset the throttle and aircraft before trying again if needed.
 
 ## Architecture
 

@@ -17,7 +17,7 @@ this page is the orientation map.
 | Evaluators | `rumoca-eval-ast`, `-eval-flat`, `-eval-dae`, `-eval-solve` | Stage-appropriate evaluation |
 | Runtime | `rumoca-sim`, `rumoca-solver`, `rumoca-solver-rk45`, `rumoca-solver-diffsol`, `rumoca-worker` | Simulation orchestration and solver backends |
 | Optimization | `rumoca-opt` | Training and optimization over differentiable Solve runtime |
-| Execution adapters | `rumoca-exec-cranelift`, `rumoca-exec-mlir`, `rumoca-exec-wasm` | JIT/compiled execution over Solve |
+| Execution adapters | `rumoca-exec-cranelift`, `rumoca-exec-mlir`; experimental `rumoca-exec-wasm` | JIT/compiled execution over Solve; the WASM row adapter is not selected by a pipeline yet |
 | Interactive I/O | `rumoca-input`, `rumoca-input-keyboard`, `rumoca-input-gamepad`, `rumoca-signal-frame`, `rumoca-transport-udp`, `rumoca-transport-websocket`, `rumoca-web` | Devices, signals, transports, viewer |
 | Tools | `rumoca-tool-fmt`, `rumoca-tool-lint`, `rumoca-tool-lsp` | Formatter, linter, language server logic |
 | Bindings | `rumoca` (CLI), `rumoca-bind-wasm`, `rumoca-bind-python` | User-facing entry points |

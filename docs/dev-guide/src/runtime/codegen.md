@@ -32,7 +32,7 @@ user-facing contract.
 
 Solve-level tensor nodes, including `ComputeNode::AffineStencil`, arrive at
 templates with scalar fallback behavior already proven. Stencil-aware targets
-such as `wgsl-solve` should render the native tensor node directly; scalar
+such as `wgsl-ode` should render the native tensor node directly; scalar
 targets should use the fallback programs and must not infer stencil structure
 by scanning flattened row text.
 
@@ -45,10 +45,12 @@ with such a test.
 
 ## Adding a Target
 
-1. Start from a worked example: `examples/codegen/standalone_web/` is a
-   complete custom bundle; the built-in target directories show the full
-   manifest vocabulary.
+1. Start from a worked example: `examples/codegen/checked_dae_report/` is a
+   complete custom bundle over the canonical checked DAE projection; the
+   built-in target directories show the full manifest vocabulary.
 2. Declare the IR stage and capabilities in `target.toml`.
-3. Write templates against the serialized IR (`--emit <stage>-json` shows
-   the exact shape).
+3. Write templates against the target's documented semantic projection and
+   keep a rendering fixture beside the target. `--emit <stage>-json` exposes
+   the stage's wire representation; it is not a promise that template context
+   and wire storage have the same shape.
 4. Wire a runtime regression test if the output executes.

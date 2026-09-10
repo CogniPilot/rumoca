@@ -17,7 +17,7 @@ it contains no rules itself, and neither does this book.
 | Diagnostics, spans, error codes, tracing | [SPEC_0008](https://github.com/CogniPilot/rumoca/blob/main/spec/SPEC_0008_PHASE_ERRORS.md) |
 | Tool config (`rumoca-tool-*`, env-var policy) | [SPEC_0018](https://github.com/CogniPilot/rumoca/blob/main/spec/SPEC_0018_TOOL_CONFIG.md) |
 | Function length, nesting, file size, determinism | [SPEC_0021](https://github.com/CogniPilot/rumoca/blob/main/spec/SPEC_0021_CODE_COMPLEXITY.md) |
-| Development workflow, bug triage, root-cause proof | [SPEC_0032](https://github.com/CogniPilot/rumoca/blob/main/spec/SPEC_0032_DEVELOPMENT_PROCESS.md) |
+| Development workflow, bug triage, root-cause proof | [SPEC_0033](https://github.com/CogniPilot/rumoca/blob/main/spec/SPEC_0033_DEVELOPMENT_PROCESS.md) |
 | Opening a PR | [SPEC_0025](https://github.com/CogniPilot/rumoca/blob/main/spec/SPEC_0025_PR_REVIEW_PROCESS.md) |
 | Scope/philosophy questions ("should this live in the compiler?") | [SPEC_0031](https://github.com/CogniPilot/rumoca/blob/main/spec/SPEC_0031_COMPILER_PHILOSOPHY.md) |
 

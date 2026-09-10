@@ -27,8 +27,9 @@ fallback must choose an explicit policy at the boundary.
 
 1. Convert exported evaluator APIs to return `Result<T, EvalError>` or a runtime
    layout error.
-2. Replace implicit defaults with explicit caller policies such as
-   `EvalGuess::SolverInitialGuess`.
+2. Replace implicit defaults with an explicit initial-guess argument or
+   constructor at the solver boundary that needs it; do not invent a fallback
+   inside an evaluator.
 3. Add source guards that prevent the known default-zero fallback surface from
    growing while each helper is converted.
 4. Run the MSL quality gates after each behavioral slice and promote baselines

@@ -2715,7 +2715,7 @@ self.onmessage = async (event) => {
         gpuCheck.type = 'checkbox';
         gpuCheck.checked = gpuDefault;
         gpuLabel.append(gpuCheck, document.createTextNode(' GPU'));
-        gpuLabel.title = 'Run on WebGPU (wgsl-solve backend; experimental)';
+        gpuLabel.title = 'Run on WebGPU (wgsl-ode backend; experimental)';
         const liveLabel = document.createElement('label');
         liveLabel.className = 'rumoca-live-gpu';
         const liveCheck = document.createElement('input');
@@ -3089,6 +3089,7 @@ self.onmessage = async (event) => {
         }
 
         async function startExternalInteractiveViewer({
+            external,
             wasm,
             THREE,
             source,
@@ -3098,9 +3099,8 @@ self.onmessage = async (event) => {
             scriptText,
         }) {
             const title = `${model} - Rumoca interactive viewer`;
-            const external = window.open('', `rumoca-${model}-interactive`);
-            if (!external) {
-                throw new Error('External viewer window was blocked. Allow popups for this page and try again.');
+            if (!external || external.closed) {
+                throw new Error('The interactive viewer was closed before simulation startup completed.');
             }
             external.document.open();
             external.document.write(`<!doctype html>
@@ -3691,8 +3691,22 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             if (isCodegenScenario()) {
                 return withWasm('codegen', 'Generating code…', runCodegenScenario);
             }
-            return withWasm('simulate', 'Compiling & simulating…', async (wasm, source, model, signal) => {
+            if (widget.busy) {
+                return;
+            }
             stopInteractiveRunner();
+            const externalRequested = scenarioWantsInputRuntime(null)
+                && scenarioViewerMode() === 'external_web';
+            let externalViewer = externalRequested ? window.open('', '_blank') : null;
+            if (externalRequested && !externalViewer) {
+                showError(new Error('External viewer window was blocked. Allow popups for this page and try again.'));
+                return;
+            }
+            if (externalViewer) {
+                externalViewer.document.title = 'Rumoca interactive viewer';
+                externalViewer.document.body.textContent = 'Preparing simulation…';
+            }
+            return withWasm('simulate', 'Compiling & simulating…', async (wasm, source, model, signal) => {
             const sim = scenarioConfig?.sim || {};
             const solver = trimMaybeString(sim.solver).toLowerCase() || solverSelect.value || 'auto';
             const tEnd = Number.isFinite(sim.t_end) ? sim.t_end : 0;
@@ -3710,6 +3724,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 if (scenarioViewerMode() === 'external_web') {
                     setPhase('Opening external interactive viewer', null);
                     const runner = await startExternalInteractiveViewer({
+                        external: externalViewer,
                         wasm,
                         THREE,
                         source,
@@ -3723,6 +3738,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                         throw makeAbortError();
                     }
                     widget.interactiveRunner = runner;
+                    externalViewer = null;
                     output.replaceChildren(Object.assign(document.createElement('div'), {
                         className: 'rumoca-live-note',
                         textContent: 'External interactive viewer opened in a separate browser window. Press Esc there to release input capture; Q stops the simulation.',
@@ -3898,7 +3914,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                             variables: variableNames.length,
                         },
                         requested: {
-                            solver: 'wgsl-solve interactive',
+                            solver: 'wgsl-ode interactive',
                             t_start: t0,
                             dt: outputDt,
                             internal_dt: stepDt,
@@ -4017,7 +4033,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 const adapter = await gpu.probeGpu();
                 if (typeof wasm.prepare_gpu_simulation !== 'function') {
                     throw new Error(
-                        'This WASM build predates the wgsl-solve backend; '
+                        'This WASM build predates the wgsl-ode backend; '
                         + 'rebuild the package (cargo xtask playground build) or '
                         + 'uncheck GPU to simulate on the CPU (WASM) path.'
                     );
@@ -4116,7 +4132,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             }, signal);
             throwIfAborted(signal);
             await renderRunResult(JSON.parse(raw));
-            });
+            }).finally(() => externalViewer?.close());
         });
 
         stopBtn.addEventListener('click', () => {

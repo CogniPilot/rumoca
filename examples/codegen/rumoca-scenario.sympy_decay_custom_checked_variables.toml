@@ -7,5 +7,5 @@ file = "../models/SympyDecay.mo"
 name = "SympyDecay"
 
 [codegen]
-target = "standalone_web"
-output_dir = "gen/sympy_decay_standalone_web"
+target = "custom_checked_variables.jinja"
+output_dir = "gen/sympy_decay_custom_checked_variables.txt"
