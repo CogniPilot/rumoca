@@ -65,6 +65,7 @@ where
         self.entries.get_mut(key).map(|entry| &mut entry.value)
     }
 
+    #[cfg(test)]
     pub(super) fn contains_key<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
@@ -73,6 +74,7 @@ where
         self.entries.contains_key(key)
     }
 
+    #[cfg(test)]
     pub(super) fn keys(&self) -> impl Iterator<Item = &K> {
         self.entries.keys()
     }

@@ -10,6 +10,16 @@
 //! live in `main.rs` (binary-only); the error-*report builders* live here so they
 //! can be unit-tested alongside the dispatch logic and reused by `main.rs`.
 
+#[cfg(test)]
+mod cli_report_tests;
+#[cfg(test)]
+mod cli_tests;
+mod compile_selectors;
+mod model_resolution;
+mod value;
+
+pub use compile_selectors::{CompilePhase, EmissionPolicyArg, InlinePolicyArg, ScalarizePolicyArg};
+
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -33,19 +43,18 @@ pub use crate::fmt_cli::FmtArgs;
 pub use crate::sim_bench::SimBenchArgs;
 use crate::{CompilationResult, Compiler, CompilerError, DaeCompilationResult, TemplateIr};
 use rumoca_compile::{
-    codegen::{render_ast_template_with_name, render_flat_template_with_name},
-    compile::core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap},
-    compile::{Dae, FlatModel, ResolvedTree},
+    codegen::{CodegenError, render_flat_template_with_name},
+    compile::{Dae, FlatModel},
 };
+use rumoca_core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap};
+use rumoca_phase_resolve::ResolvedTree;
 use rumoca_sim::{DiffsolMethod, SimOptions, SimSolverMode};
 use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, PartialLintOptions};
 
-#[path = "cli/model_resolution.rs"]
-mod model_resolution;
 pub(crate) use model_resolution::{
-    collect_modelica_files, compiler_for_source, ensure_model_file_readable, first_path_config_dir,
-    infer_model_name, merged_source_root_paths, normalize_target_paths, parent_dir_or_current,
+    collect_modelica_files, compiler_for_source, ensure_model_file_readable, infer_model_name,
+    merged_source_root_paths, normalize_target_paths, parent_dir_or_current,
     validate_explicit_target_paths,
 };
 #[cfg(test)]
@@ -100,12 +109,13 @@ or a `::`-sub-target, e.g. --trace=rumoca_solver_diffsol::bdf):
   rumoca_solver_diffsol       ::bdf (event/root tracing) ::bdf_eval (eval counts)
   rumoca_solver_rk45          ::eval (RK eval counts/events)
   rumoca_solver               ::hotpath (solver step/root counters)
+                              ::driver (backend-neutral event/root driver)
   rumoca_eval_solve           ::refresh (algebraic refresh) ::row (row-eval stats)
   rumoca_eval_dae             ::sim ::introspect ::function_inputs ::function_match
   rumoca_sim                  ::external_interface ::autopilot (child stdio passthrough)
   rumoca_transport_websocket  ::ws ::viewer_input
   rumoca_tool_lsp             ::completion
-Short aliases: bdf, rk45, hotpath (e.g. --trace=bdf).
+Short aliases: bdf, rk45, hotpath, driver (e.g. --trace=bdf).
 
 Add --trace-profile for phase timing/profiling targets
 (rumoca_phase_dae::profile, rumoca_phase_dae::runtime_precompute,
@@ -155,6 +165,11 @@ pub enum Commands {
     Targets(TargetsArgs),
     /// Inspect or prune the shared Rumoca cache
     Cache(CacheArgs),
+    /// Print the build identity shared with the Python binding
+    ///
+    /// Exits non-zero when the identity is unavailable, so a caller comparing
+    /// two artifacts skips the check rather than comparing placeholders.
+    BuildInfo,
 }
 
 #[derive(Args, Debug)]
@@ -299,6 +314,35 @@ pub struct CompileArgs {
     #[arg(long, value_enum, requires = "target")]
     pub phase: Option<CompilePhase>,
 
+    /// How much call structure a GALEC-derived target keeps (default `none`, so
+    /// no flag emits what a compiler with no dial emits). Information-preserving
+    /// and bit-identical at every setting, so all stay certification-eligible.
+    #[arg(
+        long,
+        value_enum,
+        requires = "target",
+        conflicts_with = "emission_policy"
+    )]
+    pub inline_policy: Option<InlinePolicyArg>,
+
+    /// Whether tensor operations may be expanded into per-element statements
+    /// (default `never`). Expansion destroys index sets, symmetry and
+    /// bandedness, so any other setting taints the artifact and says so.
+    #[arg(
+        long,
+        value_enum,
+        requires = "target",
+        conflicts_with = "emission_policy"
+    )]
+    pub scalarize_policy: Option<ScalarizePolicyArg>,
+
+    /// Shorthand for one point in the (`--inline-policy`, `--scalarize-policy`)
+    /// space: `reviewable` = (none, never), `balanced` = (cost-model, never),
+    /// `flat` = (all, all). A preset is never the only way to name a point: the
+    /// useful combinations it does not name need the two axes.
+    #[arg(long, value_enum, requires = "target")]
+    pub emission_policy: Option<EmissionPolicyArg>,
+
     /// Output path. For an `--emit` IR dump this is a file (defaults to stdout);
     /// for a `--target` codegen run it may be a file or a directory.
     #[arg(short, long)]
@@ -332,36 +376,10 @@ pub struct CompileArgs {
     pub diagnostics: DiagnosticsArgs,
 }
 
-/// Compiler stage whose IR a raw `.jinja` `--target` consumes (`compile --phase`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CompilePhase {
-    /// Abstract syntax tree (resolved).
-    Ast,
-    /// Flattened model.
-    Flat,
-    /// DAE system.
-    Dae,
-    /// Solver IR.
-    Solve,
-}
-
-impl From<CompilePhase> for TemplateIr {
-    fn from(phase: CompilePhase) -> Self {
-        match phase {
-            CompilePhase::Ast => TemplateIr::Ast,
-            CompilePhase::Flat => TemplateIr::Flat,
-            CompilePhase::Dae => TemplateIr::Dae,
-            CompilePhase::Solve => TemplateIr::Solve,
-        }
-    }
-}
-
 /// An IR dump selected by `compile --emit`: a compiler stage plus output format.
 /// The solver IR has no Modelica form, so `solve-mo` is intentionally absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EmitTarget {
-    #[value(name = "ast-mo")]
-    AstMo,
     #[value(name = "ast-json")]
     AstJson,
     #[value(name = "flat-mo")]
@@ -379,7 +397,7 @@ pub enum EmitTarget {
 impl EmitTarget {
     fn phase(self) -> CompilePhase {
         match self {
-            Self::AstMo | Self::AstJson => CompilePhase::Ast,
+            Self::AstJson => CompilePhase::Ast,
             Self::FlatMo | Self::FlatJson => CompilePhase::Flat,
             Self::DaeMo | Self::DaeJson => CompilePhase::Dae,
             Self::SolveJson => CompilePhase::Solve,
@@ -423,8 +441,7 @@ pub struct SimCommandArgs {
     #[command(flatten)]
     pub model_options: ModelOptions,
 
-    /// Solver: auto (recommended), bdf (stiff/implicit, diffsol), esdirk34 or
-    /// trbdf2 (implicit SDIRK tableaus for stiff DAEs, diffsol), or rk-like
+    /// Solver: auto (recommended), bdf (stiff/implicit, diffsol), or rk-like
     /// (explicit Runge-Kutta-style, non-stiff)
     #[arg(long, value_enum)]
     pub solver: Option<SimulateSolverMode>,
@@ -566,15 +583,18 @@ impl SimCommandArgs {
     }
 }
 
+/// Solvers `--solver` accepts.
+///
+/// This list mirrors [`rumoca_core::SOLVER_NAMES`], the whole set of solvers the
+/// tree runs, so clap rejects anything else against exactly the names the rest of
+/// the pipeline accepts. Labels that arrive as free text instead — a scenario
+/// config's `sim.solver`, a model's `experiment(Solver=...)` — go through
+/// [`rumoca_core::canonical_solver_name`], which reports an unrunnable name
+/// against the same set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SimulateSolverMode {
     Auto,
     Bdf,
-    /// ESDIRK34 — implicit SDIRK tableau on the diffsol path (stiff).
-    Esdirk34,
-    /// TR-BDF2 — implicit SDIRK tableau on the diffsol path (stiff).
-    #[value(name = "trbdf2")]
-    TrBdf2,
     #[value(name = "rk-like")]
     RkLike,
 }
@@ -583,12 +603,7 @@ impl From<SimulateSolverMode> for SimSolverMode {
     fn from(value: SimulateSolverMode) -> Self {
         match value {
             SimulateSolverMode::Auto => SimSolverMode::Auto,
-            // ESDIRK34 / TR-BDF2 are implicit tableaus served by the diffsol
-            // (BDF-family) path; the specific tableau is carried by the solver
-            // label into `SimOptions::diffsol_method`.
-            SimulateSolverMode::Bdf | SimulateSolverMode::Esdirk34 | SimulateSolverMode::TrBdf2 => {
-                SimSolverMode::Bdf
-            }
+            SimulateSolverMode::Bdf => SimSolverMode::Bdf,
             SimulateSolverMode::RkLike => SimSolverMode::RkLike,
         }
     }
@@ -599,8 +614,6 @@ impl SimulateSolverMode {
         match self {
             SimulateSolverMode::Auto => "auto",
             SimulateSolverMode::Bdf => "bdf",
-            SimulateSolverMode::Esdirk34 => "esdirk34",
-            SimulateSolverMode::TrBdf2 => "trbdf2",
             SimulateSolverMode::RkLike => "rk-like",
         }
     }
@@ -684,14 +697,23 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Commands::Targets(args) => targets_cmd::run(args.json),
         Commands::Cache(args) => cache_cmd::run_cache(args),
+        Commands::BuildInfo => run_build_info(),
     }
 }
 
 /// Build a miette [`Report`] for any CLI error, preferring the compiler's own
-/// diagnostic codes when the error is a [`CompilerError`].
+/// diagnostic codes when the error is a [`CompilerError`] or a [`CodegenError`].
+///
+/// The `--emit <stage>-mo` dumps render through the codegen crate directly, so
+/// their refusals arrive unwrapped. Reporting both keeps one refusal carrying
+/// one stable code whichever emission surface raised it, rather than a code a
+/// caller can match on from `--target` but not from `--emit`.
 pub fn build_cli_error_report(error: &anyhow::Error) -> Report {
     if let Some(compiler_error) = error.downcast_ref::<CompilerError>() {
         return Report::new(compiler_error.clone());
+    }
+    if let Some(codegen_error) = error.downcast_ref::<CodegenError>() {
+        return Report::new(codegen_error.clone());
     }
     let mut message = error.to_string();
     for cause in error.chain().skip(1) {
@@ -722,9 +744,22 @@ pub fn build_source_diagnostic_report(
     Report::new(MietteDiagnostic::new(message).with_severity(severity))
 }
 
+/// Render a compile failure as the whole diagnostic it came from.
+///
+/// A phase diagnostic is more than one span: `EF026` names both the subscripted
+/// `connect` endpoint and the declaration that has no such dimension, and every
+/// phase error's `help(...)` text arrives as a note. Anchoring the report on the
+/// primary label and dropping the rest would leave the CLI showing strictly less
+/// than the LSP and the API already show for the same error.
+///
+/// Miette renders one source per report, so labels that live in the anchor's
+/// file become miette labels (it draws the snippet and the `file:line:col`
+/// headers, all one-based) and labels in any *other* file become notes carrying
+/// an explicit one-based `file:line:col` — the alternative, silently dropping
+/// them, is what this function exists to stop.
 pub fn build_compile_failure_report(
     failure: &rumoca_compile::compile::ModelFailureDiagnostic,
-    source_map: &rumoca_compile::compile::core::SourceMap,
+    source_map: &rumoca_core::SourceMap,
 ) -> Report {
     let Some(label) = failure.primary_label.as_ref() else {
         return build_compile_failure_fallback_report(
@@ -738,22 +773,74 @@ pub fn build_compile_failure_report(
             "internal compiler diagnostic references a missing source file",
         );
     };
-    let start = label.span.start.0.min(source.len());
-    let end = label.span.end.0.max(start + 1).min(source.len());
-    let label_text = label.message.clone().unwrap_or_else(|| "error".to_string());
     let display_name = display_source_name(file_name);
     let message = if let Some(code) = &failure.error_code {
         format!("\x1b[31m[{code}]\x1b[0m {}", failure.error)
     } else {
         failure.error.clone()
     };
-    let diagnostic = MietteDiagnostic::new(message)
+
+    let (start, len) = clamped_label_offsets(label.span, source);
+    let mut labels = vec![LabeledSpan::new_primary_with_span(
+        Some(label.message.clone().unwrap_or_else(|| "error".to_string())),
+        (start, len),
+    )];
+    let mut notes = Vec::new();
+    for secondary in &failure.secondary_labels {
+        if secondary.span.source == label.span.source {
+            let (start, len) = clamped_label_offsets(secondary.span, source);
+            labels.push(LabeledSpan::new_with_span(
+                secondary.message.clone(),
+                (start, len),
+            ));
+        } else {
+            notes.push(cross_source_label_note(secondary, source_map));
+        }
+    }
+    notes.extend(failure.notes.iter().cloned());
+
+    let mut diagnostic = MietteDiagnostic::new(message)
         .with_severity(Severity::Error)
-        .with_label(LabeledSpan::new_primary_with_span(
-            Some(label_text),
-            (start, end.saturating_sub(start).max(1)),
-        ));
+        .with_labels(labels);
+    if !notes.is_empty() {
+        diagnostic = diagnostic.with_help(notes.join("\n"));
+    }
     Report::new(diagnostic).with_source_code(NamedSource::new(display_name, source.to_string()))
+}
+
+/// Byte offset and length of `span` inside `source`, clamped to the file.
+///
+/// A stale or synthesized span must not panic the renderer, and a zero-length
+/// span must still draw a caret, so the length floors at one byte.
+fn clamped_label_offsets(span: rumoca_core::Span, source: &str) -> (usize, usize) {
+    let start = span.start.0.min(source.len());
+    let end = span.end.0.max(start + 1).min(source.len());
+    (start, end.saturating_sub(start).max(1))
+}
+
+/// A note naming a label that lives in a different file than the report anchor.
+///
+/// [`rumoca_compile::compile::source_span_location`] yields the editor-protocol
+/// [`TextPosition`](rumoca_core::text_position::TextPosition), whose line and
+/// column are zero-based; a terminal `file:line:col` is one-based everywhere
+/// else this compiler prints one, so both fields are shifted here.
+fn cross_source_label_note(
+    label: &rumoca_core::Label,
+    source_map: &rumoca_core::SourceMap,
+) -> String {
+    let text = label.message.as_deref().unwrap_or("related location");
+    match rumoca_compile::compile::source_span_location(source_map, label.span) {
+        Some(location) => format!(
+            "{text}: {}:{}:{}",
+            display_source_name(&location.file_name),
+            location.start.line + 1,
+            location.start.character + 1
+        ),
+        None => match source_map.name(label.span.source) {
+            Some(name) => format!("{text}: {}", display_source_name(name)),
+            None => text.to_string(),
+        },
+    }
 }
 
 fn build_compile_failure_fallback_report(
@@ -974,6 +1061,7 @@ fn run_config_init() -> Result<()> {
 
 fn run_compile(args: CompileArgs) -> Result<()> {
     init_debug_tracing(&args.diagnostics)?;
+    invalidate_previous_compile_output(&args)?;
     if let Some(emit) = args.emit
         && matches!(emit.phase(), CompilePhase::Ast | CompilePhase::Flat)
     {
@@ -1022,6 +1110,11 @@ fn run_compile(args: CompileArgs) -> Result<()> {
         };
     }
 
+    let emission_policy = compile_selectors::resolve_emission_policy(
+        args.emission_policy,
+        args.inline_policy,
+        args.scalarize_policy,
+    );
     match (args.emit, args.target) {
         // IR dump of one compiler stage (--emit conflicts with --target).
         (Some(emit), _) => run_ir_dump(&result, &model, emit.phase(), emit.is_json(), args.output),
@@ -1033,6 +1126,7 @@ fn run_compile(args: CompileArgs) -> Result<()> {
             &target,
             args.output,
             args.phase.map(TemplateIr::from),
+            emission_policy,
         ),
         // Neither: just report the compilation summary. There is no artifact to
         // write here, so `--output` would be a silent no-op — reject it instead
@@ -1051,6 +1145,73 @@ fn run_compile(args: CompileArgs) -> Result<()> {
     }
 }
 
+fn invalidate_previous_compile_output(args: &CompileArgs) -> Result<()> {
+    let Some(output) = args.output.as_deref() else {
+        if args.target.is_none() {
+            return Ok(());
+        }
+        let model = selected_model_name(&args.input)?;
+        return target_manifest::invalidate_target_output(
+            &model,
+            args.target.as_deref().expect("target checked above"),
+            None,
+            args.phase.map(TemplateIr::from),
+        );
+    };
+
+    if args.emit.is_some() {
+        if output_names_input_file(output, Path::new(&args.input.model_file))? {
+            bail!(
+                "output path `{}` is the Modelica input file; refusing to invalidate the source",
+                output.display()
+            );
+        }
+        if output.is_dir() {
+            bail!(
+                "output path `{}` is a directory; --emit must write to a file \
+                 (e.g. model.dae.mo)",
+                output.display()
+            );
+        }
+        if output.exists() {
+            std::fs::remove_file(output)
+                .with_context(|| format!("Invalidate previous output '{}'", output.display()))?;
+        }
+        return Ok(());
+    }
+
+    if let Some(target) = args.target.as_deref() {
+        let model = selected_model_name(&args.input)?;
+        target_manifest::invalidate_target_output(
+            &model,
+            target,
+            Some(output),
+            args.phase.map(TemplateIr::from),
+        )?;
+    }
+    Ok(())
+}
+
+fn output_names_input_file(output: &Path, input: &Path) -> Result<bool> {
+    let output = if output.exists() {
+        std::fs::canonicalize(output)
+            .with_context(|| format!("Resolve output path '{}'", output.display()))?
+    } else {
+        std::path::absolute(output)
+            .with_context(|| format!("Resolve output path '{}'", output.display()))?
+    };
+    let input = std::fs::canonicalize(input)
+        .with_context(|| format!("Resolve Modelica input '{}'", input.display()))?;
+    Ok(output == input)
+}
+
+fn selected_model_name(args: &ModelInputArgs) -> Result<String> {
+    match &args.options.model {
+        Some(model) => Ok(model.clone()),
+        None => infer_model_name(&args.model_file),
+    }
+}
+
 pub(crate) enum EarlyIrArtifact {
     Ast(Box<ResolvedTree>),
     Flat(Box<FlatModel>),
@@ -1064,8 +1225,8 @@ fn run_early_ir_dump(
 ) -> Result<()> {
     let rendered = match (artifact, json) {
         (EarlyIrArtifact::Ast(resolved), true) => serde_json::to_string_pretty(resolved.inner())?,
-        (EarlyIrArtifact::Ast(resolved), false) => {
-            render_early_ir_as_modelica_ast(resolved, model)?
+        (EarlyIrArtifact::Ast(_), false) => {
+            bail!("the AST has no lossless Modelica export; use `--emit ast-json`")
         }
         (EarlyIrArtifact::Flat(flat), true) => serde_json::to_string_pretty(flat)?,
         (EarlyIrArtifact::Flat(flat), false) => render_early_ir_as_modelica_flat(flat, model)?,
@@ -1135,16 +1296,6 @@ fn write_ir_dump(
     Ok(())
 }
 
-fn render_early_ir_as_modelica_ast(resolved: &ResolvedTree, model: &str) -> Result<String> {
-    let template = rumoca_compile::codegen::templates::builtin_template_source(
-        "modelica",
-        "modelica.mo.jinja",
-    )
-    .ok_or_else(|| anyhow::anyhow!("missing built-in modelica template"))?;
-    let model_identifier = model.replace('.', "_");
-    render_ast_template_with_name(resolved.inner(), template, &model_identifier).map_err(Into::into)
-}
-
 fn render_early_ir_as_modelica_flat(flat: &FlatModel, model: &str) -> Result<String> {
     let template = rumoca_compile::codegen::templates::builtin_template_source(
         "flat-modelica",
@@ -1163,7 +1314,9 @@ fn render_ir_as_modelica(
     phase: CompilePhase,
 ) -> Result<String> {
     let (target, template_file) = match phase {
-        CompilePhase::Ast => ("modelica", "modelica.mo.jinja"),
+        CompilePhase::Ast => {
+            bail!("the AST has no lossless Modelica export; use `--emit ast-json`")
+        }
         CompilePhase::Flat => ("flat-modelica", "flat_modelica.mo.jinja"),
         CompilePhase::Dae => ("dae-modelica", "dae_modelica.mo.jinja"),
         CompilePhase::Solve => {
@@ -1214,7 +1367,7 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
     init_debug_tracing(&args.diagnostics)?;
     let (result, model) = compile_dae_with_inferred_model(&input, args.diagnostics.verbose)?;
     if let Some(kind) = args.inspect {
-        let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref());
+        let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref())?;
         let dae = result.dae.as_ref();
         let at = inspect_at_spec(args.at.as_deref());
         if matches!(args.format, InspectFormat::Json)
@@ -1245,7 +1398,7 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
         };
     }
     let workspace_root = discover_workspace_root_for_model_file(&input.model_file);
-    let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref());
+    let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref())?;
     run_simulation(SimulationRun {
         dae: result.dae.as_ref(),
         model: &model,
@@ -1264,27 +1417,32 @@ fn inspect_at_spec(at: Option<&str>) -> &str {
     at.unwrap_or_default()
 }
 
+/// Resolve the solver for a direct run: `--solver` if given, else the model's
+/// `experiment(Solver = "...")` annotation, else `auto`.
+///
+/// The annotation is free text, so it is resolved through the same authority
+/// every other surface uses and an unrunnable name is reported here. Honoring
+/// only the names this tree runs is what makes the annotation meaningful: the
+/// PDE method-of-lines examples annotate `Solver = "rk-like"` because they are
+/// explicit / artificial-compressibility schemes the implicit auto path cannot
+/// step, and silently ignoring a misspelling of that would run them on the
+/// solver they specifically asked not to use.
 fn simulate_solver_or_auto(
     solver: Option<SimulateSolverMode>,
     experiment_solver: Option<&str>,
-) -> SimulateSolverMode {
-    // An explicit `--solver` always wins.
+) -> Result<SimulateSolverMode> {
+    // An explicit `--solver` always wins, and clap has already validated it.
     if let Some(solver) = solver {
-        return solver;
+        return Ok(solver);
     }
-    // No `--solver`: honor the model's `experiment(Solver = "...")` annotation when it
-    // names an explicit Runge-Kutta-family solver -- e.g. the PDE method-of-lines
-    // examples annotated `Solver = "rk-like"`, which are artificial-compressibility /
-    // explicit schemes the implicit BDF auto path cannot step. Non-RK annotations
-    // (`dassl`, `cvode`, ...) already resolve to the implicit family and so match the
-    // `Auto` fallback, leaving their behavior unchanged. This mirrors the WASM/docs
-    // scheduled simulation loop, which already resolves the annotated solver.
-    match experiment_solver {
-        Some(name) if SimSolverMode::from_external_name(name) == SimSolverMode::RkLike => {
-            SimulateSolverMode::RkLike
-        }
+    let Some(name) = experiment_solver else {
+        return Ok(SimulateSolverMode::Auto);
+    };
+    Ok(match rumoca_core::canonical_solver_name(name)? {
+        "rk-like" => SimulateSolverMode::RkLike,
+        "bdf" => SimulateSolverMode::Bdf,
         _ => SimulateSolverMode::Auto,
-    }
+    })
 }
 
 fn direct_sim_t_end(t_end: Option<f64>) -> f64 {
@@ -1294,15 +1452,12 @@ fn direct_sim_t_end(t_end: Option<f64>) -> f64 {
 fn run_lint(args: LintArgs) -> Result<()> {
     validate_explicit_target_paths(&args.paths)?;
     let paths = normalize_target_paths(&args.paths);
-    let config_dir = first_path_config_dir(&paths);
-    let base_options = lint_options_from_config(&config_dir)?;
     let cli_overrides = PartialLintOptions {
         min_level: args.min_level.map(Into::into),
         disabled_rules: (!args.disable_rules.is_empty()).then_some(args.disable_rules.clone()),
         warnings_as_errors: args.warnings_as_errors.then_some(true),
         max_messages: args.max_messages,
     };
-    let options = base_options.merge(cli_overrides);
 
     let files = collect_modelica_files(&paths);
     if files.is_empty() {
@@ -1310,7 +1465,8 @@ fn run_lint(args: LintArgs) -> Result<()> {
         return Ok(());
     }
 
-    let mut total_messages = Vec::<LintMessage>::new();
+    let mut shown_messages = Vec::<(LintMessage, bool)>::new();
+    let mut total_message_count = 0usize;
     let mut io_errors = 0usize;
     for file in &files {
         let source = match std::fs::read_to_string(file) {
@@ -1322,16 +1478,18 @@ fn run_lint(args: LintArgs) -> Result<()> {
             }
         };
         let file_label = file.to_string_lossy().to_string();
-        let messages = rumoca_tool_lint::lint(&source, &file_label, &options);
-        total_messages.extend(messages);
+        let options = lint_options_for_file(file, &cli_overrides)?;
+        let mut messages = rumoca_tool_lint::lint(&source, &file_label, &options);
+        total_message_count += messages.len();
+        messages.truncate(options.max_messages);
+        shown_messages.extend(
+            messages
+                .into_iter()
+                .map(|message| (message, options.warnings_as_errors)),
+        );
     }
 
-    let mut limited = total_messages;
-    let total_message_count = limited.len();
-    if limited.len() > options.max_messages {
-        limited.truncate(options.max_messages);
-    }
-    for message in &limited {
+    for (message, _) in &shown_messages {
         let suggestion = lint_suggestion_suffix(message.suggestion.as_deref());
         println!(
             "{}:{}:{} [{}] {} ({}){}",
@@ -1345,38 +1503,58 @@ fn run_lint(args: LintArgs) -> Result<()> {
         );
     }
 
-    let error_count = limited
+    let error_count = shown_messages
         .iter()
-        .filter(|m| m.level >= LintLevel::Error)
+        .filter(|(message, warnings_as_errors)| {
+            message.level >= LintLevel::Error
+                || (*warnings_as_errors && message.level == LintLevel::Warning)
+        })
         .count()
         + io_errors;
-    let warning_count = limited
+    let warning_count = shown_messages
         .iter()
-        .filter(|m| m.level == LintLevel::Warning)
+        .filter(|(message, _)| message.level == LintLevel::Warning)
         .count();
 
     eprintln!(
         "{} files linted | {} messages (shown: {}) | errors={} warnings={} io_errors={}",
         files.len(),
         total_message_count,
-        limited.len(),
+        shown_messages.len(),
         error_count,
         warning_count,
         io_errors
     );
 
-    if error_count > 0 || (options.warnings_as_errors && warning_count > 0) {
+    if error_count > 0 {
         std::process::exit(1);
     }
     Ok(())
 }
 
-fn lint_options_from_config(config_dir: &Path) -> Result<LintOptions> {
+/// Print the build identity this binary and the Python binding share.
+///
+/// The identity is deliberately absent rather than a placeholder when the build
+/// could not determine it, so a consumer comparing the two artifacts skips the
+/// check instead of comparing two equal placeholders and concluding they match.
+fn run_build_info() -> Result<()> {
+    let Some(identity) = rumoca_core::build_identity() else {
+        anyhow::bail!(
+            "build identity unavailable: this binary was built without commit \
+             information, so it cannot be compared against another artifact"
+        );
+    };
+    println!("{identity}");
+    Ok(())
+}
+
+fn lint_options_for_file(file: &Path, cli_overrides: &PartialLintOptions) -> Result<LintOptions> {
+    let config_dir = file.parent().unwrap_or(Path::new("."));
     match rumoca_tool_lint::load_config_from_dir(config_dir)
         .map_err(|e| anyhow::anyhow!("Failed to load lint config: {e}"))?
     {
-        Some(options) => Ok(options),
-        None => Ok(LintOptions::default()),
+        Some(options) => Ok(options.merge(cli_overrides.clone())),
+        None => Ok(LintOptions::default().merge(cli_overrides.clone())),
     }
 }
 
@@ -1464,6 +1642,7 @@ const TRACE_PHASE_ALIASES: &[(&str, &str)] = &[
     ("bdf", "rumoca_solver_diffsol::bdf"),
     ("rk45", "rumoca_solver_rk45::eval"),
     ("hotpath", "rumoca_solver::hotpath"),
+    ("driver", "rumoca_solver::driver"),
 ];
 
 /// Expand short phase aliases in a `--trace` filter. Each comma-separated token
@@ -1610,24 +1789,44 @@ pub(crate) fn compile_str_dae_with_inferred_model(
 }
 
 fn print_summary(model: &str, result: &CompilationResult) {
+    let (states, algebraics, parameters, constants, inputs, outputs, continuous, initial) =
+        result.dae.inspect(|view| {
+            let mut roles = [0usize; 6];
+            for (_, variable) in view.variables() {
+                match variable.role() {
+                    rumoca_compile::compile::VariableRole::State => roles[0] += 1,
+                    rumoca_compile::compile::VariableRole::Algebraic => roles[1] += 1,
+                    rumoca_compile::compile::VariableRole::Parameter => roles[2] += 1,
+                    rumoca_compile::compile::VariableRole::Constant => roles[3] += 1,
+                    rumoca_compile::compile::VariableRole::Input => roles[4] += 1,
+                    rumoca_compile::compile::VariableRole::Output => roles[5] += 1,
+                    rumoca_compile::compile::VariableRole::DiscreteReal
+                    | rumoca_compile::compile::VariableRole::DiscreteValue => {}
+                }
+            }
+            (
+                roles[0],
+                roles[1],
+                roles[2],
+                roles[3],
+                roles[4],
+                roles[5],
+                view.continuous_owner_count(),
+                view.initialization_owner_count(),
+            )
+        });
     println!("Compilation successful!");
     println!();
     println!("Model: {}", model);
-    println!("States: {}", result.dae.variables.states.len());
-    println!("Algebraics: {}", result.dae.variables.algebraics.len());
-    println!("Parameters: {}", result.dae.variables.parameters.len());
-    println!("Constants: {}", result.dae.variables.constants.len());
-    println!("Inputs: {}", result.dae.variables.inputs.len());
-    println!("Outputs: {}", result.dae.variables.outputs.len());
+    println!("States: {states}");
+    println!("Algebraics: {algebraics}");
+    println!("Parameters: {parameters}");
+    println!("Constants: {constants}");
+    println!("Inputs: {inputs}");
+    println!("Outputs: {outputs}");
     println!();
-    println!(
-        "Continuous equations (f_x): {}",
-        result.dae.continuous.equations.len()
-    );
-    println!(
-        "Initial equations: {}",
-        result.dae.initialization.equations.len()
-    );
+    println!("Continuous equations (f_x): {}", continuous);
+    println!("Initial equations: {}", initial);
     println!();
     println!("Balance: {} (equations - unknowns)", result.balance());
     if result.is_balanced() {
@@ -1646,6 +1845,21 @@ fn print_summary(model: &str, result: &CompilationResult) {
     println!(
         "Use `rumoca sim <file> --inspect structure` for BLT/tearing/SCC analysis (also `--inspect eval|jacobian`)"
     );
+}
+
+/// Render a typed simulation failure for the CLI, keeping the SPEC_0008 code
+/// (`EL0xx` / `ES0xx` / `EX0xx`) the error already carries in the same
+/// `[CODE] message` form the compile paths print. Flattening the error with
+/// `anyhow::Error::msg` drops the code, leaving a CLI user with no triage
+/// handle for a defect the LSP reports by code.
+///
+/// Shared with the value-returning `sim` entry point (`cli::value`) and with
+/// the `--inspect` dumps in [`crate::sim_inspect`], so every surface renders
+/// one identity for the same failure.
+pub(crate) fn simulation_failure_error(
+    error: &rumoca_sim::SimulationDiagnosticError,
+) -> anyhow::Error {
+    anyhow::anyhow!("[{}] {error}", error.diagnostic_code())
 }
 
 struct SimulationRun<'a> {
@@ -1674,13 +1888,14 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         );
     }
 
+    // Scenario configs carry the solver as free text, so this is where a name
+    // this tree cannot run is reported rather than quietly replaced.
+    validate_solver_label(run.solver_label)?;
     let mut opts = SimOptions {
         t_end: run.t_end,
         dt: run.dt,
         solver_mode: run.solver_mode,
-        // `--solver esdirk34` / `trbdf2` selects an implicit SDIRK tableau on
-        // the diffsol path; other names leave the BDF default.
-        diffsol_method: diffsol_method_for_solver_label(run.solver_label),
+        diffsol_method: DiffsolMethod::Bdf,
         ..SimOptions::default()
     };
     // Explicit --atol/--rtol override the backend default so a host's tolerance
@@ -1696,8 +1911,8 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
     // On a non-finite-suggestive failure (e.g. a model divide-by-zero showing up
     // as "step size too small"), this re-runs once with NaN tracing so the
     // offending variable(s) are named for the user.
-    let sim =
-        simulate_with_diagnostics_auto_nan_trace(run.dae, &opts).map_err(anyhow::Error::msg)?;
+    let sim = simulate_with_diagnostics_auto_nan_trace(run.dae, &opts)
+        .map_err(|error| simulation_failure_error(&error))?;
     eprintln!(
         "Simulation complete: {} time points, {} variables",
         sim.times.len(),
@@ -1753,21 +1968,21 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
     Ok(())
 }
 
-fn diffsol_method_for_solver_label(solver_label: &str) -> DiffsolMethod {
-    DiffsolMethod::from_external_name(solver_label).unwrap_or_default()
+/// Check that a solver label names a solver this tree runs.
+///
+/// `--solver` is validated by clap against its value enum, but a label can also
+/// arrive as free text from a scenario config's `sim.solver`, and neither route
+/// is checked anywhere else. An unrecognized name is reported with the valid set
+/// rather than dropped — dropping it would leave whichever solver was already in
+/// effect running under a name the user did not ask for.
+pub(crate) fn validate_solver_label(solver_label: &str) -> Result<()> {
+    rumoca_core::canonical_solver_name(solver_label)
+        .map(|_| ())
+        .map_err(anyhow::Error::from)
 }
 
 // Structured, value-returning entrypoints (`compile_to_value`,
 // `simulate_to_value`) for the Python `cli` binding live in a child module so
 // `cli.rs` stays focused on argument parsing + the binary's print/write
 // dispatch. The child reuses this module's private compute helpers via `super::`.
-mod value;
 pub use value::{compile_to_value, simulate_to_value};
-
-#[cfg(test)]
-#[path = "cli/cli_tests.rs"]
-mod cli_tests;
-
-#[cfg(test)]
-#[path = "cli/cli_report_tests.rs"]
-mod cli_report_tests;

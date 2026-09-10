@@ -9,7 +9,7 @@
 //! rumoca compile model.mo --model MyModel --emit solve-json
 //!
 //! # Compile and render a target.toml codegen target
-//! rumoca compile model.mo --model MyModel --target sympy --output out
+//! rumoca compile model.mo --model MyModel --target c-ode --output out
 //!
 //! # Verbose output
 //! rumoca compile model.mo --model MyModel --emit dae-mo --verbose
@@ -38,7 +38,7 @@ use rumoca::CompilerError;
 use rumoca::cli::{
     self, Cli, build_cli_error_report, build_compile_failure_report, build_source_diagnostic_report,
 };
-use rumoca_compile::compile::core::{Diagnostic as CommonDiagnostic, SourceMap};
+use rumoca_core::{Diagnostic as CommonDiagnostic, SourceMap};
 
 fn main() {
     // Restore the default SIGPIPE disposition: Rust installs SIG_IGN at startup,
@@ -109,7 +109,7 @@ fn print_scheduled_sim_diagnostic_error(
 
 fn print_compile_failures(
     failures: &[rumoca_compile::compile::ModelFailureDiagnostic],
-    source_map: Option<&rumoca_compile::compile::core::SourceMap>,
+    source_map: Option<&rumoca_core::SourceMap>,
 ) -> bool {
     let Some(source_map) = source_map else {
         return false;

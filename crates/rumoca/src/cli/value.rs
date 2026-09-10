@@ -22,9 +22,8 @@ use super::{
     CompilationResult, CompileArgs, CompilePhase, EarlyIrArtifact, SimCommandArgs, SimOptions,
     SimulationRequestSummary, SimulationRunMetrics, TemplateIr,
     compile_str_dae_with_inferred_model, compile_str_early_ir_with_inferred_model,
-    compile_str_with_inferred_model, diffsol_method_for_solver_label, direct_sim_t_end,
-    render_early_ir_as_modelica_ast, render_early_ir_as_modelica_flat, render_ir_as_modelica,
-    simulate_solver_or_auto, target_manifest,
+    compile_str_with_inferred_model, direct_sim_t_end, render_early_ir_as_modelica_flat,
+    render_ir_as_modelica, simulate_solver_or_auto, simulation_failure_error, target_manifest,
 };
 
 /// Compile `source` (inline Modelica text) according to `args` and return the
@@ -86,7 +85,9 @@ fn early_ir_value(artifact: &EarlyIrArtifact, model: &str, json: bool) -> Result
         };
     }
     let rendered = match artifact {
-        EarlyIrArtifact::Ast(resolved) => render_early_ir_as_modelica_ast(resolved, model)?,
+        EarlyIrArtifact::Ast(_) => {
+            bail!("the AST has no lossless Modelica export; use `--emit ast-json`")
+        }
         EarlyIrArtifact::Flat(flat) => render_early_ir_as_modelica_flat(flat, model)?,
     };
     Ok(json!({ "format": "modelica", "source": rendered }))
@@ -153,13 +154,13 @@ pub fn simulate_to_value(args: &SimCommandArgs, source: &str) -> Result<Value> {
         args.diagnostics.verbose,
     )?;
     let compile_seconds = compile_started.elapsed().as_secs_f64();
-    let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref());
+    let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref())?;
 
     let mut opts = SimOptions {
         t_end: direct_sim_t_end(args.t_end),
         dt: args.dt,
         solver_mode: solver.into(),
-        diffsol_method: diffsol_method_for_solver_label(solver.as_label()),
+        diffsol_method: rumoca_sim::DiffsolMethod::Bdf,
         ..SimOptions::default()
     };
     if let Some(atol) = args.atol {
@@ -172,9 +173,11 @@ pub fn simulate_to_value(args: &SimCommandArgs, source: &str) -> Result<Value> {
     let sim_started = Instant::now();
     // Dispatch on `opts.solver_mode` (auto / bdf / rk-like) exactly like the
     // binary's direct-sim path. The plain `simulate_dae` alias resolves to the
-    // diffsol/BDF-only entry, so it would silently ignore `--solver`.
+    // diffsol/BDF-only entry, so it would silently ignore `--solver`. The
+    // failure is rendered by the shared `[CODE] message` helper so the typed
+    // error's SPEC_0008 code survives the conversion to `anyhow`.
     let sim = rumoca_sim::simulate_dae_with_diagnostics(result.dae.as_ref(), &opts)
-        .map_err(|e| anyhow::anyhow!("Simulation error: {e}"))?;
+        .map_err(|error| simulation_failure_error(&error))?;
 
     let request = SimulationRequestSummary {
         solver: solver.as_label().to_string(),

@@ -302,7 +302,8 @@ impl Session {
             .collect()
     }
 
-    pub fn dirty_source_root_class_prefixes(&self, source_root_key: &str) -> Vec<String> {
+    #[cfg(test)]
+    pub(crate) fn dirty_source_root_class_prefixes(&self, source_root_key: &str) -> Vec<String> {
         self.source_sets
             .get(source_root_key)
             .map(|record| record.dirty_class_prefixes.iter().cloned().collect())
@@ -348,7 +349,8 @@ impl Session {
             .contains(path_key)
     }
 
-    pub fn source_root_load_reservation_epoch(&self, path_key: &str) -> Option<u64> {
+    #[cfg(test)]
+    pub(crate) fn source_root_load_reservation_epoch(&self, path_key: &str) -> Option<u64> {
         self.source_root_indexing
             .loading_path_keys
             .get(path_key)
@@ -554,19 +556,19 @@ impl Session {
         &mut self,
         source_root_prefix: &str,
         kind: SourceRootKind,
-        definitions: Vec<(String, ast::StoredDefinition)>,
+        definitions: Vec<ParsedSourceDocument>,
         cache_root: Option<&Path>,
         exclude_uri: Option<&str>,
     ) -> usize {
         let top_level_package_roots = top_level_package_roots_for_definitions(&definitions);
-        let mut grouped_definitions: IndexMap<String, Vec<(String, ast::StoredDefinition)>> =
-            IndexMap::new();
-        for (uri, parsed) in definitions {
-            let package_root = partitioned_package_root_for_uri(&uri, &top_level_package_roots);
+        let mut grouped_definitions: IndexMap<String, Vec<ParsedSourceDocument>> = IndexMap::new();
+        for document in definitions {
+            let package_root =
+                partitioned_package_root_for_uri(document.uri(), &top_level_package_roots);
             grouped_definitions
                 .entry(package_root)
                 .or_default()
-                .push((uri, parsed));
+                .push(document);
         }
 
         let mut stale_root_keys: IndexSet<String> = self
@@ -583,7 +585,7 @@ impl Session {
                 partitioned_source_root_key(source_root_prefix, package_root.as_str());
             stale_root_keys.shift_remove(&source_root_key);
             inserted_count +=
-                self.replace_parsed_source_set(&source_root_key, kind, definitions, exclude_uri);
+                self.replace_in_memory_source_set(&source_root_key, kind, definitions, exclude_uri);
             if let Some(cache_root) = cache_root {
                 let _ = self.sync_source_root_semantic_summary_cache(
                     &source_root_key,
@@ -673,25 +675,6 @@ impl Session {
             });
         entry.document = document;
         entry.source_root_keys.extend(source_root_keys);
-    }
-
-    pub(super) fn cache_detached_source_root_parsed_document(
-        &mut self,
-        source_root_key: &str,
-        uri: &str,
-        parsed: ast::StoredDefinition,
-    ) {
-        let mut source_root_keys = IndexSet::new();
-        source_root_keys.insert(source_root_key.to_string());
-        self.cache_detached_source_root_document(
-            uri,
-            Document::new(
-                uri.to_string(),
-                String::new(),
-                crate::parse::SyntaxFile::from_parsed(parsed),
-            ),
-            source_root_keys,
-        );
     }
 
     pub(super) fn drop_detached_source_root_membership(&mut self, source_root_key: &str) {
@@ -853,12 +836,10 @@ impl Session {
     }
 }
 
-fn top_level_package_roots_for_definitions(
-    definitions: &[(String, ast::StoredDefinition)],
-) -> Vec<String> {
+fn top_level_package_roots_for_definitions(definitions: &[ParsedSourceDocument]) -> Vec<String> {
     let mut package_dirs = definitions
         .iter()
-        .filter_map(|(uri, _)| package_directory(uri))
+        .filter_map(|document| package_directory(document.uri()))
         .collect::<Vec<_>>();
     package_dirs.sort_by_key(String::len);
     let mut top_level_roots: Vec<String> = Vec::new();

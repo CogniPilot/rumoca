@@ -244,19 +244,6 @@ pub(crate) fn validate_explicit_target_paths(paths: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn first_path_config_dir(paths: &[PathBuf]) -> PathBuf {
-    match paths.first() {
-        Some(p) => {
-            if p.is_dir() {
-                p.clone()
-            } else {
-                parent_dir_or_current(p).to_path_buf()
-            }
-        }
-        None => PathBuf::from("."),
-    }
-}
-
 pub(crate) fn parent_dir_or_current(path: &Path) -> &Path {
     match path.parent() {
         Some(parent) => parent,

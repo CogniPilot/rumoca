@@ -926,12 +926,14 @@ impl FrameCtx<'_> {
             model_time,
             model_get: &model_get,
         };
-        for (name, val) in self.mapper.build_model_inputs(engine, &rt)? {
-            session
-                .set_input(&name, val)
-                .with_context(|| format!("set session input '{name}'"))?;
-        }
-        Ok(())
+        let inputs = self.mapper.build_model_inputs(engine, &rt)?;
+        let batch: Vec<_> = inputs
+            .iter()
+            .map(|(name, value)| (name.as_str(), *value))
+            .collect();
+        session
+            .set_inputs(&batch)
+            .context("set session input batch")
     }
 
     /// Build payloads + send FB + push viewer JSON.
@@ -1096,7 +1098,7 @@ impl FrameCtx<'_> {
             && let Some(dbg) = self.cfg.debug_log.as_ref()
             && engine.take_signal(&dbg.trigger_signal)
         {
-            // TODO(phase 4b): ring-buffer-backed debug log dump.
+            // Debug triggers report that no buffered log is available.
             eprintln!("[debug] log trigger — ring buffer not yet implemented");
         }
         Ok(FrameControl::Continue)
@@ -1266,17 +1268,22 @@ fn apply_received(
     session: &mut impl SimulationSessionApi,
     engine: &mut InputEngine,
 ) -> Result<()> {
+    let inputs: Vec<_> = values
+        .iter()
+        .filter_map(|(key, value)| {
+            if key.starts_with("local:") {
+                None
+            } else {
+                Some((key.strip_prefix("model:").unwrap_or(key), value))
+            }
+        })
+        .collect();
+    session
+        .set_inputs(&inputs)
+        .context("set received session input batch")?;
     for (key, val) in values.iter() {
-        if let Some(rest) = key.strip_prefix("model:") {
-            session
-                .set_input(rest, val)
-                .with_context(|| format!("set received session input '{rest}'"))?;
-        } else if let Some(rest) = key.strip_prefix("local:") {
+        if let Some(rest) = key.strip_prefix("local:") {
             engine.set_local(rest, val);
-        } else {
-            session
-                .set_input(key, val)
-                .with_context(|| format!("set received session input '{key}'"))?;
         }
     }
     Ok(())
@@ -1386,7 +1393,7 @@ mod tests {
             Ok(())
         }
 
-        fn set_input(&mut self, _name: &str, _value: f64) -> Result<(), Self::Error> {
+        fn set_inputs(&mut self, _inputs: &[(&str, f64)]) -> Result<(), Self::Error> {
             Ok(())
         }
 

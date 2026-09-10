@@ -12,14 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use serde::Deserialize;
 use tungstenite::{Message, WebSocket, accept};
-
-/// Configuration deserialized from `[transport.websocket]`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct WsConfig {
-    pub port: u16,
-}
 
 type WsStream = WebSocket<TcpStream>;
 

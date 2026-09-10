@@ -52,6 +52,7 @@ impl Session {
             fresh_session_snapshot_caches();
         Self {
             instantiation_options: config.instantiate_options(),
+            structural_override_sources: Vec::new(),
             documents: IndexMap::new(),
             detached_document_uris: IndexSet::new(),
             detached_source_root_documents: IndexMap::new(),
@@ -71,33 +72,8 @@ impl Session {
             snapshot_cache,
             lightweight_snapshot_cache,
             workspace_symbol_snapshot_cache,
-            evaluate_scope_is_error: config.evaluate_scope_is_error,
-            when_single_assign_is_error: config.when_single_assign_is_error,
             query_state,
         }
-    }
-
-    pub fn set_semantic_strictness(
-        &mut self,
-        evaluate_scope_is_error: bool,
-        when_single_assign_is_error: bool,
-    ) {
-        if self.evaluate_scope_is_error == evaluate_scope_is_error
-            && self.when_single_assign_is_error == when_single_assign_is_error
-        {
-            return;
-        }
-        self.evaluate_scope_is_error = evaluate_scope_is_error;
-        self.when_single_assign_is_error = when_single_assign_is_error;
-        self.invalidate_resolved_state(CacheInvalidationCause::DocumentMutation);
-        self.invalidate_strict_compile_state(CacheInvalidationCause::DocumentMutation);
-    }
-
-    pub fn semantic_strictness(&self) -> (bool, bool) {
-        (
-            self.evaluate_scope_is_error,
-            self.when_single_assign_is_error,
-        )
     }
 
     pub(crate) fn invalidate_resolved_state(&mut self, cause: CacheInvalidationCause) {
@@ -352,17 +328,15 @@ impl Session {
     ) -> Option<SourceRootResolvedAggregate> {
         let mut session = Session::default();
         session.add_parsed_batch(documents.to_vec());
-        let (resolved, _) = session
-            .build_resolved_for_strict_compile_with_diagnostics()
-            .ok()?;
+        let (plan, _) = session.build_resolution_plan_for_strict_compile().ok()?;
         Some(SourceRootResolvedAggregate {
             model_names: session.query_state.resolved.model_names.clone(),
-            dependency_fingerprints: DependencyFingerprintCache::from_tree(&resolved.0),
+            dependency_fingerprints: DependencyFingerprintCache::from_tree(plan.tree()),
         })
     }
 
     fn restore_resolved_inputs_from_source_root_aggregates(&mut self) -> bool {
-        if self.query_state.resolved.builds.any().is_some()
+        if self.query_state.resolved.builds.any_tree().is_some()
             || !self.detached_document_uris.is_empty()
             || !self.detached_source_root_documents.is_empty()
         {

@@ -88,7 +88,7 @@ fn render_human_targets(
         "\nDump an IR stage with `rumoca compile --emit <value>`:"
     )?;
     for (id, stage) in [
-        ("ast-mo / ast-json", "abstract syntax tree"),
+        ("ast-json", "abstract syntax tree"),
         ("flat-mo / flat-json", "flattened model"),
         ("dae-mo / dae-json", "DAE system"),
         ("solve-json", "solver IR (no Modelica form)"),
@@ -129,8 +129,8 @@ mod tests {
         let output = render_human_targets(&matrix).expect("human target table should render");
         let wgsl_row = output
             .lines()
-            .find(|line| line.starts_with("wgsl-solve "))
-            .unwrap_or_else(|| panic!("wgsl-solve row should be present:\n{output}"));
+            .find(|line| line.starts_with("wgsl-ode "))
+            .unwrap_or_else(|| panic!("wgsl-ode row should be present:\n{output}"));
 
         assert!(output.lines().next().is_some_and(|line| {
             line.split_whitespace().collect::<Vec<_>>()
@@ -148,21 +148,8 @@ mod tests {
         assert_eq!(
             wgsl_row.split_whitespace().collect::<Vec<_>>(),
             vec![
-                "wgsl-solve",
-                "solve",
-                "jit",
-                "gpu",
-                "0",
-                "native",
-                "scalar",
-                "unknown",
-                "native",
-                "native",
-                "no",
-                "no",
-                "native",
-                "no",
-                "no",
+                "wgsl-ode", "solve", "jit", "gpu", "0", "native", "scalar", "unknown", "native",
+                "native", "no", "no", "no", "no", "no",
             ]
         );
     }

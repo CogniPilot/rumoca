@@ -844,8 +844,7 @@ fn test_compile_models_parallel_reuses_cache() {
 
 #[test]
 fn test_compiled_source_root_streaming_reuses_cache() {
-    let definition = rumoca_phase_parse::parse_to_ast(
-        r#"
+    let source = r#"
         model A
           Real x(start=0);
         equation
@@ -857,11 +856,12 @@ fn test_compiled_source_root_streaming_reuses_cache() {
         equation
           der(y) = 2;
         end B;
-        "#,
-        "models.mo",
-    )
-    .expect("models should parse");
-    let source_root = CompiledSourceRoot::from_stored_definition(definition)
+        "#;
+    let definition =
+        rumoca_phase_parse::parse_to_ast(source, "models.mo").expect("models should parse");
+    let mut source_map = rumoca_core::SourceMap::new();
+    source_map.add("models.mo", source);
+    let source_root = CompiledSourceRoot::from_stored_definition(definition, source_map)
         .expect("compiled source root should build");
 
     let mut first = Vec::new();
@@ -999,6 +999,69 @@ fn test_compile_model_strict_reachable_uncached_with_recovery_ignores_cache() {
         matches!(second.requested_result, Some(PhaseResult::Success(_))),
         "expected uncached strict requested result to compile successfully, got {:?}",
         second.requested_result
+    );
+}
+
+#[test]
+fn strict_target_source_map_tracks_the_current_planning_revision() {
+    const FIRST: &str = r#"
+        model Target
+          Real x(start=0);
+        equation
+          der(x) = 1;
+        end Target;
+    "#;
+    const SECOND: &str = r#"
+        model Target
+          Real x(start=0);
+        equation
+          der(x) = 2;
+        end Target;
+    "#;
+    let mut session = Session::default();
+    session
+        .add_document("target.mo", FIRST)
+        .expect("first target revision should parse");
+    session
+        .add_document(
+            "unrelated.mo",
+            "model Unrelated\n  MissingType value;\nend Unrelated;\n",
+        )
+        .expect("unrelated source should parse before resolve rejects its type");
+
+    let first = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("Target")
+        .expect("strict target recovery should ignore the unrelated resolve error");
+    let source = rumoca_core::SourceId::from_source_name("target.mo");
+    assert_eq!(
+        first
+            .source_map
+            .as_ref()
+            .and_then(|map| map.get_source(source))
+            .map(|(_, text)| text),
+        Some(FIRST)
+    );
+
+    assert!(
+        session.update_document("target.mo", SECOND).is_none(),
+        "second target revision should parse"
+    );
+    let second = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("Target")
+        .expect("updated strict target should compile");
+    assert_eq!(
+        second
+            .source_map
+            .as_ref()
+            .and_then(|map| map.get_source(source))
+            .map(|(_, text)| text),
+        Some(SECOND),
+        "the compile result must retain the current planning revision"
+    );
+    assert_eq!(
+        second.dae.source_map().get_source(source),
+        Some(("target.mo", SECOND)),
+        "the checked DAE must own the same current-revision source snapshot"
     );
 }
 
