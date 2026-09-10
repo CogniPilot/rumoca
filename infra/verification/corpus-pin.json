@@ -1,0 +1,1035 @@
+{
+  "schema_version": 2,
+  "runtime_budget_seconds": 180.0,
+  "entries": [
+    {
+      "id": "flight/navigation-estimator/galec-production",
+      "corpus": "flight-models",
+      "model": "Vehicles.Rdd2.NavigationEstimator",
+      "entry_point": "Vehicles/package.mo",
+      "why": "Largest realistic model emitted as eFMI Production Code; the certification review surface the GALEC track exists for",
+      "check": {
+        "kind": "compile",
+        "target": "galec-production"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [],
+        "artifacts": [
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator/__content.xml",
+            "kind": "file",
+            "min_bytes": 256
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator/AlgorithmCode/Vehicles_Rdd2_NavigationEstimator.alg",
+            "kind": "file",
+            "min_bytes": 131072
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator/ProductionCode/Vehicles_Rdd2_NavigationEstimator.c",
+            "kind": "file",
+            "min_bytes": 262144
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator/ProductionCode/Vehicles_Rdd2_NavigationEstimator.h",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator/ProductionCode/manifest.xml",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator.efmu",
+            "kind": "efmu-container",
+            "min_bytes": 65536
+          }
+        ]
+      }
+    },
+    {
+      "id": "flight/navigation-estimator/embedded-c-galec",
+      "corpus": "flight-models",
+      "model": "Vehicles.Rdd2.NavigationEstimator",
+      "entry_point": "Vehicles/package.mo",
+      "why": "Second established target for the same estimator; a projection change that breaks only one of the two is a real regression",
+      "check": {
+        "kind": "compile",
+        "target": "embedded-c-galec"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [],
+        "artifacts": [
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator.c",
+            "kind": "file",
+            "min_bytes": 262144
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator.h",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "rumoca_galec_kernels.c",
+            "kind": "file",
+            "min_bytes": 512
+          },
+          {
+            "path": "rumoca_galec_kernels.h",
+            "kind": "file",
+            "min_bytes": 1024
+          }
+        ]
+      }
+    },
+    {
+      "id": "flight/ukf-estimator/galec-production",
+      "corpus": "flight-models",
+      "model": "Estimation.StrapdownINS.UKF.Estimator",
+      "entry_point": "Estimation/package.mo",
+      "why": "Strapdown UKF estimator: the heaviest matrix-algebra model with an established eFMI target. The host preflight formerly reported one maybe-uninitialized local, `call9896_result14` in step, run to ground as a gcc correlation gap and not wrong code. One checked DAE conditional reaches GALEC once per value read out of it, so the three-arm seed-admission guard, whose arms define both the initialization quaternion and the alignment flag, was projected as two guards repeating one test with the initialize call between them; the alignment arm's call result was defined in the first guard and read in the matching arm of the second, which is total on every path but which no single emitted statement says, so gcc reported the read and the -Werror preflight rejected the artifact. The guard coalescer already merges an equivalent pair and refused here only because it treated any call as an obstacle to every guard; it now lets a guard that raises no signal of its own cross a multi-assignment whose names it shares none of, which puts the definition and its use in one arm and makes definite assignment visible. Two other models carry the same shape and collapse the same way, the ESKF estimator and Vehicles.Rdd2.NavigationEstimator, whose emissions had the shape without the report; every other corpus emission is byte-identical, outputs are bit-identical over a multi-config sanitizer differential on all three (with a perturbation control showing the schedule reaches the merged arm), and the ARM measurement falls 24 B here and 52 B on the navigation estimator with the arithmetic count unchanged",
+      "check": {
+        "kind": "compile",
+        "target": "galec-production"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [],
+        "artifacts": [
+          {
+            "path": "Estimation_StrapdownINS_UKF_Estimator/__content.xml",
+            "kind": "file",
+            "min_bytes": 256
+          },
+          {
+            "path": "Estimation_StrapdownINS_UKF_Estimator/AlgorithmCode/Estimation_StrapdownINS_UKF_Estimator.alg",
+            "kind": "file",
+            "min_bytes": 131072
+          },
+          {
+            "path": "Estimation_StrapdownINS_UKF_Estimator/ProductionCode/Estimation_StrapdownINS_UKF_Estimator.c",
+            "kind": "file",
+            "min_bytes": 262144
+          },
+          {
+            "path": "Estimation_StrapdownINS_UKF_Estimator/ProductionCode/manifest.xml",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Estimation_StrapdownINS_UKF_Estimator.efmu",
+            "kind": "efmu-container",
+            "min_bytes": 65536
+          }
+        ]
+      }
+    },
+    {
+      "id": "flight/controller/galec-production",
+      "corpus": "flight-models",
+      "model": "Vehicles.Rdd2.Controller",
+      "entry_point": "Vehicles/package.mo",
+      "why": "Flight controller, compiling since 2026-08-23 and pinned as a success. The road here, kept because each step is a regression class this row now guards: the dynamic write index is proven by the loop-entry bounds fixpoint (EGT017); call arguments lower to their formal's element type so MLS §6.7 Integer-to-Real conversion applies (EG017); a dependent parameter bound to a call folds to its generation-time value from rumoca-eval-dae when every input is frozen (EG028/EG027), which the model enables by declaring rotorGeometry annotation(Evaluate = true), a mark that propagates to record members per MLS §18.6 (galec_call_boundary::an_evaluate_record_parameter_freezes_its_members_for_the_fold); the emitted solve's elimination is hazard-ordered and its pivot exchange reads a snapshot, both pinned by galec_equivalence tests against hand math. The folded allocation matrix was checked numerically: 0.25 thrust share, +-1.4142135623730951 roll/pitch, +-15.625 yaw, matching the hand elimination of the rotor-effectiveness system, and the runtime artifact carries no solve call at all. The host preflight formerly reported three maybe-uninitialized locals; run to ground as a gcc correlation gap, not wrong code: the guard splitter copied one condition into two adjacent conditionals whose assignments gcc could not correlate across the intervening call, and the splitter now refuses a split whose halves would assign a common target, with the estimator and UKF emissions byte-identical. The last frontier this row tracked is closed as of 2026-08-23. The ARM cross-compile used to trip -Wstringop-overread at two inlined call sites, a gcc false positive driven by same-start value numbering of two overlay-union siblings inlined into one caller (semantics verified by sanitizer differential; a proposed coverage-rule mechanism was refuted by counterexample). The overlay layout now declares every array sharing a call-boundary bound-clash address long enough for the bound that address is handed to, except where that array's own address is handed to a shorter bound, which is left as the block declared it; both reports are gone on both cross targets and under the strict host preflight, measured, and the wider rule that would close the exception was tried and reintroduced a report at SO3_Quat_product; both reports are gone on both cross targets and the strict host preflight passes under -Werror with all five prior reports retired. The pass is uniform over every model and costs this artifact 40 B of state and 16 B of text; it reshapes the estimator and UKF emissions as a layout-only diff (array extents and the member offsets that follow, nothing else) whose outputs are bit-identical over a 240-call multi-config sanitizer differential. The controller therefore now carries embedded-budget rows of its own, flight-controller/embedded-c-galec and flight-controller/galec-production",
+      "check": {
+        "kind": "compile",
+        "target": "galec-production"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [],
+        "artifacts": [
+          {
+            "path": "Vehicles_Rdd2_Controller/__content.xml",
+            "kind": "file",
+            "min_bytes": 256
+          },
+          {
+            "path": "Vehicles_Rdd2_Controller/AlgorithmCode/Vehicles_Rdd2_Controller.alg",
+            "kind": "file",
+            "min_bytes": 131072
+          },
+          {
+            "path": "Vehicles_Rdd2_Controller/ProductionCode/Vehicles_Rdd2_Controller.c",
+            "kind": "file",
+            "min_bytes": 196608
+          },
+          {
+            "path": "Vehicles_Rdd2_Controller/ProductionCode/Vehicles_Rdd2_Controller.h",
+            "kind": "file",
+            "min_bytes": 16384
+          },
+          {
+            "path": "Vehicles_Rdd2_Controller/ProductionCode/manifest.xml",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Vehicles_Rdd2_Controller.efmu",
+            "kind": "efmu-container",
+            "min_bytes": 65536
+          }
+        ]
+      }
+    },
+    {
+      "id": "flight/cubs2-outer-loop/galec-production",
+      "corpus": "flight-models",
+      "model": "Vehicles.Cubs2.OuterLoop",
+      "entry_point": "Vehicles/package.mo",
+      "why": "Fixed-wing outer loop emitted as eFMI Production Code; the second flight controller on the GALEC track, and the one whose two conditional-bound dependent parameters used to collide on one temporary name",
+      "check": {
+        "kind": "compile",
+        "target": "galec-production"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [],
+        "artifacts": [
+          {
+            "path": "Vehicles_Cubs2_OuterLoop/__content.xml",
+            "kind": "file",
+            "min_bytes": 256
+          },
+          {
+            "path": "Vehicles_Cubs2_OuterLoop/AlgorithmCode/Vehicles_Cubs2_OuterLoop.alg",
+            "kind": "file",
+            "min_bytes": 131072
+          },
+          {
+            "path": "Vehicles_Cubs2_OuterLoop/ProductionCode/Vehicles_Cubs2_OuterLoop.c",
+            "kind": "file",
+            "min_bytes": 131072
+          },
+          {
+            "path": "Vehicles_Cubs2_OuterLoop/ProductionCode/Vehicles_Cubs2_OuterLoop.h",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Vehicles_Cubs2_OuterLoop/ProductionCode/manifest.xml",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Vehicles_Cubs2_OuterLoop.efmu",
+            "kind": "efmu-container",
+            "min_bytes": 65536
+          }
+        ]
+      }
+    },
+    {
+      "id": "flight/waypoint-mission/rk-like",
+      "corpus": "flight-models",
+      "model": "Vehicles.Rdd2.Test.WaypointMission",
+      "entry_point": "Vehicles/package.mo",
+      "why": "Closed-loop multirotor waypoint mission: plant, estimator and controller in one system, the end-to-end path the theorem is about",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "plant.dynamics.position[3]",
+            "time": 0.0,
+            "value": 0.12000000000000001,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "plant.dynamics.position[3]",
+            "time": 0.02,
+            "value": 0.1180398933225104,
+            "tolerance": 5e-6
+          },
+          {
+            "variable": "plant.dynamics.velocity[3]",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "plant.dynamics.velocity[3]",
+            "time": 0.02,
+            "value": -0.1959471789562373,
+            "tolerance": 5e-6
+          },
+          {
+            "variable": "plant.imu.specificForceBodyFlu_m_s2[3]",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "plant.imu.specificForceBodyFlu_m_s2[3]",
+            "time": 0.02,
+            "value": 0.01904627326865809,
+            "tolerance": 5e-6
+          }
+        ],
+        "artifacts": []
+      }
+    },
+    {
+      "id": "flight/waypoint-mission/bdf",
+      "corpus": "flight-models",
+      "model": "Vehicles.Rdd2.Test.WaypointMission",
+      "entry_point": "Vehicles/package.mo",
+      "why": "The same mission on the implicit session, pinned to the SAME numbers as the explicit row: the two sessions share a front end but not an integrator, so one shared pin is a cross-backend differential rather than two independent goldens. Measured spread over this run was 7.4e-7 at worst, well inside the 5e-6 tolerance",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "bdf"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "plant.dynamics.position[3]",
+            "time": 0.0,
+            "value": 0.12000000000000001,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "plant.dynamics.position[3]",
+            "time": 0.02,
+            "value": 0.1180398933225104,
+            "tolerance": 5e-6
+          },
+          {
+            "variable": "plant.dynamics.velocity[3]",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "plant.dynamics.velocity[3]",
+            "time": 0.02,
+            "value": -0.1959471789562373,
+            "tolerance": 5e-6
+          },
+          {
+            "variable": "plant.imu.specificForceBodyFlu_m_s2[3]",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "plant.imu.specificForceBodyFlu_m_s2[3]",
+            "time": 0.02,
+            "value": 0.01904627326865809,
+            "tolerance": 5e-6
+          }
+        ],
+        "artifacts": []
+      }
+    },
+    {
+      "id": "flight/cubs2-takeoff/rk-like",
+      "corpus": "flight-models",
+      "model": "Vehicles.Cubs2.Test.Scenarios.Takeoff",
+      "entry_point": "Vehicles/package.mo",
+      "why": "Fixed-wing takeoff scenario: a second closed-loop vehicle stack, and the cheapest one to run",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "plant.elev",
+            "time": 0.0,
+            "value": 0.42726192903846705,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "plant.elev",
+            "time": 0.02,
+            "value": 0.017205550449028235,
+            "tolerance": 1.1720555044902823e-6
+          },
+          {
+            "variable": "plant.position[1]",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "plant.position[1]",
+            "time": 0.02,
+            "value": 0.0009068653742209459,
+            "tolerance": 1.0090686537422093e-6
+          },
+          {
+            "variable": "plant.position[3]",
+            "time": 0.0,
+            "value": 0.1,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "plant.position[3]",
+            "time": 0.02,
+            "value": 0.09929820159810587,
+            "tolerance": 1.992982015981059e-6
+          }
+        ],
+        "artifacts": []
+      }
+    },
+    {
+      "id": "msl/blocks-examples-booleannetwork1",
+      "corpus": "msl",
+      "model": "Modelica.Blocks.Examples.BooleanNetwork1",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "ED019"
+      }
+    },
+    {
+      "id": "msl/blocks-examples-noise-automaticseed",
+      "corpus": "msl",
+      "model": "Modelica.Blocks.Examples.Noise.AutomaticSeed",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "ED019"
+      }
+    },
+    {
+      "id": "msl/clocked-examples-elementary-booleansignals-backsample",
+      "corpus": "msl",
+      "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "ED019"
+      }
+    },
+    {
+      "id": "msl/clocked-examples-elementary-booleansignals-timebasedpulse",
+      "corpus": "msl",
+      "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json). t_end is 0.5 rather than the corpus default 0.02 because this model does nothing before 0.1: its clock has a 0.1 s period and the pulse first rises at 0.1, falls at 0.3 and rises again at 0.5, so a 0.02 window reports the initial value at every probe and pins nothing about the run",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.5,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "pulse.y",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "pulse.y",
+            "time": 0.5,
+            "value": 1.0,
+            "tolerance": 0.000011000000000000001
+          },
+          {
+            "variable": "pulse.simTime",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "pulse.simTime",
+            "time": 0.5,
+            "value": 0.5,
+            "tolerance": 6e-6
+          },
+          {
+            "variable": "pulse.next",
+            "time": 0.0,
+            "value": 0.1,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "pulse.next",
+            "time": 0.5,
+            "value": 0.9,
+            "tolerance": 0.00001
+          }
+        ],
+        "artifacts": []
+      }
+    },
+    {
+      "id": "msl/clocked-examples-elementary-integersignals-backsample",
+      "corpus": "msl",
+      "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "ED019"
+      }
+    },
+    {
+      "id": "msl/clocked-examples-elementary-integersignals-timebasedstep",
+      "corpus": "msl",
+      "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json). t_end is 0.5 rather than the corpus default 0.02 because this model does nothing before 0.2: its clock has a 0.1 s period and the step fires at 0.2, so a 0.02 window reports the initial value at every probe and pins nothing about the run",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.5,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "step.y",
+            "time": 0.0,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "step.y",
+            "time": 0.5,
+            "value": 4.0,
+            "tolerance": 0.000041
+          },
+          {
+            "variable": "step.simTime",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "step.simTime",
+            "time": 0.5,
+            "value": 0.5,
+            "tolerance": 6e-6
+          },
+          {
+            "variable": "assignClock1.u",
+            "time": 0.0,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "assignClock1.u",
+            "time": 0.5,
+            "value": 4.0,
+            "tolerance": 0.000041
+          }
+        ],
+        "artifacts": []
+      }
+    },
+    {
+      "id": "msl/clocked-examples-elementary-realsignals-sample1",
+      "corpus": "msl",
+      "model": "Modelica.Clocked.Examples.Elementary.RealSignals.Sample1",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "sine.y",
+            "time": 0.0,
+            "value": 0.1,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "sine.y",
+            "time": 0.02,
+            "value": 0.34868988716485483,
+            "tolerance": 4.4868988716485486e-6
+          },
+          {
+            "variable": "sample1.u",
+            "time": 0.0,
+            "value": 0.1,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "sample1.u",
+            "time": 0.02,
+            "value": 0.34868988716485483,
+            "tolerance": 4.4868988716485486e-6
+          },
+          {
+            "variable": "sample1.y",
+            "time": 0.0,
+            "value": 0.1,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "sample1.y",
+            "time": 0.02,
+            "value": 0.3486898871648547,
+            "tolerance": 4.486898871648548e-6
+          }
+        ],
+        "artifacts": []
+      }
+    },
+    {
+      "id": "msl/clocked-examples-elementary-realsignals-tickbasedramp",
+      "corpus": "msl",
+      "model": "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json). t_end is 0.5 rather than the corpus default 0.02 because this model does nothing before 0.2: its clock has a 0.1 s period and the tick-based ramp leaves zero on its third tick and reaches its plateau on the fifth, so a 0.02 window reports the initial value at every probe and pins nothing about the run",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.5,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "assignClock1.u",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "assignClock1.u",
+            "time": 0.5,
+            "value": 1.0,
+            "tolerance": 0.000011000000000000001
+          },
+          {
+            "variable": "assignClock1.y",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "assignClock1.y",
+            "time": 0.5,
+            "value": 1.0,
+            "tolerance": 0.000011000000000000001
+          },
+          {
+            "variable": "ramp.y",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "ramp.y",
+            "time": 0.5,
+            "value": 1.0,
+            "tolerance": 0.000011000000000000001
+          }
+        ],
+        "artifacts": []
+      }
+    },
+    {
+      "id": "msl/clocked-examples-simplecontrolleddrive-clockedwithdiscretecontroller",
+      "corpus": "msl",
+      "model": "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteController",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "ramp.y",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "ramp.y",
+            "time": 0.02,
+            "value": 0.01,
+            "tolerance": 1.1e-6
+          },
+          {
+            "variable": "sample2.u",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "sample2.u",
+            "time": 0.02,
+            "value": 0.01,
+            "tolerance": 1.1e-6
+          },
+          {
+            "variable": "load.flange_a.phi",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "load.flange_a.phi",
+            "time": 0.02,
+            "value": 0.0,
+            "tolerance": 1e-6
+          }
+        ],
+        "artifacts": []
+      }
+    },
+    {
+      "id": "msl/electrical-analog-examples-demopowersupply",
+      "corpus": "msl",
+      "model": "Modelica.Electrical.Analog.Examples.DemoPowerSupply",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "dcPowerSupply.v",
+            "time": 0.0,
+            "value": 59.99994000006,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "dcPowerSupply.v",
+            "time": 0.02,
+            "value": 59.999920904699955,
+            "tolerance": 0.0006009992090469996
+          },
+          {
+            "variable": "dcPowerSupply.i",
+            "time": 0.0,
+            "value": -0.05999994000005996,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "dcPowerSupply.i",
+            "time": 0.02,
+            "value": -0.07909530004547215,
+            "tolerance": 1.7909530004547214e-6
+          },
+          {
+            "variable": "dcPowerSupply.P",
+            "time": 0.0,
+            "value": -3.5999928000107975,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "dcPowerSupply.P",
+            "time": 0.02,
+            "value": -4.74571174666184,
+            "tolerance": 0.0000484571174666184
+          }
+        ],
+        "artifacts": []
+      }
+    },
+    {
+      "id": "msl/electrical-analog-examples-opamps-comparator",
+      "corpus": "msl",
+      "model": "Modelica.Electrical.Analog.Examples.OpAmps.Comparator",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "opAmp.v_in",
+            "time": 0.0,
+            "value": 5.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "opAmp.v_in",
+            "time": 0.02,
+            "value": 2.500000000000001,
+            "tolerance": 0.000026000000000000012
+          },
+          {
+            "variable": "opAmp.in_p.v",
+            "time": 0.0,
+            "value": 5.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "opAmp.in_p.v",
+            "time": 0.02,
+            "value": 2.500000000000001,
+            "tolerance": 0.000026000000000000012
+          },
+          {
+            "variable": "vIn.signalSource.y",
+            "time": 0.0,
+            "value": 5.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "vIn.signalSource.y",
+            "time": 0.02,
+            "value": 2.500000000000001,
+            "tolerance": 0.000026000000000000012
+          }
+        ],
+        "artifacts": []
+      }
+    },
+    {
+      "id": "msl/electrical-analog-examples-opamps-opampcircuits-add",
+      "corpus": "msl",
+      "model": "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.Add",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "EL005"
+      }
+    },
+    {
+      "id": "msl/electrical-analog-examples-showsaturatinginductor",
+      "corpus": "msl",
+      "model": "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "SineVoltage1.signalSource.y",
+            "time": 0.0,
+            "value": 1.25,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "SineVoltage1.signalSource.y",
+            "time": 0.02,
+            "value": 1.2497500083332223,
+            "tolerance": 0.000013497500083332224
+          },
+          {
+            "variable": "SineVoltage1.i",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "SineVoltage1.i",
+            "time": 0.02,
+            "value": -0.037505207121280526,
+            "tolerance": 1.3750520712128052e-6
+          },
+          {
+            "variable": "SineVoltage1.v",
+            "time": 0.0,
+            "value": 1.25,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "SineVoltage1.v",
+            "time": 0.02,
+            "value": 1.2497500083332223,
+            "tolerance": 0.000013497500083332224
+          }
+        ],
+        "artifacts": []
+      }
+    },
+    {
+      "id": "msl/electrical-digital-examples-counter",
+      "corpus": "msl",
+      "model": "Modelica.Electrical.Digital.Examples.Counter",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "ED010"
+      }
+    },
+    {
+      "id": "msl/electrical-digital-examples-fulladder",
+      "corpus": "msl",
+      "model": "Modelica.Electrical.Digital.Examples.FullAdder",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "ED013"
+      }
+    },
+    {
+      "id": "msl/electrical-polyphase-examples-transformeryd",
+      "corpus": "msl",
+      "model": "Modelica.Electrical.Polyphase.Examples.TransformerYD",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "EL005"
+      }
+    },
+    {
+      "id": "msl/math-nonlinear-examples-quadraturelobatto3",
+      "corpus": "msl",
+      "model": "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "ED019"
+      }
+    },
+    {
+      "id": "msl/stategraph-examples-showcompositestep",
+      "corpus": "msl",
+      "model": "Modelica.StateGraph.Examples.ShowCompositeStep",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "ED010"
+      }
+    },
+    {
+      "id": "msl/mechanics-rotational-examples-friction",
+      "corpus": "msl",
+      "model": "Modelica.Mechanics.Rotational.Examples.Friction",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "ED019"
+      }
+    },
+    {
+      "id": "msl/mechanics-rotational-examples-firstgrounded",
+      "corpus": "msl",
+      "model": "Modelica.Mechanics.Rotational.Examples.FirstGrounded",
+      "entry_point": "Modelica 4.1.0/package.mo",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "check": {
+        "kind": "simulate",
+        "t_end": 0.02,
+        "dt": 0.01,
+        "solver": "rk-like"
+      },
+      "expect": {
+        "outcome": "refused",
+        "diagnostic": "EL005"
+      }
+    }
+  ]
+}

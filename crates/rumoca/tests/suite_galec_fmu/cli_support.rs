@@ -1,12 +1,10 @@
 //! Shared CLI-driving helpers for the GALEC-family end-to-end suites
 //! (`cli_target_galec.rs`, `cli_target_embedded_c_galec.rs`,
-//! `cli_target_galec_production.rs`).
+//! `cli_target_galec_production.rs`, `galec_equivalence.rs`).
 //!
-//! Each suite includes the helper files it needs via
-//! `#[path = "galec_cli_support/<file>.rs"]` (the `examples_smoke.rs`
-//! include pattern), so every test binary compiles only helpers whose
-//! every item it uses — keeping the workspace's zero-`allow` dead-code
-//! discipline. This file is the set used by all three suites.
+//! `suite_galec_fmu/main.rs` owns this normal module once, and its sibling suites
+//! reach it as `super::cli_support`. A single owner prevents helper drift and
+//! satisfies the workspace's zero-`allow` dead-code discipline.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,6 +21,21 @@ pub(super) fn write_fixture(dir: &Path, model: &str, source: &str) -> PathBuf {
 /// real binary, so the whole chain is exercised: CLI dispatch → generic
 /// capability gate → projection facade → templates → packaging.
 pub(super) fn run_compile_target(file: &Path, target: &str, out_dir: &Path) -> Output {
+    run_compile_target_with(file, target, out_dir, &[])
+}
+
+/// As [`run_compile_target`], with additional `compile` flags appended.
+///
+/// The emission-policy suite needs the same invocation under several values of
+/// one flag, and running the real binary is what makes the flag's whole path
+/// (clap parse, CLI dispatch, target manifest, GALEC projection, templates)
+/// part of what the assertion covers.
+pub(super) fn run_compile_target_with(
+    file: &Path,
+    target: &str,
+    out_dir: &Path,
+    extra: &[&str],
+) -> Output {
     Command::new(env!("CARGO_BIN_EXE_rumoca"))
         .arg("compile")
         .arg(file)
@@ -30,6 +43,7 @@ pub(super) fn run_compile_target(file: &Path, target: &str, out_dir: &Path) -> O
         .arg(target)
         .arg("-o")
         .arg(out_dir)
+        .args(extra)
         .output()
         .unwrap_or_else(|error| panic!("run rumoca compile --target {target}: {error}"))
 }
@@ -51,4 +65,21 @@ pub(super) fn strip_ansi(text: &str) -> String {
         }
     }
     out
+}
+
+/// Match semantic diagnostic text independently of miette's rendered layout.
+///
+/// The renderer may wrap both between words and inside a long path, prefixing
+/// continuation lines with a `│` gutter. Removing only renderer whitespace and
+/// that gutter from both sides preserves every non-layout character while
+/// making assertions independent of terminal width.
+pub(super) fn diagnostic_contains(text: &str, expected: &str) -> bool {
+    fn without_layout(text: &str) -> String {
+        strip_ansi(text)
+            .chars()
+            .filter(|character| !character.is_whitespace() && *character != '\u{2502}')
+            .collect()
+    }
+
+    without_layout(text).contains(&without_layout(expected))
 }
