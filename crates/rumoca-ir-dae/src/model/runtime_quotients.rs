@@ -1,0 +1,406 @@
+use super::*;
+use crate::ConditionInput;
+use crate::expression::PureBuiltin;
+use crate::{ConditionId, RelationId, RootId};
+
+/// Finalized identity of one dynamic-quotient owner.
+///
+/// Construction appends an entry atomically with the owner it builds; the
+/// registry is the ONLY authority that a dynamic quotient is owned. The
+/// recorded ids are finalized-DAE metadata for views and structural replay;
+/// the wire never accepts them as facts — replay regenerates and verifies
+/// them through the same checked operations.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RuntimeQuotientOwnerEntry {
+    pub(crate) quotient: u32,
+    pub(crate) builtin: PureBuiltin,
+    pub(crate) kind: QuotientOwnerKind,
+}
+
+/// The two owner kinds a dynamic quotient can have.
+///
+/// A model quotient owns a state-event surface: six generated expression
+/// nodes in canonical order (ratio, pi, phase, indicator, zero, relation
+/// expression), one relation, one Always activation, one discontinuity root.
+/// A function-body quotient is MLS §3.7.2 event-free: its owner is the exact
+/// function whose open body proved the construction.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum QuotientOwnerKind {
+    ModelEvent {
+        generated: [u32; 6],
+        relation: u32,
+        activation: u32,
+        root: u32,
+    },
+    FunctionBody {
+        function: u32,
+    },
+}
+
+/// The canonical generated batch of one model quotient owner.
+struct QuotientBatch<'dae> {
+    quotient: ExprId<'dae>,
+    generated: [ExprId<'dae>; 6],
+    generated_at: DaeProvenance,
+}
+
+/// Linear capability for one in-flight model-owner replay.
+///
+/// This is reconstruction capability, not a producer API: only
+/// [`DaeConstruction::begin_quotient_replay`] mints it, its fields remain
+/// opaque, and each stage consumes exactly one owner-produced fact in source
+/// order — relation, then activation definition, then root.
+/// `finish_quotient_replay` verifies full consumption and clears exactly
+/// this token's construction-issued pending slot; a token that never
+/// finishes is caught at `finish_construction`, so no partially consumed
+/// owner can reach a finalized DAE on any path, and finishing several live
+/// tokens in any order settles each exact slot rather than a stack.
+pub struct QuotientReplayToken<'dae> {
+    quotient: ExprId<'dae>,
+    generated: [ExprId<'dae>; 6],
+    builtin: PureBuiltin,
+    generated_at: DaeProvenance,
+    pending_slot: usize,
+    relation: Option<RelationId<'dae>>,
+    activation: Option<ConditionId<'dae>>,
+    root: Option<RootId<'dae>>,
+}
+
+impl<'dae> QuotientReplayToken<'dae> {
+    /// The regenerated quotient expression.
+    pub fn quotient(&self) -> ExprId<'dae> {
+        self.quotient
+    }
+
+    /// The regenerated indicator expressions in canonical owner order.
+    pub fn generated(&self) -> [ExprId<'dae>; 6] {
+        self.generated
+    }
+
+    /// The generated RuntimeDiscontinuity provenance anchoring this replay.
+    pub fn provenance(&self) -> DaeProvenance {
+        self.generated_at
+    }
+}
+
+impl<'dae> DaeConstruction<'dae> {
+    /// Construct the canonical seven-node expression batch of one dynamic
+    /// quotient: the checked quotient itself and the six generated nodes of
+    /// its continuous indicator `sin(pi * lhs / rhs) >= 0`, in fixed order.
+    fn quotient_batch(
+        &mut self,
+        builtin: PureBuiltin,
+        arguments: [ExprId<'dae>; 2],
+        provenance: DaeProvenance,
+    ) -> Result<QuotientBatch<'dae>, DaeConstructionError> {
+        let generated_at =
+            DaeProvenance::generated(DaeGeneration::RuntimeDiscontinuity, provenance.span())?;
+        let quotient = self.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .checked_runtime_quotient(builtin, arguments)
+        })?;
+        let generated = self.expressions(|expressions| {
+            let ratio = expressions.at(generated_at).binary(
+                BinaryOperator::Divide,
+                arguments[0],
+                arguments[1],
+            )?;
+            let pi = expressions
+                .at(generated_at)
+                .literal(DaeLiteral::Real(std::f64::consts::PI))?;
+            let phase = expressions
+                .at(generated_at)
+                .binary(BinaryOperator::Multiply, pi, ratio)?;
+            let indicator = expressions
+                .at(generated_at)
+                .builtin(PureBuiltin::Sin, [phase])?;
+            let zero = expressions
+                .at(generated_at)
+                .literal(DaeLiteral::Real(0.0))?;
+            let relation_expression = expressions.at(generated_at).binary(
+                BinaryOperator::GreaterEqual,
+                indicator,
+                zero,
+            )?;
+            Ok([ratio, pi, phase, indicator, zero, relation_expression])
+        })?;
+        Ok(QuotientBatch {
+            quotient,
+            generated,
+            generated_at,
+        })
+    }
+
+    /// Construct a scalar runtime quotient together with its checked
+    /// state-event surface, and record its owner identity.
+    ///
+    /// MLS discontinuities occur whenever `lhs / rhs` crosses an integer. The
+    /// continuous indicator `sin(pi * lhs / rhs)` has exactly those integer
+    /// quotient boundaries as zeros. Requiring a finite, nonzero static
+    /// divisor keeps this compact owner both defined and scalar; a varying
+    /// divisor or shaped quotient needs a different checked owner.
+    pub fn runtime_quotient(
+        &mut self,
+        builtin: PureBuiltin,
+        arguments: [ExprId<'dae>; 2],
+        provenance: DaeProvenance,
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        let batch = self.quotient_batch(builtin, arguments, provenance)?;
+        let generated_at = batch.generated_at;
+        let relation =
+            self.conditions(|conditions| conditions.relation(batch.generated[5], generated_at))?;
+        let activation = self.conditions(|conditions| {
+            let activation = conditions.reserve(generated_at)?;
+            conditions.define(activation, ConditionInput::Always, generated_at)?;
+            Ok(activation)
+        })?;
+        let root =
+            self.conditions(|conditions| conditions.root(relation, activation, generated_at))?;
+        self.storage.record_quotient_owner(
+            RuntimeQuotientOwnerEntry {
+                quotient: batch.quotient.index(),
+                builtin,
+                kind: QuotientOwnerKind::ModelEvent {
+                    generated: batch.generated.map(ExprId::index),
+                    relation: relation.index(),
+                    activation: activation.index(),
+                    root: root.index(),
+                },
+            },
+            provenance,
+        )?;
+        Ok(batch.quotient)
+    }
+
+    /// Construct a runtime quotient inside one exact function body, and
+    /// record its owner identity.
+    ///
+    /// MLS §3.7.2 exempts function bodies from event generation: the
+    /// quotient keeps the same time-invariant divisor admission, but no
+    /// discontinuity root exists to own — a root would smuggle a
+    /// function-scope expression into the model's condition system. The
+    /// `FunctionBody` capability is the SPEC_0036 proof that a body is
+    /// open. Both operands are validated against that exact body before any
+    /// node is inserted: a pure builtin contributes no scope or read facts
+    /// beyond its operands, so operand prevalidation is the proof, and a
+    /// rejected quotient leaves the expression arena untouched instead of
+    /// stranding an eventless dynamic node behind a late `Err`.
+    pub fn function_runtime_quotient(
+        &mut self,
+        body: &FunctionBody<'dae>,
+        builtin: PureBuiltin,
+        arguments: [ExprId<'dae>; 2],
+        provenance: DaeProvenance,
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        for argument in arguments {
+            expect_function_body_expression(self.storage, body, argument, provenance)?;
+            validate_function_value_reads(self.storage, body, argument, provenance)?;
+        }
+        let quotient = self.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .checked_runtime_quotient(builtin, arguments)
+        })?;
+        self.storage.record_quotient_owner(
+            RuntimeQuotientOwnerEntry {
+                quotient: quotient.index(),
+                builtin,
+                kind: QuotientOwnerKind::FunctionBody {
+                    function: body.function.index(),
+                },
+            },
+            provenance,
+        )?;
+        Ok(quotient)
+    }
+
+    /// Begin replaying one model quotient owner: re-run the checked batch
+    /// construction and return the staged token that the relation,
+    /// activation, and root positions consume in source order.
+    pub fn begin_quotient_replay(
+        &mut self,
+        builtin: PureBuiltin,
+        arguments: [ExprId<'dae>; 2],
+        provenance: DaeProvenance,
+    ) -> Result<QuotientReplayToken<'dae>, DaeConstructionError> {
+        let batch = self.quotient_batch(builtin, arguments, provenance)?;
+        // The slot index is the construction-issued identity finish must
+        // settle; several live tokens each clear exactly their own slot.
+        let pending_slot = self.storage.pending_quotient_replays.len();
+        self.storage.pending_quotient_replays.push(Some(provenance));
+        Ok(QuotientReplayToken {
+            quotient: batch.quotient,
+            generated: batch.generated,
+            builtin,
+            generated_at: batch.generated_at,
+            pending_slot,
+            relation: None,
+            activation: None,
+            root: None,
+        })
+    }
+
+    /// Re-issue the owner's relation from its own regenerated relation
+    /// expression. First stage; consumable exactly once.
+    pub fn replay_quotient_relation(
+        &mut self,
+        token: &mut QuotientReplayToken<'dae>,
+    ) -> Result<RelationId<'dae>, DaeConstructionError> {
+        if token.relation.is_some() {
+            return Err(DaeConstructionError::InvalidQuotientReplayStage {
+                stage: "relation",
+                span: token.generated_at.span(),
+            });
+        }
+        let relation = self
+            .conditions(|conditions| conditions.relation(token.generated[5], token.generated_at))?;
+        token.relation = Some(relation);
+        Ok(relation)
+    }
+
+    /// Define the owner's exact pre-reserved activation as Always. Second
+    /// stage; requires the relation stage and a still-undefined reservation.
+    pub fn replay_quotient_activation(
+        &mut self,
+        token: &mut QuotientReplayToken<'dae>,
+        activation: ConditionId<'dae>,
+    ) -> Result<(), DaeConstructionError> {
+        if token.relation.is_none() || token.activation.is_some() {
+            return Err(DaeConstructionError::InvalidQuotientReplayStage {
+                stage: "activation",
+                span: token.generated_at.span(),
+            });
+        }
+        // The reservation is semantic input, but its stored provenance is an
+        // owner-produced fact: it must be exactly this replay's canonical
+        // generated provenance, or a foreign reservation would smuggle a
+        // different finalized span through the omitted definition.
+        let reserved = self
+            .storage
+            .conditions
+            .get(activation.index() as usize)
+            .map(|entry| entry.provenance);
+        if reserved != Some(token.generated_at) {
+            return Err(DaeConstructionError::InvalidQuotientReplayStage {
+                stage: "activation",
+                span: token.generated_at.span(),
+            });
+        }
+        let generated_at = token.generated_at;
+        self.conditions(|conditions| {
+            conditions.define(activation, ConditionInput::Always, generated_at)
+        })?;
+        token.activation = Some(activation);
+        Ok(())
+    }
+
+    /// Re-issue the owner's root from ITS relation and activation. Third
+    /// stage; requires both earlier stages.
+    pub fn replay_quotient_root(
+        &mut self,
+        token: &mut QuotientReplayToken<'dae>,
+    ) -> Result<RootId<'dae>, DaeConstructionError> {
+        let (Some(relation), Some(activation)) = (token.relation, token.activation) else {
+            return Err(DaeConstructionError::InvalidQuotientReplayStage {
+                stage: "root",
+                span: token.generated_at.span(),
+            });
+        };
+        if token.root.is_some() {
+            return Err(DaeConstructionError::InvalidQuotientReplayStage {
+                stage: "root",
+                span: token.generated_at.span(),
+            });
+        }
+        let root = self
+            .conditions(|conditions| conditions.root(relation, activation, token.generated_at))?;
+        token.root = Some(root);
+        Ok(root)
+    }
+
+    /// Verify the token is fully consumed, settle exactly its pending slot,
+    /// and record the regenerated owner.
+    pub fn finish_quotient_replay(
+        &mut self,
+        token: QuotientReplayToken<'dae>,
+    ) -> Result<(), DaeConstructionError> {
+        let (Some(relation), Some(activation), Some(root)) =
+            (token.relation, token.activation, token.root)
+        else {
+            return Err(DaeConstructionError::UnconsumedQuotientReplay {
+                span: token.generated_at.span(),
+            });
+        };
+        let settled = self
+            .storage
+            .pending_quotient_replays
+            .get_mut(token.pending_slot)
+            .and_then(Option::take);
+        if settled.is_none() {
+            return Err(DaeConstructionError::InvalidQuotientReplayStage {
+                stage: "finish",
+                span: token.generated_at.span(),
+            });
+        }
+        self.storage.record_quotient_owner(
+            RuntimeQuotientOwnerEntry {
+                quotient: token.quotient.index(),
+                builtin: token.builtin,
+                kind: QuotientOwnerKind::ModelEvent {
+                    generated: token.generated.map(ExprId::index),
+                    relation: relation.index(),
+                    activation: activation.index(),
+                    root: root.index(),
+                },
+            },
+            token.generated_at,
+        )
+    }
+}
+
+impl Storage {
+    /// Record one owner, keeping the registry canonical in
+    /// quotient-expression order on EVERY recording path.
+    ///
+    /// Construction and replay reach this in different orders — replay
+    /// records function owners during expression reconstruction but model
+    /// owners only after their root markers — so ordered insertion (with
+    /// exact ordinal repair of the expression lookup) is what makes the
+    /// public view and the structural consumer independent of marker
+    /// timing.
+    pub(crate) fn record_quotient_owner(
+        &mut self,
+        entry: RuntimeQuotientOwnerEntry,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        checked_u32(
+            self.runtime_quotient_owners.len(),
+            "runtime quotient owner registry",
+            at,
+        )?;
+        if self
+            .runtime_quotient_owner_by_expression
+            .contains_key(&entry.quotient)
+        {
+            return Err(DaeConstructionError::DuplicateRuntimeQuotientOwner {
+                expression: entry.quotient,
+                span: at.span(),
+            });
+        }
+        let position = self
+            .runtime_quotient_owners
+            .partition_point(|existing| existing.quotient < entry.quotient);
+        self.runtime_quotient_owners.insert(position, entry);
+        for (ordinal, existing) in self
+            .runtime_quotient_owners
+            .iter()
+            .enumerate()
+            .skip(position)
+        {
+            self.runtime_quotient_owner_by_expression
+                .insert(existing.quotient, ordinal as u32);
+        }
+        Ok(())
+    }
+}
