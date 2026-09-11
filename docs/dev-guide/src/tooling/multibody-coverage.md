@@ -527,3 +527,76 @@ simulation statuses, nine strict-high comparisons, 175 high initial
 channels, and zero missing, skipped, or deviating comparisons. All 19
 recorded historical reference-file hashes remain unchanged. The complete
 566-model milestone follows at the repair commit; no baseline is promoted.
+
+### Complete milestone after reference repair
+
+The complete 566-model gate at commit
+`13f0f133fac8edc80b7f55b53d820259bad74347` passed in 393.62 seconds. Its
+artifacts are in `target/msl/multibody-reference-repaired-full`, with the
+source audit and artifact hashes recorded in
+`.git/multibody-campaign/reference-repaired-full-receipt.json`.
+All 138 compared models are strict-high; 17 other completed models retain
+their reviewed exclusions, and zero candidate comparisons are missing.
+All 12,126 compared initial channels are high. Every previously strict-high
+model, including all 129 baseline-certified models, remains strict-high.
+
+The run compiles 286 models, balances 274, attempts 267 simulations, and
+completes 155. Six attempts time out and 106 fail in the solver path.
+These stage classifications are unchanged from the preceding full run;
+the clock and DCPM repairs remain effective. OMC supplies successful
+references for all 155 completed candidates. The other 411 models remain
+visible in the full roster without an OMC simulation attempt in this run.
+The performance gate also passes with its complete 145-model cohort.
+The tracked source tree matches the named commit; the recorded dirty flag
+comes from the user-owned, untracked `comm_fastdyn.md` file. No baseline
+was promoted. These results do not establish complete MultiBody coverage.
+
+### Record fields in retained state constraints
+
+`Modelica.Mechanics.MultiBody.Examples.Constraints.PrismaticConstraint`
+previously stopped in checked index-reduction reconstruction with a missing
+state-only substitution for expression 5431. This identity belongs to the
+reconstructed DAE at that reduction round, not the original DAE. It projects
+the orientation matrix from `Frames.absoluteRotation` into the retained
+position constraint from `Joints.Prismatic`:
+
+```modelica
+frame_b.r_0 = frame_a.r_0 + Frames.resolve1(frame_a.R, e*s);
+```
+
+The differentiability analysis already understood this field projection.
+The first missing operation was exact value materialization in the structural
+phase, whose matching holonomic preflight also omitted record fields.
+Both now use the existing checked projection resolver and preserve nested
+function argument bindings. Unsupported projections still fail at the same
+typed boundary. The semantic basis is MLS 3.6 §§12.4, 12.6, and Appendix B;
+the owner follows SPEC_0007 and STRUCT-T03/T04 in SPEC_0040.
+
+Three checked-DAE regressions reproduce the old rejection. They exercise
+both matrix fields of a record returned through nested calls with permuted
+arguments. Independent numeric expectations cover four parameter pairs,
+including negative, zero, and fractional values. The retained equation still
+relates the remaining matrix state, passes the state-only invariant, and
+has a computable structural system. All 144 structural tests, 421 core
+integration tests, formatting, and all-target, all-feature structural Clippy
+pass.
+
+The production diagnostic inspection of the original Prismatic DAE now
+completes the exact formerly rejected state-296/RHS-5573 substitution,
+reducing the unmatched residue from 38 to 32. Subsequent exploratory
+reductions reach residue 20 before exhausting admissible candidates.
+The incomplete transformed system is not published; the model still reports
+its original structural singularity, 2287 matches for 2313 equations and
+unknowns. This repairs a construction boundary and adds no supported model.
+Before/after identities and artifact hashes are retained in
+`.git/multibody-campaign/prismatic-manifold-triage.json`.
+
+The origin run in `target/msl/multibody-prismatic-field-origin` retains high
+parity for Pendulum and MovingActuatedDrive: two comparisons, all 768 channels
+and initial values high, zero missing or skipped comparisons. Prismatic's
+OMC reference succeeds while Rumoca still refuses it. The fixed canary in
+`target/msl/multibody-prismatic-field-canary` has no changes to any of its
+20 phase or simulation statuses relative to `multibody-omc-reference-final-canary`.
+All nine compared models and 175 initial channels remain high, with zero
+missing, skipped, or deviating comparisons. The recorded Tier 1 delta is
+`.git/multibody-campaign/prismatic-field-canary-delta.json`.

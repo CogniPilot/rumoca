@@ -1012,6 +1012,11 @@ fn can_materialize_holonomic_value_in_context<'dae>(
         dae::ExpressionOperation::Array(elements) => elements.iter().all(|element| {
             can_materialize_holonomic_value_in_context(view, facts, element, visited, context)
         }),
+        dae::ExpressionOperation::Field { base, field } => context
+            .projected_field(view, base, field)
+            .is_some_and(|(projected, nested)| {
+                can_materialize_holonomic_value_in_context(view, facts, projected, visited, &nested)
+            }),
         dae::ExpressionOperation::Builtin {
             builtin: dae::PureBuiltin::Sin | dae::PureBuiltin::Cos | dae::PureBuiltin::Atan2,
             arguments,

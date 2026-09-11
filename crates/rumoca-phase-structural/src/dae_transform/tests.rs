@@ -3,6 +3,7 @@ mod functions;
 mod initial_pins;
 mod initial_values;
 mod invariant_balances;
+mod manifold_fields;
 mod reconstruction_failures;
 mod reduction_observation;
 mod runtime_quotients;

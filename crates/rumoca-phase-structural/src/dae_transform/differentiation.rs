@@ -438,6 +438,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .collect::<Result<Vec<_>, _>>()?;
                 self.target.at(provenance).array(elements)
             }
+            dae::ExpressionOperation::Field { base, field } => {
+                self.materialize_projected_field(source_id, base, field, provenance)
+            }
             dae::ExpressionOperation::Builtin { builtin, arguments }
                 if matches!(
                     builtin,
@@ -463,6 +466,27 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 span: provenance.span(),
             }),
         }
+    }
+
+    fn materialize_projected_field(
+        &mut self,
+        source_id: dae::ExprId<'source>,
+        base: dae::ExprId<'source>,
+        field: u32,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let (projected, context) = self
+            .function_context
+            .projected_field(self.source, base, field)
+            .ok_or(dae::DaeConstructionError::IncompleteDefinition {
+                kind: "state-only manifold substitution",
+                index: source_id.index(),
+                span: provenance.span(),
+            })?;
+        let previous = std::mem::replace(&mut self.function_context, context);
+        let materialized = self.materialize_exact_value(projected, provenance);
+        self.function_context = previous;
+        materialized
     }
 
     fn materialize_algebraic_value(
