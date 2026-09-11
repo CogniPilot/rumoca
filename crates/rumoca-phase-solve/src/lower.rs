@@ -260,12 +260,12 @@ fn continuous_scalar_row_count(view: dae::DaeView<'_>) -> Result<usize, LowerErr
     })
 }
 
-/// One continuous scalar row as the lowering walk reaches it.
+/// One exact scalar projection of a checked DAE equation body.
 ///
-/// Row ordinals come from the same per-owner scalar counts
-/// [`continuous_scalar_row_count`] sums, so this enumeration and the lowering
-/// walk agree by construction.
-pub(super) struct ContinuousRowSource<'dae> {
+/// The expression, row-major scalar, and optional structured domain point
+/// travel together so incidence and emission consume the same source row.
+#[derive(Clone)]
+pub(super) struct ScalarRowSource<'dae> {
     pub(super) expression: dae::ExprId<'dae>,
     pub(super) scalar: usize,
     pub(super) domain_point: Option<(dae::DomainId<'dae>, Vec<i64>)>,
@@ -281,7 +281,7 @@ pub(super) struct ContinuousRowSource<'dae> {
 /// meeting a coordinate with no Solve storage.
 #[derive(Default)]
 pub(super) struct DerivativeRowIndex<'dae> {
-    rows: HashMap<(u32, u32), ContinuousRowSource<'dae>>,
+    rows: HashMap<(u32, u32), ScalarRowSource<'dae>>,
 }
 
 impl<'dae> DerivativeRowIndex<'dae> {
@@ -289,7 +289,7 @@ impl<'dae> DerivativeRowIndex<'dae> {
         &self,
         state: dae::StateId<'dae>,
         scalar: usize,
-    ) -> Option<&ContinuousRowSource<'dae>> {
+    ) -> Option<&ScalarRowSource<'dae>> {
         let scalar = u32::try_from(scalar).ok()?;
         self.rows.get(&(state.index(), scalar))
     }
@@ -309,7 +309,7 @@ fn index_derivative_rows<'dae>(
                     insert_derivative_row(
                         matching,
                         row,
-                        ContinuousRowSource {
+                        ScalarRowSource {
                             expression: equation.residual(),
                             scalar,
                             domain_point: None,
@@ -339,7 +339,7 @@ fn index_family_derivative_rows<'dae>(
     matching: &HashMap<usize, UnknownId<'dae>>,
     mut row: usize,
     family: dae::StructuredFamilyView<'dae>,
-    rows: &mut HashMap<(u32, u32), ContinuousRowSource<'dae>>,
+    rows: &mut HashMap<(u32, u32), ScalarRowSource<'dae>>,
     span: Span,
 ) -> Result<usize, LowerError> {
     let domain = view
@@ -359,7 +359,7 @@ fn index_family_derivative_rows<'dae>(
             insert_derivative_row(
                 matching,
                 row,
-                ContinuousRowSource {
+                ScalarRowSource {
                     expression: body,
                     scalar,
                     domain_point: Some((family.domain(), values.clone())),
@@ -376,8 +376,8 @@ fn index_family_derivative_rows<'dae>(
 fn insert_derivative_row<'dae>(
     matching: &HashMap<usize, UnknownId<'dae>>,
     row: usize,
-    source: ContinuousRowSource<'dae>,
-    rows: &mut HashMap<(u32, u32), ContinuousRowSource<'dae>>,
+    source: ScalarRowSource<'dae>,
+    rows: &mut HashMap<(u32, u32), ScalarRowSource<'dae>>,
     span: Span,
 ) -> Result<(), LowerError> {
     let Some(UnknownId::Derivative { state, scalar }) = matching.get(&row).copied() else {
@@ -1994,19 +1994,17 @@ fn lower_initialization<'dae>(
                     let program = lower_initial_residual_program(context, equation, scalar)?;
                     let output = rows.programs.len();
                     rows.push(program, equation.provenance().span(), output);
-                    // Only a one-scalar equation lets a whole-expression coordinate
-                    // walk stand in for exact per-scalar incidence.
-                    row_incidence.push(match count {
-                        1 => initial_projection::InitialRowIncidence::Residual(equation.residual()),
-                        _ => initial_projection::InitialRowIncidence::Opaque,
-                    });
+                    row_incidence.push(initial_projection::InitialRowIncidence::Residual(
+                        ScalarRowSource {
+                            expression: equation.residual(),
+                            scalar,
+                            domain_point: None,
+                        },
+                    ));
                 }
             }
             dae::InitializationOwnerView::Structured { family, .. } => {
-                lower_initialization_family(context, family, &mut rows)?;
-                row_incidence.resize_with(rows.programs.len(), || {
-                    initial_projection::InitialRowIncidence::Opaque
-                });
+                lower_initialization_family(context, family, &mut rows, &mut row_incidence)?;
             }
         }
     }
@@ -2175,6 +2173,7 @@ fn lower_initialization_family<'dae>(
     context: InitializationRowContext<'_, 'dae>,
     family: dae::StructuredFamilyView<'dae>,
     rows: &mut ScalarRows,
+    incidence: &mut Vec<initial_projection::InitialRowIncidence<'dae>>,
 ) -> Result<(), LowerError> {
     let domain = context
         .view
@@ -2186,7 +2185,7 @@ fn lower_initialization_family<'dae>(
             .index_tuple_at(point)
             .expect("checked domain remains valid")
             .expect("checked point ordinal is in range");
-        lower_initialization_family_point(context, family, point, &values, rows)?;
+        lower_initialization_family_point(context, family, point, &values, rows, incidence)?;
     }
     Ok(())
 }
@@ -2197,6 +2196,7 @@ fn lower_initialization_family_point<'dae>(
     point: usize,
     values: &[i64],
     rows: &mut ScalarRows,
+    incidence: &mut Vec<initial_projection::InitialRowIncidence<'dae>>,
 ) -> Result<(), LowerError> {
     let domain = context
         .view
@@ -2223,6 +2223,13 @@ fn lower_initialization_family_point<'dae>(
         })?;
         let output = rows.programs.len();
         rows.push(program, family.provenance().span(), output);
+        incidence.push(initial_projection::InitialRowIncidence::Residual(
+            ScalarRowSource {
+                expression: body,
+                scalar,
+                domain_point: Some((family.domain(), values.to_vec())),
+            },
+        ));
     }
     Ok(())
 }

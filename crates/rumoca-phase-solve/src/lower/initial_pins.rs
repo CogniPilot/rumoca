@@ -111,7 +111,10 @@ pub(super) fn lower_transferred_initial_values<'dae>(
                     lowered
                         .check_incidence
                         .push(InitialRowIncidence::CarriedValue(
-                            terms.iter().map(|(expression, _, _)| *expression).collect(),
+                            terms
+                                .iter()
+                                .map(|(expression, scalar, _)| (*expression, *scalar))
+                                .collect(),
                         ));
                 }
                 dae::VariableRole::Algebraic | dae::VariableRole::Output => {

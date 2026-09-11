@@ -84,11 +84,11 @@
 //! unplanned row, and admitting it needs discretes in the unknown space's
 //! *determined* half — task #44's event-machinery territory.
 //!
-//! **Shapes this walk cannot read per scalar** — an array state, a multi-scalar
-//! initialization row, a derivative whose defining row is a structured family
-//! point — disqualify the row rather than claiming a coordinate the walk cannot
-//! prove the row reads. `Real x[2]; initial equation x[1] = 3; x[2] = 4;` is
-//! therefore unplanned where OpenModelica initializes it.
+//! **Array coordinates retain their exact scalar identity.** Initial equations,
+//! structured family points, substituted parameter bindings, and matched
+//! derivative rows use the same checked scalar dependency projection as
+//! structural incidence. A projection failure remains unowned. A fixed state
+//! declaration or transferred pin owns only the scalars it actually determines.
 //!
 //! ## Two choices this phase makes that the model does not
 //!
@@ -116,7 +116,7 @@ use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{InitialValuePin, InitialValueRole};
 
 use super::initial_parameters::InitializationParameterOwnership;
-use super::{DerivativeRowIndex, scalar_count, variable_scalar_slot};
+use super::{DerivativeRowIndex, ScalarRowSource, scalar_count, variable_scalar_slot};
 use crate::LowerError;
 use crate::layout::LoweredLayout;
 
@@ -169,7 +169,7 @@ pub(super) struct InitializationUnknownSpace<'a, 'dae> {
     view: dae::DaeView<'dae>,
     ownership: &'a InitializationParameterOwnership<'dae>,
     derivatives: &'a DerivativeRowIndex<'dae>,
-    states: HashMap<u32, StateInitialOwner>,
+    states: HashMap<(u32, usize), StateInitialOwner>,
 }
 
 /// Everything the initialization unknown space is assembled from.
@@ -201,14 +201,6 @@ pub(super) fn initialization_unknown_space<'a, 'dae>(
 }
 
 impl<'dae> InitializationUnknownSpace<'_, 'dae> {
-    /// The declaration one coordinate identity names.
-    ///
-    /// Absent when the identity has no declaration, which the walk treats as a
-    /// coordinate it cannot own rather than assuming a shape for it.
-    fn variable(&self, variable: dae::VariableId<'dae>) -> Option<dae::VariableView<'dae>> {
-        self.view.variable(variable)
-    }
-
     fn all_projection_unknowns(&self) -> BTreeSet<InitialUnknown> {
         self.ownership
             .all_projection_unknown_slots()
@@ -221,20 +213,16 @@ impl<'dae> InitializationUnknownSpace<'_, 'dae> {
     }
 }
 
-/// Who determines each state coordinate, keyed by variable index.
-///
-/// A state absent from the map is one this phase can neither own nor read: an
-/// array whose scalars a whole-expression walk cannot separate, with nothing
-/// stated about it. A row that reaches such a coordinate is left unplanned.
+/// Who determines each state scalar, keyed by declaration and scalar index.
 fn state_initial_owners(
     view: dae::DaeView<'_>,
     layout: &LoweredLayout<'_>,
     pins: &[InitialValuePin],
-) -> Result<HashMap<u32, StateInitialOwner>, LowerError> {
-    let defined: BTreeSet<u32> = pins
+) -> Result<HashMap<(u32, usize), StateInitialOwner>, LowerError> {
+    let defined: BTreeSet<(u32, usize)> = pins
         .iter()
         .filter(|pin| matches!(pin.role, InitialValueRole::Definition))
-        .map(|pin| pin.coordinate)
+        .map(|pin| (pin.coordinate, pin.scalar as usize))
         .collect();
     let mut owners = HashMap::new();
     for (id, variable) in view.variables() {
@@ -242,21 +230,22 @@ fn state_initial_owners(
             continue;
         }
         let span = variable.declaration().span();
-        if variable.fixed() == Some(true) || defined.contains(&id.index()) {
-            owners.insert(id.index(), StateInitialOwner::Stated);
-            continue;
+        for scalar in 0..variable.scalar_count() {
+            let key = (id.index(), scalar);
+            if variable.fixed() == Some(true) || defined.contains(&key) {
+                owners.insert(key, StateInitialOwner::Stated);
+                continue;
+            }
+            let solve::ScalarSlot::Y { index, .. } =
+                variable_scalar_slot(layout, id.index(), scalar, span)?
+            else {
+                return Err(LowerError::contract(
+                    format!("state `{}` does not occupy solver storage", variable.name()),
+                    span,
+                ));
+            };
+            owners.insert(key, StateInitialOwner::Projection(index));
         }
-        if variable.scalar_count() != 1 {
-            continue;
-        }
-        let solve::ScalarSlot::Y { index, .. } = variable_scalar_slot(layout, id.index(), 0, span)?
-        else {
-            return Err(LowerError::contract(
-                format!("state `{}` does not occupy solver storage", variable.name()),
-                span,
-            ));
-        };
-        owners.insert(id.index(), StateInitialOwner::Projection(index));
     }
     Ok(owners)
 }
@@ -265,13 +254,8 @@ fn state_initial_owners(
 ///
 /// The three forms differ in what the walk may start from, not in what it proves.
 pub(super) enum InitialRowIncidence<'dae> {
-    /// Nothing this planner can read: a multi-scalar equation, whose per-scalar
-    /// unknowns a whole-expression walk cannot separate.
-    Opaque,
-    /// One whole-model residual expression. Every coordinate it reaches is an
-    /// unknown of the row, so a coordinate the projection cannot own disqualifies
-    /// the row.
-    Residual(dae::ExprId<'dae>),
+    /// The same scalar and structured domain point the emitted residual reads.
+    Residual(ScalarRowSource<'dae>),
     /// A stated initial value carried onto a coordinate that already holds one
     /// (`initial_pins`). The row is `coordinate - Σ terms`, and the coordinate is
     /// a state the initialization instant has already seeded, so only the terms
@@ -285,7 +269,7 @@ pub(super) enum InitialRowIncidence<'dae> {
     /// so the coordinate is always one [`StateInitialOwner::Stated`] covers. A
     /// `Check` that failed to converge is therefore two declarations contradicting
     /// each other, not a coordinate nothing solved.
-    CarriedValue(Vec<dae::ExprId<'dae>>),
+    CarriedValue(Vec<(dae::ExprId<'dae>, usize)>),
     /// A fixed algebraic/output checked after solving the simultaneous
     /// continuous algebraic system. Its exact total incidence is implicit in
     /// that solve, so it conservatively joins every initialization unknown;
@@ -335,8 +319,9 @@ pub(super) fn plan_initialization_projection<'dae>(
     // and is downgraded or promoted below by what the walk and the matching find.
     let mut row_roles = vec![solve::InitializationRowRole::SurplusCheck; rows.len()];
     let mut incidence: Vec<(usize, BTreeSet<InitialUnknown>)> = Vec::new();
+    let mut projection_cache = rumoca_eval_dae::ScalarCoordinateProjectionCache::default();
     for (row, source) in rows.iter().enumerate() {
-        match row_unknowns(space, source) {
+        match row_unknowns(space, source, &mut projection_cache) {
             RowIncidence::Owned(unknowns) if !unknowns.is_empty() => {
                 incidence.push((row, unknowns));
             }
@@ -430,13 +415,18 @@ fn record_component_roles(
 fn row_unknowns<'dae>(
     space: &InitializationUnknownSpace<'_, 'dae>,
     row: &InitialRowIncidence<'dae>,
+    projection_cache: &mut rumoca_eval_dae::ScalarCoordinateProjectionCache<'dae>,
 ) -> RowIncidence {
     let pending = match row {
-        InitialRowIncidence::Opaque => {
-            return RowIncidence::Unowned(solve::InitializationCoordinateKind::Unreadable);
-        }
-        InitialRowIncidence::Residual(residual) => vec![*residual],
-        InitialRowIncidence::CarriedValue(terms) => terms.clone(),
+        InitialRowIncidence::Residual(residual) => vec![residual.clone()],
+        InitialRowIncidence::CarriedValue(terms) => terms
+            .iter()
+            .map(|(expression, scalar)| ScalarRowSource {
+                expression: *expression,
+                scalar: *scalar,
+                domain_point: None,
+            })
+            .collect(),
         InitialRowIncidence::ImplicitAlgebraic => {
             return RowIncidence::Owned(space.all_projection_unknowns());
         }
@@ -455,14 +445,21 @@ fn row_unknowns<'dae>(
     while !matches!(
         incidence.excluded,
         Some(solve::InitializationCoordinateKind::Algebraic)
-    ) && let Some(expression) = incidence.pending.pop()
+    ) && let Some(row) = incidence.pending.pop()
     {
-        dae::for_each_expression(space.view, expression, |_, node| {
-            let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
-                return;
-            };
-            incidence.visit(space, coordinate);
-        });
+        let projected = rumoca_eval_dae::for_each_scalar_coordinate_cached(
+            space.view,
+            row.expression,
+            row.scalar,
+            row.domain_point
+                .as_ref()
+                .map(|(domain, point)| (*domain, point.as_slice())),
+            projection_cache,
+            |coordinate, scalar| incidence.visit(space, coordinate, scalar),
+        );
+        if projected.is_err() {
+            incidence.exclude(solve::InitializationCoordinateKind::Unreadable);
+        }
     }
     match incidence.excluded {
         None => RowIncidence::Owned(incidence.unknowns),
@@ -500,11 +497,11 @@ struct InitialIncidence<'dae> {
     unknowns: BTreeSet<InitialUnknown>,
     excluded: Option<solve::InitializationCoordinateKind>,
     /// Parameter bindings already followed, so a diamond is walked once.
-    substituted: BTreeSet<u32>,
+    substituted: BTreeSet<(u32, usize)>,
     /// State derivatives already followed, so a derivative that reads itself
     /// through its own defining row terminates.
-    expanded: BTreeSet<u32>,
-    pending: Vec<dae::ExprId<'dae>>,
+    expanded: BTreeSet<(u32, usize)>,
+    pending: Vec<ScalarRowSource<'dae>>,
 }
 
 impl<'dae> InitialIncidence<'dae> {
@@ -512,11 +509,12 @@ impl<'dae> InitialIncidence<'dae> {
         &mut self,
         space: &InitializationUnknownSpace<'_, 'dae>,
         coordinate: dae::CoordinateView<'dae>,
+        scalar: usize,
     ) {
         match coordinate {
-            dae::CoordinateView::Parameter(parameter) => self.visit_parameter(space, parameter),
-            dae::CoordinateView::State(state) => self.visit_state(space, state),
-            dae::CoordinateView::Derivative(state) => self.visit_derivative(space, state),
+            dae::CoordinateView::Parameter(parameter) => self.visit_parameter(space, parameter, scalar),
+            dae::CoordinateView::State(state) => self.visit_state(space, state, scalar),
+            dae::CoordinateView::Derivative(state) => self.visit_derivative(space, state, scalar),
             // MLS §8.6.1: the environment supplies inputs as known values.
             // Complete Solve-model construction requires a checked binding or
             // an explicit host value for every scalar before initialization.
@@ -566,16 +564,29 @@ impl<'dae> InitialIncidence<'dae> {
         &mut self,
         space: &InitializationUnknownSpace<'_, 'dae>,
         parameter: dae::ParameterId<'dae>,
+        scalar: usize,
     ) {
         if let Some(indices) = space.ownership.projection_unknown_slots(parameter.index()) {
-            self.unknowns
-                .extend(indices.iter().copied().map(InitialUnknown::Parameter));
+            match indices.get(scalar) {
+                Some(index) => {
+                    self.unknowns.insert(InitialUnknown::Parameter(*index));
+                }
+                None => self.exclude(solve::InitializationCoordinateKind::Unreadable),
+            }
             return;
         }
         if let Some(binding) = space.ownership.substitution(parameter.index())
-            && self.substituted.insert(parameter.index())
+            && self.substituted.insert((parameter.index(), scalar))
         {
-            self.pending.push(binding);
+            self.pending.push(ScalarRowSource {
+                expression: binding,
+                scalar: if scalar_count(space.view, binding) == 1 {
+                    0
+                } else {
+                    scalar
+                },
+                domain_point: None,
+            });
         }
     }
 
@@ -583,8 +594,9 @@ impl<'dae> InitialIncidence<'dae> {
         &mut self,
         space: &InitializationUnknownSpace<'_, 'dae>,
         state: dae::StateId<'dae>,
+        scalar: usize,
     ) {
-        match space.states.get(&state.index()) {
+        match space.states.get(&(state.index(), scalar)) {
             Some(StateInitialOwner::Projection(index)) => {
                 self.unknowns.insert(InitialUnknown::State(*index));
             }
@@ -604,28 +616,14 @@ impl<'dae> InitialIncidence<'dae> {
         &mut self,
         space: &InitializationUnknownSpace<'_, 'dae>,
         state: dae::StateId<'dae>,
+        scalar: usize,
     ) {
-        let scalar = space
-            .variable(state.into())
-            .map(dae::VariableView::scalar_count);
-        if scalar != Some(1) {
-            self.exclude(solve::InitializationCoordinateKind::Unreadable);
-            return;
-        }
-        let Some(definition) = space.derivatives.definition(state, 0) else {
+        let Some(definition) = space.derivatives.definition(state, scalar) else {
             self.exclude(solve::InitializationCoordinateKind::Other);
             return;
         };
-        // A family point carries binder values this walk does not substitute, and
-        // a multi-scalar residual mixes the coordinates of every scalar into one
-        // expression, so neither can be read per scalar.
-        if definition.domain_point.is_some() || scalar_count(space.view, definition.expression) != 1
-        {
-            self.exclude(solve::InitializationCoordinateKind::Unreadable);
-            return;
-        }
-        if self.expanded.insert(state.index()) {
-            self.pending.push(definition.expression);
+        if self.expanded.insert((state.index(), scalar)) {
+            self.pending.push(definition.clone());
         }
     }
 }

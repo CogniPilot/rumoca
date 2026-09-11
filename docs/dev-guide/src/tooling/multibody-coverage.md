@@ -600,3 +600,35 @@ OMC reference succeeds while Rumoca still refuses it. The fixed canary in
 All nine compared models and 175 initial channels remain high, with zero
 missing, skipped, or deviating comparisons. The recorded Tier 1 delta is
 `.git/multibody-campaign/prismatic-field-canary-delta.json`.
+
+
+### Exact scalar incidence in initialization
+
+The next shared structural blocker is the initial-manifold guard: the
+GyroscopicEffects example reaches a holonomic constraint incident on the
+source-fixed `revolute.phi`. Its initial value is present in the DAE. The
+earlier preflight rejects the candidate because the existing post-initialization
+manifold projection may move that state; the later transferred-pin check is
+not the originating failure. The guard remains intact pending a joint
+initialization owner. MLS 3.6 §8.6 and Appendix B, SPEC_0007, and the
+SPEC_0036 draft / SPEC_0043 §4 describe the required ownership.
+
+A prerequisite repair makes initialization incidence use the exact scalar
+projection already used by structural analysis. Matrix coordinates, structured
+domain points, substituted parameter bindings, and derivative definitions now
+retain the same scalar identity as their emitted residual programs. A transferred
+pin determines only its actual scalar. The prior whole-variable walk rejected
+three analytic matrix-initialization fixtures before simulation.
+
+Five end-to-end regressions cover direct and structured matrix initial equations,
+derivative initial equations, permuted array parameter bindings, and inconsistent
+fixed matrix initial data. Both BDF and RK paths are checked against independent
+exponential trajectories or the required initialization refusal. All 426 core
+integration tests and 113 Solve tests pass, along with focused all-target,
+all-feature Clippy. The fixed canary in
+`target/msl/multibody-initial-tensor-canary` retains all 20 phase and simulation
+outcomes relative to `multibody-prismatic-field-canary`: nine comparisons and
+all 175 initial channels high, zero missing, skipped, or deviating comparisons.
+The artifact hashes and delta are in
+`.git/multibody-campaign/initial-tensor-canary-delta.json`. This is prerequisite
+coverage; it does not claim that the initial-manifold blocker is resolved.
