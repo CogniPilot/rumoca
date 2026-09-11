@@ -8,6 +8,8 @@ cargo run -p rumoca --release -- sim -c examples/simulation/rumoca-scenario.ball
 
 Scenarios:
 
+- `sport_cub_monte_carlo/`: pure-Python 6-DOF Monte Carlo sweep of the
+  firmware-representative Sport Cub mission from 1–5 m/s cruise velocity.
 - `rumoca-scenario.ball.toml`: bouncing ball with a browser results view.
 - `rumoca-scenario.neural_latent_oscillator.toml`: larger latent Neural ODE with learned decoder.
 - `rumoca-scenario.neural_ode_backprop.toml`: native backpropagation training demonstration.
