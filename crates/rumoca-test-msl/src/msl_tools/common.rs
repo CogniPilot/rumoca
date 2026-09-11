@@ -3,7 +3,7 @@ use rumoca_core::{msl_cache_dir_from_manifest, workspace_root_from_manifest_dir}
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -32,10 +32,6 @@ const MSL_PACKAGE_SPECS: &[MslPackageSpec] = &[
     MslPackageSpec {
         package_name: "Complex",
         candidates: &["Complex.mo"],
-    },
-    MslPackageSpec {
-        package_name: "ModelicaServices",
-        candidates: &["ModelicaServices 4.1.0/package.mo"],
     },
     MslPackageSpec {
         package_name: "Modelica",
@@ -200,6 +196,8 @@ fn resolve_msl_packages(paths: &MslPaths) -> Vec<(&'static str, PathBuf)> {
 }
 
 pub fn msl_load_lines(paths: &MslPaths) -> Vec<String> {
+    // OMC supplies its own ModelicaServices. Preloading the generic MSL
+    // implementation replaces URI resolution with fullPathName(uri).
     resolve_msl_packages(paths)
         .into_iter()
         .map(|(_, path)| format!("loadFile(\"{}\");", path.display()))
@@ -487,12 +485,24 @@ fn parse_trace_exclusions(payload: &Value) -> Result<std::collections::BTreeMap<
 }
 
 pub fn write_pretty_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create '{}'", parent.display()))?;
-    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create '{}'", parent.display()))?;
     let payload = serde_json::to_string_pretty(value).context("failed to serialize JSON")?;
-    std::fs::write(path, payload).with_context(|| format!("failed to write '{}'", path.display()))
+    // Cache materialization hard-links traces across runs. Replace this path
+    // only after the new payload is complete, preserving the other links.
+    let mut replacement = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("failed to create replacement for '{}'", path.display()))?;
+    replacement
+        .write_all(payload.as_bytes())
+        .with_context(|| format!("failed to write '{}'", path.display()))?;
+    replacement
+        .persist(path)
+        .with_context(|| format!("failed to replace '{}'", path.display()))?;
+    Ok(())
 }
 
 pub fn unix_timestamp_seconds() -> i64 {
@@ -612,7 +622,7 @@ mod tests {
 
         let paths = test_paths(msl_dir.to_path_buf());
         let lines = msl_load_lines(&paths);
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 3);
         assert!(
             lines.iter().any(|line| line.contains("Complex.mo")),
             "expected Complex.mo loadFile entry"
@@ -624,10 +634,8 @@ mod tests {
             "expected Modelica release-layout package load"
         );
         assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("ModelicaServices 4.1.0/package.mo")),
-            "expected ModelicaServices release-layout package load"
+            !lines.iter().any(|line| line.contains("ModelicaServices")),
+            "OMC must load its own tool-specific services"
         );
         assert!(
             lines
@@ -654,6 +662,26 @@ mod tests {
                 .any(|line| line.contains("ModelicaTest/package.mo")),
             "expected source-tree ModelicaTest package load"
         );
+    }
+
+    #[test]
+    fn replacing_json_preserves_hard_linked_reference_history() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let historical = temp.path().join("historical.json");
+        let current = temp.path().join("current.json");
+        let old = serde_json::json!({"value": 1.0});
+        let new = serde_json::json!({"value": 2.0});
+        write_pretty_json(&historical, &old).expect("write original reference");
+        std::fs::hard_link(&historical, &current).expect("materialize cache reference");
+
+        write_pretty_json(&current, &new).expect("regenerate current reference");
+
+        let read = |path: &Path| {
+            serde_json::from_slice::<Value>(&std::fs::read(path).expect("read reference"))
+                .expect("parse reference")
+        };
+        assert_eq!(read(&current), new);
+        assert_eq!(read(&historical), old);
     }
 
     #[test]

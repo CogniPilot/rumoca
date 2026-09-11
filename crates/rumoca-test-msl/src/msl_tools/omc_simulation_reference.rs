@@ -622,6 +622,9 @@ fn run_dry_run(paths: &MslPaths, model_names: &[String], args: &Args) -> Result<
 /// and forces a re-run; otherwise cached per-model results are reused.
 fn omc_reference_cache_key(omc_version: &str, msl_dir: &Path) -> String {
     let mut hasher = blake3::Hasher::new();
+    // References made with generic services or incomplete-success acceptance
+    // cannot be reused under the corrected producer contract.
+    hasher.update(b"omc-tool-services/required-result-file/v1\0");
     hasher.update(MSL_VERSION.as_bytes());
     hasher.update(b"\0");
     hasher.update(omc_version.as_bytes());
@@ -912,16 +915,27 @@ const SESSION_RECYCLE_MODELS: usize = 25;
 fn build_session_model_result(outcome: &OmcSimOutcome, elapsed: f64) -> SimModelResult {
     let mut error_text = outcome.error.clone();
     let messages = outcome.messages.trim();
-    let messages_indicate_failure =
-        messages.contains("Simulation Failed") || messages.contains("does not exist");
-    if messages_indicate_failure {
+    let messages_indicate_failure = messages.contains("Simulation Failed")
+        || messages.contains("Simulation execution failed")
+        || messages.contains("does not exist");
+    let missing_result = outcome
+        .result_file
+        .as_deref()
+        .is_none_or(|path| path.trim().is_empty());
+    // Successful simulations can report warning-level assertion violations.
+    // Preserve runtime diagnostics when the outcome identifies a failure.
+    if missing_result || messages_indicate_failure || has_fatal_omc_error(&error_text) {
         if !error_text.trim().is_empty() {
             error_text.push('\n');
         }
         error_text.push_str(messages);
     }
+    if missing_result {
+        error_text.push_str("\nOMC simulation returned no result file");
+    }
     let assertion_failures = omc_assertion_failure_lines(&error_text);
-    let fatal = has_fatal_omc_error(&error_text)
+    let fatal = missing_result
+        || has_fatal_omc_error(&error_text)
         || !assertion_failures.is_empty()
         || messages_indicate_failure;
     let status = if fatal { "error" } else { "success" };
@@ -1020,7 +1034,10 @@ fn omc_assertion_failure_lines(error_text: &str) -> Vec<String> {
         }
         let lower = line.to_ascii_lowercase();
         if lower.contains("assert")
-            && (lower.contains("error") || lower.contains("violat") || lower.contains("fail"))
+            && (lower.contains("error")
+                || lower.contains("violat")
+                || lower.contains("fail")
+                || lower.contains("terminat"))
         {
             lines.push(line.to_string());
         }

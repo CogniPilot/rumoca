@@ -485,3 +485,45 @@ comparisons. All 175 initial channels are high and all 20 stage and simulation
 statuses are unchanged from `multibody-clock-trigger-canary`. The execution
 regression is closed; the complete 566-model milestone follows at the repair
 commit. No baseline is promoted from these focused results.
+
+### Reference generation and cache evidence repair
+
+The complete 566-model run at `7069c44e` in
+`target/msl/multibody-regression-restored-full` failed its quality gate during
+reference-cache persistence. It supplies no accepted cohort parity number.
+Ten OMC attempts had been labeled successful despite an empty `resultFile`
+and no trace. Their runtime messages reported execution failures, but the
+reference producer discarded the wording `Simulation execution failed`.
+This was a producer error; the cache correctly rejected the incomplete
+success records. No candidate comparison was missing, and no compiler
+simulation status regressed from the preceding full run; `DCPM_Drive`
+returned to `sim_ok` under its unchanged reviewed exclusion.
+
+The first reproduction, `Modelica.Electrical.Digital.Examples.RAM`, also
+identified an earlier reference setup error. Explicitly loading the generic
+MSL `ModelicaServices` made its resource loader pass `modelica://` URIs to
+`fullPathName`, so initialization could not read the memory data file.
+The identical pinned model succeeds with OMC's tool-specific services.
+Reference generation now lets OMC supply those services, requires a result
+file before reporting success, and retains runtime failure diagnostics.
+An independent warning-level assertion model confirms that warnings which
+permit successful simulation remain nonfatal. A cache-policy fingerprint
+invalidates references produced under the previous setup.
+
+Regenerating JSON now replaces the destination after writing the complete
+payload, preserving historical traces which share a cache hard link.
+The empty-result, runtime-assertion, warning, and hard-link regressions each
+exercise their observed failure boundary. All 168 tooling unit tests pass,
+as do formatting and all-target, all-feature tooling Clippy.
+
+The originating harness run in `target/msl/multibody-omc-reference-origin`
+produces successful OMC references for RAM, `readRealParameterModel`, and
+the MultiBody `Pendulum`. Only Pendulum currently completes in Rumoca;
+its 144 compared channels, including initial values, are high, with no
+missing or skipped comparison. This does not claim Rumoca support for the
+two resource examples. The final fixed canary in
+`target/msl/multibody-omc-reference-final-canary` retains all 20 stage and
+simulation statuses, nine strict-high comparisons, 175 high initial
+channels, and zero missing, skipped, or deviating comparisons. All 19
+recorded historical reference-file hashes remain unchanged. The complete
+566-model milestone follows at the repair commit; no baseline is promoted.

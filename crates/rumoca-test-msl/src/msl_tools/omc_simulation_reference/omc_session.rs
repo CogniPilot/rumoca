@@ -371,6 +371,67 @@ end SimulationResult;"#;
     }
 
     #[test]
+    fn reference_outcome_preserves_runtime_assertion_failure() {
+        let record = r#"record SimulationResult
+    resultFile = "",
+    messages = "Simulation execution failed for model: ResourceUser
+LOG_ASSERT | debug | Not possible to open file modelica://Library/data.txt
+LOG_ASSERT | info | simulation terminated by an assertion at initialization
+",
+    timeSimulation = 0.014,
+    timeTotal = 0.831
+end SimulationResult;"#;
+        let outcome = parse_sim_record(
+            record,
+            "Warning: pure function calls impure function".into(),
+        );
+        let result = super::super::build_session_model_result(&outcome, 1.0);
+
+        assert_eq!(result.status, "error");
+        let error = result.error.expect("runtime failure diagnostic");
+        assert!(error.contains("Simulation execution failed"));
+        assert!(error.contains("modelica://Library/data.txt"));
+        assert_eq!(super::super::omc_assertion_failure_lines(&error).len(), 1);
+    }
+
+    #[test]
+    fn reference_outcome_requires_a_result_even_without_diagnostics() {
+        let outcome = parse_sim_record(
+            "record SimulationResult resultFile = \"\", messages = \"\" end SimulationResult;",
+            String::new(),
+        );
+        let result = super::super::build_session_model_result(&outcome, 1.0);
+
+        assert_eq!(result.status, "error");
+        assert!(
+            result
+                .error
+                .expect("missing result diagnostic")
+                .contains("result file")
+        );
+    }
+
+    #[test]
+    fn reference_outcome_accepts_result_with_nonfatal_warning() {
+        let outcome = parse_sim_record(
+            r#"record SimulationResult
+    resultFile = "result.csv",
+    messages = "LOG_ASSERT | warning | [<interactive>:1:68-1:125:writable]
+| | | The following assertion has been violated during initialization at time 0.000000
+| | | ((x < -1.0)) --> \"expected warning\"
+LOG_SUCCESS | info | The simulation finished successfully.
+"
+end SimulationResult;"#,
+            "Warning: harmless diagnostic".into(),
+        );
+        let result = super::super::build_session_model_result(&outcome, 1.0);
+
+        assert_eq!(result.status, "success");
+        assert_eq!(result.result_file.as_deref(), Some("result.csv"));
+        assert_eq!(result.error, None);
+    }
+
+    #[test]
     fn unquote_strips_and_unescapes() {
         assert_eq!(unquote_omc_string("\"hello\\nworld\""), "hello\nworld");
         assert_eq!(unquote_omc_string("\"\""), "");
