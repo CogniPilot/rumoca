@@ -6,6 +6,79 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/electrical-affine-polished-full` passes the local MSL quality
+gate against the checked-in fallback baseline. Its complete 566-model
+comparison finishes in 132.74 seconds at commit
+`3a7c0b12f46f94220cd56e7b8f64f0337d18a08a`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`, with
+eleven requested and pinned model workers. **152 models compare and all
+152 are strict-high (26.86% of 566)**. Of 169 simulation completions,
+seventeen have existing reviewed exclusions; missing and nonidentifiable
+traces are zero. There are 17,589 high and seventeen minor trajectory
+channels, zero deviating or severe channels, and all 17,606 initial channels
+are high. The tracked baseline and exclusion policy are unchanged.
+
+All twelve high-model execution regressions from the first affine sweep
+are restored. Every previously high model from the RollingWheel and
+fixed-pre full runs remains high, and all nine original electrical
+counterexamples now close as strict-high in this complete comparison:
+
+| ACDC model suffix | Full-run outcome | High trajectory channels |
+|---|---|---:|
+| Rectifier1Pulse.Thyristor1Pulse_R_Characteristic | high | 95 |
+| RectifierBridge2Pulse.ThyristorBridge2Pulse_RL | high | 146 |
+| RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV | high | 429 |
+| RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RL | high | 133 |
+| RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_R | high | 417 |
+| RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RL | high | 423 |
+| RectifierCenterTapmPulse.ThyristorCenterTapmPulse_R | high | 307 |
+| RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RL | high | 313 |
+| RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV | high | 316 |
+
+MultiBody returns to **19/42 high**, with nineteen compared, all 8,477
+trajectory and initial channels high, and zero skipped, missing, excluded,
+or nonidentifiable traces. DAE completion remains 35/42. RollingWheel
+completes its four-second horizon with all 184 channels high; its reported
+12.601-second simulation runtime includes initialization and remains close
+to the unchanged twelve-second integration budget. A perf investigation
+is next to establish where runtime is spent before claiming a performance
+repair or attributing earlier timeouts to host load.
+
+The remaining 23 MultiBody examples comprise eleven Solve timeouts, three
+structural refusals, two simulation timeouts, two Flatten timeouts, four
+DAE refusals, and one Instantiate refusal. The known implicit-contact-circle
+core regression still fails at structural matching, 6/7. Combined
+`verify quick` and `verify full` are not green, and no PR, release approval,
+or baseline promotion is made from this gate alone.
+
+One previously completed reviewed exclusion,
+`RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic`, now times
+out in simulation. This execution loss remains visible even though it was
+never strict-high. GearConstraint reaches its structural refusal within
+the phase budget instead of timing out; Inverse_sh_TX changes from Flatten
+to DAE refusal without a corresponding producer edit. Those diagnostic
+changes are recorded, not claimed as new language capability. Full per-model
+deltas and artifact hashes are in `affine-polished-full-delta.json` and
+`full-execution-delta.json` under the inverter investigation.
+
+The subsequent RollingWheel perf diagnostic captures 4,001 samples with
+zero lost samples at 199 Hz and completes under the unchanged solver budget.
+It reports 11.776 seconds including 0.575 seconds of initialization. In the
+last 45% of the capture, prepared row evaluation accounts for 22.42% of
+self samples, tensor concatenation 5.82%, memory comparison 5.65%, matrix
+multiplication 3.59%, and scalar pure-call payload adaptation 3.35%.
+Source inspection finds selected projection residual/JVP evaluation uses
+the interpreter even though the backend interface offers compiled whole-block
+evaluation. Call metadata is also checked in both the interpreter and native
+adapter. These are investigation leads, not established repair claims;
+compiled-program availability and selected-output ownership need verification
+before changing dispatch. `rolling-wheel/affine-polished-performance-receipt.json`
+records the profile, request, result, and hashes. No gate result is replaced
+by this diagnostic run, and host contention remains an unproven explanation
+for the earlier timeout.
+
+## Previous complete measurement: first direct affine solve
+
 `target/msl/electrical-affine-full` completes the full 566-model comparison
 in 127.82 seconds at commit `82630a4d2361ef673d921c49ada8519ce51ed08b`,
 working-tree digest
