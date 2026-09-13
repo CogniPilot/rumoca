@@ -86,6 +86,8 @@ impl ImplicitProjectionModel for PoorlyScaledProjectionModel {
 }
 
 struct ContinuousCausalAssignmentModel {
+    affinity_queries: Cell<usize>,
+    affine: bool,
     residual_calls: Cell<usize>,
     residual_row_calls: Cell<usize>,
     jacobian_calls: Cell<usize>,
@@ -243,6 +245,11 @@ impl ImplicitProjectionModel for ScaledContinuousAssignmentModel {
 }
 
 impl ImplicitProjectionModel for ContinuousCausalAssignmentModel {
+    fn algebraic_projection_block_is_affine(&self, _block_index: usize) -> bool {
+        self.affinity_queries.set(self.affinity_queries.get() + 1);
+        self.affine
+    }
+
     fn eval_residual(
         &self,
         y: &[f64],
@@ -1124,7 +1131,22 @@ fn scaled_backtracking_preserves_a_tiny_but_significant_trust_step() {
 
 #[test]
 fn continuous_singleton_assignment_avoids_jacobian_projection() {
+    for affine in [false, true] {
+        check_singleton_assignment_queries(affine, false);
+    }
+}
+
+#[test]
+fn continuous_singleton_with_tearing_retains_degree_selection() {
+    for affine in [false, true] {
+        check_singleton_assignment_queries(affine, true);
+    }
+}
+
+fn check_singleton_assignment_queries(affine: bool, torn: bool) {
     let model = ContinuousCausalAssignmentModel {
+        affinity_queries: Cell::new(0),
+        affine,
         residual_calls: Cell::new(0),
         residual_row_calls: Cell::new(0),
         jacobian_calls: Cell::new(0),
@@ -1134,7 +1156,11 @@ fn continuous_singleton_assignment_avoids_jacobian_projection() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
-                tearing: None,
+                tearing: torn.then(|| solve::BlockTearing {
+                    tear_y_indices: vec![0],
+                    residual_rows: vec![0],
+                    causal_steps: vec![],
+                }),
             }],
         },
     };
@@ -1144,10 +1170,19 @@ fn continuous_singleton_assignment_avoids_jacobian_projection() {
         .expect("singleton assignment should project");
 
     assert_eq!(y, vec![5.0]);
+    if torn {
+        assert!(model.affinity_queries.get() > 0);
+        return;
+    }
     assert_eq!(model.residual_calls.get(), 0);
     // The constructor certificate makes runtime residual re-proving redundant.
     assert_eq!(model.residual_row_calls.get(), 0);
     assert_eq!(model.jacobian_calls.get(), 0);
+    assert_eq!(
+        model.affinity_queries.get(),
+        0,
+        "an exact singleton assignment needs no polynomial-degree query"
+    );
 }
 
 #[test]
@@ -1307,6 +1342,8 @@ fn partial_projection_ignores_unselected_residuals_and_unknowns() {
 #[test]
 fn continuous_singleton_assignment_does_not_accept_inexact_improvement() {
     let model = ContinuousCausalAssignmentModel {
+        affinity_queries: Cell::new(0),
+        affine: false,
         residual_calls: Cell::new(0),
         residual_row_calls: Cell::new(0),
         jacobian_calls: Cell::new(0),
@@ -1327,6 +1364,7 @@ fn continuous_singleton_assignment_does_not_accept_inexact_improvement() {
 
     assert_eq!(y, vec![5.0]);
     assert!(model.jacobian_calls.get() > 0);
+    assert!(model.affinity_queries.get() > 0);
 }
 
 #[test]

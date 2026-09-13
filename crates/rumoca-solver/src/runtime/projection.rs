@@ -629,19 +629,29 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     let AlgebraicBlockProjectionPolicy {
         tolerance: tol,
-        step_limit,
         certify_coordinates,
+        ..
     } = policy;
     require_square_projection_block(block.rows.len(), block.y_indices.len(), "algebraic")?;
-    let mut changed = false;
     if block.rows.is_empty() || block.y_indices.is_empty() {
         return Ok(ProjectionBlockUpdate {
-            changed,
-            settled: !changed,
+            changed: false,
+            settled: true,
         });
     }
+    // Both untorn paths try the same singleton assignment. Its acceptance is
+    // independent of the degree certificate; query that only if it declines.
+    let singleton_was_tried = block.tearing.is_none();
+    if singleton_was_tried
+        && let Some(update) = project_algebraic_singleton_assignment(model, y, p, t, block, tol)?
+    {
+        return Ok(update);
+    }
     if model.algebraic_projection_block_is_affine(block_index) {
-        if let Some(update) = project_algebraic_singleton_assignment(model, y, p, t, block, tol)? {
+        if !singleton_was_tried
+            && let Some(update) =
+                project_algebraic_singleton_assignment(model, y, p, t, block, tol)?
+        {
             return Ok(update);
         }
         return affine::project_affine_block(model, y, p, t, block, block_index, tol);
@@ -661,9 +671,29 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
     {
         return Ok(update);
     }
-    if let Some(update) = project_algebraic_singleton_assignment(model, y, p, t, block, tol)? {
+    if !singleton_was_tried
+        && let Some(update) = project_algebraic_singleton_assignment(model, y, p, t, block, tol)?
+    {
         return Ok(update);
     }
+    project_algebraic_residual_block(model, y, p, t, block, block_index, policy)
+}
+
+fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
+    model: &M,
+    y: &mut [f64],
+    p: &[f64],
+    t: f64,
+    block: &solve::AlgebraicProjectionBlock,
+    block_index: usize,
+    policy: AlgebraicBlockProjectionPolicy,
+) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
+    let AlgebraicBlockProjectionPolicy {
+        tolerance: tol,
+        step_limit,
+        certify_coordinates,
+    } = policy;
+    let mut changed = false;
     let Some(residual) = block_residual_or_seed(model, y, p, t, block, tol, &mut changed)? else {
         return Ok(ProjectionBlockUpdate {
             changed,

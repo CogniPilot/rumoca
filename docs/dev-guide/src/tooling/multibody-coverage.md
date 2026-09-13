@@ -242,6 +242,45 @@ The existing native singleton path deliberately excludes multi-output tensor
 rows; any extension must preserve one tensor program owner and its checked
 assignment semantics. No runtime optimization is claimed from this capture.
 
+### Untorn singleton projection before degree queries
+
+For a block without a tearing, both degree classifications attempt the same
+singleton assignment before residual projection. Runtime now performs that
+common attempt first, then asks for the degree certificate only if it declines.
+It does not repeat a declined assignment. A block with a tearing retains the
+previous affine/torn/assignment ordering and its branch selection. The residual
+Newton path is factored into its own helper without changing its arithmetic.
+This is a control-flow optimization over existing constructor-issued facts
+(SPEC_0029 §5 and SPEC_0036/SPEC_0043 §6a); tensor source programs, assertion
+execution, assignment acceptance, and rollback semantics retain their owners.
+
+The focused RED records one redundant degree query for an exact singleton;
+the candidate records zero with either an affine or unproved classification.
+A torn-singleton control still requests degree selection, and an inexact
+candidate still reaches residual Newton. All 448 solver tests, all-target/
+all-feature solver Clippy, 243 architecture tests, seventeen size/spec gates,
+formatting, and whitespace checks pass (`rolling-wheel/singleton-degree-red-1.log`,
+`singleton-degree-green-2.log`, `singleton-degree-canary-1.log`).
+
+The matched declared-Sim wheel-set profile takes 11.183 seconds versus 11.670.
+The degree-query hotspot falls from 2.52% of samples to zero recorded samples;
+2,214 samples are captured with zero lost. The complete trace remains
+byte-identical, SHA-256
+`3dc2333f4b9d6d69bead292633f3304aa57204f430040d50c00fb62753006a5b`.
+Build takes 11.098 seconds, including 7.008 seconds of Solve lowering. The
+single diagnostic pair proves the targeted cost and unchanged trace, not a
+stable speedup or restored cohort completion. Its receipt and exact candidate
+patch digest are in `rolling-wheel/singleton-degree-profile-pair.json`.
+
+The fixed twenty-model `target/msl/multibody-singleton-degree-canary` has no
+phase or band deltas from `multibody-manifold-preflight-canary`. Its nine
+compared models and 175 initial channels remain high, with zero skipped,
+excluded, missing, or nonidentifiable traces. This Tier 1 result is on parent
+`45b3507e00b0b073573864eeffd8a0ea64d40e6d`, candidate worktree digest
+`e5ce5b73a334ab799b53e6003fdd031e353d60e285e0aaf268529c25b75ebb77`;
+receipt `rolling-wheel/singleton-degree-canary-delta.json`. The following full
+cohort sweep must decide whether the wheel-set timeout is closed.
+
 ### Fourbar_analytic: supplied derivative chains
 
 MLS §12.7.1 permits a higher-order annotation only in the differentiation
