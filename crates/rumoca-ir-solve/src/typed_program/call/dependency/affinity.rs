@@ -112,6 +112,9 @@ pub(in crate::typed_program) fn derive(
                     registers[destination.index()] = output.substitute(&arguments)?;
                 }
             }
+            operation @ SolveOperation::Conditional { .. } => {
+                conditional(operation, &mut registers, available)?;
+            }
             operation => {
                 let result = operation_interactions(operation, &registers)?;
                 operation
@@ -126,6 +129,44 @@ pub(in crate::typed_program) fn derive(
             .take(output_count)
             .collect(),
     ))
+}
+
+fn conditional(
+    operation: &SolveOperation,
+    registers: &mut [InputInteractions],
+    available: SolvePureCallTableView<'_>,
+) -> Option<()> {
+    let SolveOperation::Conditional {
+        condition,
+        captures,
+        destinations,
+        if_true,
+        if_false,
+    } = operation
+    else {
+        return None;
+    };
+    let condition = registers[condition.index()].clone().nonlinear();
+    let arguments = captures
+        .iter()
+        .map(|arg| registers[arg.index()].clone())
+        .collect::<Vec<_>>();
+    let branch = |region: &crate::SolveProgramRegion| {
+        derive(region.body(), captures.len(), destinations.len(), available)
+    };
+    let if_true = branch(if_true)?;
+    let if_false = branch(if_false)?;
+    for ((destination, lhs), rhs) in destinations
+        .iter()
+        .zip(if_true.0.iter())
+        .zip(if_false.0.iter())
+    {
+        registers[destination.index()] = lhs
+            .substitute(&arguments)?
+            .join(&rhs.substitute(&arguments)?)
+            .join(&condition);
+    }
+    Some(())
 }
 
 fn operation_interactions(
@@ -143,6 +184,8 @@ fn operation_interactions(
             SolveUnaryOperator::Negate => read(operand),
             _ => read(operand).nonlinear(),
         },
+        SolveOperation::Compare { lhs, rhs, .. } => read(lhs).join(&read(rhs)).nonlinear(),
+        SolveOperation::Convert { operand, .. } => read(operand).nonlinear(),
         SolveOperation::Binary {
             operator, lhs, rhs, ..
         } => binary(*operator, read(lhs), read(rhs)),
@@ -168,6 +211,14 @@ fn operation_interactions(
             aggregate: operand, ..
         } => read(operand),
         SolveOperation::Fill { value, .. } => read(value),
+        SolveOperation::ConstructAggregate { elements, .. }
+        | SolveOperation::Concatenate {
+            operands: elements, ..
+        } => elements
+            .iter()
+            .fold(InputInteractions::default(), |result, element| {
+                result.join(&read(element))
+            }),
         _ => return None,
     })
 }

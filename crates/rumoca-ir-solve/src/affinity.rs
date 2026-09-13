@@ -1,6 +1,7 @@
 //! Constructor-owned degree bounds relative to a projection's unknowns.
 
 mod registers;
+mod tensors;
 #[cfg(test)]
 mod tests;
 
@@ -292,6 +293,6 @@ fn operation_degree(
         } => registers
             .read(lhs_start, rows.checked_mul(inner)?)?
             .product(registers.read(rhs_start, inner.checked_mul(columns)?)?),
-        _ => return None,
+        _ => return tensors::degree(operation, registers),
     })
 }

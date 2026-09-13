@@ -122,6 +122,72 @@ The runtime repair and its focused/canary checks are complete. The remaining
 passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
 
+## Prepared linear solves through conditional tensor functions
+
+RollingWheel's generated plan formerly lacked affine certificates for block
+813 (three angle rates) and block 858 (twenty-one forces, torques, and
+accelerations). Both therefore entered the torn Newton solver, whose reduced
+Jacobian perturbs each tear variable and repeats the causal/residual sweep.
+OMC's generated equations use linear systems, including the six-unknown
+dynamics system 731; the compilers have different state bases and block
+partitions, so these dimensions are not directly equivalent.
+
+The first certificate refusal is inside the typed `Frames.axesRotations`
+owner 563: its `axisRotation` callees contain comparisons, conditional regions,
+concatenation, and numeric conversion. The constructor's affinity walk did not
+cover those operations. The source formula computes a rotation matrix from
+the known sequence/angles and multiplies known axis/rotation coefficients by
+the unknown rates. Program 223, which owns the acceleration constraint at
+row 814, also requires concatenation, transpose, and array-patch degree bounds.
+
+The repair extends the constructor-owned proof through both conditional
+regions and compact tensor operands. Unknown-dependent selectors remain
+nonlinear; both branch results contribute even if one is inactive at a
+particular point. Conversion is conservatively nonlinear in its operand.
+Tensor bounds cover whole ranges without per-coordinate IR expansion. This
+follows SPEC_0007 SOLVE-C36/C56, SPEC_0032 §2/4, and MLS §10.4, §10.6.13,
+and §12.4.4. No numerical tolerance, source equation, or execution program is
+changed.
+
+Checked reconstruction of the newly emitted Solve model now certifies all
+four coupled blocks (813, 823, 858, 869) as affine. The pure-call bodies and
+projection plan are identical to the previous artifact; the implicit programs
+differ only in their derived affinity certificates. The earlier corrected
+row-814 dependency and all non-invalidating BLT flags remain intact.
+`rolling-wheel/affinity-pattern-proof-1.log` records the complete block census.
+
+Two typed-call regression assertions and three tensor-operation assertions
+fail before their corresponding repairs. The negative controls cover unknown
+selectors, nonlinear coefficients, an unknown-dependent inactive branch,
+runtime indices/slices, and a million-element tensor. All 302 IR, 190 evaluator,
+457 solver, and 128 simulation library tests pass; all-target/all-feature
+Clippy passes for the four crates. The fixed canary at parent `34c6ec78`,
+working-tree digest
+`ef383da198f992c4e6421b7dc4ecfeaff2ebde90524c490117d23b1287430aca`,
+retains all twenty phase outcomes and bands: nine compared high, all 175 initial
+channels high, zero missing/skipped/nonidentifiable/deviating traces, eleven
+workers. Its receipt is `rolling-wheel/affinity-canary-delta.json`.
+
+One clean isolated profile pair, with the same twelve-second simulation budget,
+shows the following changes:
+
+| Declared phase / counter | Prepared-stage baseline | Affinity repair |
+|---|---:|---:|
+| SimBuild | 2.184 s | 1.700 s |
+| IC | 0.369 s | 0.061 s |
+| Sim | 4.303 s | 3.435 s |
+| Sim user CPU delta | 4.24 s | 3.41 s |
+
+Both runs have zero Sim major-fault and system-CPU deltas. The new worker SHA is
+`f81a7c6ae2193579dbd7ecd7470612bf17a7590a8d322a14d6e345d04ea3c80f`.
+Its trace SHA is
+`61e23f642f39489afa0717c767501558972f2e29419b77b088befbe8b2aff3dd`;
+the changed arithmetic path requires a new OMC comparison. Perf records 675
+user-CPU samples without loss; trigonometry, row evaluation, and allocation
+remain visible costs, with incomplete native/JIT stack unwinding. The critical
+OMC runtime gap remains open. A complete cohort comparison at the implementation
+commit, combined `verify quick`, and `verify full` are pending.
+
 ## OMC profile and remaining algebraic refresh overhead
 
 Forty sequential executions of the unchanged, xtask-generated RollingWheel

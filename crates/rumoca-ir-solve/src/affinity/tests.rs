@@ -1,5 +1,138 @@
 use super::*;
 
+#[test]
+fn concatenation_keeps_affine_and_nonlinear_tensor_bounds() {
+    let mut program = multiplied_values();
+    program.pop();
+    program.extend([
+        LinearOp::TensorConcatenate {
+            dst_start: 3,
+            sources: [0, 2]
+                .map(|start| crate::TensorConcatenateSource {
+                    start,
+                    dimensions: vec![1, 1].into_boxed_slice(),
+                })
+                .into(),
+            dimensions: vec![1, 2].into_boxed_slice(),
+            axis: 1,
+            lanes: 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: 3,
+            count: 2,
+            stride: 1,
+        },
+    ]);
+    assert_eq!(
+        program_degree(&program, &BTreeSet::from([0]), 1),
+        Some(Degree::Affine)
+    );
+    assert_eq!(
+        program_degree(&program, &BTreeSet::from([0, 1]), 1),
+        Some(Degree::Nonlinear)
+    );
+}
+
+#[test]
+fn transpose_keeps_large_tensor_degree_without_expansion() {
+    let program = vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: TensorInputKind::Y,
+            input_start: 0,
+            count: 1_000_000,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::TensorTranspose {
+            dst_start: 1_000_000,
+            src_start: 0,
+            rows: 2,
+            columns: 250_000,
+            element_width: 2,
+            lanes: 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: 1_000_000,
+            count: 1_000_000,
+            stride: 1,
+        },
+    ];
+    assert_eq!(
+        program_degree(&program, &BTreeSet::from([999_999]), 999_999),
+        Some(Degree::Affine)
+    );
+    assert_eq!(
+        program_degree(&program, &BTreeSet::new(), 999_999),
+        Some(Degree::Independent)
+    );
+}
+
+#[test]
+fn tensor_patch_affinity_requires_independent_selectors() {
+    let mut program = vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: TensorInputKind::Y,
+            input_start: 0,
+            count: 6,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::TensorUpdate {
+            dst_start: 6,
+            base_start: 0,
+            value_start: 3,
+            dimensions: vec![3].into_boxed_slice(),
+            subscripts: vec![crate::TensorUpdateSubscript::Index(
+                crate::TensorIndex::Constant(2),
+            )]
+            .into_boxed_slice(),
+            lanes: 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: 6,
+            count: 3,
+            stride: 1,
+        },
+    ];
+    assert_eq!(
+        program_degree(&program, &BTreeSet::from([3]), 2),
+        Some(Degree::Affine)
+    );
+    for subscript in [
+        crate::TensorUpdateSubscript::Index(crate::TensorIndex::Runtime(5)),
+        crate::TensorUpdateSubscript::Slice {
+            start: 5,
+            dimensions: vec![1].into_boxed_slice(),
+        },
+    ] {
+        let LinearOp::TensorUpdate { subscripts, .. } = &mut program[1] else {
+            unreachable!()
+        };
+        subscripts[0] = subscript;
+        // Give the known selector its own range; the aggregate load's bound is conservative.
+        program.insert(1, LinearOp::LoadY { dst: 5, index: 5 });
+        assert_eq!(
+            program_degree(&program, &BTreeSet::from([3]), 2),
+            Some(Degree::Affine)
+        );
+        assert_eq!(
+            program_degree(&program, &BTreeSet::from([3, 5]), 2),
+            Some(Degree::Nonlinear)
+        );
+        program.remove(1);
+    }
+    let LinearOp::TensorUpdate { subscripts, .. } = &mut program[1] else {
+        unreachable!()
+    };
+    subscripts[0] = crate::TensorUpdateSubscript::Whole;
+    assert_eq!(
+        program_degree(&program, &BTreeSet::from([4]), 2),
+        Some(Degree::Affine)
+    );
+}
+
 fn multiplied_values() -> Vec<LinearOp> {
     vec![
         LinearOp::LoadY { dst: 0, index: 0 },
