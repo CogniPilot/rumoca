@@ -36,6 +36,53 @@ fn quadratic_table() -> solve::SolvePureCallTable {
     .unwrap()
 }
 
+#[test]
+fn selected_residual_keeps_the_attached_native_pure_call_owner() {
+    let table = quadratic_table();
+    let backend = super::backend(&table);
+    let block = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::PureCall {
+                dst_start: 1,
+                input_starts: vec![0].into(),
+                site: table.owners()[0].call_site(),
+            },
+            solve::LinearOp::StoreOutput { src: 1 },
+        ]],
+        span()
+            .require_provenance("selected native residual")
+            .unwrap(),
+    )
+    .unwrap();
+    let native = backend.compile_selectable_expression(&block).unwrap();
+    let interpreted = PreparedScalarProgramBlock::new(block).unwrap();
+    for x in [3.0, -4.0] {
+        let expected = interpreted
+            .eval_row_output_unchecked_with_context(
+                0,
+                0,
+                &[x],
+                &[],
+                0.0,
+                RowEvalContext {
+                    pure_calls: Some(&table),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            native
+                .call_program_output((0, 0), &[x], &[], 0.0, &[])
+                .unwrap(),
+            Some(expected)
+        );
+        let mut full = [0.0];
+        native.call(&[x], &[], 0.0, &[], &mut full).unwrap();
+        assert_eq!(full, [expected]);
+    }
+}
+
 struct CountedExecution<'a> {
     inner: &'a dyn PureCallExecution,
     calls: Cell<usize>,

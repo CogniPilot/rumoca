@@ -16,6 +16,19 @@ struct CraneliftEventTransaction {
 }
 
 impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
+    fn call_program_output(
+        &self,
+        coordinate: (usize, usize),
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[rumoca_core::ExternalTableData],
+    ) -> Result<Option<f64>, String> {
+        self.0
+            .call_program_output(coordinate, y, p, t, external_tables)
+            .map_err(|error| error.to_string())
+    }
+
     fn call(
         &self,
         y: &[f64],
@@ -141,6 +154,18 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         compiled
             .map(|compiled| Rc::new(CraneliftExpression(compiled)) as Rc<_>)
             .map_err(|error| error.to_string())
+    }
+
+    fn compile_selectable_expression(
+        &self,
+        block: &rumoca_ir_solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
+        rumoca_exec_cranelift::compile_selectable_expression_scalar_program_block(
+            block,
+            self.pure_calls.as_ref(),
+        )
+        .map(|compiled| Rc::new(CraneliftExpression(compiled)) as Rc<_>)
+        .map_err(|error| error.to_string())
     }
 
     fn compile_jacobian_expression(

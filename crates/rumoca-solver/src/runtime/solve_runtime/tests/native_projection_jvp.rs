@@ -40,7 +40,10 @@ impl CompiledSolveJacobianExpression for SelectedJacobian {
     }
 }
 
-fn selected_projection(runtime: &SolveRuntime, full_seed: bool) -> RefreshProjectionModel<'_> {
+pub(super) fn selected_projection(
+    runtime: &SolveRuntime,
+    full_seed: bool,
+) -> RefreshProjectionModel<'_> {
     RefreshProjectionModel {
         runtime,
         plan: &runtime.algebraic_refresh.simultaneous_plan,

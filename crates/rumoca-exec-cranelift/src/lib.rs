@@ -315,6 +315,20 @@ impl CompiledAssignmentSchedule {
 }
 
 impl CompiledExpressionRows {
+    /// Execute a complete source program and select its local output offset.
+    /// Batched products without an independent program entry return `None`.
+    pub fn call_program_output(
+        &self,
+        coordinate: (usize, usize),
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[ExternalTableData],
+    ) -> Result<Option<f64>, CompileError> {
+        self.jit
+            .call_program_output(coordinate, y, p, t, external_tables)
+    }
+
     pub fn call(&self, y: &[f64], p: &[f64], t: f64, out: &mut [f64]) -> Result<(), CompileError> {
         self.call_with_external_tables(y, p, t, &[], out)
     }
@@ -356,6 +370,23 @@ pub fn compile_expression_scalar_program_block(
     rows: &ScalarProgramBlock,
 ) -> Result<CompiledExpressionRows, CompileError> {
     let jit = emit::compile_residual_rows(rows.programs())?;
+    Ok(CompiledExpressionRows {
+        jit,
+        output_placement: OutputPlacement::for_block(rows),
+    })
+}
+
+/// Compile independent residual program entries for algebraic projection.
+/// Whole-block calls use the same entries, so program bodies are emitted once.
+/// A block with shared conditional owners retains its aggregate batch instead.
+pub fn compile_selectable_expression_scalar_program_block(
+    rows: &ScalarProgramBlock,
+    pure_calls: Option<&CompiledPureCallTable>,
+) -> Result<CompiledExpressionRows, CompileError> {
+    let jit = emit::compile_selectable_residual_rows(
+        rows.programs(),
+        pure_calls.map(|table| table.jit.clone()),
+    )?;
     Ok(CompiledExpressionRows {
         jit,
         output_placement: OutputPlacement::for_block(rows),
@@ -427,6 +458,7 @@ pub fn compile_exact_assignment_schedule_with_pure_calls(
 #[cfg(test)]
 mod tests {
     mod selected_jvp;
+    mod selected_residual;
 
     use super::*;
     use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};

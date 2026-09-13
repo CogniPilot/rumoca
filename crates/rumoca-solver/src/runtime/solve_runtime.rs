@@ -86,6 +86,20 @@ use support::{
 /// block. Native execution adapters implement this contract; the runtime
 /// retains the prepared evaluator as the correctness fallback.
 pub trait CompiledSolveExpression {
+    /// Evaluate one source program output at `(program index, output offset)`.
+    /// Other programs must not execute. `None` declines this optional entry
+    /// point; an admitted execution error must propagate to the caller.
+    fn call_program_output(
+        &self,
+        _coordinate: (usize, usize),
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        _external_tables: &[rumoca_core::ExternalTableData],
+    ) -> Result<Option<f64>, String> {
+        Ok(None)
+    }
+
     fn call(
         &self,
         y: &[f64],
@@ -154,6 +168,16 @@ pub trait SolveExecutionBackend {
         &self,
         block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveExpression>, String>;
+
+    /// Prepare an expression used through both whole-block and selected-program
+    /// calls. Backends may retain batching when separate entry points would
+    /// split a shared owner; the selected call then explicitly declines.
+    fn compile_selectable_expression(
+        &self,
+        block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        self.compile_expression(block)
+    }
 
     fn compile_jacobian_expression(
         &self,
@@ -440,7 +464,7 @@ impl SolveRuntime {
         let compiled_implicit_rhs = execution_backend.as_ref().and_then(|backend| {
             optional_compiled(
                 "implicit_rhs",
-                backend.compile_expression(&implicit_scalar_programs),
+                backend.compile_selectable_expression(&implicit_scalar_programs),
             )
         });
         let implicit_projection_scalar_jacobian =

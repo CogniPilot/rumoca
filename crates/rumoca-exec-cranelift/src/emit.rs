@@ -30,6 +30,7 @@ mod host_runtime;
 mod input_validation;
 mod interpreter;
 mod owned_jit_module;
+mod selected_residual;
 mod status;
 pub(crate) mod typed_program;
 
@@ -191,8 +192,10 @@ pub(crate) struct CompiledResidualRows {
     _pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     rows: Vec<CompiledResidualRow>,
     jits: Vec<CompiledResidualJit>,
+    selectable: bool,
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
+    output_scratch: RefCell<Vec<f64>>,
     jit_call_count: Cell<usize>,
     _module: OwnedJitModule,
 }
@@ -549,26 +552,35 @@ fn fold_signature(
 pub(crate) fn compile_residual_rows(
     rows: &[Vec<LinearOp>],
 ) -> Result<CompiledResidualRows, CompileError> {
-    compile_residual_rows_attached(rows, None)
+    compile_residual_rows_attached(rows, None, false)
 }
 
 pub(crate) fn compile_residual_rows_with_pure_calls(
     rows: &[Vec<LinearOp>],
     pure_calls: Rc<typed_program::CompiledPureCallTable>,
 ) -> Result<CompiledResidualRows, CompileError> {
-    compile_residual_rows_attached(rows, Some(pure_calls))
+    compile_residual_rows_attached(rows, Some(pure_calls), false)
+}
+
+pub(crate) fn compile_selectable_residual_rows(
+    rows: &[Vec<LinearOp>],
+    pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
+) -> Result<CompiledResidualRows, CompileError> {
+    compile_residual_rows_attached(rows, pure_calls, true)
 }
 
 fn compile_residual_rows_attached(
     rows: &[Vec<LinearOp>],
     pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
+    selectable: bool,
 ) -> Result<CompiledResidualRows, CompileError> {
     let mut emitter = CraneliftEmitter::new(pure_calls.as_deref())?;
     let plans = plan_rows(rows)?;
     for row in rows {
         validate_row_supported_by_jit(row, RowKind::Residual)?;
     }
-    let pending = compile_residual_functions(&mut emitter, rows, &plans)?;
+    let selectable = selectable && !selected_residual::has_shared_conditional_owner(rows);
+    let pending = compile_residual_functions(&mut emitter, rows, &plans, selectable)?;
     finalize_jit_module(&mut emitter.module)?;
     let input_requirements = input_requirements_for_plans(&plans);
     let compiled_rows = build_compiled_residual_rows(rows, plans)?;
@@ -577,8 +589,10 @@ fn compile_residual_rows_attached(
         _pure_calls: pure_calls,
         rows: compiled_rows,
         jits,
+        selectable,
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
+        output_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
         _module: emitter.module,
     })
@@ -590,16 +604,12 @@ fn compile_residual_functions(
     emitter: &mut CraneliftEmitter,
     rows: &[Vec<LinearOp>],
     plans: &[RowPlan],
+    selectable: bool,
 ) -> Result<Vec<PendingResidual>, CompileError> {
     let mut pending = Vec::new();
     let mut row_start = 0usize;
     let mut output_start = 0usize;
-    if rows.iter().flatten().any(|operation| {
-        matches!(
-            operation,
-            LinearOp::FunctionConditional { program, .. } if program.owner.is_some()
-        )
-    }) {
+    if selected_residual::has_shared_conditional_owner(rows) {
         let output_count = plans.iter().map(RowPlan::output_count).sum();
         let func_id = emitter.compile_residual_batch(rows)?;
         pending.push((
@@ -612,7 +622,7 @@ fn compile_residual_functions(
         row_start = rows.len();
     }
     while row_start < rows.len() {
-        if residual_program_cost(&rows[row_start]) > RESIDUAL_CHUNK_THRESHOLD {
+        if selectable || residual_program_cost(&rows[row_start]) > RESIDUAL_CHUNK_THRESHOLD {
             let output_count = plans[row_start].output_count();
             pending.push((
                 emitter.compile_residual_program(&rows[row_start], row_start)?,

@@ -70,6 +70,50 @@ The runtime repair and its focused/canary checks are complete. The remaining
 passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
 
+## Selected algebraic residual native execution
+
+RollingWheel's selected algebraic residual callback always interpreted its
+source program, although selected directional callbacks already used native
+code. Program 223 retains 766 operations and three aggregate outputs; only one
+of those outputs participates in the large simultaneous block, so batching
+that block alone cannot remove its interpreter cost. The first responsible
+layer is runtime/native dispatch, not Modelica lowering.
+
+The runtime now requests a selectable native expression for the unchanged
+implicit residual block. Cranelift emits each source program once and uses its
+entry for both selected and full evaluations. Selection uses the checked
+program/output coordinate, preserves complete tensor programs, and does not
+execute unrelated programs. Shared conditional owners retain their aggregate
+batch and explicitly decline selection. An admitted execution error propagates.
+This is target-local emission under SPEC_0032 §4 and SPEC_0007; it changes no
+equations, assignment ownership, solve order, state selection, or tolerances.
+
+The isolated diagnostic pair goes from **5.144 to 4.283 seconds** in declared
+Sim, with user CPU decreasing from 5.09 to 4.24 seconds and zero major faults
+during either simulation. Both complete traces have SHA-256
+`340e0a5bab67e9a05b160f3b50a623126edd2660863fa9cd0f25461b16bc334b`.
+The roughly 17% reduction is one profile pair, not a stable benchmark. The OMC
+gap remains critical; repeated tensor assignment and directional evaluations
+remain visible in `perf`. Source hashes, worker hashes, timings, and profiles
+are recorded in `rolling-wheel/native-residual-diagnosis.json`.
+
+Three reduced dispatch tests fail before the repair and pass afterwards.
+All **76 Cranelift, 456 solver, and 128 simulation library tests** pass, including
+aggregate/sparse outputs, table context and errors, pure-call owners, shared
+conditional batches, explicit decline, and error propagation. All-target,
+all-feature Clippy passes for the three crates.
+
+`target/msl/multibody-native-residual-canary` passes at parent `ab36e867`,
+working-tree digest
+`bb06dbc1af4f6e03fcbcea70241f5220c0734b7379bcda5d7d2c95588bcd9926`.
+All twenty phase/simulation outcomes and bands match the native-manifold
+canary: nine compared models high, all 175 initial channels high, and zero
+skipped/missing/excluded/nonidentifiable/deviating comparisons. Eleven workers
+were requested and admitted. Logs and the exact delta are
+`rolling-wheel/native-residual-{libraries-2,clippy-1,canary-1}.log` and
+`rolling-wheel/native-residual-canary-delta.json`. Combined `verify quick` and
+`verify full` have not run for this change.
+
 ## Critical RollingWheel performance investigation
 
 The 48x cached-OMC runtime gap is an open critical performance bug. An isolated

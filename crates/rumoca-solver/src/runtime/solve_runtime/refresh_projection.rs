@@ -391,6 +391,21 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         else {
             return Ok(None);
         };
+        if let Some(compiled) = &self.runtime.compiled_implicit_rhs
+            && let Some(value) = compiled
+                .call_program_output(
+                    (program_idx, output_offset),
+                    y,
+                    p,
+                    t,
+                    self.runtime.model.external_tables.as_slice(),
+                )
+                .map_err(RuntimeSolveError::solve_ir)?
+        {
+            self.runtime
+                .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
+            return Ok(Some(value));
+        }
         let value = self
             .runtime
             .implicit_scalar_rhs
