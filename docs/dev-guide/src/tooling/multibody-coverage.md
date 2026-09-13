@@ -6,6 +6,31 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/electrical-affine-full` completes the full 566-model comparison
+in 127.82 seconds at commit `82630a4d2361ef673d921c49ada8519ce51ed08b`,
+working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The quality gate fails: **139 models compare and all 139 are high**
+(24.56% of 566), but twelve previously high models now fail execution.
+The original center-tap rectifier gains high status. Of 150 simulation
+completions, eleven have existing reviewed exclusions; missing and
+nonidentifiable traces are zero. Of 14,471 trajectory channels, 14,461 are
+high and ten minor; none deviate. All 14,471 initial channels are high.
+Seven previously observed exclusions no longer complete;
+the exclusion policy itself is unchanged. These failures are not closures.
+
+MultiBody remains **18/42 high**, with 18 compared and zero skipped, missing,
+or nonidentifiable traces. DAE completion remains 35/42. RollingWheel still
+times out with eleven pinned workers. Its performance investigation remains
+pending while the electrical execution regressions take priority.
+
+The numerical follow-up below restores eleven of the twelve lost high
+models in a focused comparison, but a new complete measurement is still
+required. The remaining single-phase inverter event failure is unresolved.
+Neither this full run nor the follow-up establishes release readiness.
+
+## Previous complete measurement: fixed-pre iteration
+
 `target/msl/electrical-fixed-pre-full` completes the full 566-model MSL/OMC
 comparison in 149.53 seconds at HEAD
 `49477020cc7706352fa314fe8384c08d9695b1d8`, working-tree digest
@@ -134,6 +159,52 @@ HEAD. Solver tests pass 435/435; focused all-feature solver and core Clippy
 pass. The full 566-model sweep is next, with 11 simulation workers explicitly
 accepted by the user. No full-cohort closure or release readiness is claimed
 from these focused results.
+
+### Affine residual scaling and refinement
+
+The full sweep above exposes two defects in the direct affine path. In
+`ChopperStepDown_R`, its first solution has opposing currents near three
+million amperes during a switching iteration. The candidate's flow residual
+is 1.979e-10, with a normalized residual of 1.184e-16 under the existing
+coordinate-scale policy. The new path had instead certified it using the
+temporary zero origin's scales and rejected it against 1e-10. A three-equation
+resistor/current-source reduction reproduces the rejection. Certification
+now derives scales from the actual candidate, as the existing Newton path
+does; no model tolerance or comparator threshold changes.
+
+In `RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_R`, the corrected
+scaling still exposes a first-solve residual of 1.56146e-10 in a small
+current, just above the unchanged 1e-10 tolerance. A four-variable circuit
+with large opposing currents and small leakage reproduces that refusal.
+The affine solve now refines against the original residual using the same
+certified matrix until the normal certificate passes or the existing
+projection iteration budget is exhausted. Failure preserves the incoming
+coordinate. Both numerical regressions turn from red to green; all 437
+solver tests and focused all-feature Clippy pass.
+
+`target/msl/electrical-affine-refinement-focused` compares 14 of 15 selected
+models, all high, with 3,340 high and three minor trajectory channels, all
+3,343 initial channels high, and zero skipped, missing, excluded,
+nonidentifiable, or deviating traces. Its HEAD
+is `82630a4d`, working-tree digest
+`b7d918c8e691a3b53dd091e6ac9b7fe5c99ec8455a9f8a63baecbfe09e1670b2`.
+All nine original electrical counterexamples are high in this focused
+check. Eleven of the twelve execution losses are restored; the remaining
+`DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_RL` fails condition iteration
+at time 0.0009362657394780009. It remains an execution regression requiring
+repair, and the focused gains do not replace the latest full-cohort counts.
+Artifacts and the two red regressions are under the `affine-regressions`
+subdirectory of the center-tap investigation.
+
+The follow-up canary `target/msl/electrical-affine-refinement-canary` keeps
+all twenty members' phase, simulation, initialization, and band outcomes
+unchanged: nine compared and high, 175 initial channels high, and zero
+skipped, missing, excluded, nonidentifiable, or deviating traces. At the
+same HEAD its working-tree digest is
+`8db4964fc62f6158d73caf1c5118c43a19c4478185979bcc4b6936f96c2adacf`.
+Core tests pass 554 with the same one implicit-contact-circle failure;
+focused all-feature Clippy and formatting pass after extracting the
+finite correction update to keep nesting within the existing limit.
 
 ## Previous complete measurement: RollingWheel completion
 

@@ -29,29 +29,18 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         &block.y_indices,
         structure,
     )?;
-    let residual = implicit_selected_residuals(
+    let system = AffineBlockSystem {
         model,
-        &candidate,
-        p,
-        t,
-        &block.rows,
-        "affine block constant term",
-    )?;
-    let pattern = structure.map(solve::JacobianStructure::pattern);
-    let (row_scales, variable_scales) =
-        algebraic_block_scales(model, &candidate, block, &jacobian, pattern);
-    let solution = model.solve_algebraic_newton_delta(
+        parameters: p,
+        time: t,
+        block,
         block_index,
-        ScaledNewtonSystem {
-            jacobian: &jacobian,
-            residual: &residual,
-            row_scales: &row_scales,
-            variable_scales: &variable_scales,
-            structure: pattern,
-            tolerance: tol,
-        },
-    );
-    let Some(solution) = solution.filter(|v| v.iter().all(|x| x.is_finite())) else {
+        jacobian,
+        structure,
+        tolerance: tol,
+    };
+    let residual = system.residual(&candidate)?;
+    let Some(solution) = system.solve(&candidate, &residual) else {
         return Ok(ProjectionBlockUpdate {
             changed: false,
             settled: false,
@@ -60,15 +49,7 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
     for (&index, &value) in block.y_indices.iter().zip(solution.iter()) {
         candidate[index] = value;
     }
-    let residual = implicit_selected_residuals(
-        model,
-        &candidate,
-        p,
-        t,
-        &block.rows,
-        "affine block solution",
-    )?;
-    if !scaled_residual_converged(&residual, &row_scales, tol) {
+    if !system.refine(&mut candidate)? {
         return Ok(ProjectionBlockUpdate {
             changed: false,
             settled: false,
@@ -83,4 +64,90 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         changed,
         settled: true,
     })
+}
+
+struct AffineBlockSystem<'a, M> {
+    model: &'a M,
+    parameters: &'a [f64],
+    time: f64,
+    block: &'a solve::AlgebraicProjectionBlock,
+    block_index: usize,
+    jacobian: DMatrix<f64>,
+    structure: Option<&'a solve::JacobianStructure>,
+    tolerance: f64,
+}
+
+impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
+    fn residual(&self, y: &[f64]) -> Result<Vec<f64>, RuntimeSolveError> {
+        implicit_selected_residuals(
+            self.model,
+            y,
+            self.parameters,
+            self.time,
+            &self.block.rows,
+            "affine block residual",
+        )
+    }
+
+    fn scales(&self, y: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        algebraic_block_scales(
+            self.model,
+            y,
+            self.block,
+            &self.jacobian,
+            self.structure.map(solve::JacobianStructure::pattern),
+        )
+    }
+
+    fn solve(&self, y: &[f64], residual: &[f64]) -> Option<DVector<f64>> {
+        let (row_scales, variable_scales) = self.scales(y);
+        self.model
+            .solve_algebraic_newton_delta(
+                self.block_index,
+                ScaledNewtonSystem {
+                    jacobian: &self.jacobian,
+                    residual,
+                    row_scales: &row_scales,
+                    variable_scales: &variable_scales,
+                    structure: self.structure.map(solve::JacobianStructure::pattern),
+                    tolerance: self.tolerance,
+                },
+            )
+            .filter(|v| v.len() == self.block.y_indices.len() && v.iter().all(|x| x.is_finite()))
+    }
+
+    fn refine(&self, y: &mut [f64]) -> Result<bool, RuntimeSolveError> {
+        for _ in 0..ALGEBRAIC_PROJECTION_MAX_ITERS {
+            let residual = self.residual(y)?;
+            // Zero was only the arithmetic origin used to extract b. The
+            // residual certificate uses this candidate's coordinate scales.
+            let row_scales = self.scales(y).0;
+            if scaled_residual_converged(&residual, &row_scales, self.tolerance) {
+                return Ok(true);
+            }
+            // Factorization roundoff can leave small coordinates inaccurate
+            // in a block containing much larger currents or forces. Refine
+            // against the original residual with the same certified matrix.
+            let Some(delta) = self.solve(y, &residual) else {
+                return Ok(false);
+            };
+            if !self.apply_correction(y, delta.as_slice()) {
+                return Ok(false);
+            }
+        }
+        Ok(false)
+    }
+
+    fn apply_correction(&self, y: &mut [f64], delta: &[f64]) -> bool {
+        let mut changed = false;
+        for (&index, &correction) in self.block.y_indices.iter().zip(delta) {
+            let value = y[index] + correction;
+            if !value.is_finite() {
+                return false;
+            }
+            changed |= value != y[index];
+            y[index] = value;
+        }
+        changed
+    }
 }
