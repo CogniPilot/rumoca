@@ -6,6 +6,31 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-grouped-jvp-full` passes at commit
+`2c637488b3c88703d4f729eb30f7d6453b58543e` (compiler change `b51acb48`),
+working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The full 566-model gate takes 147.38 seconds with eleven Rumoca workers.
+All **154 compared models remain strict-high (27.21%)**; seventeen unchanged
+reviewed exclusions remain skipped, with zero missing/nonidentifiable traces
+and zero deviating channels. All 18,693 initial channels remain high.
+**MultiBody remains 20/42 high**, and every previous high model is retained.
+
+RollingWheel takes 2.209 seconds in concurrent Sim; RollingWheelSetDriving
+takes 2.803 seconds. The isolated RollingWheel profile below remains the
+performance evidence, and its critical OMC gap remains open. No model changes
+agreement band. Three absent models change failure classification:
+Inverse_sh_TX reaches DAE construction refusal, BevelGear1D reports a runtime
+contract failure instead of timeout, and GenerationOfFMUs returns its previous
+structural refusal. Exact deltas are in
+`rolling-wheel/grouped-jvp-full-delta.json`.
+
+Combined `verify quick` and `verify full` remain pending. The immediate priority
+is RollingWheel execution cost; no coverage expansion, PR, release, or baseline
+promotion is claimed.
+
+## Previous complete measurement: affine seed removal
+
 `target/msl/multibody-affine-seed-full` passes the local fallback gate at commit
 `9fb1b2476977ea27225287751e2d8adbb4afafea`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
