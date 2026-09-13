@@ -24,9 +24,8 @@ or nonidentifiable traces. DAE completion remains 35/42. RollingWheel still
 times out with eleven pinned workers. Its performance investigation remains
 pending while the electrical execution regressions take priority.
 
-The numerical follow-up below restores eleven of the twelve lost high
-models in a focused comparison, but a new complete measurement is still
-required. The remaining single-phase inverter event failure is unresolved.
+The numerical follow-ups below restore all twelve lost high models in
+focused comparisons, but a new complete measurement is still required.
 Neither this full run nor the follow-up establishes release readiness.
 
 ## Previous complete measurement: fixed-pre iteration
@@ -205,6 +204,67 @@ same HEAD its working-tree digest is
 Core tests pass 554 with the same one implicit-contact-circle failure;
 focused all-feature Clippy and formatting pass after extracting the
 finite correction update to keep nesting within the existing limit.
+
+### Inverter commutation beside offset port voltages
+
+The remaining `DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_RL` failure is
+a lower diode-to-transistor conduction transfer, rather than a PWM firing
+change. OMC's regular equations 246/249/252/255 retain the same four switch
+relations. At time 0.0009362657637039185, OMC transfers conduction with
+lower firing true and upper firing false. Rumoca's source, DAE, and Solve
+preserve these equations; the failing runtime state has inductor current
+0.0020000011485478463 at time 0.0009362657394780009.
+
+The lower transistor's switching coordinate is Solve Y43, root 2 writes
+condition memory P251, and its source `off` is P168. Fixed-pre iteration
+alternates the root between zero and -7.1054e-10. A 70-digit solution of
+the source resistor network, using the captured binary64 inputs, instead
+requires a negative junction voltage in both candidate configurations:
+-1.14855e-14 on the transistor-off branch and -5.74274e-15 with both lower
+devices on. Absolute port potentials near -50 V cause factorization to
+lose the small independent junction coordinate. Its residual is already
+within tolerance, so the prior refinement path accepts zero before trying
+a correction. This localizes the divergence to runtime affine projection;
+the source relations, history ownership, and upstream IR remain correct.
+
+A four-variable numerical regression reproduces the failure with two offset
+ports, junction voltage, and leakage current. It formerly returned zero
+instead of the analytical negative voltage near -1e-17. The general affine
+path now attempts one residual correction before accepting a nonzero
+first residual, even when that residual already fits tolerance. Exact zero
+requires no correction, finite stagnation retains the existing certificate,
+and nonfinite corrections fail without publishing the private candidate.
+Subsequent certification and iteration budgets remain unchanged. This
+implements the existing MLS Appendix B and SPEC_0040 SOLVE-C22 obligation
+to solve the current equations before accepting their relation values.
+
+All 438 solver tests pass. An additional timed source control verifies
+inductive current and complementary switching with both BDF and RK;
+OMC matches its analytical current within 8.676e-11 across 84 rows, with
+zero switching errors. The complete core suite passes 556 tests with only
+the known implicit-contact-circle structural failure, 6/7 matched rows.
+Temporary runtime probes are removed. These checks do not establish
+`verify quick` or `verify full` success.
+
+The originating focused comparison `target/msl/electrical-offset-ports-origin`
+at HEAD `c4789fce2e90aaa0b33f1406007a6a90642ada43`, working-tree digest
+`2833c01141a5261c5c48c7aa9f5c3301be1e661ab2e1f75e9ea998e54857c991`,
+compares one model and classifies it high: 139 trajectory channels are
+high and four minor, with all 143 initial channels high. Deviating, skipped,
+missing, excluded, and nonidentifiable counts are zero. Runtime simulation
+takes 0.868 seconds. Proof, red/green logs, source/IR hashes, and the OMC
+control are under `buffered-relation-counterexamples/inverter-rl` in the
+private campaign directory.
+
+The fixed `target/msl/electrical-offset-ports-canary` retains all twenty
+phase, simulation, initialization, and model-band outcomes from the preceding
+refinement canary. Nine models compare high, with all 175 initial channels
+high and zero skipped, missing, excluded, nonidentifiable, or deviating
+traces. At the same HEAD its working-tree digest is
+`dfec1300d8534c5246c51b960f04ee0b4a3891470b1a1fabdee91d6146cd3570`;
+the delta is `offset-ports-canary-delta.json`. Solver/core all-target,
+all-feature Clippy and formatting pass. The complete 566-model sweep is
+next, using the user-approved eleven simulation workers.
 
 ## Previous complete measurement: RollingWheel completion
 

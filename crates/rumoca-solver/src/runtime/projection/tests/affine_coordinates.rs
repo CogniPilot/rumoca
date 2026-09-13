@@ -1,5 +1,86 @@
 use super::super::*;
 
+struct OffsetPortVoltages {
+    plan: solve::AlgebraicProjectionPlan,
+}
+
+impl ImplicitProjectionModel for OffsetPortVoltages {
+    fn eval_residual(
+        &self,
+        y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        // Small junction voltage s, two equal absolute port potentials, diode current.
+        out[0] = y[0] - (y[1] + 50.0);
+        out[1] = 1e-5 * y[3] + (y[2] + 50.0);
+        out[2] = y[1] - y[2];
+        out[3] = (50.0 - y[1]) * 2e-5 + y[3] - 1e-5 * y[0] - (0.002 + 1e-12);
+        Ok(())
+    }
+
+    fn eval_jacobian_v(
+        &self,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        out[0] = v[0] - v[1];
+        out[1] = 1e-5 * v[3] + v[2];
+        out[2] = v[1] - v[2];
+        out[3] = -2e-5 * v[1] + v[3] - 1e-5 * v[0];
+        Ok(())
+    }
+
+    fn implicit_target(&self, row: usize) -> Option<solve::ScalarSlot> {
+        (row < 4).then(|| solve::scalar_slot_y(row))
+    }
+    fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
+        &self.plan
+    }
+    fn target_name_for_row(&self, _row: usize) -> Option<&str> {
+        None
+    }
+    fn algebraic_projection_block_is_affine(&self, _block: usize) -> bool {
+        true
+    }
+}
+
+#[test]
+fn affine_projection_preserves_a_small_junction_voltage_beside_offset_ports() {
+    let model = OffsetPortVoltages {
+        plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0, 1, 2, 3],
+                y_indices: vec![0, 1, 2, 3],
+                tearing: None,
+            }],
+        },
+    };
+    let mut y = [0.0; 4];
+    project_algebraics_with_plan_certified(
+        &model,
+        &model.plan,
+        &mut y,
+        AlgebraicProjectionArgs {
+            parameters: &[],
+            time: 0.0,
+            state_count: 0,
+            tolerance: 1e-10,
+        },
+        ALGEBRAIC_PROJECTION_MAX_ITERS,
+    )
+    .unwrap();
+    let expected = (0.002 - (0.002 + 1e-12)) / (100000.0 + 3e-5);
+    assert!(
+        (y[0] / expected - 1.0).abs() < 1e-3,
+        "junction voltage must remain negative: {y:?}, expected {expected}"
+    );
+}
+
 struct AffineCoordinates {
     drive: f64,
     plan: solve::AlgebraicProjectionPlan,

@@ -117,12 +117,17 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
     }
 
     fn refine(&self, y: &mut [f64]) -> Result<bool, RuntimeSolveError> {
-        for _ in 0..ALGEBRAIC_PROJECTION_MAX_ITERS {
+        for iteration in 0..ALGEBRAIC_PROJECTION_MAX_ITERS {
             let residual = self.residual(y)?;
             // Zero was only the arithmetic origin used to extract b. The
             // residual certificate uses this candidate's coordinate scales.
             let row_scales = self.scales(y).0;
-            if scaled_residual_converged(&residual, &row_scales, self.tolerance) {
+            let converged = scaled_residual_converged(&residual, &row_scales, self.tolerance);
+            // One correction recovers small coordinates lost while solving
+            // beside large offsets, even when the residual already fits tol.
+            // Exact zero needs no correction; subsequent passes certify the
+            // corrected coordinate under the unchanged convergence policy.
+            if converged && (iteration > 0 || residual.iter().all(|&value| value == 0.0)) {
                 return Ok(true);
             }
             // Factorization roundoff can leave small coordinates inaccurate
@@ -131,23 +136,26 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             let Some(delta) = self.solve(y, &residual) else {
                 return Ok(false);
             };
-            if !self.apply_correction(y, delta.as_slice()) {
+            let Some(changed) = self.apply_correction(y, delta.as_slice()) else {
                 return Ok(false);
+            };
+            if !changed {
+                return Ok(converged);
             }
         }
         Ok(false)
     }
 
-    fn apply_correction(&self, y: &mut [f64], delta: &[f64]) -> bool {
+    fn apply_correction(&self, y: &mut [f64], delta: &[f64]) -> Option<bool> {
         let mut changed = false;
         for (&index, &correction) in self.block.y_indices.iter().zip(delta) {
             let value = y[index] + correction;
             if !value.is_finite() {
-                return false;
+                return None;
             }
             changed |= value != y[index];
             y[index] = value;
         }
-        changed
+        Some(changed)
     }
 }
