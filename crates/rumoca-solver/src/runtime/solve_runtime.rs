@@ -106,6 +106,22 @@ pub trait CompiledSolveJacobianExpression {
         external_tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), String>;
+
+    /// Evaluate one output of one already compiled program. `coordinate` is
+    /// `(program index, output offset)`, as issued by the prepared scalar view,
+    /// not a visible-output index. Other programs must not execute. `None`
+    /// declines this optional entry point; an execution error is not a decline.
+    fn call_program_output(
+        &self,
+        _coordinate: (usize, usize),
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        _seed: &[f64],
+        _external_tables: &[rumoca_core::ExternalTableData],
+    ) -> Result<Option<f64>, String> {
+        Ok(None)
+    }
 }
 
 /// Backend-neutral callable for a causally ordered set of exact assignments.

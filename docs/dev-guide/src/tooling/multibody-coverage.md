@@ -77,6 +77,75 @@ records the profile, request, result, and hashes. No gate result is replaced
 by this diagnostic run, and host contention remains an unproven explanation
 for the earlier timeout.
 
+### Selected native Jacobian execution
+
+The bounded availability probe confirms that RollingWheel's implicit residual,
+Y-only JVP, and full-seed JVP all compile successfully. The first avoidable
+work is in `RefreshProjectionModel::eval_implicit_jacobian_v_row`: it always
+evaluates the selected prepared program in the interpreter. The native
+adapter already owns one callable per Jacobian program, but its public
+execution interface previously exposed only a whole-block sweep.
+
+Two focused regressions reproduce the missing dispatch: four selected
+requests make zero native calls, and a selected native failure is bypassed
+while the interpreter returns a value. They pass after adding a selected
+program-output entry point through the runtime, simulation adapter, and
+Cranelift product. The coordinate comes from the existing prepared JVP view,
+including its exact program index and aggregate output offset. This follows
+SPEC_0007 SOLVE-C13/C14/C15, SPEC_0032 scalar-view ownership, and SPEC_0029's
+runtime/backend boundary. It changes execution of the existing AD artifact;
+it does not change Modelica equations, tensor ownership, or differentiation.
+
+The native entry point checks the program, output extent, and input extents,
+executes that program into reusable private aggregate storage, and returns
+only after successful execution. Unrelated programs remain unevaluated.
+External-table context, sparse whole-block output placement, static-gradient
+reuse, and both seed spaces retain their existing ownership. An unavailable
+selected entry point returns `None`; an execution failure propagates.
+
+The library run passes 440 solver, 72 native-backend, and 127 simulation
+tests. An added mapping test passes with reordered JVP programs and a
+multi-output JVP program. The thirteen native policy tests also pass after
+their counting wrapper delegates the new entry point. Native tests cover
+changing Y/P/time/seeds, sparse output placement, aggregate output offsets,
+invalid coordinates and extents, and an unrelated missing-table program
+that must not execute. All affected all-target/all-feature Clippy checks
+pass. Core validation has 556 passes and the same one contact-circle
+structural failure, 6/7. Original-model OMC/perf, canary, and full-cohort
+validation remain pending at this point. Logs and the red dispatch failures
+are recorded in `rolling-wheel/selected-jvp-receipt.json`.
+
+The originating comparison `target/msl/multibody-selected-jvp-origin` at
+HEAD `7e05287df7eb7dede5cb95b9101968588f0b443b`, working-tree digest
+`007525460aca735748b223cd2ad120e16fb7252da6e6d0ed39e68e9343ee3bae`,
+compares one model and keeps all 184 trajectory and initial channels high.
+Skipped, missing, excluded, nonidentifiable, and deviating counts are zero;
+worst channel bounded normalized L1 is 1.272e-4. The reported simulation
+runtime is 8.887 seconds including initialization.
+
+A matching standalone perf capture at 199 Hz, with the same model settings,
+four-second model horizon, and twelve-second solver budget, completes in
+8.723 simulation seconds including 0.455 seconds of initialization. The
+preceding capture reported 11.776 seconds including 0.575 seconds of
+initialization: a 25.9% reduction across these two captures. Build time
+remains about four seconds. The new capture has 3,400 samples and zero lost
+samples. In its last 45%, prepared row evaluation falls from 22.42% to
+11.79% of self samples and native Jacobian row functions appear among the
+largest entries. Residual evaluation and call-interface work remain visible.
+This is bounded diagnostic evidence, not a statistical benchmark or a new
+cohort number; the original-model OMC comparison separately establishes
+trace agreement. No temporary probes remain.
+
+The fixed `target/msl/multibody-selected-jvp-canary` passes with all twenty
+phase, simulation, initialization, and model-band outcomes unchanged from
+`electrical-offset-ports-canary`. Nine models compare high; all 175 initial
+channels are high, with zero skipped, missing, excluded, nonidentifiable,
+or deviating traces. Its working-tree digest at the same HEAD is
+`35c3a4205ecd131713a68486f37f4104d563cb5a5dd98500d450e4f73596e34a`.
+The durable delta is `rolling-wheel/selected-jvp-canary-delta.json`.
+Formatting passes. The next complete cohort will use eleven simulation
+workers and retain all preceding high models and electrical counterexamples.
+
 ## Previous complete measurement: first direct affine solve
 
 `target/msl/electrical-affine-full` completes the full 566-model comparison

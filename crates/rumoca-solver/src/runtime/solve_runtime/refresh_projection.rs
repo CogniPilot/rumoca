@@ -316,6 +316,13 @@ impl<'a> ProjectionJacobian<'a> {
     fn is_solver_y_only(self) -> bool {
         matches!(self, Self::SolverY { .. })
     }
+
+    fn compiled(self, runtime: &SolveRuntime) -> Option<&dyn CompiledSolveJacobianExpression> {
+        match self {
+            Self::SolverY { .. } => runtime.compiled_implicit_projection_jacobian_v.as_deref(),
+            Self::SolverYAndParameters(_) => runtime.compiled_implicit_full_jacobian_v.as_deref(),
+        }
+    }
 }
 
 impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
@@ -352,15 +359,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let compiled = match self.jacobian_v {
-            ProjectionJacobian::SolverY { .. } => self
-                .runtime
-                .compiled_implicit_projection_jacobian_v
-                .as_ref(),
-            ProjectionJacobian::SolverYAndParameters(_) => {
-                self.runtime.compiled_implicit_full_jacobian_v.as_ref()
-            }
-        };
+        let compiled = self.jacobian_v.compiled(self.runtime);
         if let Some(compiled) = compiled
             && compiled
                 .call(
@@ -448,6 +447,20 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 .parameter_static_gradient_cache
                 .borrow()
                 .dot_solver_y_seed(implicit_program_idx, parameter_indices, p, v)
+        {
+            return Ok(Some(value));
+        }
+        if let Some(compiled) = self.jacobian_v.compiled(self.runtime)
+            && let Some(value) = compiled
+                .call_program_output(
+                    (jvp_program_idx, output_offset),
+                    y,
+                    p,
+                    t,
+                    v,
+                    self.runtime.model.external_tables.as_slice(),
+                )
+                .map_err(RuntimeSolveError::solve_ir)?
         {
             return Ok(Some(value));
         }

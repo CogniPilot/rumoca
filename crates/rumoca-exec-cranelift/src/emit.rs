@@ -365,11 +365,52 @@ pub(crate) struct CompiledJacobianRows {
     rows: Vec<CompiledJacobianRow>,
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
+    output_scratch: RefCell<Vec<f64>>,
     jit_call_count: Cell<usize>,
     _module: OwnedJitModule,
 }
 
 impl CompiledJacobianRows {
+    pub(crate) fn call_program_output(
+        &self,
+        (program, offset): (usize, usize),
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+        external_tables: &[ExternalTableData],
+    ) -> Result<f64, CompileError> {
+        let row = self.rows.get(program).ok_or_else(|| {
+            CompileError::Input(format!(
+                "Jacobian program {program} is outside compiled rows"
+            ))
+        })?;
+        let count = row.plan.output_count();
+        if offset >= count {
+            return Err(CompileError::Input(format!(
+                "Jacobian program {program} output {offset} is outside {count} outputs"
+            )));
+        }
+        validate_input_requirements(self.input_requirements, y, p, Some(v))?;
+        with_active_external_tables(external_tables, || {
+            let mut output = self.output_scratch.borrow_mut();
+            output.resize(count, 0.0);
+            self.call_jacobian_row(
+                row,
+                &mut self.regs_scratch.borrow_mut(),
+                &JacobianCallContext {
+                    y,
+                    p,
+                    t,
+                    v,
+                    external_tables,
+                },
+                &mut output,
+            )?;
+            Ok(output[offset])
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn call(
         &self,
@@ -829,6 +870,7 @@ fn compile_jacobian_rows_attached(
         rows: compiled_rows,
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
+        output_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
         _module: emitter.module,
     })

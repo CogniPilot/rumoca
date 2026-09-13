@@ -608,6 +608,24 @@ mod native_policy_tests {
     }
 
     impl CompiledSolveJacobianExpression for CountingJacobian {
+        fn call_program_output(
+            &self,
+            coordinate: (usize, usize),
+            y: &[f64],
+            p: &[f64],
+            t: f64,
+            seed: &[f64],
+            external_tables: &[rumoca_core::ExternalTableData],
+        ) -> Result<Option<f64>, String> {
+            let result = self
+                .inner
+                .call_program_output(coordinate, y, p, t, seed, external_tables);
+            if !matches!(result, Ok(None)) {
+                self.counters.jacobian.observe(&result);
+            }
+            result
+        }
+
         fn call(
             &self,
             y: &[f64],

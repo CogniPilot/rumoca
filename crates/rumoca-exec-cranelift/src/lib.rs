@@ -169,6 +169,22 @@ pub struct CompiledJacobianV {
 }
 
 impl CompiledJacobianV {
+    /// Execute one output of one compiled program, using the prepared scalar
+    /// view's `(program index, output offset)`. Sparse visible-output indices
+    /// do not change this coordinate, and unrelated programs do not execute.
+    pub fn call_program_output(
+        &self,
+        coordinate: (usize, usize),
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+        external_tables: &[ExternalTableData],
+    ) -> Result<f64, CompileError> {
+        self.jit
+            .call_program_output(coordinate, y, p, t, v, external_tables)
+    }
+
     pub fn call(
         &self,
         y: &[f64],
@@ -410,6 +426,8 @@ pub fn compile_exact_assignment_schedule_with_pure_calls(
 
 #[cfg(test)]
 mod tests {
+    mod selected_jvp;
+
     use super::*;
     use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
     use std::num::NonZeroU64;
