@@ -6,6 +6,31 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-native-residual-full` passes the local fallback gate at
+commit `a2cd4deae1c50e9650c0ca3124452c0d72013b2b`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The complete 566-model run takes 120.83 seconds with eleven requested and
+admitted workers. OMC reuses all 170 existing reference results.
+
+All **153 compared models remain strict-high (27.03% of 566)**, with seventeen
+unchanged reviewed exclusions, zero missing/nonidentifiable traces, and all
+18,498 initial channels high. There are zero deviating trajectory channels.
+All 566 phase/simulation outcomes and bands match the native-manifold full run;
+all nine electrical counterexamples retain their high bands. MultiBody remains
+**20/42 high**. `rolling-wheel/native-residual-full-delta.json` records the
+complete comparison and artifact hashes.
+
+RollingWheel takes 4.380 seconds in Sim and RollingWheelSetDriving 4.927 seconds;
+build times are separately 4.188 and 10.873 seconds. The isolated profile pair
+below establishes the selected-residual dispatch improvement. The OMC gap
+remains a critical runtime bug. The fixed 145-model median speed ratio is 2.635
+and the expanded 170-model median is 1.730; this concurrent run with cached OMC
+timings does not establish an isolated cohort speedup. Combined `verify quick`
+last passed before ten subsequent implementation changes; `verify full` has
+not run. No PR, release, or baseline promotion is claimed.
+
+## Previous complete measurement: native manifold execution
+
 `target/msl/multibody-native-manifold-full` passes the local fallback gate at
 commit `55acfbbdbef06c7d3b86820ce3e2b71deaa5cf40`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
@@ -111,8 +136,10 @@ canary: nine compared models high, all 175 initial channels high, and zero
 skipped/missing/excluded/nonidentifiable/deviating comparisons. Eleven workers
 were requested and admitted. Logs and the exact delta are
 `rolling-wheel/native-residual-{libraries-2,clippy-1,canary-1}.log` and
-`rolling-wheel/native-residual-canary-delta.json`. Combined `verify quick` and
-`verify full` have not run for this change.
+`rolling-wheel/native-residual-canary-delta.json`. The subsequent named-commit
+full sweep passes with all 566 phase/simulation outcomes and bands unchanged,
+as recorded above. Combined `verify quick` and `verify full` have not run for
+this change.
 
 ## Critical RollingWheel performance investigation
 
