@@ -6,6 +6,31 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-native-manifold-full` passes the local fallback gate at
+commit `55acfbbdbef06c7d3b86820ce3e2b71deaa5cf40`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The complete 566-model run takes 133.14 seconds with eleven requested and
+admitted workers. OMC reuses all 170 existing reference results.
+
+All **153 compared models remain strict-high (27.03% of 566)**, with the same
+seventeen reviewed exclusions, zero missing/nonidentifiable traces, and all
+18,498 initial channels high. There are zero deviating trajectory channels.
+All 566 phase/simulation outcomes and bands match the preceding full run;
+all nine electrical counterexamples retain their high bands. MultiBody remains
+**20/42 high**. `rolling-wheel/native-manifold-full-delta.json` records the
+complete comparison and artifact hashes.
+
+RollingWheel takes 5.215 seconds in Sim and RollingWheelSetDriving 5.423 seconds;
+build times are separately 4.375 and 10.568 seconds. The isolated profiles below
+establish the native-manifold dispatch improvement. The remaining OMC gap is
+still a critical runtime bug. The fixed 145-model median speed ratio is 2.164
+and the expanded 170-model median is 1.463; this concurrent run with cached OMC
+timings does not establish an isolated cohort speedup. Combined `verify quick`
+last passed before nine subsequent implementation changes; `verify full` has
+not run. No PR, release, or baseline promotion is claimed.
+
+## Previous complete measurement: state-only manifold projection
+
 `target/msl/multibody-state-only-manifold-full` passes the local fallback gate
 at commit `f485ef13f2e3a79c9ae136c193eb3560f05114dc`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
@@ -90,8 +115,9 @@ Nine models compare high, all 175 initial channels are high, and there are
 zero skipped, missing, excluded, nonidentifiable, or deviating comparisons.
 Eleven workers were requested and admitted. Logs and the exact delta are
 `rolling-wheel/native-manifold-{libraries-1,clippy-1,canary-1}.log` and
-`rolling-wheel/native-manifold-canary-delta.json`. The named-commit full sweep
-is next; combined `verify quick` and `verify full` have not run for this change.
+`rolling-wheel/native-manifold-canary-delta.json`. The subsequent named-commit full sweep passes with all
+566 phase/simulation outcomes and bands unchanged, as recorded above; combined
+`verify quick` and `verify full` have not run for this change.
 
 ## Fourbar indexed-alias definition repair
 
