@@ -30,6 +30,7 @@ mod host_runtime;
 mod input_validation;
 mod interpreter;
 mod owned_jit_module;
+mod selected_jvp;
 mod selected_residual;
 mod status;
 pub(crate) mod typed_program;
@@ -374,6 +375,11 @@ pub(crate) struct CompiledJacobianRows {
 }
 
 impl CompiledJacobianRows {
+    #[cfg(test)]
+    pub(crate) fn program_call_count(&self) -> usize {
+        self.jit_call_count.get()
+    }
+
     pub(crate) fn call_program_output(
         &self,
         (program, offset): (usize, usize),

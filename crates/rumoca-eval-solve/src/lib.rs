@@ -584,6 +584,15 @@ pub struct RowEvalContext<'a> {
     pub runtime_state: Option<&'a SimulationRuntimeState>,
 }
 
+/// Immutable numerical point and direction for one Jacobian evaluation.
+#[derive(Clone, Copy)]
+pub struct JacobianEvalInputs<'a> {
+    pub y: &'a [f64],
+    pub p: &'a [f64],
+    pub t: f64,
+    pub seed: &'a [f64],
+}
+
 impl<'a> RowEvalContext<'a> {
     fn with_runtime_state(self, runtime_state: &'a SimulationRuntimeState) -> Self {
         Self {

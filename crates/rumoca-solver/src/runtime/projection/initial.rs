@@ -974,7 +974,7 @@ fn fill_colored_algebraic_rows(
     // seed layout. Projection colors activate only solver-y columns; parameter
     // lanes remain explicit zero seeds.
     let mut seed = vec![0.0; y.len().saturating_add(p.len())];
-    for group in structure.coloring().groups() {
+    for (color, group) in structure.coloring().groups().iter().enumerate() {
         let mut has_dependency = false;
         for &column in group.iter() {
             let column = column as usize;
@@ -988,7 +988,18 @@ fn fill_colored_algebraic_rows(
             *seed_value = 1.0;
             has_dependency |= column_rows[column].iter().any(|&row| selected_rows[row]);
         }
-        if has_dependency {
+        let prepared = structure.output_evaluation(color);
+        if has_dependency
+            && !fill_prepared_algebraic_color(
+                jacobian,
+                block,
+                selected_rows,
+                prepared,
+                &seed,
+                group,
+                &column_rows,
+            )?
+        {
             let active_rows = colored_group_entries(group, &column_rows, selected_rows)
                 .map(|(row, _)| rows[row])
                 .collect::<Vec<_>>();
@@ -1012,6 +1023,39 @@ fn fill_colored_algebraic_rows(
         }
     }
     Ok(())
+}
+
+fn fill_prepared_algebraic_color(
+    jacobian: &mut DMatrix<f64>,
+    block: AlgebraicBlockPoint<'_>,
+    selected_rows: &[bool],
+    selection: Option<&solve::ProjectionJacobianOutputs>,
+    seed: &[f64],
+    group: &[u32],
+    column_rows: &[Vec<usize>],
+) -> Result<bool, RuntimeSolveError> {
+    let Some(selection) = selection else {
+        return Ok(false);
+    };
+    let mut values = vec![0.0; block.rows.len()];
+    let inputs = rumoca_eval_solve::JacobianEvalInputs {
+        y: block.y,
+        p: block.p,
+        t: block.t,
+        seed,
+    };
+    if !block.model.eval_implicit_jacobian_v_outputs(
+        selection,
+        inputs,
+        selected_rows,
+        &mut values,
+    )? {
+        return Ok(false);
+    }
+    for (row, column) in colored_group_entries(group, column_rows, selected_rows) {
+        jacobian[(row, column)] = values[row];
+    }
+    Ok(true)
 }
 
 fn colored_group_entries<'a>(

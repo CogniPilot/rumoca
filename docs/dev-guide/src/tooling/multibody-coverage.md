@@ -178,6 +178,62 @@ The runtime repair and its focused/canary checks are complete. The remaining
 passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
 
+## Reuse all tensor JVP outputs within a prepared color
+
+The selected-row interface recomputed an entire JVP program to return each
+requested output. The earlier actual RollingWheel census recorded 40,821
+evaluations of each of program 195's three selected outputs. A three-column
+Jacobian therefore invoked the same tensor program nine times. OMC's generated
+linear-system matrix functions fill their selected entries directly; they do
+not replay a whole tensor derivative separately to retrieve each component.
+
+Under SPEC_0007 SOLVE-C56, derived structural-artifact construction now binds
+each projection color to ordered program/output groups in both solver-Y and
+solver-Y/parameter seed spaces. It uses the checked logical output catalogs,
+retains their nonidentity placement, and does not rewrite the scalar/tensor
+programs. The runtime consumes those groups at one immutable numerical point,
+omits reverse-completed rows, and retains all selected outputs of each native
+or interpreted program invocation. Native failures propagate without a retry.
+There is no persistent numerical cache or runtime grouping by hashes, pointers,
+or operation equality.
+
+The construction also checks operation repeatability exhaustively, including
+compact nested branches and folds. Impure random operations prevent reuse even
+when their values are discarded. Ambiguous or missing logical output ownership
+cannot issue a grouped selection. Table access retains the same immutable
+external-table context for each invocation.
+
+`rolling-wheel/grouped-jvp-red-1.log` records the coupled-system regression:
+the numerical solution was correct, but the native interface received four
+single-output calls instead of two grouped calls. The repaired regression
+reuses the runtime while changing the matrix coefficient through `2,-3,0,2`.
+`grouped-jvp-effects-red-1.log` separately captures the initially missing guard
+for an unused impure operation. Regressions cover both seed-space maps,
+reverse-completed rows, input extents, unrelated-program isolation, table
+failures, and actual JIT call counts. All 307 Solve-IR, 190 evaluator, 78 native,
+463 solver, and 128 simulation tests pass (`grouped-jvp-libraries-2.log`).
+All-target/all-feature Clippy for those crates passes
+(`grouped-jvp-clippy-3.log`); its earlier two attempts exposed nesting only.
+
+The fixed `target/msl/multibody-grouped-jvp-canary` preserves all 20 phase and
+agreement-band outcomes against `multibody-affine-seed-canary`. Its nine
+compared models and 175 initialization channels remain high, with zero
+skipped, missing, nonidentifiable, or deviating traces. Eleven requested,
+admitted, and pinned workers ran the canary. The delta receipt
+`rolling-wheel/grouped-jvp-canary-delta.json` binds dirty-tree digest
+`b8a0a484309d158bbaac8d2cbee7ba859808690a379cd7a918934abd4708e1b2` to parent
+`52d578f101f0f992eebc9e7b4bf15366a8acab54`.
+
+The clean isolated `rolling-wheel/critical-grouped-jvp-profile-1` takes
+2.138 seconds in Sim and 2.11 seconds of user CPU, versus 2.315 and 2.28
+seconds in `critical-affine-seed-profile-1`. This single pair supports roughly
+8% less runtime. The trace is byte-identical
+(`61e23f642f39489afa0717c767501558972f2e29419b77b088befbe8b2aff3dd`), and the
+entire emitted canonical Solve JSON compares equal. The profile retains 414
+samples with zero loss and named JIT symbols. Program 223's residual and JVP,
+plus their trigonometric work, remain material costs; the OMC gap remains open.
+`rolling-wheel/grouped-jvp-diagnosis.json` pins the evidence and worker hashes.
+
 ## Omit singular guesses before prepared affine solves
 
 RollingWheel's positive-time runtime census found 5,540 failures of the optional

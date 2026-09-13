@@ -169,6 +169,18 @@ pub struct CompiledJacobianV {
 }
 
 impl CompiledJacobianV {
+    /// Execute one existing program once, retaining all local outputs.
+    pub fn call_program_outputs(
+        &self,
+        program: usize,
+        inputs: rumoca_eval_solve::JacobianEvalInputs<'_>,
+        external_tables: &[ExternalTableData],
+        out: &mut Vec<f64>,
+    ) -> Result<(), CompileError> {
+        self.jit
+            .call_program_outputs(program, inputs, external_tables, out)
+    }
+
     /// Execute one output of one compiled program, using the prepared scalar
     /// view's `(program index, output offset)`. Sparse visible-output indices
     /// do not change this coordinate, and unrelated programs do not execute.

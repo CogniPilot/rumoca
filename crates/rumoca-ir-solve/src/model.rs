@@ -3,8 +3,10 @@ use std::sync::Arc;
 
 mod clock_partition;
 mod event_transaction;
+mod jacobian_outputs;
 
 pub use event_transaction::*;
+pub use jacobian_outputs::*;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ContinuousSolveSystem {
@@ -101,12 +103,17 @@ pub struct SolveArtifacts {
 pub struct JacobianStructure {
     pattern: StructuralPattern,
     coloring: ColumnColoring,
+    output_evaluations: Box<[ProjectionJacobianOutputs]>,
 }
 
 impl JacobianStructure {
     pub fn derived(pattern: StructuralPattern) -> Self {
         let coloring = pattern.column_coloring();
-        Self { pattern, coloring }
+        Self {
+            pattern,
+            coloring,
+            output_evaluations: Box::default(),
+        }
     }
 
     pub const fn pattern(&self) -> &StructuralPattern {
@@ -115,6 +122,10 @@ impl JacobianStructure {
 
     pub const fn coloring(&self) -> &ColumnColoring {
         &self.coloring
+    }
+
+    pub fn output_evaluation(&self, color: usize) -> Option<&ProjectionJacobianOutputs> {
+        self.output_evaluations.get(color)
     }
 }
 

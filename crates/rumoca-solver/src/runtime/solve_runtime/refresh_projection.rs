@@ -1,3 +1,5 @@
+mod grouped_jacobian;
+
 use crate::runtime::projection::{ScaledNewtonSystem, per_row_torn_block_sweep};
 use nalgebra::DVector;
 use rumoca_eval_solve::{PreparedTornSweep, TornSweepStatus};
@@ -315,6 +317,25 @@ impl<'a> ProjectionJacobian<'a> {
 }
 
 impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
+    fn eval_implicit_jacobian_v_outputs(
+        &self,
+        selection: &solve::ProjectionJacobianOutputs,
+        inputs: solve_eval::JacobianEvalInputs<'_>,
+        enabled_rows: &[bool],
+        out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        let selection = if self.jacobian_v.is_solver_y_only() {
+            selection.solver_y()
+        } else {
+            selection.solver_y_and_parameters()
+        };
+        let Some(selection) = selection else {
+            return Ok(false);
+        };
+        self.eval_grouped_jacobian_outputs(selection, inputs, enabled_rows, out)?;
+        Ok(true)
+    }
+
     fn eval_residual(
         &self,
         y: &[f64],

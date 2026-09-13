@@ -53,6 +53,18 @@ pub(crate) struct AlgebraicProjectionArgs<'a> {
 }
 
 pub(crate) trait ImplicitProjectionModel {
+    /// Evaluate construction-issued output groups at one immutable point.
+    /// The mask omits rows already supplied by the reverse Jacobian path.
+    fn eval_implicit_jacobian_v_outputs(
+        &self,
+        _selection: &solve::ProjectionJacobianOutputs,
+        _inputs: rumoca_eval_solve::JacobianEvalInputs<'_>,
+        _enabled_rows: &[bool],
+        _out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        Ok(false)
+    }
+
     fn eval_residual(
         &self,
         y: &[f64],

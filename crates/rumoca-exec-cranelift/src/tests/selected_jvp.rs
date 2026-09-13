@@ -1,6 +1,83 @@
 use super::*;
 use rumoca_ir_solve::BinaryOp;
 
+#[test]
+fn grouped_native_jvp_returns_all_outputs_in_one_invocation() {
+    let compiled = compile_jacobian_scalar_program_block(&aggregate_and_table()).unwrap();
+    let mut out = vec![99.0; 12];
+    for (i, (y, p, t, seed, expected)) in [
+        (3.0, 2.0, 0.5, [4.0, -2.0], [14.0, -1.0]),
+        (-1.0, 8.0, 2.0, [2.0, 3.0], [6.0, 6.0]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        compiled
+            .call_program_outputs(
+                0,
+                rumoca_eval_solve::JacobianEvalInputs {
+                    y: &[y],
+                    p: &[p],
+                    t,
+                    seed: &seed,
+                },
+                &[],
+                &mut out,
+            )
+            .unwrap();
+        assert_eq!(out, expected);
+        assert_eq!(compiled.jit.program_call_count(), i + 1);
+    }
+}
+
+#[test]
+fn grouped_native_jvp_checks_extents_and_external_tables() {
+    let compiled = compile_jacobian_scalar_program_block(&aggregate_and_table()).unwrap();
+    let mut out = Vec::new();
+    let inputs = rumoca_eval_solve::JacobianEvalInputs {
+        y: &[3.0],
+        p: &[2.0],
+        t: 0.5,
+        seed: &[4.0, -2.0],
+    };
+    assert!(
+        compiled
+            .call_program_outputs(2, inputs, &[], &mut out)
+            .is_err()
+    );
+    for invalid in [
+        rumoca_eval_solve::JacobianEvalInputs { y: &[], ..inputs },
+        rumoca_eval_solve::JacobianEvalInputs { p: &[], ..inputs },
+        rumoca_eval_solve::JacobianEvalInputs {
+            seed: &[4.0],
+            ..inputs
+        },
+    ] {
+        assert!(
+            compiled
+                .call_program_outputs(0, invalid, &[], &mut out)
+                .is_err()
+        );
+    }
+    assert_eq!(compiled.jit.program_call_count(), 0);
+    assert!(
+        compiled
+            .call_program_outputs(1, inputs, &[], &mut out)
+            .is_err()
+    );
+    let tables = [ExternalTableData {
+        id: 42,
+        data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 1,
+    }];
+    compiled
+        .call_program_outputs(1, inputs, &tables, &mut out)
+        .unwrap();
+    assert_eq!(out, [12.0]);
+}
+
 fn aggregate_and_table() -> ScalarProgramBlock {
     ScalarProgramBlock::with_output_indices(
         vec![

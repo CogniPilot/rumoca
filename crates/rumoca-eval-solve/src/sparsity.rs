@@ -174,6 +174,11 @@ pub fn derive_solve_structural_artifacts(
             problem.continuous.derivative_rhs.len()?,
             full_columns,
         )?,
+    )
+    .with_algebraic_output_evaluations(
+        &problem.continuous.algebraic_projection_plan,
+        &to_scalar_program_block(&artifacts.continuous.implicit_jacobian_v)?,
+        &artifacts.continuous.implicit_jacobian_v_scalar,
     );
     let initialization_columns = solver_columns
         .checked_add(problem.layout.p_scalars())

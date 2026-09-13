@@ -112,6 +112,18 @@ pub trait CompiledSolveExpression {
 
 /// Backend-neutral callable for a checked forward-mode Solve-IR expression.
 pub trait CompiledSolveJacobianExpression {
+    /// Execute one already compiled program and return all of its local
+    /// outputs. `false` declines this optional entry point before execution.
+    fn call_program_outputs(
+        &self,
+        _program: usize,
+        _inputs: solve_eval::JacobianEvalInputs<'_>,
+        _external_tables: &[rumoca_core::ExternalTableData],
+        _out: &mut Vec<f64>,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
     fn call(
         &self,
         y: &[f64],

@@ -44,6 +44,19 @@ impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
 }
 
 impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpression {
+    fn call_program_outputs(
+        &self,
+        program: usize,
+        inputs: rumoca_eval_solve::JacobianEvalInputs<'_>,
+        external_tables: &[rumoca_core::ExternalTableData],
+        out: &mut Vec<f64>,
+    ) -> Result<bool, String> {
+        self.0
+            .call_program_outputs(program, inputs, external_tables, out)
+            .map(|()| true)
+            .map_err(|error| error.to_string())
+    }
+
     fn call_program_output(
         &self,
         coordinate: (usize, usize),
