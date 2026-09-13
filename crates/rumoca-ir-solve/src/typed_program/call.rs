@@ -18,6 +18,11 @@ use super::program::{
 };
 use super::types::{SolveArithmeticProfile, SolveScalarType, SolveValueType};
 
+fn shared_slice_eq<T: Eq>(left: &Arc<[T]>, right: &Arc<[T]>) -> bool {
+    // Eq is reflexive; PartialEq alone would not justify shared-storage equality.
+    Arc::ptr_eq(left, right) || left == right
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SolvePureCallOwnerId(u32);
 
@@ -308,6 +313,19 @@ impl SolvePureCallDirectionalOwner {
             outputs: self.outputs.clone(),
         }
     }
+
+    fn matches_site(
+        &self,
+        owner: SolvePureCallOwnerId,
+        site: &SolvePureCallDirectionalSite,
+    ) -> bool {
+        owner == site.owner
+            && shared_slice_eq(&self.dependencies, &site.dependencies)
+            && self.projections == site.projections
+            && self.affinity == site.affinity
+            && shared_slice_eq(&self.inputs, &site.inputs)
+            && shared_slice_eq(&self.outputs, &site.outputs)
+    }
 }
 
 impl SolvePureCallOwner {
@@ -430,43 +448,26 @@ impl SolvePureCallTable {
     #[must_use]
     pub fn matches_site(&self, site: &SolvePureCallSite) -> bool {
         self.owner(site.owner).is_some_and(|owner| {
-            owner.dependencies == site.dependencies
+            shared_slice_eq(&owner.dependencies, &site.dependencies)
                 && owner.projections == site.projections
                 && owner.affinity == site.affinity
-                && owner.inputs == site.inputs
-                && owner.outputs == site.outputs
-                && owner.directional.as_ref().map(|directional| {
-                    (
-                        owner.id,
-                        &directional.inputs,
-                        &directional.outputs,
-                        &directional.dependencies,
-                        directional.projections.as_ref(),
-                        directional.affinity.as_ref(),
-                    )
-                }) == site.directional.as_deref().map(|directional| {
-                    (
-                        directional.owner,
-                        &directional.inputs,
-                        &directional.outputs,
-                        &directional.dependencies,
-                        directional.projections.as_ref(),
-                        directional.affinity.as_ref(),
-                    )
-                })
+                && shared_slice_eq(&owner.inputs, &site.inputs)
+                && shared_slice_eq(&owner.outputs, &site.outputs)
+                && match (owner.directional.as_ref(), site.directional.as_deref()) {
+                    (None, None) => true,
+                    (Some(directional), Some(site)) => directional.matches_site(owner.id, site),
+                    _ => false,
+                }
         })
     }
 
     #[must_use]
     pub fn matches_directional_site(&self, site: &SolvePureCallDirectionalSite) -> bool {
         self.owner(site.owner).is_some_and(|owner| {
-            owner.directional.as_ref().is_some_and(|directional| {
-                directional.dependencies == site.dependencies
-                    && directional.projections == site.projections
-                    && directional.affinity == site.affinity
-                    && directional.inputs == site.inputs
-                    && directional.outputs == site.outputs
-            })
+            owner
+                .directional
+                .as_ref()
+                .is_some_and(|directional| directional.matches_site(owner.id, site))
         })
     }
 }

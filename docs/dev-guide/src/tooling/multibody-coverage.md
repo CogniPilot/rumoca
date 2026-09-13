@@ -40,6 +40,45 @@ it makes no recursive-unwinding claim. Evidence is under
 show repeated value comparisons of immutable interface slices already shared
 by `Arc`. A sharing-aware equality fast path is the next hypothesis.
 
+### Shared call-interface equality
+
+The owner-table equality query now recognizes identical immutable `Arc`
+slice allocations before comparing their values. The helper requires `Eq`,
+whose reflexivity justifies the shortcut; a merely `PartialEq` element could
+not justify it. Independently reconstructed interfaces still undergo the
+same full value comparison, and primal/directional owner checks remain
+required. This is a read-only data-integrity optimization under SPEC_0029 §3,
+not a new semantic identity, wire format, or execution policy.
+
+The focused RED visits all three elements when comparing shared storage
+(`rolling-wheel/shared-call-red-2.log`). After the fix that count is zero;
+independent equal and unequal slices still compare all three values. Wire
+replay retains value equality and rejects altered input, output, and dependency
+slices in both primal and directional interfaces. All 293 Solve IR tests,
+190 evaluator tests, 72 native-backend tests, and 447 solver tests pass.
+All-target/all-feature IR Clippy, 243 architecture tests, seventeen size/spec
+gates, formatting, and whitespace checks pass
+(`rolling-wheel/shared-call-green-1.log`, `shared-call-gates-build-1.log`).
+
+The matched declared-Sim diagnostic completes in 11.474 seconds versus
+11.875 before. `memcmp` falls from 6.96% to 1.11% of samples; the new capture
+has 2,250 samples with zero lost. The emitted traces are byte-identical,
+SHA-256 `3dc2333f4b9d6d69bead292633f3304aa57204f430040d50c00fb62753006a5b`.
+Build time rises from 11.613 to 12.307 seconds, including Solve lowering
+from 7.371 to 8.051; the change targets repeated runtime comparisons.
+The single pair proves the targeted cost was removed without changing this
+trace, not a stable speedup or restored cohort coverage. Receipt:
+`rolling-wheel/shared-call-profile-pair.json`.
+
+The fixed twenty-model `target/msl/multibody-shared-call-canary` has no phase
+or band changes from `multibody-parameter-branch-canary`. Its nine compared
+models and all 175 initial channels remain high, with zero skipped, missing,
+excluded, or nonidentifiable traces. This is Tier 1 evidence only, captured
+on `f3db93c41e049e5d9eb16720cf36bf4f68c0cc6f` with candidate worktree digest
+`80dfdfee5fdfc0c2453ca7e42c7f1168148124844e8d2cc68aaf294a5083f04b`;
+`rolling-wheel/shared-call-canary-delta.json` retains the receipt. The next
+complete sweep must decide whether the wheel-set completion loss is closed.
+
 ## Previous complete measurement: first RollingWheelSetDriving high trace
 
 `target/msl/multibody-native-singleton-full` passes the local fallback gate

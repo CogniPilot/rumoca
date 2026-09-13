@@ -1,5 +1,44 @@
 use super::*;
 
+struct CountedValue<'count> {
+    value: usize,
+    comparisons: &'count std::sync::atomic::AtomicUsize,
+}
+
+impl Eq for CountedValue<'_> {}
+
+impl PartialEq for CountedValue<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.comparisons
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.value == other.value
+    }
+}
+
+#[test]
+fn shared_call_slices_do_not_rewalk_elements() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let comparisons = AtomicUsize::new(0);
+    let make_slice = |last| -> Arc<[_]> {
+        [1, 2, last]
+            .map(|value| CountedValue {
+                value,
+                comparisons: &comparisons,
+            })
+            .into()
+    };
+    let left = make_slice(3);
+    assert!(shared_slice_eq(&left, &left.clone()));
+    assert_eq!(comparisons.load(Ordering::Relaxed), 0);
+
+    let independent = make_slice(3);
+    assert!(!Arc::ptr_eq(&left, &independent));
+    assert!(shared_slice_eq(&left, &independent));
+    assert_eq!(comparisons.swap(0, Ordering::Relaxed), 3);
+    assert!(!shared_slice_eq(&left, &make_slice(4)));
+    assert_eq!(comparisons.load(Ordering::Relaxed), 3);
+}
+
 fn two_owners() -> SolvePureCallTable {
     SolvePureCallTable::construct(profile(), |table| {
         let vector = vector_type();
@@ -68,6 +107,9 @@ fn shared_call_facts_retain_value_equality_after_wire_replay() {
     let table = two_owners();
     let owner = &table.owners[0];
     let site = owner.call_site();
+    assert!(Arc::ptr_eq(&owner.inputs, &site.inputs));
+    assert!(Arc::ptr_eq(&owner.outputs, &site.outputs));
+    assert!(Arc::ptr_eq(&owner.dependencies, &site.dependencies));
     assert!(std::ptr::eq(
         owner.projections.as_deref().unwrap(),
         site.projections.as_deref().unwrap(),
@@ -84,11 +126,18 @@ fn shared_call_facts_retain_value_equality_after_wire_replay() {
     assert!(table.matches_site(&replayed));
     assert!(table.matches_directional_site(replayed.directional().unwrap()));
 
-    let mut forged = encoded;
-    forged["directional"]["dependencies"] = serde_json::json!([]);
-    let forged: SolvePureCallSite = serde_json::from_value(forged).unwrap();
-    assert!(!table.matches_site(&forged));
-    assert!(!table.matches_directional_site(forged.directional().unwrap()));
+    for field in ["inputs", "outputs", "dependencies"] {
+        let mut forged = encoded.clone();
+        forged[field] = serde_json::json!([]);
+        let forged: SolvePureCallSite = serde_json::from_value(forged).unwrap();
+        assert!(!table.matches_site(&forged), "primal {field}");
+
+        let mut forged = encoded.clone();
+        forged["directional"][field] = serde_json::json!([]);
+        let forged: SolvePureCallSite = serde_json::from_value(forged).unwrap();
+        assert!(!table.matches_site(&forged), "directional {field}");
+        assert!(!table.matches_directional_site(forged.directional().unwrap()));
+    }
     assert!(table.matches_site(&site));
 }
 
