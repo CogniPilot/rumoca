@@ -155,6 +155,16 @@ The six-equation frontier names orientation/position equations and leaves
 The reducer ultimately returns its preserved earlier refusal. Logs are
 `fourbar-analytic/structure-1.log` and `fourbar-analytic/reduction-1.log`.
 
+Rebuilding the structural inspector after the parameter-branch change
+and replaying the same checked source DAE produces exactly the same 829
+reduction records. Both lanes reach a minimum residue of twelve (six unmatched
+equation/unknown pairs); the later holonomic lane finishes at sixteen. The
+record-stream SHA-256 is
+`0936b7735c12449841f9fb2a55e5f1092ca8aea833ed3dcbab0cc62b2ed6434c`
+before and after. `fourbar-analytic/parameter-branch-reduction-delta.json`
+binds this result to the current capture. The reduced parameter case is
+repaired, but this evidence gives it no credit for advancing Fourbar_analytic.
+
 OMC stage captures include flattened Modelica, flat/optimiser/backend XML,
 and transformation-debugger equations in `fourbar-analytic/omc-stages`.
 OMC selects exactly `j1.phi` and `j1.w` as states, with one linear torn system
