@@ -44,6 +44,7 @@ mod guarded_assignments;
 mod initial_continuation;
 mod initial_event;
 mod initial_projection;
+mod native_projection_assignments;
 mod native_specialization;
 use native_specialization::{RowEvalPoint, SpecializedRows};
 mod plans;
@@ -374,6 +375,7 @@ pub struct SolveRuntime {
     compiled_assignment_schedules: RefCell<
         FxHashMap<solve::RefreshSequenceId, Option<Rc<dyn CompiledSolveAssignmentSchedule>>>,
     >,
+    native_projection_assignments: native_projection_assignments::NativeProjectionAssignments,
     compiled_output_scratch: RefCell<Vec<f64>>,
     clock_activation_cache: RefCell<ClockActivationCache>,
 }
@@ -725,6 +727,7 @@ impl SolveRuntime {
             compiled_event_action_rows: RefCell::new(FxHashMap::default()),
             failed_event_action_rows: RefCell::new(BTreeSet::new()),
             compiled_assignment_schedules: RefCell::new(FxHashMap::default()),
+            native_projection_assignments: Default::default(),
             compiled_output_scratch: RefCell::new(Vec::new()),
             clock_activation_cache: RefCell::new(ClockActivationCache::default()),
         })

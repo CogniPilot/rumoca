@@ -876,10 +876,8 @@ mod native_policy_tests {
     }
 
     /// Mutation fixture: a backend whose compiles succeed but whose every
-    /// compiled call returns `Err`. The runtime's documented semantics treat a
-    /// compiled-call failure as permission to fall back to the interpreter, so
-    /// a run over this backend can still complete — the success/failure
-    /// accounting is what must expose it.
+    /// compiled call returns `Err`. Exact projection must propagate the error,
+    /// and the success/failure accounting must expose the failed execution.
     struct FailingCompiled;
 
     impl CompiledSolveExpression for FailingCompiled {
@@ -962,9 +960,8 @@ mod native_policy_tests {
     }
 
     /// Discriminator (a): the Auto/native BDF path really executes compiled
-    /// expression, JVP, and exact-assignment native calls — SUCCESSFULLY. The
-    /// runtime treats a compiled-call failure as permission to interpret, so
-    /// each class asserts `succeeded > 0` (recorded only after the delegated
+    /// expression, JVP, and exact-assignment native calls — SUCCESSFULLY. Each
+    /// class asserts `succeeded > 0` (recorded only after the delegated
     /// call returns `Ok`) AND `failed == 0`: a mutation that drops, ignores,
     /// or re-composes the handle zeroes the successes, and a backend that
     /// errors its way into silent interpreter fallback trips the zero-failure
@@ -1011,18 +1008,20 @@ mod native_policy_tests {
     }
 
     /// Discriminator (a-mutation): a backend whose every compiled call fails
-    /// must NOT satisfy the native-success evidence. The runtime's current
-    /// fallback semantics let the simulation complete on the interpreter (this
-    /// slice deliberately does not restructure that), so the proof is in the
-    /// accounting: nonzero failures, zero successes, evidence predicate false.
+    /// must fail the simulation and must NOT satisfy the native-success
+    /// evidence: nonzero failures, zero successes, evidence predicate false.
     #[test]
     fn failing_native_backend_cannot_satisfy_the_success_evidence() {
         let opts = sim_opts(SimExecutionPolicy::Auto);
         let model = state_fixture(&opts);
         let (_backend, counters, handle) = counting_handle_over(Rc::new(FailingBackend));
-        let result = simulate_artifact(model.artifact(), &opts, Some(handle))
-            .expect("current runtime semantics fall back to the interpreter and complete");
-        assert!(!result.times.is_empty(), "fallback run produced no samples");
+        let error = simulate_artifact(model.artifact(), &opts, Some(handle))
+            .expect_err("native exact projection errors must reach the caller");
+        assert!(
+            error
+                .to_string()
+                .contains("injected native expression failure")
+        );
         assert!(
             counters.total_failed() > 0,
             "the failing backend was never even attempted — the mutation fixture is vacuous"

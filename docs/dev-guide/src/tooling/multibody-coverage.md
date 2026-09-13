@@ -26,12 +26,74 @@ runtime performance fix. IMC_Transformer still changes from a structural
 refusal to a Solve timeout relative to `multibody-function-scope-index-full`;
 the full delta is `rolling-wheel/verify-quick-architecture-msl-delta.json`.
 
-The combined quick suite passes workspace lint, MSL parity, all 28 pinned
-corpus rows (89.3 seconds), 243 architecture-hardening tests, and seventeen
-size/spec gates. Workspace tests are building. Combined `verify quick`
-success is still pending; `verify full` has not run. Further explicit MSL
-runs retain the approved eleven simulation workers. RollingWheel profiling
-remains next after the owned test execution finishes.
+The combined `verify quick --early-exit` suite passes in 1396.72 seconds:
+workspace lint, MSL parity, all 28 pinned corpus rows (89.3 seconds), 243
+architecture-hardening tests, seventeen size/spec gates, all 7,516 nextest
+tests across 146 binaries, and workspace doctests. Existing ignored doctest
+examples remain ignored. The log is
+`.git/multibody-campaign/verify-quick-after-architecture-1.log`; the timing
+receipt is `rolling-wheel/verify-quick-after-architecture-passed.json`.
+This validates the implementation at `be391b3f`; the subsequent `6ba7bb80`
+commit only records evidence. `verify full` has not run. Further explicit MSL
+runs retain the approved eleven simulation workers.
+
+### Native execution of singleton projection assignments
+
+A fresh RollingWheel `perf` capture attaches at the worker's declared `Sim`
+phase, after build and the separate initialization check. The pre-change
+`rolling-wheel/quick-rolling-runtime-profile` capture records 1,799 samples,
+zero lost, and 9.115 seconds of simulation. Prepared row interpretation has
+12.95% self samples. Caller unwinding is incomplete, so this is not an
+inclusive cost attribution to any particular projection caller.
+
+Source inspection identifies an interpreter-only consumer in
+`RefreshProjectionModel::eval_implicit_target_value`. The candidate hands its
+existing constructor-derived exact assignment to the optional native backend
+and caches compilation by immutable program/target identity. Only source
+programs with one stored scalar output are admitted; aggregate programs keep
+their shared owner and existing execution path. The compiler's assignment
+materializer preserves independent tiny offsets and singularity guards
+(SPEC_0036 and SPEC_0043 §6a, SPEC_0032). No equation, state selection,
+tolerance, or model-name policy changes.
+
+The focused regression first records two failures: no native execution and
+an injected native error hidden by the interpreter-only path. All six new
+tests pass, covering reuse, compilation refusal caching, error propagation,
+aggregate retention, tiny roots, and identical singular-coefficient declines.
+The simulator's existing injected-failure test initially expected successful
+interpreter completion; it now requires the native projection error while
+retaining its zero-success and nonzero-failure assertions. All 447 solver and
+127 simulator library tests pass. Logs are
+`rolling-wheel/native-singleton-red-2.log`,
+`rolling-wheel/native-singleton-tests-build-1.log`, and
+`rolling-wheel/native-singleton-tests-build-2.log`.
+
+The matching post-change capture,
+`rolling-wheel/native-singleton-runtime-profile`, completes simulation in
+8.677 seconds against the same twelve-second budget. Its complete trace JSON
+is byte-identical to the pre-change trace
+(`f8df74c085fa7a397df10ebdf9754cc48bd2bf34776aa81ebb85b9e5ac23e31c`).
+This single pair observes a 4.8% reduction; it does not establish a stable
+speedup or replace a cohort comparison. Prepared interpretation has 11.39%
+self samples. Build and separate initialization check change from 4.146 /
+0.471 seconds to 3.841 / 0.451 seconds. The timing receipt is
+`rolling-wheel/native-singleton-runtime-timing-delta.json`.
+
+The fixed `target/msl/multibody-native-singleton-canary` passes in 9.49
+seconds with eleven workers at HEAD `6ba7bb80`, working-tree digest
+`7c13adb6fd70e33d052159b2b017ed0def8711e7f1d85defd32be26d33a4d81a`.
+All twenty phase/simulation and band outcomes match
+`multibody-function-scope-index-canary`. All nine compared models and 175
+initial channels remain high, with no deviating, missing, skipped, excluded,
+or nonidentifiable comparisons. The retained receipt is
+`rolling-wheel/native-singleton-canary-delta.json`. Tier 1 is complete;
+the next full cohort measurement remains pending. All-target, all-feature
+Clippy for solver/simulator, 243 architecture-hardening tests, and seventeen
+size/spec gates pass (`rolling-wheel/native-singleton-gates-1.log` and
+`rolling-wheel/native-singleton-size-gates-1.log`). The first combined command
+named the nonexistent `code_size_test` target after its successful Clippy and
+architecture steps; the subsequent command runs the actual `suite_gates`
+target. Formatting and whitespace checks pass.
 
 ## Previous complete measurement: quick-suite gate failures
 

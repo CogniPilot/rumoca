@@ -1592,6 +1592,7 @@ fn direct_assignment_residual_row() -> Vec<solve::LinearOp> {
 // Jacobian is d(der)/dx = d(a)/dx = k, which a states-only seed would miss
 // (it would yield 0) — so this pins the projection forward-sensitivity.
 
+mod native_projection_assignments;
 mod native_projection_jvp;
 mod projection_output_mapping;
 mod projection_sensitivity;

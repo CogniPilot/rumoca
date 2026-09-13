@@ -610,6 +610,31 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         else {
             return Ok(None);
         };
+        if output_offset == 0
+            && let Some(compiled) = self
+                .runtime
+                .compiled_projection_assignment(program_idx, target_y_index)?
+        {
+            let mut output = [0.0];
+            compiled
+                .call(
+                    y,
+                    p,
+                    t,
+                    self.runtime.model.external_tables.as_slice(),
+                    &mut output,
+                )
+                .map_err(|error| {
+                    RuntimeSolveError::solve_ir_with_span(
+                        error,
+                        self.runtime
+                            .implicit_scalar_rhs
+                            .block()
+                            .program_span(program_idx),
+                    )
+                })?;
+            return Ok(Some(output[0]));
+        }
         self.runtime
             .implicit_scalar_rhs
             .eval_target_assignment_output_unchecked_with_context(
