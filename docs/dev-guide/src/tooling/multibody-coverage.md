@@ -220,6 +220,28 @@ receipt `line-force/manifold-preflight-canary-delta.json`. The latest cohort
 number remains the named derivative-chain sweep above. Wheel-set performance
 remains open before further capability expansion.
 
+### Wheel-set follow-up profile after the preflight repair
+
+One declared-Sim `perf` diagnostic at `d3c414d8` completes in 11.670 seconds,
+with 2,303 samples and zero lost. Build takes 9.824 seconds, including 6.957
+seconds of Solve lowering. The trace is byte-identical to the earlier high
+wheel-set trace, SHA-256
+`3dc2333f4b9d6d69bead292633f3304aa57204f430040d50c00fb62753006a5b`.
+This single-worker diagnostic does not replace the eleven-worker cohort timeout.
+The profiler is attached only during the worker's declared Sim phase, with the
+same twelve-second solver budget (`rolling-wheel/manifold-profile-receipt.json`).
+
+The main leaf costs remain prepared-row interpretation (9.08%), sparse LU
+(5.17%), native call payload conversion (2.74%), projection-affinity lookup
+(2.52%), assignment-certificate queries (2.26%), and row/output lookup (1.65%).
+The earlier shared-interface comparison fix remains effective: `memcmp` is
+1.13%. Caller unwinding is still almost entirely absent, so these are leaf
+samples, not inclusive cost attribution. Next hypotheses are preparing repeated
+immutable projection queries once and examining aggregate projection execution.
+The existing native singleton path deliberately excludes multi-output tensor
+rows; any extension must preserve one tensor program owner and its checked
+assignment semantics. No runtime optimization is claimed from this capture.
+
 ### Fourbar_analytic: supplied derivative chains
 
 MLS §12.7.1 permits a higher-order annotation only in the differentiation
