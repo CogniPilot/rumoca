@@ -152,6 +152,14 @@ fn materialize_operation<'dae>(
                 view, facts, element, visited, context, states,
             )
         }),
+        dae::ExpressionOperation::Conditional(operands) => {
+            super::super::parameter_conditionals::has_parameter_guards(view, context, operands)
+                && super::super::parameter_conditionals::values(operands).all(|value| {
+                    can_materialize_holonomic_value_in_context(
+                        view, facts, value, visited, context, states,
+                    )
+                })
+        }
         dae::ExpressionOperation::Field { base, field } => context
             .projected_field(view, base, field)
             .is_some_and(|(projected, nested)| {

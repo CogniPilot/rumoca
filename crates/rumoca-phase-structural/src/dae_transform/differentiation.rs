@@ -12,6 +12,7 @@
 //! reaches these arms.
 
 mod algebra;
+mod conditionals;
 mod geometry;
 
 use rumoca_ir_dae as dae;
@@ -224,6 +225,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             dae::ExpressionOperation::Array(elements) => {
                 self.differentiate_array(elements, order, provenance)
             }
+            dae::ExpressionOperation::Conditional(operands) => self
+                .materialize_parameter_conditional(operands, Some(order), provenance)
+                .map(Derivative::Expression),
             dae::ExpressionOperation::Builtin { builtin, arguments }
                 if is_linear_tensor_map(builtin) =>
             {
@@ -517,6 +521,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .map(|element| self.materialize_exact_value(element, provenance))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.target.at(provenance).array(elements)
+            }
+            dae::ExpressionOperation::Conditional(operands) => {
+                self.materialize_parameter_conditional(operands, None, provenance)
             }
             dae::ExpressionOperation::Field { base, field } => {
                 self.materialize_projected_field(source_id, base, field, provenance)

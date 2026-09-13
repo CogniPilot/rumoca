@@ -38,6 +38,77 @@ before this implementation, and its focused tests and gates pass as recorded
 below. `verify full` has not run. Twenty-two MultiBody examples still lack
 high parity; Fourbar_analytic's structural refusal is the next investigation.
 
+### Fourbar_analytic: differentiating a parameter-selected position
+
+The existing `omc-structure` inspector reproduces the original 1622/1659
+structural refusal. An observed reduction of the exact source DAE shows why
+that final diagnostic alone is insufficient: direct demotion reaches six
+unmatched equations, while the later pristine holonomic path reaches eight.
+The six-equation frontier names orientation/position equations and leaves
+`jointSSP.totalPower`, body accelerations, and `b2.body.frame_a.t[1]` unmatched.
+The reducer ultimately returns its preserved earlier refusal. Logs are
+`fourbar-analytic/structure-1.log` and `fourbar-analytic/reduction-1.log`.
+
+OMC stage captures include flattened Modelica, flat/optimiser/backend XML,
+and transformation-debugger equations in `fourbar-analytic/omc-stages`.
+OMC selects exactly `j1.phi` and `j1.w` as states, with one linear torn system
+(one iteration variable and thirty inner variables), no nonlinear torn
+system. Its equations explicitly propagate first and second derivatives
+through the prismatic joint's quadratic position solution.
+
+The source joint computes `distance = -k1 + (if positiveBranch then k2 else
+-k2)`, where `positiveBranch` is a Boolean parameter solved during
+initialization. Structural differentiation had no conditional-expression
+case unless the guard could already be selected as a literal. Parameter
+bindings deliberately are not literals: initialization and parameter updates
+must still choose the branch.
+
+The reduced `ParameterBranchKinematics` oscillator preserves two forced
+states, observes a parameter-selected signed position, and requests both
+kinematic derivatives. The unconditional alias control passes. Both a bound
+Boolean parameter and a `fixed=false` initialized Boolean fail structural
+analysis at 4/5 matches, leaving the position equation and acceleration
+unmatched (`fourbar-analytic/parameter-branch-red-2.log`). OMC accepts the
+literal, initialized-positive, and initialized-negative sources; all five
+channels match the analytic oscillator within `9.44e-9` absolute error
+(`fourbar-analytic/parameter-branch-omc/analytic-comparison.json`).
+
+The candidate derives guard invariance from parameter coordinates and their
+checked operations/call-argument substitutions, requires every branch value
+to satisfy the relevant differentiation/materialization proof, and retains
+the original conditions and branch order around the differentiated values.
+Tensor branches retain their whole shape, including zero derivatives.
+Governing requirements are MLS §3.6.5, §3.8.3, §8.6, SPEC_0007's structural
+stage contract, SPEC_0032, and SPEC_0036. All six focused tests pass, including
+function substitution, both tensor branches, and rejection of time/state
+guards from this parameter-only proof. The tensor test audits the prepared
+DAE: the position and both derivative conditionals retain vector shape `[2]`.
+All 154 structural and 566 compiler-core tests pass
+(`fourbar-analytic/parameter-branch-gates-1.log`). All-target, all-feature
+structural Clippy, 243 architecture tests, and seventeen size/spec gates pass
+after replacing a manual even-index test with `is_multiple_of`
+(`fourbar-analytic/parameter-branch-gates-build-2.log`). Formatting and
+whitespace checks pass.
+
+The normal-budget `target/msl/multibody-parameter-branch-fourbar` attempt
+still returns 1622/1659 structural matches, in 8.389 seconds of build time.
+It produces no simulation or comparison: the focused gate correctly reports
+parity unmeasured. This reduced repair does not close the original model.
+The fixed `multibody-parameter-branch-canary` passes with all twenty
+phase/simulation and band rows unchanged from `multibody-native-singleton-canary`.
+All nine compared models and 175 initial channels remain high, with zero
+deviating, skipped, missing, excluded, or nonidentifiable comparisons. It runs
+at `b102b3f7`, dirty-tree digest
+`93d23c8089bdbfe881e2f3c80952ec46d792d48a9955f051fc6a39558860c837`;
+the receipt is `fourbar-analytic/parameter-branch-canary-delta.json`.
+Tier 1 is complete. A named-commit cohort sweep and continued equation-level
+investigation of Fourbar_analytic remain next.
+
+The DAE JSON capture succeeds, but readable DAE rendering refuses a function
+assertion (`unsupported-feature:dae-modelica-function-statement:assertion`).
+The flattened text and exact DAE JSON remain available for this investigation;
+that rendering limitation is separate from structural compilation.
+
 ## Previous complete measurement: quick-suite success
 
 The MSL step of `verify quick --early-exit` at commit

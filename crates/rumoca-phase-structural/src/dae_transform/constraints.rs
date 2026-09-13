@@ -1193,6 +1193,14 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
             dae::ExpressionOperation::Array(elements) => elements
                 .iter()
                 .all(|element| self.can_differentiate_order(element, order, on_residual)),
+            dae::ExpressionOperation::Conditional(operands) => {
+                super::parameter_conditionals::has_parameter_guards(
+                    self.view,
+                    &self.function_context,
+                    operands,
+                ) && super::parameter_conditionals::values(operands)
+                    .all(|value| self.can_differentiate_order(value, order, on_residual))
+            }
             dae::ExpressionOperation::Field { base, field } => self
                 .function_context
                 .projected_field(self.view, base, field)
@@ -1455,6 +1463,12 @@ fn operation_is_differentiable<'dae>(
         dae::ExpressionOperation::Array(elements) => elements.iter().all(|element| {
             is_differentiable_in_context(view, facts, element, demoted, visited, context)
         }),
+        dae::ExpressionOperation::Conditional(operands) => {
+            super::parameter_conditionals::has_parameter_guards(view, context, operands)
+                && super::parameter_conditionals::values(operands).all(|value| {
+                    is_differentiable_in_context(view, facts, value, demoted, visited, context)
+                })
+        }
         dae::ExpressionOperation::Field { base, field } => context
             .projected_field(view, base, field)
             .is_some_and(|(projected, projected_context)| {

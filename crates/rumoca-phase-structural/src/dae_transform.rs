@@ -19,6 +19,7 @@ mod function_derivatives;
 mod functions;
 mod initial_pins;
 mod observation;
+mod parameter_conditionals;
 mod reconstruction;
 mod runtime_quotients;
 mod semantic_owners;

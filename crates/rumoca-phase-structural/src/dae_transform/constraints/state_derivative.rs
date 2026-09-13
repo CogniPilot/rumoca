@@ -79,6 +79,12 @@ impl<'dae> StateDerivativeWalk<'_, 'dae> {
             dae::ExpressionOperation::Array(elements) => elements
                 .iter()
                 .all(|element| self.expression(element, context)),
+            dae::ExpressionOperation::Conditional(operands) => {
+                super::super::parameter_conditionals::has_parameter_guards(
+                    self.view, context, operands,
+                ) && super::super::parameter_conditionals::values(operands)
+                    .all(|value| self.expression(value, context))
+            }
             dae::ExpressionOperation::Literal(_)
             | dae::ExpressionOperation::Coordinate(
                 dae::CoordinateView::Parameter(_) | dae::CoordinateView::Time,
