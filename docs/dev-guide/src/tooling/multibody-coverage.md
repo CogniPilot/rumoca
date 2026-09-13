@@ -6,6 +6,42 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-parameter-branch-full` passes the local fallback gate
+at commit `c89fde703f82afc323d9f38bdf1e8f316452d723`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The complete 566-model sweep takes 123.99 seconds with eleven workers.
+**All 152 compared models are strict-high (26.86% of 566)**, with seventeen
+reviewed exclusions and zero missing or nonidentifiable traces. Every
+compared initial channel is high and no trajectory channel deviates. All
+nine electrical counterexamples retain their high bands.
+
+MultiBody returns to **19/42 high** because RollingWheelSetDriving times out
+after successful initialization. Its enclosing simulation call takes 12.130
+seconds and reports `timeout after 12.000s`; build takes 11.051 seconds,
+including 7.646 seconds of Solve lowering. This is the only phase/simulation
+or band change from `multibody-native-singleton-full`, retained in
+`fourbar-analytic/parameter-branch-full-delta.json`. The earlier twentieth
+high model is a real trace comparison but not yet reliable completion.
+The passing fallback gate does not excuse this loss. Performance work takes
+priority over further capability changes; no timeout or comparator change
+is proposed.
+
+A declared-Sim `perf` diagnostic on RollingWheelSetDriving completes in
+11.875 seconds, capturing 2,342 samples with zero lost. This diagnostic does
+not replace the cohort timeout. Of 163 `memcmp` samples, captured direct
+return addresses identify 95 dependency-slice comparisons, 28 input-type
+comparisons, 23 output-interface comparisons, and seventeen comparisons
+inside native `call_cells`. The original DWARF caller unwind fails. The
+bounded replacement reads the first user-stack word of leaf libc `memcmp`,
+using the ELF load bias derived independently from a resolved Rust symbol;
+it makes no recursive-unwinding claim. Evidence is under
+`rolling-wheel/wheel-set-runtime-profile`, including
+`memcmp-return-addresses-corrected.json`. Source inspection and disassembly
+show repeated value comparisons of immutable interface slices already shared
+by `Arc`. A sharing-aware equality fast path is the next hypothesis.
+
+## Previous complete measurement: first RollingWheelSetDriving high trace
+
 `target/msl/multibody-native-singleton-full` passes the local fallback gate
 at commit `27bc2c8d711703fc679b492a26e542486bb19019`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
