@@ -1,6 +1,6 @@
 //! Refresh-projection regression cases: affine coordinates, Newton
 //! backtracking across expression-domain boundaries, rank-deficient and
-//! singular starts, staged-seed coverage, and missing-producer rejection.
+//! singular starts, staged dependencies, and missing-producer rejection.
 //!
 //! Split out of the parent `tests` module to keep each file within the
 //! SPEC_0021 line budget; every case still shares the parent fixtures.
@@ -400,40 +400,57 @@ fn singular_affine_seed_falls_back_to_preserved_projection() {
 }
 
 #[test]
-fn staged_projection_requires_a_seed_for_every_block_coordinate() {
-    let rows = vec![
-        solve::AlgebraicRefreshRow::checked(solve::AlgebraicRefreshRowDraft {
-            owner_id: Default::default(),
-            source: solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
-            equation_index: 0,
-            output_offset: 0,
-            target_index: 0,
-            assignment_target: Some(0),
-            assignment_shape: None,
-            direct_assignment_certified: false,
-            exact_assignment_certified: false,
-        })
-        .unwrap(),
-    ];
-    let stage = solve::RefreshStage::ProjectionBlock {
-        seed_sequence: Default::default(),
-        block_index: 0,
-        plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
-                rows: vec![0, 1],
-                y_indices: vec![0, 1],
-                tearing: None,
-            }],
+fn staged_projection_still_rejects_a_genuine_backward_dependency() {
+    let mut model = mode_dependent_repivot_model();
+    let layout = &mut model.problem.solve_layout;
+    layout.solver_maps.names.push("late_input".to_owned());
+    layout.algebraic_scalar_count += 1;
+    model.initial_y.push(0.0);
+    let mut residual = mode_dependent_repivot_residual_rows();
+    residual[0][5] = solve::LinearOp::LoadY { dst: 5, index: 2 };
+    residual.push(shifted_variable_residual_row(2, 1.0));
+    let continuous = &mut model.problem.continuous;
+    continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(spanned_block(
+        residual,
+        "late_coupled_input.mo",
+    ));
+    continuous
+        .implicit_row_targets
+        .push(Some(solve::scalar_slot_y(2)));
+    continuous
+        .algebraic_projection_plan
+        .blocks
+        .push(solve::AlgebraicProjectionBlock {
+            rows: vec![2],
+            y_indices: vec![2],
+            tearing: None,
+        });
+    let mut jvp = mode_dependent_repivot_jvp_rows();
+    jvp[0].pop();
+    jvp[0].extend([
+        solve::LinearOp::LoadSeed { dst: 5, index: 2 },
+        solve::LinearOp::Binary {
+            dst: 6,
+            op: solve::BinaryOp::Sub,
+            lhs: 4,
+            rhs: 5,
         },
-        seed_rows: solve::RefreshRowSelection::checked(rows.len(), [0]).unwrap(),
-    };
-    let refresh = solve::RefreshPlan {
-        rows,
-        value_stages: vec![stage],
-        ..solve::RefreshPlan::default()
-    };
-
-    assert!(!value_stage_seed_coverage_is_complete(&refresh));
+        solve::LinearOp::StoreOutput { src: 6 },
+    ]);
+    jvp.push(vec![
+        solve::LinearOp::LoadSeed { dst: 0, index: 2 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ]);
+    set_test_implicit_jvp(&mut model, jvp, "late_coupled_input_jvp.mo");
+    derive_test_structural_artifacts(&mut model);
+    let runtime = SolveRuntime::new_fixture(&model).unwrap();
+    assert_eq!(
+        runtime
+            .continuous_structural
+            .algebraic_invalidates_earlier(1),
+        Some(true)
+    );
+    assert!(!runtime.value_stage_schedule_is_certified(&runtime.algebraic_refresh));
 }
 
 #[test]
@@ -469,8 +486,10 @@ fn refresh_projects_complete_system_with_empty_causal_schedule() {
         "empty_causal_projection_jvp.mo",
     );
     set_complete_test_projection_plan(&mut model);
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert!(runtime.algebraic_refresh.rows.is_empty());
+    assert!(runtime.value_stage_schedule_is_certified(&runtime.algebraic_refresh));
     let mut solver_y = model.initial_y.clone();
 
     runtime

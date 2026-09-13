@@ -9,6 +9,11 @@ use crate::{
     AffineStencilLoadStride, BinaryOp, LinearOp, Reg, ScalarProgramBlock, TensorOutputMap,
 };
 
+mod tensor_update;
+
+#[cfg(test)]
+mod tensor_update_tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PatternDerivation {
@@ -2218,57 +2223,6 @@ impl DependencyWalk<'_> {
             set_register(registers, dst_start + destination as Reg, dependencies);
             Ok::<(), StructuralPatternError>(())
         })
-    }
-
-    fn tensor_update(
-        &mut self,
-        dst_start: Reg,
-        base_start: Reg,
-        value_start: Reg,
-        dimensions: &[u32],
-        subscripts: &[crate::TensorUpdateSubscript],
-        lanes: usize,
-    ) -> Result<(), StructuralPatternError> {
-        let count = saturating_tensor_extent(dimensions);
-        let (value_count, selector) = self.tensor_update_patch(dimensions, subscripts, lanes)?;
-        let patch = self.range(value_start, value_count)?.union(selector);
-        for element in 0..count {
-            for lane in 0..lanes {
-                let offset = element * lanes + lane;
-                let dependencies = self.get(base_start + offset as Reg)?.union(patch.clone());
-                self.set(dst_start + offset as Reg, dependencies);
-            }
-        }
-        Ok(())
-    }
-
-    /// Width of the patch value range and the dependencies of the runtime
-    /// coordinates that select where the patch lands.
-    fn tensor_update_patch(
-        &self,
-        dimensions: &[u32],
-        subscripts: &[crate::TensorUpdateSubscript],
-        lanes: usize,
-    ) -> Result<(usize, DependencyState), StructuralPatternError> {
-        let mut value_count = lanes;
-        let mut selector = DependencyState::empty();
-        for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
-            match subscript {
-                crate::TensorUpdateSubscript::Whole => {
-                    value_count = value_count.saturating_mul(extent as usize);
-                }
-                crate::TensorUpdateSubscript::Index(crate::TensorIndex::Runtime(register_id)) => {
-                    selector = selector.union(self.get(*register_id)?);
-                }
-                crate::TensorUpdateSubscript::Index(crate::TensorIndex::Constant(_)) => {}
-                crate::TensorUpdateSubscript::Slice { start, dimensions } => {
-                    let slice_count = saturating_tensor_extent(dimensions);
-                    selector = selector.union(self.range(*start, slice_count)?);
-                    value_count = value_count.saturating_mul(slice_count);
-                }
-            }
-        }
-        Ok((value_count, selector))
     }
 
     fn tensor_fill(

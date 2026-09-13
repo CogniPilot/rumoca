@@ -645,16 +645,10 @@ impl SolveRuntime {
         let Some(compiled) = self.compiled_assignment_schedule(backend.as_ref(), sequence) else {
             return Ok(false);
         };
-        if compiled
+        compiled
             .call(solver_y, params, t, self.model.external_tables.as_slice())
-            .is_ok()
-        {
-            return Ok(true);
-        }
-        self.compiled_assignment_schedules
-            .borrow_mut()
-            .insert(sequence, None);
-        Ok(false)
+            .map_err(RuntimeSolveError::solve_ir)?;
+        Ok(true)
     }
 
     fn compiled_assignment_schedule(

@@ -1020,7 +1020,7 @@ mod native_policy_tests {
         assert!(
             error
                 .to_string()
-                .contains("injected native expression failure")
+                .contains("injected native assignment failure")
         );
         assert!(
             counters.total_failed() > 0,

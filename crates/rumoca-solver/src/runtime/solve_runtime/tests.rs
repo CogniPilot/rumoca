@@ -51,6 +51,14 @@ fn set_test_implicit_jvp(
     mirror_scalar_implicit_jvp(model);
 }
 
+fn derive_test_structural_artifacts(model: &mut solve::SolveModel) {
+    let (continuous, initialization) =
+        solve_eval::derive_solve_structural_artifacts(&model.problem, &model.artifacts)
+            .expect("fixture programs derive their structural artifacts");
+    model.artifacts.continuous.structural = continuous;
+    model.artifacts.initialization.structural = initialization;
+}
+
 fn set_complete_test_projection_plan(model: &mut solve::SolveModel) {
     let state_count = model.state_scalar_count();
     let solver_count = model.solver_scalar_count();
@@ -941,30 +949,29 @@ fn mode_dependent_repivot_model() -> solve::SolveModel {
 fn refresh_newton_repivots_mode_dependent_coupled_residuals() {
     // At k=0, row 0 is structurally incident on x but numerically independent
     // of it. The complete Jacobian remains nonsingular.
-    let model = mode_dependent_repivot_model();
+    let mut model = mode_dependent_repivot_model();
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     // The second row now exposes y = 3 - x, but x still has no causal seed.
-    // Incomplete coverage must keep the complete, dynamically pivoted solve.
+    // The stage owns both residuals and unknowns, so its Newton solve does
+    // not need an isolatable assignment for every initial guess.
     assert_eq!(runtime.algebraic_refresh.rows.len(), 1);
     assert_eq!(runtime.algebraic_refresh.rows[0].target_index(), 1);
     assert!(matches!(
         runtime.algebraic_refresh.rows[0].assignment_shape(),
         Some(solve::TargetAssignmentShape::Additive { .. })
     ));
-    assert!(
-        !super::refresh_projection::value_stage_seed_coverage_is_complete(
-            &runtime.algebraic_refresh
-        )
-    );
+    assert!(runtime.value_stage_schedule_is_certified(&runtime.algebraic_refresh));
     assert_eq!(runtime.algebraic_refresh.simultaneous_plan.blocks.len(), 1);
 
     let mut solver_y = model.initial_y.clone();
-    runtime
-        .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[0.0], 1.0e-10, 4)
-        .expect("coupled Newton solve should dynamically repivot the residuals");
-
-    assert!((solver_y[0] - 2.0).abs() <= 1.0e-9);
-    assert!((solver_y[1] - 1.0).abs() <= 1.0e-9);
+    for k in [0.0, 1.0, 3.0, 0.0] {
+        runtime
+            .refresh_algebraic_and_output_slots_certified(0.0, &mut solver_y, &[k], 1.0e-10, 4)
+            .expect("the prepared coupled stage should repivot at the current parameters");
+        assert!((solver_y[0] - 2.0 / (1.0 + k)).abs() <= 1.0e-9);
+        assert!((solver_y[1] - (3.0 - solver_y[0])).abs() <= 1.0e-9);
+    }
 }
 
 fn refresh_with_value_stages(

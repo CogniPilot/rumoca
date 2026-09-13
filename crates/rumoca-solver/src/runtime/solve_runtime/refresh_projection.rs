@@ -931,9 +931,11 @@ impl SolveRuntime {
 
     pub(super) fn value_stage_schedule_is_certified(&self, plan: &solve::RefreshPlan) -> bool {
         let structural = self.continuous_structural.algebraic_projection();
+        // Construction binds each projection stage to its complete BLT block.
+        // Its seeds are optional guesses; Newton solves every block coordinate
+        // even when a particular residual cannot be isolated as an assignment.
         plan.simultaneous_block_indices.len() == plan.simultaneous_plan.blocks.len()
             && !plan.value_stages.is_empty()
-            && value_stage_seed_coverage_is_complete(plan)
             && plan
                 .simultaneous_block_indices
                 .iter()
@@ -1130,23 +1132,6 @@ impl SolveRuntime {
             )
         }
     }
-}
-
-pub(super) fn value_stage_seed_coverage_is_complete(plan: &solve::RefreshPlan) -> bool {
-    plan.value_stages.iter().all(|stage| match stage {
-        solve::RefreshStage::ProjectionBlock {
-            plan: projection,
-            seed_rows,
-            ..
-        } => projection.blocks.iter().all(|block| {
-            block.y_indices.iter().all(|target| {
-                plan.selected_rows(seed_rows)
-                    .iter()
-                    .any(|row| row.target_index() == *target)
-            })
-        }),
-        _ => true,
-    })
 }
 
 pub(super) fn seed_error_allows_projection(error: &RuntimeSolveError) -> bool {

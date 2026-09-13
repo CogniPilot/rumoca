@@ -95,6 +95,107 @@ The runtime repair and its focused/canary checks are complete. The remaining
 passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
 
+## OMC profile and remaining algebraic refresh overhead
+
+Forty sequential executions of the unchanged, xtask-generated RollingWheel
+OMC executable confirm that solver step count does not explain the gap.
+The original initialization file, horizon, DASSL settings, and CSV output are
+retained; OMP/OpenBLAS threads are fixed to one. The executable SHA-256 is
+`a563bc0a18b6ae9baed42ad78014c27044f94cea56cfaaae8f45ceb22793dd0a`.
+All forty executions succeed with 1,028 DASSL steps, 1,329 ODE evaluations,
+42 Jacobians, eight error-test failures, and zero convergence failures.
+
+| OMC measurement | Median across forty executions |
+|---|---:|
+| Reported simulation time | 16.582 ms |
+| Reported output time | 31.356 ms |
+| Reported solver time, excluding callbacks | 1.097 ms |
+| Reported total simulation/output time | 50.655 ms |
+| Whole-process user CPU | 67.345 ms |
+| Whole-process wall observation | 114.236 ms |
+
+The whole-process wall observation includes the diagnostic driver's polling;
+it is not an isolated solver timer. The simulation timer ranges from 15.868 to
+21.956 ms. A 999 Hz user-CPU `perf` capture across these runs retains 2,502
+samples with no lost samples. CSV emission accounts for 43.25% of inclusive
+samples and generated `functionAlgebraics` for 5.32%. Floating-point formatting
+is the largest self-time cost. The generated ODE entry invokes 44 top-level
+equation routines, which may themselves call other routines. Raw profiles,
+per-run statistics, source-artifact hashes, and commands are retained under
+`rolling-wheel/omc-perf-repeated-1` and `rolling-wheel/profile_omc_repeated.py`.
+
+Rumoca's latest clean isolated declared-Sim measurement remains 4.283 seconds.
+Its profile excludes build/startup, while the OMC profile includes those phases
+and CSV output; their sampled percentages must not be treated as having the
+same denominator. A separate temporary positive-time Rumoca assignment census
+counts 2,224,551 calls: 2,168,913 Direct assignments and 55,638 Zero assignments.
+There are no TensorAffine assignments, ruling out that suspected path for this
+model. Instrumentation adds overhead, so its timing is not a benchmark.
+
+The stage diagnostic identifies two refusal reasons. Coupled projection blocks
+without an isolatable seed for every coordinate fail the runtime seed-coverage
+guard. Separately, the Solve dependency certificate says projection block 868,
+which assigns Y114 (`wheel1.rollingWheel.r_road_0[3]`) to zero, invalidates
+earlier row 814 in coupled block 858. The runtime therefore refuses staged
+execution and uses the broader refresh projection. No native assignment compile
+or execution failures were observed. These findings are retained in
+`rolling-wheel/critical-assignment-census-{1,4}`; diagnostic probes are removed.
+
+Inspection of the actual prepared DAE disproves an upstream BLT-order defect.
+Prepared expression 4023 updates component three of vector residual 3107 with
+expression 4021; row 814 no longer depends on algebraic coordinate 72/2, the
+road-height component. The lowered program preserves that exact TensorUpdate
+at operation 764. However, `DependencyWalk::tensor_update` unions the whole patch
+into every output and retains every original base dependency, including the
+overwritten component. This introduces the false reverse edge. The prepared
+DAE and scalar incidence are retained in `rolling-wheel/ordering-prepared-dae.json`
+and `rolling-wheel/ordering-probe-2.log`.
+
+The candidate dependency derivation follows fixed index/whole-axis projections
+exactly, including separate AD lanes; runtime indices and slices retain their
+conservative dependencies. The tensor owner and operation sequence are
+unchanged. Three reduced vector/matrix tests fail before the fix; all four
+tests, including the dynamic-selector control, pass afterwards. Governing
+contracts are MLS §10.5/§10.6.9, SPEC_0032 §2, and SPEC_0007 SOLVE-C17/C36/C56.
+The separate runtime repair relies on the constructor's complete projection
+block ownership instead of requiring an isolatable seed for every unknown.
+Missing producers still reject runtime construction; genuine backward
+dependencies still reject one-pass execution. Two reduced tests with derived
+structural artifacts fail the old dispatch requirement (`coupled-stage-seeds-red-2.log`);
+the earlier fixture omitted those artifacts and is not the decisive RED proof.
+
+Enabling the stages exposes another runtime defect: an admitted native
+assignment execution error was silently retried through the interpreter.
+`prepared-stages-libraries-3.log` records the existing simulation discriminator
+incorrectly succeeding with an always-failing native backend. Assignment errors
+now propagate, restore the incoming snapshot, and do not permanently disable
+native execution. The discriminator now observes the assignment error, the
+first native failure reached by the prepared stage order. A separate regression
+checks restoration after a partial native write and a second attempted call.
+
+All 297 IR, 190 evaluator, 457 solver, and 128 simulation library tests pass
+(`prepared-stages-libraries-4.log`); all-target/all-feature Clippy passes for all
+four crates (`prepared-stages-clippy-4.log`). The fixed
+`target/msl/multibody-prepared-stages-canary` passes at parent `3799c0c8`,
+working-tree digest
+`e5d98371f99a43da88bd65b89d3defbea7e92a14d58081eda8e0042e77f704ad`.
+All twenty phase/simulation outcomes and bands are unchanged: nine compared
+models high, all 175 initial channels high, and zero skipped, missing, excluded,
+nonidentifiable, or deviating comparisons. Eleven workers are requested and
+admitted. The exact delta is `rolling-wheel/prepared-stages-canary-delta.json`.
+
+Replaying the unchanged RollingWheel residual programs through the repaired
+artifact derivation removes the row814/Y114 edge and every algebraic reverse
+invalidation (`prepared-stages-pattern-proof-1.log`). The first isolated run
+takes **4.303 seconds**, versus 4.283 seconds before; user CPU remains 4.24
+seconds, with zero major faults during Sim. Its trace is byte-identical to the
+baseline, SHA-256
+`340e0a5bab67e9a05b160f3b50a623126edd2660863fa9cd0f25461b16bc334b`.
+This pair establishes no speed improvement. The corrected dependency and
+dispatch contracts do not close the critical performance gap; the remaining
+prepared coupled-block execution needs profiling. The complete cohort sweep,
+combined `verify quick`, and `verify full` remain pending for this change.
+
 ## Selected algebraic residual native execution
 
 RollingWheel's selected algebraic residual callback always interpreted its
