@@ -6,6 +6,47 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-state-only-manifold-full` passes the local fallback gate
+at commit `f485ef13f2e3a79c9ae136c193eb3560f05114dc`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The complete 566-model sweep takes 175.94 seconds. Eleven Rumoca workers were
+requested; available memory limited execution to ten. OMC reuses 169 cached
+results and runs one new model in one persistent session. The run metadata's
+14-worker OMC setting describes its configured budget, not fourteen active
+new simulations.
+
+**All 153 compared models are strict-high (27.03% of 566)**, with seventeen
+reviewed exclusions, zero missing/nonidentifiable traces, and all 18,498 initial
+channels high. No compared trajectory channel deviates. All nine electrical
+counterexamples retain their high bands. **MultiBody returns to 20/42 high**;
+RollingWheelSetDriving is the only phase/simulation and band change from
+`multibody-singleton-degree-full`. Every preceding high model remains high.
+The delta, electrical checks, and artifact hashes are in
+`rolling-wheel/state-only-manifold-full-delta.json` under the campaign directory.
+
+| Model | Previous full simulation | Current full simulation | Current trajectory parity |
+|---|---:|---:|---|
+| RollingWheelSetDriving | Timeout at 12 s | 6.741 s | 892/892 channels high |
+| RollingWheel | 9.234 s | 6.407 s | 184/184 channels high |
+
+The wheel-set build still takes 10.708 seconds, separately from simulation.
+Its complete trace is byte-identical to the earlier singleton-degree diagnostic
+(`3dc2333f4b9d6d69bead292633f3304aa57204f430040d50c00fb62753006a5b`),
+with maximum channel bounded normalized L1 `5.061492181479045e-6`.
+RollingWheel's trace changes slightly and remains all-high, maximum channel
+bounded normalized L1 `1.1053709819053231e-4`. OMC's cached RollingWheel
+simulation timing is 0.134 seconds: substantial runtime overhead remains.
+The fixed 145-model performance cohort median is 2.585 versus 2.245 before;
+the expanded 170-completion median is 1.688. Memory pressure, concurrency,
+and cached OMC timings prevent interpreting this pair as an isolated speedup.
+
+The runtime repair and its focused/canary checks are complete. The remaining
+22 MultiBody models still need investigation. Combined `verify quick` last
+passed before seven subsequent implementation changes; `verify full` has not
+run. No PR, release, or baseline promotion is claimed.
+
+## Previous complete measurement: singleton degree queries
+
 `target/msl/multibody-singleton-degree-full` passes the local fallback gate at
 commit `39cb7f2384de9d15cf3d022bf16d1d2c5b1d168c`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
@@ -79,7 +120,8 @@ zero missing/skipped/excluded/nonidentifiable traces. It ran at parent `39cb7f23
 with dirty digest `a3031f39be8bb4047180ee0e1142d4a5c9a43b65010c3b9b861017d54a8008a0`.
 Eleven workers were requested, but the memory limiter admitted one; this is
 not an eleven-worker timing comparison. The delta is retained in
-`rolling-wheel/state-only-manifold-canary-delta.json`. A new full sweep is pending.
+`rolling-wheel/state-only-manifold-canary-delta.json`. The completed full sweep
+at `f485ef13` is recorded above.
 
 ## Previous complete measurement: supplied derivative chains
 
