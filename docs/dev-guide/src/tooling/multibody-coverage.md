@@ -6,6 +6,33 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-prepared-stages-full` passes the local fallback gate at
+commit `440f4466fec6987eb1cbcb6c68f34500566319ae`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The complete 566-model run takes 196.38 seconds with eleven requested and
+admitted workers; the OMC reference/comparison stage accounts for 91.87 seconds.
+
+All **154 compared models are strict-high (27.21% of 566)**, with seventeen
+unchanged reviewed exclusions, zero missing/nonidentifiable traces, and all
+18,693 initial channels high. There are zero deviating trajectory channels.
+Every previous high model remains high, including the nine electrical
+counterexamples. **MultiBody remains 20/42 high**.
+
+`DCPM_Cooling` advances from a simulation timeout to 7.911 seconds in Sim,
+with all 195 channels high and maximum channel bounded normalized L1
+`1.518715114241044e-5`. This is the only band change. The other phase change is
+`GenerationOfFMUs`, which remains absent: its previous structural refusal is
+replaced by a ten-second Solve-stage timeout in this run. The complete delta is
+`rolling-wheel/prepared-stages-full-delta.json`.
+
+RollingWheel takes 4.556 seconds in Sim and RollingWheelSetDriving 5.015 seconds;
+all 184 and 892 respective channels remain high. The clean isolated RollingWheel
+pair below remains effectively unchanged at 4.283 versus 4.303 seconds. The
+critical OMC runtime gap remains open. Combined `verify quick` and `verify full`
+have not run for this change; no PR, release, or baseline promotion is claimed.
+
+## Previous complete measurement: selected native residual execution
+
 `target/msl/multibody-native-residual-full` passes the local fallback gate at
 commit `a2cd4deae1c50e9650c0ca3124452c0d72013b2b`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
@@ -193,8 +220,9 @@ baseline, SHA-256
 `340e0a5bab67e9a05b160f3b50a623126edd2660863fa9cd0f25461b16bc334b`.
 This pair establishes no speed improvement. The corrected dependency and
 dispatch contracts do not close the critical performance gap; the remaining
-prepared coupled-block execution needs profiling. The complete cohort sweep,
-combined `verify quick`, and `verify full` remain pending for this change.
+prepared coupled-block execution needs profiling. The subsequent named-commit
+complete cohort sweep passes as recorded above; combined `verify quick` and
+`verify full` have not run for this change.
 
 ## Selected algebraic residual native execution
 
