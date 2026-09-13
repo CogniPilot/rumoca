@@ -6,6 +6,37 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-function-scope-index-full` passes the local fallback
+MSL gate at commit `a2bf9abc7ea12a0c16a2674e22626d9abfd03c92`, digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The 566-model run finishes in 136.49 seconds with eleven model workers.
+**All 152 compared models remain strict-high (26.86% of 566)**, with seventeen
+existing reviewed exclusions and zero missing or nonidentifiable traces.
+All 17,606 initial channels are high; no trajectory channel deviates. Every
+previously high model, including the nine original electrical counterexamples,
+retains its band.
+
+All four Solve completion regressions from the scalar-contact sweep recover.
+DCPM_Drive completes again under its unchanged reviewed exclusion, with
+9.185 seconds of Solve lowering and 9.383 seconds of build time. PrismaticConstraint,
+GearConstraint, and GenerationOfFMUs again report their structural refusals
+within budget. Raw simulation and initialization completions return to 169
+and 183. Solve completion reaches 258: Fourbar_analytic now reports a
+structural refusal, 1622/1659, instead of timing out. This gives a concrete
+next diagnostic, not a new successful simulation.
+
+MultiBody remains **19/42 high**, with nineteen compared, all 8,477 trajectory
+and initial channels high, and no skipped, missing, excluded, or
+nonidentifiable MultiBody traces. DAE completion remains 35/42. RollingWheel
+reports 9.264 seconds of simulation including initialization. Relative to
+the pre-contact `multibody-selected-jvp-full`, every simulation band and
+execution outcome is retained; only Fourbar_analytic changes its refusal
+classification. The full delta and hashes are in
+`rolling-wheel/function-scope-index-full-delta.json`. Combined `verify quick`
+and `verify full` success and complete MultiBody coverage are not established.
+
+## Previous complete measurement: scalar contact reconstruction
+
 `target/msl/multibody-scalar-contact-full` passes the local fallback-baseline
 MSL gate at commit `adc5d4b2ac965d1b1778647ad78bc26dc16f5a6a`, digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
@@ -68,8 +99,8 @@ excluded, nonidentifiable, and deviating counts are zero. At HEAD
 `09e66c8be6c5df71fbf964564516ff15eb678d0c`, its working-tree digest is
 `94c4aafbbe07bf098a355f7069b749bfae1541297682197261500d1d2024eeca`.
 `rolling-wheel/function-scope-index-canary-delta.json` records the delta.
-The original full run's four Solve timeouts remain open until measured again
-after this change.
+The subsequent full run records all four Solve completion regressions as
+recovered in the latest measurement; the underlying structural refusals remain.
 
 ## Previous complete measurement: selected native Jacobians
 
