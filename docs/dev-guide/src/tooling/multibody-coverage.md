@@ -171,6 +171,55 @@ before this implementation, and its focused tests and gates pass as recorded
 below. `verify full` has not run. Twenty-two MultiBody examples still lack
 high parity; Fourbar_analytic's structural refusal is the next investigation.
 
+### LineForceWithTwoMasses: retained-value preflight
+
+The full derivative-chain sweep exposed a panic while restoring a previously
+retained manifold after direct state demotion. A bounded replay identifies
+`body1.w_a`, RHS expression 7059, as differentiable but not reconstructible as a
+state-only value. Reconstruction reaches `jointUPS.axisLength` without a causal
+value anchor and hits an `expect` whose alleged preflight never ran. This is a
+structural proof/consumer mismatch, not a Modelica source error or solver issue.
+The earlier candidate for the same state, RHS 5693, does have a value proof.
+
+OMC's flat, optimiser, and backend XML captures under `line-force/omc-stages`
+all succeed. Its flat source defines `body1.w_a = angularVelocity2(body1.frame_a.R)`;
+the function returns the record's `w` field. Its backend represents axisLength
+as a dummy state, retains the geometric square-root definition, and issues its
+first and second derivatives. Rumoca's panic is earlier than numerical execution;
+these captures do not establish a Rumoca trace comparison.
+
+The reduced checked-DAE test returns a whole vector from a pure function whose
+other argument is a matrix. Differentiation can follow the returned argument,
+but retaining the complete call needs the matrix's exact value. The RED reproduces
+the same panic (`line-force/manifold-preflight-red-1.log`). Before reconstructing
+a demotion, structural analysis now proves an exact RHS value if a surviving
+manifold references that state. The value must use remaining state/invariant
+anchors. A missing proof rejects this candidate through the existing
+`WouldInvalidateManifold` outcome, allowing other candidates to be considered.
+A removed lifted constraint requires no retained-value substitution. Tensor
+arguments, source equations, assertions, and the final manifold check remain
+under their existing owners (SPEC_0007 structural scope / STRUCT-T03).
+
+The negative case now rejects without panic; a control with an exact whole-matrix
+definition reconstructs a state-only manifold, and demotion without a retained
+constraint remains available. All 156 structural tests, 572 compiler-core tests,
+243 architecture tests, seventeen size/spec gates, structural Clippy, formatting,
+and whitespace checks pass. No temporary probes remain. The original DAE replay
+now completes with a typed structural refusal: its best intermediate residue is
+one equation/unknown pair, but no complete reduction is established. All 1,143
+reduction records, including two manifold rejections, are retained with the source
+DAE digest in `line-force/manifold-preflight-inspection.json`.
+
+The fixed twenty-model `target/msl/multibody-manifold-preflight-canary` has no
+phase or band changes from `multibody-derivative-chain-canary`. Its nine compared
+models and 175 initial channels are high, with zero skipped, excluded, missing,
+or nonidentifiable traces. This is Tier 1 evidence on parent
+`c7d85fc3b9b068f249d7f2972895c01559932e7b`, candidate worktree digest
+`9be3cae1653ab969bc61f1a89a7dea73b0bee0567ac6638d7538bc096fb0f3f5`;
+receipt `line-force/manifold-preflight-canary-delta.json`. The latest cohort
+number remains the named derivative-chain sweep above. Wheel-set performance
+remains open before further capability expansion.
+
 ### Fourbar_analytic: supplied derivative chains
 
 MLS §12.7.1 permits a higher-order annotation only in the differentiation

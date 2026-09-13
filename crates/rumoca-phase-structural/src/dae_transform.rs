@@ -734,11 +734,31 @@ fn discarded_initial_after_attempt(
     }
 }
 
-/// Try one candidate, observing its identity and outcome. Every decision this
-/// makes is exactly the one the pre-observation code made at this same branch
-/// point; `observer.observe` calls are interleaved without moving, adding, or
-/// removing any of them.
+/// Try one candidate whose derivative and retained-value obligations hold,
+/// observing its identity and outcome without changing the decision.
 fn attempt_direct_candidate(
+    model: &dae::Dae,
+    residue: usize,
+    stated: &[u32],
+    candidate: &DirectStateConstraint,
+    prior_manifold: &[ManifoldConstraint],
+    observer: &mut impl ReductionObserver,
+) -> Result<DirectAttempt, StructuralError> {
+    let identity = Identity::Direct(DirectIdentity::from(candidate));
+    if !model.inspect(|view| {
+        constraints::demotion_preserves_manifold_values(view, candidate, prior_manifold)
+    }) {
+        observer.observe(ReductionEvent::Attempt {
+            lane: Lane::Direct,
+            identity,
+            outcome: AttemptOutcome::WouldInvalidateManifold,
+        });
+        return Ok(DirectAttempt::Rejected);
+    }
+    reconstruct_direct_candidate(model, residue, stated, candidate, prior_manifold, observer)
+}
+
+fn reconstruct_direct_candidate(
     model: &dae::Dae,
     residue: usize,
     stated: &[u32],

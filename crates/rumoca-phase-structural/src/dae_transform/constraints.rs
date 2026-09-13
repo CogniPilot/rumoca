@@ -38,7 +38,9 @@ use super::equalities::{
 };
 use super::initial_pins::represented_initial_values;
 use super::tensor_maps::has_invariant_subscripts;
-use super::{DirectStateConstraint, HolonomicConstraint, HolonomicDifferentiationProof};
+use super::{
+    DirectStateConstraint, HolonomicConstraint, HolonomicDifferentiationProof, ManifoldConstraint,
+};
 use crate::StructuralError;
 
 /// The exact indirections reconstruction is allowed to follow while
@@ -348,6 +350,36 @@ pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> StateDemotionC
         admissible,
         conditional,
     }
+}
+
+/// A derivative proof alone cannot reconstruct a retained position value.
+/// Require the exact RHS value only when a surviving manifold uses this state.
+pub(super) fn demotion_preserves_manifold_values(
+    view: dae::DaeView<'_>,
+    candidate: &DirectStateConstraint,
+    manifold: &[ManifoldConstraint],
+) -> bool {
+    let state = view
+        .variable_id(candidate.state as usize)
+        .expect("candidate state resolves");
+    let needs_value = manifold.iter().any(|entry| {
+        if entry
+            .lifted
+            .is_some_and(|lifted| lifted.state == candidate.state)
+        {
+            return false;
+        }
+        let expression = view
+            .expression_id(entry.expression as usize)
+            .expect("retained manifold expression resolves");
+        dae::expr_contains_var(view, expression, state)
+    });
+    if !needs_value {
+        return true;
+    }
+    DifferentiationFacts::collect(view)
+        .materialized_state_anchors(view, candidate.rhs)
+        .is_some_and(|states| !states.contains(&candidate.state))
 }
 
 /// The MLS 3.6 §8.6 initial equation `rebuilt` no longer states, out of the ones
