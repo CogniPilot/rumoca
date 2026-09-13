@@ -283,6 +283,52 @@ fn mixed_projection_exact_plan(projection_first: bool) -> RefreshPlan {
 }
 
 #[test]
+fn affine_projection_seeds_are_omitted_from_all_owners_and_remainders() {
+    let source = two_output_source(true);
+    let plan = mixed_projection_exact_plan(true);
+    // Empty predecessors preserve the projection in the remainder. Full
+    // predecessors exercise the derivative and event owners themselves.
+    for predecessor in [RefreshPlan::default(), plan.clone()] {
+        let owners = ContinuousRefreshOwners::checked_for_source(
+            &source,
+            plan.clone(),
+            predecessor.clone(),
+            plan.clone(),
+            predecessor,
+            vec![plan.clone()],
+        )
+        .unwrap();
+        assert!(owners.algebraic_projection_block_is_affine(0));
+        for owner in [
+            owners.algebraic(),
+            owners.derivative(),
+            owners.root(),
+            owners.event(),
+            &owners.clock_events()[0],
+            owners.root_after_derivative().unwrap().remainder(),
+            owners.algebraic_after_derivative().unwrap().remainder(),
+            owners.clock_events_after_event()[0].remainder(),
+        ] {
+            assert_affine_projection_has_no_seed(&owners, owner);
+        }
+    }
+}
+
+fn assert_affine_projection_has_no_seed(owners: &ContinuousRefreshOwners, plan: &RefreshPlan) {
+    for stage in &plan.value_stages {
+        if let RefreshStage::ProjectionBlock {
+            seed_rows,
+            seed_sequence,
+            ..
+        } = stage
+        {
+            assert!(seed_rows.is_empty());
+            assert!(owners.exact_assignment_schedule(*seed_sequence).is_none());
+        }
+    }
+}
+
+#[test]
 fn projection_requirement_distinguishes_exact_and_residual_stages() {
     let exact = RefreshPlan {
         value_stages: vec![RefreshStage::ExactAssignments {

@@ -149,6 +149,60 @@ The runtime repair and its focused/canary checks are complete. The remaining
 passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
 
+## Omit singular guesses before prepared affine solves
+
+RollingWheel's positive-time runtime census found 5,540 failures of the optional
+scalar seed for `wheel1.rollingWheel.delta_0[3]` in projection block 823. Each
+failure restored the incoming snapshot and abandoned the staged refresh for
+the complete projection plan. The earlier census recorded 2,015,815 block
+evaluations, including 13,607 executions of the angle-rate block. These are
+instrumented diagnostic counts, not performance measurements.
+
+The preserved tensor equations locate the first divergent producer precisely:
+the seed isolates `delta_0[3]` from `dot(delta_0, e_long_0) = 0`. The source
+defines `e_long_0 = normalize(cross({0,0,1}, e_axis_0))`, so that scalar pivot
+is zero. The coupled contact equations use the orthogonal directions
+`e_axis_0`, `e_long_0`, and their cross product; the complete matrix remains
+nonsingular within the source assertion domain. OMC's generated linear system
+664 also retains a coupled three-variable solve, using body height in place
+of `delta_0[3]`. The equations and seed owner are pinned in
+`rolling-wheel/affine-seed-diagnosis.json`.
+
+Under SPEC_0007 SOLVE-C56, `ContinuousRefreshOwners` now omits projection seeds
+after deriving affinity from the canonical residuals and before emitting exact
+assignment schedules. The same construction applies to algebraic, derivative,
+root, event, clock, and remainder owners. An affine solve already computes its
+solution independently of the incoming guess. Nonlinear blocks retain their
+seeds, and the original tensor residuals, assertions, coupled matrices, and
+coordinate refinement remain authoritative.
+
+The reduced regression uses `y - k*x = 1`, `x + y = 3`: scalar isolation of
+`x` divides by zero at `k=0`, while the coupled determinant is `-(k+1)`.
+`affine-seed-red-1.log` records the failing schedule assertion. The repaired
+test reuses the prepared runtime across `k=0,1,3,0`; companion tests cover
+nonlinear seed retention and every owner/remainder's emitted schedule.
+All 303 Solve-IR, 190 evaluator, 459 solver, and 128 simulation tests pass
+(`affine-seed-libraries-{1,2}.log`), as does all-target/all-feature Clippy for
+these crates (`affine-seed-clippy-1.log`). Temporary probes were removed.
+
+The fixed `target/msl/multibody-affine-seed-canary` preserves all 20 phase and
+band outcomes against `multibody-affinity-canary`: all nine compared models
+and 175 initialization channels remain high, with zero skipped, missing,
+nonidentifiable, or deviating results. The run used 11 requested/admitted/pinned
+workers; `rolling-wheel/affine-seed-canary-delta.json` binds its dirty tree
+digest `4e0d8507938500c5264e1c551dbb49281b070abb631e9bf27c53fd0554f99056`
+to parent `2db3389d45583ba3551b1cb19124a75eeef2ef0c`.
+
+The clean isolated profile `rolling-wheel/critical-affine-seed-profile-1`
+takes 2.315 seconds in Sim and 2.28 seconds of user CPU, compared with
+3.439 and 3.40 seconds in `critical-affinity-symbols-profile-1`. Both use
+the unchanged 12-second budget, one worker, and named JIT symbols. This
+single pair supports a roughly 33% reduction, not a broad speedup claim.
+The trace is byte-identical (`61e23f642f39489afa0717c767501558972f2e29419b77b088befbe8b2aff3dd`),
+and the emitted canonical implicit programs, pure-call bodies, and complete
+projection plan compare equal. The new artifact has empty seeds on every
+affine projection stage. The critical performance gap to OMC remains open.
+
 ## Prepared linear solves through conditional tensor functions
 
 RollingWheel's generated plan formerly lacked affine certificates for block

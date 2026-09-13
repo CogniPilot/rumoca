@@ -1,11 +1,39 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     AlgebraicProjectionPlan, ContinuousRefreshConstructionError, ContinuousRefreshOwners,
-    RefreshPlan, refresh_error,
+    RefreshPlan, RefreshRowSelection, RefreshStage, refresh_error,
 };
 
 impl ContinuousRefreshOwners {
+    pub(super) fn omit_affine_projection_seeds(&mut self) {
+        for plan in [
+            &mut self.algebraic,
+            &mut self.derivative,
+            &mut self.root,
+            &mut self.event,
+        ]
+        .into_iter()
+        .chain(self.clock_events.iter_mut())
+        .chain(
+            self.root_after_derivative
+                .iter_mut()
+                .map(|relation| &mut relation.remainder),
+        )
+        .chain(
+            self.algebraic_after_derivative
+                .iter_mut()
+                .map(|relation| &mut relation.remainder),
+        )
+        .chain(
+            self.clock_events_after_event
+                .iter_mut()
+                .map(|relation| &mut relation.remainder),
+        ) {
+            omit_affine_seeds(plan, &self.projection_affinities);
+        }
+    }
+
     pub(crate) fn validate_projection_ownership(
         &self,
         canonical: &AlgebraicProjectionPlan,
@@ -26,6 +54,23 @@ impl ContinuousRefreshOwners {
             .get(&block_index)
             .copied()
             .unwrap_or(false)
+    }
+}
+
+fn omit_affine_seeds(plan: &mut RefreshPlan, affinities: &BTreeMap<usize, bool>) {
+    for stage in &mut plan.value_stages {
+        if let RefreshStage::ProjectionBlock {
+            block_index,
+            seed_rows,
+            ..
+        } = stage
+            && affinities.get(block_index) == Some(&true)
+        {
+            // The affine solve evaluates at the arithmetic origin. A scalar
+            // seed cannot affect its solution and can divide by zero even
+            // when the complete coupled matrix is nonsingular.
+            *seed_rows = RefreshRowSelection::default();
+        }
     }
 }
 

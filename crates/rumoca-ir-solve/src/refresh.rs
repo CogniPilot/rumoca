@@ -768,6 +768,7 @@ impl ContinuousRefreshOwners {
         self.validate_canonical_row_owners()?;
         self.projection_affinities =
             crate::affinity::projection_affinities(implicit_rhs, &self.algebraic);
+        self.omit_affine_projection_seeds();
         let Self {
             projection_affinities: _,
             algebraic,
