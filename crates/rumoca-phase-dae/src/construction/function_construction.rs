@@ -120,7 +120,40 @@ pub(super) fn construct_functions<'dae>(
             ids.insert(shapes.certificates()[specialization].key.clone(), function);
         }
     }
+    construct_derivatives(construction, shapes, &ids)?;
     Ok(ids)
+}
+
+fn construct_derivatives<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    shapes: &FunctionShapeAnalysis,
+    functions: &HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
+) -> Result<(), dae::DaeConstructionError> {
+    let mut links = Vec::new();
+    for derivative in shapes.derivatives() {
+        let source = functions[&shapes.certificates()[derivative.source].key];
+        let target = functions[&shapes.certificates()[derivative.target].key];
+        let at = dae::DaeProvenance::source(derivative.span)?;
+        let link = construction.functions(|functions| match derivative.previous {
+            Some(previous) => functions.next_derivative(
+                source,
+                links[previous],
+                target,
+                derivative.inputs.iter().copied(),
+                derivative.priority,
+                at,
+            ),
+            None => functions.first_derivative(
+                source,
+                target,
+                derivative.inputs.iter().copied(),
+                derivative.priority,
+                at,
+            ),
+        })?;
+        links.push(link);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

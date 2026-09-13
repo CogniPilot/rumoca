@@ -6,6 +6,7 @@
 
 // SPEC_0021 file-size exception - split plan: extract the Solve program validation and invariant checks into ir-solve/src/program_checks.rs, leaving this file as the module facade and re-exports; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
+mod affinity;
 mod certificate;
 #[cfg(test)]
 mod certificate_tests;
@@ -13,6 +14,7 @@ mod certificate_tests;
 mod compute_block_tests;
 mod feature_query;
 pub mod fmi;
+mod initialization;
 mod layout;
 mod linear_op;
 mod model;
@@ -62,7 +64,9 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 61;
+pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
+
+pub const SOLVE_SCHEMA_VERSION: u16 = 70;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -1874,6 +1878,11 @@ fn validate_continuous_system_shape(
     system
         .refresh_owners
         .validate_against(&system.implicit_rhs)
+        .and_then(|()| {
+            system
+                .refresh_owners
+                .validate_projection_ownership(&system.algebraic_projection_plan)
+        })
         .map_err(
             |error| SolveProblemShapeContractError::ContinuousRefreshOwner {
                 detail: error.to_string(),
@@ -2011,34 +2020,46 @@ fn validate_initialization_system_shape(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
     let system = &problem.initialization;
+    validate_indices(
+        "initialization.given_state_indices",
+        system.given_state_indices(),
+        problem.solve_layout.state_scalar_count,
+    )?;
+
+    validate_count(
+        "initialization.manifold_row_count",
+        problem.continuous.manifold_residual.len()?,
+        system.manifold_row_count(),
+    )?;
+
     system
-        .residual
+        .residual()
         .validate_shape_contract("initialization.residual")?;
-    let residual_count = system.residual.len()?;
+    let residual_count = system.residual().len()?;
     validate_count(
         "initialization.row_targets",
         residual_count,
-        system.row_targets.len(),
+        system.row_targets().len(),
     )?;
     validate_count(
         "initialization.row_roles",
         residual_count,
-        system.row_roles.len(),
+        system.row_roles().len(),
     )?;
     validate_count(
         "initialization.update_targets",
-        system.update_rhs.len(),
-        system.update_targets.len(),
+        system.update_rhs().len(),
+        system.update_targets().len(),
     )?;
     validate_initial_projection_unknowns(
         "initialization.projection_unknowns",
-        &system.projection_unknowns,
+        system.projection_unknowns(),
         problem.solve_layout.solver_scalar_count(),
         problem.layout.p_scalars(),
     )?;
     validate_initial_projection_plan(
         "initialization.projection_plan",
-        &system.projection_plan,
+        system.projection_plan(),
         residual_count,
         problem.solve_layout.solver_scalar_count(),
         problem.layout.p_scalars(),
@@ -2747,10 +2768,16 @@ fn validate_unique_projection_indices(
     Ok(())
 }
 
-fn projection_unknown_key(slot: ScalarSlot) -> Option<(bool, usize)> {
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ProjectionUnknownKey {
+    Y(usize),
+    P(usize),
+}
+
+fn projection_unknown_key(slot: ScalarSlot) -> Option<ProjectionUnknownKey> {
     match slot {
-        ScalarSlot::Y { index, .. } => Some((false, index)),
-        ScalarSlot::P { index, .. } => Some((true, index)),
+        ScalarSlot::Y { index, .. } => Some(ProjectionUnknownKey::Y(index)),
+        ScalarSlot::P { index, .. } => Some(ProjectionUnknownKey::P(index)),
         ScalarSlot::Time | ScalarSlot::Constant(_) => None,
     }
 }
@@ -2763,11 +2790,10 @@ fn validate_initial_projection_unknowns(
 ) -> Result<(), SolveProblemShapeContractError> {
     let mut seen = BTreeSet::new();
     for unknown in unknowns {
-        let key = match *unknown {
-            ScalarSlot::Y { index, .. } if index < y_upper_bound => Some((false, index)),
-            ScalarSlot::P { index, .. } if index < p_upper_bound => Some((true, index)),
-            _ => None,
-        };
+        let key = projection_unknown_key(*unknown).filter(|key| match *key {
+            ProjectionUnknownKey::Y(index) => index < y_upper_bound,
+            ProjectionUnknownKey::P(index) => index < p_upper_bound,
+        });
         let Some(key) = key else {
             return Err(SolveProblemShapeContractError::InvalidProjectionUnknown {
                 context,

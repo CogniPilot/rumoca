@@ -121,7 +121,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 self.binary(dae::BinaryOperator::Subtract, rhs, lhs, span)?
             }
             _ => {
-                let condition = self.expression(expression, 0)?;
+                let condition = self.unbuffered_expression(expression, 0)?;
                 let when_true = self.constant(-1.0, span)?;
                 let when_false = self.constant(1.0, span)?;
                 self.select(condition, when_true, when_false, span)?

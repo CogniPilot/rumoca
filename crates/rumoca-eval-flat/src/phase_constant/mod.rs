@@ -10,17 +10,21 @@
 //!
 //! These functions are used for compile-time constant evaluation per MLS §4.4.
 
+mod boolean_eval;
+mod borrowed_context;
+mod dimension_scope;
+mod enum_identity;
+
 use rustc_hash::FxHashMap;
 
-use crate::constant::{EvalContext, Value};
+use crate::constant::Value;
 use rumoca_ir_flat as flat;
 
 use rumoca_core::{ComponentPath, ExpressionVisitor, scoped_component_path_candidates};
 
-mod boolean_eval;
-mod enum_identity;
-
 pub use boolean_eval::try_eval_flat_expr_boolean;
+use borrowed_context::BorrowedContext;
+use dimension_scope::DimensionScope;
 use enum_identity::EnumCanonicalizer;
 pub use enum_identity::canonicalize_enum_literal;
 
@@ -28,69 +32,12 @@ pub use enum_identity::canonicalize_enum_literal;
 #[cfg(feature = "tracing")]
 use tracing::debug;
 
-/// Build an EvalContext from known parameter values and functions.
-pub fn build_eval_context(
-    known_ints: &FxHashMap<String, i64>,
-    known_reals: &FxHashMap<String, f64>,
-    known_bools: &FxHashMap<String, bool>,
-    array_dims: &FxHashMap<String, Vec<i64>>,
-    functions: &FxHashMap<String, rumoca_core::Function>,
-) -> EvalContext {
-    let parameter_capacity =
-        known_ints.len() + known_reals.len() + known_bools.len() + array_dims.len();
-    let mut eval_ctx = EvalContext::with_capacity(parameter_capacity, 0, functions.len() * 2);
-    for (k, v) in known_ints {
-        eval_ctx.add_parameter(k.clone(), Value::Integer(*v));
-    }
-    for (k, v) in known_reals {
-        eval_ctx.add_parameter(k.clone(), Value::Real(*v));
-    }
-    for (k, v) in known_bools {
-        eval_ctx.add_parameter(k.clone(), Value::Bool(*v));
-    }
-    for (k, v) in array_dims {
-        eval_ctx.add_array_dimensions(k.clone(), v.clone());
-    }
-    for func in functions.values() {
-        eval_ctx.add_function(func.clone());
-    }
-    eval_ctx
-}
-
-fn build_param_value_context(
-    ctx: &ParamEvalContext<'_>,
-    enum_canonicalizer: &EnumCanonicalizer,
-) -> EvalContext {
-    let mut eval_ctx = build_eval_context(
-        ctx.known_ints,
-        ctx.known_reals,
-        ctx.known_bools,
-        ctx.array_dims,
-        ctx.functions,
-    );
-    for (name, literal) in ctx.known_enums {
-        // An empty rendered name carries no enumeration identity and cannot key
-        // a lookup, so there is nothing to register for it.
-        let Some(identity) = enum_canonicalizer.canonicalize(literal) else {
-            continue;
-        };
-        let value = identity.to_value();
-        eval_ctx.add_parameter(name.clone(), value.clone());
-        eval_ctx.add_parameter(identity.to_flat_string(), value);
-    }
-    eval_ctx.set_lookup_scope(
-        ctx.var_context
-            .map(ComponentPath::from_flat_path)
-            .and_then(|path| path.parent()),
-    );
-    eval_ctx
-}
-
 fn eval_param_expr(expr: &rumoca_core::Expression, ctx: &ParamEvalContext<'_>) -> Option<Value> {
     ParamEvaluator::new(ctx).eval_value(expr, ctx.var_context)
 }
 
 /// Context for compile-time parameter expression evaluation (MLS §4.4).
+#[derive(Clone, Copy)]
 pub struct ParamEvalContext<'a> {
     pub known_ints: &'a FxHashMap<String, i64>,
     pub known_reals: &'a FxHashMap<String, f64>,
@@ -128,18 +75,18 @@ impl<'a> ParamEvalContext<'a> {
 
 /// Reusable evaluator for one stable parameter inventory.
 ///
-/// Flatten evaluates many bindings against the same maps during each
-/// fixed-point pass. Preparing those maps once avoids rebuilding and cloning
-/// the complete parameter/function inventory for every expression.
-pub struct ParamEvaluator {
-    eval_ctx: EvalContext,
+/// Values, dimensions, and function bodies are borrowed for the duration of
+/// evaluation. Only enumeration identities and function-name aliases need
+/// preparation; unrelated scalar bindings are never copied.
+pub struct ParamEvaluator<'a> {
+    eval_ctx: BorrowedContext<'a>,
     enum_canonicalizer: EnumCanonicalizer,
 }
 
-impl ParamEvaluator {
-    pub fn new(ctx: &ParamEvalContext<'_>) -> Self {
+impl<'a> ParamEvaluator<'a> {
+    pub fn new(ctx: &ParamEvalContext<'a>) -> Self {
         let enum_canonicalizer = EnumCanonicalizer::new(ctx.known_enums);
-        let eval_ctx = build_param_value_context(ctx, &enum_canonicalizer);
+        let eval_ctx = BorrowedContext::new(ctx, &enum_canonicalizer);
         Self {
             eval_ctx,
             enum_canonicalizer,
@@ -147,7 +94,7 @@ impl ParamEvaluator {
     }
 
     fn set_var_context(&mut self, var_context: Option<&str>) {
-        self.eval_ctx.set_lookup_scope(
+        self.eval_ctx.literals.set_lookup_scope(
             var_context
                 .map(ComponentPath::from_flat_path)
                 .and_then(|path| path.parent()),
@@ -200,18 +147,6 @@ pub fn try_eval_integer_with_context(
     eval_param_expr(expr, ctx).and_then(|value| value.as_integer())
 }
 
-/// Try to evaluate a flat expression to a boolean value with full context.
-///
-/// This extends `try_eval_flat_expr_boolean` with scoped VarRef resolution
-/// via `var_context` (MLS §7.2), so unqualified enum/bool refs in parameter
-/// bindings can be evaluated while computing integer if-expressions.
-pub fn try_eval_flat_expr_boolean_with_context(
-    expr: &rumoca_core::Expression,
-    ctx: &ParamEvalContext,
-) -> Option<bool> {
-    eval_param_expr(expr, ctx).and_then(|value| value.as_bool())
-}
-
 /// Evaluate a flat expression to a real using scoped lookup context.
 pub fn try_eval_real_with_context(
     expr: &rumoca_core::Expression,
@@ -262,7 +197,7 @@ pub fn infer_array_dimensions_full_with_conds(
         functions: &functions,
         var_context: None,
     };
-    infer_array_dimensions_with_context(expr, &ctx)
+    infer_dimensions_scoped(expr, &DimensionScope::new(&ctx)).filter(|shape| !shape.is_empty())
 }
 
 /// Infer array dimensions with function output shape metadata available.
@@ -270,19 +205,24 @@ pub fn infer_array_dimensions_full_with_functions(
     expr: &rumoca_core::Expression,
     ctx: &ParamEvalContext<'_>,
 ) -> Option<Vec<i64>> {
-    infer_array_dimensions_with_context(expr, ctx)
+    infer_dimensions_scoped(expr, &DimensionScope::new(ctx)).filter(|shape| !shape.is_empty())
 }
 
-fn infer_array_dimensions_with_context(
+fn infer_dimensions_scoped(
     expr: &rumoca_core::Expression,
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
     match expr {
-        rumoca_core::Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } => infer_array_literal_dimensions_with_context(elements, *is_matrix, ctx),
+        rumoca_core::Expression::Literal { .. } => Some(Vec::new()),
+        rumoca_core::Expression::Unary { rhs, .. } => infer_dimensions_scoped(rhs, ctx),
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            let lhs = infer_dimensions_scoped(lhs, ctx)?;
+            let rhs = infer_dimensions_scoped(rhs, ctx)?;
+            (lhs.is_empty() && rhs.is_empty()).then(Vec::new)
+        }
+        rumoca_core::Expression::Array { elements, kind, .. } => {
+            infer_array_literal_dimensions_with_context(elements, *kind, ctx)
+        }
         rumoca_core::Expression::BuiltinCall { function, args, .. } => {
             infer_builtin_call_dimensions_with_context(*function, args, ctx)
         }
@@ -308,13 +248,17 @@ fn infer_array_dimensions_with_context(
         rumoca_core::Expression::Index {
             base, subscripts, ..
         } => {
-            let dims = infer_array_dimensions_with_context(base, ctx)?;
+            let dims = infer_dimensions_scoped(base, ctx)?;
             project_dims_by_subscripts(&dims, subscripts, ctx)
         }
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } => {
-            let dims = lookup_array_dims_in_scope(name.as_str(), ctx.var_context, ctx.array_dims)?;
+            if ctx.is_index(name) {
+                return subscripts.is_empty().then(Vec::new);
+            }
+            let dims = lookup_array_dims_in_scope(name.as_str(), ctx.var_context, ctx.array_dims)
+                .or_else(|| ctx.has_scalar_value(expr).then(Vec::new))?;
             project_dims_by_subscripts(&dims, subscripts, ctx)
         }
         _ => None,
@@ -324,7 +268,7 @@ fn infer_array_dimensions_with_context(
 fn project_dims_by_subscripts(
     dims: &[i64],
     subscripts: &[rumoca_core::Subscript],
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
     let mut projected = Vec::new();
     let mut dim_index = 0usize;
@@ -333,7 +277,11 @@ fn project_dims_by_subscripts(
         match subscript {
             rumoca_core::Subscript::Index { .. } => {}
             rumoca_core::Subscript::Expr { expr, .. } => {
-                try_eval_integer_with_context(expr, ctx)?;
+                match infer_dimensions_scoped(expr, ctx)?.as_slice() {
+                    [] => {}
+                    [extent] => projected.push(*extent),
+                    _ => return None,
+                }
             }
             rumoca_core::Subscript::Colon { .. } => projected.push(dim),
         }
@@ -346,12 +294,21 @@ fn project_dims_by_subscripts(
 fn infer_user_function_call_dimensions(
     name: &rumoca_core::Reference,
     args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
     let func = ctx.functions.get(name.as_str())?;
     let output = func.outputs.first()?;
     if output.shape_expr.is_empty() {
-        return concrete_param_dims(output).or_else(|| broadcast_function_arg_dims(args, ctx));
+        return concrete_param_dims(output)
+            .or_else(|| broadcast_function_arg_dims(args, ctx))
+            .or_else(|| {
+                args.iter()
+                    .all(|arg| {
+                        infer_dimensions_scoped(function_arg_value(arg), ctx)
+                            .is_some_and(|shape| shape.is_empty())
+                    })
+                    .then(Vec::new)
+            });
     }
 
     let mut local_ints = ctx.known_ints.clone();
@@ -376,11 +333,14 @@ fn infer_user_function_call_dimensions(
         var_context: None,
     };
 
+    let local_scope = DimensionScope::new(&local_ctx);
     output
         .shape_expr
         .iter()
         .enumerate()
-        .map(|(index, subscript)| eval_param_shape_subscript(output, index, subscript, &local_ctx))
+        .map(|(index, subscript)| {
+            eval_param_shape_subscript(output, index, subscript, &local_scope)
+        })
         .collect()
 }
 
@@ -393,7 +353,7 @@ fn concrete_param_dims(param: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {
 
 fn broadcast_function_arg_dims(
     args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
     args.iter()
         .map(function_arg_value)
@@ -428,137 +388,82 @@ fn named_call_arg(expr: &rumoca_core::Expression) -> Option<(&str, &rumoca_core:
 
 fn infer_function_arg_dims(
     arg: &rumoca_core::Expression,
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
-    if let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    } = arg
-        && subscripts.is_empty()
-    {
-        return lookup_array_dims_in_scope(name.as_str(), ctx.var_context, ctx.array_dims);
-    }
-
-    infer_array_dimensions_full_with_functions(arg, ctx)
+    infer_dimensions_scoped(arg, ctx)
 }
 
 fn infer_array_literal_dimensions_with_context(
     elements: &[rumoca_core::Expression],
-    is_matrix: bool,
-    ctx: &ParamEvalContext<'_>,
+    kind: rumoca_core::ArrayConstructor,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
-    if elements.is_empty() {
-        return Some(vec![0]);
-    }
-
-    if is_matrix {
-        return infer_matrix_constructor_dimensions_with_context(elements, ctx);
-    }
-
-    let mut dims = vec![elements.len() as i64];
-    if let Some(first) = elements.first()
-        && let Some(inner_dims) = infer_array_dimensions_with_context(first, ctx)
-    {
-        dims.extend(inner_dims);
-    }
-    Some(dims)
-}
-
-fn infer_matrix_constructor_dimensions_with_context(
-    elements: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext<'_>,
-) -> Option<Vec<i64>> {
-    let has_nested_rows = matches!(
-        elements.first(),
-        Some(rumoca_core::Expression::Array { .. })
-    );
-    if !has_nested_rows {
-        return infer_matrix_row_dimensions_with_context(elements, ctx)
-            .map(|(rows, cols)| vec![rows, cols]);
-    }
-
-    let mut rows = 0i64;
-    let mut expected_cols = None;
-    for row in elements {
-        let rumoca_core::Expression::Array {
-            elements: row_elements,
-            ..
-        } = row
-        else {
-            return None;
-        };
-        let (row_count, col_count) = infer_matrix_row_dimensions_with_context(row_elements, ctx)?;
-        match expected_cols {
-            Some(expected) if expected != col_count => return None,
-            None => expected_cols = Some(col_count),
-            _ => {}
-        }
-        rows += row_count;
-    }
-
-    Some(vec![rows, expected_cols?])
-}
-
-fn infer_matrix_row_dimensions_with_context(
-    elements: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext<'_>,
-) -> Option<(i64, i64)> {
-    let single_entry = elements.len() == 1;
-    let mut expected_rows = None;
-    let mut cols = 0i64;
-    for element in elements {
-        let dims = infer_array_dimensions_with_context(element, ctx)
-            .or_else(|| scalar_matrix_entry_dims(element))?;
-        let (entry_rows, entry_cols) = matrix_entry_dimensions(&dims, single_entry)?;
-        match expected_rows {
-            Some(expected) if expected != entry_rows => return None,
-            None => expected_rows = Some(entry_rows),
-            _ => {}
-        }
-        cols += entry_cols;
-    }
-    Some((expected_rows?, cols))
-}
-
-fn scalar_matrix_entry_dims(expr: &rumoca_core::Expression) -> Option<Vec<i64>> {
-    matches!(expr, rumoca_core::Expression::Literal { .. }).then(Vec::new)
+    let shapes = elements
+        .iter()
+        .map(|element| {
+            infer_dimensions_scoped(element, ctx)
+                .or_else(|| {
+                    matches!(element, rumoca_core::Expression::Literal { .. }).then(Vec::new)
+                })?
+                .into_iter()
+                .map(|n| usize::try_from(n).ok())
+                .collect()
+        })
+        .collect::<Option<Vec<Vec<usize>>>>()?;
+    kind.checked_dimensions(&shapes)?
+        .into_iter()
+        .map(|n| i64::try_from(n).ok())
+        .collect()
 }
 
 fn infer_array_comprehension_dimensions_with_context(
     expr: &rumoca_core::Expression,
     indices: &[rumoca_core::ComprehensionIndex],
     filter: Option<&rumoca_core::Expression>,
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
     if filter.is_some() {
         return None;
     }
-
+    let mut local = ctx.clone();
     let mut dims = Vec::with_capacity(indices.len().saturating_add(1));
     for index in indices {
-        let range_dims = infer_array_dimensions_with_context(&index.range, ctx)?;
-        if range_dims.is_empty() {
+        let range_dims = infer_dimensions_scoped(&index.range, &local)?;
+        let [extent] = range_dims.as_slice() else {
             return None;
-        }
-        let iter_size = range_dims
-            .iter()
-            .copied()
-            .fold(1i64, |acc, dim| acc.saturating_mul(dim.max(0)));
-        dims.push(iter_size);
+        };
+        dims.push(*extent);
+        local.bind_index(&index.name);
     }
-
-    if let Some(mut inner_dims) = infer_array_dimensions_with_context(expr, ctx) {
-        dims.append(&mut inner_dims);
-    }
-
+    let inner = infer_dimensions_scoped(expr, &local)
+        .or_else(|| matches!(expr, rumoca_core::Expression::Literal { .. }).then(Vec::new))?;
+    dims.extend(inner);
     Some(dims)
 }
 
 fn infer_builtin_call_dimensions_with_context(
     function: rumoca_core::BuiltinFunction,
     args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
     match function {
+        function if function.is_unary_real_math() => {
+            let [arg] = args else {
+                return None;
+            };
+            infer_dimensions_scoped(arg, ctx)
+        }
+        rumoca_core::BuiltinFunction::Mod
+        | rumoca_core::BuiltinFunction::Rem
+        | rumoca_core::BuiltinFunction::Div
+        | rumoca_core::BuiltinFunction::Atan2 => {
+            let [lhs, rhs] = args else {
+                return None;
+            };
+            (infer_dimensions_scoped(lhs, ctx)?.is_empty()
+                && infer_dimensions_scoped(rhs, ctx)?.is_empty())
+            .then(Vec::new)
+        }
         rumoca_core::BuiltinFunction::Zeros | rumoca_core::BuiltinFunction::Ones => {
             eval_dimension_args_with_context(args, ctx)
         }
@@ -572,28 +477,28 @@ fn infer_builtin_call_dimensions_with_context(
             if args.len() != 3 {
                 return None;
             }
-            let n = try_eval_integer_with_context(&args[2], ctx)?;
+            let n = ctx.integer(&args[2])?;
             (n >= 2).then_some(vec![n])
         }
         rumoca_core::BuiltinFunction::Identity => {
             if args.len() != 1 {
                 return None;
             }
-            let n = try_eval_integer_with_context(&args[0], ctx)?;
+            let n = ctx.integer(&args[0])?;
             Some(vec![n, n])
         }
         rumoca_core::BuiltinFunction::Vector => {
             if args.len() != 1 {
                 return None;
             }
-            let dims = infer_array_dimensions_with_context(&args[0], ctx)?;
+            let dims = infer_dimensions_scoped(&args[0], ctx)?;
             Some(vec![dims.iter().copied().product()])
         }
         rumoca_core::BuiltinFunction::Matrix => {
             if args.len() != 1 {
                 return None;
             }
-            let dims = infer_array_dimensions_with_context(&args[0], ctx)?;
+            let dims = infer_dimensions_scoped(&args[0], ctx)?;
             match dims.as_slice() {
                 [] => Some(vec![1, 1]),
                 [len] => Some(vec![*len, 1]),
@@ -607,11 +512,11 @@ fn infer_builtin_call_dimensions_with_context(
 
 fn eval_dimension_args_with_context(
     args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
     let mut dims = Vec::with_capacity(args.len());
     for arg in args {
-        dims.push(try_eval_integer_with_context(arg, ctx)?);
+        dims.push(ctx.integer(arg)?);
     }
     (!dims.is_empty()).then_some(dims)
 }
@@ -619,22 +524,22 @@ fn eval_dimension_args_with_context(
 fn infer_if_dimensions_with_context(
     branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
     else_branch: &rumoca_core::Expression,
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
     for (cond, then_expr) in branches {
-        match try_eval_flat_expr_boolean_with_context(cond, ctx) {
-            Some(true) => return infer_array_dimensions_with_context(then_expr, ctx),
+        match ctx.boolean(cond) {
+            Some(true) => return infer_dimensions_scoped(then_expr, ctx),
             Some(false) => continue,
             None => return None,
         }
     }
-    infer_array_dimensions_with_context(else_branch, ctx)
+    infer_dimensions_scoped(else_branch, ctx)
 }
 
 fn bind_function_dimension_args(
     func: &rumoca_core::Function,
     args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
     local_ints: &mut FxHashMap<String, i64>,
     local_reals: &mut FxHashMap<String, f64>,
     local_bools: &mut FxHashMap<String, bool>,
@@ -681,20 +586,20 @@ fn bind_function_dimension_args(
 fn bind_dimension_arg_value(
     name: &str,
     expr: &rumoca_core::Expression,
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
     local_ints: &mut FxHashMap<String, i64>,
     local_reals: &mut FxHashMap<String, f64>,
     local_bools: &mut FxHashMap<String, bool>,
 ) -> Option<()> {
-    if let Some(value) = try_eval_integer_with_context(expr, ctx) {
+    if let Some(value) = ctx.integer(expr) {
         local_ints.insert(name.to_string(), value);
         return Some(());
     }
-    if let Some(value) = try_eval_real_with_context(expr, ctx) {
+    if let Some(value) = ctx.real(expr) {
         local_reals.insert(name.to_string(), value);
         return Some(());
     }
-    if let Some(value) = try_eval_flat_expr_boolean_with_context(expr, ctx) {
+    if let Some(value) = ctx.boolean(expr) {
         local_bools.insert(name.to_string(), value);
         return Some(());
     }
@@ -705,22 +610,12 @@ fn eval_param_shape_subscript(
     param: &rumoca_core::FunctionParam,
     index: usize,
     subscript: &rumoca_core::Subscript,
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<i64> {
     match subscript {
         rumoca_core::Subscript::Index { value, .. } => Some(*value),
-        rumoca_core::Subscript::Expr { expr, .. } => try_eval_integer_with_context(expr, ctx),
+        rumoca_core::Subscript::Expr { expr, .. } => ctx.integer(expr),
         rumoca_core::Subscript::Colon { .. } => param.dimensions().get(index).copied(),
-    }
-}
-
-fn matrix_entry_dimensions(dims: &[i64], single_entry: bool) -> Option<(i64, i64)> {
-    match dims {
-        [] => Some((1, 1)),
-        [len] if single_entry => Some((*len, 1)),
-        [len] => Some((*len, 1)),
-        [rows, cols] => Some((*rows, *cols)),
-        _ => None,
     }
 }
 
@@ -728,13 +623,11 @@ fn infer_range_dimensions_with_context(
     start: &rumoca_core::Expression,
     step: Option<&rumoca_core::Expression>,
     end: &rumoca_core::Expression,
-    ctx: &ParamEvalContext<'_>,
+    ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
-    let start_val = try_eval_integer_with_context(start, ctx)?;
-    let end_val = try_eval_integer_with_context(end, ctx)?;
-    let step_val = step
-        .map(|s| try_eval_integer_with_context(s, ctx))
-        .unwrap_or(Some(1))?;
+    let start_val = ctx.integer(start)?;
+    let end_val = ctx.integer(end)?;
+    let step_val = step.map(|s| ctx.integer(s)).unwrap_or(Some(1))?;
 
     if step_val == 0 {
         return None;
@@ -892,7 +785,7 @@ pub fn try_eval_flat_expr_enum(
 fn register_enum_value_candidates(
     expr: &rumoca_core::Expression,
     enum_canonicalizer: &EnumCanonicalizer,
-    eval_ctx: &mut EvalContext,
+    eval_ctx: &mut BorrowedContext<'_>,
 ) {
     match expr {
         rumoca_core::Expression::If {
@@ -908,11 +801,13 @@ fn register_enum_value_candidates(
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty()
-            && !eval_ctx.parameters.contains_key(name.as_str())
+            && !eval_ctx.contains_parameter(name.as_str())
             && looks_like_enum_literal_path(name.as_str()) =>
         {
             if let Some(identity) = enum_canonicalizer.canonicalize(name.as_str()) {
-                eval_ctx.add_parameter(name.to_string(), identity.to_value());
+                eval_ctx
+                    .literals
+                    .add_parameter(name.to_string(), identity.to_value());
             }
         }
         _ => {}
@@ -922,7 +817,7 @@ fn register_enum_value_candidates(
 fn register_enum_comparison_candidates(
     expr: &rumoca_core::Expression,
     enum_canonicalizer: &EnumCanonicalizer,
-    eval_ctx: &mut EvalContext,
+    eval_ctx: &mut BorrowedContext<'_>,
 ) {
     EnumComparisonRegistrar {
         enum_canonicalizer,
@@ -931,12 +826,12 @@ fn register_enum_comparison_candidates(
     .visit_expression(expr);
 }
 
-struct EnumComparisonRegistrar<'a> {
+struct EnumComparisonRegistrar<'a, 'b> {
     enum_canonicalizer: &'a EnumCanonicalizer,
-    eval_ctx: &'a mut EvalContext,
+    eval_ctx: &'a mut BorrowedContext<'b>,
 }
 
-impl ExpressionVisitor for EnumComparisonRegistrar<'_> {
+impl ExpressionVisitor for EnumComparisonRegistrar<'_, '_> {
     fn visit_binary(
         &mut self,
         op: &rumoca_core::OpBinary,

@@ -39,6 +39,7 @@
 mod array_expansion;
 mod attributes;
 mod component_loop;
+mod component_redeclarations;
 mod conditional_components;
 mod connections;
 mod dims;
@@ -303,6 +304,8 @@ pub struct InstantiateContext {
     next_instance_id: u32,
     /// Modification environment for the current scope.
     mod_env: ast::ModificationEnvironment,
+    component_redeclarations: component_redeclarations::ComponentRedeclarations,
+    has_unapplied_redeclare: bool,
     /// Inner declarations visible in the current scope (MLS §5.4).
     /// Maps component name to inner declaration info.
     /// Stack-based: each entry contains the inner declarations at that scope level.
@@ -386,6 +389,8 @@ impl InstantiateContext {
             context_path_def_ids: Vec::new(),
             next_instance_id: 0,
             mod_env: ast::ModificationEnvironment::new(),
+            component_redeclarations: component_redeclarations::ComponentRedeclarations::default(),
+            has_unapplied_redeclare: false,
             inner_scopes: vec![IndexMap::default()],
             missing_inners: Vec::new(),
             scope_frames: vec![ScopeFrame::default()],
@@ -867,7 +872,10 @@ fn instantiate_class(
         // reuse it for all 100 instances, only applying per-instance modifications.
         let template = get_or_compute_template(tree, class, &mut ctx.template_cache)?;
         // Borrow cached template structures directly to avoid per-instance deep clones.
-        let effective_components = &template.effective_components;
+        let effective_components = ctx
+            .component_redeclarations
+            .apply(&template.effective_components);
+        let effective_components = effective_components.as_ref();
         let all_equations = &template.effective_equations;
         // MLS §7.3: Build type override map for replaceable type redeclarations.
         // When a record type like ThermodynamicState is redeclared in the enclosing
@@ -1136,25 +1144,6 @@ struct InstanceDataBuild<'a> {
     class_def: Option<&'a ast::ClassDef>,
 }
 
-/// True when this declaration carries a redeclare modifier of its own
-/// (`Holder h(redeclare C a[2])`, MLS §7.3).
-///
-/// The parser records one redeclare flag per source modifier, which settles the
-/// direct form. The redeclaration may also sit deeper inside an ordinary
-/// modifier — `Wrap w(h(redeclare C a[2]))` modifies `w.h` and redeclares
-/// `w.h.a` — so the modifier subtrees are searched as well. Only the redeclared
-/// type is ever propagated, so either shape leaves everything instantiated
-/// beneath this declaration carrying unproven dimensions.
-fn declaration_carries_redeclare_modifier(comp: &ast::Component) -> bool {
-    comp.source_modification_redeclare_flags
-        .iter()
-        .any(|is_redeclare| *is_redeclare)
-        || comp
-            .source_modifications
-            .iter()
-            .any(traversal_adapter::expression_contains_redeclare)
-}
-
 fn build_instance_data(
     args: InstanceDataBuild<'_>,
 ) -> InstantiateResult<(
@@ -1199,13 +1188,8 @@ fn build_instance_data(
         declaration_source_scope: args.declaration_source_scope,
         class_overrides: args.class_overrides,
         has_forwarding_class_redeclare: args.has_forwarding_class_redeclare,
-        // MLS §7.3 redeclarations reach a component from two directions: an
-        // `extends` modification (recorded on the merged declaration by
-        // `merge_extends`) or a redeclare modifier on this very declaration
-        // (`Holder h(redeclare C a[2])`). Only the redeclared type is consumed
-        // either way, so both must be recorded.
-        had_redeclare: args.comp.redeclared_by_modification
-            || declaration_carries_redeclare_modifier(args.comp),
+        has_unapplied_redeclare: args.ctx.has_unapplied_redeclare
+            || component_redeclarations::has_unapplied_redeclare(args.comp),
         // Type prefixes (MLS §4.4.2, SPEC_0022 §3.19-3.20)
         variability: args.effective_variability.clone(),
         causality: args.causality.clone(),
@@ -1738,6 +1722,15 @@ fn instantiate_nested_class(
     // to this component's instantiation. Parent-scope entries with names that coincidentally
     // match nested class component names must NOT leak through (e.g., parent has parameter `T`
     // and nested HeatPort connector also has field `T`).
+    let component_redeclarations =
+        component_redeclarations::ComponentRedeclarations::from_component(
+            tree,
+            comp,
+            nested_class,
+            effective_components,
+            ctx,
+            modifier_imports,
+        )?;
     let mod_env_snapshot = ctx.mod_env().active.clone();
     let shifted_parent_keys = collect_shifted_parent_mod_keys(comp, &mod_env_snapshot);
     let targeted_keys = collect_targeted_mod_keys(comp, &mod_env_snapshot);
@@ -1807,7 +1800,13 @@ fn instantiate_nested_class(
         ctx.active_package_constant_aliases.push(alias.clone());
     }
     ctx.active_type_overrides.push(type_overrides.clone());
+    let parent_redeclarations =
+        std::mem::replace(&mut ctx.component_redeclarations, component_redeclarations);
+    let parent_unapplied = ctx.has_unapplied_redeclare;
+    ctx.has_unapplied_redeclare |= component_redeclarations::has_unapplied_redeclare(comp);
     let result = instantiate_class(tree, nested_class, Some(instance_id), None, ctx, overlay);
+    ctx.has_unapplied_redeclare = parent_unapplied;
+    ctx.component_redeclarations = parent_redeclarations;
     ctx.active_type_overrides.pop();
     if active_package_alias.is_some() {
         ctx.active_package_constant_aliases.pop();

@@ -1118,7 +1118,7 @@ fn local_int_component_bound(name: &str, binding: ast::Expression) -> ast::Compo
 fn real_array_expr(values: &[&str]) -> ast::Expression {
     ast::Expression::Array {
         elements: values.iter().map(|value| real_expr(value)).collect(),
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -1316,7 +1316,7 @@ fn real_vector_function_fails_closed_on_rank_type_and_purity() {
     // Rank-2 (matrix) actual fails closed.
     let matrix = ast::Expression::Array {
         elements: vec![real_array_expr(&["1.0"]), real_array_expr(&["2.0"])],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: rumoca_core::Span::DUMMY,
     };
     let rank2 = func_call("vecEqual", vec![matrix, real_array_expr(&["1.0"])]);
@@ -1328,7 +1328,7 @@ fn real_vector_function_fails_closed_on_rank_type_and_purity() {
     // Boolean-element actual fails closed.
     let boolean_array = ast::Expression::Array {
         elements: vec![bool_expr(true), bool_expr(false)],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: rumoca_core::Span::DUMMY,
     };
     let wrong_type = func_call(

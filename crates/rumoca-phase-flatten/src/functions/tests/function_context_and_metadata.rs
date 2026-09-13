@@ -1,6 +1,81 @@
 use super::*;
 
 #[test]
+fn malformed_derivative_orders_are_not_replaced_with_the_default() {
+    for restriction in [
+        "order=0",
+        "order=-1",
+        "order=1.5",
+        "order=4294967296",
+        "order=1,order=2",
+    ] {
+        let source = format!(
+            "function f input Real x; output Real y; algorithm y:=x; annotation(derivative({restriction})=df); end f; function df input Real x; input Real dx; output Real dy; algorithm dy:=dx; end df;"
+        );
+        let resolved = resolve_test_source(&source, "invalid_derivative_order.mo");
+        let annotation = &resolved.inner().definitions.classes["f"].annotation;
+        let error =
+            extract_derivative_annotations(annotation).expect_err("invalid order is rejected");
+        let diagnostic = rumoca_core::PhaseError::to_diagnostic(&error);
+        assert_eq!(diagnostic.code.as_deref(), Some("EF032"));
+        assert!(diagnostic.labels.iter().any(|label| !label.span.is_dummy()));
+    }
+}
+
+#[test]
+fn parsed_derivative_modifiers_are_retained_in_source_order() {
+    let source = r#"
+function f
+  input Real q;
+  input Real v;
+  output Real y;
+algorithm
+  y := q*q;
+  annotation(derivative(noDerivative=q, zeroDerivative=v)=df,
+             derivative=df_general);
+end f;
+function df
+  input Real q;
+  input Real v;
+  output Real dy;
+algorithm
+  dy := v;
+end df;
+function df_general
+  input Real q;
+  input Real v;
+  input Real dq;
+  input Real dv;
+  output Real dy;
+algorithm
+  dy := 2*q*dq;
+end df_general;
+"#;
+    let parsed = resolve_test_source(source, "derivative_metadata.mo");
+    let function = &parsed.inner().definitions.classes["f"];
+    let annotations = extract_derivative_annotations(&function.annotation).unwrap();
+    assert_eq!(annotations.len(), 2);
+    assert_eq!(annotations[0].derivative_function.as_str(), "df");
+    assert_eq!(
+        annotations[0]
+            .no_derivative
+            .iter()
+            .map(rumoca_core::Reference::as_str)
+            .collect::<Vec<_>>(),
+        ["q"]
+    );
+    assert_eq!(
+        annotations[0]
+            .zero_derivative
+            .iter()
+            .map(rumoca_core::Reference::as_str)
+            .collect::<Vec<_>>(),
+        ["v"]
+    );
+    assert_eq!(annotations[1].derivative_function.as_str(), "df_general");
+}
+
+#[test]
 fn test_function_context_inherits_base_lexical_imports() {
     let (tree, derived_function) = function_context_inheritance_tree();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
@@ -287,9 +362,9 @@ fn test_extract_derivative_annotation_simple() {
         span: test_span(),
     }];
 
-    let derivs = extract_derivative_annotations(&annotations);
+    let derivs = extract_derivative_annotations(&annotations).unwrap();
     assert_eq!(derivs.len(), 1);
-    assert_eq!(derivs[0].derivative_function, "myFunc_der");
+    assert_eq!(derivs[0].derivative_function.as_str(), "myFunc_der");
     assert_eq!(derivs[0].order, 1);
     assert!(derivs[0].zero_derivative.is_empty());
     assert!(derivs[0].no_derivative.is_empty());
@@ -331,9 +406,9 @@ fn test_extract_derivative_annotation_with_modification() {
         span: test_span(),
     }];
 
-    let derivs = extract_derivative_annotations(&annotations);
+    let derivs = extract_derivative_annotations(&annotations).unwrap();
     assert_eq!(derivs.len(), 1);
-    assert_eq!(derivs[0].derivative_function, "myFunc_der2");
+    assert_eq!(derivs[0].derivative_function.as_str(), "myFunc_der2");
     assert_eq!(derivs[0].order, 2);
 }
 
@@ -369,11 +444,18 @@ fn test_extract_derivative_annotation_with_zero_derivative() {
         span: test_span(),
     }];
 
-    let derivs = extract_derivative_annotations(&annotations);
+    let derivs = extract_derivative_annotations(&annotations).unwrap();
     assert_eq!(derivs.len(), 1);
-    assert_eq!(derivs[0].derivative_function, "myFunc_der");
+    assert_eq!(derivs[0].derivative_function.as_str(), "myFunc_der");
     assert_eq!(derivs[0].order, 1);
-    assert_eq!(derivs[0].zero_derivative, vec!["k"]);
+    assert_eq!(
+        derivs[0]
+            .zero_derivative
+            .iter()
+            .map(rumoca_core::Reference::as_str)
+            .collect::<Vec<_>>(),
+        vec!["k"]
+    );
 }
 
 /// One `<name> = <Boolean literal>` annotation argument, in the shape the

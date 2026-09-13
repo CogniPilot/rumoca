@@ -85,6 +85,31 @@ model AttributePlant
         m = m,
         leaf(off(each start = shared, each fixed = true)));
 end AttributePlant;
+
+model FixedAttributeBank
+    parameter Boolean pinned = false;
+    Real x[3](start = {1, 2, 3}, fixed = fill(pinned, 3));
+equation
+    der(x) = -x;
+end FixedAttributeBank;
+
+model FixedAttributeInstances
+    FixedAttributeBank enabled(pinned = true);
+    FixedAttributeBank disabled;
+end FixedAttributeInstances;
+
+model FixedAttributeLeaf
+    parameter Boolean pinned = true;
+    Real x(start=2, fixed=false);
+equation
+    der(x) = -x;
+end FixedAttributeLeaf;
+
+model FixedAttributeOverride
+    parameter Boolean pinned = false;
+    FixedAttributeLeaf enabled(x(fixed=not pinned));
+    FixedAttributeLeaf disabled(x(fixed=pinned));
+end FixedAttributeOverride;
 "#;
 
 fn flatten_model(model_name: &str) -> rumoca_ir_flat::Model {
@@ -103,6 +128,32 @@ fn flatten_model(model_name: &str) -> rumoca_ir_flat::Model {
 
 fn flatten_source() -> rumoca_ir_flat::Model {
     flatten_model("Top")
+}
+
+#[test]
+fn parameter_array_fixed_attributes_preserve_instance_initial_constraints() {
+    let model = flatten_model("FixedAttributeInstances");
+    for (name, expected) in [("enabled.x", true), ("disabled.x", false)] {
+        let variable = &model.variables[&rumoca_core::VarName::new(name)];
+        assert_eq!(variable.dims, vec![3]);
+        assert_eq!(
+            variable.fixed,
+            Some(expected),
+            "MLS 8.6: the fixed array must retain each instance's initial constraints for {name}"
+        );
+    }
+}
+
+#[test]
+fn computed_fixed_modifier_uses_its_written_scope_and_overrides_local_default() {
+    let model = flatten_model("FixedAttributeOverride");
+    for (name, expected) in [("enabled.x", true), ("disabled.x", false)] {
+        assert_eq!(
+            model.variables[&rumoca_core::VarName::new(name)].fixed,
+            Some(expected),
+            "the modifier must read the enclosing pinned=false, not the leaf's pinned=true"
+        );
+    }
 }
 
 fn binding_of(model: &rumoca_ir_flat::Model, name: &str) -> rumoca_core::Expression {

@@ -7,7 +7,7 @@
 use rumoca_ir_dae as dae;
 use serde_json::{Value, json};
 
-pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 5;
+pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 6;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum DaeBackendError {
@@ -697,6 +697,14 @@ fn project_continuous_owner(owner: dae::ContinuousOwnerView<'_>) -> Value {
 
 fn project_initialization(view: dae::DaeView<'_>) -> Value {
     json!({
+        "parameter_values": view
+            .initial_parameter_values()
+            .map(|definition| json!({
+                "target": definition.target().index(),
+                "value": definition.value().index(),
+                "provenance": definition.provenance(),
+            }))
+            .collect::<Vec<_>>(),
         // MLS §8.6 initialization-instant values of discrete coordinates. A
         // template that renders only `owners` would start those coordinates
         // from their declared `start` instead, so the definitions are their own

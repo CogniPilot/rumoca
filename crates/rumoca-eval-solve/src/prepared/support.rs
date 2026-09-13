@@ -347,6 +347,8 @@ pub(super) fn checked_prepared_output_count(
 }
 
 pub(crate) fn non_causal_linear_op(op: &LinearOp) -> bool {
+    #[cfg(test)]
+    super::capability_tests::record_causality_visit();
     matches!(
         op,
         LinearOp::LoadSeed { .. }

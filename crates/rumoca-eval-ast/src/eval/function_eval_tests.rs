@@ -3,6 +3,29 @@ use rumoca_core::{ClassType, Token, Variability};
 use rumoca_ir_ast::{Component, ComponentRefPart, ComponentReference, ForIndex};
 use rustc_hash::FxHashMap;
 
+#[test]
+fn power_dimensions_preserve_scalar_and_square_matrix_shapes() {
+    let mut ctx = TypeCheckEvalContext::new();
+    for (name, shape, expected) in [
+        ("scalar", vec![], Some(vec![])),
+        ("square", vec![2, 2], Some(vec![2, 2])),
+        ("vector", vec![2], None),
+        ("rectangle", vec![2, 3], None),
+    ] {
+        ctx.add_dimensions(name, shape);
+        let power = binary(
+            OpBinary::Exp,
+            Expression::ComponentReference(cref(name)),
+            int_expr(2),
+        );
+        assert_eq!(
+            infer_dimensions_from_binding(&power, &ctx),
+            expected,
+            "{name}"
+        );
+    }
+}
+
 fn token(text: &str) -> Token {
     Token {
         text: text.into(),

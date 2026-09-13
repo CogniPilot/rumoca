@@ -19,6 +19,7 @@ impl Context {
     /// Create a new flatten context.
     pub(crate) fn new() -> Self {
         Self {
+            declared_dimensions: std::sync::Arc::default(),
             parameter_values: rustc_hash::FxHashMap::default(),
             real_parameter_values: rustc_hash::FxHashMap::default(),
             boolean_parameter_values: rustc_hash::FxHashMap::default(),

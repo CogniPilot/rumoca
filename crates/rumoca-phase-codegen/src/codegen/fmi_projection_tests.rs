@@ -99,11 +99,14 @@ fn component(delay_bearing: bool) -> solve::fmi::FmiComponent {
 
 fn component_with_initialization() -> solve::fmi::FmiComponent {
     let mut model = model_with_one_state_run(false);
-    model.problem.initialization.update_rhs = one_row_block();
-    model.problem.initialization.update_targets = vec![solve::ScalarSlot::Y {
+    let mut initialization = model.problem.initialization.clone().into_input();
+    initialization.update_rhs = one_row_block();
+    initialization.update_targets = vec![solve::ScalarSlot::Y {
         index: 0,
         byte_offset: 0,
     }];
+    model.problem.initialization = solve::InitializationSolveSystem::construct(initialization)
+        .expect("fixture initialization ownership is disjoint");
     solve::fmi::FmiComponent::construct(model, vec![state_input()])
         .expect("the initialization-bearing fixture is a checked component")
 }

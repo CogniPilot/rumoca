@@ -265,73 +265,6 @@ pub(crate) fn silent_totality_debt_sites(content: &str) -> Vec<usize> {
     sites
 }
 
-/// Names declared as `#[cfg(test)] mod <name>;`, whose backing file is compiled
-/// only under `cfg(test)` and therefore holds no shipped obligation.
-pub(crate) fn cfg_test_module_names(content: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut in_attributes = false;
-    for line in code_lines(content) {
-        let trimmed = line.trim_start();
-        let attributed = if in_attributes {
-            trimmed
-        } else {
-            match trimmed.strip_prefix(CFG_TEST_ATTRIBUTE) {
-                Some(rest) => rest,
-                None => continue,
-            }
-        };
-        match item_after_attributes(attributed) {
-            Some(item) => {
-                in_attributes = false;
-                names.extend(semicolon_module_name(item).map(str::to_owned));
-            }
-            None => in_attributes = true,
-        }
-    }
-    names
-}
-
-/// Names declared as `mod <name>;`, used to follow a test-only module into the
-/// files it in turn declares.
-pub(crate) fn declared_module_names(content: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for line in code_lines(content) {
-        names.extend(semicolon_module_name(line.trim_start()).map(str::to_owned));
-    }
-    names
-}
-
-/// Every line of a file as code, with comment and literal text removed.
-///
-/// Module declarations are read from stripped code for the same reason the
-/// counts are: a commented-out `mod name;` is not a declaration, and treating
-/// it as one would pull a shipped file into the test-only closure and hide its
-/// obligations.
-fn code_lines(content: &str) -> Vec<String> {
-    let mut stripper = CodeStripper::default();
-    content.lines().map(|line| stripper.strip(line)).collect()
-}
-
-/// Extracts `name` from a `mod name;` declaration, ignoring any visibility.
-fn semicolon_module_name(trimmed: &str) -> Option<&str> {
-    let after_visibility = strip_visibility(trimmed);
-    let rest = after_visibility.strip_prefix("mod ")?;
-    let name = rest.trim_end().strip_suffix(';')?.trim();
-    (!name.is_empty() && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_')).then_some(name)
-}
-
-fn strip_visibility(trimmed: &str) -> &str {
-    let Some(rest) = trimmed.strip_prefix("pub") else {
-        return trimmed;
-    };
-    match rest.strip_prefix('(') {
-        Some(scoped) => scoped
-            .find(')')
-            .map_or(trimmed, |end| scoped[end + 1..].trim_start()),
-        None => rest.trim_start(),
-    }
-}
-
 /// Removes comment text, string-literal contents and character literals from
 /// source lines, carrying whatever construct a line ends inside into the next
 /// line.
@@ -824,46 +757,6 @@ fn run() {
         assert_eq!(silent_totality_debt_sites(source), vec![1, 4, 4]);
     }
 
-    #[test]
-    fn cfg_test_module_names_finds_only_the_semicolon_form() {
-        let source = "\
-#[cfg(test)]
-mod liveness;
-#[cfg(test)]
-pub(crate) mod corpus;
-#[cfg(test)]
-mod inline_tests {
-    fn hidden() {}
-}
-mod shipped;
-";
-        assert_eq!(cfg_test_module_names(source), vec!["liveness", "corpus"]);
-        assert_eq!(
-            declared_module_names(source),
-            vec!["liveness", "corpus", "shipped"]
-        );
-    }
-
-    /// A commented-out declaration is not a declaration. Reading one as a
-    /// declaration pulls the named file into the test-only closure and deletes
-    /// its obligations from the count, so the module reader works on stripped
-    /// code like everything else. A `mod` line inside a multi-line block
-    /// comment is the form that reads as a declaration on its own.
-    #[test]
-    fn commented_out_module_declarations_are_not_declarations() {
-        let source = "\
-#[cfg(test)]
-mod real;
-// mod line_commented;
-/*
-mod block_commented;
-*/
-mod shipped;
-";
-        assert_eq!(cfg_test_module_names(source), vec!["real"]);
-        assert_eq!(declared_module_names(source), vec!["real", "shipped"]);
-    }
-
     /// A well-formed file ends outside every attributed item; a file cut off
     /// inside one is reported, because everything below the cut was dropped.
     #[test]
@@ -1267,23 +1160,5 @@ fn shipped() {
 }
 ";
         assert_eq!(totality_debt_sites(opening), vec![(5, ".expect(")]);
-    }
-
-    /// The module reader sees the joined form as one declaration too, so a
-    /// test-only module written that way still leaves the count.
-    #[test]
-    fn a_same_line_cfg_test_module_declaration_is_read_as_one() {
-        let source = "\
-#[cfg(test)] mod corpus;
-#[cfg(test)]
-mod liveness;
-mod shipped;
-";
-        assert_eq!(cfg_test_module_names(source), vec!["corpus", "liveness"]);
-        assert_eq!(
-            declared_module_names(source),
-            vec!["liveness", "shipped"],
-            "the joined form is not a bare `mod name;` line and is read only as an attributed one"
-        );
     }
 }

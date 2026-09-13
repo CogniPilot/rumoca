@@ -207,6 +207,7 @@ pub(super) fn trace_reverse_projection_coverage(
 
 pub(super) struct RefreshProjectionModel<'a> {
     pub(super) runtime: &'a SolveRuntime,
+    #[cfg(test)]
     pub(super) plan: &'a solve::AlgebraicProjectionPlan,
     pub(super) block_indices: &'a [usize],
     pub(super) plan_validated: bool,
@@ -551,11 +552,13 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     }
 
     fn algebraic_projection_block_is_affine(&self, block_index: usize) -> bool {
-        self.plan.blocks.get(block_index).is_some_and(|block| {
-            block
-                .rows
-                .iter()
-                .all(|&row| self.implicit_row_is_affine(row))
+        self.block_indices.get(block_index).is_some_and(|&index| {
+            self.runtime
+                .model
+                .problem
+                .continuous
+                .refresh_owners
+                .algebraic_projection_block_is_affine(index)
         })
     }
 
@@ -825,14 +828,6 @@ impl RefreshProjectionModel<'_> {
             .report_nonfinite_implicit_residual_row_inputs(t, y, row, value);
         if value.is_finite() { value } else { f64::NAN }
     }
-
-    fn implicit_row_is_affine(&self, row_idx: usize) -> bool {
-        let block = &self.runtime.implicit_scalar_rhs;
-        block
-            .row_output_position(row_idx)
-            .map(|(program_idx, _)| program_idx)
-            .is_some_and(|program_idx| block.certifies_parameter_static_y_gradient(program_idx))
-    }
 }
 
 impl SolveRuntime {
@@ -1060,6 +1055,7 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         let model = RefreshProjectionModel {
             runtime: self,
+            #[cfg(test)]
             plan,
             block_indices: std::slice::from_ref(&block_index),
             plan_validated: true,

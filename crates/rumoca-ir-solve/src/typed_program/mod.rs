@@ -4,6 +4,7 @@ mod call;
 mod program;
 mod types;
 
+pub use call::dependency::SolveCallDependency;
 pub use call::{
     SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite, SolvePureCallIdentity,
     SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner, SolvePureCallOwnerId,

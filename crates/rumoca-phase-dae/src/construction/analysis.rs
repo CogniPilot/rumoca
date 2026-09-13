@@ -22,6 +22,7 @@ mod function_returns;
 mod function_value_types;
 mod history_operators;
 mod initial_algorithms;
+mod initial_parameter_equations;
 mod loop_compaction;
 mod model_algorithm_calls;
 mod model_algorithm_statements;
@@ -156,6 +157,8 @@ pub(super) struct Analysis {
     /// Scalar initial-equation rows represented by typed initial discrete-value
     /// definitions rather than numeric initialization residuals.
     pub(super) initial_discrete_equation_rows: HashSet<usize>,
+    pub(super) initial_parameter_equations:
+        Vec<initial_parameter_equations::InitialParameterEquation>,
     pub(super) sample_lattices: Vec<(Span, PeriodicClockSchedule)>,
     pub(super) expression_events: ExpressionEventPlans,
     /// Exact scalar Boolean aliases of MLS §3.7.5 `sample(start, interval)`.
@@ -552,8 +555,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     )?;
     let (discrete_connection_ranks, aggregate_discrete_connections, discrete_value_topology) =
         analyze_discrete_connections(flat, &roles)?;
-    let (initial_algorithms, initial_discrete_equation_rows) =
-        analyze_initial_owners(flat, &roles, &states, &constants, &mut sample_lattices)?;
+    let initial = analyze_initial_owners(flat, &roles, &states, &constants, &mut sample_lattices)?;
     let balance = analyze_source_balance(SourceBalanceAnalysisInput {
         flat,
         roles: &roles,
@@ -579,7 +581,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         balance: balance.detail,
         continuous_family_rows,
         initialization_family_rows,
-        initial_discrete_equation_rows,
+        initial_discrete_equation_rows: initial.discrete_equation_rows,
+        initial_parameter_equations: initial.parameter_equations,
         sample_lattices,
         expression_events,
         sample_alias_schedules,
@@ -590,9 +593,9 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         clocked_when_owners: clock_domains.when_owners,
         clocked_coordinate_owners: clock_domains.coordinate_owners,
         model_algorithm_plans,
-        initial_parameters: initial_algorithms.parameters,
-        initial_discrete_values: initial_algorithms.discrete_values,
-        initial_algorithm_assertions: initial_algorithms.assertions,
+        initial_parameters: initial.algorithms.parameters,
+        initial_discrete_values: initial.algorithms.discrete_values,
+        initial_algorithm_assertions: initial.algorithms.assertions,
         function_plans,
         function_shapes,
         comprehension_plans: expression_support.comprehensions,
@@ -767,7 +770,13 @@ fn analyze_expression_event_ownership(
     Ok((events, aliases))
 }
 
-/// Prove initial-algorithm ownership and claim initial discrete equation rows
+struct InitialOwners {
+    algorithms: InitialAlgorithmAnalysis,
+    discrete_equation_rows: HashSet<usize>,
+    parameter_equations: Vec<initial_parameter_equations::InitialParameterEquation>,
+}
+
+/// Prove initial-algorithm ownership and claim initial definition rows
 /// as one construction transaction.
 ///
 /// The equation claim mutates the algorithm-owned discrete staging plan, so
@@ -779,11 +788,17 @@ fn analyze_initial_owners(
     states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
-) -> Result<(InitialAlgorithmAnalysis, HashSet<usize>), ToDaeError> {
+) -> Result<InitialOwners, ToDaeError> {
     let mut algorithms =
         analyze_initial_algorithm_owners(flat, roles, states, constants, sample_lattices)?;
-    let rows = claim_initial_discrete_equations(flat, roles, &mut algorithms.discrete_values)?;
-    Ok((algorithms, rows))
+    let discrete_equation_rows =
+        claim_initial_discrete_equations(flat, roles, &mut algorithms.discrete_values)?;
+    let parameter_equations = initial_parameter_equations::analyze(flat, roles)?;
+    Ok(InitialOwners {
+        algorithms,
+        discrete_equation_rows,
+        parameter_equations,
+    })
 }
 
 type EventAlgorithmAnalysis = (Vec<(Span, PeriodicClockSchedule)>, Vec<ModelAlgorithmPlan>);

@@ -87,7 +87,7 @@ fn initial_input_reads_plan_only_state_unknowns_and_keep_consistency_checks() {
     };
     let lowered = lower_dae_for_simulation(&model, &options).unwrap();
     assert_eq!(
-        lowered.problem.initialization.projection_unknowns,
+        lowered.problem.initialization.projection_unknowns(),
         [lowered.problem.layout.binding("x").unwrap()]
     );
     let inconsistent = compile(

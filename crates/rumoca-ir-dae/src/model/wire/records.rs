@@ -79,8 +79,20 @@ pub(super) struct FunctionEntryWire<Name = rumoca_core::VarName> {
     pub(super) statements: Vec<FunctionStatementInput>,
     /// MLS §12.9 external interface; mutually exclusive with `statements`.
     pub(super) external: Option<ExternalBodyInput<Name>>,
+    pub(super) derivatives: Vec<FunctionDerivativeWire>,
     #[serde(deserialize_with = "deserialize_provenance")]
     pub(super) declaration: DaeProvenance,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct FunctionDerivativeWire {
+    pub(super) target: u32,
+    pub(super) inputs: Vec<rumoca_core::FunctionDerivativeInput>,
+    pub(super) previous: Option<(u32, u32)>,
+    pub(super) priority: u32,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    pub(super) provenance: DaeProvenance,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -207,7 +219,7 @@ pub(super) struct ModelEventTransactionWire {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct InitialDiscreteValueWire {
+pub(super) struct InitialValueWire {
     pub(super) target: u32,
     pub(super) value: u32,
     #[serde(deserialize_with = "deserialize_provenance")]

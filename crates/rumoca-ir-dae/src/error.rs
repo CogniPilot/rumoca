@@ -178,10 +178,16 @@ pub enum DaeConstructionError {
         target: u32,
         span: Span,
     },
+    #[error("invalid derivative function: {reason}")]
+    InvalidFunctionDerivative { reason: &'static str, span: Span },
     #[error("reserved recursive functions do not form one strongly connected component")]
     InvalidRecursiveFunctionGroup { span: Span },
     #[error("variable `{name}` has the wrong DAE coordinate role")]
     InvalidVariableRole { name: VarName, span: Span },
+    #[error(
+        "initialization definition for `{name}` requires an unbound non-Real parameter with fixed=false"
+    )]
+    InvalidInitialParameter { name: VarName, span: Span },
     #[error("variable `{name}` of type {found:?} cannot be a {role:?} DAE coordinate")]
     InvalidVariableType {
         name: VarName,
@@ -361,8 +367,10 @@ impl DaeConstructionError {
             | Self::InvalidFunctionValueRead { span, .. }
             | Self::InvalidFunctionCoordinate { span, .. }
             | Self::InvalidFunctionDependency { span, .. }
+            | Self::InvalidFunctionDerivative { span, .. }
             | Self::InvalidRecursiveFunctionGroup { span }
             | Self::InvalidVariableRole { span, .. }
+            | Self::InvalidInitialParameter { span, .. }
             | Self::InvalidVariableType { span, .. }
             | Self::DuplicateDefinition { span, .. }
             | Self::DuplicateKey { span, .. }

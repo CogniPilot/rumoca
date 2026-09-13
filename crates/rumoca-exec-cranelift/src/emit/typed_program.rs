@@ -5,6 +5,7 @@
 //! contiguous 64-bit-cell range only inside this execution adapter.
 
 mod control;
+mod linear_solve;
 #[cfg(test)]
 mod local_store_tests;
 mod storage;
@@ -132,24 +133,30 @@ impl CompiledPureCallTable {
 
     pub(crate) fn call_cells(
         &self,
-        site: &solve::SolvePureCallSite,
+        site: rumoca_eval_solve::PureCallInvocation<'_>,
         input: &[u64],
         output: &mut [u64],
     ) -> Result<(), CompileError> {
-        let symbol = self
-            .symbols
-            .get(site.owner().index() as usize)
-            .filter(|symbol| {
-                symbol.owner == site.owner()
-                    && symbol.inputs.as_ref() == site.inputs()
-                    && symbol.outputs.as_ref() == site.outputs()
-            })
-            .ok_or_else(|| {
-                CompileError::Input(format!(
-                    "typed call site {} does not match its compiled owner",
-                    site.owner().index()
-                ))
-            })?;
+        let symbol = match site {
+            rumoca_eval_solve::PureCallInvocation::Primal(_) => {
+                self.symbols.get(site.owner().index() as usize)
+            }
+            rumoca_eval_solve::PureCallInvocation::Directional(_) => self
+                .directional_symbols
+                .get(site.owner().index() as usize)
+                .and_then(Option::as_ref),
+        }
+        .filter(|symbol| {
+            symbol.owner == site.owner()
+                && symbol.inputs.as_ref() == site.inputs()
+                && symbol.outputs.as_ref() == site.outputs()
+        })
+        .ok_or_else(|| {
+            CompileError::Input(format!(
+                "typed call site {} does not match its compiled owner",
+                site.owner().index()
+            ))
+        })?;
         let input_count = scalar_type_count(&symbol.inputs, "typed call input")?;
         let output_count = symbol.outputs.iter().try_fold(0usize, |count, value| {
             count
@@ -1003,6 +1010,11 @@ impl ProgramLowerer<'_, '_> {
                 lhs,
                 rhs,
             } => self.lower_matrix_multiply(*destination, *lhs, *rhs),
+            solve::SolveOperation::LinearSolve {
+                destination,
+                matrix,
+                rhs,
+            } => self.lower_linear_solve(*destination, *matrix, *rhs),
             solve::SolveOperation::Scale {
                 destination,
                 aggregate,

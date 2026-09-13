@@ -69,7 +69,7 @@ impl Serialize for FrozenStorage {
         S: serde::Serializer,
     {
         let projection = verify_owner_projection(self).map_err(serde::ser::Error::custom)?;
-        let mut state = serializer.serialize_struct("DaeStorage", 25)?;
+        let mut state = serializer.serialize_struct("DaeStorage", 26)?;
         state.serialize_field(
             "predefined_string_declaration",
             &self.predefined_string_declaration,
@@ -109,6 +109,7 @@ impl Serialize for FrozenStorage {
             ),
         )?;
         state.serialize_field("initial_discrete_values", &self.initial_discrete_values)?;
+        state.serialize_field("initial_parameter_values", &self.initial_parameter_values)?;
         state.serialize_field("discrete_real_equations", &self.discrete_real_equations)?;
         state.serialize_field("discrete_value_owners", &discrete_value_owner_output(self))?;
         state.serialize_field("model_event_transactions", &self.model_event_transactions)?;
@@ -172,7 +173,8 @@ struct StorageWire {
     expressions: ExpressionArenaWire,
     continuous_equation_operations: Vec<EquationOperationInput>,
     initialization_equation_operations: Vec<EquationOperationInput>,
-    initial_discrete_values: Vec<InitialDiscreteValueWire>,
+    initial_discrete_values: Vec<InitialValueWire>,
+    initial_parameter_values: Vec<InitialValueWire>,
     discrete_real_equations: Vec<DiscreteRealEquationWire>,
     discrete_value_owners: Vec<DiscreteValueOwnerWire>,
     model_event_transactions: Vec<ModelEventTransactionWire>,
@@ -323,6 +325,7 @@ fn reconstruct<'dae>(
     reconstruct_clocks(wire, dae, &mut ids)?;
     reconstruct_temporal(wire, dae, &mut ids)?;
     function_replay::reconstruct(wire, dae, &mut ids)?;
+    function_replay::reconstruct_derivatives(wire, dae, &ids)?;
     reconstruct_relations(wire, dae, &mut ids)?;
     define_variables(wire, dae, &ids, variable_reservations)?;
     define_conditions(wire, dae, &mut ids)?;
@@ -332,6 +335,7 @@ fn reconstruct<'dae>(
     reconstruct_events(wire, dae, &ids)?;
     reconstruct_equation_systems(wire, dae, &ids)?;
     reconstruct_initial_discrete_values(wire, dae, &ids)?;
+    reconstruct_initial_parameter_values(wire, dae, &ids)?;
     reconstruct_discrete_value_owners(wire, dae, &ids)?;
     reconstruct_model_event_transactions(wire, dae, &ids)
 }
@@ -404,6 +408,27 @@ fn map_model_event_target<'dae>(
             crate::ModelEventTarget::DiscreteValue(DiscreteValueId::from_raw(variable.index()))
         }
     })
+}
+
+fn reconstruct_initial_parameter_values<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+) -> Result<(), DaeConstructionError> {
+    for (index, definition) in wire.initial_parameter_values.iter().enumerate() {
+        let at = definition.provenance;
+        let variable = mapped(&ids.variables, definition.target, "variable", at)?;
+        let value = mapped_expression(ids, definition.value, at)?;
+        let id = dae.initialization(|initialization| {
+            initialization.parameter_initial_value(
+                crate::ParameterId::from_raw(variable.index()),
+                value,
+                at,
+            )
+        })?;
+        expect_ordinal("initial parameter value", index, id.index(), at)?;
+    }
+    Ok(())
 }
 
 /// Replay every MLS §8.6 discrete initial-value definition through the same

@@ -13,6 +13,7 @@ mod diagnostics;
 pub mod incidence;
 mod matching;
 pub mod report;
+mod residual_normalization;
 pub mod runtime_defined;
 mod same_tick;
 mod tarjan;

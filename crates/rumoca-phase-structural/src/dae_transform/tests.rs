@@ -1,4 +1,6 @@
+mod defining_equations;
 mod equalities;
+mod forwarding_equalities;
 mod functions;
 mod initial_pins;
 mod initial_values;
@@ -7,6 +9,8 @@ mod manifold_fields;
 mod reconstruction_failures;
 mod reduction_observation;
 mod runtime_quotients;
+mod shared_differentiation;
+mod tensor_linear_map;
 
 pub(super) use reconstruction_failures::independent_constraint_model;
 

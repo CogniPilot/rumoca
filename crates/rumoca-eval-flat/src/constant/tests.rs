@@ -37,7 +37,7 @@ fn make_bool(v: bool) -> Expression {
 fn make_vector(values: &[i64]) -> Expression {
     Expression::Array {
         elements: values.iter().map(|v| make_int(*v)).collect(),
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: test_span(),
     }
 }
@@ -48,11 +48,11 @@ fn make_matrix(rows: &[&[i64]]) -> Expression {
             .iter()
             .map(|row| Expression::Array {
                 elements: row.iter().map(|v| make_int(*v)).collect(),
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Array,
                 span: test_span(),
             })
             .collect(),
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: test_span(),
     }
 }
@@ -274,7 +274,7 @@ fn test_eval_array() {
 
     let expr = Expression::Array {
         elements: vec![make_int(1), make_int(2), make_int(3)],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: test_span(),
     };
     let result = eval_expr(&expr, &ctx).unwrap();
@@ -511,7 +511,7 @@ fn scalar_builtin_applies_element_wise_to_an_array_argument() {
         function: BuiltinFunction::Cos,
         args: vec![Expression::Array {
             elements: vec![make_real(0.0), make_real(2.0), make_real(4.0)],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         }],
         span: test_span(),
@@ -538,16 +538,16 @@ fn scalar_builtin_applies_element_wise_through_matrix_rows() {
         elements: vec![
             Expression::Array {
                 elements: vec![make_real(0.0), make_real(0.0)],
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Array,
                 span: test_span(),
             },
             Expression::Array {
                 elements: vec![make_real(0.0), make_real(0.0)],
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Array,
                 span: test_span(),
             },
         ],
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: test_span(),
     };
     let expr = Expression::BuiltinCall {
@@ -574,7 +574,7 @@ fn array_formal_builtins_are_not_vectorized() {
     let ctx = EvalContext::new();
     let vector = Expression::Array {
         elements: vec![make_int(1), make_int(2), make_int(3)],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: test_span(),
     };
     for function in [
@@ -604,7 +604,7 @@ fn array_divided_by_numeric_scalar_folds_element_wise() {
         op: OpBinary::Div,
         lhs: Box::new(Expression::Array {
             elements: vec![make_real(1.0), make_real(2.0)],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         }),
         rhs: Box::new(make_real(4.0)),

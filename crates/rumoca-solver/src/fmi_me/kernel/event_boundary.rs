@@ -79,11 +79,8 @@ impl SolveMeKernel {
         self.pending_event_pre_y = Some(event_pre_y);
         self.pending_event_pre_p = Some(event_pre_p);
         self.seed_scheduled_root_relation_overrides(event_time, event);
-        let application_time = event_update_application_time(
-            event_time,
-            self.time,
-            self.state_time_coincidence.is_some(),
-        );
+        let application_time =
+            event_update_application_time(event_time, self.time, self.state_time_coincidence);
         let row_filter = if self.state_time_coincidence.is_consumed() {
             EventUpdateRowFilter::UnownedOnly
         } else {

@@ -720,7 +720,7 @@ mod tests {
                     event_pre_p: &event_pre_p,
                     max_iters: 4,
                     row_filter: EventUpdateRowFilter::All,
-                    root_relation_overrides: &[],
+                    root_relation_overrides: &mut Vec::new(),
                 },
                 |solver_y, params| {
                     let changed = (solver_y[0] - params[0]).abs() > 1.0e-12;

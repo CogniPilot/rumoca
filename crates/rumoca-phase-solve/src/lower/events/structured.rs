@@ -124,8 +124,6 @@ fn lower_unconditional_discrete_value_owner<'dae>(
             let pre_mode = expression_pre_mode(view, value, sampled);
             for scalar in 0..scalar_count {
                 let target = variable_scalar_slot(layout, variable.index(), scalar, span)?;
-                rows.relation_memory_owners
-                    .claim_exact_expression(value, target);
                 outputs.push((variable, target, pre_mode));
             }
         }
@@ -166,10 +164,6 @@ fn lower_unconditional_discrete_value_owner<'dae>(
             let targets = (0..scalar_count)
                 .map(|scalar| variable_scalar_slot(layout, target.index(), scalar, span))
                 .collect::<Result<Vec<_>, _>>()?;
-            for &target in &targets {
-                rows.relation_memory_owners
-                    .claim_exact_expression(value, target);
-            }
             let start_row = rows.targets.len();
             rows.record_clocked_producer(
                 PendingClockedStep::ScalarRows {
@@ -207,8 +201,6 @@ fn lower_unconditional_discrete_value_owner<'dae>(
                 };
             let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
             rows.claim_scalar_event_owner(variable, target, span)?;
-            rows.relation_memory_owners
-                .claim_exact_expression(value, target);
             let pre_mode = expression_pre_mode(view, value, sampled);
             if clock.is_none() && pre_mode == solve::DiscreteEventPreMode::FollowCurrent {
                 rows.push_root_refresh_candidate(program.clone(), span, target);

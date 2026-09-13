@@ -1,0 +1,30 @@
+model TensorContact
+  parameter Real radius = 1;
+  parameter Real theta0 = 0.2;
+  Real theta(start=theta0, fixed=true, stateSelect=StateSelect.always);
+  Real z(start=radius*cos(theta0));
+  Real vz(start=-radius*sin(theta0));
+  Real force;
+  Real normal[3];
+  Real axis[3];
+  Real auxiliary[3];
+  Real longitudinal[3];
+  Real road[3];
+  Real delta[3];
+  Real s;
+  Real w;
+equation
+  der(theta) = 1;
+  der(z) = vz;
+  der(vz) = force;
+  normal = {0,0,1};
+  axis = {0, cos(theta), sin(theta)};
+  auxiliary = cross(normal, axis);
+  longitudinal = auxiliary/sqrt(auxiliary*auxiliary);
+  road = {s,w,0};
+  delta = road - {0,0,z};
+  0 = delta*axis;
+  0 = delta*longitudinal;
+  radius = delta*cross(longitudinal,axis);
+  assert(abs(axis[3]) < 0.99, "Contact basis is singular");
+end TensorContact;

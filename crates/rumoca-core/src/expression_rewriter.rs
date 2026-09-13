@@ -44,9 +44,9 @@ pub trait ExpressionRewriter {
             } => self.walk_if_expression(branches, else_branch, *span),
             Expression::Array {
                 elements,
-                is_matrix,
+                kind,
                 span,
-            } => self.walk_array_expression(elements, *is_matrix, *span),
+            } => self.walk_array_expression(elements, *kind, *span),
             Expression::Tuple { elements, span } => self.walk_tuple_expression(elements, *span),
             Expression::Range {
                 start,
@@ -225,12 +225,12 @@ pub trait ExpressionRewriter {
     fn walk_array_expression(
         &mut self,
         elements: &[Expression],
-        is_matrix: bool,
+        kind: crate::ArrayConstructor,
         span: Span,
     ) -> Expression {
         Expression::Array {
             elements: self.rewrite_expressions(elements),
-            is_matrix,
+            kind,
             span,
         }
     }
@@ -385,9 +385,9 @@ pub trait FallibleExpressionRewriter {
             } => self.walk_if_expression(branches, else_branch, *span),
             Expression::Array {
                 elements,
-                is_matrix,
+                kind,
                 span,
-            } => self.walk_array_expression(elements, *is_matrix, *span),
+            } => self.walk_array_expression(elements, *kind, *span),
             Expression::Tuple { elements, span } => self.walk_tuple_expression(elements, *span),
             Expression::Range {
                 start,
@@ -573,12 +573,12 @@ pub trait FallibleExpressionRewriter {
     fn walk_array_expression(
         &mut self,
         elements: &[Expression],
-        is_matrix: bool,
+        kind: crate::ArrayConstructor,
         span: Span,
     ) -> Result<Expression, Self::Error> {
         Ok(Expression::Array {
             elements: self.rewrite_expressions(elements)?,
-            is_matrix,
+            kind,
             span,
         })
     }

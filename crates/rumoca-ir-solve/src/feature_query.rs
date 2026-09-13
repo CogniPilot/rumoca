@@ -107,9 +107,9 @@ pub fn solve_has_clocks(problem: &SolveProblem) -> bool {
 #[must_use]
 pub fn solve_has_initialization(problem: &SolveProblem) -> bool {
     let initialization = &problem.initialization;
-    !initialization.residual.is_empty()
-        || !initialization.projection_unknowns.is_empty()
-        || !initialization.projection_plan.is_empty()
-        || !initialization.update_rhs.is_empty()
-        || !initialization.update_targets.is_empty()
+    !initialization.residual().is_empty()
+        || !initialization.projection_unknowns().is_empty()
+        || !initialization.projection_plan().is_empty()
+        || !initialization.update_rhs().is_empty()
+        || !initialization.update_targets().is_empty()
 }

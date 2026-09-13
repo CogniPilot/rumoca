@@ -54,7 +54,7 @@ mod tests {
             declaration_source_scope: None,
             class_overrides: ast::ClassOverrideMap::default(),
             has_forwarding_class_redeclare: false,
-            had_redeclare: false,
+            has_unapplied_redeclare: false,
             variability: rumoca_core::Variability::Empty,
             causality: rumoca_core::Causality::Empty,
             flow: false,
@@ -217,7 +217,7 @@ mod tests {
     fn int_array(values: &[i64]) -> Expression {
         Expression::Array {
             elements: values.iter().copied().map(int_lit).collect(),
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         }
     }
@@ -284,7 +284,7 @@ mod tests {
                 value: rumoca_core::Literal::Integer(0),
                 span: test_span(),
             }],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![1]));
@@ -305,7 +305,7 @@ mod tests {
                     span: test_span(),
                 },
             ],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![3]));
@@ -313,7 +313,7 @@ mod tests {
         // {} -> [0]
         let expr = Expression::Array {
             elements: vec![],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![0]));
@@ -335,7 +335,7 @@ mod tests {
                             span: test_span(),
                         },
                     ],
-                    is_matrix: false,
+                    kind: rumoca_core::ArrayConstructor::Array,
                     span: test_span(),
                 },
                 Expression::Array {
@@ -349,11 +349,11 @@ mod tests {
                             span: test_span(),
                         },
                     ],
-                    is_matrix: false,
+                    kind: rumoca_core::ArrayConstructor::Array,
                     span: test_span(),
                 },
             ],
-            is_matrix: true,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![2, 2]));
@@ -373,7 +373,7 @@ mod tests {
                     span: test_span(),
                 },
             ],
-            is_matrix: true,
+            kind: rumoca_core::ArrayConstructor::Horizontal,
             span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![1, 2]));
@@ -671,7 +671,7 @@ mod tests {
                     span: test_span(),
                 },
             ],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         });
         flat.add_variable(field.name.clone(), field);
@@ -783,7 +783,7 @@ mod tests {
                             span: test_span(),
                         },
                     ],
-                    is_matrix: false,
+                    kind: rumoca_core::ArrayConstructor::Array,
                     span: test_span(),
                 }),
                 binding_from_modification: true,
@@ -971,7 +971,7 @@ mod tests {
                             span: test_span(),
                         },
                     ],
-                    is_matrix: false,
+                    kind: rumoca_core::ArrayConstructor::Array,
                     span: test_span(),
                 }),
                 start: Some(Expression::Array {
@@ -989,7 +989,7 @@ mod tests {
                             span: test_span(),
                         },
                     ],
-                    is_matrix: false,
+                    kind: rumoca_core::ArrayConstructor::Array,
                     span: test_span(),
                 }),
                 ..flat::Variable::empty_with_span(test_span())
@@ -1372,7 +1372,7 @@ mod tests {
                             span: test_span(),
                         },
                     ],
-                    is_matrix: false,
+                    kind: rumoca_core::ArrayConstructor::Array,
                     span: test_span(),
                 }),
                 is_primitive: true,

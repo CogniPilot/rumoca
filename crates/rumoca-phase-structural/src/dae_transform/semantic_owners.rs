@@ -40,6 +40,7 @@ pub(super) fn rebuild_semantic_owners<'target>(
 ) -> Result<(), dae::DaeConstructionError> {
     rebuild_equations(source, target, expressions, identities.domains, replacement)?;
     rebuild_initial_discrete_values(source, target, expressions, identities.variables)?;
+    rebuild_initial_parameter_values(source, target, expressions, identities.variables)?;
     let relations = rebuild_relations(source, target, expressions, quotients)?;
     define_conditions(
         source,
@@ -148,6 +149,26 @@ fn structured_equation_replacement<'a, 'target>(
 ) -> Option<&'a EquationReplacement<'target>> {
     replacement.filter(|candidate| {
         candidate.owner_ordinal == owner_ordinal && candidate.body_ordinal.is_some()
+    })
+}
+
+fn rebuild_initial_parameter_values<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    expressions: &[dae::ExprId<'target>],
+    variables: &[ReservedVariable<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    target.initialization(|target| {
+        for definition in source.initial_parameter_values() {
+            let value = expressions[definition.value().index() as usize];
+            let TargetVariable::Parameter(coordinate) =
+                variables[definition.target().index() as usize].identity
+            else {
+                unreachable!("checked initialization parameter retains its parameter role");
+            };
+            target.parameter_initial_value(coordinate, value, definition.provenance())?;
+        }
+        Ok(())
     })
 }
 

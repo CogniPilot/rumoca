@@ -13,18 +13,22 @@ pub mod errors;
 pub mod function_eval;
 pub mod value;
 
+mod array_construction;
 mod builtin_dispatch;
 mod context;
+mod environment;
 mod expr_eval;
 mod matrix_ops;
 mod operators;
 mod range_eval;
+mod subscripts;
 
 #[cfg(test)]
 mod tests;
 
 pub use builtins::{eval_builtin, is_builtin};
 pub use context::EvalContext;
+pub use environment::EvalEnvironment;
 pub use errors::{DeferredParameterSource, EvalError, RuntimeDependentReason};
 pub use expr_eval::{
     eval_expr, eval_expr_with_span, try_eval_bool, try_eval_integer, try_eval_real,

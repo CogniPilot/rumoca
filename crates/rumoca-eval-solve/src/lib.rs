@@ -34,6 +34,7 @@ mod ops;
 mod prepared;
 mod prepared_event_transaction;
 mod prepared_guarded_assignment;
+mod pure_call_execution;
 mod random_runtime;
 pub mod refresh_plan;
 pub mod reverse;
@@ -58,6 +59,7 @@ pub use prepared::{
 };
 pub use prepared_event_transaction::PreparedEventTransactionProgram;
 pub use prepared_guarded_assignment::PreparedGuardedAssignmentProgram;
+pub use pure_call_execution::{PureCallExecution, PureCallInvocation};
 use random_runtime::{
     ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,
     initial_state_values, projected_random_value, random_result_and_state, read_reg_range,
@@ -578,6 +580,7 @@ pub struct RowEvalContext<'a> {
     pub seed: Option<&'a [f64]>,
     pub external_tables: Option<&'a [rumoca_core::ExternalTableData]>,
     pub pure_calls: Option<&'a SolvePureCallTable>,
+    pub pure_call_execution: Option<&'a dyn PureCallExecution>,
     pub runtime_state: Option<&'a SimulationRuntimeState>,
 }
 
@@ -2802,12 +2805,10 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 input_starts,
                 site,
             } => {
-                let values = eval_pure_call_payload(
-                    self.input.context.pure_calls,
-                    &site,
-                    &input_starts,
-                    |register| self.get(register),
-                )?;
+                let values =
+                    eval_pure_call_payload(self.input.context, &site, &input_starts, |register| {
+                        self.get(register)
+                    })?;
                 for (offset, value) in values.into_iter().enumerate() {
                     self.set(dst_start + offset as Reg, value)?;
                 }
@@ -2818,7 +2819,7 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 site,
             } => {
                 let values = eval_pure_call_directional_payload(
-                    self.input.context.pure_calls,
+                    self.input.context,
                     &site,
                     &input_starts,
                     |register| self.get(register),
@@ -3465,12 +3466,10 @@ fn eval_row_prepared_fast(
                 input_starts,
                 site,
             } => {
-                let values = eval_pure_call_payload(
-                    input.context.pure_calls,
-                    site,
-                    input_starts,
-                    |register| Ok(regs[register as usize]),
-                )?;
+                let values =
+                    eval_pure_call_payload(input.context, site, input_starts, |register| {
+                        Ok(regs[register as usize])
+                    })?;
                 regs[*dst_start as usize..*dst_start as usize + values.len()]
                     .copy_from_slice(&values);
             }
@@ -3480,7 +3479,7 @@ fn eval_row_prepared_fast(
                 site,
             } => {
                 let values = eval_pure_call_directional_payload(
-                    input.context.pure_calls,
+                    input.context,
                     site,
                     input_starts,
                     |register| Ok(regs[register as usize]),
@@ -4345,16 +4344,26 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
 }
 
 fn eval_pure_call_payload(
-    table: Option<&SolvePureCallTable>,
+    context: RowEvalContext<'_>,
     site: &SolvePureCallSite,
     input_starts: &[Reg],
     mut read: impl FnMut(Reg) -> Result<f64, EvalSolveError>,
 ) -> Result<Vec<f64>, EvalSolveError> {
-    let table = table.ok_or(EvalSolveError::MissingRuntimeState {
-        operation: "PureCall table",
-    })?;
+    let table = context
+        .pure_calls
+        .ok_or(EvalSolveError::MissingRuntimeState {
+            operation: "PureCall table",
+        })?;
     if !table.matches_site(site) || input_starts.len() != site.inputs().len() {
         return Err(invalid_row("pure-call site does not match its model owner"));
+    }
+    if let Some(execution) = context.pure_call_execution {
+        return pure_call_execution::eval_compiled_call(
+            execution,
+            PureCallInvocation::Primal(site),
+            input_starts,
+            &mut read,
+        );
     }
     eval_typed_call_payload(
         table,
@@ -4370,18 +4379,28 @@ fn eval_pure_call_payload(
 }
 
 fn eval_pure_call_directional_payload(
-    table: Option<&SolvePureCallTable>,
+    context: RowEvalContext<'_>,
     site: &SolvePureCallDirectionalSite,
     input_starts: &[Reg],
     mut read: impl FnMut(Reg) -> Result<f64, EvalSolveError>,
 ) -> Result<Vec<f64>, EvalSolveError> {
-    let table = table.ok_or(EvalSolveError::MissingRuntimeState {
-        operation: "PureCallDirectional table",
-    })?;
+    let table = context
+        .pure_calls
+        .ok_or(EvalSolveError::MissingRuntimeState {
+            operation: "PureCallDirectional table",
+        })?;
     if !table.matches_directional_site(site) || input_starts.len() != site.inputs().len() {
         return Err(invalid_row(
             "directional pure-call site does not match its model owner",
         ));
+    }
+    if let Some(execution) = context.pure_call_execution {
+        return pure_call_execution::eval_compiled_call(
+            execution,
+            PureCallInvocation::Directional(site),
+            input_starts,
+            &mut read,
+        );
     }
     eval_typed_call_payload(
         table,
@@ -4424,13 +4443,9 @@ fn eval_typed_call_payload(
     for (&start, value_type) in input_starts.iter().zip(inputs) {
         let mut elements = Vec::with_capacity(value_type.scalar_count() as usize);
         for offset in 0..value_type.scalar_count() as usize {
-            let register =
-                start
-                    .checked_add(Reg::try_from(offset).map_err(|_| {
-                        invalid_row("pure-call input range exceeds register identity")
-                    })?)
-                    .ok_or_else(|| invalid_row("pure-call input range overflows"))?;
-            elements.push(typed_kind_from_scalar(read(register)?, value_type)?);
+            elements.push(pure_call_execution::read_input_element(
+                start, offset, value_type, read,
+            )?);
         }
         arguments.push(
             TypedValue::construct(value_type.clone(), elements)

@@ -70,14 +70,14 @@ impl<'storage> EquationOperationsOutput<'storage> {
         residual_cursor: &mut usize,
         family_cursor: &mut usize,
     ) -> Result<EquationOperationOutput<'storage>, &'static str> {
-        match owner {
-            EquationOwnerEntry::Residual(raw) => {
-                let operation = self.project_residual(*raw, *residual_cursor)?;
+        match owner.kind {
+            EquationOwnerKind::Residual(raw) => {
+                let operation = self.project_residual(raw, *residual_cursor)?;
                 *residual_cursor += 1;
                 Ok(operation)
             }
-            EquationOwnerEntry::Structured(raw) => {
-                let operation = self.project_family(*raw, *family_cursor)?;
+            EquationOwnerKind::Structured(raw) => {
+                let operation = self.project_family(raw, *family_cursor)?;
                 *family_cursor += 1;
                 Ok(operation)
             }

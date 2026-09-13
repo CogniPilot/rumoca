@@ -1575,6 +1575,12 @@ fn program_output_dependencies_with_fold(
 /// The walk holds no evaluated value: every method reads `LinearOp` register
 /// flow only, which is what makes the derived pattern a structural proof
 /// rather than a sampled observation.
+struct PureCallInputDependencies<'a> {
+    starts: &'a [Reg],
+    types: &'a [crate::SolveValueType],
+    whole: Vec<DependencyState>,
+}
+
 struct DependencyWalk<'a> {
     registers: Vec<Option<DependencyState>>,
     outputs: Vec<DependencyState>,
@@ -1676,12 +1682,10 @@ fn apply_dependency_op(
         LinearOp::FunctionConditional { dst_start, capture_start, program } =>
             walk.function_conditional(*dst_start, *capture_start, program)?,
         LinearOp::PureCall { dst_start, input_starts, site } => walk.pure_call(
-            *dst_start, input_starts, site.inputs(), site.output_scalar_count(),
-            "pure-call output width overflows",
+            *dst_start, input_starts, site.inputs(), site.outputs(), site.output_dependencies(),
         )?,
         LinearOp::PureCallDirectional { dst_start, input_starts, site } => walk.pure_call(
-            *dst_start, input_starts, site.inputs(), site.output_scalar_count(),
-            "directional pure-call output width overflows",
+            *dst_start, input_starts, site.inputs(), site.outputs(), site.output_dependencies(),
         )?,
         LinearOp::StoreOutputFoldTensorUpdate {
             source_base, source_stride, dimensions, updates, nodes, lanes, ..
@@ -2438,29 +2442,109 @@ impl DependencyWalk<'_> {
         Ok(dependency)
     }
 
-    /// Every ordered result of a typed pure call depends on every typed input:
-    /// the call owner is opaque to this structural walk, so the conservative
-    /// closure is the only sound one. The plain and directional sites differ
-    /// only in the diagnostic their output-width overflow reports.
+    /// Substitute the issued output summary into the invocation's input ranges.
+    /// The owner retains typed leaves; this scalar consumer expands their ranges.
     fn pure_call(
         &mut self,
         dst_start: Reg,
         input_starts: &[Reg],
         inputs: &[crate::SolveValueType],
-        output_scalar_count: Option<usize>,
-        message: &'static str,
+        outputs: &[crate::SolvePureCallOutput],
+        summaries: &[Box<[crate::SolveCallDependency]>],
     ) -> Result<(), StructuralPatternError> {
-        let mut dependency = DependencyState::empty();
-        for (start, value_type) in input_starts.iter().zip(inputs) {
-            let count = value_type.scalar_count() as usize;
-            dependency = self.union_scalar_range(dependency, *start, count)?;
+        if input_starts.len() != inputs.len() || summaries.len() != outputs.len() {
+            return Err(dependency_error(
+                "pure-call dependency interface mismatch",
+                self.span,
+            ));
         }
-        let output_count =
-            output_scalar_count.ok_or_else(|| dependency_error(message, self.span))?;
-        for offset in 0..output_count {
-            self.set(dst_start + offset as Reg, dependency.clone());
+        let input_dependencies = input_starts
+            .iter()
+            .zip(inputs)
+            .map(|(start, value_type)| {
+                self.union_scalar_range(
+                    DependencyState::empty(),
+                    *start,
+                    value_type.scalar_count() as usize,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let inputs = PureCallInputDependencies {
+            starts: input_starts,
+            types: inputs,
+            whole: input_dependencies,
+        };
+        let mut destination = dst_start;
+        for (output, summary) in outputs.iter().zip(summaries) {
+            destination = self.pure_call_output(destination, &inputs, output, summary)?;
         }
         Ok(())
+    }
+
+    fn pure_call_output(
+        &mut self,
+        mut destination: Reg,
+        inputs: &PureCallInputDependencies<'_>,
+        output: &crate::SolvePureCallOutput,
+        summary: &[crate::SolveCallDependency],
+    ) -> Result<Reg, StructuralPatternError> {
+        for element in 0..output.value_type().scalar_count() as usize {
+            let dependency =
+                summary
+                    .iter()
+                    .try_fold(DependencyState::empty(), |dependency, source| {
+                        let source = self.pure_call_input_dependency(
+                            source,
+                            inputs,
+                            output.value_type(),
+                            element,
+                        )?;
+                        Ok::<_, StructuralPatternError>(dependency.union(source))
+                    })?;
+            self.set(destination, dependency);
+            destination = destination
+                .checked_add(1)
+                .ok_or_else(|| dependency_error("pure-call output width overflows", self.span))?;
+        }
+        Ok(destination)
+    }
+
+    fn pure_call_input_dependency(
+        &self,
+        source: &crate::SolveCallDependency,
+        inputs: &PureCallInputDependencies<'_>,
+        output: &crate::SolveValueType,
+        element: usize,
+    ) -> Result<DependencyState, StructuralPatternError> {
+        let index = source.input_index();
+        let input = inputs.types.get(index).ok_or_else(|| {
+            dependency_error(
+                "pure-call dependency input is outside its interface",
+                self.span,
+            )
+        })?;
+        if source.is_whole_input() {
+            return Ok(inputs.whole[index].clone());
+        }
+        let elements = source
+            .input_elements(output, element, input)
+            .ok_or_else(|| {
+                dependency_error(
+                    "pure-call coordinate dependency is outside its interface",
+                    self.span,
+                )
+            })?;
+        elements
+            .into_iter()
+            .try_fold(DependencyState::empty(), |dependency, offset| {
+                let register = Reg::try_from(offset)
+                    .ok()
+                    .and_then(|offset| inputs.starts[index].checked_add(offset))
+                    .ok_or_else(|| {
+                        dependency_error("pure-call dependency register overflows", self.span)
+                    })?;
+                Ok(dependency.union(self.get(register)?))
+            })
     }
 
     fn store_fold_tensor_update(

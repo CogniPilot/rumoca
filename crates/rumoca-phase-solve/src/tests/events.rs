@@ -440,7 +440,12 @@ fn primitive_relation_root_lowers_to_signed_event_program() {
         solve.events.root_zero_domains,
         [rumoca_ir_solve::RootZeroDomain::Positive]
     );
-    assert!(solve.events.root_relation_memory_targets[0].is_none());
+    let target = solve.events.root_relation_memory_targets[0].unwrap();
+    assert!(!solve.discrete.runtime_assignment_targets.contains(&target));
+    assert_eq!(
+        solve.solve_layout.relation_memory_parameter_indices.len(),
+        1
+    );
 }
 
 #[test]
@@ -519,7 +524,7 @@ fn roots_from_one_source_owner_lower_to_one_multi_output_program() {
 }
 
 #[test]
-fn exact_unconditional_b1c_relation_owns_the_root_post_side() {
+fn exact_unconditional_b1c_reads_a_distinct_relation_buffer() {
     let source = TestSource::new(
         "discrete Boolean active; equation active = time > 0.5; when time > 0.5 then end when;",
     );
@@ -576,10 +581,7 @@ fn exact_unconditional_b1c_relation_owns_the_root_post_side() {
 
     let solve = lower_solve_problem(&model).expect("exact relation owner lowers");
 
-    assert_eq!(
-        solve.events.root_relation_memory_targets,
-        [Some(rumoca_ir_solve::scalar_slot_p(0))]
-    );
+    assert_buffered_relation_readers(&solve, 1);
 }
 
 fn relation_bearing_follow_current_model() -> dae::Dae {
@@ -705,28 +707,45 @@ fn add_two_root_conditions<'dae>(
 }
 
 #[test]
-fn root_refresh_excludes_relation_bearing_follow_current_owner() {
+fn root_refresh_reads_frozen_relations_through_boolean_composition() {
     let model = relation_bearing_follow_current_model();
 
     let solve = lower_solve_problem(&model).expect("typed root-refresh partition lowers");
 
     assert_eq!(
         solve.discrete.post_commit_assignment_targets,
-        [rumoca_ir_solve::scalar_slot_p(2)],
-        "the relation-free alias is root-refreshable, while the relation-bearing mode owner remains event-only"
+        [
+            rumoca_ir_solve::scalar_slot_p(0),
+            rumoca_ir_solve::scalar_slot_p(1),
+            rumoca_ir_solve::scalar_slot_p(2),
+        ],
+        "all three assignments consume frozen buffers without reevaluating a relation"
     );
     assert_eq!(
         solve.discrete.runtime_assignment_targets,
         [
+            rumoca_ir_solve::scalar_slot_p(0),
             rumoca_ir_solve::scalar_slot_p(1),
             rumoca_ir_solve::scalar_slot_p(2),
         ],
-        "event iteration retains both root-driven owners while pre is frozen"
+        "event iteration retains all three Boolean owners"
+    );
+    assert!(
+        solve
+            .discrete
+            .post_commit_assignment_rhs
+            .programs()
+            .iter()
+            .all(|program| {
+                !program
+                    .iter()
+                    .any(|op| matches!(op, LinearOp::Compare { .. }))
+            })
     );
 }
 
 #[test]
-fn multiply_owned_relation_fails_closed_without_an_arbitrary_root_target() {
+fn multiple_boolean_consumers_share_one_distinct_relation_buffer() {
     let source = TestSource::new(
         "discrete Boolean a, b; equation a = time > 0.5; b = time > 0.5; when time > 0.5 then end when;",
     );
@@ -797,5 +816,134 @@ fn multiply_owned_relation_fails_closed_without_an_arbitrary_root_target() {
 
     let solve = lower_solve_problem(&model).expect("duplicate exact relation owners lower");
 
-    assert_eq!(solve.events.root_relation_memory_targets, [None]);
+    assert_buffered_relation_readers(&solve, 2);
+}
+
+fn assert_buffered_relation_readers(solve: &rumoca_ir_solve::SolveProblem, readers: usize) {
+    let [Some(rumoca_ir_solve::ScalarSlot::P { index, .. })] =
+        solve.events.root_relation_memory_targets.as_slice()
+    else {
+        panic!("one exact relation must own one buffer")
+    };
+    assert_eq!(
+        solve.solve_layout.relation_memory_parameter_indices,
+        [*index]
+    );
+    assert!(
+        !solve
+            .events
+            .condition_memory_parameter_indices
+            .contains(index)
+    );
+    assert!(
+        !solve
+            .discrete
+            .runtime_assignment_targets
+            .contains(&rumoca_ir_solve::scalar_slot_p(*index))
+    );
+    let block = &solve.discrete.runtime_assignment_rhs;
+    assert_eq!(block.stored_output_count(), readers);
+    let mut parameters = vec![0.0; solve.solve_layout.compiled_parameter_len];
+    for truth in [0.0, 1.0] {
+        parameters[*index] = truth;
+        let mut output = vec![0.0; readers];
+        rumoca_eval_solve::eval_scalar_program_block(
+            block,
+            &[],
+            &parameters,
+            0.5,
+            None,
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(output, vec![truth; readers]);
+    }
+}
+
+#[test]
+fn shared_relation_expression_keeps_no_event_evaluation_literal() {
+    let source = TestSource::new(
+        "Boolean a, b, c; equation a=time>0.5; b=noEvent(time>0.5 and true); c=time>0.5;",
+    );
+    let owner = source.at(0, 1);
+    let model = dae::Dae::construct(source.map, |model| {
+        let boolean = model.types(|types| {
+            types.derived(dae::ValueType::scalar(dae::ScalarType::Boolean), owner)
+        })?;
+        let targets = model.variables(|variables| {
+            ["a", "b", "c"]
+                .map(|name| {
+                    variables.discrete_value(
+                        VarName::new(name),
+                        boolean,
+                        owner,
+                        dae::VariableAttributes::default(),
+                    )
+                })
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        let (relation, literal, combined) = model.expressions(|expressions| {
+            let time = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Time)?;
+            let half = expressions.at(owner).literal(dae::DaeLiteral::Real(0.5))?;
+            let relation =
+                expressions
+                    .at(owner)
+                    .binary(dae::BinaryOperator::Greater, time, half)?;
+            let true_value = expressions
+                .at(owner)
+                .literal(dae::DaeLiteral::Boolean(true))?;
+            let combined =
+                expressions
+                    .at(owner)
+                    .binary(dae::BinaryOperator::And, relation, true_value)?;
+            let literal = expressions
+                .at(owner)
+                .builtin(dae::PureBuiltin::NoEvent, [combined])?;
+            Ok((relation, literal, combined))
+        })?;
+        model.conditions(|conditions| {
+            let relation = conditions.relation(relation, owner)?;
+            let activation = conditions.reserve(owner)?;
+            conditions.define(activation, dae::ConditionInput::Relation(relation), owner)?;
+            conditions.root(relation, activation, owner)
+        })?;
+        model.b1c(targets.clone(), |topology| {
+            topology.owner(owner, targets, |definition| {
+                definition.always(
+                    owner,
+                    [(combined, owner), (literal, owner), (combined, owner)],
+                )
+            })?;
+            Ok(())
+        })
+    })
+    .unwrap();
+    let solve = lower_solve_problem(&model).unwrap();
+    let buffer = solve.solve_layout.relation_memory_parameter_indices[0];
+    let mut parameters = vec![0.0; solve.solve_layout.compiled_parameter_len];
+    for (time, buffered, expected) in [(0.0, 1.0, [1.0, 0.0, 1.0]), (1.0, 0.0, [0.0, 1.0, 0.0])] {
+        parameters[buffer] = buffered;
+        let mut output = [0.0; 3];
+        rumoca_eval_solve::eval_scalar_program_block(
+            &solve.discrete.runtime_assignment_rhs,
+            &[],
+            &parameters,
+            time,
+            None,
+            &mut output,
+        )
+        .unwrap();
+        for (value, target) in output
+            .iter()
+            .zip(&solve.discrete.runtime_assignment_targets)
+        {
+            let rumoca_ir_solve::ScalarSlot::P { index, .. } = target else {
+                panic!("Boolean target must use parameter storage")
+            };
+            assert_eq!(*value, expected[*index], "target {index} at {time}");
+        }
+    }
 }

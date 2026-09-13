@@ -349,11 +349,11 @@ fn rewrite_structural_assert_condition(
         },
         ast::Expression::Array {
             elements,
-            is_matrix,
+            kind,
             span,
         } => ast::Expression::Array {
             elements: rewrite_assert_elements(ctx, elements, prefix),
-            is_matrix: *is_matrix,
+            kind: *kind,
             span: *span,
         },
         ast::Expression::Tuple { elements, span } => ast::Expression::Tuple {

@@ -4,6 +4,7 @@
 //! cursor, asks the same incremental [`MeSimulationSession`] to reach its
 //! defined end once, and publishes the trace the session owns.
 
+use super::integrator::accepted_step_roundoff;
 use super::session::{
     MeAdvanceOutcome, MeOutputCursor, MeSessionError, MeSessionOptions, MeSessionOptionsInput,
     MeSimulationSession,
@@ -30,12 +31,10 @@ pub fn default_root_scan_resolution(experiment_width: f64) -> f64 {
     }
 }
 
-/// The default bracket width a located root is refined to.
+/// Default root-location duration from the host's time-coordinate policy.
 #[must_use]
-pub fn default_root_location_tolerance(scan_resolution: f64, absolute_tolerance: f64) -> f64 {
-    absolute_tolerance
-        .max(f64::MIN_POSITIVE)
-        .min(scan_resolution)
+pub fn default_root_time_resolution(start_time: f64, scan_resolution: f64) -> f64 {
+    accepted_step_roundoff(start_time, scan_resolution).min(scan_resolution)
 }
 
 /// The checked session options a defined experiment implies.
@@ -55,10 +54,7 @@ pub fn batch_session_options(
         absolute_tolerance,
         output_interval,
         root_scan_resolution: scan_resolution,
-        root_location_tolerance: default_root_location_tolerance(
-            scan_resolution,
-            absolute_tolerance,
-        ),
+        root_location_tolerance: default_root_time_resolution(start_time, scan_resolution),
         max_wall_seconds,
         records_trace: true,
     })
@@ -89,10 +85,7 @@ pub fn live_session_options(
         // fidelity.
         output_interval: scan_resolution,
         root_scan_resolution: scan_resolution,
-        root_location_tolerance: default_root_location_tolerance(
-            scan_resolution,
-            absolute_tolerance,
-        ),
+        root_location_tolerance: default_root_time_resolution(start_time, scan_resolution),
         max_wall_seconds,
         records_trace: false,
     })
@@ -157,6 +150,36 @@ mod tests {
         assert_eq!(
             coarse.root_location_tolerance().to_bits(),
             fine.root_location_tolerance().to_bits()
+        );
+    }
+
+    #[test]
+    fn default_root_time_accuracy_does_not_follow_state_units() {
+        let baseline = batch_session_options(0.0, 1.0, 1e-6, 1e-9, 0.1, None).unwrap();
+        let rescaled = batch_session_options(0.0, 1.0, 1e-6, 1e-3, 0.1, None).unwrap();
+        assert_eq!(
+            baseline.root_location_tolerance(),
+            rescaled.root_location_tolerance(),
+            "changing the state unit cannot change a root's time accuracy"
+        );
+        let live = live_session_options(0.0, 1e-6, 1e-9, 1.0, None).unwrap();
+        let rescaled_live = live_session_options(0.0, 1e-6, 1e-3, 1.0, None).unwrap();
+        assert_eq!(
+            live.root_location_tolerance(),
+            rescaled_live.root_location_tolerance()
+        );
+    }
+
+    #[test]
+    fn default_root_time_accuracy_scales_with_time_units() {
+        let baseline = batch_session_options(2.0, 3.0, 1e-6, 1e-6, 0.1, None).unwrap();
+        let scale = 1024.0;
+        let rescaled =
+            batch_session_options(2.0 * scale, 3.0 * scale, 1e-6, 1e-6, 0.1 * scale, None).unwrap();
+        assert_eq!(
+            scale * baseline.root_location_tolerance(),
+            rescaled.root_location_tolerance(),
+            "a root-location duration must transform with the time coordinate"
         );
     }
 

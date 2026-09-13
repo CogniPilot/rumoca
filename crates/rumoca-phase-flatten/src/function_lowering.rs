@@ -794,6 +794,7 @@ fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, Fla
         }
 
         // Replace record inputs with scalar field inputs
+        decompose_derivative_input_roles(func, &decomposed);
         let old_inputs = std::mem::take(&mut func.inputs);
         for (idx, input) in old_inputs.into_iter().enumerate() {
             let Some(dp) = decomposed.iter().find(|d| d.original_index == idx) else {
@@ -820,6 +821,26 @@ fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, Fla
 
     rewrite_decomposed_record_call_sites(flat, &decomposition_map, &local_decomposed_params)?;
     Ok(true)
+}
+
+fn decompose_derivative_input_roles(
+    function: &mut rumoca_core::Function,
+    decomposed: &[DecomposedParam],
+) {
+    for annotation in &mut function.derivatives {
+        annotation.inputs = annotation
+            .inputs
+            .iter()
+            .enumerate()
+            .flat_map(|(index, &role)| {
+                let count = decomposed
+                    .iter()
+                    .find(|param| param.original_index == index)
+                    .map_or(1, |param| param.fields.len());
+                std::iter::repeat_n(role, count)
+            })
+            .collect();
+    }
 }
 
 fn rewrite_decomposed_record_call_sites(
@@ -1555,7 +1576,7 @@ fn empty_record_field_arg(
         .any(|subscript| matches!(subscript, rumoca_core::Subscript::Index { value: 0, .. }))
         .then_some(rumoca_core::Expression::Array {
             elements: Vec::new(),
-            is_matrix: field.dimensions().len() == 2,
+            kind: rumoca_core::ArrayConstructor::Array,
             span,
         })
 }

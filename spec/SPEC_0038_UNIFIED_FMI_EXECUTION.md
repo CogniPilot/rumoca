@@ -31,6 +31,7 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | `rumoca-solver` implements the FMI 3 ME importer/host contract | solver facade | Solver code never consumes `SolveModel` directly |
 | Numerical methods implement an internal FMI 3 ME-host integrator contract | solver implementations | Solver choice does not change model semantics |
 | Private `MeRuntimeHost` implements `MeSimulationSession`'s sole FMI 3 ME master algorithm | solver facade | The session remains the semantic owner; initialization, Event Mode, discrete-state iteration, output scheduling, and trace roles cannot fork by numerical method |
+| Default root-location accuracy uses the existing host time-roundoff policy, independently of state-error tolerances and state units | common host option construction | State accuracy cannot define a duration |
 | Numerical plugins implement only `MeIntegratorBackend` | solver implementations | A new solver supplies numerical advance/reset; it cannot invoke FMI lifecycle transitions, schedule observations, or construct traces |
 | `MeSimulationSession` is the incremental master algorithm | solver facade | Batch simulation, live stepping, inputs, reset, events, timeouts, and observation ordering share one state machine |
 | `FmiComponent` is the only linked or packaged component source | checked FMI projection | Runtime and emitted metadata share one inventory |
@@ -39,6 +40,8 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | Native in-process calls may be zero-copy | FMI host | Preserve current performance |
 | Repeated directional seeds may reuse a bitwise-identical settled coordinate | FMI component | Avoid redundant algebraic projection |
 | Root evaluation may warm-start its complete checked refresh plan from a bitwise-identical derivative-settled coordinate | FMI component | Keep roots on the same algebraic branch without omitting root dependencies |
+| Derivative and root refreshes certify convergence of every recovered algebraic coordinate as well as the reduced residual; a reused derivative coordinate carries the same accuracy obligation | FMI component numerical projection | Small tear residuals can conceal amplified coordinate errors and move or erase an event |
+| Torn coordinate certification bounds the linearized recovered correction before adding it to floating-point coordinates; a rounded no-op is not convergence evidence | numerical projection | Rounding can hide a large recovered-coordinate error |
 | At a bitwise-identical derivative-settled coordinate, root evaluation may omit covered value stages and execute only a construction-issued checked-BLT remainder; it may omit the complete refresh only when that remainder is empty | FMI component | Remove duplicate work without turning a warm start into an unchecked semantic shortcut |
 | Settled-coordinate caches invalidate on lifecycle or parameter mutation | FMI component | Never reuse stale algebraics |
 | An empty checked manifold-projection artifact certifies that continuous-state projection returns unchanged without settling observation algebraics | FMI component | Do not execute algebraic work for a structurally absent constraint system |

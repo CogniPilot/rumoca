@@ -167,6 +167,14 @@ impl ValueType {
             .get(ordinal)
             .map(|field| field.value_type)
     }
+
+    pub(crate) fn record_fields(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&rumoca_core::VarName, u32)> {
+        self.record_fields
+            .iter()
+            .map(|field| (&field.name, field.value_type))
+    }
 }
 
 impl RecordFieldType {

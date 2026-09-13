@@ -1019,7 +1019,7 @@
       "corpus": "msl",
       "model": "Modelica.Mechanics.Rotational.Examples.FirstGrounded",
       "entry_point": "Modelica 4.1.0/package.mo",
-      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "why": "Tier-1 canary. The gear reflects the motor inertia to give J=12 at inertia2. Four zero initial states and the forced spring/damper response are pinned against an independent matrix exponential; source equations and OMC review are recorded in docs/dev-guide/src/tooling/multibody-coverage.md.",
       "check": {
         "kind": "simulate",
         "t_end": 0.02,
@@ -1027,8 +1027,82 @@
         "solver": "rk-like"
       },
       "expect": {
-        "outcome": "refused",
-        "diagnostic": "EL005"
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "inertia2.phi",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-09
+          },
+          {
+            "variable": "inertia2.w",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-09
+          },
+          {
+            "variable": "inertia3.phi",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-09
+          },
+          {
+            "variable": "inertia3.w",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-09
+          },
+          {
+            "variable": "inertia2.phi",
+            "time": 0.01,
+            "value": 4.3149582564480485e-05,
+            "tolerance": 1.0004314958256447e-06
+          },
+          {
+            "variable": "inertia2.w",
+            "time": 0.01,
+            "value": 0.012857994980219337,
+            "tolerance": 1.1285799498021932e-06
+          },
+          {
+            "variable": "inertia3.phi",
+            "time": 0.01,
+            "value": 1.071770544433436e-06,
+            "tolerance": 1.0000107177054444e-06
+          },
+          {
+            "variable": "inertia3.w",
+            "time": 0.01,
+            "value": 0.0005322558435009759,
+            "tolerance": 1.0053225584350097e-06
+          },
+          {
+            "variable": "inertia2.phi",
+            "time": 0.02,
+            "value": 0.0003353877654539701,
+            "tolerance": 1.0033538776545397e-06
+          },
+          {
+            "variable": "inertia2.w",
+            "time": 0.02,
+            "value": 0.04905714114709371,
+            "tolerance": 1.4905714114709371e-06
+          },
+          {
+            "variable": "inertia3.phi",
+            "time": 0.02,
+            "value": 3.2621323509799934e-05,
+            "tolerance": 1.000326213235098e-06
+          },
+          {
+            "variable": "inertia3.w",
+            "time": 0.02,
+            "value": 0.007939108207911586,
+            "tolerance": 1.0793910820791159e-06
+          }
+        ],
+        "artifacts": []
       }
     }
   ]

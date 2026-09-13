@@ -108,36 +108,26 @@ impl OmcSession {
         // after we kill the omc parent.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
-        let child = command
-            .spawn()
-            .context("failed to spawn omc interactive session")?;
-
-        let port_file = match wait_for_port_file(work_dir, &suffix, startup_timeout) {
-            Some(path) => path,
-            None => {
-                let mut child = child;
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(anyhow!(
-                    "omc session port file for suffix '{suffix}' did not appear within {:.1}s",
-                    startup_timeout.as_secs_f64()
-                ));
-            }
-        };
-        let endpoint = std::fs::read_to_string(&port_file)
-            .with_context(|| format!("failed to read omc port file '{}'", port_file.display()))?
-            .trim()
-            .to_string();
-
         let ctx = zmq::Context::new();
         let socket = ctx
             .socket(zmq::REQ)
             .context("failed to create omc zmq REQ socket")?;
         // LINGER=0 so dropping a hung socket does not block process teardown.
-        socket.set_linger(0).ok();
-        socket
-            .connect(&endpoint)
-            .with_context(|| format!("failed to connect to omc endpoint '{endpoint}'"))?;
+        socket.set_linger(0)?;
+        let mut child = command
+            .spawn()
+            .context("failed to spawn omc interactive session")?;
+
+        let port_file = match connect_port_file(&socket, work_dir, &suffix, startup_timeout) {
+            Ok(path) => path,
+            Err(error) => {
+                kill_omc_process(&mut child);
+                if let Some(path) = find_port_file(work_dir, &format!("port.{suffix}")) {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(error);
+            }
+        };
 
         let mut session = OmcSession {
             child,
@@ -202,23 +192,8 @@ impl OmcSession {
 
     /// Kill the underlying process. Used before respawning after a hang.
     pub(super) fn kill(&mut self) {
-        self.kill_process_group();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        kill_omc_process(&mut self.child);
         let _ = std::fs::remove_file(&self.port_file);
-    }
-
-    /// SIGKILL the whole process group (omc plus any simulation executables it
-    /// spawned). `omc` is the group leader (see `process_group(0)` at spawn), so
-    /// the group id equals its pid. Uses `nix`'s safe `killpg` wrapper.
-    fn kill_process_group(&self) {
-        #[cfg(unix)]
-        if let Ok(pid) = i32::try_from(self.child.id()) {
-            let _ = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(pid),
-                nix::sys::signal::Signal::SIGKILL,
-            );
-        }
     }
 }
 
@@ -227,11 +202,42 @@ impl Drop for OmcSession {
         // Best-effort graceful quit, then ensure the process group is gone
         // (omc + any simulation executables it spawned).
         let _ = self.eval("quit()", Duration::from_millis(500));
-        self.kill_process_group();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.port_file);
+        self.kill();
     }
+}
+
+/// The owned child is also the process-group leader, including during startup.
+fn kill_omc_process(child: &mut Child) {
+    #[cfg(unix)]
+    if let Ok(pid) = i32::try_from(child.id()) {
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn connect_port_file(
+    socket: &zmq::Socket,
+    work_dir: &Path,
+    suffix: &str,
+    timeout: Duration,
+) -> Result<PathBuf> {
+    let port_file = wait_for_port_file(work_dir, suffix, timeout).ok_or_else(|| {
+        anyhow!(
+            "omc session port file for suffix '{suffix}' was not populated within {:.1}s",
+            timeout.as_secs_f64()
+        )
+    })?;
+    let endpoint = std::fs::read_to_string(&port_file)
+        .with_context(|| format!("failed to read omc port file '{}'", port_file.display()))?;
+    let endpoint = endpoint.trim();
+    socket
+        .connect(endpoint)
+        .with_context(|| format!("failed to connect to omc endpoint '{endpoint}'"))?;
+    Ok(port_file)
 }
 
 fn unique_session_suffix() -> String {
@@ -252,7 +258,11 @@ fn wait_for_port_file(work_dir: &Path, suffix: &str, timeout: Duration) -> Optio
     let deadline = Instant::now() + timeout;
     let needle = format!("port.{suffix}");
     loop {
-        if let Some(path) = find_port_file(work_dir, &needle) {
+        // OMC creates this file before fputs/fclose publishes the endpoint.
+        // Existence alone can expose the empty file between those operations.
+        if let Some(path) = find_port_file(work_dir, &needle)
+            && std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 0)
+        {
             return Some(path);
         }
         if Instant::now() >= deadline {
@@ -332,6 +342,22 @@ fn extract_record_f64(record: &str, field: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_port_file_is_not_a_ready_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let suffix = "empty_endpoint";
+        let path = directory
+            .path()
+            .join(format!("openmodelica.test.port.{suffix}"));
+        std::fs::write(&path, "").unwrap();
+        assert!(wait_for_port_file(directory.path(), suffix, Duration::ZERO).is_none());
+        std::fs::write(&path, "tcp://127.0.0.1:12345").unwrap();
+        assert_eq!(
+            wait_for_port_file(directory.path(), suffix, Duration::ZERO),
+            Some(path)
+        );
+    }
 
     #[test]
     fn parse_sim_record_extracts_fields() {

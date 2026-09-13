@@ -61,6 +61,12 @@ pub(super) fn rebuild_holonomic_constraint(
                         constraint,
                         &mut manifold,
                     )?;
+                    let replacement = replace_constraint_component(
+                        target,
+                        constraint,
+                        expressions[constraint.residual as usize],
+                        replacement,
+                    )?;
                     define_variables(source, target, &expressions, variables)?;
                     rebuild_semantic_owners(
                         source,
@@ -87,6 +93,31 @@ pub(super) fn rebuild_holonomic_constraint(
     rebuilt
         .map(|dae| (dae, manifold))
         .map_err(construction_failure)
+}
+
+fn replace_constraint_component<'target>(
+    target: &mut dae::DaeConstruction<'target>,
+    constraint: &HolonomicConstraint,
+    base: dae::ExprId<'target>,
+    replacement: dae::ExprId<'target>,
+) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+    let Some(component) = &constraint.proof.component else {
+        return Ok(replacement);
+    };
+    target.expressions(|target| {
+        let provenance = dae::DaeProvenance::generated(
+            dae::DaeGeneration::IndexReduction,
+            constraint.owner.span(),
+        )?;
+        let subscripts = super::component_constraint::component_subscripts(
+            target,
+            &component.indices,
+            provenance,
+        )?;
+        target
+            .at(provenance)
+            .array_update(base, replacement, subscripts)
+    })
 }
 
 #[cfg(test)]
@@ -149,6 +180,7 @@ pub(super) fn rebuild_with_state_demotion_and_manifold(
 
 #[derive(Clone, Copy)]
 struct RebuildContext<'source, 'borrow, 'target> {
+    auxiliary_functions: &'borrow [Option<dae::FunctionId<'target>>],
     source: dae::DaeView<'source>,
     types: &'borrow [dae::ValueTypeId<'target>],
     functions: &'borrow [super::functions::RebuiltFunction<'target>],
@@ -168,6 +200,7 @@ impl<'target> RebuildContext<'_, '_, 'target> {
     ) -> RebuiltIdentities<'borrow, 'target> {
         RebuiltIdentities {
             base: RebuiltBaseIdentities {
+                auxiliary_functions: self.auxiliary_functions,
                 types: self.types,
                 variables,
                 domains: self.domains,
@@ -211,8 +244,10 @@ fn prepare_rebuild<'source, 'target>(
     let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
     let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
     let facts = DifferentiationFacts::collect(source);
+    let auxiliary_functions = super::auxiliary_blocks::create_functions(source, target, &facts)?;
     let mut rebuilt_state = vec![None; source.expression_count()];
     let base = RebuiltBaseIdentities {
+        auxiliary_functions: &auxiliary_functions,
         types: &types,
         variables: &variables,
         domains: &domains,
@@ -243,6 +278,7 @@ fn prepare_rebuild<'source, 'target>(
         &mut quotients,
     )?;
     let context = RebuildContext {
+        auxiliary_functions: &auxiliary_functions,
         source,
         types: &types,
         functions: &functions,

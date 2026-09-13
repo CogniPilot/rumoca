@@ -1,3 +1,4 @@
+mod array_update;
 #[cfg(test)]
 mod tests;
 
@@ -147,6 +148,7 @@ pub fn for_each_scalar_coordinate_cached<'dae>(
         function_call_active: HashSet::new(),
         function_fold_active: HashSet::new(),
         function_summary_captures: Vec::new(),
+        model_visited: HashSet::new(),
         cache,
         visit: &mut visit,
     };
@@ -161,6 +163,7 @@ struct Projection<'visit, 'dae, F> {
     function_call_active: HashSet<FunctionResultDependency>,
     function_fold_active: HashSet<FunctionFoldDependency>,
     function_summary_captures: Vec<FunctionSummaryCapture>,
+    model_visited: HashSet<ScalarExpressionDependency>,
     cache: &'visit mut ScalarCoordinateProjectionCache<'dae>,
     visit: &'visit mut F,
 }
@@ -209,11 +212,11 @@ struct FunctionSummaryCapture {
     function: u32,
     dependencies: Vec<FunctionParameterDependency>,
     cacheable: bool,
-    visited: HashSet<FunctionExpressionDependency>,
+    visited: HashSet<ScalarExpressionDependency>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct FunctionExpressionDependency {
+struct ScalarExpressionDependency {
     expression: u32,
     field: Option<usize>,
     scalar: usize,
@@ -296,11 +299,7 @@ where
                 base,
                 value,
                 subscripts,
-            } => {
-                self.expression(base, scalar_index)?;
-                self.all_scalars(value)?;
-                self.subscripts(subscripts)
-            }
+            } => self.array_update_scalar(base, value, subscripts, scalar_index),
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
                 self.builtin(node, builtin, arguments, scalar_index)
             }
@@ -337,9 +336,10 @@ where
             dae::ExpressionOperation::FunctionFoldParameter { .. }
                 | dae::ExpressionOperation::FunctionFoldOutput { .. }
         );
-        Ok((is_fold_boundary
-            || self.visit_function_expression_once(expression, None, scalar_index))
-        .then_some(node))
+        Ok(
+            (is_fold_boundary || self.visit_expression_once(expression, None, scalar_index))
+                .then_some(node),
+        )
     }
 
     /// Visit the coordinates one carried loop value depends on.
@@ -648,32 +648,30 @@ where
         Ok(())
     }
 
-    fn visit_function_expression_once(
+    fn visit_expression_once(
         &mut self,
         expression: dae::ExprId<'dae>,
         field: Option<usize>,
         scalar: usize,
     ) -> bool {
-        let Some(FunctionFrame::Summary(function)) = self.function_frames.last() else {
-            return true;
-        };
-        let function = function.index();
-        let dependency = FunctionExpressionDependency {
+        let dependency = ScalarExpressionDependency {
             expression: expression.index(),
             field,
             scalar,
-            domain_context: self.function_expression_domain_context(expression),
+            domain_context: self.expression_domain_context(expression),
         };
-        self.function_summary_captures
-            .last_mut()
-            .filter(|capture| capture.function == function)
-            .is_none_or(|capture| capture.visited.insert(dependency))
+        match self.function_frames.last() {
+            None => self.model_visited.insert(dependency),
+            Some(FunctionFrame::Summary(function)) => self
+                .function_summary_captures
+                .last_mut()
+                .filter(|capture| capture.function == function.index())
+                .is_none_or(|capture| capture.visited.insert(dependency)),
+            Some(FunctionFrame::Actual { .. }) => true,
+        }
     }
 
-    fn function_expression_domain_context(
-        &self,
-        expression: dae::ExprId<'dae>,
-    ) -> Vec<(u32, Vec<i64>)> {
+    fn expression_domain_context(&self, expression: dae::ExprId<'dae>) -> Vec<(u32, Vec<i64>)> {
         let Some(mut domain) = self.node(expression).binder_domain() else {
             return Vec::new();
         };
@@ -711,7 +709,7 @@ where
         {
             return self.function_fold_dependency(fold, carried, Some(field), scalar_index);
         }
-        if !self.visit_function_expression_once(expression, Some(field), scalar_index) {
+        if !self.visit_expression_once(expression, Some(field), scalar_index) {
             return Ok(());
         }
         match node.operation() {
@@ -779,11 +777,7 @@ where
                 base,
                 value,
                 subscripts,
-            } => {
-                self.record_field(base, field, scalar_index)?;
-                self.all_record_field_scalars(value, field)?;
-                self.subscripts(subscripts)
-            }
+            } => self.array_update_field(base, value, subscripts, field, scalar_index),
             _ => Err(unsupported_record_operation(node, field)),
         }
     }
@@ -1037,6 +1031,7 @@ where
             | dae::PureBuiltin::Exp
             | dae::PureBuiltin::Log
             | dae::PureBuiltin::Log10
+            | dae::PureBuiltin::NoEvent
             | dae::PureBuiltin::Vector => self.expression(
                 arguments
                     .get(0)
@@ -1046,6 +1041,7 @@ where
             dae::PureBuiltin::Transpose => {
                 self.transpose(arguments, node.value_type().dimensions(), scalar_index)
             }
+            dae::PureBuiltin::LinearSolve => self.coupled_arguments(arguments),
             dae::PureBuiltin::Diagonal
             | dae::PureBuiltin::OuterProduct
             | dae::PureBuiltin::Skew => self.matrix_product(builtin, arguments, node, scalar_index),
@@ -1061,10 +1057,6 @@ where
             }
             dae::PureBuiltin::Smooth => self.expression(
                 arguments.get(1).expect("checked smooth value argument"),
-                scalar_index,
-            ),
-            dae::PureBuiltin::NoEvent => self.expression(
-                arguments.get(0).expect("checked noEvent value argument"),
                 scalar_index,
             ),
             dae::PureBuiltin::Sum | dae::PureBuiltin::Product => self.all_scalars(
@@ -1118,6 +1110,18 @@ where
                 )
             }
         }
+    }
+
+    fn coupled_arguments(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+    ) -> Result<(), ProjectionError> {
+        // A dense implicit solve may couple every result to every coefficient
+        // and RHS entry; diagonal structure is not proved here.
+        for argument in arguments.iter() {
+            self.all_scalars(argument)?;
+        }
+        Ok(())
     }
 
     fn transpose(

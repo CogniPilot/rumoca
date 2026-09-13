@@ -23,6 +23,9 @@ use crate::{LinearSolver, Matrix, Scalar, Vector};
 
 const METHOD: &str = "diffsol-bdf";
 
+#[cfg(test)]
+mod tests;
+
 type RhsFn = Box<dyn Fn(&Vector, &Vector, Scalar, &mut Vector)>;
 type JacobianFn = Box<dyn Fn(&Vector, &Vector, Scalar, &Vector, &mut Vector)>;
 type InitialFn = Box<dyn Fn(&Vector, Scalar, &mut Vector)>;
@@ -281,9 +284,7 @@ impl MeIntegratorBackend for DiffsolBdfIntegrator {
         }
         self.accepted_interval = Some(AcceptedInterval {
             start_time: request.current().time(),
-            start_states: try_copy(request.current().states(), "BDF interval start")?,
             end_time: candidate.accepted_time(),
-            end_states: try_copy(candidate.accepted_states(), "BDF interval end")?,
         });
         Ok(candidate)
     }
@@ -313,18 +314,10 @@ impl MeIntegratorBackend for DiffsolBdfIntegrator {
                 ),
             ));
         }
-        // The BDF state vectors are the native extension's endpoint values.
-        // Diffsol's polynomial evaluator is intended for the open interval and
-        // can accumulate a different endpoint rounding path, so preserve the
-        // exact accepted points the host is validating.
-        if time.to_bits() == interval.start_time.to_bits() || time < interval.start_time {
-            states.copy_from_slice(&interval.start_states);
-            return Ok(());
-        }
-        if time.to_bits() == interval.end_time.to_bits() || time > interval.end_time {
-            states.copy_from_slice(&interval.end_states);
-            return Ok(());
-        }
+        // Roundoff-admitted neighbors use the native endpoint. Endpoint and
+        // interior values come from the same extension, so the host can check
+        // its consistency with the accepted state without an overriding copy.
+        let time = time.clamp(interval.start_time, interval.end_time);
         self.require_solver()?.with_dependent(|_, method| {
             let sampled = method
                 .interpolate(time)
@@ -348,9 +341,7 @@ impl MeIntegratorBackend for DiffsolBdfIntegrator {
 
 struct AcceptedInterval {
     start_time: f64,
-    start_states: Vec<f64>,
     end_time: f64,
-    end_states: Vec<f64>,
 }
 
 fn build_problem(

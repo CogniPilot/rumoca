@@ -163,7 +163,7 @@ fn solve_diagonal_unchecked(
 ) -> Result<(), EvalSolveError> {
     for (component, dst) in out.iter_mut().take(n).enumerate() {
         let coeff = regs[matrix_start as usize + component * n + component];
-        if coeff.abs() <= 1.0e-14 {
+        if coeff == 0.0 || !coeff.is_finite() {
             return Err(linear_solve_error(n, Some(component), "singular diagonal"));
         }
         *dst = regs[rhs_start as usize + component] / coeff;
@@ -337,14 +337,17 @@ pub fn gaussian_eliminate(matrix: &mut AugmentedMatrix) -> Option<()> {
                 .abs()
                 .total_cmp(&matrix.get(b, col).abs())
         })?;
-        if matrix.get(pivot, col).abs() <= 1.0e-14 {
+        let pivot_value = matrix.get(pivot, col);
+        if pivot_value == 0.0 || !pivot_value.is_finite() {
             return None;
         }
         matrix.swap_rows(col, pivot);
         normalize_pivot_row(matrix, col);
         eliminate_column(matrix, col);
     }
-    Some(())
+    (0..n)
+        .all(|component| matrix.solution_component(component).is_finite())
+        .then_some(())
 }
 
 fn normalize_pivot_row(matrix: &mut AugmentedMatrix, col: usize) {

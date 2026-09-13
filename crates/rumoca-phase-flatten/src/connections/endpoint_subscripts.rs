@@ -41,38 +41,12 @@
 //!   (zero equations generated). Tracked as task #87. The leaf-counting fix in
 //!   point 1 of the [parent module docs](super) covers *primitive* connector
 //!   arrays only.
-//! - **Redeclared array dimensions** (MLS §7.3). A redeclaration may replace a
-//!   component together with its dimensions, and reaches a component along four
-//!   routes: an `extends` modification
-//!   (`model M extends Base(redeclare C a[2])` over `replaceable C a;`); a
-//!   modifier on an enclosing declaration
-//!   (`Holder h(redeclare C a[2]); … connect(h.a[1], …)`); and the nested form
-//!   of each, where the redeclaration sits inside an ordinary modification one
-//!   or more levels down (`extends Wrap(h(redeclare C a[2]))` and
-//!   `Wrap w(h(redeclare C a[2]))`), which is where the redeclare flag lives on
-//!   the enclosing class-modification rather than on the modification a caller
-//!   sees first. Instantiation keeps
-//!   only the redeclared type in both cases, so the component arrives here
-//!   wearing the *original* declaration's shape. `EF026` is suppressed for such
-//!   a component and for everything instantiated beneath it (that is what
-//!   `ConnectionEndpointIndex::rank_is_authoritative` and the
-//!   `InstanceData::had_redeclare` marker it reads are for), but the lost
-//!   dimensions are still lost: a rank-raising redeclare yields a scalar and an
-//!   `ED001` imbalance, and a same-rank extent redeclare (`C a[1]` redeclared
-//!   to `C a[2]`) keeps the old extent and silently drops `connect(a[2], …)`.
-//!   Both are pre-existing instantiate gaps owned by task #92, not connection
-//!   gaps. Inheritance on its own is *not* one of these cases: a component
-//!   inherited without any redeclaration keeps an authoritative rank and is
-//!   judged normally, and a redeclaration on one declaration does not touch its
-//!   siblings (`Holder h; Holder h2(redeclare C a[2]);` leaves `h.a` judged).
-//!
-//!   The marker's granularity is the *declaration the redeclaration was written
-//!   on*, not the member it names, so a redeclare of one member also suppresses
-//!   the check for that declaration's other members
-//!   (`Holder h(redeclare C a[2]); connect(h.bb[1], s)` abstains where OMC
-//!   reports "Wrong number of subscripts in h.bb[1]"). Narrowing this needs the
-//!   redeclared member's own identity to survive instantiation, which is the
-//!   same #92 gap; abstaining is the safe direction while it does not.
+//! - **Unapplied nested redeclarations** (MLS §7.3). Instantiate applies direct
+//!   component and extends replacements before expansion. Nested replacements
+//!   that remain unapplied mark their affected subtree with
+//!   `InstanceData::has_unapplied_redeclare`. This check abstains from treating
+//!   a rank in that subtree as authoritative, while still checking unaffected
+//!   siblings and replacements whose type and dimensions were applied.
 
 use rumoca_core::Span;
 use rumoca_ir_ast as ast;
@@ -97,11 +71,8 @@ struct DeclaredEndpoint {
     /// declaration that has any dimension expression at all is never treated as
     /// proven rank-zero.
     has_unevaluated_dimensions: bool,
-    /// True when instantiation consumed a redeclare modification for this
-    /// component, so its surviving `dims` are this compiler's residue of the
-    /// *original* declaration rather than a statement about the source. See
-    /// [`ConnectionEndpointIndex::rank_is_authoritative`].
-    had_redeclare: bool,
+    /// An unapplied redeclaration makes the surviving dimensions unproven.
+    has_unapplied_redeclare: bool,
     /// Span of the component declaration, when instantiation preserved one.
     declaration_span: Option<Span>,
 }
@@ -117,7 +88,7 @@ impl ConnectionEndpointIndex {
                 DeclaredEndpoint {
                     dimension_rank: component.dims.len(),
                     has_unevaluated_dimensions: !component.dims_expr.is_empty(),
-                    had_redeclare: component.had_redeclare,
+                    has_unapplied_redeclare: component.has_unapplied_redeclare,
                     declaration_span: component
                         .source_location
                         .has_source()
@@ -134,31 +105,16 @@ impl ConnectionEndpointIndex {
         }
     }
 
-    /// Whether a component's declared rank is evidence about the *source*
-    /// rather than an artifact of this compiler.
-    ///
-    /// MLS §7.3 lets a redeclaration replace a component *and its array
-    /// dimensions*, either through an `extends` modification
-    /// (`extends Base(redeclare C a[2])`) or through a modifier on an enclosing
-    /// declaration (`Holder h(redeclare C a[2])`). Instantiation consumes only
-    /// the redeclared *type*, so the redeclared dimensions never reach
-    /// `InstanceData::dims` and the component arrives here still wearing the
-    /// original declaration's shape. Reporting that shape as a user error would
-    /// blame the model for this compiler's gap.
-    ///
-    /// Instantiation marks every component it consumed a redeclaration for
-    /// (`InstanceData::had_redeclare`). A redeclaration on an *enclosing*
-    /// declaration invalidates everything instantiated beneath it — `h.a`
-    /// carries the dimensions lost by `Holder h(redeclare C a[2])` — so the
-    /// rank is authoritative only when neither the component itself nor any
-    /// ancestor on its path was redeclared.
+    /// A surviving rank is not authoritative beneath an unapplied replacement.
+    /// Check ancestors as well, so the index remains conservative when only
+    /// the enclosing occurrence has retained the uncertainty marker.
     fn rank_is_authoritative(&self, path: &rumoca_core::ComponentPath) -> bool {
         let mut candidate = Some(path.clone());
         while let Some(current) = candidate {
             if self
                 .declared
                 .get(&current)
-                .is_some_and(|declared| declared.had_redeclare)
+                .is_some_and(|declared| declared.has_unapplied_redeclare)
             {
                 return false;
             }

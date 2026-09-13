@@ -58,7 +58,7 @@ fn select_constant_index(
                 .collect::<Option<Vec<_>>>()?;
             Some(rumoca_core::Expression::Array {
                 elements: projected,
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Array,
                 span,
             })
         }
@@ -106,7 +106,7 @@ fn resolve_field_on_constant_expr(
                 .collect::<Option<Vec<_>>>()?;
             Some(rumoca_core::Expression::Array {
                 elements: projected,
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Array,
                 span,
             })
         }

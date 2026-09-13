@@ -655,11 +655,11 @@ fn expand_array_comprehensions_in_expression(
         } => expand_if_expression(ctx, branches, else_branch, prefix, span),
         ast::Expression::Array {
             elements,
-            is_matrix,
+            kind,
             span,
         } => Ok(ast::Expression::Array {
             elements: expand_expression_list(ctx, elements, prefix, *span)?,
-            is_matrix: *is_matrix,
+            kind: *kind,
             span: *span,
         }),
         ast::Expression::Tuple { elements, span } => Ok(ast::Expression::Tuple {
@@ -791,7 +791,7 @@ fn expand_array_comprehension_expression(
 
     Ok(ast::Expression::Array {
         elements: expanded_elements,
-        is_matrix: matches!(body, ast::Expression::Array { .. }),
+        kind: rumoca_core::ArrayConstructor::Array,
         span,
     })
 }

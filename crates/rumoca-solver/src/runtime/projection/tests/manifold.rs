@@ -126,3 +126,28 @@ fn failed_manifold_projection_rolls_back_every_y_slot() {
     );
     assert_eq!(y, original, "failed projection must restore all Y slots");
 }
+
+#[test]
+fn initial_manifold_certification_checks_without_correcting_states() {
+    let model = PendulumManifoldModel {
+        plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0, 1],
+                y_indices: vec![0, 1, 2, 3],
+                tearing: None,
+            }],
+        },
+    };
+    let consistent: [f64; 4] = [0.6, 0.8, -0.8, 0.6];
+    certify_state_manifold(&model, &consistent, &[], 0.0, 1e-12).unwrap();
+    let inconsistent: [f64; 4] = [0.6, 0.7, -0.8, 0.6];
+    let bits = inconsistent.map(f64::to_bits);
+    let error = certify_state_manifold(&model, &inconsistent, &[], 0.0, 1e-12).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("settled initial states cannot be corrected"),
+        "{error}"
+    );
+    assert_eq!(inconsistent.map(f64::to_bits), bits);
+}

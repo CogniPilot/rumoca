@@ -489,7 +489,6 @@ fn seed_refresh_directly_solves_coupled_algebraic_loop() {
         .expect("valid runtime should prepare");
     let solver_y = [1.0, 2.0 / 15.0, 7.0 / 15.0];
     let mut seed = [1.0, 0.0, 0.0];
-    let mut unit_seed = [0.0, 0.0, 0.0];
 
     runtime
         .seed_refresh_with_plan(
@@ -504,7 +503,6 @@ fn seed_refresh_directly_solves_coupled_algebraic_loop() {
             },
             &solver_y,
             &mut seed,
-            &mut unit_seed,
         )
         .expect("direct seed refresh should not depend on fixed-point iterations");
 
@@ -527,7 +525,6 @@ fn seed_refresh_reports_singular_coupled_algebraic_loop() {
     let solver_y = [1.0, 0.5, 0.5];
     let mut seed = [1.0, 9.0, -4.0];
     let original_seed = seed;
-    let mut unit_seed = [0.0, 0.0, 0.0];
 
     let error = runtime
         .seed_refresh_with_plan(
@@ -542,7 +539,6 @@ fn seed_refresh_reports_singular_coupled_algebraic_loop() {
             },
             &solver_y,
             &mut seed,
-            &mut unit_seed,
         )
         .expect_err("singular seed system should report an invalid gradient");
 

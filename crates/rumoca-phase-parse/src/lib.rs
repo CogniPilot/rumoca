@@ -944,6 +944,35 @@ end Test;
     }
 
     #[test]
+    fn component_redeclaration_preserves_nested_modifier_prefixes() {
+        let parsed = parse_to_ast(
+            r#"
+model Root
+  Holder h(redeclare Box box(each gain=2, final limit=3, redeclare Part data[2]));
+end Root;
+"#,
+            "redeclare_prefixes.mo",
+        )
+        .expect("parse redeclaration");
+        let h = &parsed.classes["Root"].components["h"];
+        let ast::Expression::Modification { value, .. } = &h.source_modifications[0] else {
+            panic!("component redeclaration");
+        };
+        let ast::Expression::ClassModification {
+            each_flags,
+            final_flags,
+            redeclare_flags,
+            ..
+        } = value.as_ref()
+        else {
+            panic!("replacement's modifiers");
+        };
+        assert_eq!(each_flags, &[true, false, false]);
+        assert_eq!(final_flags, &[false, true, false]);
+        assert_eq!(redeclare_flags, &[false, false, true]);
+    }
+
+    #[test]
     fn test_parse_replaceable_component_preserves_array_shape() {
         let source = r#"
 model Base

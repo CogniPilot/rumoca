@@ -63,13 +63,13 @@ fn check_problem_blocks(solve: &SolveModel, p_len: usize, failures: &mut Vec<Str
     );
     check_block(
         "initialization.residual",
-        &solve.problem.initialization.residual,
+        solve.problem.initialization.residual(),
         p_len,
         failures,
     );
     check_block(
         "initialization.update_rhs",
-        &ComputeBlock::from_scalar_program_block(solve.problem.initialization.update_rhs.clone()),
+        &ComputeBlock::from_scalar_program_block(solve.problem.initialization.update_rhs().clone()),
         p_len,
         failures,
     );

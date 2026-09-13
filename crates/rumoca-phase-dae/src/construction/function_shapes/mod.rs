@@ -1,3 +1,4 @@
+mod derivatives;
 mod expression_rules;
 mod integer_bounds;
 #[cfg(test)]
@@ -5,6 +6,7 @@ mod tests;
 mod value_relevance;
 
 use super::*;
+use derivatives::FunctionDerivativeCertificate;
 pub(in crate::construction) use expression_rules::{
     call_free_expression_shape, call_free_target_shape,
 };
@@ -394,6 +396,7 @@ pub(super) struct FunctionShapeAnalysis {
     /// split certificates that are proven identical, which both duplicates DAE
     /// functions and denies a recursive call the repeated key it terminates on.
     value_read_inputs: ValueReadInputs,
+    derivatives: Vec<FunctionDerivativeCertificate>,
 }
 
 impl FunctionShapeAnalysis {
@@ -448,10 +451,12 @@ impl FunctionShapeAnalysis {
                 constructor_fields_by_key: HashMap::new(),
                 declared_input_counts,
                 value_read_inputs,
+                derivatives: Vec::new(),
             },
             active_specializations: Vec::new(),
         };
         analyzer.discover_model_calls()?;
+        analyzer.discover_derivative_calls()?;
         Ok(analyzer.analysis)
     }
 
@@ -495,6 +500,10 @@ impl FunctionShapeAnalysis {
 
     pub(super) fn certificates(&self) -> &[FunctionShapeCertificate] {
         &self.certificates
+    }
+
+    pub(super) fn derivatives(&self) -> &[FunctionDerivativeCertificate] {
+        &self.derivatives
     }
 
     pub(super) fn construction_components(&self) -> Vec<rumoca_core::DependencyScc> {
@@ -716,50 +725,8 @@ impl ShapeAnalyzer<'_> {
             self.discover_expression(expression, values)?;
             return Ok(());
         }
-        if let Expression::Array {
-            elements,
-            is_matrix: true,
-            ..
-        } = expression
-            && elements.iter().all(|element| {
-                matches!(
-                    element,
-                    Expression::Array {
-                        is_matrix: true,
-                        ..
-                    }
-                )
-            })
-        {
-            // Parse reserves an all-matrix-child node for the `;`
-            // spelling. Its child rows may contain vectors or matrices:
-            // the checked promoted-concatenation constructor owns their
-            // exact shape. Descend through the row wrappers so calls are
-            // still discovered, without applying the deliberately narrower
-            // top-level horizontal-row rejection to those operands.
-            return self.discover_promoted_matrix_calls(elements, values);
-        }
         for child in expression_children(expression) {
             self.discover_calls(child, values)?;
-        }
-        Ok(())
-    }
-
-    fn discover_promoted_matrix_calls(
-        &mut self,
-        rows: &[Expression],
-        values: &ShapeEnvironment,
-    ) -> Result<(), ToDaeError> {
-        for row in rows {
-            let Expression::Array {
-                elements: operands, ..
-            } = row
-            else {
-                unreachable!("semicolon-row predicate proves every child")
-            };
-            for operand in operands {
-                self.discover_calls(operand, values)?;
-            }
         }
         Ok(())
     }

@@ -2,6 +2,8 @@ use super::*;
 use crate::{SolveRealFormat, SolveTypeConstructionError, SolveValueKind};
 use rumoca_core::{SourceId, StructuredIndexBinder, StructuredIndexDomain};
 
+mod linear_solve;
+
 fn span(start: usize) -> Span {
     Span::from_offsets(
         SourceId::from_source_name("typed_program.alg"),

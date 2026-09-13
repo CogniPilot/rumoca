@@ -146,7 +146,92 @@ pub(super) fn rebuild_functions<'source, 'target>(
         active_function: None,
     };
     rebuilder.rebuild_all(target)?;
+    rebuild_derivatives(source, target, &rebuilder.functions)?;
     Ok(rebuilder.functions)
+}
+
+fn rebuild_derivatives<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    rebuilt: &[RebuiltFunction<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    let entries = (0..source.function_count())
+        .map(|ordinal| {
+            source
+                .function(source.function_id(ordinal).expect("checked ordinal"))
+                .expect("checked function")
+                .derivatives()
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut links = vec![Vec::new(); entries.len()];
+    let mut pending = entries.iter().map(Vec::len).sum::<usize>();
+    while pending > 0 {
+        let before = pending;
+        for (function, entries) in entries.iter().enumerate() {
+            pending -=
+                rebuild_function_derivatives(target, rebuilt, &mut links, function, entries)?;
+        }
+        assert!(pending < before, "checked derivative chains are acyclic");
+    }
+    Ok(())
+}
+
+fn rebuild_function_derivatives<'target>(
+    target: &mut dae::DaeConstruction<'target>,
+    functions: &[RebuiltFunction<'target>],
+    links: &mut [Vec<dae::FunctionDerivativeId<'target>>],
+    function: usize,
+    entries: &[dae::FunctionDerivativeView<'_>],
+) -> Result<usize, dae::DaeConstructionError> {
+    let before = links[function].len();
+    while let Some(entry) = entries.get(links[function].len()).copied() {
+        let Some(link) = rebuild_derivative(target, functions, links, entry)? else {
+            break;
+        };
+        links[function].push(link);
+    }
+    Ok(links[function].len() - before)
+}
+
+fn rebuild_derivative<'target>(
+    target: &mut dae::DaeConstruction<'target>,
+    functions: &[RebuiltFunction<'target>],
+    links: &[Vec<dae::FunctionDerivativeId<'target>>],
+    entry: dae::FunctionDerivativeView<'_>,
+) -> Result<Option<dae::FunctionDerivativeId<'target>>, dae::DaeConstructionError> {
+    let previous = match entry.previous() {
+        Some(previous) => {
+            let Some(mapped) =
+                links[previous.function().index() as usize].get(previous.ordinal() as usize)
+            else {
+                return Ok(None);
+            };
+            Some(*mapped)
+        }
+        None => None,
+    };
+    let source = functions[entry.source().index() as usize].id;
+    let derivative = functions[entry.target().index() as usize].id;
+    target
+        .functions(|functions| match previous {
+            Some(previous) => functions.next_derivative(
+                source,
+                previous,
+                derivative,
+                entry.inputs().iter().copied(),
+                entry.priority(),
+                entry.provenance(),
+            ),
+            None => functions.first_derivative(
+                source,
+                derivative,
+                entry.inputs().iter().copied(),
+                entry.priority(),
+                entry.provenance(),
+            ),
+        })
+        .map(Some)
 }
 
 #[derive(Clone, Copy)]
@@ -1290,7 +1375,11 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         target: dae::FunctionDefinitionId<'target>,
         provenance: dae::DaeProvenance,
     ) -> Result<(), dae::DaeConstructionError> {
-        if source.function().index() != target.function().index()
+        if self
+            .functions
+            .get(source.function().index() as usize)
+            .map(|function| function.id)
+            != Some(target.function())
             || source.ordinal() != target.ordinal()
         {
             return Err(dae::DaeConstructionError::ShapeMismatch {

@@ -145,11 +145,12 @@ pub struct Component {
     /// True once an `extends` modification has redeclared this inherited
     /// component (MLS §7.3, `extends Base(redeclare C a[2])`).
     ///
-    /// Instantiation consumes only the redeclared *type* from such a
-    /// modification, so everything else the redeclare states — notably array
-    /// dimensions — is dropped. Consumers that would otherwise read this
-    /// component's shape as a fact about the source must treat it as unproven.
+    /// This records the redeclaration's presence. Type and dimension
+    /// application are separate from other component prefixes and modifiers.
     pub redeclared_by_modification: bool,
+    /// A nested component redeclaration has not yet been applied by Instantiate.
+    /// Descendant dimension facts must remain unknown until it is consumed.
+    pub has_unapplied_redeclare: bool,
     /// Constraining type for replaceable components (MLS §7.3.2)
     /// If set, redeclarations must be subtypes of this type
     pub constrainedby: Option<Name>,
@@ -250,6 +251,7 @@ impl Component {
             is_replaceable: false,
             is_redeclare: false,
             redeclared_by_modification: false,
+            has_unapplied_redeclare: false,
             constrainedby: None,
             is_structural: false,
         }
@@ -944,8 +946,7 @@ pub enum Expression {
     },
     Array {
         elements: Vec<Expression>,
-        /// True if original syntax was `[a;b]` matrix notation, false for `{a,b}` array notation
-        is_matrix: bool,
+        kind: rumoca_core::ArrayConstructor,
         span: Span,
     },
     /// Tuple expression for multi-output function calls: (a, b) = func()
@@ -1255,9 +1256,7 @@ impl std::fmt::Display for Expression {
             }
             Expression::NamedArgument { name, value, .. } => write!(f, "{} = {}", name.text, value),
             Expression::Modification { target, value, .. } => write!(f, "{} = {}", target, value),
-            Expression::Array { elements, .. } => {
-                write!(f, "{{{}}}", format_display_list(elements))
-            }
+            Expression::Array { elements, kind, .. } => format_array(f, elements, *kind),
             Expression::Tuple { elements, .. } => write!(f, "({})", format_display_list(elements)),
             Expression::If {
                 branches,
@@ -1295,6 +1294,26 @@ impl std::fmt::Display for Expression {
             }
         }
     }
+}
+
+fn format_array(
+    f: &mut std::fmt::Formatter<'_>,
+    elements: &[Expression],
+    kind: rumoca_core::ArrayConstructor,
+) -> std::fmt::Result {
+    let (open, separator, close) = match kind {
+        rumoca_core::ArrayConstructor::Array => ("{", ", ", "}"),
+        rumoca_core::ArrayConstructor::Horizontal => ("[", ", ", "]"),
+        rumoca_core::ArrayConstructor::Vertical => ("[", "; ", "]"),
+    };
+    f.write_str(open)?;
+    for (index, element) in elements.iter().enumerate() {
+        if index != 0 {
+            f.write_str(separator)?;
+        }
+        write!(f, "{element}")?;
+    }
+    f.write_str(close)
 }
 
 fn format_unary_op(op: &OpUnary) -> &'static str {

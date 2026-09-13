@@ -9,16 +9,19 @@ fn component(operation: LinearOp) -> FmiComponent {
         0,
         1,
     );
-    model.problem.initialization.update_rhs = ScalarProgramBlock::with_source_span(
+    let mut initialization = model.problem.initialization.clone().into_input();
+    initialization.update_rhs = ScalarProgramBlock::with_source_span(
         vec![vec![operation, LinearOp::StoreOutput { src: 0 }]],
         span.require_provenance("parameter binding fixture")
             .unwrap(),
     )
     .unwrap();
-    model.problem.initialization.update_targets = vec![ScalarSlot::P {
+    initialization.update_targets = vec![ScalarSlot::P {
         index: 1,
         byte_offset: 8,
     }];
+    model.problem.initialization = crate::InitializationSolveSystem::construct(initialization)
+        .expect("fixture initialization ownership is disjoint");
     FmiComponent::construct(model, vec![input]).expect("valid initialization assignment")
 }
 
@@ -68,7 +71,8 @@ fn parameter_settlement_follows_issued_output_indices() {
     input.scalar_names = vec!["p[1]".into(), "p[2]".into()];
     input.start = vec![0.0, 0.0];
     let span = input.declaration;
-    model.problem.initialization.update_rhs = ScalarProgramBlock::with_output_indices(
+    let mut initialization = model.problem.initialization.clone().into_input();
+    initialization.update_rhs = ScalarProgramBlock::with_output_indices(
         vec![
             vec![
                 LinearOp::Const { dst: 0, value: 2.0 },
@@ -83,7 +87,7 @@ fn parameter_settlement_follows_issued_output_indices() {
         vec![1, 0],
     )
     .unwrap();
-    model.problem.initialization.update_targets = vec![
+    initialization.update_targets = vec![
         ScalarSlot::P {
             index: 0,
             byte_offset: 0,
@@ -93,6 +97,8 @@ fn parameter_settlement_follows_issued_output_indices() {
             byte_offset: 8,
         },
     ];
+    model.problem.initialization = crate::InitializationSolveSystem::construct(initialization)
+        .expect("fixture initialization ownership is disjoint");
     let component = FmiComponent::construct(model, vec![input]).unwrap();
     let error = component
         .into_codegen_view()

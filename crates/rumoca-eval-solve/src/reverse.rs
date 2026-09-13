@@ -651,12 +651,7 @@ mod tests {
                 y: &[2.0],
                 p: &[],
                 t: 0.0,
-                context: RowEvalContext {
-                    seed: None,
-                    external_tables: None,
-                    pure_calls: None,
-                    runtime_state: None,
-                },
+                context: RowEvalContext::default(),
             },
             &[1.0],
             &mut ReverseCotangents {
@@ -784,12 +779,7 @@ mod tests {
                     y,
                     p: &[],
                     t: 0.0,
-                    context: RowEvalContext {
-                        seed: None,
-                        external_tables: None,
-                        pure_calls: None,
-                        runtime_state: None,
-                    },
+                    context: RowEvalContext::default(),
                 },
                 &mut regs,
             )
@@ -807,12 +797,7 @@ mod tests {
                 y: &y,
                 p: &[],
                 t: 0.0,
-                context: RowEvalContext {
-                    seed: None,
-                    external_tables: None,
-                    pure_calls: None,
-                    runtime_state: None,
-                },
+                context: RowEvalContext::default(),
             },
             &[1.0],
             &mut ReverseCotangents {

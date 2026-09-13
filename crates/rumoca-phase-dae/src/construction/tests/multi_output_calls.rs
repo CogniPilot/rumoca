@@ -482,7 +482,7 @@ fn matrix_row_of_scalars_proves_rank_two() {
         .collect::<Vec<_>>();
     let argument = Expression::Array {
         elements,
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Horizontal,
         span: source.span("[0, 1, 1, 0, 0]", 0),
     };
     let model = rank2_call_model(&source, argument);
@@ -500,7 +500,7 @@ fn array_constructor_of_scalars_still_reports_the_rank_mismatch() {
         .collect::<Vec<_>>();
     let argument = Expression::Array {
         elements,
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: source.span("[0, 1, 1, 0, 0]", 0),
     };
     let model = rank2_call_model(&source, argument);
@@ -604,30 +604,22 @@ fn each_unshaped_expression_form_names_its_own_construct() {
     }
 }
 
-/// A `[ ]` operand that is not a scalar needs the promoting `cat` the canonical
-/// DAE has no owner for, and says so rather than proving a shape it cannot build.
+/// A bracket operand retains its vector extent while promotion adds a column axis.
 #[test]
-fn matrix_with_a_non_scalar_operand_is_rejected_by_name() {
+fn matrix_with_a_vector_operand_constructs_as_a_column() {
     let source = TestSource::new(MATRIX_TEXT);
     let inner = Expression::Array {
         elements: vec![scalar(&source, "0", 0), scalar(&source, "1", 0)],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: source.span("0, 1", 0),
     };
     let argument = Expression::Array {
         elements: vec![inner],
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Horizontal,
         span: source.span("[0, 1, 1, 0, 0]", 0),
     };
     let model = rank2_call_model(&source, argument);
-    let error = construct(&model, source.map).expect_err("a vector operand needs `cat` promotion");
-    let message = error.to_string();
-    assert!(
-        message.contains("MLS §10.4.2.1")
-            && message.contains("ambiguous horizontal")
-            && message.contains("rank-1 operand"),
-        "unexpected rejection: {message}"
-    );
+    construct(&model, source.map).expect("a vector operand promotes to a rank-2 column");
 }
 
 /// The `;` spelling has an unambiguous nested-row owner, so its vector
@@ -641,17 +633,17 @@ fn semicolon_matrix_of_vectors_constructs_with_promoted_shape() {
             scalar(&source, "0", occurrence),
             scalar(&source, "1", occurrence),
         ],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: source.span("0, 1", 0),
     };
     let row = |occurrence| Expression::Array {
         elements: vec![vector(occurrence)],
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Horizontal,
         span: source.span("[0, 1, 1, 0, 0]", 0),
     };
     let argument = Expression::Array {
         elements: vec![row(0), row(1)],
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Vertical,
         span: source.span("[0, 1, 1, 0, 0]", 0),
     };
     let model = rank2_call_model(&source, argument);
@@ -685,7 +677,7 @@ fn model_scope_matrix_row_of_vectors_uses_checked_promotion() {
                 span: source.span("v2", 1),
             },
         ],
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Horizontal,
         span: row_span,
     };
     model.add_equation(flat::Equation::new(

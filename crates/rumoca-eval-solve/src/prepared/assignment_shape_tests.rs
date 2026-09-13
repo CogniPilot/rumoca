@@ -147,15 +147,34 @@ fn compact_tensor_moment_sum_keeps_cross_product_independent_of_target() {
 }
 
 #[test]
-fn compact_tensor_sum_does_not_certify_a_target_in_an_unisolated_cross_product() {
-    assert!(
-        rumoca_ir_solve::derive_target_assignment_shape_for_output(
-            &tensor_sum_residual(true, 0),
-            0,
-            1
+fn compact_tensor_sum_isolates_a_force_coordinate_inside_its_cross_product() {
+    let prepared = PreparedScalarProgramBlock::new(
+        ScalarProgramBlock::with_source_span(
+            vec![tensor_sum_residual(true, 0)],
+            fixture_span()
+                .require_provenance("affine tensor moment")
+                .unwrap(),
         )
-        .is_none()
-    );
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        prepared.assignment_shape_for_output(0, 0, 1),
+        Some(TargetAssignmentShape::TensorAffine { .. })
+    ));
+    let value = prepared
+        .eval_target_assignment_output_unchecked_with_context(TargetAssignmentOutputRequest {
+            row_idx: 0,
+            output_offset: 0,
+            target_y_index: 1,
+            y: &[4.0, 1e30, 7.0, 18.0, -4.0, 5.0],
+            p: &[2.0, 3.0, 5.0],
+            t: 0.0,
+            context: RowEvalContext::default(),
+        })
+        .unwrap()
+        .unwrap();
+    assert!((value - 8.6).abs() < 1e-12);
 }
 
 #[test]
@@ -418,7 +437,7 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
             output_offset: 0,
             target_index: 1,
             assignment_target: Some(1),
-            assignment_shape: Some(selected),
+            assignment_shape: Some(selected.clone()),
             direct_assignment_certified: false,
             exact_assignment_certified: true,
         })
@@ -445,7 +464,7 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
             output_offset: 0,
             target_index: 2,
             assignment_target: Some(2),
-            assignment_shape: Some(selected),
+            assignment_shape: Some(selected.clone()),
             direct_assignment_certified: false,
             exact_assignment_certified: true,
         })
@@ -497,7 +516,7 @@ fn affine_shape_isolates_a_coordinate_from_negated_zero_sum() {
 }
 
 #[test]
-fn affine_residual_shape_isolates_nested_connection_difference() {
+fn additive_shape_isolates_nested_connection_difference() {
     let row = vec![
         LinearOp::LoadY { dst: 0, index: 3 },
         LinearOp::LoadY { dst: 1, index: 4 },
@@ -536,6 +555,56 @@ fn affine_residual_shape_isolates_nested_connection_difference() {
         .expect("nested connection difference is exactly isolatable");
 
     assert_eq!(value, Some(3.0));
+}
+
+#[test]
+fn additive_assignment_keeps_small_offsets_with_a_large_target_guess() {
+    let row = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::LoadY { dst: 1, index: 1 },
+        LinearOp::LoadY { dst: 2, index: 2 },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Sub,
+            lhs: 3,
+            rhs: 2,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ];
+    let prepared = PreparedScalarProgramBlock::new(
+        ScalarProgramBlock::with_source_span(
+            vec![row],
+            fixture_span()
+                .require_provenance("additive offset")
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    for guess in [1e30, -1e30, 0.0] {
+        let value = prepared
+            .eval_target_assignment_row_with_context(
+                0,
+                0,
+                &[guess, 4.0, 13.0],
+                &[],
+                0.0,
+                RowEvalContext::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            value,
+            Some(9.0),
+            "x + 4 - 13 = 0 is independent of its starting guess"
+        );
+        assert!(prepared.can_evaluate_declared_target_assignment(0, 0, 0));
+    }
 }
 
 #[test]

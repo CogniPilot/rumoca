@@ -140,13 +140,9 @@ pub(crate) fn expression_from_ast_with_context(
             ..
         } => convert_if_with_context(branches, else_branch, expr.span(), context),
 
-        ast::Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } => Ok(rumoca_core::Expression::Array {
+        ast::Expression::Array { elements, kind, .. } => Ok(rumoca_core::Expression::Array {
             elements: convert_expr_vec_with_context(elements, context)?,
-            is_matrix: *is_matrix,
+            kind: *kind,
             span: expr.span(),
         }),
 
@@ -824,18 +820,14 @@ fn expression_from_ast_in_subscript(
             )?),
             span: expr.span(),
         }),
-        ast::Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } => Ok(rumoca_core::Expression::Array {
+        ast::Expression::Array { elements, kind, .. } => Ok(rumoca_core::Expression::Array {
             elements: elements
                 .iter()
                 .map(|element| {
                     expression_from_ast_in_subscript(element, base, dimension, owner_span, context)
                 })
                 .collect::<LowerResult<Vec<_>>>()?,
-            is_matrix: *is_matrix,
+            kind: *kind,
             span: expr.span(),
         }),
         // Nested component/index expressions establish their own nearest-array

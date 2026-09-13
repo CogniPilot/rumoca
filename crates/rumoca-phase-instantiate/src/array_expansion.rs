@@ -854,7 +854,7 @@ fn try_eval_structural_array_expr(
             let len = n.max(0) as usize;
             Some(ast::Expression::Array {
                 elements: std::iter::repeat_n(value, len).collect(),
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Array,
                 span: call_span,
             })
         };
@@ -915,7 +915,7 @@ fn try_eval_structural_array_expr(
                     .into_iter()
                     .map(|value| make_real_lit(value, call_span))
                     .collect(),
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Array,
                 span: call_span,
             })
         }
@@ -963,12 +963,7 @@ fn apply_unary_to_structural_array(
     array: &ast::Expression,
     span: rumoca_core::Span,
 ) -> Option<ast::Expression> {
-    let ast::Expression::Array {
-        elements,
-        is_matrix,
-        ..
-    } = array
-    else {
+    let ast::Expression::Array { elements, kind, .. } = array else {
         return None;
     };
     let mapped = elements
@@ -977,7 +972,7 @@ fn apply_unary_to_structural_array(
         .collect::<Option<Vec<_>>>()?;
     Some(ast::Expression::Array {
         elements: mapped,
-        is_matrix: *is_matrix,
+        kind: *kind,
         span,
     })
 }
@@ -1088,7 +1083,7 @@ fn try_eval_array_comprehension(
     }
     Some(ast::Expression::Array {
         elements,
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: *span,
     })
 }

@@ -665,7 +665,7 @@ fn substitutes_function_scope_constants_inside_defaults_and_body() {
             value: rumoca_core::Literal::Real(1.0),
             span: rumoca_core::Span::DUMMY,
         }],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: rumoca_core::Span::DUMMY,
     };
     let mut ctx = Context::new();
@@ -716,7 +716,7 @@ fn substitutes_record_array_field_projection_from_flat_var_ref() {
         "ConcreteMedium.data".to_string(),
         rumoca_core::Expression::Array {
             elements: vec![record],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: rumoca_core::Span::DUMMY,
         },
     );
@@ -885,7 +885,7 @@ fn substitutes_inline_multi_indexed_constant_varref_names() {
                     span: rumoca_core::Span::DUMMY,
                 },
             ],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: rumoca_core::Span::DUMMY,
         },
     );
@@ -903,8 +903,8 @@ fn substitutes_inline_multi_indexed_constant_varref_names() {
             } => {
                 assert!(matches!(
                     base.as_ref(),
-                    rumoca_core::Expression::Array { elements, is_matrix, .. }
-                        if !*is_matrix && elements.len() == 2
+                    rumoca_core::Expression::Array { elements, kind, .. }
+                        if *kind == rumoca_core::ArrayConstructor::Array && elements.len() == 2
                 ));
                 assert_eq!(subscripts.len(), 2);
                 assert!(matches!(
@@ -942,7 +942,7 @@ fn rejects_unspanned_inline_indexed_constant_varref_names() {
         "Pkg.table".to_string(),
         rumoca_core::Expression::Array {
             elements: vec![int_literal(1)],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: rumoca_core::Span::DUMMY,
         },
     );
@@ -1136,7 +1136,7 @@ fn substitutes_package_constant_in_structured_template_and_preserves_binder() {
         table_name.to_string(),
         rumoca_core::Expression::Array {
             elements: vec![int_literal(11), int_literal(12)],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         },
     );

@@ -55,30 +55,23 @@ pub(crate) fn infer_function_call_dims(
 
 pub(crate) fn infer_array_dims_from_expression(
     elements: &[Expression],
-    is_matrix: bool,
+    kind: rumoca_core::ArrayConstructor,
     var_dims: &DimMap,
     function_output_dims: &DimMap,
 ) -> Option<Vec<i64>> {
-    if elements.is_empty() {
-        return Some(vec![0]);
-    }
-    if is_matrix {
-        return match elements.first() {
-            Some(Expression::Array { elements: row, .. }) => {
-                Some(vec![elements.len() as i64, row.len() as i64])
-            }
-            _ => Some(vec![1, elements.len() as i64]),
-        };
-    }
-
-    let mut dims = vec![elements.len() as i64];
-    let inner_dims = elements
+    let shapes = elements
         .iter()
-        .find_map(|element| infer_expr_dims(element, var_dims, function_output_dims));
-    if let Some(inner) = inner_dims {
-        dims.extend(inner);
-    }
-    Some(dims)
+        .map(|element| {
+            infer_expr_dims(element, var_dims, function_output_dims)?
+                .into_iter()
+                .map(|n| usize::try_from(n).ok())
+                .collect()
+        })
+        .collect::<Option<Vec<Vec<usize>>>>()?;
+    kind.checked_dimensions(&shapes)?
+        .into_iter()
+        .map(|n| i64::try_from(n).ok())
+        .collect()
 }
 
 pub(crate) fn infer_array_comprehension_dims(
@@ -120,11 +113,9 @@ pub(crate) fn infer_expr_dims(
     function_output_dims: &DimMap,
 ) -> Option<Vec<i64>> {
     match expr {
-        Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } => infer_array_dims_from_expression(elements, *is_matrix, var_dims, function_output_dims),
+        Expression::Array { elements, kind, .. } => {
+            infer_array_dims_from_expression(elements, *kind, var_dims, function_output_dims)
+        }
         Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() => var_dims.get(name.as_str()).cloned(),

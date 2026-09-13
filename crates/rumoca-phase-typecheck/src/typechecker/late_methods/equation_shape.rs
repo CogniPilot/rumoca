@@ -69,11 +69,9 @@ impl TypeChecker {
             Expression::FunctionCall { comp, args, .. } => {
                 self.infer_function_call_shape(expr, comp, args, type_table)
             }
-            Expression::Array {
-                elements,
-                is_matrix,
-                ..
-            } => self.infer_array_literal_shape(elements, *is_matrix, type_table),
+            Expression::Array { elements, kind, .. } => {
+                self.infer_array_literal_shape(elements, *kind, type_table)
+            }
             Expression::Range {
                 start, step, end, ..
             } => Self::integer_literal_range_shape(start, step.as_deref(), end).or_else(|| {
@@ -272,64 +270,14 @@ impl TypeChecker {
     fn infer_array_literal_shape(
         &self,
         elements: &[Expression],
-        is_matrix: bool,
+        kind: rumoca_core::ArrayConstructor,
         type_table: &TypeTable,
     ) -> Option<Vec<usize>> {
-        if elements.is_empty() {
-            return Some(vec![0]);
-        }
-        if is_matrix {
-            return self.infer_matrix_literal_shape(elements, type_table);
-        }
-        let element_shapes: Option<Vec<Vec<usize>>> = elements
+        let shapes = elements
             .iter()
             .map(|element| self.infer_expression_shape(element, type_table))
-            .collect();
-        let element_shapes = element_shapes?;
-        let first = &element_shapes[0];
-        if element_shapes.iter().any(|shape| shape != first) {
-            return None;
-        }
-        let mut shape = vec![elements.len()];
-        shape.extend_from_slice(first);
-        Some(shape)
-    }
-
-    fn infer_matrix_literal_shape(
-        &self,
-        elements: &[Expression],
-        type_table: &TypeTable,
-    ) -> Option<Vec<usize>> {
-        if !matches!(elements.first(), Some(Expression::Array { .. })) {
-            let all_scalar = elements.iter().all(|element| {
-                self.infer_expression_shape(element, type_table)
-                    .is_some_and(|shape| shape.is_empty())
-            });
-            return all_scalar.then_some(vec![1, elements.len()]);
-        }
-
-        let mut column_count = None;
-        for row in elements {
-            let Expression::Array {
-                elements: row_elements,
-                ..
-            } = row
-            else {
-                return None;
-            };
-            if !row_elements.iter().all(|element| {
-                self.infer_expression_shape(element, type_table)
-                    .is_some_and(|shape| shape.is_empty())
-            }) {
-                return None;
-            }
-            match column_count {
-                Some(expected) if expected != row_elements.len() => return None,
-                None => column_count = Some(row_elements.len()),
-                _ => {}
-            }
-        }
-        Some(vec![elements.len(), column_count.unwrap_or(0)])
+            .collect::<Option<Vec<_>>>()?;
+        kind.checked_dimensions(&shapes)
     }
 
     fn merge_binary_shapes(

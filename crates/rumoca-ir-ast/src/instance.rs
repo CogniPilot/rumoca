@@ -562,18 +562,9 @@ pub struct InstanceData {
     /// (e.g., `redeclare package Medium = Medium`) that is remapped to an active
     /// enclosing override during instantiation (MLS §7.3).
     pub has_forwarding_class_redeclare: bool,
-    /// True when a redeclare modification was consumed for this component —
-    /// either an `extends` modification that redeclared it
-    /// (`extends Base(redeclare C a[2])`) or a redeclare modifier written on
-    /// its own declaration (`Holder h(redeclare C a[2])`), MLS §7.3.
-    ///
-    /// Instantiation consumes only the redeclared *type*; the redeclaration's
-    /// array dimensions are dropped. `dims` on such an instance (and on
-    /// anything instantiated underneath it) is therefore this compiler's
-    /// residue of the *original* declaration, not a statement about the model,
-    /// and must never be reported to the user as one.
-    #[serde(default)]
-    pub had_redeclare: bool,
+    /// This occurrence or an enclosing occurrence retains an unapplied
+    /// component redeclaration. Its dimensions cannot establish a shape proof.
+    pub has_unapplied_redeclare: bool,
 
     // Type prefixes (MLS §4.4.2, SPEC_0022 §3.19-3.20)
     /// Variability (constant, parameter, discrete, continuous).
@@ -688,7 +679,7 @@ impl Default for InstanceData {
             declaration_source_scope: None,
             class_overrides: IndexMap::default(),
             has_forwarding_class_redeclare: false,
-            had_redeclare: false,
+            has_unapplied_redeclare: false,
             variability: Variability::Empty,
             causality: Causality::Empty,
             flow: false,
@@ -875,6 +866,10 @@ pub struct InstanceOverlay {
     /// (`plug_p.pin[1]`, `plug_p.pin[2]`, `plug_p.pin[3]`), this map stores the parent
     /// path `plug_p.pin` with dimensions `[3]` for use in array equation expansion.
     pub array_parent_dims: IndexMap<ComponentPath, Vec<i64>>,
+    /// Declarations with at least one array occurrence, including empty arrays
+    /// that produce no component instances. This only vetoes universal scalar
+    /// proofs; it does not identify or merge runtime occurrences.
+    pub array_component_declarations: IndexSet<DefId>,
     /// Mapping from outer-prefixed paths to their corresponding inner paths (MLS §5.4).
     /// When an outer component `initialStep.stateGraphRoot` references inner `stateGraphRoot`,
     /// equations/connections using the outer prefix are redirected to the inner path.

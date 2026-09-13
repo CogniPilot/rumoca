@@ -185,12 +185,12 @@ pub fn derive_solve_structural_artifacts(
         })?;
     let initialization_residual = derive_optional_compute_pattern(
         &artifacts.initialization.residual_jacobian_v,
-        problem.initialization.residual.len()?,
+        problem.initialization.residual().len()?,
         initialization_columns,
     )?;
     let initialization_projection = derive_initial_projection_patterns(
         initialization_residual.as_ref(),
-        &problem.initialization.projection_plan,
+        problem.initialization.projection_plan(),
         solver_columns,
     )?;
     let initialization = rumoca_ir_solve::InitializationStructuralArtifacts::derived(

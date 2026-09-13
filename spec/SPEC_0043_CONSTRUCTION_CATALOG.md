@@ -61,15 +61,26 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 17,000 | Retain checked conditional/tensor/loop-region identity; retire downstream recovery during Solve Algorithm Block cutover |
+| `dae-core-loc` | 11,000 | 17,500 | Retain checked conditional/tensor/loop-region and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
 | `dae-wire-loc` | 3,250 | 5,500 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
-| `dae-total-loc` | 14,250 | 22,250 | Both items above; total follows their sum |
+| `dae-total-loc` | 14,250 | 23,000 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
 legal once its ledger row records it, and only crossing a 250-line step forces
 the row to be rewritten. Measured, checked, and stated as an acceptance contract
 in `crates/rumoca/tests/suite_gates/dae_loc_trigger_test.rs`.
+
+**2026-09-12 scalar-owner index review:** production is 17,347 core + 5,431
+wire = 22,778 lines. The [module review](../docs/dev-guide/src/tooling/multibody-coverage.md#scalar-row-owner-lookup)
+accounts for 39 core lines: checked per-owner row ends replace repeated scans.
+The index is compact, immutable, and absent from wire; no scalar owner is added.
+
+**2026-09-12 initialization-owner review:** production is 17,308 core + 5,431
+wire = 22,739 lines. The [module inventory](../docs/dev-guide/src/tooling/multibody-coverage.md#initialization-owner-module-review)
+accounts for 145 core and 24 wire lines since the derivative-owner review.
+It retains distinct initialization semantics and checked replay, shares the
+wire value record, and finds no obsolete reader or duplicate parameter binding.
 
 **2026-08-20 module review:** measured production source is 16,577 core +
 5,292 wire = 21,869 lines. The step crossing comes from the checked
@@ -82,6 +93,15 @@ abstraction, downstream recovery, or obsolete compatibility path to delete.
 The remaining increment is the
 construction and replay evidence required to avoid cloning multiply-used loop
 expressions, so it remains under the updated derived ceilings.
+
+**2026-09-11 module review:** measured production source is 17,163 core +
+5,407 wire = 22,570 lines. Checked function-derivative links account for the
+new construction and replay code. The
+[module inventory and review](../docs/dev-guide/src/tooling/multibody-coverage.md#dae-module-review)
+records the 502-line increase from the branch HEAD, retained obligations,
+and removal of redundant field lookups. The ledger changes only to the
+derived 250-line steps; the review triggers and totality-debt ceilings remain
+unchanged.
 
 ### 2. Reservation Owner Catalog (SPEC_0036 §Storage and Forward References)
 
@@ -123,7 +143,7 @@ exists. Every other object inserts complete values in proven order.
 |---|---|---|
 | Continuous equations own checked residual IDs | Continuous system | B.1a has one form |
 | Initialization uses initialization-specific IDs | Initialization system | Runtime rules differ |
-| Structural index reduction may retain a differentiated manifold that anchors a stated `fixed = true` state only when construction also issues a separate initial-manifold projection proving that the source-fixed initial value remains immutable; until that owner exists, the candidate is rejected before a transformed DAE can be constructed | Structural index-reduction admission and Solve manifold construction | Runtime manifold projection cannot overwrite the MLS §8.6 initial equation while reporting the transformed model as supported |
+| Structural index reduction retains every differentiated manifold in the separate initialization solve together with all source-fixed initial conditions. A source-fixed state whose start is proved independent of initialization unknowns is a given input with no projection or update writer; dependent starts and transferred initial values remain equations in the same solve. Checked initialization construction derives targets and unknown inventories from one disjoint projection plan, and root assembly requires every retained manifold row. After this simultaneous solve settles, initialization and its event boundary may certify the manifold through read-only state access; only continuous-time correction may move states | Structural index-reduction admission and Solve manifold construction | Initial guesses cannot replace fixed equations; later correction cannot overwrite their settled values |
 | Discrete initial values from initial algorithms or explicit `m = value` / `pre(m) = value` equations own a typed scalar target and one settled value | Initialization system | MLS §8.6 assigns, never solves |
 | One discrete coordinate has at most one initial value | Initialization system | Duplicate is impossible |
 | A discrete initial value reads only `time`, parameters, and constants | Initialization system | Nothing else is settled there |
@@ -211,10 +231,16 @@ validation, superseded fallbacks, and compatibility are prohibited.
 | Each lowered root-relation output derives exactly one row-aligned `RootRelationRefreshRole`; `Frozen` is issued only with a proof that its typed dependency closure contains no continuous algebraic coordinate, `AlgebraicDependent` only with a proof that one exists, and unsupported dependency forms fail construction | Solve event construction | Refresh ownership remains aligned with `root_conditions` and `root_relation_memory_targets` and is never recovered by runtime inspection |
 | Each typed discrete owner derives an integrator-history effect from the finalized dependency graph; only a proved non-continuous target constructs `Preserve` | Solve construction | Unknown, cyclic, ambiguous, unsupported, and state-affecting updates fail closed to `Restart` |
 | B.1b residuals, B.1c definitions, reinit, and condition memory are distinct owners | Solve construction | Tags cannot conflate semantics |
+| An unclocked scalar model relation with a checked root derives one dedicated current-truth P buffer from its exact DAE expression identity; ordinary expression consumers read it, root programs evaluate the original operands, and condition-edge history and whole Boolean assignments have separate storage. Repeated uses share the same issued truth owner; no model names or observed signs select ownership | DAE-to-Solve layout, expression, and event construction | Compound conditions retain the located side without corrupting edge history |
 | Definitions, branches, generated edges, and holds retain exact typed provenance | Construction scopes | No dummy source claims |
 | Dense vectors, packed branches, and `u32` IDs freeze without rescanning | Solve aggregate | Linear construction |
+| Pure-call construction and wire replay borrow the already-issued owner prefix through constant-time ID lookup; nested regions and dependency, value-projection, and affinity derivation reuse that view without materializing previous-owner interface arrays. Generative program brands, exact owner identity, and acyclic availability remain mandatory | Solve typed call construction | Interface size must not multiply by the number of later owners |
 | Each prepared refresh row owns the selected isolator for its exact target | Solve evaluation construction | Runtime cannot rediscover another target shape |
+| An additive assignment certificate derives a finite nonzero constant target coefficient and a bounded weighted projection of target-independent source registers; shared subexpressions remain shared, the original evaluation prefix remains required, and wire replay matches the exact derived selection. Final backends materialize arithmetic from the issued projection, while evaluators never recover it from a runtime residual or old target value | Solve assignment construction | Independent offsets avoid cancellation; shared DAGs stay bounded |
+| An affine tensor projection binds one offset/coefficient rule to each selected canonical source operation, preserving compact tensor ranges and source DAG sharing. Independent cuts reuse original register ranges; bilinear rules require an independent operand and division an independent denominator. Execution adapters materialize only the issued relation after the unchanged source prefix, never substitute a target into a call or assertion, and decline zero/nonfinite coefficients. Wire replay rederives source producer identities, rules, output identity, and independent cuts | Solve assignment construction and final execution adapters | Tensor isolation preserves evaluation effects, bounded structure, and singular implicit equations |
+| A pure-call value-projection certificate derives exact output-to-input coordinate maps only from a total checked body of copies, finite constants, static projections, fills, transposes, and nested certified calls with no assertion predicates. Isolation consumes the issued certificate and retains the call's evaluation prefix; arithmetic, runtime indexing, control flow, and assertions remain unproved. Wire replay rederives and matches the certificate, and a dependency relation alone never proves value equality | Solve pure-call and assignment construction | Exact forwarding can expose an isolator without erasing calls or changing nonlinear branch selection |
 | A prepared scalar row may certify that its complete solver-Y gradient is invariant under solver-Y and time at a fixed parameter snapshot | Solve scalar construction | Runtime may reuse the exact gradient only while the parameter snapshot is bitwise identical; nonlinear or time-varying gradients remain uncached |
+| A continuous refresh owner may certify a projection block affine only by deriving every selected residual's degree in that block's exact unknown inventory. Outside-block coordinates are coefficients; compact typed-call owners issue and replay input-interaction summaries, and unsupported operations remain unproved. This certificate permits unrestricted Newton corrections for that block but proves neither nonsingularity, parameter-static Jacobians, complete causal seed coverage, nor nonlinear branch equivalence | Solve call and refresh construction | State-dependent coefficients must not obscure linear blocks or authorize unrelated solver shortcuts |
 | A causal refresh row constructs `ParameterStatic` only by recursively accepting pure scalar/tensor/fold/conditional owners, exact P ranges proved immutable during continuous-time mode (including the dedicated homotopy endpoint after its initialization owner pins lambda to one), and Y ranges owned by itself or earlier `ParameterStatic` rows; time, state/dynamic Y, every other runtime P coordinate, seeds, mutable tables, and impure state reject construction | Solve refresh-plan construction | Runtime can reuse tensor-native invariant values under an identical bitwise parameter snapshot without operation rescans, coordinate expansion, stale dynamic inputs, or continuous root searches over initialization-only continuation state |
 | A function-fold program derives its finite domain, carried tuple types, initial definitions, update definitions, result projections, and exact provenance in one construction; no scalar iteration list is accepted or stored | Solve program construction | A backend receives the original bounded loop and cannot depend on post-expansion graph recovery |
 | The staged executor accepts a checked value-stage schedule only when every numerical block coordinate has a compiler-issued causal seed; the schedule begins with the complete seed sweep in certified order, then reapplies each block's local seeds immediately before that BLT stage; otherwise execution uses the complete preserved projection, and a runtime-unavailable isolator also restores the incoming coordinate before that fallback | Solve evaluation construction and runtime artifact check | Complete seed coverage makes block-local branch selection construction-owned; missing, reordered, or deleted warm-start witnesses can select a different nonlinear solution, while treating a runtime-singular isolator as a semantic failure would discard the preserved implicit equation |
@@ -277,6 +303,21 @@ validation, superseded fallbacks, and compatibility are prohibited.
 | Every issued owner carries exact Algorithm Code correlation and provenance; the mapping is injective and complete at root close | Correlation construction | Production code remains auditable |
 | Wire decode replays the same current-version construction operations; old schemas and unchecked child deserialization are absent | Solve serialization | Bytes cannot forge execution |
 | Tests use production construction and compare the independent GALEC evaluator with Solve execution | Differential evidence | Shared lowering defects stay observable |
+
+### 10. Function Derivative Ownership Proposal
+
+This extension is being implemented for MLS §12.7.1 structural differentiation.
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Resolve derivative targets and restricted inputs in the declaring function's lexical scope | Resolve | Annotation spelling is not identity |
+| Retain source-priority derivative references and positional input roles through record-input decomposition | Flatten | Excluding a record excludes its complete decomposed input |
+| Construct each derivative link from exact function identities and checked primal/tangent signatures; wire replay repeats construction | DAE | A malformed derivative ABI cannot enter structural analysis |
+| A higher-order link requires its constructor-issued predecessor and appends tangents only for that predecessor's last derivative group; selection retains source priority and the exact chain context | DAE / Structural | MLS §12.7.1 permits higher-order annotations only on compiler-differentiated calls |
+| Select the first applicable source derivative before differentiating the primal body; carry a selected link into reconstruction | Structural | Selection and emission consume the same source contract |
+| `zeroDerivative` requires an invariant actual argument; `noDerivative` omits the tangent under the source function's documented domain assumptions | Structural | Omitted tangents do not assert constant values |
+| Keep the original call for values and retained position constraints, and preserve compact tensor shapes in derivative arguments/results | Structural | Derivative metadata cannot replace primal semantics |
+| Reject unsupported derivative orders or type profiles when required, with source provenance; do not silently discard a selected link | DAE / Structural | Unsupported metadata cannot produce a false proof |
 
 ## References
 

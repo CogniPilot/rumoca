@@ -62,8 +62,12 @@ pub struct MatrixProductShape {
 /// The Solve phase issues this certificate with its continuous refresh owner;
 /// evaluators execute it directly and never search the residual program for a
 /// target assignment.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TargetAssignmentShape {
+    Zero {
+        target_y_index: usize,
+        expr_eval_len: usize,
+    },
     Direct {
         target_y_index: usize,
         expr_reg: Reg,
@@ -78,31 +82,71 @@ pub enum TargetAssignmentShape {
         coefficient_scale: f64,
         expr_eval_len: usize,
     },
-    AffineResidual {
+    Additive {
         target_y_index: usize,
-        target_reg: Reg,
-        residual_reg: Reg,
+        offset_terms: std::sync::Arc<[(Reg, f64)]>,
         coefficient: f64,
+        expr_eval_len: usize,
+    },
+    TensorAffine {
+        target_y_index: usize,
+        projection: crate::refresh::AffineTensorProjection,
         expr_eval_len: usize,
     },
 }
 
 impl TargetAssignmentShape {
+    /// Source registers determining the isolated value, excluding its old target.
+    pub fn value_registers(&self) -> impl Iterator<Item = Reg> + '_ {
+        let (fixed, terms): ([Option<Reg>; 2], &[(Reg, f64)]) = match self {
+            Self::Zero { .. } => ([None, None], &[]),
+            Self::Direct { expr_reg, .. } => ([Some(*expr_reg), None], &[]),
+            Self::Affine {
+                offset_reg,
+                coefficient_reg,
+                ..
+            } => ([Some(*offset_reg), *coefficient_reg], &[]),
+            Self::Additive { offset_terms, .. } => ([None, None], offset_terms),
+            Self::TensorAffine { .. } => ([None, None], &[]),
+        };
+        fixed
+            .into_iter()
+            .flatten()
+            .chain(terms.iter().map(|(register, _)| *register))
+            .chain(
+                match self {
+                    Self::TensorAffine { projection, .. } => Some(projection),
+                    _ => None,
+                }
+                .into_iter()
+                .flat_map(|projection| projection.value_registers()),
+            )
+    }
+
     #[must_use]
-    pub const fn target_y_index(self) -> usize {
+    pub const fn is_direct(&self) -> bool {
+        matches!(self, Self::Zero { .. } | Self::Direct { .. })
+    }
+
+    #[must_use]
+    pub const fn target_y_index(&self) -> usize {
         match self {
-            Self::Direct { target_y_index, .. }
+            Self::Zero { target_y_index, .. }
+            | Self::Direct { target_y_index, .. }
             | Self::Affine { target_y_index, .. }
-            | Self::AffineResidual { target_y_index, .. } => target_y_index,
+            | Self::Additive { target_y_index, .. }
+            | Self::TensorAffine { target_y_index, .. } => *target_y_index,
         }
     }
 
     #[must_use]
-    pub const fn expr_eval_len(self) -> usize {
+    pub const fn expr_eval_len(&self) -> usize {
         match self {
-            Self::Direct { expr_eval_len, .. }
+            Self::Zero { expr_eval_len, .. }
+            | Self::Direct { expr_eval_len, .. }
             | Self::Affine { expr_eval_len, .. }
-            | Self::AffineResidual { expr_eval_len, .. } => expr_eval_len,
+            | Self::Additive { expr_eval_len, .. }
+            | Self::TensorAffine { expr_eval_len, .. } => *expr_eval_len,
         }
     }
 }

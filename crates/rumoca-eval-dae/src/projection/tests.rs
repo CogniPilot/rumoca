@@ -1,3 +1,7 @@
+mod array_update;
+mod linear_solve;
+mod shared_dag;
+
 use rumoca_core::{SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, TypeId, VarName};
 
 use super::*;

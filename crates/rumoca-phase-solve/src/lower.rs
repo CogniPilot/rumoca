@@ -11,19 +11,23 @@ use crate::LowerError;
 use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 
 pub(crate) mod call_scoped_actions;
+pub(crate) mod clock_ownership;
 mod clocks;
 mod continuous_tensor;
 mod events;
 mod implicit_derivative;
 mod initial_discrete;
+mod initial_given_states;
 mod initial_parameters;
 mod initial_pins;
 mod initial_projection;
+mod initialization;
 mod scalar;
 pub(crate) mod typed_functions;
 use scalar::{
     AffineDerivativeRow, AffineDerivativeSystem, AffineDerivativeSystems, AffineDerivativeUnknown,
-    FunctionConditionalOwnerRegistry, ScalarCompiler, ScalarSelector, ScaledDerivativeProgram,
+    AffineScalarDerivative, FunctionConditionalOwnerRegistry, ScalarCompiler, ScalarSelector,
+    ScaledDerivativeProgram,
 };
 
 pub(crate) fn lower_solve_problem(
@@ -52,7 +56,14 @@ pub(crate) fn lower_solve_problem(
     clocks::reject_cross_clock_coincident_cycle(view, &clocks, &structural)?;
     let derivatives = index_derivative_rows(view, &structural.rows)?;
     let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
-    let initialization = lower_initialization(view, &lowered, &derivatives, pins, overrides)?;
+    let initialization = initialization::lower_initialization(
+        view,
+        &lowered,
+        &derivatives,
+        pins,
+        manifold,
+        overrides,
+    )?;
     let (mut discrete, mut events, event_transactions) =
         events::lower_discrete_and_events(view, &lowered, &clocks, &continuous)?;
     discrete.event_transactions = call_scoped_actions::append_collected_actions(
@@ -1401,6 +1412,9 @@ fn lower_continuous_row<'dae>(
                 target as usize,
             )?;
             let program = match rhs {
+                DerivativeRhs::Affine(proof) => ScalarCompiler::new(view, layout, domain_point)
+                    .with_function_conditional_owners(function_conditional_owners)
+                    .affine_derivative_program(&proof)?,
                 DerivativeRhs::Explicit { expression, scalar } => {
                     ScalarCompiler::new(view, layout, domain_point)
                         .with_function_conditional_owners(function_conditional_owners)
@@ -1778,6 +1792,7 @@ fn push_subscript_expression<'dae>(
 }
 
 enum DerivativeRhs<'dae> {
+    Affine(AffineScalarDerivative<'dae>),
     Explicit {
         expression: dae::ExprId<'dae>,
         scalar: usize,
@@ -1871,10 +1886,8 @@ fn derivative_rhs<'dae>(
                 span: node.provenance().span(),
             })
         }
-        _ => Err(LowerError::non_computable(
-            "matched derivative is not an isolated affine product",
-            node.provenance().span(),
-        )),
+        _ => AffineScalarDerivative::derive(selector, residual, scalar, state, state_scalar)
+            .map(DerivativeRhs::Affine),
     }
 }
 
@@ -1942,296 +1955,15 @@ fn scaled_derivative_factor<'dae>(
             node.provenance().span(),
         ));
     }
-    if selector.constant_real(factor.0, factor.1)? == 0.0 {
+    if selector.node(factor.0).variability() <= dae::ExpressionVariability::Parameter
+        && selector.constant_real(factor.0, factor.1)? == 0.0
+    {
         return Err(LowerError::non_computable(
             "matched derivative has a zero affine coefficient",
             node.provenance().span(),
         ));
     }
     Ok(Some(factor))
-}
-
-fn lower_initialization<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    derivatives: &DerivativeRowIndex<'dae>,
-    pins: &[structural::InitialValuePin],
-    overrides: &HashMap<String, f64>,
-) -> Result<solve::InitializationSolveSystem, LowerError> {
-    // Every parameter coordinate the initialization determines gets exactly one
-    // owner, decided before any row is lowered: the residual rows below have to
-    // recompute a bound owner's binding rather than read the seed the parameter
-    // set stored for it.
-    let ownership =
-        initial_parameters::initialization_parameter_ownership(view, layout, overrides)?;
-    // MLS §8.6 solves the states and the `fixed = false` parameters together; the
-    // space names which coordinate of each kind the projection may own, and which
-    // a declaration has already determined.
-    let space = initial_projection::initialization_unknown_space(
-        initial_projection::InitializationUnknownInputs {
-            view,
-            layout,
-            ownership: &ownership,
-            derivatives,
-            pins,
-        },
-    )?;
-    let context = InitializationRowContext {
-        view,
-        layout,
-        derivatives,
-        ownership: &ownership,
-    };
-    let mut rows = ScalarRows::default();
-    let mut row_incidence: Vec<initial_projection::InitialRowIncidence<'dae>> = Vec::new();
-    for owner in view.initialization_owners() {
-        match owner {
-            dae::InitializationOwnerView::Residual { equation, .. } => {
-                let count = scalar_count(view, equation.residual());
-                for scalar in 0..count {
-                    // An initial residual may constrain a state derivative;
-                    // the continuous row that defines it supplies its value.
-                    let program = lower_initial_residual_program(context, equation, scalar)?;
-                    let output = rows.programs.len();
-                    rows.push(program, equation.provenance().span(), output);
-                    row_incidence.push(initial_projection::InitialRowIncidence::Residual(
-                        ScalarRowSource {
-                            expression: equation.residual(),
-                            scalar,
-                            domain_point: None,
-                        },
-                    ));
-                }
-            }
-            dae::InitializationOwnerView::Structured { family, .. } => {
-                lower_initialization_family(context, family, &mut rows, &mut row_incidence)?;
-            }
-        }
-    }
-    // A stated initial value the structural proof carried onto the coordinate
-    // that holds it (MLS §8.6). A proof that the value *defines* a state makes
-    // it an assignment below; a value the proof could only place beside another
-    // stated one stays a residual here, so the initialization instant decides
-    // with numbers whether the two agree.
-    let transferred =
-        initial_pins::lower_transferred_initial_values(view, layout, &ownership, pins)?;
-    rows.extend(transferred.checks);
-    // A carried value is a sum of time-invariant terms about an already-seeded
-    // state, so its parameter incidence is exactly the incidence of those terms.
-    // Handing it to the planner is what lets such a row *determine* a
-    // `fixed = false` parameter its displacement reads, instead of standing as a
-    // residual no block can ever satisfy.
-    row_incidence.extend(transferred.check_incidence);
-    let row_count = rows.programs.len();
-    let plan = initial_projection::plan_initialization_projection(&space, &row_incidence);
-    let mut updates = initial_discrete::lower_initial_discrete_values(view, layout)?;
-    // MLS §8.6 orders these after the projection that solves the `fixed = false`
-    // unknowns they read; `settle_initialization_system` iterates the whole set
-    // to a fixed point, so the two row groups share one update block.
-    let dependents = ownership.lower_solved_parameter_reads(view, layout)?;
-    updates.rows.extend(dependents.rows);
-    updates.targets.extend(dependents.targets);
-    // The carried values that are definitions join the same update block: each
-    // reads only parameters and constants, so applying it before or after the
-    // projection reaches the same fixed point.
-    updates.rows.extend(transferred.updates);
-    updates.targets.extend(transferred.update_targets);
-    reject_double_owned_initial_coordinates(view, &plan.unknowns, &updates.targets)?;
-    let row_targets = initial_row_targets(view, &plan.plan, row_count)?;
-    Ok(solve::InitializationSolveSystem {
-        residual: rows.into_compute_block()?,
-        row_targets,
-        row_roles: plan.row_roles,
-        projection_unknowns: plan.unknowns,
-        projection_plan: plan.plan,
-        update_rhs: updates.rows.into_scalar_block()?,
-        update_targets: updates.targets,
-    })
-}
-
-/// The coordinate each initialization row was planned to determine.
-///
-/// The matching already decided this pairing, and carrying it into the Solve IR
-/// is what lets a failed initialization say *which coordinate* it could not
-/// settle instead of only which residual row index was worst — the difference
-/// between a bare numeric failure and a diagnostic a model author can act on.
-/// It also lets the runtime take a row that is affine in its own coordinate as a
-/// direct assignment (`project_initial_singleton_assignment`), which it verifies
-/// against the residual and reverts when it does not improve.
-///
-/// A row named by two blocks would be one equation solving two coordinates. The
-/// components are row-disjoint by construction, so that cannot happen — which is
-/// exactly why it is checked here rather than assumed.
-fn initial_row_targets(
-    view: dae::DaeView<'_>,
-    plan: &solve::InitializationProjectionPlan,
-    row_count: usize,
-) -> Result<Vec<Option<solve::ScalarSlot>>, LowerError> {
-    let mut targets = vec![None; row_count];
-    for block in &plan.blocks {
-        for (row, unknown) in block
-            .rows
-            .iter()
-            .copied()
-            .zip(block.unknowns.iter().copied())
-        {
-            let entry = targets.get_mut(row).ok_or_else(|| {
-                LowerError::contract(
-                    format!(
-                        "initialization projection names residual row {row}, but the system has \
-                         only {row_count} rows"
-                    ),
-                    first_model_span(view),
-                )
-            })?;
-            if entry.is_some() {
-                return Err(LowerError::contract(
-                    format!(
-                        "initialization residual row {row} is claimed by two projection blocks"
-                    ),
-                    first_model_span(view),
-                ));
-            }
-            *entry = Some(unknown);
-        }
-    }
-    Ok(targets)
-}
-
-/// Every coordinate the initialization determines has exactly one owner.
-///
-/// The two lanes are disjoint by construction — `initial_projection` refuses a
-/// coordinate any declaration already states, and the update rows only write
-/// coordinates a declaration or a binding states — but a slot written by both an
-/// update row and a projection block is a wrong number rather than a failed
-/// solve: the update overwrites what the block solved, or the block re-solves
-/// what the update assigned, depending on where the settle loop stops. So the
-/// disjointness is checked here rather than trusted.
-fn reject_double_owned_initial_coordinates(
-    view: dae::DaeView<'_>,
-    unknowns: &[solve::ScalarSlot],
-    targets: &[solve::ScalarSlot],
-) -> Result<(), LowerError> {
-    let owned = unknowns
-        .iter()
-        .copied()
-        .filter_map(slot_identity)
-        .collect::<BTreeSet<_>>();
-    let Some(collision) = targets
-        .iter()
-        .copied()
-        .filter_map(slot_identity)
-        .find(|target| owned.contains(target))
-    else {
-        return Ok(());
-    };
-    Err(LowerError::contract(
-        format!(
-            "initialization coordinate {collision:?} is both a projection unknown and an \
-             initialization update target",
-        ),
-        first_model_span(view),
-    ))
-}
-
-/// A storage-class-tagged slot identity, so a Y index never aliases a P index.
-fn slot_identity(slot: solve::ScalarSlot) -> Option<(bool, usize)> {
-    match slot {
-        solve::ScalarSlot::Y { index, .. } => Some((false, index)),
-        solve::ScalarSlot::P { index, .. } => Some((true, index)),
-        solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => None,
-    }
-}
-
-/// Everything a lowered initialization row resolves its leaves against.
-#[derive(Clone, Copy)]
-struct InitializationRowContext<'a, 'dae> {
-    view: dae::DaeView<'dae>,
-    layout: &'a LoweredLayout<'dae>,
-    derivatives: &'a DerivativeRowIndex<'dae>,
-    ownership: &'a initial_parameters::InitializationParameterOwnership<'dae>,
-}
-
-fn lower_initial_residual_program<'dae>(
-    context: InitializationRowContext<'_, 'dae>,
-    equation: dae::ResidualEquationView<'dae>,
-    scalar: usize,
-) -> Result<Vec<solve::LinearOp>, LowerError> {
-    ScalarCompiler::new(context.view, context.layout, None)
-        .with_derivative_definitions(context.derivatives)
-        .with_parameter_substitutions(context.ownership.substitutions())
-        .program(equation.residual(), scalar)
-        .map_err(|error| {
-            LowerError::non_computable(
-                format!("initial residual cannot resolve its derivative reads: {error}"),
-                equation.provenance().span(),
-            )
-        })
-}
-
-fn lower_initialization_family<'dae>(
-    context: InitializationRowContext<'_, 'dae>,
-    family: dae::StructuredFamilyView<'dae>,
-    rows: &mut ScalarRows,
-    incidence: &mut Vec<initial_projection::InitialRowIncidence<'dae>>,
-) -> Result<(), LowerError> {
-    let domain = context
-        .view
-        .domain(family.domain())
-        .expect("checked family domain resolves");
-    for point in 0..domain.scalar_count() as usize {
-        let values = domain
-            .structured()
-            .index_tuple_at(point)
-            .expect("checked domain remains valid")
-            .expect("checked point ordinal is in range");
-        lower_initialization_family_point(context, family, point, &values, rows, incidence)?;
-    }
-    Ok(())
-}
-
-fn lower_initialization_family_point<'dae>(
-    context: InitializationRowContext<'_, 'dae>,
-    family: dae::StructuredFamilyView<'dae>,
-    point: usize,
-    values: &[i64],
-    rows: &mut ScalarRows,
-    incidence: &mut Vec<initial_projection::InitialRowIncidence<'dae>>,
-) -> Result<(), LowerError> {
-    let domain = context
-        .view
-        .domain(family.domain())
-        .expect("checked family domain resolves");
-    for body in family.bodies().iter() {
-        let scalar = family
-            .scalar_view()
-            .body_scalar(point, domain.extents())
-            .expect("checked family view projects its domain point");
-        let program = ScalarCompiler::new(
-            context.view,
-            context.layout,
-            Some((family.domain(), values)),
-        )
-        .with_derivative_definitions(context.derivatives)
-        .with_parameter_substitutions(context.ownership.substitutions())
-        .program(body, scalar)
-        .map_err(|error| {
-            LowerError::non_computable(
-                format!("structured initial residual cannot resolve its derivative reads: {error}"),
-                family.provenance().span(),
-            )
-        })?;
-        let output = rows.programs.len();
-        rows.push(program, family.provenance().span(), output);
-        incidence.push(initial_projection::InitialRowIncidence::Residual(
-            ScalarRowSource {
-                expression: body,
-                scalar,
-                domain_point: Some((family.domain(), values.to_vec())),
-            },
-        ));
-    }
-    Ok(())
 }
 
 #[derive(Default)]
@@ -2684,7 +2416,8 @@ fn unary_builtin(builtin: dae::PureBuiltin) -> solve::UnaryOp {
         | dae::PureBuiltin::Transpose
         | dae::PureBuiltin::Diagonal
         | dae::PureBuiltin::OuterProduct
-        | dae::PureBuiltin::Skew => unreachable!("non-unary builtin"),
+        | dae::PureBuiltin::Skew
+        | dae::PureBuiltin::LinearSolve => unreachable!("non-unary builtin"),
     }
 }
 

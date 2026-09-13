@@ -255,6 +255,50 @@ fn test_extract_attributes_preserves_local_fixed_with_outer_start() {
 }
 
 #[test]
+fn test_extract_attributes_does_not_default_an_unresolved_outer_fixed() {
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications
+        .insert("fixed".to_string(), make_bool_expr(true));
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_dotted("x.fixed"),
+        ast::ModificationValue::simple(make_comp_ref_expr(&["unsettled"])),
+    );
+    let tree = ast::ClassTree::default();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let error = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+        .expect_err("an overriding fixed expression must not use the local default");
+    assert!(matches!(
+        *error,
+        InstantiateError::UnsupportedFixedAttribute { .. }
+    ));
+}
+
+#[test]
+fn test_extract_attributes_does_not_collapse_nonuniform_fixed_values() {
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications.insert(
+        "fixed".to_string(),
+        ast::Expression::Array {
+            elements: vec![make_bool_expr(true), make_bool_expr(false)],
+            kind: rumoca_core::ArrayConstructor::Array,
+            span: Span::DUMMY,
+        },
+    );
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let error = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+        .expect_err("a uniform declaration owner cannot replace differing fixed values");
+    assert!(matches!(
+        *error,
+        InstantiateError::UnsupportedFixedAttribute { .. }
+    ));
+}
+
+#[test]
 fn test_extract_attributes_outer_state_select_overrides_local() {
     let mut comp = make_component("x", "Real", None);
     comp.modifications.insert(

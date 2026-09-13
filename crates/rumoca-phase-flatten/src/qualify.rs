@@ -992,11 +992,11 @@ fn qualify_expr_inner(
         } => qualify_if_inner(branches, else_branch, *span, prefix, opts, locals, imports),
         Expression::Array {
             elements,
-            is_matrix,
+            kind,
             span,
         } => Expression::Array {
             elements: qualify_vec_inner(elements, prefix, opts, locals, imports),
-            is_matrix: *is_matrix,
+            kind: *kind,
             span: *span,
         },
         Expression::Range {

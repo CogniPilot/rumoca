@@ -2,16 +2,25 @@
 
 // SPEC_0021 file-size exception - split plan: extract tensor-node orchestration into prepared/tensor_nodes.rs, leaving prepared row evaluation and its module facade here; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
+#[cfg(test)]
+mod additive_assignment_tests;
 mod affine_eval;
 mod assignment_shape;
 #[cfg(test)]
 mod assignment_shape_tests;
+#[cfg(test)]
+mod capability_tests;
 mod construction;
 mod dependency;
 #[cfg(test)]
 mod prepared_compute_block_tests;
 mod support;
+mod tensor_affine_assignment;
+#[cfg(test)]
+mod tensor_affine_assignment_tests;
 mod torn_sweep;
+#[cfg(test)]
+mod zero_assignment_tests;
 
 use std::cell::RefCell;
 
@@ -42,10 +51,11 @@ use dependency::{parameter_static_y_gradient, row_parameter_indices};
 pub(crate) use dependency::{row_reads_y_index, row_y_input_ranges};
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::AlgebraicRefreshRow;
+#[cfg(test)]
+use rumoca_ir_solve::BinaryOp;
 use rumoca_ir_solve::{
-    AffineStencilConstStride, AffineStencilLoadStride, BinaryOp, ComputeBlock, ComputeNode,
-    LinearOp, ScalarProgramBlock, StructuralPattern, TargetAssignmentShape, TensorOutputMap,
-    UnaryOp,
+    AffineStencilConstStride, AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp,
+    ScalarProgramBlock, StructuralPattern, TargetAssignmentShape, TensorOutputMap,
 };
 use support::*;
 pub use torn_sweep::{PreparedTornSweep, TornSweepComposite, TornSweepStatus};
@@ -69,10 +79,9 @@ pub(crate) fn program_can_evaluate_declared_target(
 ) -> Result<bool, EvalSolveError> {
     let shapes = target_assignment_shapes_with_output_offsets(program)?;
     let selected = shapes.iter().find_map(|(output, shape)| {
-        (*output == output_offset && shape.target_y_index() == target_y_index).then_some(*shape)
+        (*output == output_offset && shape.target_y_index() == target_y_index).then_some(shape)
     });
     Ok(match selected {
-        Some(TargetAssignmentShape::AffineResidual { .. }) => false,
         Some(_) => true,
         None => {
             !shapes.iter().any(|(output, _)| *output == output_offset)
@@ -87,10 +96,9 @@ pub(crate) fn program_certifies_direct_target(
     target_y_index: usize,
 ) -> Result<bool, EvalSolveError> {
     Ok(!program.iter().any(non_causal_linear_op)
-        && matches!(
-            assignment_shape_for_program_output(program, output_offset, target_y_index)?,
-            Some(TargetAssignmentShape::Direct { .. })
-        ))
+        && assignment_shape_for_program_output(program, output_offset, target_y_index)?
+            .as_ref()
+            .is_some_and(TargetAssignmentShape::is_direct))
 }
 
 pub(crate) fn program_certifies_exact_target(
@@ -110,7 +118,9 @@ pub struct PreparedScalarProgramBlock {
     row_registers: Vec<usize>,
     row_lazy_plans: Vec<Option<PreparedLazyRowPlan>>,
     row_requirements: Vec<RowInputRequirements>,
+    row_is_causal: Vec<bool>,
     row_assignment_shapes: Vec<Box<[(usize, TargetAssignmentShape)]>>,
+    row_tensor_affine_assignments: Vec<tensor_affine_assignment::PreparedTensorAffineAssignments>,
     row_parameter_indices: Vec<Box<[usize]>>,
     row_parameter_static_y_gradient_params: Vec<Option<Box<[usize]>>>,
     requirements: RowInputRequirements,
@@ -539,10 +549,6 @@ impl PreparedScalarProgramBlock {
         target_y_index: usize,
     ) -> bool {
         self.can_evaluate_target_assignment_output(row_idx, output_offset, target_y_index)
-            && !matches!(
-                self.assignment_shape_for_output(row_idx, output_offset, target_y_index),
-                Some(TargetAssignmentShape::AffineResidual { .. })
-            )
     }
 
     pub(crate) fn certifies_direct_target_assignment(
@@ -551,16 +557,10 @@ impl PreparedScalarProgramBlock {
         output_offset: usize,
         target_y_index: usize,
     ) -> bool {
-        let Some(row) = self.block.programs().get(row_idx) else {
-            return false;
-        };
-        if row.iter().any(non_causal_linear_op) {
-            return false;
-        }
-        matches!(
-            self.assignment_shape_for_output(row_idx, output_offset, target_y_index),
-            Some(TargetAssignmentShape::Direct { .. })
-        )
+        self.is_causal_row(row_idx)
+            && self
+                .assignment_shape_for_output(row_idx, output_offset, target_y_index)
+                .is_some_and(TargetAssignmentShape::is_direct)
     }
 
     pub fn certifies_exact_target_assignment_output(
@@ -569,13 +569,14 @@ impl PreparedScalarProgramBlock {
         output_offset: usize,
         target_y_index: usize,
     ) -> bool {
-        let Some(row) = self.block.programs().get(row_idx) else {
-            return false;
-        };
-        !row.iter().any(non_causal_linear_op)
+        self.is_causal_row(row_idx)
             && self
                 .assignment_shape_for_output(row_idx, output_offset, target_y_index)
                 .is_some()
+    }
+
+    fn is_causal_row(&self, row_idx: usize) -> bool {
+        self.row_is_causal.get(row_idx).copied().unwrap_or(false)
     }
 
     pub fn exact_target_assignment_output_program(
@@ -585,7 +586,7 @@ impl PreparedScalarProgramBlock {
         target_y_index: usize,
     ) -> Option<Vec<LinearOp>> {
         let row = self.block.programs().get(row_idx)?;
-        if row.iter().any(non_causal_linear_op) {
+        if !self.is_causal_row(row_idx) {
             return None;
         }
         let shape = self.assignment_shape_for_output(row_idx, output_offset, target_y_index)?;
@@ -620,7 +621,7 @@ impl PreparedScalarProgramBlock {
             return self.exact_target_assignment_output_program(row_idx, *output_offset, *target);
         }
         let row = self.block.programs().get(row_idx)?;
-        if row.iter().any(non_causal_linear_op) {
+        if !self.is_causal_row(row_idx) {
             return None;
         }
         let shapes = output_targets
@@ -630,7 +631,7 @@ impl PreparedScalarProgramBlock {
             .collect::<Option<Vec<_>>>()?;
         for (&(_, owner), shape) in output_targets.iter().zip(&shapes) {
             if output_targets.iter().copied().any(|(_, candidate)| {
-                candidate != owner && assignment_shape_reads_y_index(row, *shape, candidate)
+                candidate != owner && assignment_shape_reads_y_index(row, shape, candidate)
             }) {
                 return None;
             }
@@ -936,6 +937,20 @@ impl PreparedScalarProgramBlock {
                     span: self.block.program_span(request.row_idx),
                 })?;
         let shape = request.shape;
+        if let TargetAssignmentShape::TensorAffine {
+            projection,
+            target_y_index,
+            ..
+        } = shape
+        {
+            let assignment = self.row_tensor_affine_assignments[request.row_idx]
+                .get(&(projection.output_register(), *target_y_index))
+                .ok_or_else(|| {
+                    invalid_prepared_row("issued tensor-affine materialization is missing")
+                })?;
+            let span = self.block.program_span(request.row_idx);
+            return assignment.eval(request, span);
+        }
         eval_prevalidated_discard_output_program(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
@@ -964,13 +979,12 @@ impl PreparedScalarProgramBlock {
         row_idx: usize,
         output_offset: usize,
         target_y_index: usize,
-    ) -> Option<TargetAssignmentShape> {
+    ) -> Option<&TargetAssignmentShape> {
         self.row_assignment_shapes
             .get(row_idx)?
             .iter()
-            .copied()
             .find_map(|(output, shape)| {
-                (output == output_offset && shape.target_y_index() == target_y_index)
+                (*output == output_offset && shape.target_y_index() == target_y_index)
                     .then_some(shape)
             })
     }
@@ -1040,7 +1054,7 @@ struct TargetAssignmentRowRequest<'a> {
 
 struct TargetAssignmentScratchRequest<'a> {
     row_idx: usize,
-    shape: TargetAssignmentShape,
+    shape: &'a TargetAssignmentShape,
     y: &'a [f64],
     p: &'a [f64],
     t: f64,
@@ -1050,7 +1064,6 @@ struct TargetAssignmentScratchRequest<'a> {
 
 struct AssignmentProgramBuilder<'a> {
     program: &'a mut Vec<LinearOp>,
-    next_register: u32,
 }
 
 /// Whether a constant assignment-shape coefficient can never trip the
@@ -1061,60 +1074,26 @@ fn constant_coefficient_is_regular(coefficient: f64) -> bool {
 
 pub(crate) fn assignment_shape_reads_y_index(
     row: &[LinearOp],
-    shape: TargetAssignmentShape,
+    shape: &TargetAssignmentShape,
     y_index: usize,
 ) -> bool {
     let Some(expression_prefix) = row.get(..shape.expr_eval_len()) else {
         return true;
     };
-    match shape {
-        TargetAssignmentShape::Direct { expr_reg, .. } => {
-            dependency::reg_depends_on_y_index(expression_prefix, expr_reg, y_index)
-        }
-        TargetAssignmentShape::Affine {
-            offset_reg,
-            coefficient_reg,
-            ..
-        } => {
-            dependency::reg_depends_on_y_index(expression_prefix, offset_reg, y_index)
-                || coefficient_reg.is_some_and(|reg| {
-                    dependency::reg_depends_on_y_index(expression_prefix, reg, y_index)
-                })
-        }
-        TargetAssignmentShape::AffineResidual { residual_reg, .. } => {
-            dependency::reg_depends_on_y_index(expression_prefix, residual_reg, y_index)
-        }
-    }
+    shape
+        .value_registers()
+        .any(|register| dependency::reg_depends_on_y_index(expression_prefix, register, y_index))
 }
 
 impl<'a> AssignmentProgramBuilder<'a> {
     fn new(program: &'a mut Vec<LinearOp>) -> Option<Self> {
-        let next_register = u32::try_from(required_registers(program).ok()?).ok()?;
-        Some(Self {
-            program,
-            next_register,
-        })
+        required_registers(program).ok()?;
+        Some(Self { program })
     }
 
-    fn materialize(&mut self, shape: TargetAssignmentShape) -> Option<u32> {
-        match shape {
-            TargetAssignmentShape::Direct { expr_reg, .. } => Some(expr_reg),
-            TargetAssignmentShape::Affine {
-                offset_reg,
-                coefficient_reg,
-                offset_scale,
-                coefficient_scale,
-                ..
-            } => self
-                .affine(offset_reg, coefficient_reg, offset_scale, coefficient_scale)
-                .map(|(result, _)| result),
-            TargetAssignmentShape::AffineResidual {
-                target_reg,
-                residual_reg,
-                coefficient,
-                ..
-            } => self.affine_residual(target_reg, residual_reg, coefficient),
-        }
+    fn materialize(&mut self, shape: &TargetAssignmentShape) -> Option<u32> {
+        rumoca_ir_solve::materialize_target_assignment(shape, self.program)
+            .map(|(result, _)| result)
     }
 
     /// Materialize a shape for the torn sweep's compiled assignment schedule,
@@ -1125,142 +1104,19 @@ impl<'a> AssignmentProgramBuilder<'a> {
     /// already yields a non-finite quotient. Shapes with a constant singular
     /// coefficient return `None`: the per-row path declines them on every
     /// call, and the caller keeps the interpreted path that reproduces that.
-    fn materialize_poisoning_singular(&mut self, shape: TargetAssignmentShape) -> Option<u32> {
+    fn materialize_poisoning_singular(&mut self, shape: &TargetAssignmentShape) -> Option<u32> {
         match shape {
-            TargetAssignmentShape::Direct { .. } => self.materialize(shape),
-            TargetAssignmentShape::Affine {
-                offset_reg,
-                coefficient_reg: coefficient_reg @ Some(_),
-                offset_scale,
-                coefficient_scale,
-                ..
-            } => {
-                let (result, coefficient) =
-                    self.affine(offset_reg, coefficient_reg, offset_scale, coefficient_scale)?;
-                self.poison_non_finite(result, coefficient)
-            }
             TargetAssignmentShape::Affine {
                 coefficient_reg: None,
                 coefficient_scale,
                 ..
-            } => constant_coefficient_is_regular(coefficient_scale)
-                .then(|| self.materialize(shape))
-                .flatten(),
-            TargetAssignmentShape::AffineResidual { coefficient, .. } => {
-                constant_coefficient_is_regular(coefficient)
-                    .then(|| self.materialize(shape))
-                    .flatten()
             }
+            | TargetAssignmentShape::Additive {
+                coefficient: coefficient_scale,
+                ..
+            } if !constant_coefficient_is_regular(*coefficient_scale) => None,
+            _ => self.materialize(shape),
         }
-    }
-
-    /// Emit `value - (guard - guard)`. For a finite guard the correction is
-    /// exactly +0.0 and IEEE 754 subtraction of +0.0 reproduces `value` bit
-    /// for bit (including -0.0); for an infinite or NaN guard it is NaN and
-    /// poisons the result.
-    fn poison_non_finite(&mut self, value: u32, guard: u32) -> Option<u32> {
-        let gap = self.allocate()?;
-        let poisoned = self.allocate()?;
-        self.program.push(LinearOp::Binary {
-            dst: gap,
-            op: BinaryOp::Sub,
-            lhs: guard,
-            rhs: guard,
-        });
-        self.program.push(LinearOp::Binary {
-            dst: poisoned,
-            op: BinaryOp::Sub,
-            lhs: value,
-            rhs: gap,
-        });
-        Some(poisoned)
-    }
-
-    fn affine(
-        &mut self,
-        offset: u32,
-        coefficient: Option<u32>,
-        offset_scale: f64,
-        coefficient_scale: f64,
-    ) -> Option<(u32, u32)> {
-        let offset_scale_reg = self.allocate()?;
-        let scaled_offset = self.allocate()?;
-        let coefficient_scale_reg = self.allocate()?;
-        let scaled_coefficient = self.allocate()?;
-        let negated_offset = self.allocate()?;
-        let result = self.allocate()?;
-        self.program.push(LinearOp::Const {
-            dst: offset_scale_reg,
-            value: offset_scale,
-        });
-        self.program.push(LinearOp::Binary {
-            dst: scaled_offset,
-            op: BinaryOp::Mul,
-            lhs: offset_scale_reg,
-            rhs: offset,
-        });
-        self.program.push(LinearOp::Const {
-            dst: coefficient_scale_reg,
-            value: coefficient_scale,
-        });
-        self.scaled_coefficient(coefficient_scale_reg, coefficient, scaled_coefficient);
-        self.program.push(LinearOp::Unary {
-            dst: negated_offset,
-            op: UnaryOp::Neg,
-            arg: scaled_offset,
-        });
-        self.program.push(LinearOp::Binary {
-            dst: result,
-            op: BinaryOp::Div,
-            lhs: negated_offset,
-            rhs: scaled_coefficient,
-        });
-        Some((result, scaled_coefficient))
-    }
-
-    fn scaled_coefficient(&mut self, scale: u32, coefficient: Option<u32>, target: u32) {
-        let operation = match coefficient {
-            Some(coefficient) => LinearOp::Binary {
-                dst: target,
-                op: BinaryOp::Mul,
-                lhs: scale,
-                rhs: coefficient,
-            },
-            None => LinearOp::Move {
-                dst: target,
-                src: scale,
-            },
-        };
-        self.program.push(operation);
-    }
-
-    fn affine_residual(&mut self, target: u32, residual: u32, coefficient: f64) -> Option<u32> {
-        let coefficient_reg = self.allocate()?;
-        let correction = self.allocate()?;
-        let result = self.allocate()?;
-        self.program.push(LinearOp::Const {
-            dst: coefficient_reg,
-            value: coefficient,
-        });
-        self.program.push(LinearOp::Binary {
-            dst: correction,
-            op: BinaryOp::Div,
-            lhs: residual,
-            rhs: coefficient_reg,
-        });
-        self.program.push(LinearOp::Binary {
-            dst: result,
-            op: BinaryOp::Sub,
-            lhs: target,
-            rhs: correction,
-        });
-        Some(result)
-    }
-
-    fn allocate(&mut self) -> Option<u32> {
-        let register = self.next_register;
-        self.next_register = self.next_register.checked_add(1)?;
-        Some(register)
     }
 }
 

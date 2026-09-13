@@ -68,7 +68,7 @@ impl SolveRuntime {
                 params,
                 tol,
                 max_iters,
-                certify_coordinates: false,
+                certify_coordinates: true,
             },
         )
     }
@@ -326,6 +326,7 @@ impl SolveRuntime {
         };
         let projection_model = RefreshProjectionModel {
             runtime: self,
+            #[cfg(test)]
             plan: projection_plan,
             block_indices: &plan.simultaneous_block_indices,
             plan_validated: false,
@@ -375,6 +376,23 @@ impl SolveRuntime {
             params,
             t,
             self.state_count,
+            tol,
+        )
+    }
+
+    /// Check an initialization point; this API cannot alter a state coordinate.
+    pub fn certify_state_manifold(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        tol: f64,
+    ) -> Result<(), RuntimeSolveError> {
+        crate::runtime::projection::certify_state_manifold(
+            &RuntimeManifoldProjection { runtime: self },
+            y,
+            p,
+            t,
             tol,
         )
     }

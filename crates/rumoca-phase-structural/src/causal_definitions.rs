@@ -10,6 +10,8 @@ use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_dae as dae;
 
+use crate::residual_normalization::equation_sides;
+
 /// Immutable elimination evidence tied to one branded DAE view.
 pub struct CausalDefinitions<'dae> {
     definitions: HashMap<u32, dae::ExprId<'dae>>,
@@ -478,15 +480,7 @@ fn scalar_direct_definition<'dae>(
     view: dae::DaeView<'dae>,
     residual: dae::ExprId<'dae>,
 ) -> Option<(dae::AlgebraicId<'dae>, u32, dae::ExprId<'dae>)> {
-    let residual = view.expression(residual)?;
-    let dae::ExpressionOperation::Binary {
-        operator: dae::BinaryOperator::Subtract,
-        lhs,
-        rhs,
-    } = residual.operation()
-    else {
-        return None;
-    };
+    let (lhs, rhs) = equation_sides(view, residual)?;
     match (scalar_algebraic(view, lhs), scalar_algebraic(view, rhs)) {
         (Some((target, scalar)), None) => scalar_compatible_definition(view, target, scalar, rhs),
         (None, Some((target, scalar))) => scalar_compatible_definition(view, target, scalar, lhs),
@@ -562,15 +556,7 @@ fn discrete_connection_definition<'dae>(
     {
         return None;
     }
-    let residual = view.expression(equation.residual())?;
-    let dae::ExpressionOperation::Binary {
-        operator: dae::BinaryOperator::Subtract,
-        lhs,
-        rhs,
-    } = residual.operation()
-    else {
-        return None;
-    };
+    let (lhs, rhs) = equation_sides(view, equation.residual())?;
     match (
         whole_algebraic(view, lhs),
         whole_discrete_real(view, rhs),
@@ -587,15 +573,7 @@ fn direct_definition<'dae>(
     view: dae::DaeView<'dae>,
     residual: dae::ExprId<'dae>,
 ) -> Option<(dae::AlgebraicId<'dae>, dae::ExprId<'dae>)> {
-    let residual = view.expression(residual)?;
-    let dae::ExpressionOperation::Binary {
-        operator: dae::BinaryOperator::Subtract,
-        lhs,
-        rhs,
-    } = residual.operation()
-    else {
-        return None;
-    };
+    let (lhs, rhs) = equation_sides(view, residual)?;
     match (whole_algebraic(view, lhs), whole_algebraic(view, rhs)) {
         (Some(target), None) => compatible_definition(view, target, rhs),
         (None, Some(target)) => compatible_definition(view, target, lhs),
@@ -612,15 +590,7 @@ fn direct_alias<'dae>(
     dae::AlgebraicId<'dae>,
     dae::ExprId<'dae>,
 )> {
-    let residual = view.expression(residual)?;
-    let dae::ExpressionOperation::Binary {
-        operator: dae::BinaryOperator::Subtract,
-        lhs,
-        rhs,
-    } = residual.operation()
-    else {
-        return None;
-    };
+    let (lhs, rhs) = equation_sides(view, residual)?;
     let lhs_target = whole_algebraic(view, lhs)?;
     let rhs_target = whole_algebraic(view, rhs)?;
     (lhs_target != rhs_target).then_some((lhs_target, lhs, rhs_target, rhs))

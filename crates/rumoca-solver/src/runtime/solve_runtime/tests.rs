@@ -940,7 +940,19 @@ fn refresh_newton_repivots_mode_dependent_coupled_residuals() {
     // of it. The complete Jacobian remains nonsingular.
     let model = mode_dependent_repivot_model();
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
-    assert!(runtime.algebraic_refresh.rows.is_empty());
+    // The second row now exposes y = 3 - x, but x still has no causal seed.
+    // Incomplete coverage must keep the complete, dynamically pivoted solve.
+    assert_eq!(runtime.algebraic_refresh.rows.len(), 1);
+    assert_eq!(runtime.algebraic_refresh.rows[0].target_index(), 1);
+    assert!(matches!(
+        runtime.algebraic_refresh.rows[0].assignment_shape(),
+        Some(solve::TargetAssignmentShape::Additive { .. })
+    ));
+    assert!(
+        !super::refresh_projection::value_stage_seed_coverage_is_complete(
+            &runtime.algebraic_refresh
+        )
+    );
     assert_eq!(runtime.algebraic_refresh.simultaneous_plan.blocks.len(), 1);
 
     let mut solver_y = model.initial_y.clone();

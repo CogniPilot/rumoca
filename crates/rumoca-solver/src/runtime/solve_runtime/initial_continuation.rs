@@ -33,7 +33,7 @@
 //!   below use real permutations: `BistableLoop` emits `[2, 1]`, `E10_Mixed`
 //!   `[4, 1, 2, 3]`, `E11_Shifted` `[5, 4, 1, 2, 3]`. [`lambda_reading_equations`]
 //!   is the only place a program index is turned into an equation index.
-//! * `continuous.implicit_row_targets` and `initialization.row_targets` are
+//! * `continuous.implicit_row_targets` and `initialization.row_targets()` are
 //!   indexed by equation index.
 //! * `InitializationProjectionBlock::rows` and `AlgebraicProjectionBlock::rows`
 //!   are equation indices into the corresponding residual vector.
@@ -52,15 +52,15 @@
 //! * λ is allocated and read by at least one lowered row of the model. Rows
 //!   split into two groups:
 //!   * **Steered** — `continuous.implicit_rhs` rows that target an algebraic
-//!     slot, and `initialization.residual` rows the initialization projection
+//!     slot, and `initialization.residual()` rows the initialization projection
 //!     plan solves. The continuation drives these; this module proves a plan
 //!     names each of them.
 //!   * **Unsteered** — every other row family the lowering can put a λ read in:
 //!     `continuous.derivative_rhs` (`der(y) = homotopy(...)`),
 //!     `discrete.rhs` (`when c then z = homotopy(...); end when;`),
 //!     `events.root_conditions`, `continuous.residual`,
-//!     `continuous.manifold_residual`, `initialization.update_rhs`,
-//!     `visible_value_rows`, and `initialization.residual` rows that no
+//!     `continuous.manifold_residual`, `initialization.update_rhs()`,
+//!     `visible_value_rows`, and `initialization.residual()` rows that no
 //!     projection block solves (steady-state `initial equation der(x) = 0`
 //!     against a `der(x) = homotopy(...)` equation). Nothing solves these rows
 //!     for an unknown during the continuation, so they are evaluated at λ = 1,
@@ -78,10 +78,9 @@
 //!   `implicit_row_targets` entry is an algebraic slot that no algebraic refresh
 //!   plan names. The sweep would report success without ever having solved that
 //!   row.
-//! * A λ-reading `initialization.residual` equation whose target unknown *is*
-//!   claimed by an `initialization.projection_plan` block while that block omits
-//!   the equation itself — the plan claims to solve the unknown from rows that
-//!   exclude the one carrying λ.
+//!
+//! Initialization row targets are derived from the same checked plan. The
+//! former independent target/row mismatch is rejected during IR construction.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -100,7 +99,7 @@ pub(crate) struct InitialContinuationCoverage {
     /// the algebraic refresh plan. Non-empty means the sweep has to re-run that
     /// refresh at every continuation value.
     steered_implicit_equations: BTreeSet<usize>,
-    /// λ-reading `initialization.residual` equations the initialization
+    /// λ-reading `initialization.residual()` equations the initialization
     /// projection plan solves. Non-empty means the plan itself carries part of
     /// the sweep.
     steered_initialization_equations: BTreeSet<usize>,
@@ -119,7 +118,7 @@ impl InitialContinuationCoverage {
         algebraic_refresh: &solve::RefreshPlan,
     ) -> Result<(solve::ScalarProgramBlock, Option<Self>), EvalSolveError> {
         let initial_scalar_residual =
-            to_scalar_program_block(&model.problem.initialization.residual)?;
+            to_scalar_program_block(model.problem.initialization.residual())?;
         let coverage = Self::certify(
             model,
             implicit_scalar_rhs.block(),
@@ -168,8 +167,7 @@ impl InitialContinuationCoverage {
             });
         }
 
-        let steered_initialization_equations =
-            certify_initialization_rows(model, initial_block, &initial_reads)?;
+        let steered_initialization_equations = certify_initialization_rows(model, &initial_reads);
         let refresh_equations = algebraic_refresh_equations(algebraic_refresh);
         let steered_implicit_equations =
             certify_implicit_rows(model, implicit_block, &implicit_reads, &refresh_equations)?;
@@ -205,58 +203,20 @@ impl InitialContinuationCoverage {
     }
 }
 
-/// Reject λ-reading `initialization.residual` equations that a projection block
-/// claims through their unknown but omits from its own rows, and return the
-/// equations the projection plan steers.
+/// Select continuation rows directly from the checked initialization owner.
 fn certify_initialization_rows(
     model: &solve::SolveModel,
-    initial_block: &solve::ScalarProgramBlock,
     initial_reads: &BTreeMap<usize, usize>,
-) -> Result<BTreeSet<usize>, EvalSolveError> {
-    let plan = &model.problem.initialization.projection_plan;
-    let mut steered = BTreeSet::new();
-    for (&equation, &program_index) in initial_reads {
-        let Some(target) = model
-            .problem
-            .initialization
-            .row_targets
-            .get(equation)
-            .copied()
-            .flatten()
-            .as_ref()
-            .and_then(slot_key)
-        else {
-            // No unknown is assigned to this row, so initialization solves
-            // nothing through it and the continuation owes it nothing. The
-            // steady-state `initial equation der(x) = 0` shape lands here.
-            continue;
-        };
-        let Some(owner) = plan.blocks.iter().find(|block| {
-            block
-                .unknowns
-                .iter()
-                .filter_map(slot_key)
-                .any(|u| u == target)
-        }) else {
-            // The projection plan does not solve this row's unknown at all; the
-            // row rides at λ = 1 like any other unsteered row.
-            continue;
-        };
-        if !owner.rows.contains(&equation) {
-            return Err(EvalSolveError::ShapeContract {
-                message: format!(
-                    "initialization.residual equation {equation} reads the homotopy continuation \
-                     parameter and its target unknown is solved by an initialization.projection_plan \
-                     block whose rows {:?} exclude it; the continuation would sweep lambda without \
-                     ever steering that row",
-                    owner.rows
-                ),
-                span: initial_block.program_span(program_index),
-            });
-        }
-        steered.insert(equation);
-    }
-    Ok(steered)
+) -> BTreeSet<usize> {
+    model
+        .problem
+        .initialization
+        .projection_plan()
+        .blocks
+        .iter()
+        .flat_map(|block| block.rows.iter().copied())
+        .filter(|row| initial_reads.contains_key(row))
+        .collect()
 }
 
 /// Reject λ-reading `continuous.implicit_rhs` equations that target an algebraic
@@ -455,15 +415,6 @@ fn implicit_equation_is_initialization_solved(model: &solve::SolveModel, equatio
     )
 }
 
-/// Storage-space identity of a projection unknown, ignoring byte offsets.
-fn slot_key(slot: &solve::ScalarSlot) -> Option<(u8, usize)> {
-    match slot {
-        solve::ScalarSlot::Y { index, .. } => Some((0, *index)),
-        solve::ScalarSlot::P { index, .. } => Some((1, *index)),
-        solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use rumoca_core::{BytePos, SourceId, Span};
@@ -607,8 +558,16 @@ mod tests {
     #[test]
     fn covered_initialization_row_certifies() {
         let mut model = model_with_lambda(Some(1));
-        model.problem.initialization.row_targets = vec![Some(solve::scalar_slot_y(0))];
-        model.problem.initialization.projection_plan = covered_plan();
+        model.problem.initialization =
+            solve::InitializationSolveSystem::construct(solve::InitializationSystemInput {
+                residual: solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![
+                    reads_lambda_program(1),
+                ])),
+                row_roles: vec![solve::InitializationRowRole::Solved],
+                projection_plan: covered_plan(),
+                ..Default::default()
+            })
+            .unwrap();
         let coverage = InitialContinuationCoverage::certify(
             &model,
             &scalar_block(vec![plain_program()]),
@@ -900,7 +859,15 @@ mod tests {
         let mut model = model_with_lambda(Some(0));
         model.problem.solve_layout.compiled_parameter_len = 1;
         model.problem.solve_layout.state_scalar_count = 1;
-        model.problem.initialization.row_targets = vec![None];
+        model.problem.initialization =
+            solve::InitializationSolveSystem::construct(solve::InitializationSystemInput {
+                residual: solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![
+                    reads_lambda_program(0),
+                ])),
+                row_roles: vec![solve::InitializationRowRole::SurplusCheck],
+                ..Default::default()
+            })
+            .unwrap();
         let coverage = InitialContinuationCoverage::certify(
             &model,
             &scalar_block(vec![]),
@@ -911,35 +878,6 @@ mod tests {
         .expect("a continuation parameter yields coverage");
 
         assert!(!coverage.drives_algebraic_refresh());
-    }
-
-    /// The genuine initialization hole: the plan claims the row's unknown but
-    /// solves it from other rows, so the sweep never steers the λ row.
-    #[test]
-    fn unsteered_initialization_row_is_rejected() {
-        let mut model = model_with_lambda(Some(1));
-        model.problem.initialization.row_targets =
-            vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
-        model.problem.initialization.projection_plan = solve::InitializationProjectionPlan {
-            blocks: vec![solve::InitializationProjectionBlock {
-                rows: vec![1],
-                unknowns: vec![solve::scalar_slot_y(0)],
-            }],
-        };
-        let error = InitialContinuationCoverage::certify(
-            &model,
-            &scalar_block(vec![]),
-            &scalar_block(vec![reads_lambda_program(1), plain_program()]),
-            &solve::RefreshPlan::default(),
-        )
-        .expect_err("a homotopy row its own solve block omits must be rejected");
-
-        assert!(
-            error
-                .to_string()
-                .contains("initialization.residual equation 0"),
-            "unexpected message: {error}"
-        );
     }
 
     /// The genuine implicit hole, stated on a permuted block so the message and

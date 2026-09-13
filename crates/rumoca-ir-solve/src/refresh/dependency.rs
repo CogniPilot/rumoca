@@ -19,14 +19,12 @@ pub(super) fn assignment_y_dependencies_for_shapes(
                         ScalarProgramYDependency::new(prefix),
                     )
                 });
-            let registers = shape_value_registers(*shape);
             indices
                 .iter()
                 .copied()
                 .filter(|index| {
-                    registers
-                        .into_iter()
-                        .flatten()
+                    shape
+                        .value_registers()
                         .any(|register| dependency.depends_on(register, *index))
                 })
                 .collect::<Vec<_>>()
@@ -34,22 +32,6 @@ pub(super) fn assignment_y_dependencies_for_shapes(
         })
         .collect::<Vec<_>>()
         .into_boxed_slice()
-}
-
-pub(super) fn shape_value_registers(shape: TargetAssignmentShape) -> [Option<u32>; 3] {
-    match shape {
-        TargetAssignmentShape::Direct { expr_reg, .. } => [Some(expr_reg), None, None],
-        TargetAssignmentShape::Affine {
-            offset_reg,
-            coefficient_reg,
-            ..
-        } => [Some(offset_reg), coefficient_reg, None],
-        TargetAssignmentShape::AffineResidual {
-            target_reg,
-            residual_reg,
-            ..
-        } => [Some(target_reg), Some(residual_reg), None],
-    }
 }
 
 pub(super) fn y_load_indices(program: &[LinearOp]) -> BTreeSet<usize> {

@@ -5,12 +5,17 @@
 //! replacement DAE demotes that state and substitutes the exact symbolic
 //! derivative of its definition at every derivative occurrence.
 
+mod auxiliary_blocks;
+mod builtin_profiles;
+mod component_constraint;
+mod component_projection;
 mod constraints;
 mod declarations;
 mod differentiation;
 mod equalities;
 mod event_owners;
 mod expressions;
+mod function_derivatives;
 mod functions;
 mod initial_pins;
 mod observation;
@@ -18,6 +23,7 @@ mod reconstruction;
 mod runtime_quotients;
 mod semantic_owners;
 mod temporal;
+mod tensor_maps;
 #[cfg(test)]
 mod tests;
 mod variables;
@@ -318,6 +324,29 @@ struct HolonomicConstraint {
     lifted_algebraic: Option<u32>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct HolonomicOwnerKey {
+    owner: usize,
+    body: Option<usize>,
+    lifted: Option<u32>,
+    component: Option<usize>,
+}
+
+impl HolonomicConstraint {
+    fn owner_key(&self) -> HolonomicOwnerKey {
+        HolonomicOwnerKey {
+            owner: self.owner_ordinal,
+            body: self.body_ordinal,
+            lifted: self.lifted_algebraic,
+            component: self
+                .proof
+                .component
+                .as_ref()
+                .map(|component| component.scalar),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ManifoldConstraint {
     expression: u32,
@@ -339,6 +368,7 @@ struct HolonomicDifferentiationProof {
     residual: u32,
     maximum_order: u8,
     anchored_states: Box<[u32]>,
+    component: Option<component_constraint::ComponentConstraint>,
 }
 
 /// Prepare a finalized DAE for Solve without admitting a weaker intermediate.
@@ -933,7 +963,7 @@ struct HolonomicReductionState {
     current_error: StructuralError,
     round_number: u32,
     direct_round_number: u32,
-    differentiated_owners: BTreeSet<(usize, Option<usize>, Option<u32>)>,
+    differentiated_owners: BTreeSet<HolonomicOwnerKey>,
     blocked: Option<DiscardedInitialValue>,
 }
 
@@ -977,11 +1007,7 @@ impl HolonomicReductionState {
         observer: &mut impl ReductionObserver,
     ) {
         let (constraint, next_residue, step) = held;
-        self.differentiated_owners.insert((
-            constraint.owner_ordinal,
-            constraint.body_ordinal,
-            constraint.lifted_algebraic,
-        ));
+        self.differentiated_owners.insert(constraint.owner_key());
         observer.observe(ReductionEvent::Selected {
             lane: Lane::Holonomic,
             identity: Identity::Holonomic(HolonomicIdentity::from(&constraint)),
@@ -1333,7 +1359,14 @@ fn holonomic_replacement_is_structurally_active(
                     return false;
                 };
                 (0..scalar_count).any(|scalar| {
-                    residual_scalar_is_structurally_active(view, residual, scalar, None, &mut cache)
+                    constraint
+                        .proof
+                        .component
+                        .as_ref()
+                        .is_none_or(|component| component.scalar == scalar)
+                        && residual_scalar_is_structurally_active(
+                            view, residual, scalar, None, &mut cache,
+                        )
                 })
             }
             dae::ContinuousOwnerView::Structured { family, .. } => {
@@ -1366,6 +1399,14 @@ fn structured_replacement_is_active<'dae>(
         let Some(scalar) = family.scalar_view().body_scalar(point, domain.extents()) else {
             return false;
         };
+        if constraint
+            .proof
+            .component
+            .as_ref()
+            .is_some_and(|component| component.scalar != scalar)
+        {
+            return false;
+        }
         residual_scalar_is_structurally_active(
             view,
             residual,
@@ -1403,10 +1444,6 @@ fn attempt_holonomic_candidate(
     observer: &mut impl ReductionObserver,
 ) -> Result<HolonomicAttempt, StructuralError> {
     let identity = Identity::Holonomic(HolonomicIdentity::from(&constraint));
-    if let Some(discarded) = stated_initial_on_holonomic_manifold(model, stated, &constraint) {
-        observe_discarded_holonomic_initial(observer, identity, &discarded);
-        return Ok(HolonomicAttempt::Blocked(discarded));
-    }
     let (rebuilt, manifold) = match rebuild_holonomic_constraint(model, &constraint, prior_manifold)
     {
         Ok(pair) => pair,
@@ -1500,44 +1537,13 @@ fn attempt_holonomic_candidate(
     })
 }
 
-/// A stated state value that the current manifold projection certificate does
-/// not prove immutable.
-///
-/// MLS 3.6 §8.6 makes a `fixed = true` start an initialization equation. The
-/// retained manifold is projected after that initialization system settles,
-/// and today's projection certificate permits every state named by the
-/// manifold to move. Retaining the pin on the rewritten DAE is therefore not
-/// sufficient: projection could silently replace the stated value. Until the
-/// IR carries a separate initial-manifold plan that excludes initialized state
-/// owners, fail closed whenever this holonomic edge anchors a stated state.
-fn stated_initial_on_holonomic_manifold(
-    model: &dae::Dae,
-    stated: &[u32],
-    constraint: &HolonomicConstraint,
-) -> Option<DiscardedInitialValue> {
-    let variable = stated.iter().copied().find(|variable| {
-        constraint
-            .proof
-            .anchored_states
-            .binary_search(variable)
-            .is_ok()
-    })?;
-    model.inspect(|view| {
-        let declaration = view.variable(view.variable_id(variable as usize)?)?;
-        Some(DiscardedInitialValue {
-            variable: declaration.name().as_str().to_string(),
-            span: declaration.declaration().span(),
-        })
-    })
-}
-
 /// Try every current certificate in deterministic owner order, preferring a
 /// strict residue reduction over a once-only owner-consuming held step.
 fn holonomic_pass_with_observer(
     model: &dae::Dae,
     residue: usize,
     prior_manifold: &[ManifoldConstraint],
-    differentiated_owners: &mut BTreeSet<(usize, Option<usize>, Option<u32>)>,
+    differentiated_owners: &mut BTreeSet<HolonomicOwnerKey>,
     perturb_enumeration: &mut impl FnMut(&mut Vec<HolonomicConstraint>),
     observer: &mut impl ReductionObserver,
 ) -> Result<HolonomicPass, StructuralError> {
@@ -1549,19 +1555,21 @@ fn holonomic_pass_with_observer(
     })?;
     perturb_enumeration(&mut candidates);
     candidates.retain(|candidate| {
-        !differentiated_owners.contains(&(
-            candidate.owner_ordinal,
-            candidate.body_ordinal,
-            candidate.lifted_algebraic,
-        )) && candidate
-            .lifted_algebraic
-            .is_none_or(|variable| incident.contains(&variable))
+        !differentiated_owners.contains(&candidate.owner_key())
+            && candidate
+                .lifted_algebraic
+                .is_none_or(|variable| incident.contains(&variable))
     });
     candidates.sort_by_key(|candidate| {
         (
             usize::from(candidate.lifted_algebraic.is_some()),
             candidate.owner_ordinal,
             candidate.body_ordinal,
+            candidate
+                .proof
+                .component
+                .as_ref()
+                .map(|component| component.scalar),
         )
     });
     observer.observe(ReductionEvent::Candidates {
@@ -1617,11 +1625,7 @@ fn holonomic_pass_with_observer(
     }
     match reduced {
         Some((constraint, residue_after, step)) => {
-            differentiated_owners.insert((
-                constraint.owner_ordinal,
-                constraint.body_ordinal,
-                constraint.lifted_algebraic,
-            ));
+            differentiated_owners.insert(constraint.owner_key());
             observer.observe(ReductionEvent::Selected {
                 lane: Lane::Holonomic,
                 identity: Identity::Holonomic(HolonomicIdentity::from(&constraint)),

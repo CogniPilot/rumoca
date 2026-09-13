@@ -44,7 +44,13 @@ fn native_local_stores_preserve_values_without_output_aliasing() {
     for x in [2.0_f64, -3.0, 0.0] {
         let input = [x.to_bits()];
         let mut output = [0_u64];
-        compiled.call_cells(&site, &input, &mut output).unwrap();
+        compiled
+            .call_cells(
+                rumoca_eval_solve::PureCallInvocation::Primal(&site),
+                &input,
+                &mut output,
+            )
+            .unwrap();
         assert_eq!(f64::from_bits(output[0]), x * x + 1.0);
         assert_eq!(input, [x.to_bits()]);
     }

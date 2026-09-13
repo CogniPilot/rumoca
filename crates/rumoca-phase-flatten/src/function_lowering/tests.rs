@@ -215,7 +215,7 @@ fn complete_record_field_defaults_seed_one_aggregate_function_local() {
             };
             3
         ],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: test_span(),
     });
     flat.add_function(constructor);

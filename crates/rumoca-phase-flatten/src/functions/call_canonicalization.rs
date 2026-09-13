@@ -91,6 +91,10 @@ pub(crate) fn canonicalize_collected_function_calls(
         }
     }
     for function in flat.functions.values_mut() {
+        for derivative in &mut function.derivatives {
+            derivative.derivative_function =
+                rewriter.canonicalize_derivative_reference(&derivative.derivative_function)?;
+        }
         for param in function
             .inputs
             .iter_mut()
@@ -323,6 +327,37 @@ struct CollectedFunctionCallCanonicalizer<'a> {
 }
 
 impl CollectedFunctionCallCanonicalizer<'_> {
+    fn canonicalize_derivative_reference(
+        &mut self,
+        reference: &rumoca_core::Reference,
+    ) -> Result<rumoca_core::Reference, FlattenError> {
+        let span = reference
+            .span()
+            .expect("derivative annotation retains source provenance");
+        let matched = self
+            .canonical_function_for_reference(reference)
+            .ok_or_else(|| {
+                FlattenError::missing_resolved_class_metadata(
+                    reference.as_str(),
+                    "derivative function instance",
+                    span,
+                )
+            })?;
+        let name = matched.function.name.clone();
+        let instance_id = matched.function.instance_id;
+        let transitively_non_replaceable =
+            self.occurrence_proves_transitive_nonreplaceability(reference);
+        Ok(reference.with_var_name(name).with_resolved_function(
+            rumoca_core::ResolvedFunctionReference {
+                instance_id,
+                base_part_count: reference
+                    .component_ref()
+                    .map_or(0, |value| value.parts().len()),
+                transitively_non_replaceable,
+            },
+        ))
+    }
+
     fn record_call_kind_conflict(
         &mut self,
         name: &rumoca_core::Reference,

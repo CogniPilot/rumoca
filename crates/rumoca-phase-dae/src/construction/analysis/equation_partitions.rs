@@ -486,7 +486,7 @@ fn pack_connection_prefix(values: &[Expression], extents: &[usize], span: Span) 
         .collect();
     Expression::Array {
         elements,
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span,
     }
 }
@@ -590,7 +590,7 @@ fn full_aggregate_connection_value<'flat>(
     for _ in subscripts.iter().rev() {
         aggregate = Expression::Array {
             elements: vec![aggregate],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: owner,
         };
     }

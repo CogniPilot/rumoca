@@ -1,9 +1,11 @@
 mod certification;
+mod colored_rows;
 mod manifold;
 mod order_robustness;
 mod saturation;
 mod scaled_systems;
 mod singular_isolation;
+mod torn_roundoff;
 
 use std::cell::Cell;
 
@@ -611,7 +613,6 @@ fn coupled_projection_sensitivity_uses_selected_jacobian_rows() {
     };
     let y = vec![2.0, 3.0];
     let mut seed = vec![0.0; 2];
-    let mut unit_seed = vec![0.0; 2];
 
     project_algebraic_seed_with_plan(
         &model,
@@ -624,7 +625,6 @@ fn coupled_projection_sensitivity_uses_selected_jacobian_rows() {
             tolerance: 1.0e-12,
         },
         &mut seed,
-        &mut unit_seed,
     )
     .expect("coupled sensitivity projection should evaluate selected scalar rows");
 
@@ -632,8 +632,8 @@ fn coupled_projection_sensitivity_uses_selected_jacobian_rows() {
     assert_eq!(model.full_jacobian_calls.get(), 0);
     assert_eq!(
         model.jacobian_row_calls.get(),
-        12,
-        "the selected rows are also evaluated to certify the residual in row-scaled units"
+        8,
+        "row-scale certification reuses the Jacobian already formed at the same point"
     );
 }
 

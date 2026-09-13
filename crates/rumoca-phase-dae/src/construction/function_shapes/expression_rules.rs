@@ -123,13 +123,9 @@ pub(super) fn expression_shape(
             }
             Ok(expected)
         }
-        Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } => {
-            if *is_matrix {
-                matrix_expression_shape(elements, values, function_result, span)
+        Expression::Array { elements, kind, .. } => {
+            if let Some(axis) = kind.concatenation_axis() {
+                promoted_concatenation_shape(axis, elements, values, function_result, span)
             } else {
                 array_expression_shape(elements, values, function_result, span)
             }
@@ -296,147 +292,6 @@ fn array_expression_shape(
     Ok(std::iter::once(count).chain(child).collect())
 }
 
-/// The shape MLS §10.4.2.1 gives the `[ ]` concatenation operator.
-///
-/// MLS §10.4.2.1 defines both spellings over `promote`:
-///
-/// > Concatenation along first dimension: `[A; B; C; …] = cat(1, promote(A, n),
-/// > promote(B, n), promote(C, n), …)` where `n = max(2, ndims(A), ndims(B),
-/// > ndims(C), …)`.
-/// >
-/// > Concatenation along second dimension: `[A, B, C, …] = cat(2, promote(A,
-/// > n), promote(B, n), promote(C, n), …)` where `n = max(2, …)`. If necessary,
-/// > 1-sized dimensions are added to the right of A, B, C before the operation
-/// > is carried out, especially that each operand has at least two dimensions.
-///
-/// A `[ ]` result therefore always has rank 2 here, never the rank the element
-/// nesting alone suggests: `[0, 1, 1, 0, 0]` is a 1x5 matrix, not a 5-vector.
-/// Proving it as a vector is what made `Modelica.Math.Matrices.isEqual(...,
-/// [0, 1, 1, 0, 0], ...)` look like a rank-1 argument for a `Real[:,:]` formal.
-///
-/// Parse builds a row-per-element node for the `;` spelling and a
-/// operand-per-element node for the `,` spelling
-/// (`rumoca-phase-parse/src/expressions.rs::convert_range_primary`), so a
-/// constructor whose every element is itself a `[ ]` node is the `;` form.
-///
-/// KNOWN FRONTEND LIMITATION (not introduced here): those two spellings alias
-/// when a `,` operand is itself written with brackets. `[[1,2],[3,4]]` (OMC:
-/// 1x4) and `[1,2;3,4]` (OMC: 2x2) reach this rule as the *same* node, and both
-/// are read as the `;` form. The aliasing is in the parse IR — `is_matrix` is a
-/// bool with no room for the separator — and predates this rule, which only
-/// changes the previously wrong rank of the unambiguous single-row form.
-fn matrix_expression_shape(
-    elements: &[Expression],
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    if elements.is_empty() {
-        // MLS §10.4.2.1: "There must be at least one argument (i.e., [] is not
-        // defined)."
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "MLS §10.4.2.1 leaves the empty matrix construction `[]` undefined",
-            span,
-        ));
-    }
-    let is_row_element = |element: &Expression| {
-        matches!(
-            element,
-            Expression::Array {
-                is_matrix: true,
-                ..
-            }
-        )
-    };
-    if elements.iter().all(is_row_element) {
-        // `[A; B; …]`: each source row first performs its own promoted
-        // dimension-2 concatenation, then the rows concatenate along
-        // dimension 1. This is the unambiguous parse shape for the `;`
-        // spelling, so vectors and matrices retain the exact promotion MLS
-        // gives them instead of being guessed from element nesting.
-        let mut rows = Vec::with_capacity(elements.len());
-        for row in elements {
-            let Expression::Array {
-                elements: operands, ..
-            } = row
-            else {
-                unreachable!("every element was proven to be a matrix constructor")
-            };
-            rows.push(promoted_concatenation_shape(
-                1,
-                operands,
-                values,
-                function_result,
-                span,
-            )?);
-        }
-        return concatenate_proven_shapes(0, &rows, span);
-    }
-    // `[A, B, …]`: one row, concatenated along dimension 2. When the source
-    // operands are not themselves array nodes, Parse gives this form a unique
-    // representation, so the checked promoted-concatenation owner can derive
-    // the exact shape for scalars, references, and function results alike.
-    // Array-node operands retain the narrow refusal below because the current
-    // Flat producer also uses that shape for expanded comprehensions.
-    if elements
-        .iter()
-        .all(|element| !matches!(element, Expression::Array { .. }))
-    {
-        return promoted_concatenation_shape(1, elements, values, function_result, span);
-    }
-    let columns = matrix_row_columns(elements, values, function_result, span)?;
-    Ok(vec![1, columns])
-}
-
-/// The column count one `[ ]` row proves for its operands.
-///
-/// Each operand is `promote`d to rank 2 first — MLS Operator 10.1 "Fills
-/// dimensions of size 1 from the right" — so a scalar becomes 1x1 and the row
-/// is 1 x (operand count).
-///
-/// ACCEPTANCE CONTRACT (SPEC_0008): this fallback is only for a horizontal row
-/// containing an array *node*, the shape that still aliases the comprehension
-/// frontend form described above. Syntactically non-array operands use the
-/// checked promoted-concatenation owner directly in [`matrix_expression_shape`].
-fn matrix_row_columns(
-    operands: &[Expression],
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<u32, ToDaeError> {
-    if operands.is_empty() {
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "MLS §10.4.2.1 leaves an empty matrix construction row undefined",
-            span,
-        ));
-    }
-    for operand in operands {
-        let shape = expression_shape(operand, values, function_result)?;
-        if !shape.is_empty() {
-            return Err(ToDaeError::unsupported_flat(
-                "function shape proof",
-                format!(
-                    "MLS §10.4.2.1 ambiguous horizontal `[ ]` row has a rank-{} operand; only \
-                     the structurally unambiguous `;` form has a checked promoted-concatenation \
-                     owner",
-                    shape.len()
-                ),
-                span,
-            ));
-        }
-    }
-    u32::try_from(operands.len()).map_err(|_| {
-        ToDaeError::unsupported_flat(
-            "function shape proof",
-            "matrix column count exceeds the DAE shape domain",
-            span,
-        )
-    })
-}
-
-/// Exact promoted-concatenation shape for one unambiguous `;` matrix row.
 fn promoted_concatenation_shape(
     axis: usize,
     operands: &[Expression],

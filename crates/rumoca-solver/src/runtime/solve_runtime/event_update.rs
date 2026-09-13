@@ -41,7 +41,7 @@ pub struct ProjectedEventUpdateInput<'a> {
     pub event_pre_p: &'a [f64],
     pub max_iters: usize,
     pub row_filter: EventUpdateRowFilter,
-    pub root_relation_overrides: &'a [(usize, f64)],
+    pub root_relation_overrides: &'a mut Vec<(usize, f64)>,
 }
 
 pub(super) struct DiscretePreSnapshot<'a> {

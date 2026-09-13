@@ -66,6 +66,7 @@ pub(crate) fn validate_component_class_redeclare_target(
         target_name,
         nested_class,
         replacement_def_id,
+        mod_expr,
         span,
     )?;
 
@@ -77,6 +78,7 @@ fn validate_component_redeclare_constraint(
     target_name: &str,
     nested_class: &ast::ClassDef,
     replacement_def_id: DefId,
+    mod_expr: &ast::Expression,
     span: rumoca_core::Span,
 ) -> InstantiateResult<()> {
     let Some(constraint_def_id) = component_redeclare_constraint_def_id(nested_class) else {
@@ -117,7 +119,17 @@ fn validate_component_redeclare_constraint(
             ))
         })?;
 
-    if !crate::inheritance::is_type_subtype(tree, &replacement_name, &constraint_name) {
+    let compatible = if nested_class.class_type == rumoca_core::ClassType::Function {
+        crate::inheritance::function_reference_compatible(
+            tree,
+            replacement_def_id,
+            constraint_def_id,
+            &super::redeclare_modifiers::class_redeclare_modifier_args(mod_expr),
+        )
+    } else {
+        crate::inheritance::is_type_subtype(tree, &replacement_name, &constraint_name)
+    };
+    if !compatible {
         return Err(Box::new(InstantiateError::redeclare_constraint_violation(
             target_name,
             &replacement_name,

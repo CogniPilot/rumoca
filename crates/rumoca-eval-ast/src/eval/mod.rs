@@ -5,6 +5,10 @@
 //! - enum/integer/boolean conditions in guarded expressions
 //! - shape inference before flattening produces Expression forms
 
+mod declaration_dimensions;
+
+pub use declaration_dimensions::DeclaredDimensions;
+
 use crate::ast_scalar::{self, AstScalarContext};
 use crate::function_control::FunctionStmtFlow;
 use rumoca_core::{Causality, ClassType, OpBinary};
@@ -36,6 +40,10 @@ pub trait DimensionInferenceContext {
     fn eval_integer(&self, expression: &Expression, scope: &str) -> Option<i64>;
     fn eval_real(&self, expression: &Expression, scope: &str) -> Option<f64>;
     fn eval_boolean(&self, expression: &Expression, scope: &str) -> Option<bool>;
+
+    fn is_declared_scalar_reference(&self, _reference: &rumoca_ir_ast::ComponentReference) -> bool {
+        false
+    }
 
     fn infer_user_function_dimensions(
         &self,
@@ -118,6 +126,7 @@ pub struct TypeCheckEvalContext {
     scalar_spans: FxHashMap<String, Span>,
     pub enums: FxHashMap<String, String>,
     pub dimensions: FxHashMap<String, Vec<usize>>,
+    pub declared_dimensions: Arc<DeclaredDimensions>,
     /// Function definitions for compile-time evaluation (MLS §12.4).
     pub functions: Arc<FxHashMap<String, ClassDef>>,
     pub func_eval_depth: usize,
@@ -142,6 +151,7 @@ impl TypeCheckEvalContext {
             scalar_spans: FxHashMap::default(),
             enums: FxHashMap::default(),
             dimensions: FxHashMap::default(),
+            declared_dimensions: Arc::default(),
             functions: Arc::new(FxHashMap::default()),
             func_eval_depth: 0,
             enum_sizes: FxHashMap::default(),
@@ -207,6 +217,10 @@ impl TypeCheckEvalContext {
 }
 
 impl DimensionInferenceContext for TypeCheckEvalContext {
+    fn is_declared_scalar_reference(&self, reference: &rumoca_ir_ast::ComponentReference) -> bool {
+        self.declared_dimensions.proves_scalar_reference(reference)
+    }
+
     fn lookup_dimensions(&self, name: &str, scope: &str) -> Option<Vec<usize>> {
         lookup_structural_with_scope(name, scope, &self.dimensions).cloned()
     }
@@ -573,6 +587,7 @@ fn build_func_eval_context(
 ) -> Option<TypeCheckEvalContext> {
     let mut local = TypeCheckEvalContext::new();
     local.functions = Arc::clone(&ctx.functions);
+    local.declared_dimensions = Arc::clone(&ctx.declared_dimensions);
     local.func_eval_depth = ctx.func_eval_depth + 1;
     if local.func_eval_depth > MAX_FUNC_EVAL_DEPTH {
         return None;
@@ -841,11 +856,7 @@ fn eval_integer_array_with_scope(
     scope: &str,
 ) -> Option<Vec<i64>> {
     match expr {
-        Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } if *is_matrix => {
+        Expression::Array { elements, kind, .. } if kind.concatenation_axis().is_some() => {
             // Matrix syntax [a; b; c] - flatten row arrays to scalar elements
             let mut result = Vec::new();
             for elem in elements {
@@ -1176,88 +1187,15 @@ pub fn eval_integer_with_scope(
 /// Infer dimensions from an array literal expression.
 fn infer_array_dims(
     elements: &[Expression],
-    is_matrix: bool,
+    kind: rumoca_core::ArrayConstructor,
     ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<Vec<usize>> {
-    if elements.is_empty() {
-        return Some(vec![0]);
-    }
-    if is_matrix {
-        return infer_matrix_constructor_dims(elements, ctx, scope);
-    }
-    if let Some(inner) = elements
-        .first()
-        .and_then(|f| infer_dimensions_from_binding_with_scope(f, ctx, scope))
-    {
-        let mut dims = vec![elements.len()];
-        dims.extend(inner);
-        return Some(dims);
-    }
-    Some(vec![elements.len()])
-}
-
-fn infer_matrix_constructor_dims(
-    elements: &[Expression],
-    ctx: &(impl DimensionInferenceContext + ?Sized),
-    scope: &str,
-) -> Option<Vec<usize>> {
-    let has_nested_rows = matches!(elements.first(), Some(Expression::Array { .. }));
-    if !has_nested_rows {
-        return infer_matrix_row_dims(elements, ctx, scope).map(|(_, cols)| vec![1, cols]);
-    }
-
-    let mut rows = 0usize;
-    let mut expected_cols = None;
-    for row in elements {
-        let Expression::Array {
-            elements: row_elements,
-            ..
-        } = row
-        else {
-            return None;
-        };
-        let (row_count, col_count) = infer_matrix_row_dims(row_elements, ctx, scope)?;
-        match expected_cols {
-            Some(expected) if expected != col_count => return None,
-            None => expected_cols = Some(col_count),
-            _ => {}
-        }
-        rows += row_count;
-    }
-
-    Some(vec![rows, expected_cols.unwrap_or(0)])
-}
-
-fn infer_matrix_row_dims(
-    elements: &[Expression],
-    ctx: &(impl DimensionInferenceContext + ?Sized),
-    scope: &str,
-) -> Option<(usize, usize)> {
-    let single_entry = elements.len() == 1;
-    let mut expected_rows = None;
-    let mut cols = 0usize;
-    for element in elements {
-        let dims = infer_dimensions_from_binding_with_scope(element, ctx, scope)?;
-        let (entry_rows, entry_cols) = matrix_entry_dims(&dims, single_entry)?;
-        match expected_rows {
-            Some(expected) if expected != entry_rows => return None,
-            None => expected_rows = Some(entry_rows),
-            _ => {}
-        }
-        cols += entry_cols;
-    }
-    Some((expected_rows?, cols))
-}
-
-fn matrix_entry_dims(dims: &[usize], single_entry: bool) -> Option<(usize, usize)> {
-    match dims {
-        [] => Some((1, 1)),
-        [len] if single_entry => Some((*len, 1)),
-        [len] => Some((1, *len)),
-        [rows, cols] => Some((*rows, *cols)),
-        _ => None,
-    }
+    let operands = elements
+        .iter()
+        .map(|element| infer_dimensions_from_binding_with_scope(element, ctx, scope))
+        .collect::<Option<Vec<_>>>()?;
+    kind.checked_dimensions(&operands)
 }
 
 /// Infer dimensions for `cat(dim, A, B, ...)` concatenation.

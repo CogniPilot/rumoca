@@ -1,5 +1,5 @@
 {
-  "schema_version": 61,
+  "schema_version": 70,
   "layout": {
     "bindings": {
       "x": {
@@ -389,18 +389,9 @@
         }
       ]
     },
-    "row_targets": [
-      {
-        "Y": {
-          "index": 1,
-          "byte_offset": 8
-        }
-      }
-    ],
     "row_roles": [
-      "Solved"
+      "SurplusCheck"
     ],
-    "projection_unknowns": [],
     "projection_plan": {
       "blocks": []
     },
@@ -409,7 +400,9 @@
       "program_spans": [],
       "output_indices": []
     },
-    "update_targets": []
+    "update_targets": [],
+    "manifold_row_count": 0,
+    "given_state_indices": []
   },
   "discrete": {
     "event_iteration_plan": {

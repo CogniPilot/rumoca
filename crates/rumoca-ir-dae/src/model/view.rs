@@ -1,5 +1,7 @@
 mod arena_walks;
 mod quotient_owners;
+#[cfg(test)]
+mod scalar_owner_tests;
 pub use quotient_owners::{RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView};
 
 use super::*;
@@ -166,6 +168,7 @@ impl<'dae> DaeView<'dae> {
         initialization_equation_count => initialization_equations,
         initialization_owner_count => initialization_equation_owners,
         initial_discrete_value_count => initial_discrete_values,
+        initial_parameter_value_count => initial_parameter_values,
         discrete_real_equation_count => discrete_real_equations,
         discrete_value_owner_count => discrete_value_owners,
         model_event_transaction_count => model_event_transactions,
@@ -404,13 +407,15 @@ impl<'dae> DaeView<'dae> {
     }
 
     pub fn continuous_owner(self, index: usize) -> Option<ContinuousOwnerView<'dae>> {
+        #[cfg(test)]
+        scalar_owner_tests::OWNER_VIEWS.with(|count| count.set(count.get() + 1));
         Some(
-            match *self.dae.storage.continuous_equation_owners.get(index)? {
-                EquationOwnerEntry::Residual(raw) => ContinuousOwnerView::Residual {
+            match self.dae.storage.continuous_equation_owners.get(index)?.kind {
+                EquationOwnerKind::Residual(raw) => ContinuousOwnerView::Residual {
                     id: ContinuousEquationId::from_raw(raw),
                     equation: self.continuous_equation(raw as usize)?,
                 },
-                EquationOwnerEntry::Structured(raw) => ContinuousOwnerView::Structured {
+                EquationOwnerKind::Structured(raw) => ContinuousOwnerView::Structured {
                     id: ContinuousFamilyId::from_raw(raw),
                     family: self.continuous_family(raw as usize)?,
                 },
@@ -425,24 +430,17 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
-    /// Resolve the semantic owner of one row in the derived scalar view.
+    /// Resolve a scalar row in O(log owners), without expanding structured domains.
     pub fn continuous_owner_for_scalar_row(
         self,
         scalar_row: usize,
     ) -> Option<ContinuousOwnerView<'dae>> {
-        let mut first_row = 0usize;
-        for owner in self.continuous_owners() {
-            let row_count = match owner {
-                ContinuousOwnerView::Residual { .. } => 1,
-                ContinuousOwnerView::Structured { family, .. } => family.scalar_rows() as usize,
-            };
-            let end = first_row.checked_add(row_count)?;
-            if scalar_row < end {
-                return Some(owner);
-            }
-            first_row = end;
-        }
-        None
+        let index = self
+            .dae
+            .storage
+            .continuous_equation_owners
+            .partition_point(|owner| owner.scalar_row_end <= scalar_row);
+        self.continuous_owner(index)
     }
 
     pub fn continuous_family(self, index: usize) -> Option<StructuredFamilyView<'dae>> {
@@ -461,12 +459,18 @@ impl<'dae> DaeView<'dae> {
 
     pub fn initialization_owner(self, index: usize) -> Option<InitializationOwnerView<'dae>> {
         Some(
-            match *self.dae.storage.initialization_equation_owners.get(index)? {
-                EquationOwnerEntry::Residual(raw) => InitializationOwnerView::Residual {
+            match self
+                .dae
+                .storage
+                .initialization_equation_owners
+                .get(index)?
+                .kind
+            {
+                EquationOwnerKind::Residual(raw) => InitializationOwnerView::Residual {
                     id: InitializationEquationId::from_raw(raw),
                     equation: self.initialization_equation(raw as usize)?,
                 },
-                EquationOwnerEntry::Structured(raw) => InitializationOwnerView::Structured {
+                EquationOwnerKind::Structured(raw) => InitializationOwnerView::Structured {
                     id: InitializationFamilyId::from_raw(raw),
                     family: self.initialization_family(raw as usize)?,
                 },
@@ -697,6 +701,21 @@ pub struct FunctionView<'dae> {
 }
 
 impl<'dae> FunctionView<'dae> {
+    pub fn derivatives(self) -> impl ExactSizeIterator<Item = FunctionDerivativeView<'dae>> {
+        self.entry
+            .derivatives
+            .iter()
+            .enumerate()
+            .map(move |(ordinal, entry)| FunctionDerivativeView {
+                source: self.id,
+                ordinal: ordinal as u32,
+                types: &self.dae.storage.value_types,
+                parameters: &self.entry.parameters,
+                results: &self.entry.results,
+                entry,
+            })
+    }
+
     view_getters! {
         const fn id -> FunctionId<'dae> = |view| view.id;
         const fn declaration -> DaeProvenance = |view| view.entry.declaration;

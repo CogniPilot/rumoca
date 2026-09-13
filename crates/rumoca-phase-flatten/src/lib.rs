@@ -341,6 +341,9 @@ pub fn flatten_ref_with_options(
     options: FlattenOptions,
 ) -> Result<flat::Model, FlattenError> {
     let mut ctx = Context::new();
+    ctx.declared_dimensions = std::sync::Arc::new(
+        rumoca_eval_ast::eval::DeclaredDimensions::from_instanced(tree, overlay),
+    );
     ctx.predefined_string_declaration = tree
         .scope_tree
         .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String"));
@@ -1015,7 +1018,7 @@ mod nested_class_constant_scope_tests {
                         unsigned_integer("4"),
                         unsigned_integer("5"),
                     ],
-                    is_matrix: false,
+                    kind: rumoca_core::ArrayConstructor::Array,
                     span: test_span(),
                 }),
                 has_explicit_binding: true,

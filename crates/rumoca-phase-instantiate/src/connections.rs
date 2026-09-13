@@ -920,14 +920,14 @@ fn substitute_index_in_expr(expr: &ast::Expression, var_name: &str, value: i64) 
         },
         ast::Expression::Array {
             elements,
-            is_matrix,
+            kind,
             span,
         } => ast::Expression::Array {
             elements: elements
                 .iter()
                 .map(|e| substitute_index_in_expr(e, var_name, value))
                 .collect(),
-            is_matrix: *is_matrix,
+            kind: *kind,
             span: *span,
         },
         ast::Expression::FunctionCall {

@@ -97,7 +97,7 @@ fn active_mod_env_keys(ctx: &InstantiateContext) -> Vec<String> {
 fn indexed_modifier_resolution_rejects_unsupported_selections() {
     let array = ast::Expression::Array {
         elements: vec![make_int_expr(1)],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: rumoca_core::Span::DUMMY,
     };
     let subscript = |expr| ast::Subscript::Expression(expr);

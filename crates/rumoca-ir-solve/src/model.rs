@@ -259,25 +259,6 @@ pub struct InitializationSolveArtifacts {
     pub residual_jacobian_v: ComputeBlock,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct InitializationSolveSystem {
-    pub residual: ComputeBlock,
-    pub row_targets: Vec<Option<ScalarSlot>>,
-    /// What the initialization projection does with each residual row, indexed by
-    /// equation index alongside `row_targets`.
-    ///
-    /// A runtime that only knows "this row has no target" cannot tell a row the
-    /// rest of the system already determined — a legal MLS §8.6 consistency check
-    /// — from a row nothing solved because it reads a coordinate outside the
-    /// planned unknown space. Reporting the first when it is the second names the
-    /// wrong defect, so the planner records which it is.
-    pub row_roles: Vec<InitializationRowRole>,
-    pub projection_unknowns: Vec<ScalarSlot>,
-    pub projection_plan: InitializationProjectionPlan,
-    pub update_rhs: ScalarProgramBlock,
-    pub update_targets: Vec<ScalarSlot>,
-}
-
 /// What the MLS §8.6 initialization projection does with one residual row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub enum InitializationRowRole {

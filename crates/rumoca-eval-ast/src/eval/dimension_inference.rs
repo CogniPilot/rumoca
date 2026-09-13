@@ -21,11 +21,7 @@ pub fn infer_dimensions_from_binding_with_scope(
     match expr {
         Expression::Terminal { .. } => Some(Vec::new()),
 
-        Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } => infer_array_dims(elements, *is_matrix, ctx, scope),
+        Expression::Array { elements, kind, .. } => infer_array_dims(elements, *kind, ctx, scope),
 
         Expression::FunctionCall { comp, args, .. } => {
             let func_name = comp
@@ -54,9 +50,9 @@ pub fn infer_dimensions_from_binding_with_scope(
                 .collect::<Vec<_>>()
                 .join(".");
             let Some(base_dims) = ctx.lookup_dimensions(&unindexed_path, scope) else {
-                return ctx
-                    .scalar_value_known(&unindexed_path, scope)
-                    .then(Vec::new);
+                return (ctx.is_declared_scalar_reference(cr)
+                    || ctx.scalar_value_known(&unindexed_path, scope))
+                .then(Vec::new);
             };
             Some(apply_component_subscripts_to_dims(
                 base_dims, cr, ctx, scope,
@@ -200,6 +196,16 @@ fn infer_dims_from_binary_with_scope(
     let rhs_dims = infer_dimensions_from_binding_with_scope(rhs, ctx, scope);
 
     match op {
+        // MLS §10.6.7–8: scalar powers and square matrix powers retain rank.
+        OpBinary::Exp => match (lhs_dims, rhs_dims) {
+            (Some(base), Some(exponent))
+                if exponent.is_empty()
+                    && (base.is_empty() || (base.len() == 2 && base[0] == base[1])) =>
+            {
+                Some(base)
+            }
+            _ => None,
+        },
         // Matrix multiply: `[m,n] * [n,p]` -> `[m,p]`.
         OpBinary::Mul => match (&lhs_dims, &rhs_dims) {
             (Some(ld), Some(rd)) if ld.len() == 2 && rd.len() == 2 => Some(vec![ld[0], rd[1]]),

@@ -14,6 +14,9 @@ impl TypeChecker {
         let Some(type_table) = self.initialize_instanced_context(tree) else {
             return;
         };
+        self.eval_ctx.declared_dimensions = std::sync::Arc::new(
+            rumoca_eval_ast::eval::DeclaredDimensions::from_instanced(tree, overlay),
+        );
         let mut type_ids = self
             .type_ids_by_def_id
             .iter()

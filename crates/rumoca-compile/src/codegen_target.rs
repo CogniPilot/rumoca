@@ -871,9 +871,12 @@ pub fn validate_solve_target_capabilities(
         unsupported_feature(manifest, "clocks", "clock partition entries present")?;
     }
     let mut inventory = solve.compute_node_counts();
-    inventory.add_assign(solve.initialization.residual.compute_node_counts());
+    inventory.add_assign(solve.initialization.residual().compute_node_counts());
     let uses_linear_solve_component = solve.uses_linear_solve_component()
-        || solve.initialization.residual.uses_linear_solve_component();
+        || solve
+            .initialization
+            .residual()
+            .uses_linear_solve_component();
     validate_solve_tensor_inventory(
         manifest,
         capabilities,

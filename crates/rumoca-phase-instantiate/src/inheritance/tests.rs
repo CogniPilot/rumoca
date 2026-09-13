@@ -308,16 +308,18 @@ fn test_classes_are_compatible_for_equivalent_declarations() {
 
 /// Create a component with constrainedby for testing.
 fn make_constrained_component(
+    tree: &ast::ClassTree,
     name: &str,
     type_name: &str,
     constrainedby: Option<&str>,
 ) -> ast::Component {
     ast::Component {
         name: name.to_string(),
-        type_name: make_name(type_name),
+        type_name: make_resolved_name(type_name, tree.name_map[type_name]),
+        type_def_id: Some(tree.name_map[type_name]),
         is_replaceable: true,
         is_final: false,
-        constrainedby: constrainedby.map(make_name),
+        constrainedby: constrainedby.map(|name| make_resolved_name(name, tree.name_map[name])),
         ..ast::Component::empty_with_span(test_span())
     }
 }
@@ -325,8 +327,10 @@ fn make_constrained_component(
 #[test]
 fn test_constrainedby_exact_match() {
     // Redeclaring with exact same type as constraint should succeed
-    let tree = ast::ClassTree::default();
-    let comp = make_constrained_component("x", "Real", Some("Real"));
+    let tree = rumoca_phase_resolve::resolve(ast::ParsedTree::new(ast::ClassTree::default()))
+        .unwrap()
+        .into_inner();
+    let comp = make_constrained_component(&tree, "x", "Real", Some("Real"));
     let result = validate_redeclaration(&tree, &comp, "x", Some("Real"), Span::DUMMY);
     assert!(result.is_ok());
 }
@@ -334,8 +338,10 @@ fn test_constrainedby_exact_match() {
 #[test]
 fn test_constrainedby_violation_builtin() {
     // Redeclaring Real constrained component to Integer should fail
-    let tree = ast::ClassTree::default();
-    let comp = make_constrained_component("x", "Real", Some("Real"));
+    let tree = rumoca_phase_resolve::resolve(ast::ParsedTree::new(ast::ClassTree::default()))
+        .unwrap()
+        .into_inner();
+    let comp = make_constrained_component(&tree, "x", "Real", Some("Real"));
     let result = validate_redeclaration(&tree, &comp, "x", Some("Integer"), Span::DUMMY);
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -343,10 +349,26 @@ fn test_constrainedby_violation_builtin() {
 }
 
 #[test]
+fn test_explicit_constraint_without_identity_cannot_use_the_default_type() {
+    let tree = rumoca_phase_resolve::resolve(ast::ParsedTree::new(ast::ClassTree::default()))
+        .unwrap()
+        .into_inner();
+    let mut comp = make_constrained_component(&tree, "x", "Real", Some("Real"));
+    comp.constrainedby.as_mut().unwrap().def_id = None;
+    let error = validate_redeclaration(&tree, &comp, "x", Some("Real"), test_span()).unwrap_err();
+    assert!(matches!(
+        *error,
+        InstantiateError::MissingResolvedIdentity { .. }
+    ));
+}
+
+#[test]
 fn test_constrainedby_default_uses_original_type() {
     // When no constrainedby is specified, the original type is the constraint
-    let tree = ast::ClassTree::default();
-    let comp = make_constrained_component("x", "Real", None);
+    let tree = rumoca_phase_resolve::resolve(ast::ParsedTree::new(ast::ClassTree::default()))
+        .unwrap()
+        .into_inner();
+    let comp = make_constrained_component(&tree, "x", "Real", None);
     // Redeclaring to Integer should fail (Real is implicit constraint)
     let result = validate_redeclaration(&tree, &comp, "x", Some("Integer"), Span::DUMMY);
     assert!(result.is_err());
@@ -380,7 +402,7 @@ fn test_constrainedby_subtype_allowed() {
     insert_resolved_test_class(&mut tree, "DerivedConnector", derived_def_id, derived);
 
     // ast::Component constrained to BaseConnector
-    let comp = make_constrained_component("c", "BaseConnector", Some("BaseConnector"));
+    let comp = make_constrained_component(&tree, "c", "BaseConnector", Some("BaseConnector"));
 
     // Redeclaring to DerivedConnector (a subtype) should succeed
     let result = validate_redeclaration(&tree, &comp, "c", Some("DerivedConnector"), Span::DUMMY);
@@ -400,6 +422,7 @@ fn test_class_redeclare_constraint_resolves_relative_to_declaration_scope() {
         class,
         "flowCharacteristic",
         Some("Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.quadraticFlow"),
+        &[],
         Span::DUMMY,
     );
     assert!(result.is_ok());
@@ -481,6 +504,7 @@ impl RelativeConstraintIds {
 fn relative_constraint_modelica_class(ids: &RelativeConstraintIds) -> ast::ClassDef {
     let base_flow = ast::ClassDef {
         name: make_token("baseFlow"),
+        end_name_token: Some(make_token("baseFlow")),
         def_id: Some(ids.base_flow),
         class_type: rumoca_core::ClassType::Function,
         ..Default::default()
@@ -586,15 +610,12 @@ fn test_constrainedby_non_subtype_rejected() {
         ..Default::default()
     };
 
-    tree.definitions
-        .classes
-        .insert("ClassA".to_string(), class_a);
-    tree.definitions
-        .classes
-        .insert("ClassB".to_string(), class_b);
+    register_predefined_external_object(&mut tree);
+    insert_resolved_test_class(&mut tree, "ClassA", DefId::new(100), class_a);
+    insert_resolved_test_class(&mut tree, "ClassB", DefId::new(101), class_b);
 
     // ast::Component constrained to ClassA
-    let comp = make_constrained_component("c", "ClassA", Some("ClassA"));
+    let comp = make_constrained_component(&tree, "c", "ClassA", Some("ClassA"));
 
     // Redeclaring to ClassB (not a subtype) should fail
     let result = validate_redeclaration(&tree, &comp, "c", Some("ClassB"), Span::DUMMY);
@@ -674,6 +695,7 @@ fn test_class_redeclaration_default_constraint_uses_declared_base() {
         &alias_phase_system,
         "PhaseSystem",
         Some("PhaseSystems.TwoConductor"),
+        &[],
         Span::DUMMY,
     );
     let err = result.expect_err("test setup should trigger subtype failure in unit fixture");

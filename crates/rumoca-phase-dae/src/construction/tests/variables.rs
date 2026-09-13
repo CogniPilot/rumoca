@@ -289,7 +289,7 @@ fn add_empty_array_parameter(model: &mut flat::Model, source: &TestSource, dims:
     variable.variability = Variability::Parameter(Default::default());
     variable.binding = Some(Expression::Array {
         elements: Vec::new(),
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: source.span("{}", 0),
     });
 }
@@ -561,7 +561,7 @@ fn add_parameter_with_array_binding(model: &mut flat::Model, source: &TestSource
                 span: source.span("2.0", 0),
             },
         ],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: source.span("{1.0,2.0}", 0),
     });
 }

@@ -8,6 +8,87 @@
 use super::*;
 
 #[test]
+fn projection_affinity_treats_earlier_block_values_as_coefficients() {
+    let rows = vec![
+        shifted_variable_residual_row(0, 2.0),
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::LoadY { dst: 1, index: 0 },
+            solve::LinearOp::LoadY { dst: 2, index: 2 },
+            solve::LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::Mul,
+                lhs: 1,
+                rhs: 2,
+            },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 3,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ],
+        scale_and_offset_assignment_residual_row(2, 1, 0.25, 1.0),
+    ];
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: ["coefficient", "a", "b"].map(str::to_string).to_vec(),
+                    ..Default::default()
+                },
+                algebraic_scalar_count: 3,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    rows,
+                    "block_affinity.mo",
+                )),
+                implicit_row_targets: (0..3)
+                    .map(|index| Some(solve::scalar_slot_y(index)))
+                    .collect(),
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                    blocks: vec![
+                        solve::AlgebraicProjectionBlock {
+                            rows: vec![0],
+                            y_indices: vec![0],
+                            tearing: None,
+                        },
+                        solve::AlgebraicProjectionBlock {
+                            rows: vec![1, 2],
+                            y_indices: vec![1, 2],
+                            tearing: None,
+                        },
+                    ],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![2.0, 4.0, 2.0],
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new_fixture(&model).unwrap();
+    let projection = RefreshProjectionModel {
+        runtime: &runtime,
+        plan: &runtime.algebraic_refresh.simultaneous_plan,
+        block_indices: &runtime.algebraic_refresh.simultaneous_block_indices,
+        plan_validated: true,
+        jacobian_v: ProjectionJacobian::SolverY {
+            block: &runtime.implicit_projection_jacobian_v,
+            scalar: &runtime.implicit_projection_scalar_jacobian_v,
+        },
+    };
+    assert!(projection.algebraic_projection_block_is_affine(0));
+    assert!(
+        projection.algebraic_projection_block_is_affine(1),
+        "a - coefficient*b and b - 0.25*a - 1 are affine in the block unknowns a and b"
+    );
+}
+
+#[test]
 fn refresh_accepts_assignment_seed_only_when_residual_is_within_tolerance() {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {

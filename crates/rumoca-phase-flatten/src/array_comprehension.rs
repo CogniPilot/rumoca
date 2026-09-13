@@ -143,10 +143,9 @@ pub(crate) fn expand_array_comprehension_bindings(
             continue;
         }
 
-        let is_matrix = matches!(&**expr, ast::Expression::Array { .. });
         let expanded_array = ast::Expression::Array {
             elements: expanded_elements,
-            is_matrix,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: *span,
         };
 
@@ -303,7 +302,7 @@ mod tests {
     fn test_expand_comprehension_multiple_indices_cartesian_product() {
         let expr = ast::Expression::Array {
             elements: vec![cref("i"), cref("j")],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         };
         let expanded = expand_comprehension(&expr, &[("i", vec![1, 2]), ("j", vec![10, 20])]);
@@ -321,7 +320,7 @@ mod tests {
     fn test_lower_expanded_comprehension_preserves_imported_constant_aliases() {
         let expanded_array = ast::Expression::Array {
             elements: vec![cref("pi")],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         };
         let prefix = ast::QualifiedName::from_dotted("machine.spacePhasorS");

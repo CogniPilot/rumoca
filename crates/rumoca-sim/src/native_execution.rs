@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use std::rc::Rc;
 
 struct CraneliftExpression(rumoca_exec_cranelift::CompiledExpressionRows);
@@ -62,16 +65,52 @@ impl rumoca_solver::CompiledSolveEventTransaction for CraneliftEventTransaction 
         let mut cells = self.cells.borrow_mut();
         let (input_cells, output_cells) = &mut *cells;
         self.pure_calls
-            .call_scalar_payload(&self.site, input, output, input_cells, output_cells)
+            .call_scalar_payload(
+                rumoca_eval_solve::PureCallInvocation::Primal(&self.site),
+                input,
+                output,
+                input_cells,
+                output_cells,
+            )
             .map_err(|error| error.to_string())
     }
 }
 
 struct CraneliftExecutionBackend {
     pure_calls: Option<rumoca_exec_cranelift::CompiledPureCallTable>,
+    call_cells: std::cell::RefCell<(Vec<u64>, Vec<u64>)>,
+}
+
+impl rumoca_eval_solve::PureCallExecution for CraneliftExecutionBackend {
+    fn call(
+        &self,
+        invocation: rumoca_eval_solve::PureCallInvocation<'_>,
+        input: &[f64],
+        output: &mut [f64],
+    ) -> Result<(), rumoca_eval_solve::EvalSolveError> {
+        let table = self.pure_calls.as_ref().ok_or(
+            rumoca_eval_solve::EvalSolveError::MissingRuntimeState {
+                operation: "native pure-call table",
+            },
+        )?;
+        let mut cells = self.call_cells.borrow_mut();
+        let (input_cells, output_cells) = &mut *cells;
+        table
+            .call_scalar_payload(invocation, input, output, input_cells, output_cells)
+            .map_err(|error| rumoca_eval_solve::EvalSolveError::InvalidRow {
+                message: error.to_string(),
+                span: None,
+            })
+    }
 }
 
 impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
+    fn pure_call_execution(&self) -> Option<&dyn rumoca_eval_solve::PureCallExecution> {
+        self.pure_calls
+            .as_ref()
+            .map(|_| self as &dyn rumoca_eval_solve::PureCallExecution)
+    }
+
     fn compile_expression(
         &self,
         block: &rumoca_ir_solve::ScalarProgramBlock,
@@ -205,5 +244,8 @@ pub(crate) fn backend(
             None
         }
     };
-    Rc::new(CraneliftExecutionBackend { pure_calls })
+    Rc::new(CraneliftExecutionBackend {
+        pure_calls,
+        call_cells: Default::default(),
+    })
 }

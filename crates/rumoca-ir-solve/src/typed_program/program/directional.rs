@@ -4,12 +4,13 @@
 //! coordinates. Structured regions and tensor operations remain structured;
 //! an unsupported vocabulary item rejects the directional owner as a whole.
 
+mod linear_solve;
 mod mapped;
 
 use super::*;
 use crate::typed_program::call::{
-    SolvePureCallDirectionalInterface, SolvePureCallDirectionalOwner, SolvePureCallOutput,
-    SolvePureCallOutputKind,
+    SolvePureCallDirectionalOwner, SolvePureCallOutput, SolvePureCallOutputKind,
+    SolvePureCallTableView,
 };
 
 #[derive(Clone, Copy)]
@@ -23,22 +24,43 @@ impl TypedProgram {
         &self,
         inputs: &[SolveValueType],
         outputs: &[SolvePureCallOutput],
-        available: Vec<Option<SolvePureCallDirectionalInterface>>,
+        available: SolvePureCallTableView<'_>,
         provenance: Span,
     ) -> Result<Option<SolvePureCallDirectionalOwner>, SolveProgramConstructionError> {
-        if !program_supports_directional(self, &available) {
+        if !program_supports_directional(self, available) {
             return Ok(None);
         }
         let directional_inputs = expand_types(inputs);
         let directional_outputs = expand_outputs(outputs);
-        let body = derive_program(self, inputs.len(), outputs.len(), &available)?;
+        let body = derive_program(self, inputs.len(), outputs.len(), available)?;
         if body.slots().len() < directional_inputs.len() + directional_outputs.len() {
             return Err(SolveProgramConstructionError::InvalidCallInterface { provenance });
         }
+        let dependencies = crate::typed_program::call::dependency::derive(
+            &body,
+            directional_inputs.len(),
+            directional_outputs.len(),
+            available,
+        )?;
+        let projections = crate::typed_program::call::dependency::value_projection::derive(
+            &body,
+            directional_inputs.len(),
+            &directional_outputs,
+            available,
+        );
+        let affinity = crate::typed_program::call::dependency::affinity::derive(
+            &body,
+            directional_inputs.len(),
+            directional_outputs.len(),
+            available,
+        );
         Ok(Some(SolvePureCallDirectionalOwner::new(
             directional_inputs,
             directional_outputs,
             body,
+            dependencies,
+            projections,
+            affinity,
         )))
     }
 }
@@ -82,7 +104,7 @@ fn expand_outputs(outputs: &[SolvePureCallOutput]) -> Vec<SolvePureCallOutput> {
 #[allow(clippy::too_many_lines)]
 fn program_supports_directional(
     program: &TypedProgram,
-    available: &[Option<SolvePureCallDirectionalInterface>],
+    available: SolvePureCallTableView<'_>,
 ) -> bool {
     program
         .operations()
@@ -109,9 +131,7 @@ fn program_supports_directional(
                     | SolveReductionOperator::Maximum,
                 ..
             } => false,
-            SolveOperation::Call { owner, .. } => available
-                .get(owner.index() as usize)
-                .is_some_and(Option::is_some),
+            SolveOperation::Call { owner, .. } => available.get(owner.index() as usize).is_some(),
             SolveOperation::Conditional {
                 if_true, if_false, ..
             } => {
@@ -154,6 +174,7 @@ fn program_supports_directional(
             | SolveOperation::Scale { .. }
             | SolveOperation::Transpose { .. }
             | SolveOperation::MatrixMultiply { .. }
+            | SolveOperation::LinearSolve { .. }
             | SolveOperation::Cross { .. }
             | SolveOperation::Identity { .. }
             | SolveOperation::Diagonal { .. }
@@ -209,93 +230,68 @@ fn program_supports_directional(
         })
 }
 
-fn directional_interfaces(
-    available: &[Option<SolvePureCallDirectionalInterface>],
-) -> Vec<SolvePureCallInterface> {
-    available
-        .iter()
-        .enumerate()
-        .map(|(index, interface)| match interface {
-            Some(interface) => SolvePureCallInterface {
-                id: interface.id,
-                inputs: interface.inputs.clone(),
-                outputs: interface.outputs.clone(),
-            },
-            None => SolvePureCallInterface {
-                id: SolvePureCallOwnerId::from_index(index as u32),
-                inputs: Box::new([]),
-                outputs: Box::new([]),
-            },
-        })
-        .collect()
-}
-
 fn derive_program(
     primal: &TypedProgram,
     input_count: usize,
     output_count: usize,
-    available: &[Option<SolvePureCallDirectionalInterface>],
+    available: SolvePureCallTableView<'_>,
 ) -> Result<TypedProgram, SolveProgramConstructionError> {
-    TypedProgram::construct_with_calls(
-        primal.arithmetic(),
-        directional_interfaces(available),
-        |builder| {
-            let mut slots = Vec::with_capacity(primal.slots().len());
-            for slot in primal.slots() {
-                let primal_slot = builder.declare_slot(
-                    slot.value_type().clone(),
-                    slot.storage(),
-                    slot.access(),
-                    slot.provenance(),
-                )?;
-                let tangent = (is_real(slot.value_type())
-                    && slot.storage() != SolveStorageClass::Constant)
-                    .then(|| {
-                        builder.declare_slot(
-                            slot.value_type().clone(),
-                            slot.storage(),
-                            slot.access(),
-                            slot.provenance(),
-                        )
-                    })
-                    .transpose()?;
-                slots.push(Directional {
-                    primal: primal_slot,
-                    tangent,
-                });
-            }
-            let expected_interface = expand_types(
-                &primal.slots()[..input_count]
+    TypedProgram::construct_with_calls(primal.arithmetic(), available, |builder| {
+        let mut slots = Vec::with_capacity(primal.slots().len());
+        for slot in primal.slots() {
+            let primal_slot = builder.declare_slot(
+                slot.value_type().clone(),
+                slot.storage(),
+                slot.access(),
+                slot.provenance(),
+            )?;
+            let tangent = (is_real(slot.value_type())
+                && slot.storage() != SolveStorageClass::Constant)
+                .then(|| {
+                    builder.declare_slot(
+                        slot.value_type().clone(),
+                        slot.storage(),
+                        slot.access(),
+                        slot.provenance(),
+                    )
+                })
+                .transpose()?;
+            slots.push(Directional {
+                primal: primal_slot,
+                tangent,
+            });
+        }
+        let expected_interface = expand_types(
+            &primal.slots()[..input_count]
+                .iter()
+                .map(|slot| slot.value_type().clone())
+                .collect::<Vec<_>>(),
+        )
+        .len()
+            + expand_types(
+                &primal.slots()[input_count..input_count + output_count]
                     .iter()
                     .map(|slot| slot.value_type().clone())
                     .collect::<Vec<_>>(),
             )
-            .len()
-                + expand_types(
-                    &primal.slots()[input_count..input_count + output_count]
-                        .iter()
-                        .map(|slot| slot.value_type().clone())
-                        .collect::<Vec<_>>(),
-                )
-                .len();
-            debug_assert_eq!(
-                slots
-                    .iter()
-                    .take(input_count + output_count)
-                    .map(|slot| 1 + usize::from(slot.tangent.is_some()))
-                    .sum::<usize>(),
-                expected_interface,
-            );
-            let mut directional = DirectionalBuilder {
-                primal,
-                builder,
-                slots,
-                registers: vec![None; primal.register_types().len()],
-                available,
-            };
-            directional.derive_all()
-        },
-    )
+            .len();
+        debug_assert_eq!(
+            slots
+                .iter()
+                .take(input_count + output_count)
+                .map(|slot| 1 + usize::from(slot.tangent.is_some()))
+                .sum::<usize>(),
+            expected_interface,
+        );
+        let mut directional = DirectionalBuilder {
+            primal,
+            builder,
+            slots,
+            registers: vec![None; primal.register_types().len()],
+            available,
+        };
+        directional.derive_all()
+    })
 }
 
 struct DirectionalBuilder<'primal, 'program> {
@@ -303,7 +299,7 @@ struct DirectionalBuilder<'primal, 'program> {
     builder: &'primal mut TypedProgramBuilder<'program>,
     slots: Vec<Directional<ProgramSlot<'program>>>,
     registers: Vec<Option<Directional<ProgramRegister<'program>>>>,
-    available: &'primal [Option<SolvePureCallDirectionalInterface>],
+    available: SolvePureCallTableView<'primal>,
 }
 
 impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
@@ -587,6 +583,11 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 lhs,
                 rhs,
             } => self.derive_matrix_multiply(*destination, *lhs, *rhs, provenance),
+            SolveOperation::LinearSolve {
+                destination,
+                matrix,
+                rhs,
+            } => self.derive_linear_solve(*destination, *matrix, *rhs, provenance),
             SolveOperation::Cross {
                 destination,
                 lhs,
@@ -1773,11 +1774,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         destinations: &[SolveRegisterId],
         provenance: Span,
     ) -> Result<(), SolveProgramConstructionError> {
-        if self
-            .available
-            .get(owner.index() as usize)
-            .is_none_or(Option::is_none)
-        {
+        if self.available.get(owner.index() as usize).is_none() {
             return Err(SolveProgramConstructionError::UnknownCallOwner { provenance });
         }
         let arguments = self.expanded_registers(arguments, provenance)?;
@@ -1788,7 +1785,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
 
 fn derive_region(
     primal: &SolveProgramRegion,
-    available: &[Option<SolvePureCallDirectionalInterface>],
+    available: SolvePureCallTableView<'_>,
 ) -> Result<SolveProgramRegion, SolveProgramConstructionError> {
     let inputs = expand_types(primal.inputs());
     let outputs = expand_types(primal.outputs());

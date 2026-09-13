@@ -5,9 +5,11 @@
 //! lookup, and malformed expression shapes have already been eliminated by
 //! checked DAE construction.
 
+mod function_context;
 mod numeric;
 mod projection;
 
+pub use function_context::FunctionCallContext;
 pub use numeric::{NumericEvaluationError, NumericEvaluationErrorKind, NumericEvaluator};
 pub use projection::{
     ProjectionError, ScalarCoordinateProjectionCache, for_each_scalar_coordinate,

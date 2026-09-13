@@ -996,3 +996,53 @@ fn merged_location_takes_start_from_self_and_end_from_other() {
     assert_eq!(merged.end, 103);
     assert_eq!(merged.source, source);
 }
+
+#[test]
+fn array_constructor_checks_axis_promotion_and_shape_compatibility() {
+    use crate::ArrayConstructor::{Array, Horizontal, Vertical};
+    assert_eq!(
+        Horizontal.checked_dimensions(&[vec![3], vec![3]]),
+        Some(vec![3, 2])
+    );
+    assert_eq!(
+        Vertical.checked_dimensions(&[vec![3], vec![2]]),
+        Some(vec![5, 1])
+    );
+    assert_eq!(Horizontal.checked_dimensions(&[vec![3], vec![2]]), None);
+    assert_eq!(Array.checked_dimensions(&[vec![3], vec![2]]), None);
+    assert_eq!(
+        Array.checked_dimensions(&[vec![3], vec![3]]),
+        Some(vec![2, 3])
+    );
+    assert_eq!(
+        Horizontal.checked_dimensions(&[vec![], vec![]]),
+        Some(vec![1, 2])
+    );
+}
+
+#[test]
+fn array_constructor_preserves_higher_rank_and_checks_extent_overflow() {
+    use crate::ArrayConstructor::{Array, Horizontal, Vertical};
+    assert_eq!(
+        Vertical.checked_dimensions(&[vec![2, 3, 4], vec![5, 3, 4]]),
+        Some(vec![7, 3, 4])
+    );
+    assert_eq!(
+        Horizontal.checked_dimensions(&[vec![2, 3], vec![2, 4, 1]]),
+        Some(vec![2, 7, 1])
+    );
+    assert_eq!(
+        Horizontal.checked_dimensions(&[vec![2, 3], vec![2, 4, 2]]),
+        None
+    );
+    assert_eq!(
+        Vertical.checked_dimensions(&[vec![usize::MAX, 1], vec![1, 1]]),
+        None
+    );
+    assert_eq!(Horizontal.checked_dimensions(&[]), None);
+    assert_eq!(Array.checked_dimensions(&[]), Some(vec![0]));
+    assert_eq!(
+        Horizontal.checked_dimensions(&[vec![0], vec![0]]),
+        Some(vec![0, 2])
+    );
+}

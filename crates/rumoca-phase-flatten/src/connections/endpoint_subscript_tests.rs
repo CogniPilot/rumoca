@@ -263,17 +263,14 @@ fn connect_subscript_naming_a_declared_element_occurrence_is_accepted() {
         .expect("a declared element occurrence is a legal connect argument");
 }
 
-/// MLS §7.3 lets a redeclaration add dimensions to a `replaceable C a;`.
-/// Instantiation keeps only the redeclared type, so the component reaches this
-/// phase carrying the original declaration's rank of zero. That zero is
-/// evidence about rumoca, not about the model — OMC accepts the same source —
-/// so it must not be reported as a user error.
+/// An unapplied replacement may change the surviving rank. Its residue cannot
+/// establish a source-level rank error.
 #[test]
-fn redeclared_component_rank_is_not_authoritative_evidence() {
+fn unapplied_redeclaration_rank_is_not_authoritative_evidence() {
     let mut flat = two_scalar_connectors();
     let mut overlay = overlay_connecting_element_of(Vec::new(), Vec::new());
     overlay.add_component(ast::InstanceData {
-        had_redeclare: true,
+        has_unapplied_redeclare: true,
         ..declared_connector(1, "a", Vec::new(), Vec::new(), OWNING_SCOPE)
     });
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
@@ -289,11 +286,10 @@ fn redeclared_component_rank_is_not_authoritative_evidence() {
     );
 }
 
-/// A redeclaration written on an *enclosing* declaration
-/// (`Holder h(redeclare C a[2])`) drops the dimensions of everything
-/// instantiated beneath it, so the mark has to be honoured for ancestors too.
+/// An unapplied nested replacement on an enclosing occurrence invalidates
+/// descendant shape facts, so ancestor markers must also be honored.
 #[test]
-fn redeclared_ancestor_makes_a_nested_rank_unproven() {
+fn unapplied_redeclaration_on_ancestor_makes_a_nested_rank_unproven() {
     let mut flat = flat::Model::new();
     for (name, flow) in [
         ("h.a.e", false),
@@ -315,7 +311,7 @@ fn redeclared_ancestor_makes_a_nested_rank_unproven() {
     let mut overlay = ast::InstanceOverlay::new();
     // Only the *enclosing* component carries the redeclare marker.
     overlay.add_component(ast::InstanceData {
-        had_redeclare: true,
+        has_unapplied_redeclare: true,
         ..declared_connector(1, "h", Vec::new(), Vec::new(), OWNING_SCOPE)
     });
     overlay.add_component(declared_connector(
@@ -348,7 +344,7 @@ fn redeclared_ancestor_makes_a_nested_rank_unproven() {
 
 /// The suppression follows the *path*, not the type: a redeclaration written on
 /// one declaration must not excuse a sibling that shares its class.
-/// `Holder h; Holder h2(redeclare C a[2]); connect(h.a[1], s)` keeps `h.a`
+/// An unapplied replacement on `h2` keeps `h.a`
 /// judged, because nothing on `h`'s own path was ever redeclared. Pins the
 /// precision of the ancestor walk, which a whole-class or type-keyed marker
 /// would lose.
@@ -385,7 +381,7 @@ fn redeclared_sibling_does_not_make_an_untouched_path_unproven() {
     ));
     // Only the sibling `h2` carries the redeclaration.
     overlay.add_component(ast::InstanceData {
-        had_redeclare: true,
+        has_unapplied_redeclare: true,
         ..declared_connector(3, "h2", Vec::new(), Vec::new(), OWNING_SCOPE)
     });
     overlay.add_component(declared_connector(

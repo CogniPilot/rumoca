@@ -65,14 +65,14 @@ pub(super) fn simplify_zero_sized_reductions(
         },
         ast::Expression::Array {
             elements,
-            is_matrix,
+            kind,
             span,
         } => ast::Expression::Array {
             elements: elements
                 .iter()
                 .map(|element| simplify_zero_sized_reductions(ctx, element, prefix))
                 .collect(),
-            is_matrix: *is_matrix,
+            kind: *kind,
             span: *span,
         },
         ast::Expression::Tuple { elements, span } => ast::Expression::Tuple {

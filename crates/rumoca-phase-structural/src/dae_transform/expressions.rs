@@ -7,16 +7,19 @@
 //! replaced by the exact symbolic derivative of its definition, which
 //! [`differentiation`](super::differentiation) supplies.
 
+mod scoped_cache;
+
 use rumoca_ir_dae as dae;
+use scoped_cache::ScopedReconstructionCache;
 
 use super::DirectStateConstraint;
 use super::constraints::DifferentiationFacts;
 use super::declarations::RebuiltDomain;
 use super::differentiation::Derivative;
-use super::equalities::FunctionCallContext;
 use super::functions::RebuiltFunction;
 use super::temporal::RebuiltClock;
 use super::variables::{ReservedVariable, TargetVariable};
+use rumoca_eval_dae::FunctionCallContext;
 
 pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     pub(super) source: dae::DaeView<'source>,
@@ -30,15 +33,22 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     previous: &'borrow [dae::PreviousId<'target>],
     terminals: &'borrow [dae::TerminalId<'target>],
     pub(super) facts: &'borrow DifferentiationFacts,
+    pub(super) auxiliary_functions: &'borrow [Option<dae::FunctionId<'target>>],
+    pub(super) auxiliary_expressions: std::collections::BTreeMap<
+        (u32, u8, bool),
+        super::auxiliary_blocks::AuxiliaryExpression<'target>,
+    >,
     candidate: Option<DirectStateConstraint>,
     substitute_demoted_value: bool,
     pub(super) state_only_derivative: bool,
     pub(super) function_context: FunctionCallContext<'source>,
+    pub(super) scoped_cache: ScopedReconstructionCache<'source, 'target>,
     rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct RebuiltBaseIdentities<'borrow, 'target> {
+    pub(super) auxiliary_functions: &'borrow [Option<dae::FunctionId<'target>>],
     pub(super) types: &'borrow [dae::ValueTypeId<'target>],
     pub(super) variables: &'borrow [ReservedVariable<'target>],
     pub(super) domains: &'borrow [RebuiltDomain<'target>],
@@ -55,6 +65,12 @@ pub(super) struct RebuiltIdentities<'borrow, 'target> {
 }
 
 impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
+    pub(super) fn rebuilt_function(
+        &self,
+        function: dae::FunctionId<'source>,
+    ) -> dae::FunctionId<'target> {
+        self.functions[function.index() as usize].id
+    }
     pub(super) fn new(
         source: dae::DaeView<'source>,
         target: &'borrow mut dae::Expressions<'storage, 'target>,
@@ -75,10 +91,13 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             previous: identities.base.previous,
             terminals: identities.base.terminals,
             facts,
+            auxiliary_functions: identities.base.auxiliary_functions,
+            auxiliary_expressions: std::collections::BTreeMap::new(),
             candidate,
             substitute_demoted_value: false,
             state_only_derivative: false,
             function_context: FunctionCallContext::default(),
+            scoped_cache: ScopedReconstructionCache::default(),
             rebuilt,
         }
     }
@@ -141,15 +160,58 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .function_context
             .scoped_to_expression(self.source, source_id);
         let previous = std::mem::replace(&mut self.function_context, scoped);
-        let rebuilt = self.rebuild_instantiated_scoped(source_id);
+        let provenance = self.source.expression(source_id).unwrap().provenance();
+        let key = self.scoped_reconstruction_key(source_id, 0, provenance);
+        let rebuilt = match self.scoped_cache.instantiated.get(&key).copied() {
+            Some(value) => Ok(value),
+            None => {
+                let result = self
+                    .rebuild_instantiated_scoped(source_id)
+                    .and_then(|value| self.preserve_real_value_type(source_id, value, provenance));
+                if let Ok(value) = result {
+                    self.scoped_cache.instantiated.insert(key, value);
+                }
+                result
+            }
+        };
         self.function_context = previous;
         rebuilt
+    }
+
+    /// Substitution retains the MLS §10.6.13 promotion at a Real argument,
+    /// result, or value anchor. Scalar scaling preserves compact tensor shapes
+    /// and lets the ordinary mixed-numeric constructor derive the Real type.
+    pub(super) fn preserve_real_value_type(
+        &mut self,
+        source_id: dae::ExprId<'source>,
+        value: dae::ExprId<'target>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let expected = self.source.expression(source_id).unwrap().value_type();
+        if expected.scalar_type() != dae::ScalarType::Real
+            || self.target.value_type(value, provenance)?.scalar_type() != dae::ScalarType::Integer
+        {
+            return Ok(value);
+        }
+        let one = self
+            .target
+            .at(provenance)
+            .literal(dae::DaeLiteral::Real(1.0))?;
+        self.target
+            .at(provenance)
+            .binary(dae::BinaryOperator::Multiply, one, value)
     }
 
     fn rebuild_instantiated_scoped(
         &mut self,
         source_id: dae::ExprId<'source>,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        if let Some(branch) = self
+            .function_context
+            .selected_branch(self.source, source_id)
+        {
+            return self.rebuild_instantiated(branch);
+        }
         if let Some((result, nested)) = self.function_context.call_result(self.source, source_id) {
             let previous = std::mem::replace(&mut self.function_context, nested);
             let rebuilt = self.rebuild_instantiated(result);
@@ -200,6 +262,11 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 let rebuilt = self.rebuild_instantiated(projected);
                 self.function_context = previous;
                 rebuilt
+            }
+            dae::ExpressionOperation::Index { base, subscripts } => {
+                let base = self.rebuild_instantiated(base)?;
+                let subscripts = self.rebuild_subscripts(subscripts)?;
+                self.target.at(provenance).index(base, subscripts)
             }
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
                 let arguments = arguments

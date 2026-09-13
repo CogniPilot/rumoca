@@ -255,7 +255,7 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             .model
             .problem
             .initialization
-            .row_targets
+            .row_targets()
             .get(row_idx)
             .copied()
             .flatten()
@@ -276,7 +276,7 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             .model
             .problem
             .initialization
-            .row_roles
+            .row_roles()
             .get(row_idx)
             .copied()
     }
@@ -538,7 +538,7 @@ impl SolveRuntime {
                         .model
                         .problem
                         .initialization
-                        .row_roles
+                        .row_roles()
                         .iter()
                         .any(|role| {
                             matches!(
@@ -551,20 +551,26 @@ impl SolveRuntime {
                         }),
                 },
                 t,
-                plan: &self.model.problem.initialization.projection_plan,
+                plan: self.model.problem.initialization.projection_plan(),
                 homotopy_parameter_index: self
                     .initial_continuation
                     .as_ref()
                     .and_then(InitialContinuationCoverage::sweep_parameter_index),
                 tol,
+                max_iters,
             },
             y,
             p,
             |y, p| {
-                if !drives_algebraic_refresh {
-                    return Ok(());
+                if drives_algebraic_refresh {
+                    self.refresh_algebraic_and_output_slots_certified(t, y, p, tol, max_iters)?;
+                } else {
+                    self.refresh_event_dependency_slots_certified(t, y, p, tol, max_iters)?;
                 }
-                self.refresh_algebraic_and_output_slots(t, y, p, tol, max_iters)
+                let roots = self.eval_root_conditions_from_solver_y(t, y, p)?;
+                self.update_root_relation_memory_from_values(&roots, p, &[])?;
+                self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+                Ok(())
             },
         )
     }
@@ -679,18 +685,20 @@ mod tests {
                     implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
                     ..Default::default()
                 },
-                initialization: solve::InitializationSolveSystem {
-                    residual,
-                    row_targets: vec![Some(solve::scalar_slot_y(0))],
-                    projection_unknowns: vec![solve::scalar_slot_y(0)],
-                    projection_plan: solve::InitializationProjectionPlan {
-                        blocks: vec![solve::InitializationProjectionBlock {
-                            rows: vec![0],
-                            unknowns: vec![solve::scalar_slot_y(0)],
-                        }],
+                initialization: solve::InitializationSolveSystem::construct(
+                    solve::InitializationSystemInput {
+                        row_roles: vec![solve::InitializationRowRole::Solved],
+                        residual,
+                        projection_plan: solve::InitializationProjectionPlan {
+                            blocks: vec![solve::InitializationProjectionBlock {
+                                rows: vec![0],
+                                unknowns: vec![solve::scalar_slot_y(0)],
+                            }],
+                        },
+                        ..Default::default()
                     },
-                    ..Default::default()
-                },
+                )
+                .expect("initialization fixture has one checked owner per coordinate"),
                 ..Default::default()
             },
             artifacts: solve::SolveArtifacts {
@@ -754,18 +762,20 @@ mod tests {
                     compiled_parameter_len: 1,
                     ..Default::default()
                 },
-                initialization: solve::InitializationSolveSystem {
-                    residual: initial,
-                    row_targets: vec![Some(solve::scalar_slot_y(0))],
-                    projection_unknowns: vec![solve::scalar_slot_y(0)],
-                    projection_plan: solve::InitializationProjectionPlan {
-                        blocks: vec![solve::InitializationProjectionBlock {
-                            rows: vec![0],
-                            unknowns: vec![solve::scalar_slot_y(0)],
-                        }],
+                initialization: solve::InitializationSolveSystem::construct(
+                    solve::InitializationSystemInput {
+                        row_roles: vec![solve::InitializationRowRole::Solved],
+                        residual: initial,
+                        projection_plan: solve::InitializationProjectionPlan {
+                            blocks: vec![solve::InitializationProjectionBlock {
+                                rows: vec![0],
+                                unknowns: vec![solve::scalar_slot_y(0)],
+                            }],
+                        },
+                        ..Default::default()
                     },
-                    ..Default::default()
-                },
+                )
+                .expect("initialization fixture has one checked owner per coordinate"),
                 events: solve::SolveEventPartition {
                     delays: solve::SolveDelayPartition {
                         source_rhs: scalar_block(vec![vec![
@@ -807,8 +817,7 @@ mod tests {
         assert!((p[0] - 2.0).abs() <= 1.0e-10);
     }
 
-    #[test]
-    fn fixed_algebraic_row_uses_total_sensitivity_of_continuous_refresh() {
+    fn fixed_algebraic_parameter_model() -> solve::SolveModel {
         // Continuous a = nested_q - 49; initialization update nested_q = q; initial
         // equation a = 0. The compiled partial JVP of the initial row w.r.t. q is
         // zero (it reads stored `a`); the settled total derivative is one.
@@ -847,7 +856,7 @@ mod tests {
             solve::LinearOp::LoadP { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
         ]]);
-        let model = solve::SolveModel {
+        solve::SolveModel {
             problem: solve::SolveProblem {
                 solve_layout: solve::SolveLayout {
                     solver_maps: solve::SolverNameIndexMaps {
@@ -870,21 +879,26 @@ mod tests {
                     },
                     ..Default::default()
                 },
-                initialization: solve::InitializationSolveSystem {
-                    residual: initial,
-                    row_targets: vec![Some(solve::scalar_slot_p(0))],
-                    row_roles: vec![solve::InitializationRowRole::SolvedThroughAlgebraicRefresh],
-                    projection_unknowns: vec![solve::scalar_slot_p(0)],
-                    projection_plan: solve::InitializationProjectionPlan {
-                        blocks: vec![solve::InitializationProjectionBlock {
-                            rows: vec![0],
-                            unknowns: vec![solve::scalar_slot_p(0)],
-                        }],
+                initialization: solve::InitializationSolveSystem::construct(
+                    solve::InitializationSystemInput {
+                        residual: initial,
+                        row_roles: vec![
+                            solve::InitializationRowRole::SolvedThroughAlgebraicRefresh,
+                        ],
+                        projection_plan: solve::InitializationProjectionPlan {
+                            blocks: vec![solve::InitializationProjectionBlock {
+                                rows: vec![0],
+                                unknowns: vec![solve::scalar_slot_p(0)],
+                            }],
+                        },
+                        update_rhs: to_scalar_program_block(&dependent_update)
+                            .expect("dependent parameter update should scalarize"),
+                        update_targets: vec![solve::scalar_slot_p(1)],
+                        manifold_row_count: 0,
+                        given_state_indices: Vec::new(),
                     },
-                    update_rhs: to_scalar_program_block(&dependent_update)
-                        .expect("dependent parameter update should scalarize"),
-                    update_targets: vec![solve::scalar_slot_p(1)],
-                },
+                )
+                .expect("initialization fixture has one checked owner per coordinate"),
                 ..Default::default()
             },
             artifacts: solve::SolveArtifacts {
@@ -902,7 +916,12 @@ mod tests {
             initial_y: vec![51.0],
             parameters: vec![100.0, 100.0],
             ..Default::default()
-        };
+        }
+    }
+
+    #[test]
+    fn fixed_algebraic_row_uses_total_sensitivity_of_continuous_refresh() {
+        let model = fixed_algebraic_parameter_model();
         let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
         let mut y = model.initial_y.clone();
         let mut p = model.parameters.clone();

@@ -71,8 +71,110 @@ fn function_output<'storage>(
         locals: named_values(locals),
         statements,
         external,
+        derivatives: function
+            .derivatives
+            .iter()
+            .map(|derivative| FunctionDerivativeWire {
+                target: derivative.target,
+                inputs: derivative.inputs.clone(),
+                previous: derivative.previous,
+                priority: derivative.priority,
+                provenance: derivative.provenance,
+            })
+            .collect(),
         declaration: function.declaration,
     }
+}
+
+pub(super) fn reconstruct_derivatives<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+) -> Result<(), DaeConstructionError> {
+    let mut links = vec![Vec::new(); wire.functions.len()];
+    let mut pending = wire
+        .functions
+        .iter()
+        .map(|function| function.derivatives.len())
+        .sum::<usize>();
+    while pending > 0 {
+        let before = pending;
+        for (function, entries) in wire.functions.iter().enumerate() {
+            pending -= reconstruct_function_derivatives(
+                dae,
+                ids,
+                &mut links,
+                function,
+                &entries.derivatives,
+            )?;
+        }
+        if pending == before {
+            return Err(malformed("function derivative predecessor"));
+        }
+    }
+    Ok(())
+}
+
+fn reconstruct_function_derivatives<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+    links: &mut [Vec<FunctionDerivativeId<'dae>>],
+    function: usize,
+    entries: &[FunctionDerivativeWire],
+) -> Result<usize, DaeConstructionError> {
+    let before = links[function].len();
+    while let Some(entry) = entries.get(links[function].len()) {
+        let Some(link) = reconstruct_derivative(dae, ids, links, function, entry)? else {
+            break;
+        };
+        links[function].push(link);
+    }
+    Ok(links[function].len() - before)
+}
+
+fn reconstruct_derivative<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+    links: &[Vec<FunctionDerivativeId<'dae>>],
+    function: usize,
+    entry: &FunctionDerivativeWire,
+) -> Result<Option<FunctionDerivativeId<'dae>>, DaeConstructionError> {
+    let target = mapped(
+        &ids.functions,
+        entry.target,
+        "derivative function",
+        entry.provenance,
+    )?;
+    let previous = match entry.previous {
+        Some((owner, ordinal)) => {
+            let Some(previous) = links
+                .get(owner as usize)
+                .and_then(|links| links.get(ordinal as usize))
+            else {
+                return Ok(None);
+            };
+            Some(*previous)
+        }
+        None => None,
+    };
+    dae.functions(|functions| match previous {
+        Some(previous) => functions.next_derivative(
+            ids.functions[function],
+            previous,
+            target,
+            entry.inputs.iter().copied(),
+            entry.priority,
+            entry.provenance,
+        ),
+        None => functions.first_derivative(
+            ids.functions[function],
+            target,
+            entry.inputs.iter().copied(),
+            entry.priority,
+            entry.provenance,
+        ),
+    })
+    .map(Some)
 }
 
 fn named_values(

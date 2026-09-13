@@ -2,6 +2,32 @@ use rumoca::Compiler;
 use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae_with_diagnostics};
 
 #[test]
+fn computed_fixed_array_attributes_constrain_algebraic_initialization() {
+    let source = r#"
+model FixedAlgebraicArray
+  parameter Boolean pinned = true;
+  Real x[3](each start=0);
+  Real y[3](start={1,2,3}, fixed=fill(pinned,3));
+equation
+  der(x) = -x;
+  y = 2*x;
+end FixedAlgebraicArray;
+"#;
+    check_trace(
+        source,
+        "FixedAlgebraicArray",
+        &[
+            ("x[1]", 0.5),
+            ("x[2]", 1.0),
+            ("x[3]", 1.5),
+            ("y[1]", 1.0),
+            ("y[2]", 2.0),
+            ("y[3]", 3.0),
+        ],
+    );
+}
+
+#[test]
 fn matrix_initial_equations_determine_each_state_coordinate() {
     check_matrix_initialization("x = {{1,2},{3,4}};");
 }

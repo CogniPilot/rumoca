@@ -208,6 +208,12 @@ pub(crate) fn collect_function_dep_requests(func: &rumoca_core::Function) -> Vec
         collect_from_statement(stmt, &mut deps);
     }
 
+    for derivative in &func.derivatives {
+        deps.insert(FunctionRequest::from_reference(
+            &derivative.derivative_function,
+        ));
+    }
+
     deps.into_entries()
 }
 

@@ -29,7 +29,9 @@ use scaling::{
 use singleton::{SingletonAssignmentStep, initial_row_target_name, singleton_assignment_improves};
 use step_limit::StepLimit;
 
-pub(crate) use manifold::{ManifoldProjectionModel, project_state_manifold};
+pub(crate) use manifold::{
+    ManifoldProjectionModel, certify_state_manifold, project_state_manifold,
+};
 pub(crate) use tearing::per_row_torn_block_sweep;
 
 #[cfg(test)]
@@ -336,19 +338,17 @@ pub(crate) fn project_algebraic_seed_with_plan<M: ImplicitProjectionModel>(
     y: &[f64],
     args: AlgebraicProjectionArgs<'_>,
     seed: &mut [f64],
-    unit_seed: &mut [f64],
 ) -> Result<(), RuntimeSolveError> {
     validate_projection_plan_if_needed(model, plan, args.state_count, y.len())?;
-    if seed.len() < y.len() || unit_seed.len() < seed.len() {
+    if seed.len() < y.len() {
         return Err(RuntimeSolveError::solve_ir(format!(
-            "algebraic projection seed buffers have lengths {} and {}, but require at least {}",
+            "algebraic projection seed buffer has length {}, but requires at least {}",
             seed.len(),
-            unit_seed.len(),
             y.len()
         )));
     }
     let snapshot = projection_unknown_values(plan, seed);
-    let result = project_algebraic_seed_with_plan_inner(model, plan, y, args, seed, unit_seed);
+    let result = project_algebraic_seed_with_plan_inner(model, plan, y, args, seed);
     if result.is_err() {
         restore_projection_unknown_values(plan, seed, &snapshot);
     }
@@ -361,14 +361,14 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
     y: &[f64],
     args: AlgebraicProjectionArgs<'_>,
     seed: &mut [f64],
-    unit_seed: &mut [f64],
 ) -> Result<(), RuntimeSolveError> {
     for block in &plan.blocks {
         for &y_index in &block.y_indices {
             seed[y_index] = 0.0;
         }
     }
-    for block in &plan.blocks {
+    let mut row_scales = Vec::new();
+    for (block_index, block) in plan.blocks.iter().enumerate() {
         let block_residual = implicit_selected_jacobian_v_rows(
             model,
             y,
@@ -378,8 +378,27 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
             &block.rows,
             "algebraic seed projection",
         )?;
-        let jacobian =
-            algebraic_seed_block_jacobian(model, y, args.parameters, args.time, block, unit_seed)?;
+        let structure = model.algebraic_projection_block_structure(block_index);
+        let jacobian = algebraic_block_jacobian(
+            model,
+            y,
+            args.parameters,
+            args.time,
+            &block.rows,
+            &block.y_indices,
+            structure,
+        )?;
+        // The primal Y/P/time point stays fixed throughout this seed sweep.
+        row_scales.extend(
+            algebraic_block_scales(
+                model,
+                y,
+                block,
+                &jacobian,
+                structure.map(solve::JacobianStructure::pattern),
+            )
+            .0,
+        );
         let rhs = DVector::from_iterator(
             block.rows.len(),
             block_residual.into_iter().map(|value| -value),
@@ -405,7 +424,6 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
             seed[y_index] = value;
         }
     }
-    unit_seed.fill(0.0);
     let rows = projection_rows(plan);
     let residual = implicit_selected_jacobian_v_rows(
         model,
@@ -416,7 +434,6 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
         &rows,
         "algebraic projection sensitivity",
     )?;
-    let row_scales = algebraic_plan_row_scales(model, y, args.parameters, args.time, plan)?;
     if scaled_residual_converged(&residual, &row_scales, args.tolerance) {
         return Ok(());
     }
@@ -428,42 +445,6 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
         &row_scales,
         args.tolerance,
     ))
-}
-
-fn algebraic_seed_block_jacobian<M: ImplicitProjectionModel>(
-    model: &M,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    block: &solve::AlgebraicProjectionBlock,
-    unit_seed: &mut [f64],
-) -> Result<DMatrix<f64>, RuntimeSolveError> {
-    let mut jacobian = DMatrix::zeros(block.rows.len(), block.y_indices.len());
-    for (column, y_index) in block.y_indices.iter().copied().enumerate() {
-        unit_seed.fill(0.0);
-        unit_seed[y_index] = 1.0;
-        for (row_pos, row) in block.rows.iter().copied().enumerate() {
-            if !model.implicit_jacobian_v_row_depends_on(row, y_index) {
-                continue;
-            }
-            let Some(value) = model.eval_implicit_jacobian_v_row(row, y, p, t, unit_seed)? else {
-                let mut jvp = vec![0.0; y.len()];
-                model.eval_jacobian_v(y, p, t, unit_seed, &mut jvp)?;
-                fill_jacobian_column_from_jvp(
-                    &mut jacobian,
-                    column,
-                    &block.rows,
-                    &jvp,
-                    None,
-                    "algebraic seed projection Jacobian",
-                )?;
-                break;
-            };
-            jacobian[(row_pos, column)] = value;
-        }
-    }
-    unit_seed.fill(0.0);
-    Ok(jacobian)
 }
 
 pub(crate) fn project_algebraics_with_plan<M: ImplicitProjectionModel>(

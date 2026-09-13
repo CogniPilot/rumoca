@@ -3,10 +3,12 @@ mod domains;
 mod external_functions;
 mod function_checks;
 mod function_conditionals;
+mod function_derivatives;
 mod function_loop_capability;
 mod function_loops;
 mod function_reads;
 mod function_scopes;
+pub(crate) mod initial_parameters;
 mod runtime_quotients;
 mod storage;
 mod value_types;
@@ -14,6 +16,7 @@ mod variable_types;
 mod view;
 mod wire;
 
+use initial_parameters::InitialParameterValueEntry;
 use std::marker::PhantomData;
 
 use rumoca_core::{
@@ -35,7 +38,7 @@ use crate::discrete_values::{
 };
 use crate::equations::{
     ContinuousEquations, DiscreteEquations, DiscreteRealActivation, DiscreteRealEquationEntry,
-    DiscreteRealEquationView, EquationOwnerEntry, InitialDiscreteValueEntry,
+    DiscreteRealEquationView, EquationOwnerEntry, EquationOwnerKind, InitialDiscreteValueEntry,
     InitialDiscreteValueView, InitializationEquations, ResidualEquationEntry, ResidualShape,
     StructuredFamilyEntry,
 };
@@ -55,10 +58,10 @@ use crate::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
     DaeConstructionError, DaeGeneration, DaeLiteral, DaeProvenance, DelayId, DiscreteRealId,
     DiscreteValueId, DiscreteValueOwnerId, DomainBinderId, DomainId, EventActionId, ExprId,
-    FunctionDefinitionId, FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId,
-    InitializationEquationId, InitializationFamilyId, InputId, ModelEventTransactionId,
-    ModelEventTransactions, ParameterId, PreviousId, RelationId, RootId, ScalarType, StateId,
-    StructuredRootId, TerminalId, TimeEventId, ValueTypeId, VariableId,
+    FunctionDefinitionId, FunctionDerivativeId, FunctionFoldId, FunctionId, FunctionParameterId,
+    FunctionValueId, InitializationEquationId, InitializationFamilyId, InputId,
+    ModelEventTransactionId, ModelEventTransactions, ParameterId, PreviousId, RelationId, RootId,
+    ScalarType, StateId, StructuredRootId, TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
 
 pub(crate) use construction_checks::{
@@ -148,7 +151,11 @@ pub(crate) use construction_checks::{
 /// from its carried targets. Replay clears those locals on entry and restores
 /// the enclosing reaching definitions on exit, so a superseded payload cannot
 /// reinterpret nonescaping scratch as loop-carried state.
-pub const DAE_SCHEMA_VERSION: u16 = 33;
+/// 34 preserves checked first-derivative function links and their input roles.
+/// 35 binds higher-order derivatives to their checked predecessor link.
+/// 36 retains checked non-Real parameter definitions at initialization.
+/// 37 appends the checked aggregate auxiliary `LinearSolve` pure function.
+pub const DAE_SCHEMA_VERSION: u16 = 37;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -158,6 +165,8 @@ pub use external_functions::{
 };
 pub(crate) use external_functions::{ExternalArgumentEntry, ExternalBodyEntry};
 use function_checks::*;
+use function_derivatives::FunctionDerivativeEntry;
+pub use function_derivatives::FunctionDerivativeView;
 pub(crate) use function_reads::{
     FunctionReadFact, FunctionReadMergeError, FunctionReadSet, FunctionReadSets,
 };
@@ -324,6 +333,7 @@ pub(crate) struct FunctionEntry {
     pub(crate) folds: Vec<u32>,
     declaration: DaeProvenance,
     inline: InlineAnnotation,
+    derivatives: Vec<FunctionDerivativeEntry>,
     definition: Option<FunctionBodyEntry>,
     build: Option<FunctionBuildState>,
 }
@@ -488,6 +498,8 @@ pub(crate) struct Storage {
     pub(crate) initialization_equations: Vec<ResidualEquationEntry>,
     pub(crate) initial_discrete_values: Vec<InitialDiscreteValueEntry>,
     pub(crate) initial_discrete_value_by_variable: rustc_hash::FxHashMap<u32, u32>,
+    pub(crate) initial_parameter_values: Vec<InitialParameterValueEntry>,
+    pub(crate) initial_parameter_value_by_variable: rustc_hash::FxHashMap<u32, u32>,
     pub(crate) discrete_real_equations: Vec<DiscreteRealEquationEntry>,
     pub(crate) discrete_value_owners: Vec<DiscreteValueOwnerEntry>,
     pub(crate) discrete_value_targets: Vec<u32>,
@@ -543,6 +555,7 @@ struct FrozenStorage {
     continuous_equations: Box<[ResidualEquationEntry]>,
     initialization_equations: Box<[ResidualEquationEntry]>,
     initial_discrete_values: Box<[InitialDiscreteValueEntry]>,
+    initial_parameter_values: Box<[InitialParameterValueEntry]>,
     discrete_real_equations: Box<[DiscreteRealEquationEntry]>,
     discrete_value_owners: Box<[DiscreteValueOwnerEntry]>,
     discrete_value_targets: Box<[u32]>,
@@ -1236,6 +1249,7 @@ impl<'dae> Functions<'_, 'dae> {
             declaration,
             inline,
             definition: None,
+            derivatives: Vec::new(),
             build: None,
         });
         self.storage.unfilled_functions += 1;

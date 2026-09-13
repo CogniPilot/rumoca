@@ -96,6 +96,8 @@ branded_ids! {
     FunctionId;
 }
 owner_local_ids! {
+    /// Identity of one checked derivative link, including its differentiation context.
+    FunctionDerivativeId, function: FunctionId;
     /// Owner-local identity of one function parameter.
     FunctionParameterId, function: FunctionId;
     /// Owner-local identity of one function output or local value.
@@ -120,6 +122,8 @@ branded_ids! {
     InitializationEquationId;
     /// Identity of one initialization-instant discrete value definition.
     InitialDiscreteValueId;
+    /// Identity of a parameter definition owned by initialization.
+    InitialParameterValueId;
     /// Identity of one coupled discrete Real B.1b residual equation.
     DiscreteRealEquationId;
     /// Identity of one atomic source-priority B.1c definition owner.

@@ -50,6 +50,7 @@ impl Storage {
             continuous_equations: self.continuous_equations.into_boxed_slice(),
             initialization_equations: self.initialization_equations.into_boxed_slice(),
             initial_discrete_values: self.initial_discrete_values.into_boxed_slice(),
+            initial_parameter_values: self.initial_parameter_values.into_boxed_slice(),
             discrete_real_equations: self.discrete_real_equations.into_boxed_slice(),
             discrete_value_owners: self.discrete_value_owners.into_boxed_slice(),
             discrete_value_targets: self.discrete_value_targets.into_boxed_slice(),

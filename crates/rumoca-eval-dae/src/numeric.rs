@@ -1064,6 +1064,13 @@ where
             dae::PureBuiltin::NoEvent => {}
             dae::PureBuiltin::Homotopy => {}
             dae::PureBuiltin::Vector => {}
+            dae::PureBuiltin::LinearSolve => {
+                return Err(failure(
+                    NumericEvaluationErrorKind::UnsupportedOperation,
+                    "linear solve requires the Solve tensor execution kernel",
+                    span,
+                ));
+            }
             dae::PureBuiltin::Transpose => values = transpose_values(&values, result_dimensions),
             B::Diagonal | B::OuterProduct | B::Skew => {
                 values = self.matrix_product(builtin, arguments, values)?;
@@ -1554,7 +1561,7 @@ fn literal_value(literal: &dae::DaeLiteral, span: Span) -> Result<f64, NumericEv
     }
 }
 
-fn binary(operator: dae::BinaryOperator, lhs: f64, rhs: f64) -> f64 {
+pub(crate) fn binary(operator: dae::BinaryOperator, lhs: f64, rhs: f64) -> f64 {
     match operator {
         dae::BinaryOperator::Add | dae::BinaryOperator::ElementwiseAdd => lhs + rhs,
         dae::BinaryOperator::Subtract | dae::BinaryOperator::ElementwiseSubtract => lhs - rhs,

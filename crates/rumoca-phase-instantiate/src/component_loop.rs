@@ -88,6 +88,11 @@ pub(super) fn instantiate_effective_components(
             resolve_effective_components_for_eval,
         );
         let type_info = lookup_type_info(tree, comp, &type_name)?;
+        if dims.as_ref().is_some_and(|dims| !dims.is_empty())
+            && let Some(def_id) = comp.def_id
+        {
+            overlay.array_component_declarations.insert(def_id);
+        }
         if let Some(dims) = dims.as_ref()
             && dims.contains(&0)
         {

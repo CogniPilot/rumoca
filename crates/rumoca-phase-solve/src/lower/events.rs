@@ -62,7 +62,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
         &mut action_conditions,
     )?;
     lower_condition_memory(view, layout, clocks, &mut discrete)?;
-    let roots = lower_roots(view, layout, clocks, &discrete.relation_memory_owners)?;
+    let roots = lower_roots(view, layout, clocks)?;
     let (scheduled_time_events, dynamic_time_event_rhs) = lower_time_events(view, layout)?;
     let delays = lower_delays(view, layout)?;
     let mut event_transactions =
@@ -266,7 +266,6 @@ struct DiscreteRows<'dae> {
     structured_updates: Vec<solve::StructuredDiscreteUpdate>,
     guarded_assignments: Vec<PendingGuardedAssignment>,
     structured_output_cursor: usize,
-    relation_memory_owners: RelationMemoryOwners<'dae>,
     event_iteration_owners: Vec<Option<EventIterationOwnerClaim>>,
     /// Exact same-tick definitions (SOLVE-C57), derived once per DAE. Program
     /// granularity consults it while lowering, and the issued order replays it.
@@ -340,7 +339,6 @@ impl<'dae> DiscreteRows<'dae> {
             same_tick_definitions: rumoca_phase_structural::SameTickDefinitions::derive(
                 view, &causal,
             ),
-            relation_memory_owners: RelationMemoryOwners::new(view),
             event_iteration_owners: vec![None; view.variable_count()],
             ..Self::default()
         }
@@ -948,62 +946,6 @@ struct RootRefreshCandidate {
     program: Vec<solve::LinearOp>,
     span: Span,
     target: solve::ScalarSlot,
-}
-
-#[derive(Clone, Copy, Default)]
-enum RelationMemoryOwner {
-    #[default]
-    Unclaimed,
-    Unique(solve::ScalarSlot),
-    Ambiguous,
-}
-
-#[derive(Default)]
-struct RelationMemoryOwners<'dae> {
-    relation_by_expression: Vec<Option<dae::RelationId<'dae>>>,
-    owners: Vec<RelationMemoryOwner>,
-}
-
-impl<'dae> RelationMemoryOwners<'dae> {
-    fn new(view: dae::DaeView<'dae>) -> Self {
-        let mut relation_by_expression = vec![None; view.expression_count()];
-        for (relation, entry) in view.relations() {
-            relation_by_expression[entry.expression().index() as usize] = Some(relation);
-        }
-        Self {
-            relation_by_expression,
-            owners: vec![RelationMemoryOwner::Unclaimed; view.relation_count()],
-        }
-    }
-
-    fn claim_exact_expression(&mut self, expression: dae::ExprId<'dae>, target: solve::ScalarSlot) {
-        let solve::ScalarSlot::P { .. } = target else {
-            return;
-        };
-        let Some(relation) = self
-            .relation_by_expression
-            .get(expression.index() as usize)
-            .copied()
-            .flatten()
-        else {
-            return;
-        };
-        let owner = &mut self.owners[relation.index() as usize];
-        *owner = match *owner {
-            RelationMemoryOwner::Unclaimed => RelationMemoryOwner::Unique(target),
-            RelationMemoryOwner::Unique(existing) if existing == target => *owner,
-            RelationMemoryOwner::Unique(_) | RelationMemoryOwner::Ambiguous => {
-                RelationMemoryOwner::Ambiguous
-            }
-        };
-    }
-
-    fn target(&self, relation: dae::RelationId<'dae>) -> Option<solve::ScalarSlot> {
-        match self.owners.get(relation.index() as usize).copied() {
-            Some(RelationMemoryOwner::Unique(target)) => Some(target),
-            Some(RelationMemoryOwner::Unclaimed | RelationMemoryOwner::Ambiguous) | None => None,
-        }
-    }
 }
 
 fn lower_discrete_real_equations<'dae>(
@@ -1681,7 +1623,6 @@ fn lower_roots<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-    relation_memory_owners: &RelationMemoryOwners<'dae>,
 ) -> Result<LoweredRoots, LowerError> {
     let mut rows = ScalarRows::default();
     let mut zero_domains = Vec::with_capacity(view.root_count());
@@ -1702,7 +1643,7 @@ fn lower_roots<'dae>(
         owner_span = Some(span);
         owner_relations.push(root.relation());
         zero_domains.push(root_zero_domain(view, relation.expression()));
-        relation_memory_targets.push(relation_memory_owners.target(root.relation()));
+        relation_memory_targets.push(layout.buffered_relations.target(root.relation()));
     }
     flush_root_owner(view, layout, &mut rows, &mut owner_relations, owner_span)?;
     lower_structured_roots(
@@ -1797,31 +1738,13 @@ fn expression_clock_owner<'dae>(
     clocks: &LoweredClocks<'dae>,
     expression: dae::ExprId<'dae>,
 ) -> Option<(dae::ClockId<'dae>, solve::PeriodicClockId)> {
-    let mut owner = None;
-    dae::for_each_expression(view, expression, |_, node| {
-        if owner.is_some() {
-            return;
-        }
-        let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
-            return;
-        };
-        if let dae::CoordinateView::Previous(previous) = coordinate {
-            let clock = view
-                .previous(previous)
-                .expect("checked previous identity resolves")
-                .clock();
-            let solve = clocks
-                .clock(clock)
-                .expect("checked previous history names a lowered clock");
-            owner = Some((clock, solve));
-            return;
-        }
-        owner = super::coordinate_variable(coordinate)
-            .or_else(|| super::pre_coordinate_variable(coordinate))
-            .and_then(|index| view.variable_id(index as usize))
-            .and_then(|id| clocks.variable_owner(id));
-    });
-    owner
+    let owner = super::clock_ownership::expression_clock_owner(view, expression, |variable| {
+        clocks.variable_owner(variable).map(|(clock, _)| clock)
+    })?;
+    Some((
+        owner,
+        clocks.clock(owner).expect("checked expression clock"),
+    ))
 }
 
 fn root_zero_domain<'dae>(

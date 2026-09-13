@@ -553,7 +553,7 @@ fn a_backend_cannot_suppress_the_component_failure_it_provoked() {
     assert!(
         failure
             .to_string()
-            .contains("algebraic projection did not converge"),
+            .contains("algebraic projection did not establish coordinate convergence"),
         "the surviving failure is the component's own: {failure}"
     );
 

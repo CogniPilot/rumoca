@@ -540,7 +540,7 @@ pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> 
         };
         if target != shape.target_y_index()
             || !expected_targets.contains(&target)
-            || !supported_explicit_assignment_shape(*shape)
+            || !supported_explicit_assignment_shape(shape)
             || program
                 .assignment_y_dependencies(position)
                 .is_none_or(|dependencies| {
@@ -559,15 +559,22 @@ pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> 
     assigned == expected_targets && rows.len() == continuous.algebraic_projection_plan.blocks.len()
 }
 
-fn supported_explicit_assignment_shape(shape: solve::TargetAssignmentShape) -> bool {
+fn supported_explicit_assignment_shape(shape: &solve::TargetAssignmentShape) -> bool {
     match shape {
-        solve::TargetAssignmentShape::Direct { .. } => true,
+        solve::TargetAssignmentShape::Zero { .. } | solve::TargetAssignmentShape::Direct { .. } => {
+            true
+        }
         solve::TargetAssignmentShape::Affine {
             coefficient_reg,
             coefficient_scale,
             ..
-        } => coefficient_reg.is_none() && coefficient_scale.is_finite() && coefficient_scale != 0.0,
-        solve::TargetAssignmentShape::AffineResidual { .. } => false,
+        } => {
+            coefficient_reg.is_none() && coefficient_scale.is_finite() && *coefficient_scale != 0.0
+        }
+        solve::TargetAssignmentShape::Additive { coefficient, .. } => {
+            coefficient.is_finite() && *coefficient != 0.0
+        }
+        solve::TargetAssignmentShape::TensorAffine { .. } => false,
     }
 }
 
@@ -785,7 +792,7 @@ fn continuous_artifacts_value(handle: SolveRenderHandle) -> Result<Value, Codege
 pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let initialization = minijinja::context! {
         update_plan => Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
-            Arc::new(handle.problem().initialization.update_rhs.clone()),
+            Arc::new(handle.problem().initialization.update_rhs().clone()),
         )?),
         ..Value::from_serialize(&handle.problem().initialization)
     };

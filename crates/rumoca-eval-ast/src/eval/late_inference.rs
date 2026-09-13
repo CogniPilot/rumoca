@@ -569,7 +569,7 @@ mod tests {
         let ctx = TypeCheckEvalContext::new();
         let expr = Expression::Array {
             elements: vec![make_real_literal(0.0), make_real_literal(1.0)],
-            is_matrix: true,
+            kind: rumoca_core::ArrayConstructor::Horizontal,
             span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_dimensions_from_binding(&expr, &ctx), Some(vec![1, 2]));
@@ -582,18 +582,18 @@ mod tests {
             elements: vec![
                 Expression::Array {
                     elements: vec![make_real_literal(0.0), make_real_literal(1.0)],
-                    is_matrix: true,
+                    kind: rumoca_core::ArrayConstructor::Horizontal,
 
                     span: rumoca_core::Span::DUMMY,
                 },
                 Expression::Array {
                     elements: vec![make_real_literal(2.0), make_real_literal(3.0)],
-                    is_matrix: true,
+                    kind: rumoca_core::ArrayConstructor::Horizontal,
 
                     span: rumoca_core::Span::DUMMY,
                 },
             ],
-            is_matrix: true,
+            kind: rumoca_core::ArrayConstructor::Vertical,
             span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_dimensions_from_binding(&expr, &ctx), Some(vec![2, 2]));
@@ -606,16 +606,16 @@ mod tests {
             elements: vec![
                 Expression::Array {
                     elements: vec![make_real_literal(0.0), make_real_literal(0.595)],
-                    is_matrix: true,
+                    kind: rumoca_core::ArrayConstructor::Horizontal,
                     span: rumoca_core::Span::DUMMY,
                 },
                 Expression::Array {
                     elements: vec![make_real_literal(1.0), make_real_literal(1.0)],
-                    is_matrix: true,
+                    kind: rumoca_core::ArrayConstructor::Horizontal,
                     span: rumoca_core::Span::DUMMY,
                 },
             ],
-            is_matrix: true,
+            kind: rumoca_core::ArrayConstructor::Vertical,
             span: rumoca_core::Span::DUMMY,
         };
 
@@ -655,18 +655,18 @@ mod tests {
             elements: vec![
                 Expression::Array {
                     elements: vec![zero_rows],
-                    is_matrix: true,
+                    kind: rumoca_core::ArrayConstructor::Horizontal,
 
                     span: rumoca_core::Span::DUMMY,
                 },
                 Expression::Array {
                     elements: vec![make_comp_ref("b")],
-                    is_matrix: true,
+                    kind: rumoca_core::ArrayConstructor::Horizontal,
 
                     span: rumoca_core::Span::DUMMY,
                 },
             ],
-            is_matrix: true,
+            kind: rumoca_core::ArrayConstructor::Vertical,
             span: rumoca_core::Span::DUMMY,
         };
         let expr = make_call("vector", vec![matrix]);
@@ -797,7 +797,7 @@ mod tests {
                 make_comp_ref_with_sub("eta", 2),
                 make_comp_ref_with_sub("eta", 3),
             ],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(

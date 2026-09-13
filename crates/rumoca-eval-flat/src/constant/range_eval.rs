@@ -2,8 +2,8 @@
 
 use rumoca_core::Span;
 
+use super::EvalEnvironment;
 use super::Expression;
-use super::context::EvalContext;
 use super::errors::EvalError;
 use super::expr_eval::eval_expr_with_span;
 use super::value::Value;
@@ -13,7 +13,7 @@ pub(super) fn eval_range(
     start: &Expression,
     step: Option<&Expression>,
     end: &Expression,
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     let start_val = eval_expr_with_span(start, ctx, span)?;
@@ -31,7 +31,7 @@ fn eval_integer_range(
     s: i64,
     e: i64,
     step: Option<&Expression>,
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     let step_int = match step {
@@ -81,7 +81,7 @@ fn eval_real_range(
     start_val: &Value,
     end_val: &Value,
     step: Option<&Expression>,
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     let s = start_val

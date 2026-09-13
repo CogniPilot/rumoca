@@ -105,11 +105,34 @@ pub(crate) struct StructuredFamilyEntry {
     pub(crate) provenance: DaeProvenance,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum EquationOwnerEntry {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EquationOwnerKind {
     Residual(u32),
     Structured(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EquationOwnerEntry {
+    pub(crate) kind: EquationOwnerKind,
+    pub(crate) scalar_row_end: usize,
+}
+
+impl EquationOwnerEntry {
+    fn next_scalar_row_end(
+        owners: &[Self],
+        rows: u32,
+        owner: DaeProvenance,
+    ) -> Result<usize, DaeConstructionError> {
+        owners
+            .last()
+            .map_or(0, |previous| previous.scalar_row_end)
+            .checked_add(rows as usize)
+            .ok_or(DaeConstructionError::CapacityExceeded {
+                arena: "equation scalar rows",
+                attempted_index: usize::MAX,
+                span: owner.span(),
+            })
+    }
 }
 
 trait ResidualPartition {
@@ -147,8 +170,13 @@ macro_rules! equation_partitions {
                     entry: ResidualEquationEntry,
                     owner: DaeProvenance,
                 ) -> Result<u32, DaeConstructionError> {
+                    let scalar_row_end =
+                        EquationOwnerEntry::next_scalar_row_end(&storage.$owners, 1, owner)?;
                     let raw = push_dense(&mut storage.$equations, entry, "equation arena", owner)?;
-                    storage.$owners.push(EquationOwnerEntry::Residual(raw));
+                    storage.$owners.push(EquationOwnerEntry {
+                        kind: EquationOwnerKind::Residual(raw),
+                        scalar_row_end,
+                    });
                     Ok(raw)
                 }
             }
@@ -159,13 +187,21 @@ macro_rules! equation_partitions {
                     entry: StructuredFamilyEntry,
                     owner: DaeProvenance,
                 ) -> Result<u32, DaeConstructionError> {
+                    let scalar_row_end = EquationOwnerEntry::next_scalar_row_end(
+                        &storage.$owners,
+                        entry.scalar_rows,
+                        owner,
+                    )?;
                     let raw = push_dense(
                         &mut storage.$families,
                         entry,
                         "structured equation family arena",
                         owner,
                     )?;
-                    storage.$owners.push(EquationOwnerEntry::Structured(raw));
+                    storage.$owners.push(EquationOwnerEntry {
+                        kind: EquationOwnerKind::Structured(raw),
+                        scalar_row_end,
+                    });
                     Ok(raw)
                 }
             }

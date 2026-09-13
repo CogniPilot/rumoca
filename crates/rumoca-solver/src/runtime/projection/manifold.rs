@@ -175,15 +175,22 @@ fn project_state_manifold_inner<M: ManifoldProjectionModel>(
     }))
 }
 
-fn project_manifold_block<M: ManifoldProjectionModel>(
+struct ManifoldBlockEvaluation {
+    full_residual: Vec<f64>,
+    residual: Vec<f64>,
+    jacobian: DMatrix<f64>,
+    row_scales: Vec<f64>,
+    variable_scales: Vec<f64>,
+}
+
+fn evaluate_manifold_block<M: ManifoldProjectionModel>(
     model: &M,
-    y: &mut [f64],
+    y: &[f64],
     p: &[f64],
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
     block_index: usize,
-    tol: f64,
-) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
+) -> Result<ManifoldBlockEvaluation, RuntimeSolveError> {
     let residual_len = model.manifold_residual_len();
     let mut full_residual = vec![0.0; residual_len];
     model.eval_manifold_residual(y, p, t, &mut full_residual)?;
@@ -208,6 +215,53 @@ fn project_manifold_block<M: ManifoldProjectionModel>(
         .manifold_projection_block_structure(block_index)
         .map(solve::JacobianStructure::pattern);
     let (row_scales, variable_scales) = manifold_block_scales(model, block, &jacobian, structure);
+    Ok(ManifoldBlockEvaluation {
+        full_residual,
+        residual,
+        jacobian,
+        row_scales,
+        variable_scales,
+    })
+}
+
+/// Certify a settled initialization point without obtaining mutable state storage.
+pub(crate) fn certify_state_manifold<M: ManifoldProjectionModel>(
+    model: &M,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    tol: f64,
+) -> Result<(), RuntimeSolveError> {
+    for (index, block) in model.manifold_projection_plan().blocks.iter().enumerate() {
+        let evaluated = evaluate_manifold_block(model, y, p, t, block, index)?;
+        if !scaled_residual_converged(&evaluated.residual, &evaluated.row_scales, tol) {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "initial state manifold is inconsistent in constraint block {index}; settled initial states cannot be corrected"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn project_manifold_block<M: ManifoldProjectionModel>(
+    model: &M,
+    y: &mut [f64],
+    p: &[f64],
+    t: f64,
+    block: &solve::AlgebraicProjectionBlock,
+    block_index: usize,
+    tol: f64,
+) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
+    let ManifoldBlockEvaluation {
+        mut full_residual,
+        residual,
+        jacobian,
+        row_scales,
+        variable_scales,
+    } = evaluate_manifold_block(model, y, p, t, block, block_index)?;
+    let structure = model
+        .manifold_projection_block_structure(block_index)
+        .map(solve::JacobianStructure::pattern);
     if scaled_residual_converged(&residual, &row_scales, tol) {
         return Ok(ProjectionBlockUpdate {
             changed: false,

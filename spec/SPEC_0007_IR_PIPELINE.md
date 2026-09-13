@@ -5,12 +5,10 @@ ACCEPTED
 
 ## Summary
 
-Rumoca transforms Modelica through AST → Flat → DAE → Solve IRs. Each stage
-defines its contents, ownership, and boundary.
+Each Modelica stage — AST → Flat → DAE → Solve — defines contents and ownership.
 
-Per-stage contract rows and the structural-lowering transformation list are
-catalogued in [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md). Every row is
-normative by reference from the stage section linking it.
+[SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md) catalogs stage contracts and
+structural transformations; each linked row is normative.
 
 ## Specification
 
@@ -54,12 +52,10 @@ Modelica source (.mo)
 `rumoca-phase-codegen` renders text; execution adapters wrap toolchains and
 runtimes without owning compiler semantics.
 
-Every IR that crosses the code-generation boundary MUST already satisfy its
-stage invariants by construction. A target manifest selects the exact canonical
-or checked export IR it consumes; the compiler supplies a typed, read-only
-semantic view of that artifact to MiniJinja. Rendering MUST NOT resolve names,
-infer types or shapes, lower to another IR, mutate its input, or repair an
-invalid artifact.
+Code-generation inputs MUST satisfy stage invariants by construction. Target
+manifests select the exact canonical or checked export IR; MiniJinja receives
+its typed, read-only semantic view. Rendering MUST NOT resolve names, infer
+types/shapes, lower IRs, mutate inputs, or repair invalid artifacts.
 
 Code-generation architecture:
 
@@ -67,25 +63,22 @@ Code-generation architecture:
 proven-valid IR -> typed semantic template view -> target.toml + MiniJinja -> artifacts
 ```
 
-This boundary applies uniformly to syntax, Flat, DAE, Solve, and checked export
-IRs. Adding a target for an already-supported IR requires only a target
-directory. Supporting a new IR requires one target-neutral semantic view and
-capability vocabulary, never a target-language renderer in Rust. Export IRs
-remain projections, never canonical pipeline stages.
+This boundary covers syntax, Flat, DAE, Solve, and checked export IRs. Existing
+IRs need only a target directory; new IRs require a target-neutral semantic view
+and capability vocabulary, never a target-language Rust renderer. Export IRs
+remain projections, not canonical stages.
 
-The checked FMI component export is the single deployment projection for FMI 2
-and FMI 3. Its constructor binds DAE-owned variable identity, causality, type,
-shape, units, and provenance to the executable Solve kernel. FMI-version
-adapters may scalarize only the external value-reference view required by that
-version; they MUST NOT repeat equation lowering, initialization, event, or
-state-machine semantics. A raw derivative-only C kernel is not an FMI component
-and MUST NOT be advertised as an FMI deployment substitute.
+Checked FMI component export is the sole FMI 2/3 deployment projection. Its
+constructor binds DAE variable identity, causality, type, shape, units, and
+provenance to the Solve kernel. Version adapters may scalarize only required
+external value references; they MUST NOT repeat equation lowering,
+initialization, events, or state-machine semantics. Derivative-only C kernels
+MUST NOT be advertised as FMI components or deployment substitutes.
 
 ### Built-in Target Product Contract
 
-A built-in target is an executable or inspectable compiler product, not a
-roadmap marker. Every directory registered below
-`rumoca-phase-codegen/src/templates/` MUST satisfy all of these rules:
+Every target registered below `rumoca-phase-codegen/src/templates/` MUST be an
+executable or inspectable product satisfying these rules:
 
 | Rule | Required evidence |
 |---|---|
@@ -131,6 +124,12 @@ manipulation.
 - No modification chains; all modifications have been applied.
 - Virtual connection graphs satisfy MLS §9.4 forest and root invariants.
 - Arrays remain symbolic (not scalarized).
+- Array construction retains its source operation: `{...}` adds an element
+  axis, bracket commas concatenate along dimension 2, and bracket semicolons
+  concatenate along dimension 1, with MLS §10.4.2.1 promotion. AST and Flat
+  carry this distinction explicitly through rewrites and function bodies;
+  consumers MUST NOT infer the concatenation axis from child nesting. Expanded
+  comprehensions and materialized array values remain element constructors.
 - Function bodies remain structured in `functions`.
 - `pre()`, `der()`, `initial()`, and other Modelica built-ins are still present
   as expression nodes — semantic lowering has not occurred.
@@ -148,7 +147,7 @@ generate simulation code.
 | Function algorithms remain structured; conditional joins retain checked shared-branch correlation | Downstream projections preserve call cardinality without reconstructing control flow |
 | A function-algorithm `assert` is a flow action, not an ordinary call or a value expression | A value-proven function specialization may erase the statement only when its exact specialization environment proves the condition `true`. An unsettled condition may lower only through the call-specialized guarded root/action schedule in SOLVE-C25; a proven-false or otherwise unrepresentable schedule is typed-rejected. The action is never silently discarded or routed through multi-result-call lowering. |
 | Model algorithms lower to DAE only when they fit the declarative subset | Unsupported forms fail explicitly with `ED013` |
-| Initial sections use declarative owners: sequential scalar assignments and `if` conditionals in an `initial algorithm` determine a `parameter` declared `fixed = false` or a discrete coordinate; an explicit initial equation `m = value` or `pre(m) = value` determines the same typed discrete initial-value owner; and `assert` becomes an assertion owner carrying its enclosing branch conditions | A discrete initial value is a checked definition, not a numeric residual: its constructor proves exact scalar type, initialization-settled reads, and unique target ownership, and Solve initializes both current and `pre` storage from it. Replayed calculated-parameter values read only parameters and constants. Where each dependency is settled at parameter-set time, the parameter set computes exactly the initialization value; where one is a `fixed = false` parameter, Solve re-applies the binding after the initialization projection, so the parameter-set value is an iteration seed. Algebraic, state, output, and input algorithm targets and every loop, `when`, or non-`assert` call statement keep `ED013` because no checked initialization owner determines them |
+| Initial algorithms support sequential scalar assignments and `if` conditionals targeting `fixed=false` parameters or discrete coordinates. Initial equations `m = value` / `pre(m) = value` produce the same discrete initial-value owner. Assertions retain enclosing branch conditions. | Discrete initial definitions prove exact scalar type, initialization-settled reads, and unique ownership; Solve initializes both current and `pre` storage. Replayed calculated-parameter values read only parameters/constants. Settled dependencies permit exact parameter-set evaluation; dependencies on `fixed=false` parameters require post-projection binding updates, treating parameter-set values as seeds. Algebraic/state/output/input algorithm targets, loops, `when`, and non-`assert` call statements retain `ED013` without a checked owner. |
 | Post-resolution declaration identity is keyed by `DefId`, not strings | Hashing rendered names, `VarName`, flat names, cached display strings, rendered `ComponentPath`, or rendered `ComponentReference` after resolution is a phase-boundary bug. Carry `DefId` for declarations and structured instance identity where one declaration has multiple instantiated meanings. |
 | Flat `TypeId` is the resolved effective type of that concrete instance | Two instances originating from one `DefId` may have different effective types after redeclare or modification. DAE type catalogs key by this identity and retain `DefId` only as declaration provenance. |
 | Semantic phases do not recover name hierarchy by tokenizing flattened strings | The AST, `QualifiedName`, `ComponentReference`, `DefId`, scope tree, and phase metadata carry name structure. Splitting `a.b.c` text inside compiler/evaluator/lowering logic means structure was lost too early. Textual path parsing is allowed only at source/protocol/config/display boundaries while structured IR replaces it. |
@@ -208,6 +207,12 @@ indexes are recomputed rather than accepted as wire inputs.
 
 **Contract:** rows `DAE-C01`–`DAE-C21` in
 [SPEC_0040 §1](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#1-dae-stage-contract-catalog-spec_0007-stage-3).
+
+Non-Real `fixed=false` initialization definitions have checked owners distinct
+from translation-time bindings and numeric residuals. They retain exact
+parameter identity, matching shape/type, provenance, and unique ownership;
+values may read initialization state/algebraic unknowns. Wire replay and
+structural transformation reconstruct these owners through checked construction.
 
 **Do here:** DAE lowering, structural transformation, and separately returned
 structural analysis. **Do not:** allocate registers, lower bytecode, emit
@@ -274,6 +279,13 @@ of `SolveProblem`; rows SOLVE-C32–C38 define its complete obligations.
 **Contract:** rows `SOLVE-C01`–`SOLVE-C57` in
 [SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4).
 
+Solve substitutes initialization parameter definitions into that system's
+residuals and commits their values from the solved initial point. Start guesses
+and parameter-set values cannot discharge these definitions. A dependency
+cycle without a supported coupled owner must be rejected explicitly.
+Matched initialization rows are ordered by dependency; only strongly connected
+rows share a simultaneous projection block. Unmatched checks remain required.
+
 Objectives, adjoints, sensitivities, and optimizer projections are derived
 products, not canonical root fields.
 
@@ -290,16 +302,30 @@ or `rumoca-phase-codegen` by SPEC_0029.
 
 ### Structural Lowering Scope
 
-Rumoca performs OpenModelica-class structural lowering between DAE and Solve.
-Structural lowering is DAE-to-DAE: each pass consumes a finalized DAE and
-returns another finalized DAE through root-owned checked changes. Partial
+Structural lowering between DAE and Solve is DAE-to-DAE: each pass consumes a
+finalized DAE and returns another through root-owned checked changes. Partial
 mutation, independently replayable proof receipts, and mutable partition
 callbacks are prohibited.
 
-**In scope:** exactly rows `STRUCT-T01`–`STRUCT-T07` in
+**In scope:** exactly rows `STRUCT-T01`–`STRUCT-T08` in
 [SPEC_0040 §3](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
 A transformation absent from that catalog is out of scope until this spec is
 amended.
+
+STRUCT-T03 reconstruction preserves shared expression identity during value
+substitution and differentiation. Reuse requires the same source, exact call
+substitutions, derivative order, reconstruction mode, and provenance; it cannot
+merge unrelated call contexts or equation owners.
+
+STRUCT-T03's linear auxiliary profile:
+
+| Rule | Owner | Why |
+|---|---|---|
+| Reconstruct a continuous Real vector only from a source-owned square linear system with state/invariant coefficients independent of that unknown | structural value and derivative proofs | Establishes the exact domain of the auxiliary solve |
+| Follow exact function substitutions and array operations; retain original residual owners and assertions | structural coefficient proof | Reconstruction must preserve source behavior |
+| Keep identity, projection, matrix product, and outer product aggregate; never enumerate a tensor basis to obtain coefficients | structural reconstruction | Compiler representation must stay compact |
+| Reject singular runtime matrices through the checked aggregate solve | native evaluation | Structural shape cannot prove numerical nonsingularity |
+| Select supplied derivatives only at a supported order; a first-order annotation does not forbid a separately proved higher derivative of the checked function body (MLS §12.7.1) | structural differentiation | Annotation availability is not a smoothness bound |
 
 **Placement requirement:**
 

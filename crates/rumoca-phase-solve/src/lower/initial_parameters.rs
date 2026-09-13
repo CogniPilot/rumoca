@@ -11,9 +11,11 @@
 //! set: the number it computed is a seed, not the value.
 //!
 //! Every parameter the initialization system determines has exactly one owner
-//! here, and the two owners are disjoint by construction:
+//! here, and the owners are disjoint by construction:
 //!
-//! * **the projection** owns a `fixed = false` parameter with no binding. It is
+//! * **an initial definition** owns a non-Real `fixed = false` parameter whose
+//!   explicit initial equation defines it from initialization unknowns.
+//! * **the projection** owns an otherwise unbound `fixed = false` parameter. It is
 //!   the guess MLS §8.6 names, and the initialization equations solve it.
 //! * **a binding** owns every parameter that has one. MLS 3.6 §8.6: "In the case
 //!   a parameter has both a binding equation and `fixed = false` a diagnostic is
@@ -62,7 +64,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
-use super::{ScalarRows, variable_scalar_slot};
+use super::{DerivativeRowIndex, ScalarRows, variable_scalar_slot};
 use crate::LowerError;
 use crate::layout::LoweredLayout;
 use crate::lower::scalar::{ParameterBindingSubstitutions, ScalarCompiler};
@@ -77,8 +79,8 @@ pub(super) struct InitializationParameterOwnership<'dae> {
     /// P-slot indices of each unbound `fixed = false` parameter scalar, keyed by
     /// variable index. These are the coordinates the projection solves.
     projection_unknowns: HashMap<u32, Vec<usize>>,
-    /// Numeric bound parameters that read another parameter,
-    /// ordered so a binding follows everything it reads.
+    /// Initialization definitions and numeric dependent bindings, ordered so
+    /// each update follows the parameter definitions it reads.
     dependents: Vec<u32>,
     bound: BTreeMap<u32, BoundParameter<'dae>>,
     substitutions: ParameterBindingSubstitutions<'dae>,
@@ -120,6 +122,7 @@ impl<'dae> InitializationParameterOwnership<'dae> {
         &self,
         view: dae::DaeView<'dae>,
         layout: &LoweredLayout<'dae>,
+        derivatives: &DerivativeRowIndex<'dae>,
     ) -> Result<InitialParameterUpdates, LowerError> {
         let mut updates = InitialParameterUpdates {
             rows: ScalarRows::default(),
@@ -132,6 +135,7 @@ impl<'dae> InitializationParameterOwnership<'dae> {
             push_dependent_binding_rows(
                 view,
                 layout,
+                derivatives,
                 index,
                 parameter,
                 &self.overridden_scalars,
@@ -146,6 +150,7 @@ impl<'dae> InitializationParameterOwnership<'dae> {
 fn push_dependent_binding_rows<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
+    derivatives: &DerivativeRowIndex<'dae>,
     index: u32,
     parameter: &BoundParameter<'dae>,
     overridden_scalars: &BTreeSet<(u32, usize)>,
@@ -158,6 +163,7 @@ fn push_dependent_binding_rows<'dae>(
             continue;
         }
         let program = ScalarCompiler::new(view, layout, None)
+            .with_derivative_definitions(derivatives)
             .program(parameter.binding, scalar)
             .map_err(|error| dependent_binding_error(error, variable, span))?;
         let target = variable_scalar_slot(layout, index, scalar, span)?;
@@ -184,14 +190,23 @@ pub(super) fn initialization_parameter_ownership<'dae>(
     layout: &LoweredLayout<'dae>,
     overrides: &HashMap<String, f64>,
 ) -> Result<InitializationParameterOwnership<'dae>, LowerError> {
-    let bound = bound_parameters(view);
+    let bound = bound_parameters(view)?;
     let projection_unknowns = projection_unknown_slots(view, layout, &bound)?;
     let reads: BTreeMap<u32, BTreeSet<u32>> = bound
         .iter()
         .map(|(index, parameter)| (*index, parameter.reads.clone()))
         .collect();
-    let guessed: BTreeSet<u32> = projection_unknowns.keys().copied().collect();
-    let guessed_dependents = dependent_parameters(&reads, &guessed, &bound);
+    let initialized: BTreeSet<u32> = bound
+        .iter()
+        .filter_map(|(id, parameter)| parameter.initialization_defined.then_some(*id))
+        .collect();
+    let guessed: BTreeSet<u32> = projection_unknowns
+        .keys()
+        .copied()
+        .chain(initialized.iter().copied())
+        .collect();
+    let mut guessed_dependents = dependent_parameters(&reads, &guessed, &bound);
+    guessed_dependents.extend(&initialized);
     let substitutions = ParameterBindingSubstitutions::new(
         guessed_dependents
             .iter()
@@ -203,13 +218,16 @@ pub(super) fn initialization_parameter_ownership<'dae>(
         &bound
             .iter()
             .filter_map(|(id, parameter)| {
-                (is_numeric_parameter(parameter.variable) && !parameter.reads.is_empty())
-                    .then_some(*id)
+                (is_numeric_parameter(parameter.variable)
+                    && (parameter.initialization_defined || !parameter.reads.is_empty()))
+                .then_some(*id)
             })
             .collect(),
-    );
+        &bound,
+    )?;
     let overridden_scalars = bound
         .iter()
+        .filter(|(_, parameter)| !parameter.initialization_defined)
         .flat_map(|(id, parameter)| {
             (0..parameter.variable.scalar_count()).filter_map(|scalar| {
                 let name = parameter.variable.scalar_name(scalar)?;
@@ -300,16 +318,30 @@ struct BoundParameter<'dae> {
     variable: dae::VariableView<'dae>,
     binding: dae::ExprId<'dae>,
     reads: BTreeSet<u32>,
+    initialization_defined: bool,
 }
 
 /// Every parameter that has a binding, with the parameter coordinates it reads.
-fn bound_parameters(view: dae::DaeView<'_>) -> BTreeMap<u32, BoundParameter<'_>> {
+fn bound_parameters(
+    view: dae::DaeView<'_>,
+) -> Result<BTreeMap<u32, BoundParameter<'_>>, LowerError> {
+    let initialized: BTreeMap<_, _> = view
+        .initial_parameter_values()
+        .map(|definition| (definition.target().index(), definition.value()))
+        .collect();
     let mut bound = BTreeMap::new();
     for (id, variable) in view.variables() {
         if variable.role() != dae::VariableRole::Parameter {
             continue;
         }
-        let Some(binding) = variable.binding() else {
+        let initialization = initialized.get(&id.index()).copied();
+        if initialization.is_some() && !is_numeric_parameter(variable) {
+            return Err(LowerError::unsupported(
+                "initialization-determined String parameters have no checked Solve storage",
+                variable.declaration().span(),
+            ));
+        }
+        let Some(binding) = initialization.or_else(|| variable.binding()) else {
             continue;
         };
         let mut reads = BTreeSet::new();
@@ -326,21 +358,17 @@ fn bound_parameters(view: dae::DaeView<'_>) -> BTreeMap<u32, BoundParameter<'_>>
                 variable,
                 binding,
                 reads,
+                initialization_defined: initialization.is_some(),
             },
         );
     }
-    bound
+    Ok(bound)
 }
 
 /// A parameter whose value the Solve program can carry in a numeric coordinate.
 ///
-/// A `String` parameter has no numeric storage at all, so it can never be an
-/// initialization update row or a residual substitution. That is not a missing
-/// capability: MLS §8.6 gives it no equation either, so the parameter set's
-/// ordinary evaluation of its binding is already its whole determination — the
-/// only reason it appears here is that its binding happens to mention a solved
-/// parameter through `String(...)`. Rejecting it would refuse a legal model for
-/// an ordering it does not participate in.
+/// String bindings are evaluated by the parameter set. An explicit initial
+/// definition of a String needs separate storage and is rejected above.
 fn is_numeric_parameter(variable: dae::VariableView<'_>) -> bool {
     !matches!(variable.value_type().scalar_type(), dae::ScalarType::String)
 }
@@ -383,13 +411,13 @@ fn dependent_parameters(
 
 /// Order the dependents so a binding is re-applied after everything it reads.
 ///
-/// `apply_initialization_updates` iterates to a fixed point either way, so this
-/// only decides how many passes that takes — but a total order also keeps the
-/// emitted row sequence reproducible across runs.
+/// Substitution requires an acyclic definition graph. A dependency cycle needs
+/// a coupled initialization owner instead of a declaration-order evaluation.
 fn ordered_dependents(
     reads: &BTreeMap<u32, BTreeSet<u32>>,
     dependents: &BTreeSet<u32>,
-) -> Vec<u32> {
+    bound: &BTreeMap<u32, BoundParameter<'_>>,
+) -> Result<Vec<u32>, LowerError> {
     let mut pending: BTreeMap<u32, BTreeSet<u32>> = dependents
         .iter()
         .map(|variable| {
@@ -401,17 +429,19 @@ fn ordered_dependents(
         })
         .collect();
     let mut order = Vec::with_capacity(dependents.len());
-    while !pending.is_empty() {
-        // A binding cycle among parameters is rejected before Solve lowering.
-        // Falling back to declaration order keeps this ordering total instead
-        // of dropping a row if one ever reached here.
+    while let Some((&target, _)) = pending.first_key_value() {
         let ready: Vec<u32> = match pending
             .iter()
             .filter(|(_, blockers)| blockers.is_empty())
             .map(|(variable, _)| *variable)
             .collect::<Vec<_>>()
         {
-            ready if ready.is_empty() => pending.keys().copied().collect(),
+            ready if ready.is_empty() => {
+                return Err(LowerError::unsupported(
+                    "cyclic initialization parameter definitions require a coupled owner",
+                    bound[&target].variable.declaration().span(),
+                ));
+            }
             ready => ready,
         };
         for variable in ready {
@@ -422,5 +452,5 @@ fn ordered_dependents(
             order.push(variable);
         }
     }
-    order
+    Ok(order)
 }

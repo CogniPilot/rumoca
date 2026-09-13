@@ -18,6 +18,10 @@ impl std::fmt::Display for AffineTensorNodeKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SolveProblemShapeContractError {
+    InitializationOwnership {
+        detail: &'static str,
+    },
+
     SchemaVersion {
         actual: u16,
         expected: u16,
@@ -223,7 +227,7 @@ pub enum SolveProblemShapeContractError {
 impl SolveProblemShapeContractError {
     pub fn source_span(&self) -> Option<Span> {
         match self {
-            Self::SchemaVersion { .. } => None,
+            Self::SchemaVersion { .. } | Self::InitializationOwnership { .. } => None,
             Self::Layout(err) => err.source_span(),
             Self::ScalarProgramSpanMismatch { span, .. }
             | Self::ScalarProgramOutputIndexMismatch { span, .. }
@@ -262,6 +266,9 @@ impl SolveProblemShapeContractError {
 impl std::fmt::Display for SolveProblemShapeContractError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InitializationOwnership { detail } => {
+                write!(f, "invalid initialization ownership: {detail}")
+            }
             Self::SchemaVersion { actual, expected } => write!(
                 f,
                 "Solve schema version {actual} does not match expected {expected}"

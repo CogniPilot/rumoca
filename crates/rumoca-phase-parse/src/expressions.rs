@@ -487,18 +487,26 @@ fn ident_to_comp_ref(
 fn extract_class_mod_arg_list(
     class_mod: &modelica_grammar_trait::ClassModification,
 ) -> ExpressionList {
-    class_mod
+    let mut arguments = class_mod
         .class_modification_opt
         .as_ref()
         .map(|opt| opt.argument_list.clone())
-        .unwrap_or_default()
-}
-
-/// Extract arguments from a class modification, if present.
-fn extract_class_mod_args(
-    class_mod: &modelica_grammar_trait::ClassModification,
-) -> Vec<rumoca_ir_ast::Expression> {
-    extract_class_mod_arg_list(class_mod).args
+        .unwrap_or_default();
+    arguments.redeclare_flags = (0..arguments.args.len())
+        .map(|index| {
+            arguments
+                .redeclare_flags
+                .get(index)
+                .copied()
+                .unwrap_or(false)
+                || arguments
+                    .replaceable_flags
+                    .get(index)
+                    .copied()
+                    .unwrap_or(false)
+        })
+        .collect();
+    arguments
 }
 
 /// Convert a TypeClassSpecifier (inner type) to a Modification expression.
@@ -590,30 +598,26 @@ fn convert_function_partial_specifier_inner(
 /// Extract modification arguments from a component declaration.
 fn extract_component_mod_args(
     decl: &modelica_grammar_trait::Declaration,
-    _name_ref: &rumoca_ir_ast::ComponentReference,
-) -> Result<
-    (
-        Vec<rumoca_ir_ast::Expression>,
-        Option<rumoca_ir_ast::Expression>,
-    ),
-    anyhow::Error,
-> {
+) -> (ExpressionList, Option<rumoca_ir_ast::Expression>) {
     if let Some(modif) = &decl.declaration_opt0 {
         match &modif.modification {
             modelica_grammar_trait::Modification::EquModificationExpression(eq_mod) => {
                 match &eq_mod.modification_expression {
                     modelica_grammar_trait::ModificationExpression::Expression(expr) => {
-                        Ok((vec![], Some(expr.expression.clone())))
+                        (ExpressionList::default(), Some(expr.expression.clone()))
                     }
-                    modelica_grammar_trait::ModificationExpression::Break(_) => Ok((vec![], None)),
+                    modelica_grammar_trait::ModificationExpression::Break(_) => {
+                        (ExpressionList::default(), None)
+                    }
                 }
             }
-            modelica_grammar_trait::Modification::ClassModificationModificationOpt(class_mod) => {
-                Ok((extract_class_mod_args(&class_mod.class_modification), None))
-            }
+            modelica_grammar_trait::Modification::ClassModificationModificationOpt(class_mod) => (
+                extract_class_mod_arg_list(&class_mod.class_modification),
+                None,
+            ),
         }
     } else {
-        Ok((vec![], None))
+        (ExpressionList::default(), None)
     }
 }
 
@@ -652,7 +656,7 @@ fn convert_component_clause_redecl_inner(
     let new_type_ref =
         ast_name_to_comp_ref(&cc1.type_specifier.name, "component clause redeclaration")?;
 
-    let (args, direct_value) = extract_component_mod_args(decl, &name_ref)?;
+    let (args, direct_value) = extract_component_mod_args(decl);
 
     // If there's a direct value assignment, return Modification with that value
     if let Some(value) = direct_value {
@@ -671,17 +675,17 @@ fn convert_component_clause_redecl_inner(
         });
     }
 
-    let span = match expression_list_span(&args) {
+    let span = match expression_list_span(&args.args) {
         Some(args_span) => merge_spans(new_type_ref.span, args_span),
         None => new_type_ref.span,
     };
     let class_mod = rumoca_ir_ast::Expression::ClassModification {
         span,
         target: new_type_ref,
-        modifications: args,
-        each_flags: Vec::new(),
-        final_flags: Vec::new(),
-        redeclare_flags: Vec::new(),
+        modifications: args.args,
+        each_flags: args.each_flags,
+        final_flags: args.final_flags,
+        redeclare_flags: args.redeclare_flags,
     };
     Ok(rumoca_ir_ast::Expression::Modification {
         span: merge_spans(name_ref.span, class_mod.span()),
@@ -1071,14 +1075,14 @@ fn convert_range_primary(
         Ok(rumoca_ir_ast::Expression::Array {
             span: first_row_span,
             elements: first_row,
-            is_matrix: true,
+            kind: rumoca_core::ArrayConstructor::Horizontal,
         })
     } else {
         // Multiple rows: [1, 2; 3, 4] - create array of row arrays
         let mut rows = vec![rumoca_ir_ast::Expression::Array {
             span: first_row_span,
             elements: first_row,
-            is_matrix: true,
+            kind: rumoca_core::ArrayConstructor::Horizontal,
         }];
         for row_item in &rp.range_primary_list {
             let row = expr_list_to_vec(&row_item.expression_list);
@@ -1086,14 +1090,14 @@ fn convert_range_primary(
             rows.push(rumoca_ir_ast::Expression::Array {
                 span,
                 elements: row,
-                is_matrix: true,
+                kind: rumoca_core::ArrayConstructor::Horizontal,
             });
         }
         let span = required_expression_list_span(&rows, "matrix rows")?;
         Ok(rumoca_ir_ast::Expression::Array {
             span,
             elements: rows,
-            is_matrix: true,
+            kind: rumoca_core::ArrayConstructor::Vertical,
         })
     }
 }
@@ -1276,7 +1280,7 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
                             token_span(&arr.array_primary.r_brace)?,
                         ),
                         elements: vec![],
-                        is_matrix: false,
+                        kind: rumoca_core::ArrayConstructor::Array,
                     }),
                 }
             }

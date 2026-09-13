@@ -6,9 +6,9 @@ use crate::{ScalarSlot, SolveProblem, SolvePureCallTable, SolveVariableStorageRo
 pub(super) fn classify_metadata(problem: &SolveProblem, variables: &mut [FmiVariable]) {
     let owned: std::collections::BTreeSet<_> = problem
         .initialization
-        .update_targets
+        .update_targets()
         .iter()
-        .chain(&problem.initialization.projection_unknowns)
+        .chain(problem.initialization.projection_unknowns())
         .filter_map(|slot| match slot {
             ScalarSlot::P { index, .. } => Some(*index),
             _ => None,
@@ -23,7 +23,7 @@ pub(super) fn classify_metadata(problem: &SolveProblem, variables: &mut [FmiVari
         };
         if (storage.base()..storage.base() + storage.scalar_count()).any(|i| owned.contains(&i)) {
             variable.causality = FmiCausality::CalculatedParameter;
-            let binding_owned = problem.initialization.update_targets.iter().any(|slot| {
+            let binding_owned = problem.initialization.update_targets().iter().any(|slot| {
                 matches!(slot, ScalarSlot::P { index, .. }
                     if *index >= storage.base() && *index - storage.base() < storage.scalar_count())
             });
@@ -42,9 +42,9 @@ pub(super) fn validate(
     calls: &SolvePureCallTable,
 ) -> Result<(), &'static str> {
     let init = &problem.initialization;
-    if !init.residual.is_empty()
-        || !init.projection_unknowns.is_empty()
-        || !init.projection_plan.is_empty()
+    if !init.residual().is_empty()
+        || !init.projection_unknowns().is_empty()
+        || !init.projection_plan().is_empty()
     {
         return Err(
             "C initialization requires parameter assignments without residuals or projection",
@@ -52,8 +52,8 @@ pub(super) fn validate(
     }
     let mut p = stable_parameters(problem);
     let y = vec![false; problem.layout.y_scalars()];
-    let mut targets = Vec::with_capacity(init.update_targets.len());
-    for slot in &init.update_targets {
+    let mut targets = Vec::with_capacity(init.update_targets().len());
+    for slot in init.update_targets() {
         let ScalarSlot::P { index, .. } = slot else {
             return Err("C initialization can only assign parameter storage");
         };
@@ -69,13 +69,13 @@ pub(super) fn validate(
         p[*target] = false;
     }
     let mut cursor = 0;
-    for program in init.update_rhs.programs() {
+    for program in init.update_rhs().programs() {
         let values =
             super::static_assertions::scalar_dependencies::program_outputs(calls, program, &y, &p)
                 .ok_or("unsupported parameter binding dependency operation")?;
         for value in values {
             let output = init
-                .update_rhs
+                .update_rhs()
                 .output_indices()
                 .get(cursor)
                 .ok_or("missing parameter binding output index")?;

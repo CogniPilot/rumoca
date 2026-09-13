@@ -107,14 +107,14 @@ pub trait ExpressionTransformer {
             },
             Expression::Array {
                 elements,
-                is_matrix,
+                kind,
                 span,
             } => Expression::Array {
                 elements: elements
                     .into_iter()
                     .map(|e| self.transform_expression(e))
                     .collect(),
-                is_matrix,
+                kind,
                 span,
             },
             Expression::Tuple { elements, span } => Expression::Tuple {

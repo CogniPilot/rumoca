@@ -1,6 +1,15 @@
+pub(super) mod dependency;
+mod view;
+
 use rumoca_core::Span;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::num::NonZeroU64;
+use std::sync::Arc;
+
+use dependency::SolveCallDependency;
+use dependency::affinity::{self, Affinity};
+use dependency::value_projection::{self, ValueProjections};
+pub(super) use view::SolvePureCallTableView;
 
 use super::program::wire::{TypedProgramWire, replay_program};
 use super::program::{
@@ -77,33 +86,38 @@ impl SolvePureCallOutput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SolvePureCallInterface {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SolvePureCallInterface<'owner> {
     pub(super) id: SolvePureCallOwnerId,
-    pub(super) inputs: Box<[SolveValueType]>,
-    pub(super) outputs: Box<[SolvePureCallOutput]>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SolvePureCallDirectionalInterface {
-    pub(super) id: SolvePureCallOwnerId,
-    pub(super) inputs: Box<[SolveValueType]>,
-    pub(super) outputs: Box<[SolvePureCallOutput]>,
+    pub(super) inputs: &'owner [SolveValueType],
+    pub(super) outputs: &'owner [SolvePureCallOutput],
+    pub(super) dependencies: &'owner [Box<[SolveCallDependency]>],
+    pub(super) projections: Option<&'owner ValueProjections>,
+    pub(super) affinity: Option<&'owner Affinity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolvePureCallDirectionalOwner {
-    inputs: Box<[SolveValueType]>,
-    outputs: Box<[SolvePureCallOutput]>,
+    dependencies: Arc<[Box<[SolveCallDependency]>]>,
+    projections: Option<Arc<ValueProjections>>,
+    affinity: Option<Arc<Affinity>>,
+    inputs: Arc<[SolveValueType]>,
+    outputs: Arc<[SolvePureCallOutput]>,
     body: TypedProgram,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolvePureCallOwner {
+    #[serde(skip)]
+    dependencies: Arc<[Box<[SolveCallDependency]>]>,
+    #[serde(skip)]
+    projections: Option<Arc<ValueProjections>>,
+    #[serde(skip)]
+    affinity: Option<Arc<Affinity>>,
     id: SolvePureCallOwnerId,
     identity: SolvePureCallIdentity,
-    inputs: Box<[SolveValueType]>,
-    outputs: Box<[SolvePureCallOutput]>,
+    inputs: Arc<[SolveValueType]>,
+    outputs: Arc<[SolvePureCallOutput]>,
     body: TypedProgram,
     #[serde(skip)]
     directional: Option<SolvePureCallDirectionalOwner>,
@@ -116,9 +130,12 @@ pub struct SolvePureCallOwner {
 /// tangent typed values. Integer and Boolean values remain primal-only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SolvePureCallDirectionalSite {
+    dependencies: Arc<[Box<[SolveCallDependency]>]>,
+    projections: Option<Arc<ValueProjections>>,
+    affinity: Option<Arc<Affinity>>,
     owner: SolvePureCallOwnerId,
-    inputs: Box<[SolveValueType]>,
-    outputs: Box<[SolvePureCallOutput]>,
+    inputs: Arc<[SolveValueType]>,
+    outputs: Arc<[SolvePureCallOutput]>,
 }
 
 /// Checked compact interface carried by one scalar-program invocation of an
@@ -128,27 +145,55 @@ pub struct SolvePureCallDirectionalSite {
 /// range is supplied per typed input leaf; each range width is derived from
 /// its value type. Wire replay of the enclosing model additionally proves that
 /// this interface exactly matches `owner` in its sole pure-call table.
+/// Issued sites share immutable interface storage with that owner. Equality
+/// remains value-based for independently reconstructed sites.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SolvePureCallSite {
+    dependencies: Arc<[Box<[SolveCallDependency]>]>,
+    projections: Option<Arc<ValueProjections>>,
+    affinity: Option<Arc<Affinity>>,
     owner: SolvePureCallOwnerId,
-    inputs: Box<[SolveValueType]>,
-    outputs: Box<[SolvePureCallOutput]>,
+    inputs: Arc<[SolveValueType]>,
+    outputs: Arc<[SolvePureCallOutput]>,
     directional: Option<Box<SolvePureCallDirectionalSite>>,
 }
 
 impl SolvePureCallSite {
+    pub(crate) fn output_degrees(
+        &self,
+        inputs: &[crate::affinity::Degree],
+    ) -> Option<Vec<crate::affinity::Degree>> {
+        if inputs.len() != self.inputs.len() {
+            return None;
+        }
+        self.affinity.as_ref()?.output_degrees(inputs)
+    }
+
+    pub(crate) fn projected_input_coordinate(&self, output: usize) -> Option<(usize, usize)> {
+        self.projections
+            .as_ref()?
+            .input_coordinate(output, &self.inputs, &self.outputs)
+    }
+
+    /// Compact input-coordinate dependencies for each ordered output leaf.
+    /// The enclosing owner table checks this summary against its issued body.
+    #[must_use]
+    pub fn output_dependencies(&self) -> &[Box<[SolveCallDependency]>] {
+        &self.dependencies
+    }
+
     #[must_use]
     pub const fn owner(&self) -> SolvePureCallOwnerId {
         self.owner
     }
 
     #[must_use]
-    pub const fn inputs(&self) -> &[SolveValueType] {
+    pub fn inputs(&self) -> &[SolveValueType] {
         &self.inputs
     }
 
     #[must_use]
-    pub const fn outputs(&self) -> &[SolvePureCallOutput] {
+    pub fn outputs(&self) -> &[SolvePureCallOutput] {
         &self.outputs
     }
 
@@ -164,18 +209,41 @@ impl SolvePureCallSite {
 }
 
 impl SolvePureCallDirectionalSite {
+    pub(crate) fn output_degrees(
+        &self,
+        inputs: &[crate::affinity::Degree],
+    ) -> Option<Vec<crate::affinity::Degree>> {
+        if inputs.len() != self.inputs.len() {
+            return None;
+        }
+        self.affinity.as_ref()?.output_degrees(inputs)
+    }
+
+    pub(crate) fn projected_input_coordinate(&self, output: usize) -> Option<(usize, usize)> {
+        self.projections
+            .as_ref()?
+            .input_coordinate(output, &self.inputs, &self.outputs)
+    }
+
+    /// Compact input-coordinate dependencies for each ordered output leaf.
+    /// The enclosing owner table checks this summary against its issued body.
+    #[must_use]
+    pub fn output_dependencies(&self) -> &[Box<[SolveCallDependency]>] {
+        &self.dependencies
+    }
+
     #[must_use]
     pub const fn owner(&self) -> SolvePureCallOwnerId {
         self.owner
     }
 
     #[must_use]
-    pub const fn inputs(&self) -> &[SolveValueType] {
+    pub fn inputs(&self) -> &[SolveValueType] {
         &self.inputs
     }
 
     #[must_use]
-    pub const fn outputs(&self) -> &[SolvePureCallOutput] {
+    pub fn outputs(&self) -> &[SolvePureCallOutput] {
         &self.outputs
     }
 
@@ -190,21 +258,27 @@ impl SolvePureCallDirectionalOwner {
         inputs: Vec<SolveValueType>,
         outputs: Vec<SolvePureCallOutput>,
         body: TypedProgram,
+        dependencies: Box<[Box<[SolveCallDependency]>]>,
+        projections: Option<ValueProjections>,
+        affinity: Option<Affinity>,
     ) -> Self {
         Self {
-            inputs: inputs.into_boxed_slice(),
-            outputs: outputs.into_boxed_slice(),
+            dependencies: dependencies.into(),
+            projections: projections.map(Arc::new),
+            affinity: affinity.map(Arc::new),
+            inputs: inputs.into(),
+            outputs: outputs.into(),
             body,
         }
     }
 
     #[must_use]
-    pub const fn inputs(&self) -> &[SolveValueType] {
+    pub fn inputs(&self) -> &[SolveValueType] {
         &self.inputs
     }
 
     #[must_use]
-    pub const fn outputs(&self) -> &[SolvePureCallOutput] {
+    pub fn outputs(&self) -> &[SolvePureCallOutput] {
         &self.outputs
     }
 
@@ -213,16 +287,22 @@ impl SolvePureCallDirectionalOwner {
         &self.body
     }
 
-    fn interface(&self, id: SolvePureCallOwnerId) -> SolvePureCallDirectionalInterface {
-        SolvePureCallDirectionalInterface {
+    fn interface(&self, id: SolvePureCallOwnerId) -> SolvePureCallInterface<'_> {
+        SolvePureCallInterface {
+            dependencies: &self.dependencies,
+            projections: self.projections.as_deref(),
+            affinity: self.affinity.as_deref(),
             id,
-            inputs: self.inputs.clone(),
-            outputs: self.outputs.clone(),
+            inputs: &self.inputs,
+            outputs: &self.outputs,
         }
     }
 
     fn call_site(&self, owner: SolvePureCallOwnerId) -> SolvePureCallDirectionalSite {
         SolvePureCallDirectionalSite {
+            dependencies: self.dependencies.clone(),
+            projections: self.projections.clone(),
+            affinity: self.affinity.clone(),
             owner,
             inputs: self.inputs.clone(),
             outputs: self.outputs.clone(),
@@ -242,12 +322,12 @@ impl SolvePureCallOwner {
     }
 
     #[must_use]
-    pub const fn inputs(&self) -> &[SolveValueType] {
+    pub fn inputs(&self) -> &[SolveValueType] {
         &self.inputs
     }
 
     #[must_use]
-    pub const fn outputs(&self) -> &[SolvePureCallOutput] {
+    pub fn outputs(&self) -> &[SolvePureCallOutput] {
         &self.outputs
     }
 
@@ -266,17 +346,23 @@ impl SolvePureCallOwner {
         self.provenance
     }
 
-    pub(super) fn interface(&self) -> SolvePureCallInterface {
+    pub(super) fn interface(&self) -> SolvePureCallInterface<'_> {
         SolvePureCallInterface {
             id: self.id,
-            inputs: self.inputs.clone(),
-            outputs: self.outputs.clone(),
+            inputs: &self.inputs,
+            outputs: &self.outputs,
+            dependencies: &self.dependencies,
+            projections: self.projections.as_deref(),
+            affinity: self.affinity.as_deref(),
         }
     }
 
     #[must_use]
     pub fn call_site(&self) -> SolvePureCallSite {
         SolvePureCallSite {
+            dependencies: self.dependencies.clone(),
+            projections: self.projections.clone(),
+            affinity: self.affinity.clone(),
             owner: self.id,
             inputs: self.inputs.clone(),
             outputs: self.outputs.clone(),
@@ -344,15 +430,30 @@ impl SolvePureCallTable {
     #[must_use]
     pub fn matches_site(&self, site: &SolvePureCallSite) -> bool {
         self.owner(site.owner).is_some_and(|owner| {
-            owner.inputs == site.inputs
+            owner.dependencies == site.dependencies
+                && owner.projections == site.projections
+                && owner.affinity == site.affinity
+                && owner.inputs == site.inputs
                 && owner.outputs == site.outputs
-                && owner
-                    .directional
-                    .as_ref()
-                    .map(|directional| (directional.inputs.as_ref(), directional.outputs.as_ref()))
-                    == site.directional.as_deref().map(|directional| {
-                        (directional.inputs.as_ref(), directional.outputs.as_ref())
-                    })
+                && owner.directional.as_ref().map(|directional| {
+                    (
+                        owner.id,
+                        &directional.inputs,
+                        &directional.outputs,
+                        &directional.dependencies,
+                        directional.projections.as_ref(),
+                        directional.affinity.as_ref(),
+                    )
+                }) == site.directional.as_deref().map(|directional| {
+                    (
+                        directional.owner,
+                        &directional.inputs,
+                        &directional.outputs,
+                        &directional.dependencies,
+                        directional.projections.as_ref(),
+                        directional.affinity.as_ref(),
+                    )
+                })
         })
     }
 
@@ -360,7 +461,11 @@ impl SolvePureCallTable {
     pub fn matches_directional_site(&self, site: &SolvePureCallDirectionalSite) -> bool {
         self.owner(site.owner).is_some_and(|owner| {
             owner.directional.as_ref().is_some_and(|directional| {
-                directional.inputs == site.inputs && directional.outputs == site.outputs
+                directional.dependencies == site.dependencies
+                    && directional.projections == site.projections
+                    && directional.affinity == site.affinity
+                    && directional.inputs == site.inputs
+                    && directional.outputs == site.outputs
             })
         })
     }
@@ -399,11 +504,7 @@ impl SolvePureCallTableBuilder {
         let owner_index = u32::try_from(self.owners.len())
             .map_err(|_| SolveProgramConstructionError::IdentityOverflow { provenance })?;
         let id = SolvePureCallOwnerId::from_index(owner_index);
-        let interfaces = self
-            .owners
-            .iter()
-            .map(SolvePureCallOwner::interface)
-            .collect::<Vec<_>>();
+        let interfaces = SolvePureCallTableView::primal(&self.owners);
         let body = TypedProgram::construct_with_calls(self.arithmetic, interfaces, |builder| {
             let input_slots = inputs
                 .iter()
@@ -431,23 +532,20 @@ impl SolvePureCallTableBuilder {
             build(builder, &input_slots, &output_slots)
         })?;
         validate_owner_body(&body, &inputs, &outputs, provenance)?;
-        let directional_interfaces = self
-            .owners
-            .iter()
-            .map(|owner| {
-                owner
-                    .directional
-                    .as_ref()
-                    .map(|directional| directional.interface(owner.id))
-            })
-            .collect::<Vec<_>>();
+        let directional_interfaces = SolvePureCallTableView::directional(&self.owners);
         let directional =
             body.derive_directional_owner(&inputs, &outputs, directional_interfaces, provenance)?;
+        let dependencies = dependency::derive(&body, inputs.len(), outputs.len(), interfaces)?;
+        let projections = derive_value_projections(&body, inputs.len(), &outputs, &self.owners);
+        let affinity = derive_affinity(&body, inputs.len(), outputs.len(), &self.owners);
         self.owners.push(SolvePureCallOwner {
+            dependencies: dependencies.into(),
+            projections: projections.map(Arc::new),
+            affinity: affinity.map(Arc::new),
             id,
             identity,
-            inputs: inputs.into_boxed_slice(),
-            outputs: outputs.into_boxed_slice(),
+            inputs: inputs.into(),
+            outputs: outputs.into(),
             body,
             directional,
             provenance,
@@ -462,6 +560,34 @@ impl SolvePureCallTableBuilder {
             .filter(|owner| owner.id == id)
             .map(SolvePureCallOwner::call_site)
     }
+}
+
+fn derive_affinity(
+    body: &TypedProgram,
+    inputs: usize,
+    outputs: usize,
+    owners: &[SolvePureCallOwner],
+) -> Option<Affinity> {
+    affinity::derive(
+        body,
+        inputs,
+        outputs,
+        SolvePureCallTableView::primal(owners),
+    )
+}
+
+fn derive_value_projections(
+    body: &TypedProgram,
+    input_count: usize,
+    outputs: &[SolvePureCallOutput],
+    owners: &[SolvePureCallOwner],
+) -> Option<ValueProjections> {
+    value_projection::derive(
+        body,
+        input_count,
+        outputs,
+        SolvePureCallTableView::primal(owners),
+    )
 }
 
 fn output_scalar_count(outputs: &[SolvePureCallOutput]) -> Option<usize> {
@@ -597,23 +723,11 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
                 owner.provenance,
             )
             .map_err(serde::de::Error::custom)?;
-            let interfaces = owners
-                .iter()
-                .map(SolvePureCallOwner::interface)
-                .collect::<Vec<_>>();
-            let body =
-                replay_program(&owner.body, &interfaces).map_err(serde::de::Error::custom)?;
+            let interfaces = SolvePureCallTableView::primal(&owners);
+            let body = replay_program(&owner.body, interfaces).map_err(serde::de::Error::custom)?;
             validate_owner_body(&body, &owner.inputs, &owner.outputs, owner.provenance)
                 .map_err(serde::de::Error::custom)?;
-            let directional_interfaces = owners
-                .iter()
-                .map(|prior| {
-                    prior
-                        .directional
-                        .as_ref()
-                        .map(|directional| directional.interface(prior.id))
-                })
-                .collect::<Vec<_>>();
+            let directional_interfaces = SolvePureCallTableView::directional(&owners);
             let directional = body
                 .derive_directional_owner(
                     &owner.inputs,
@@ -622,11 +736,20 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
                     owner.provenance,
                 )
                 .map_err(serde::de::Error::custom)?;
+            let dependencies =
+                dependency::derive(&body, owner.inputs.len(), owner.outputs.len(), interfaces)
+                    .map_err(serde::de::Error::custom)?;
+            let projections =
+                derive_value_projections(&body, owner.inputs.len(), &owner.outputs, &owners);
+            let affinity = derive_affinity(&body, owner.inputs.len(), owner.outputs.len(), &owners);
             owners.push(SolvePureCallOwner {
+                dependencies: dependencies.into(),
+                projections: projections.map(Arc::new),
+                affinity: affinity.map(Arc::new),
                 id: owner.id,
                 identity: owner.identity,
-                inputs: owner.inputs,
-                outputs: owner.outputs,
+                inputs: owner.inputs.into(),
+                outputs: owner.outputs.into(),
                 body,
                 directional,
                 provenance: owner.provenance,
@@ -641,6 +764,11 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
 
 #[cfg(test)]
 mod tests {
+    mod affinity;
+    mod dependencies;
+    mod value_projections;
+    mod views;
+
     use super::*;
     use crate::{SolveIntegerDomain, SolveRealFormat, SolveValue};
     use rumoca_core::SourceId;

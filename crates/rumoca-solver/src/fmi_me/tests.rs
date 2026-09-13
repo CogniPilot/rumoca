@@ -11,7 +11,7 @@ use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
 
 use super::kernel::{
-    continuous_state_values_changed, event_right_limit_state_derivatives,
+    StateTimeCoincidence, continuous_state_values_changed, event_right_limit_state_derivatives,
     event_update_application_time,
 };
 use super::{
@@ -67,14 +67,28 @@ fn state_event_application_time_preserves_clock_and_numerical_owners() {
     let snapped_horizon = 0.215;
 
     assert_eq!(
-        event_update_application_time(semantic_root, snapped_horizon, false).to_bits(),
+        event_update_application_time(semantic_root, snapped_horizon, StateTimeCoincidence::None)
+            .to_bits(),
         snapped_horizon.to_bits(),
         "ordinary root rows execute at the host's numerical application point"
     );
     assert_eq!(
-        event_update_application_time(semantic_root, snapped_horizon, true).to_bits(),
+        event_update_application_time(
+            semantic_root,
+            snapped_horizon,
+            StateTimeCoincidence::Unconsumed
+        )
+        .to_bits(),
         semantic_root.to_bits(),
         "a coincident clock pass retains the semantic tick"
+    );
+    let consumed_tick = 1.0_f64;
+    let later_root = consumed_tick.next_up();
+    assert_eq!(
+        event_update_application_time(consumed_tick, later_root, StateTimeCoincidence::Consumed)
+            .to_bits(),
+        later_root.to_bits(),
+        "a consumed clock cannot backdate a later state event"
     );
 }
 
@@ -365,7 +379,7 @@ fn event_right_limit_derivative_retains_the_full_algebraic_seed() {
     assert!(
         error
             .to_string()
-            .contains("algebraic projection did not converge"),
+            .contains("algebraic projection did not establish coordinate convergence"),
         "{error}"
     );
     assert!(error.to_string().contains("target=a"), "{error}");

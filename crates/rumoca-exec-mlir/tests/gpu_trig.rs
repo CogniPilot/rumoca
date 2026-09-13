@@ -176,15 +176,17 @@ fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::
                 // slot Solve lowering fills.
                 refresh_owners: rumoca_ir_solve::ContinuousRefreshOwners::default(),
             },
-            initialization: InitializationSolveSystem {
-                residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
-                row_targets: Vec::new(),
-                row_roles: Vec::new(),
-                projection_unknowns: Vec::new(),
-                projection_plan: rumoca_ir_solve::InitializationProjectionPlan::default(),
-                update_rhs: ScalarProgramBlock::default(),
-                update_targets: Vec::new(),
-            },
+            initialization: InitializationSolveSystem::construct(
+                rumoca_ir_solve::InitializationSystemInput {
+                    residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
+                    row_roles: vec![
+                        rumoca_ir_solve::InitializationRowRole::SurplusCheck;
+                        zero_rb.len()
+                    ],
+                    ..Default::default()
+                },
+            )
+            .expect("initialization fixture has one checked owner per coordinate"),
             // The drone fixture owns no discrete variable, so the discrete
             // system is empty. A one-row RHS with no update target would claim
             // a discrete program that assigns nothing.

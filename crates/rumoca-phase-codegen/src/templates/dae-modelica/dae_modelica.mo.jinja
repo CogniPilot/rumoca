@@ -240,8 +240,14 @@ equation
   {{ equation_owner(owner) | indent(2) }}
 {% endfor %}
 {% endif %}
-{% if dae.systems.initialization.owners | length > 0 %}
+{% if dae.systems.initialization.owners | length > 0 or dae.systems.initialization.parameter_values | length > 0 or dae.systems.initialization.discrete_values | length > 0 %}
 initial equation
+{% for definition in dae.systems.initialization.parameter_values %}
+  {{ dae.variables[definition.target].name }} = {{ expr(definition.value) }};
+{% endfor %}
+{% for definition in dae.systems.initialization.discrete_values %}
+  {{ dae.variables[definition.target].name }} = {{ expr(definition.value) }};
+{% endfor %}
 {% for owner in dae.systems.initialization.owners %}
   {{ equation_owner(owner) | indent(2) }}
 {% endfor %}

@@ -1218,7 +1218,7 @@ fn solve_dense_component(
         };
         swap_dense_rows(matrix, rhs, n, col, pivot);
         let pivot_value = matrix[col * n + col];
-        if pivot_value.abs() <= f64::EPSILON {
+        if pivot_value == 0.0 || !pivot_value.is_finite() {
             return Ok(f64::NAN);
         }
         for row in col + 1..n {

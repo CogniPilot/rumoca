@@ -1032,10 +1032,8 @@ struct ProjectedAlgebraicVariables<'dae> {
     v: dae::AlgebraicId<'dae>,
 }
 
-/// A projected algebraic may be equality-anchored on a state, but this slice
-/// owns differentiation of projected states only. Admitting `w[1]` as the RHS
-/// of the `x` demotion would make reconstruction reach an unsupported Index
-/// differentiator arm and panic.
+/// The scalar state anchors the singleton aggregate's payload. Substitution
+/// must retain the aggregate's shape before applying its checked `[1]` index.
 fn projected_algebraic_definition_model() -> dae::Dae {
     const TEXT: &str =
         "Real s; Real x; Real w[1]; Real v; equation der(s) = -s; der(x) = v; x = w[1]; w[1] = s;";
@@ -1162,6 +1160,7 @@ fn function_defined_vector_state_model() -> dae::Dae {
                 model.functions(|functions| functions.define(body, at))
             },
         )?;
+        attach_spin_derivative(model, spin, vector, scalar, at)?;
         let (axis, omega, w, alpha, a) = model.variables(|variables| {
             let attributes = dae::VariableAttributes::default;
             Ok((
@@ -1196,6 +1195,51 @@ fn function_defined_vector_state_model() -> dae::Dae {
         register(model, &[at, at, at, at], residuals)
     })
     .expect("function-defined vector state fixture is valid")
+}
+
+fn attach_spin_derivative<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    spin: dae::FunctionId<'dae>,
+    vector: dae::ValueTypeId<'dae>,
+    scalar: dae::ValueTypeId<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let signature = dae::FunctionSignature::new(
+        VarName::new("spin_der"),
+        [vector, scalar, scalar],
+        [vector],
+        at,
+    );
+    let (derivative, ()) = model.function(signature, |model, reservation| {
+        let axis = model.functions(|functions| {
+            functions.parameter(&reservation, VarName::new("axis"), 0, at)
+        })?;
+        model.functions(|functions| {
+            functions.parameter(&reservation, VarName::new("rate"), 1, at)
+        })?;
+        let tangent = model.functions(|functions| {
+            functions.parameter(&reservation, VarName::new("der_rate"), 2, at)
+        })?;
+        let output = model.functions(|functions| {
+            functions.output(&reservation, VarName::new("der_result"), 0, at)
+        })?;
+        let value = model.expressions(|expressions| {
+            let axis = expressions.at(at).function_parameter(axis)?;
+            let tangent = expressions.at(at).function_parameter(tangent)?;
+            expressions
+                .at(at)
+                .binary(dae::BinaryOperator::Multiply, axis, tangent)
+        })?;
+        let mut body = model.functions(|functions| functions.begin(reservation, at))?;
+        model.functions(|functions| functions.assign(&mut body, output, value, at))?;
+        model.functions(|functions| functions.define(body, at))
+    })?;
+    use rumoca_core::FunctionDerivativeInput::{Differentiate, ZeroDerivative};
+    model.functions(|functions| {
+        functions
+            .first_derivative(spin, derivative, [ZeroDerivative, Differentiate], 0, at)
+            .map(|_| ())
+    })
 }
 
 fn projected_algebraic_residuals<'dae>(
@@ -1865,6 +1909,19 @@ fn checked_function_body_proves_vector_state_derivative() {
             .map(|(_, variable)| variable)
             .expect("the demoted vector survives");
         assert_eq!(w.value_type().dimensions(), [3]);
+        let spin = view.function(view.function_id(0).unwrap()).unwrap();
+        let links = spin.derivatives().collect::<Vec<_>>();
+        assert_eq!(
+            links.len(),
+            1,
+            "state demotion must preserve the checked derivative link"
+        );
+        assert_eq!(links[0].target(), view.function_id(1).unwrap());
+        assert_eq!(links[0].tangent_inputs().collect::<Vec<_>>(), [1]);
+        assert_eq!(
+            links[0].inputs()[0],
+            rumoca_core::FunctionDerivativeInput::ZeroDerivative
+        );
     });
 }
 
@@ -1885,37 +1942,29 @@ fn non_singleton_and_dynamic_projections_fail_closed() {
 }
 
 #[test]
-fn projected_algebraic_definition_fails_closed_before_differentiation() {
+fn projected_algebraic_definition_differentiates_through_its_proven_state_anchor() {
     let model = projected_algebraic_definition_model();
     let candidate = model.inspect(|view| {
         let x = variable_index(view, "x");
         let candidates = direct_state_constraints(view);
-        assert!(
-            candidates
-                .admissible
-                .iter()
-                .chain(&candidates.conditional)
-                .filter(|candidate| candidate.state == x)
-                .all(|candidate| {
-                    let rhs = view
-                        .expression_id(candidate.rhs as usize)
-                        .expect("candidate RHS resolves");
-                    !matches!(
-                        singleton_real_projection(view, rhs),
-                        Some(SingletonRealProjection::Algebraic(_))
-                    )
-                }),
-            "an unsupported projected-algebraic RHS must not reach reconstruction",
-        );
         candidates
             .admissible
             .into_iter()
             .chain(candidates.conditional)
-            .find(|candidate| candidate.state == x)
-            .expect("the equality closure retains the safe bare-state anchor")
+            .find(|candidate| {
+                let rhs = view.expression_id(candidate.rhs as usize).unwrap();
+                candidate.state == x
+                    && matches!(
+                        singleton_real_projection(view, rhs),
+                        Some(SingletonRealProjection::Algebraic(_))
+                    )
+            })
+            .expect("invariant projection retains its proven algebraic-to-state substitution")
     });
-    rebuild_with_state_demotion(&model, candidate)
-        .expect("the admitted bare-state anchor reconstructs without a panic");
+    let rebuilt = rebuild_with_state_demotion(&model, candidate)
+        .expect("the admitted projection differentiates through its exact state anchor");
+    assert_eq!(role(&rebuilt, "x"), dae::VariableRole::Algebraic);
+    rebuilt.inspect(|view| assert!(sort(view).is_ok()));
 }
 
 #[test]

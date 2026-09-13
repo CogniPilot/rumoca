@@ -795,13 +795,13 @@ fn fixed_false_parameter_is_solved_from_its_initial_equation() {
     let [block] = solve
         .problem
         .initialization
-        .projection_plan
+        .projection_plan()
         .blocks
         .as_slice()
     else {
         panic!(
             "one initialization projection block expected, got {:?}",
-            solve.problem.initialization.projection_plan.blocks
+            solve.problem.initialization.projection_plan().blocks
         );
     };
     assert_eq!(block.rows.len(), 1);
@@ -858,7 +858,7 @@ fn fixed_false_parameter_without_explicit_start_uses_the_checked_default_guess()
         solve
             .problem
             .initialization
-            .projection_plan
+            .projection_plan()
             .blocks
             .as_slice(),
         [block]
@@ -901,7 +901,7 @@ fn projection_blocks(dae: &rumoca_ir_dae::Dae) -> Vec<(usize, Vec<rumoca_ir_solv
     solve
         .problem
         .initialization
-        .projection_plan
+        .projection_plan()
         .blocks
         .iter()
         .map(|block| (block.rows.len(), block.unknowns.clone()))

@@ -91,7 +91,7 @@ fn named_array_assignment_remains_one_tensor_owner() {
     let lhs = ast::Expression::ComponentReference(make_comp_ref("x"));
     let rhs = ast::Expression::Array {
         elements: vec![make_int(1), make_int(2)],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: test_span(),
     };
     let expanded = expand_array_assignment(&lhs, &rhs);

@@ -35,7 +35,7 @@ pub(crate) fn lower_solve_artifacts(
     let implicit_jacobian_v = lower_compute_block_jvp(&problem.continuous.implicit_rhs)?;
     let manifold_jacobian_v = lower_compute_block_jvp(&problem.continuous.manifold_residual)?;
     let initialization_jacobian_v = lower_compute_block_full_jvp(
-        &problem.initialization.residual,
+        problem.initialization.residual(),
         problem.solve_layout.solver_scalar_count(),
     )?;
     let mut artifacts = solve::SolveArtifacts {

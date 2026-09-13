@@ -1445,20 +1445,20 @@ pub enum InlineAnnotation {
     Never,
 }
 
-/// Function derivative annotation (MLS §12.7.1).
-///
-/// Specifies the derivative function for automatic differentiation.
-/// Shared by the flat and DAE IRs.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// One original function input's role in an MLS §12.7.1 derivative call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FunctionDerivativeInput {
+    Differentiate,
+    ZeroDerivative,
+    NoDerivative,
+}
+
+/// Resolved source derivative annotation, aligned with the function inputs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivativeAnnotation {
-    /// Name of the derivative function.
-    pub derivative_function: String,
-    /// Derivative order (default is 1).
+    pub derivative_function: Reference,
     pub order: u32,
-    /// Input variables whose derivatives are zero (treated as constants).
-    pub zero_derivative: Vec<String>,
-    /// Input variables with no derivative (not differentiated at all).
-    pub no_derivative: Vec<String>,
+    pub inputs: Vec<FunctionDerivativeInput>,
 }
 
 /// Loaded external table descriptor.
@@ -1474,6 +1474,57 @@ pub struct ExternalTableData {
     pub columns: Vec<usize>,
     pub smoothness: i64,
     pub extrapolation: i64,
+}
+
+/// Source array construction, retained independently of operand shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ArrayConstructor {
+    /// `{a, b}`: add an outer element dimension.
+    Array,
+    /// `[a, b]`: promote operands and concatenate along dimension 2.
+    Horizontal,
+    /// `[a; b]`: promote operands and concatenate along dimension 1.
+    Vertical,
+}
+
+impl ArrayConstructor {
+    /// Zero-based concatenation axis; element construction has no such axis.
+    pub fn concatenation_axis(self) -> Option<usize> {
+        match self {
+            Self::Array => None,
+            Self::Horizontal => Some(1),
+            Self::Vertical => Some(0),
+        }
+    }
+
+    /// Construct dimensions from fully known operand dimensions. Unknown
+    /// dimensions must be resolved by the caller before entering this check.
+    pub fn checked_dimensions(self, operands: &[Vec<usize>]) -> Option<Vec<usize>> {
+        let Some(axis) = self.concatenation_axis() else {
+            let mut dimensions = vec![operands.len()];
+            let Some(first) = operands.first() else {
+                return Some(dimensions);
+            };
+            if operands.iter().any(|shape| shape != first) {
+                return None;
+            }
+            dimensions.extend_from_slice(first);
+            return Some(dimensions);
+        };
+        let rank = operands.iter().map(Vec::len).max()?.max(2);
+        let mut dimensions = operands.first()?.clone();
+        dimensions.resize(rank, 1);
+        for operand in &operands[1..] {
+            if dimensions.iter().enumerate().any(|(index, expected)| {
+                index != axis && *expected != operand.get(index).copied().unwrap_or(1)
+            }) {
+                return None;
+            }
+            dimensions[axis] =
+                dimensions[axis].checked_add(operand.get(axis).copied().unwrap_or(1))?;
+        }
+        Some(dimensions)
+    }
 }
 
 /// Semantic expression tree shared by Flat and DAE IR.
@@ -1567,7 +1618,7 @@ pub enum Expression {
     },
     Array {
         elements: Vec<Expression>,
-        is_matrix: bool,
+        kind: ArrayConstructor,
         #[serde(
             default = "Span::source_free_serde_default",
             skip_serializing_if = "Span::is_dummy"

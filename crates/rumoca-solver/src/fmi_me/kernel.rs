@@ -69,10 +69,33 @@ impl CachedContinuousLinearization {
 struct MeAlgebraicProjectionPolicy {
     tolerance: f64,
     settle: AlgebraicSettle,
+    manifold: ManifoldAction,
+}
+
+#[derive(Clone, Copy)]
+enum ManifoldAction {
+    CertifyInitial,
+    CorrectContinuous,
+}
+
+impl ManifoldAction {
+    fn apply(
+        self,
+        runtime: &SolveRuntime,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        tol: f64,
+    ) -> Result<(), crate::runtime::solve_ops::RuntimeSolveError> {
+        match self {
+            Self::CertifyInitial => runtime.certify_state_manifold(y, p, t, tol),
+            Self::CorrectContinuous => runtime.project_state_manifold(y, p, t, tol).map(|_| ()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StateTimeCoincidence {
+pub(super) enum StateTimeCoincidence {
     None,
     Unconsumed,
     Consumed,
@@ -889,15 +912,15 @@ fn option_float_bit_eq(left: Option<f64>, right: Option<f64>) -> bool {
 
 /// Select the time owned by the first event-update pass.
 ///
-/// A coincident scheduled clock owns its exact semantic tick. An ordinary
-/// located state event is applied where the host positioned the component —
-/// normally the numerical right limit, or a target/horizon it snapped to.
+/// An unconsumed coincident clock owns its exact semantic tick. A located
+/// state event after that tick has committed is applied at the host's current
+/// coordinate; the consumed clock still suppresses replay of its owned rows.
 pub(super) fn event_update_application_time(
     semantic_event_time: f64,
     component_time: f64,
-    coincident_state_time_event: bool,
+    coincidence: StateTimeCoincidence,
 ) -> f64 {
-    if coincident_state_time_event {
+    if matches!(coincidence, StateTimeCoincidence::Unconsumed) {
         semantic_event_time
     } else {
         component_time
@@ -1072,7 +1095,7 @@ fn project_algebraics(
 ) -> Result<bool, crate::runtime::solve_ops::RuntimeSolveError> {
     let tol = policy.tolerance;
     let before = y.to_vec();
-    runtime.project_state_manifold(y, p, t, tol)?;
+    policy.manifold.apply(runtime, y, p, t, tol)?;
     runtime.refresh_algebraic_and_output_slots_certified(
         t,
         y,
@@ -1091,7 +1114,7 @@ fn project_event_algebraics(
     policy: MeAlgebraicProjectionPolicy,
 ) -> Result<bool, crate::runtime::solve_ops::RuntimeSolveError> {
     let before = y.to_vec();
-    runtime.project_state_manifold(y, p, t, policy.tolerance)?;
+    policy.manifold.apply(runtime, y, p, t, policy.tolerance)?;
     runtime.refresh_event_dependency_slots_certified(
         t,
         y,

@@ -1390,10 +1390,10 @@ fn assignment_dependency_uses_the_certified_expression_prefix() {
         expr_eval_len: 1,
     };
 
-    assert!(assignment_shape_reads_y_index(&row, shape, 10));
+    assert!(assignment_shape_reads_y_index(&row, &shape, 10));
     assert!(assignment_shape_reads_y_index(
         &row,
-        TargetAssignmentShape::Direct {
+        &TargetAssignmentShape::Direct {
             target_y_index: 11,
             expr_reg: 0,
             target_scale: 1.0,

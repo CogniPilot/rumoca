@@ -10,9 +10,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::architecture_hardening_support::{collect_rs_files, workspace_root};
+#[cfg(test)]
+use crate::totality_debt::modules::resolve_module_file;
+use crate::totality_debt::modules::test_only_files;
 use crate::totality_debt::scan::{
-    cfg_test_module_names, declared_module_names, scan_tracks_file_to_its_end,
-    silent_totality_debt_sites, totality_debt_sites,
+    scan_tracks_file_to_its_end, silent_totality_debt_sites, totality_debt_sites,
 };
 
 /// Ceilings on `.expect(`, `panic!(`, `unreachable!(`, `todo!(` and
@@ -184,8 +186,8 @@ fn production_source_files(crate_name: &str) -> Vec<PathBuf> {
 /// directory called `tests` is a compiler fact: both compile into the library
 /// target like any other module, so reading either name as an exclusion would
 /// let a rename or a move hide a shipped obligation while the count fell. A
-/// file earns its exclusion only by being reachable from a `#[cfg(test)]`
-/// declaration, which is the same fact the compiler acts on.
+/// file earns its exclusion only through test-gated module reachability,
+/// without another path from production source.
 pub(crate) fn production_source_files_under(src: &Path) -> Vec<PathBuf> {
     if !src.is_dir() {
         return Vec::new();
@@ -193,52 +195,9 @@ pub(crate) fn production_source_files_under(src: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     collect_rs_files(src, &mut files);
     files.sort();
-    let test_only = cfg_test_module_closure(&files);
+    let test_only = test_only_files(&files);
     files.retain(|path| !test_only.contains(path));
     files
-}
-
-/// Files reachable from a `#[cfg(test)] mod <name>;` declaration, transitively.
-/// Such a file is absent from a release build, so it carries no shipped
-/// obligation even when its name does not mark it as a test.
-fn cfg_test_module_closure(files: &[PathBuf]) -> BTreeSet<PathBuf> {
-    let mut frontier = Vec::new();
-    for path in files {
-        let Ok(content) = fs::read_to_string(path) else {
-            continue;
-        };
-        for name in cfg_test_module_names(&content) {
-            frontier.extend(resolve_module_file(path, &name));
-        }
-    }
-
-    let mut closure = BTreeSet::new();
-    while let Some(path) = frontier.pop() {
-        if !closure.insert(path.clone()) {
-            continue;
-        }
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
-        for name in declared_module_names(&content) {
-            frontier.extend(resolve_module_file(&path, &name));
-        }
-    }
-    closure
-}
-
-/// Resolves `mod <name>;` declared in `declaring` to the file that backs it.
-fn resolve_module_file(declaring: &Path, name: &str) -> Option<PathBuf> {
-    let directory = match declaring.file_stem().and_then(|stem| stem.to_str()) {
-        Some("mod" | "lib" | "main") => declaring.parent()?.to_path_buf(),
-        _ => declaring.with_extension(""),
-    };
-    let flat = directory.join(format!("{name}.rs"));
-    if flat.is_file() {
-        return Some(flat);
-    }
-    let nested = directory.join(name).join("mod.rs");
-    nested.is_file().then_some(nested)
 }
 
 #[cfg(test)]
@@ -356,6 +315,80 @@ declare it `#[cfg(test)]` or give it a production name",
         let files = production_source_files_under(&fixture.root);
         let names = fixture.relative_names(&files);
         assert_eq!(names, vec!["lib.rs", "shipped.rs"]);
+    }
+
+    #[test]
+    fn inline_test_scopes_exclude_their_external_children() {
+        let fixture = Fixture::new("inline-closure");
+        fixture.write(
+            "lib.rs",
+            "mod owner;\n#[cfg(test)] mod fixtures;\nmod live { mod child; #[cfg(test)] mod cases; }\n",
+        );
+        fixture.write(
+            "owner.rs",
+            "#[cfg(test)] mod tests { mod affinity; mod nested { mod cases; } }\n",
+        );
+        fixture.write("owner/tests/affinity.rs", "fn test_helper() {}\n");
+        fixture.write("owner/tests/nested/cases.rs", "fn test_helper() {}\n");
+        fixture.write("fixtures.rs", "mod nested { mod cases; }\n");
+        fixture.write("fixtures/nested/cases.rs", "fn test_helper() {}\n");
+        fixture.write("live/child.rs", "fn shipped() {}\n");
+        fixture.write("live/cases.rs", "fn test_helper() {}\n");
+
+        assert_eq!(
+            fixture.relative_names(&production_source_files_under(&fixture.root)),
+            vec!["lib.rs", "live/child.rs", "owner.rs"]
+        );
+    }
+
+    #[test]
+    fn a_production_root_keeps_a_shared_test_dependency_counted() {
+        let fixture = Fixture::new("shared-root");
+        fixture.write("lib.rs", "#[cfg(test)]\nmod shared;\n");
+        fixture.write("main.rs", "mod shared;\nfn main() {}\n");
+        fixture.write("shared.rs", "mod child;\nfn shipped() {}\n");
+        fixture.write("shared/child.rs", "fn shipped() {}\n");
+
+        assert_eq!(
+            fixture.relative_names(&production_source_files_under(&fixture.root)),
+            vec!["lib.rs", "main.rs", "shared.rs", "shared/child.rs"]
+        );
+    }
+
+    #[test]
+    fn module_attributes_and_comments_preserve_production_reachability() {
+        let fixture = Fixture::new("module-syntax");
+        fixture.write(
+            "lib.rs",
+            r#"#[cfg (test)] #[allow(dead_code)] pub(crate) mod r#type;
+// #[cfg(test)] mod line_commented;
+/*
+#[cfg(test)]
+mod block_commented;
+*/
+mod line_commented;
+mod block_commented;
+#[cfg(any(test, feature = "runtime"))]
+mod possible_production;
+"#,
+        );
+        for name in [
+            "type",
+            "line_commented",
+            "block_commented",
+            "possible_production",
+        ] {
+            fixture.write(&format!("{name}.rs"), "fn present() {}\n");
+        }
+        assert_eq!(
+            fixture.relative_names(&production_source_files_under(&fixture.root)),
+            vec![
+                "block_commented.rs",
+                "lib.rs",
+                "line_commented.rs",
+                "possible_production.rs"
+            ]
+        );
     }
 
     /// Module resolution must follow both the flat and the directory layout.

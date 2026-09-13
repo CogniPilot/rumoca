@@ -165,12 +165,8 @@ fn hash_expression_semantics(expr: &Expression, hasher: &mut impl Hasher) {
             }
             hash_expression_semantics(else_branch, hasher);
         }
-        Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } => {
-            is_matrix.hash(hasher);
+        Expression::Array { elements, kind, .. } => {
+            kind.hash(hasher);
             hash_expression_slice_semantics(elements, hasher);
         }
         Expression::Tuple { elements, .. } => hash_expression_slice_semantics(elements, hasher),
@@ -480,12 +476,12 @@ fn arrays_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
     let (
         Expression::Array {
             elements: lhs_elements,
-            is_matrix: lhs_matrix,
+            kind: lhs_matrix,
             ..
         },
         Expression::Array {
             elements: rhs_elements,
-            is_matrix: rhs_matrix,
+            kind: rhs_matrix,
             ..
         },
     ) = (lhs, rhs)

@@ -432,9 +432,21 @@ pub enum FlattenError {
         #[label("call would silently use the declared default")]
         span: Span,
     },
+
+    #[error("invalid derivative annotation: {reason}")]
+    #[diagnostic(code(rumoca::flatten::EF032))]
+    InvalidDerivativeAnnotation {
+        reason: String,
+        #[label("derivative annotation does not satisfy MLS §12.7.1")]
+        span: Span,
+    },
 }
 
 impl FlattenError {
+    error_constructor!(
+        invalid_derivative_annotation,
+        InvalidDerivativeAnnotation { reason: String }
+    );
     /// Create a StructuralAssertionFailed error.
     pub fn structural_assertion_failed(message: impl Into<String>, span: Span) -> Self {
         Self::StructuralAssertionFailed {
@@ -744,6 +756,7 @@ impl PhaseError for FlattenError {
             | Self::InconsistentFunctionReference { span, .. }
             | Self::MissingFunctionSelectionIdentity { span, .. }
             | Self::UnhonoredFunctionRedeclare { span, .. }
+            | Self::InvalidDerivativeAnnotation { span, .. }
             | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
             | Self::CyclicConstantBinding { span, .. }
             | Self::InvalidConnectionGraph { span, .. }

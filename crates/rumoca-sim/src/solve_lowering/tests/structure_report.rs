@@ -59,12 +59,54 @@ fn index_three_inspection_agrees_with_simulation_preparation() {
 }
 
 #[test]
-fn structural_inspection_preserves_a_reduction_refusal() {
+fn structural_inspection_retains_a_fixed_initial_value() {
     let source = PENDULUM.replace("start=1", "start=1, fixed=true");
     let dae = compile(&source, "Pend");
+    let options = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.01),
+        ..SimOptions::default()
+    };
+    let solve = lower_dae_for_simulation(&dae, &options)
+        .expect("the retained manifold and fixed value have a joint initialization owner");
+    assert_eq!(solve.problem.initialization.given_state_indices(), &[0]);
+    let report = structural_report_for_dae(&dae, &options)
+        .expect("inspection consumes the same successful reduction");
+    assert_eq!(report.n_equations, report.n_unknowns);
+    assert_eq!(report.matching.len(), report.n_equations);
+    assert!(
+        diagnose_structural_singularity(&dae, &options)
+            .unwrap()
+            .is_none()
+    );
+    let trace =
+        simulate_dae(&dae, &options).expect("the fixed initial value must survive execution");
+    assert_eq!(trace.times.last(), Some(&0.1));
+    let x = trace.names.iter().position(|name| name == "x").unwrap();
+    let y = trace.names.iter().position(|name| name == "y").unwrap();
+    assert_eq!(trace.data[x][0], 1.0);
+    for (&x, &y) in trace.data[x].iter().zip(&trace.data[y]) {
+        assert!((x * x + y * y - 1.0).abs() < 1.0e-8);
+    }
+}
+
+#[test]
+fn structural_inspection_preserves_a_reduction_refusal() {
+    let dae = compile(
+        "model Conflict
+          Real x(start=1, fixed=true);
+          Real y(start=2, fixed=true);
+          Real f;
+        equation
+          x=y;
+          der(x)=f-x;
+          der(y)=-f-y;
+        end Conflict;",
+        "Conflict",
+    );
     let options = SimOptions::default();
     let simulation = lower_dae_for_simulation(&dae, &options)
-        .expect_err("reduction cannot discard a fixed initial value");
+        .expect_err("reduction cannot discard contradictory fixed initial values");
     let inspection = structural_report_for_dae(&dae, &options)
         .expect_err("inspection must retain the simulator's reduction refusal");
     let diagnosis = diagnose_structural_singularity(&dae, &options)
@@ -75,7 +117,9 @@ fn structural_inspection_preserves_a_reduction_refusal() {
         diagnosis.to_string(),
     ] {
         assert!(
-            message.contains("would discard the stated initial value of `x`"),
+            message.contains("conflicting stated initial values")
+                && message.contains("`x`")
+                && message.contains("`y`"),
             "{message}"
         );
     }

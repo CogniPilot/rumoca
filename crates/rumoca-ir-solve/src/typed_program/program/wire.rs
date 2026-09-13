@@ -2,7 +2,7 @@ use rumoca_core::StructuredIndexDomain;
 use serde::{Deserialize, Deserializer};
 
 use super::*;
-use crate::typed_program::call::SolvePureCallInterface;
+use crate::typed_program::call::SolvePureCallTableView;
 
 #[derive(Clone, Deserialize)]
 pub(in crate::typed_program) struct TypedProgramWire {
@@ -190,6 +190,11 @@ enum SolveOperationWire {
         arguments: Box<[SolveRegisterId]>,
         destinations: Box<[SolveRegisterId]>,
     },
+    LinearSolve {
+        destination: SolveRegisterId,
+        matrix: SolveRegisterId,
+        rhs: SolveRegisterId,
+    },
 }
 
 #[derive(Clone, Deserialize)]
@@ -206,16 +211,16 @@ impl<'de> Deserialize<'de> for TypedProgram {
         D: Deserializer<'de>,
     {
         let wire = TypedProgramWire::deserialize(deserializer)?;
-        replay_program(&wire, &[]).map_err(serde::de::Error::custom)
+        replay_program(&wire, SolvePureCallTableView::default()).map_err(serde::de::Error::custom)
     }
 }
 
 pub(in crate::typed_program) fn replay_program(
     wire: &TypedProgramWire,
-    available_calls: &[SolvePureCallInterface],
+    available_calls: SolvePureCallTableView<'_>,
 ) -> Result<TypedProgram, SolveProgramConstructionError> {
     let program =
-        TypedProgram::construct_with_calls(wire.arithmetic, available_calls.to_vec(), |builder| {
+        TypedProgram::construct_with_calls(wire.arithmetic, available_calls, |builder| {
             let slots = replay_slots(builder, &wire.slots)?;
             let mut registers = Vec::with_capacity(wire.register_types.len());
             for operation in &wire.operations {
@@ -365,8 +370,8 @@ fn replay_operation<'program>(
                 .iter()
                 .map(|capture| register_at(registers, *capture))
                 .collect::<Result<Vec<_>, _>>()?;
-            let if_true = replay_region(if_true, &builder.available_calls)?;
-            let if_false = replay_region(if_false, &builder.available_calls)?;
+            let if_true = replay_region(if_true, builder.available_calls)?;
+            let if_false = replay_region(if_false, builder.available_calls)?;
             let actual = builder.conditional_from_regions(
                 register_at(registers, *condition)?,
                 &captures,
@@ -387,7 +392,7 @@ fn replay_operation<'program>(
                 .iter()
                 .map(|capture| register_at(registers, *capture))
                 .collect::<Result<Vec<_>, _>>()?;
-            let body = replay_region(body, &builder.available_calls)?;
+            let body = replay_region(body, builder.available_calls)?;
             produced(
                 *destination,
                 builder.map_from_region(domain.clone(), &captures, body, at)?,
@@ -410,7 +415,7 @@ fn replay_operation<'program>(
                 .iter()
                 .map(|capture| register_at(registers, *capture))
                 .collect::<Result<Vec<_>, _>>()?;
-            let transition = replay_region(transition, &builder.available_calls)?;
+            let transition = replay_region(transition, builder.available_calls)?;
             let actual =
                 builder.fold_from_region(domain.clone(), &initial, &captures, transition, at)?;
             require_destinations(&actual, destinations, registers, wire)?;
@@ -465,6 +470,20 @@ fn replay_operation<'program>(
             *destination,
             builder.matrix_multiply(
                 register_at(registers, *lhs)?,
+                register_at(registers, *rhs)?,
+                at,
+            )?,
+            registers,
+            wire,
+        )?,
+        SolveOperationWire::LinearSolve {
+            destination,
+            matrix,
+            rhs,
+        } => produced(
+            *destination,
+            builder.linear_solve(
+                register_at(registers, *matrix)?,
                 register_at(registers, *rhs)?,
                 at,
             )?,
@@ -754,7 +773,7 @@ fn require_destinations(
 
 fn replay_region(
     wire: &SolveProgramRegionWire,
-    available_calls: &[SolvePureCallInterface],
+    available_calls: SolvePureCallTableView<'_>,
 ) -> Result<SolveProgramRegion, SolveProgramConstructionError> {
     let body = replay_program(&wire.body, available_calls)?;
     construct_region(

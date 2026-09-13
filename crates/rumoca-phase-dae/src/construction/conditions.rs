@@ -158,11 +158,17 @@ fn lower_condition_tree<'dae>(
             ..
         } => {
             let lowered = lower_expression(construction, coordinates, functions, expression, None)?;
-            let relation =
-                construction.conditions(|conditions| conditions.relation(lowered, provenance))?;
-            let roots =
-                activation_relation_roots(functions, provenance.span(), (lhs, rhs), relation);
-            (dae::ConditionInput::Relation(relation), roots, None)
+            let variability = construction
+                .expressions(|expressions| expressions.variability(lowered, provenance))?;
+            if variability <= dae::ExpressionVariability::Parameter {
+                (dae::ConditionInput::Discrete(lowered), Vec::new(), None)
+            } else {
+                let relation = construction
+                    .conditions(|conditions| conditions.relation(lowered, provenance))?;
+                let roots =
+                    activation_relation_roots(functions, provenance.span(), (lhs, rhs), relation);
+                (dae::ConditionInput::Relation(relation), roots, None)
+            }
         }
         _ => {
             let expression =

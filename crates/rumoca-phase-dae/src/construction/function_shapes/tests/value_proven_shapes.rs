@@ -309,12 +309,12 @@ fn vector_body_proves_the_checked_product_as_one_extent() {
         .collect();
     let row = Expression::Array {
         elements: columns,
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span,
     };
     let tensor = Expression::Array {
         elements: vec![row],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span,
     };
     model.add_equation(flat::Equation::new(
@@ -700,7 +700,7 @@ fn array_argument(extent: usize, span: Span) -> Expression {
                 span,
             })
             .collect(),
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span,
     }
 }

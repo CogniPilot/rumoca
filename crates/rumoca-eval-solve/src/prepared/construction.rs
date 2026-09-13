@@ -10,7 +10,9 @@ impl Clone for PreparedScalarProgramBlock {
             row_registers: self.row_registers.clone(),
             row_lazy_plans: self.row_lazy_plans.clone(),
             row_requirements: self.row_requirements.clone(),
+            row_is_causal: self.row_is_causal.clone(),
             row_assignment_shapes: self.row_assignment_shapes.clone(),
+            row_tensor_affine_assignments: self.row_tensor_affine_assignments.clone(),
             row_parameter_indices: self.row_parameter_indices.clone(),
             row_parameter_static_y_gradient_params: self
                 .row_parameter_static_y_gradient_params
@@ -34,6 +36,8 @@ impl PreparedScalarProgramBlock {
             prepared_vec_with_capacity(row_count, "prepared lazy row plan count", block_span)?;
         let mut row_requirements =
             prepared_vec_with_capacity(row_count, "prepared row requirement count", block_span)?;
+        let mut row_is_causal =
+            prepared_vec_with_capacity(row_count, "prepared row causality count", block_span)?;
         let mut row_assignment_shapes = prepared_vec_with_capacity(
             row_count,
             "prepared row assignment shape count",
@@ -50,6 +54,7 @@ impl PreparedScalarProgramBlock {
             block_span,
         )?;
         let mut requirements = RowInputRequirements::default();
+        let mut row_tensor_affine_assignments = Vec::with_capacity(row_count);
         for (row_idx, row) in block.programs().iter().enumerate() {
             let span = block.program_span(row_idx);
             let row_requirement =
@@ -61,11 +66,17 @@ impl PreparedScalarProgramBlock {
             row_registers.push(register_count);
             row_lazy_plans.push(PreparedLazyRowPlan::new(row, register_count));
             row_requirements.push(row_requirement);
+            row_is_causal.push(!row.iter().any(non_causal_linear_op));
             row_assignment_shapes.push(
                 target_assignment_shapes_with_output_offsets(row)
                     .map_err(|error| error.with_source_span(span))?
                     .into_boxed_slice(),
             );
+            row_tensor_affine_assignments.push(tensor_affine_assignment::prepare(
+                row,
+                &row_assignment_shapes[row_idx],
+                span,
+            )?);
             let parameter_indices = row_parameter_indices(row).into_boxed_slice();
             row_parameter_static_y_gradient_params
                 .push(parameter_static_y_gradient(row).then(|| parameter_indices.clone()));
@@ -79,7 +90,9 @@ impl PreparedScalarProgramBlock {
             row_registers,
             row_lazy_plans,
             row_requirements,
+            row_is_causal,
             row_assignment_shapes,
+            row_tensor_affine_assignments,
             row_parameter_indices: prepared_row_parameter_indices,
             row_parameter_static_y_gradient_params,
             requirements,

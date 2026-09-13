@@ -81,7 +81,11 @@ pub(super) fn dae_uses_random(model: &dae::Dae) -> bool {
 }
 
 pub(super) fn dae_has_initialization(model: &dae::Dae) -> bool {
-    model.inspect(|view| view.initialization_owner_count() != 0)
+    model.inspect(|view| {
+        view.initialization_owner_count() != 0
+            || view.initial_discrete_value_count() != 0
+            || view.initial_parameter_value_count() != 0
+    })
 }
 
 pub(super) fn dae_has_events(model: &dae::Dae) -> bool {

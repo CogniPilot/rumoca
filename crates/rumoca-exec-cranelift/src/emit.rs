@@ -6534,8 +6534,11 @@ fn emit_nonzero_pivot(
     pivot: cranelift_codegen::ir::Value,
 ) -> cranelift_codegen::ir::Value {
     let abs = fb.ins().fabs(pivot);
-    let eps = fb.ins().f64const(f64::EPSILON);
-    let valid = fb.ins().fcmp(FloatCC::GreaterThan, abs, eps);
+    let zero = fb.ins().f64const(0.0);
+    let maximum = fb.ins().f64const(f64::MAX);
+    let nonzero = fb.ins().fcmp(FloatCC::GreaterThan, abs, zero);
+    let finite = fb.ins().fcmp(FloatCC::LessThanOrEqual, abs, maximum);
+    let valid = fb.ins().band(nonzero, finite);
     let nan = fb.ins().f64const(f64::NAN);
     fb.ins().select(valid, pivot, nan)
 }

@@ -3,8 +3,8 @@
 
 use rumoca_core::Span;
 
+use super::EvalEnvironment;
 use super::builtin_dispatch::eval_builtin_function;
-use super::context::EvalContext;
 use super::errors::EvalError;
 use super::operators::{eval_binary_op, eval_unary_op};
 use super::range_eval::eval_range;
@@ -18,7 +18,7 @@ use super::{
 ///
 /// Returns an error if the expression cannot be evaluated at compile time
 /// (e.g., references time-varying variables, uses unsupported operations).
-pub fn eval_expr(expr: &Expression, ctx: &EvalContext) -> Result<Value, EvalError> {
+pub fn eval_expr(expr: &Expression, ctx: &dyn EvalEnvironment) -> Result<Value, EvalError> {
     let span = expr.span().ok_or_else(|| {
         EvalError::missing_source_context("constant expression is missing source provenance")
     })?;
@@ -28,7 +28,7 @@ pub fn eval_expr(expr: &Expression, ctx: &EvalContext) -> Result<Value, EvalErro
 /// Evaluate with a span for error reporting.
 pub fn eval_expr_with_span(
     expr: &Expression,
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     let span = expr.span().unwrap_or(span);
@@ -52,7 +52,7 @@ pub fn eval_expr_with_span(
             else_branch,
             ..
         } => eval_flat_if(branches, else_branch, ctx, span),
-        Expression::Array { elements, .. } => eval_flat_array(elements, ctx, span),
+        Expression::Array { elements, kind, .. } => eval_flat_array(elements, *kind, ctx, span),
         Expression::Range {
             start, step, end, ..
         } => eval_range(start, step.as_deref(), end, ctx, span),
@@ -63,7 +63,9 @@ pub fn eval_expr_with_span(
         Expression::Index {
             base, subscripts, ..
         } => eval_flat_index(base, subscripts, ctx, span),
-        Expression::Tuple { elements, .. } => eval_flat_array(elements, ctx, span),
+        Expression::Tuple { elements, .. } => {
+            eval_flat_array(elements, rumoca_core::ArrayConstructor::Array, ctx, span)
+        }
         Expression::FieldAccess {
             base,
             field,
@@ -71,9 +73,9 @@ pub fn eval_expr_with_span(
             ..
         } => {
             if let Some(path) = rumoca_core::flat_expression_component_path(expr)
-                && let Some(value) = ctx.get(&path.to_flat_string())
+                && let Some(value) = ctx.get_value(&path.to_flat_string())
             {
-                return Ok(value.clone());
+                return Ok(value.into_owned());
             }
             // Field access on complex expressions (e.g., func().field)
             // requires evaluating the base and then extracting the field
@@ -91,12 +93,12 @@ pub fn eval_expr_with_span(
 fn eval_var_ref(
     name: &str,
     subscripts: &[Subscript],
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     // First try as a parameter
-    if let Some(value) = ctx.get(name) {
-        let value = value.clone();
+    if let Some(value) = ctx.get_value(name) {
+        let value = value.into_owned();
         return if subscripts.is_empty() {
             Ok(value)
         } else {
@@ -125,7 +127,7 @@ fn eval_flat_binary(
     op: &OpBinary,
     lhs: &Expression,
     rhs: &Expression,
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     if matches!(op, OpBinary::And | OpBinary::Or) {
@@ -140,7 +142,7 @@ fn eval_flat_logical(
     op: &OpBinary,
     lhs: &Expression,
     rhs: &Expression,
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     match eval_expr_with_span(lhs, ctx, span) {
@@ -175,7 +177,7 @@ fn logical_value_determines_result(op: &OpBinary, value: bool) -> bool {
 fn eval_flat_unary(
     op: &OpUnary,
     rhs: &Expression,
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     let rhs_val = eval_expr_with_span(rhs, ctx, span)?;
@@ -186,7 +188,7 @@ fn eval_flat_unary(
 fn eval_builtin_call(
     function: &BuiltinFunction,
     args: &[Expression],
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     if matches!(function, BuiltinFunction::Size | BuiltinFunction::Ndims)
@@ -204,7 +206,7 @@ fn eval_builtin_call(
 fn eval_shape_builtin(
     function: &BuiltinFunction,
     args: &[Expression],
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Option<Value>, EvalError> {
     let Some(first) = args.first() else {
@@ -243,7 +245,7 @@ fn eval_shape_builtin(
 fn eval_fn_call(
     name: &str,
     args: &[Expression],
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     if is_builtin(name) {
@@ -253,7 +255,7 @@ fn eval_fn_call(
             .collect::<Result<_, _>>()?;
         return eval_builtin(name, &arg_values, span);
     }
-    if let Some(func) = ctx.functions.get(name) {
+    if let Some(func) = ctx.get_function(name) {
         return eval_user_function(func, args, ctx, span);
     }
     Err(EvalError::not_constant(
@@ -266,7 +268,7 @@ fn eval_fn_call(
 fn eval_user_function(
     func: &Function,
     args: &[Expression],
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     // Impure/external refusal lives in eval_function_with_call_args, the one
@@ -313,7 +315,7 @@ fn named_function_call_arg(expr: &Expression) -> Option<(&str, &Expression)> {
 fn eval_flat_if(
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     let mut unknown_branch_values = Vec::new();
@@ -383,21 +385,22 @@ fn values_semantically_equal(lhs: &Value, rhs: &Value) -> bool {
 /// Evaluate an array expression.
 fn eval_flat_array(
     elements: &[Expression],
-    ctx: &EvalContext,
+    kind: rumoca_core::ArrayConstructor,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     let values: Vec<Value> = elements
         .iter()
         .map(|e| eval_expr_with_span(e, ctx, span))
         .collect::<Result<_, _>>()?;
-    Ok(Value::Array(values))
+    super::array_construction::construct(values, kind, span)
 }
 
 /// Evaluate an index expression.
 fn eval_flat_index(
     base: &Expression,
     subscripts: &[Subscript],
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
     let base_val = eval_expr_with_span(base, ctx, span)?;
@@ -440,76 +443,31 @@ fn eval_literal(lit: &Literal) -> Value {
 fn apply_subscripts(
     value: &Value,
     subscripts: &[Subscript],
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
-    let mut current = value.clone();
-
-    for subscript in subscripts {
-        match subscript {
-            Subscript::Index { value: idx, .. } => {
-                let idx = *idx as usize;
-
-                let arr = current
-                    .as_array()
-                    .ok_or_else(|| EvalError::type_mismatch("Array", current.type_name(), span))?;
-
-                // Modelica uses 1-based indexing
-                if idx < 1 || idx > arr.len() {
-                    return Err(EvalError::IndexOutOfBounds {
-                        index: idx as i64,
-                        size: arr.len(),
-                        span,
-                    });
-                }
-                current = arr[idx - 1].clone();
-            }
-            Subscript::Colon { .. } => {
-                // Colon means "all elements" - just pass through
-                // (this is a simplification; real slicing would need more work)
-            }
-            Subscript::Expr { expr, .. } => {
-                // Evaluate the expression to get the index
-                let idx_val = eval_expr_with_span(expr, ctx, span)?;
-                let idx = idx_val
-                    .as_integer()
-                    .ok_or_else(|| EvalError::type_mismatch("Integer", idx_val.type_name(), span))?
-                    as usize;
-
-                let arr = current
-                    .as_array()
-                    .ok_or_else(|| EvalError::type_mismatch("Array", current.type_name(), span))?;
-
-                // Modelica uses 1-based indexing
-                if idx < 1 || idx > arr.len() {
-                    return Err(EvalError::IndexOutOfBounds {
-                        index: idx as i64,
-                        size: arr.len(),
-                        span,
-                    });
-                }
-                current = arr[idx - 1].clone();
-            }
-        }
-    }
-
-    Ok(current)
+    super::subscripts::apply_subscripts(
+        value.clone(),
+        subscripts,
+        |expr| eval_expr_with_span(expr, ctx, span),
+        span,
+    )
 }
 
 /// Try to evaluate an expression to an integer.
 /// Returns None if evaluation fails or result is not an integer.
-pub fn try_eval_integer(expr: &Expression, ctx: &EvalContext) -> Option<i64> {
+pub fn try_eval_integer(expr: &Expression, ctx: &dyn EvalEnvironment) -> Option<i64> {
     eval_expr(expr, ctx).ok().and_then(|v| v.as_integer())
 }
 
 /// Try to evaluate an expression to a real.
 /// Returns None if evaluation fails or result is not numeric.
-pub fn try_eval_real(expr: &Expression, ctx: &EvalContext) -> Option<f64> {
+pub fn try_eval_real(expr: &Expression, ctx: &dyn EvalEnvironment) -> Option<f64> {
     eval_expr(expr, ctx).ok().and_then(|v| v.to_real())
 }
 
 /// Try to evaluate an expression to a boolean.
 /// Returns None if evaluation fails or result is not a boolean.
-pub fn try_eval_bool(expr: &Expression, ctx: &EvalContext) -> Option<bool> {
+pub fn try_eval_bool(expr: &Expression, ctx: &dyn EvalEnvironment) -> Option<bool> {
     eval_expr(expr, ctx).ok().and_then(|v| v.as_bool())
 }

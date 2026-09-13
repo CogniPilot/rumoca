@@ -20,7 +20,7 @@ fn array(extent: usize, span: Span) -> Expression {
         elements: (0..extent)
             .map(|ordinal| literal(ordinal as f64, span))
             .collect(),
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span,
     }
 }
@@ -677,7 +677,7 @@ fn exact_call(
 fn matrix(rows: usize, columns: usize, span: Span) -> Expression {
     Expression::Array {
         elements: (0..rows).map(|_| array(columns, span)).collect(),
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span,
     }
 }

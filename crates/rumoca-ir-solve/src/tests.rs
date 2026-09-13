@@ -662,9 +662,8 @@ fn representative_derivative_rhs() -> ComputeBlock {
 }
 
 fn representative_initialization_system() -> InitializationSolveSystem {
-    InitializationSolveSystem {
-        row_targets: vec![Some(scalar_slot_y(1))],
-        row_roles: vec![InitializationRowRole::Solved],
+    InitializationSolveSystem::construct(crate::InitializationSystemInput {
+        row_roles: vec![InitializationRowRole::SurplusCheck],
         residual: ComputeBlock::from_scalar_program_block(
             ScalarProgramBlock::with_source_span(
                 vec![vec![
@@ -675,11 +674,13 @@ fn representative_initialization_system() -> InitializationSolveSystem {
             )
             .expect("initial scalar fixture is computable"),
         ),
-        projection_unknowns: Vec::new(),
         projection_plan: InitializationProjectionPlan::default(),
         update_rhs: ScalarProgramBlock::default(),
         update_targets: Vec::new(),
-    }
+        manifold_row_count: 0,
+        given_state_indices: Vec::new(),
+    })
+    .expect("initialization fixture has one checked owner per coordinate")
 }
 
 fn representative_discrete_system() -> DiscreteSolveSystem {
@@ -1845,17 +1846,16 @@ fn solve_problem_shape_contract_rejects_a_projection_target_mismatch() {
 
 #[test]
 fn solve_problem_shape_contract_rejects_duplicate_initial_projection_unknown() {
-    let mut problem = representative_solve_problem_fixture();
-    problem.initialization.projection_unknowns = vec![scalar_slot_y(1), scalar_slot_y(1)];
-
-    assert_eq!(
-        problem.validate_shape_contract(),
-        Err(SolveProblemShapeContractError::DuplicateProjectionUnknown {
-            context: "initialization.projection_unknowns",
-            unknown: format!("{:?}", scalar_slot_y(1)),
-            span: None,
-        })
-    );
+    let mut input = representative_solve_problem_fixture()
+        .initialization
+        .into_input();
+    input.projection_plan = InitializationProjectionPlan {
+        blocks: vec![InitializationProjectionBlock {
+            rows: vec![0, 0],
+            unknowns: vec![scalar_slot_y(1), scalar_slot_y(1)],
+        }],
+    };
+    assert!(InitializationSolveSystem::construct(input).is_err());
 }
 
 #[test]

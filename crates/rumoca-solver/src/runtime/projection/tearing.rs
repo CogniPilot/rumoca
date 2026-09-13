@@ -169,15 +169,25 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
         return Ok(TornStep::Settled);
     }
     let base = y.to_vec();
-    let Some(jacobian) =
-        reduced_jacobian(model, y, p, t, tearing, residual, variable_scales, &base)?
+    let Some(jacobian) = reduced_jacobian(
+        model,
+        y,
+        p,
+        t,
+        tearing,
+        residual,
+        variable_scales,
+        &base,
+        certify_coordinates,
+    )?
     else {
         return Ok(TornStep::Decline);
     };
-    let row_scales = jacobian_row_scales(&jacobian, variable_scales, variable_scales, None);
+    let row_scales =
+        jacobian_row_scales(&jacobian.residual, variable_scales, variable_scales, None);
     let converged = scaled_residual_converged(residual, &row_scales, tol);
     let delta = scaled_newton_delta(ScaledNewtonSystem {
-        jacobian: &jacobian,
+        jacobian: &jacobian.residual,
         residual,
         row_scales: &row_scales,
         variable_scales,
@@ -187,27 +197,33 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
     let Some(delta) = delta.filter(|delta| delta.iter().all(|value| value.is_finite())) else {
         return Ok(TornStep::Decline);
     };
-    // Coordinate certification also requires the correction to be within
-    // tolerance; the ordinary boundary projection settles on the residual alone.
+    let step = LineSearchStep {
+        base: &base,
+        delta: delta.as_slice(),
+        row_scales: &row_scales,
+        before: scaled_residual_norm(residual, &row_scales),
+        tol,
+        alpha: 1.0,
+    };
+    // Small tear corrections can still produce large recovered-coordinate
+    // changes. Certification checks the undamped step through the complete
+    // causal sweep as well as the tear coordinates.
     if converged
         && (!certify_coordinates
-            || scaled_correction_converged(delta.as_slice(), variable_scales, tol))
+            || (scaled_correction_converged(delta.as_slice(), variable_scales, tol)
+                && recovered_correction_converged(
+                    model,
+                    &base,
+                    tearing,
+                    &jacobian.recovered,
+                    delta.as_slice(),
+                    tol,
+                )
+                && causal_correction_converged(model, p, t, tearing, &step)?))
     {
         return Ok(TornStep::Settled);
     }
-    let before = scaled_residual_norm(residual, &row_scales);
-    match line_search(
-        model,
-        y,
-        p,
-        t,
-        tearing,
-        &base,
-        delta.as_slice(),
-        &row_scales,
-        before,
-        tol,
-    )? {
+    match line_search(model, y, p, t, tearing, step)? {
         Some(next) => Ok(TornStep::Advanced(next)),
         None => Ok(TornStep::Decline),
     }
@@ -281,9 +297,15 @@ fn all_finite(values: &[f64]) -> bool {
     values.iter().all(|value| value.is_finite())
 }
 
+struct ReducedJacobian {
+    residual: DMatrix<f64>,
+    recovered: DMatrix<f64>,
+}
+
 /// Total finite-difference Jacobian of the reduced residual with respect to the
 /// tear variables, back-substituting through each perturbation so the causal
-/// unknowns track their tear dependence. `base` holds `y` at the current point.
+/// unknowns track their tear dependence. Certification retains their derivatives
+/// from the same sweeps, before a Newton correction can round away in `base`.
 // SPEC_0021: Exception - a total FD Jacobian needs model, storage, tearing, the base residual, scales, and the base point together.
 #[allow(clippy::too_many_arguments)]
 fn reduced_jacobian<M: ImplicitProjectionModel>(
@@ -295,10 +317,17 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
     residual: &[f64],
     variable_scales: &[f64],
     base: &[f64],
-) -> Result<Option<DMatrix<f64>>, RuntimeSolveError> {
+    certify_coordinates: bool,
+) -> Result<Option<ReducedJacobian>, RuntimeSolveError> {
     let rows = tearing.residual_rows.len();
     let columns = tearing.tear_y_indices.len();
     let mut jacobian = DMatrix::zeros(rows, columns);
+    let recovered_rows = if certify_coordinates {
+        tearing.causal_steps.len()
+    } else {
+        0
+    };
+    let mut recovered = DMatrix::zeros(recovered_rows, columns);
     let mut perturbed = Vec::with_capacity(rows);
     for (column, &tear_index) in tearing.tear_y_indices.iter().enumerate() {
         y.copy_from_slice(base);
@@ -311,10 +340,21 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
         for row in 0..rows {
             jacobian[(row, column)] = (perturbed[row] - residual[row]) / h;
         }
+        for row in 0..recovered_rows {
+            let index = tearing.causal_steps[row].y_index;
+            recovered[(row, column)] = (y[index] - base[index]) / h;
+        }
     }
     y.copy_from_slice(base);
-    if jacobian.iter().all(|value| value.is_finite()) {
-        Ok(Some(jacobian))
+    if jacobian
+        .iter()
+        .chain(recovered.iter())
+        .all(|value| value.is_finite())
+    {
+        Ok(Some(ReducedJacobian {
+            residual: jacobian,
+            recovered,
+        }))
     } else {
         Ok(None)
     }
@@ -323,36 +363,30 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
 /// Backtracking line search along the reduced Newton direction. Accepts the
 /// first step that reaches tolerance or strictly reduces the scaled residual
 /// norm, returning the residual at the accepted point.
-// SPEC_0021: Exception - a backtracking search threads model, storage, tearing, the base point, step, row scales, and tolerance together.
-#[allow(clippy::too_many_arguments)]
 fn line_search<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
     p: &[f64],
     t: f64,
     tearing: &solve::BlockTearing,
-    base: &[f64],
-    delta: &[f64],
-    row_scales: &[f64],
-    before: f64,
-    tol: f64,
+    mut step: LineSearchStep<'_>,
 ) -> Result<Option<Vec<f64>>, RuntimeSolveError> {
-    let mut alpha = 1.0;
     for _ in 0..TORN_BACKTRACK_STEPS {
-        let step = LineSearchStep {
-            base,
-            delta,
-            row_scales,
-            before,
-            tol,
-            alpha,
-        };
+        // Halving cannot recover progress once every tear update rounds away.
+        if tearing
+            .tear_y_indices
+            .iter()
+            .zip(step.delta)
+            .all(|(&index, &delta)| step.base[index] + step.alpha * delta == step.base[index])
+        {
+            break;
+        }
         if let Some(residual) = line_search_step(model, y, p, t, tearing, &step)? {
             return Ok(Some(residual));
         }
-        alpha *= 0.5;
+        step.alpha *= 0.5;
     }
-    y.copy_from_slice(base);
+    y.copy_from_slice(step.base);
     Ok(None)
 }
 
@@ -365,6 +399,51 @@ struct LineSearchStep<'a> {
     before: f64,
     tol: f64,
     alpha: f64,
+}
+
+fn recovered_correction_converged<M: ImplicitProjectionModel>(
+    model: &M,
+    base: &[f64],
+    tearing: &solve::BlockTearing,
+    jacobian: &DMatrix<f64>,
+    delta: &[f64],
+    tol: f64,
+) -> bool {
+    tearing
+        .causal_steps
+        .iter()
+        .enumerate()
+        .all(|(row, causal)| {
+            let correction = jacobian
+                .row(row)
+                .iter()
+                .zip(delta)
+                .map(|(a, b)| a * b)
+                .sum();
+            let scale = model_variable_scale(model, causal.y_index, base[causal.y_index]);
+            scaled_correction_converged(&[correction], &[scale], tol)
+        })
+}
+
+fn causal_correction_converged<M: ImplicitProjectionModel>(
+    model: &M,
+    p: &[f64],
+    t: f64,
+    tearing: &solve::BlockTearing,
+    step: &LineSearchStep<'_>,
+) -> Result<bool, RuntimeSolveError> {
+    if tearing.causal_steps.is_empty() {
+        return Ok(true);
+    }
+    let mut trial = step.base.to_vec();
+    if line_search_step(model, &mut trial, p, t, tearing, step)?.is_none() {
+        return Ok(false);
+    }
+    Ok(tearing.causal_steps.iter().all(|causal| {
+        let index = causal.y_index;
+        let scale = model_variable_scale(model, index, step.base[index]);
+        scaled_correction_converged(&[trial[index] - step.base[index]], &[scale], step.tol)
+    }))
 }
 
 /// Evaluate one backtracking candidate, returning its residual when accepted.

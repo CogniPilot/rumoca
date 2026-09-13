@@ -35,7 +35,7 @@ use rumoca_ir_solve::{
     AlgebraicRefreshRow, RefreshPlan, RefreshRowOwnerId, RefreshRowSelection, RefreshRows,
     RefreshStage,
 };
-pub use schedule::build_refresh_stages;
+use schedule::build_refresh_stages;
 use source_catalog::CanonicalScalarProgramCatalog;
 use static_domain::ContinuousStaticParameters;
 
@@ -507,11 +507,13 @@ fn algebraic_refresh_rows_from_row_targets(
                 output_offset: position.output_offset,
                 target_index,
                 assignment_target: Some(target_index),
-                assignment_shape: block.assignment_shape_for_output(
-                    position.program_index,
-                    position.output_offset,
-                    target_index,
-                ),
+                assignment_shape: block
+                    .assignment_shape_for_output(
+                        position.program_index,
+                        position.output_offset,
+                        target_index,
+                    )
+                    .cloned(),
                 direct_assignment_certified: block.certifies_direct_target_assignment(
                     position.program_index,
                     position.output_offset,
@@ -1218,6 +1220,11 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
         &plan.rows,
         &plan.static_causal_seed_rows,
         plan.causal_solution_certified,
+        |row, targets| {
+            block.source_program(row.source()).map(|operations| {
+                refresh_row_dependency_positions(row, operations, state_count, targets)
+            })
+        },
     )
     .map_err(|error| EvalSolveError::InvalidRow {
         message: error.to_string(),

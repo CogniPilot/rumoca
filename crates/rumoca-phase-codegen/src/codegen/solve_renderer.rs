@@ -156,7 +156,7 @@ fn require_builtin_fmi_template_domain(problem: &solve::SolveProblem) -> Result<
     if problem.uses_linear_solve_component()
         || problem
             .initialization
-            .residual
+            .residual()
             .uses_linear_solve_component()
     {
         return Err(CodegenError::dae_preparation_failed(

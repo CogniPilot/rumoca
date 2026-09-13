@@ -152,10 +152,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 arguments.get(1).expect("checked smooth value argument"),
                 scalar,
             ),
-            dae::PureBuiltin::NoEvent => self.expression(
-                arguments.get(0).expect("checked noEvent value argument"),
-                scalar,
-            ),
+            dae::PureBuiltin::NoEvent => {
+                let argument = arguments.get(0).expect("checked noEvent value argument");
+                self.with_no_event(|compiler| compiler.expression(argument, scalar))
+            }
             dae::PureBuiltin::Vector => {
                 self.expression(arguments.get(0).expect("checked vector operand"), scalar)
             }
@@ -203,6 +203,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::PureBuiltin::Linspace => self.linspace(arguments, scalar, span),
             dae::PureBuiltin::Cross => self.cross(arguments, scalar, span),
             dae::PureBuiltin::Skew => self.skew(arguments, scalar, span),
+            dae::PureBuiltin::LinearSolve => Err(LowerError::non_computable(
+                "linear solve requires an aggregate function owner",
+                span,
+            )),
             dae::PureBuiltin::Identity => self.identity(dims, scalar, span),
             dae::PureBuiltin::PromotedCat1 | dae::PureBuiltin::PromotedCat2 => {
                 let axis = usize::from(builtin == dae::PureBuiltin::PromotedCat2);

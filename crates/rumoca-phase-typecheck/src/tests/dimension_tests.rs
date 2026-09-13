@@ -5,6 +5,112 @@
 use super::*;
 
 #[test]
+fn instance_scalar_rank_requires_consensus_and_retains_empty_array_evidence() {
+    let tree = resolve(parse(
+        r#"
+        model Test
+            replaceable parameter Real value = asin(0.5);
+            parameter Real values[:] = {value};
+        end Test;
+    "#,
+    ))
+    .expect("resolve")
+    .into_inner();
+    let model = tree.get_class_by_qualified_name("Test").unwrap();
+    let component = &model.components["value"];
+    let binding = model.components["values"].binding.as_ref().unwrap();
+    for (array, unapplied, expected) in [
+        (false, false, Some(vec![1])),
+        (true, false, None),
+        (false, true, None),
+    ] {
+        let mut overlay = InstanceOverlay::new();
+        add_test_instance(&mut overlay, "value", component, None);
+        if array {
+            // A sibling empty array has no element to inspect. Its producer
+            // must retain this declaration-level veto before dropping it.
+            overlay
+                .array_component_declarations
+                .insert(component.def_id.unwrap());
+        }
+        if unapplied {
+            overlay
+                .components
+                .values_mut()
+                .next()
+                .unwrap()
+                .has_unapplied_redeclare = true;
+        }
+        let mut ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
+        ctx.declared_dimensions = Arc::new(
+            rumoca_eval_ast::eval::DeclaredDimensions::from_instanced(&tree, &overlay),
+        );
+        assert_eq!(
+            rumoca_eval_ast::eval::infer_dimensions_from_binding(binding, &ctx),
+            expected
+        );
+    }
+}
+
+#[test]
+fn declared_constant_rank_preserves_alias_dimensions_and_component_prefixes() {
+    let source = r#"
+        package Constants
+            type Scalar = Real;
+            type ScalarAlias = Scalar;
+            type Vector = Real[3];
+            type VectorAlias = Vector;
+            constant ScalarAlias scalar = 2*asin(1.0);
+            constant VectorAlias vector = {scalar, scalar, scalar};
+            constant Real explicit[3] = vector;
+            constant Real inferred[:] = vector;
+        end Constants;
+        record Box
+            constant Real scalar = 2*asin(1.0);
+        end Box;
+        model Test
+            Box boxes[3];
+            Box box;
+            parameter Real a[:] = {Constants.scalar};
+            parameter Real b[:, :] = {Constants.vector};
+            parameter Real c[:, :] = {Constants.explicit};
+            parameter Real d[:, :] = {Constants.inferred};
+            parameter Real e[:, :] = {boxes.scalar};
+            parameter Real f[:] = {box.scalar};
+        end Test;
+    "#;
+    let tree = resolve(parse(source))
+        .expect("resolved declarations")
+        .into_inner();
+    let mut checker = TypeChecker::new();
+    checker.eval_ctx.declared_dimensions =
+        std::sync::Arc::new(rumoca_eval_ast::eval::DeclaredDimensions::from_resolved_tree(&tree));
+    let model = tree.get_class_by_qualified_name("Test").expect("model");
+    for (name, expected) in [
+        ("a", Some(vec![1])),
+        ("b", None),
+        ("c", None),
+        ("d", None),
+        ("e", None),
+        ("f", Some(vec![1])),
+    ] {
+        let binding = model.components[name].binding.as_ref().expect("binding");
+        // No constant values or instance extents have been supplied. Only the
+        // scalar alias and scalar record field prove a complete shape; the
+        // array-valued paths must remain unknown.
+        assert_eq!(
+            rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
+                binding,
+                &checker.eval_ctx,
+                "Test"
+            ),
+            expected,
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn test_dimension_evaluation() {
     // Test that shape_expr is evaluated to shape during typecheck
     let source = r#"

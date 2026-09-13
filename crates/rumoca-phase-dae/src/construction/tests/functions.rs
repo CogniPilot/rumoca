@@ -1716,7 +1716,7 @@ fn automatic_function_vectorization_constructs_one_compact_domain() {
                     span: call_span,
                 })
                 .collect(),
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: call_span,
         }],
         is_constructor: false,

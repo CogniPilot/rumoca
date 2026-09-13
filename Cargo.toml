@@ -7,7 +7,8 @@ resolver = "2"
 # carrying its own copy of every crate. Without this, a build run from the
 # workspace root can resolve a package to a worktree copy instead of the
 # checkout, producing a binary that does not match the source under review.
-exclude = ["infra/fuzz", ".claude/worktrees"]
+# Third-party source stays outside first-party workspace test/lint policy.
+exclude = ["infra/fuzz", ".claude/worktrees", "vendor/diffsol"]
 members = [
     "crates/rumoca",
     "crates/rumoca-worker",
@@ -285,3 +286,8 @@ opt-level = 2
 opt-level = 3
 [profile.dev.package.scnr2]
 opt-level = 3
+
+[patch.crates-io]
+# Correct the accepted BDF state at its owner; see the provenance and patch
+# inventory in vendor/diffsol/RUMOCA_PATCH.md.
+diffsol = { path = "vendor/diffsol" }

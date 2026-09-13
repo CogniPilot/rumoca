@@ -10,7 +10,8 @@
 
 use rumoca::Compiler;
 use rumoca_ir_solve as solve;
-use rumoca_sim::{SimOptions, SimResult, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimError, SimOptions, SimResult, simulate_dae, simulate_dae_with_diagnostics};
+use rumoca_solver::fmi_me::{MeError, session::MeSessionError};
 
 const CONCATENATED_MESSAGE: &str = r#"
 model ConcatenatedMessage
@@ -264,19 +265,25 @@ fn a_converted_argument_reads_the_value_the_owner_was_already_given() {
         .model("ArgCallMessage")
         .compile_str(ARGUMENT_FROM_A_CALL, "ArgCallMessage.mo")
         .expect("ArgCallMessage compiles");
-    let error = simulate_dae_with_diagnostics(
-        &compiled.dae,
-        &SimOptions {
-            t_end: 0.5,
-            ..SimOptions::default()
-        },
-    )
-    .expect_err("`y < 6` is violated once x reaches 1.5");
+    let options = SimOptions {
+        t_end: 0.5,
+        ..SimOptions::default()
+    };
+    let error =
+        simulate_dae(&compiled.dae, &options).expect_err("`y < 6` is violated once x reaches 1.5");
     // x = 1.5*exp(3t) - 0.5 reaches 1.5 at t = ln(4/3)/3, where the owner was
     // called with gate(1.5) = 2 and returned 3*2 = 6.
-    assert_eq!(
-        error.to_string(),
-        "Modelica assert failed at t=0.095894271: f rejects: u=2 y=6"
+    let SimError::ModelExchangeSession(MeSessionError::Component(component)) = error.kind() else {
+        panic!("expected a component assertion, got {error:?}");
+    };
+    let MeError::Assertion { time, message } = component.kind() else {
+        panic!("expected the function's assertion, got {component:?}");
+    };
+    assert_eq!(message, "f rejects: u=2 y=6");
+    let exact_state = 1.5 * (3.0 * time).exp() - 0.5;
+    assert!(
+        (exact_state - 1.5).abs() <= options.atol.max(options.rtol * 1.5),
+        "assertion at t={time} must locate x=1.5 within the integration accuracy"
     );
 }
 

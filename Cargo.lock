@@ -1210,8 +1210,6 @@ checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 [[package]]
 name = "diffsol"
 version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3690b3729a291ac097453742215a1884fcde8bf480a444fb6287d6357d86baaf"
 dependencies = [
  "faer",
  "faer-traits",
@@ -4240,6 +4238,7 @@ dependencies = [
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
  "rumoca-phase-solve",
+ "rumoca-phase-structural",
  "rumoca-phase-typecheck",
  "rumoca-sim",
  "rumoca-solver",

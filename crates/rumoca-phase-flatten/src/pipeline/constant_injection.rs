@@ -618,11 +618,9 @@ pub(crate) fn try_eval_const_flat_expr_with_scope(
                 span: expr.span(),
             })
         }
-        ast::Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } => try_eval_const_array_expr(elements, *is_matrix, expr.span(), ctx, scope),
+        ast::Expression::Array { elements, kind, .. } => {
+            try_eval_const_array_expr(elements, *kind, expr.span(), ctx, scope)
+        }
         ast::Expression::Tuple { elements, .. } => {
             try_eval_const_tuple_expr(elements, expr.span(), ctx, scope)
         }
@@ -1138,7 +1136,7 @@ fn try_eval_const_function_call_expr(
     if short_name == "array" {
         return Some(rumoca_core::Expression::Array {
             elements: evaluated_args,
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: owner_span,
         });
     }
@@ -1192,7 +1190,7 @@ fn core_component_reference_from_ast(
 
 pub(crate) fn try_eval_const_array_expr(
     elements: &[ast::Expression],
-    is_matrix: bool,
+    kind: rumoca_core::ArrayConstructor,
     owner_span: rumoca_core::Span,
     ctx: &Context,
     scope: &str,
@@ -1204,7 +1202,7 @@ pub(crate) fn try_eval_const_array_expr(
     }
     Some(rumoca_core::Expression::Array {
         elements: out,
-        is_matrix,
+        kind,
         span: owner_span,
     })
 }
@@ -1476,6 +1474,12 @@ struct FlattenDimensionContext<'a> {
 }
 
 impl rumoca_eval_ast::eval::DimensionInferenceContext for FlattenDimensionContext<'_> {
+    fn is_declared_scalar_reference(&self, reference: &ast::ComponentReference) -> bool {
+        self.context
+            .declared_dimensions
+            .proves_scalar_reference(reference)
+    }
+
     fn lookup_dimensions(&self, name: &str, scope: &str) -> Option<Vec<usize>> {
         lookup_size_array_dims_with_scope(name, scope, self.context)?
             .into_iter()

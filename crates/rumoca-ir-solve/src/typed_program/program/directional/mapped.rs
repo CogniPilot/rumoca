@@ -158,7 +158,7 @@ fn replay_iteration<'program>(
     builder: &mut TypedProgramBuilder<'program>,
     region: &SolveProgramRegion,
     inputs: &[ProgramSlot<'program>],
-    available: &[Option<SolvePureCallDirectionalInterface>],
+    available: SolvePureCallTableView<'_>,
 ) -> Result<Vec<ProgramRegister<'program>>, SolveProgramConstructionError> {
     let provenance = region.provenance();
     let slots = iteration_slots(builder, region, inputs)?;

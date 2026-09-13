@@ -11,6 +11,8 @@ use crate::traversal_adapter::{
 use rumoca_core::{ComponentPath, DefId, Diagnostic, PrimaryLabel, ScopeId};
 use rumoca_ir_ast as ast;
 
+mod derivative_annotations;
+
 type ClassDef = ast::ClassDef;
 type ComponentReference = ast::ComponentReference;
 type Expression = ast::Expression;
@@ -136,6 +138,10 @@ impl Resolver {
         }
 
         self.resolve_subscripts(&mut class.array_subscripts, class_scope);
+
+        if class.class_type == rumoca_core::ClassType::Function {
+            self.resolve_derivative_annotations(&mut class.annotation, class_scope);
+        }
 
         // Resolve component references in equations and algorithms
         // MLS §5.3: Full name lookup happens during instantiation/flattening,
@@ -290,7 +296,8 @@ impl Resolver {
         while let Some((current, resolve_class_target)) = pending.pop() {
             self.resolve_source_class_value_target(current, class_scope, resolve_class_target);
             match current {
-                Expression::Modification { value, .. } => {
+                Expression::Modification { target, value, .. } => {
+                    self.resolve_modifier_subscripts(target, class_scope);
                     pending.push((std::sync::Arc::make_mut(value), true));
                 }
                 Expression::ClassModification { modifications, .. } => {
@@ -317,6 +324,18 @@ impl Resolver {
             return;
         };
         self.resolve_function_reference(target, class_scope);
+    }
+
+    fn resolve_modifier_subscripts(
+        &mut self,
+        target: &mut rumoca_ir_ast::ComponentReference,
+        class_scope: ScopeId,
+    ) {
+        for part in &mut target.parts {
+            if let Some(subscripts) = &mut part.subs {
+                self.resolve_subscripts(subscripts, class_scope);
+            }
+        }
     }
 
     /// Try partial type resolution for qualified names (MLS §7.3).

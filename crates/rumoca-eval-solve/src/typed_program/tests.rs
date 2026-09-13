@@ -1,4 +1,6 @@
 mod directional_map;
+mod invocation_scope;
+mod linear_solve;
 
 use std::num::NonZeroU64;
 

@@ -41,6 +41,46 @@ fn dae_render_context_accepts_only_a_finalized_checked_root() {
 }
 
 #[test]
+fn dae_modelica_retains_initial_parameter_definitions_without_numeric_rows() {
+    let text = "parameter Boolean branch(fixed=false); initial equation branch = true;";
+    let mut sources = SourceMap::new();
+    let source = sources.add("InitialParameter.mo", text);
+    let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+    let model = dae::Dae::construct(sources, |model| {
+        let boolean = model
+            .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Boolean), at))?;
+        let branch = model.variables(|variables| {
+            variables.parameter(
+                VarName::new("branch"),
+                boolean,
+                at,
+                dae::VariableAttributes {
+                    fixed: Some(false),
+                    ..Default::default()
+                },
+            )
+        })?;
+        let value = model.expressions(|expressions| {
+            expressions.at(at).literal(dae::DaeLiteral::Boolean(true))
+        })?;
+        model.initialization(|initialization| {
+            initialization.parameter_initial_value(branch, value, at)?;
+            Ok(())
+        })
+    })
+    .unwrap();
+    let template =
+        crate::templates::builtin_template_source("dae-modelica", "dae_modelica.mo.jinja").unwrap();
+    let rendered = render_template_with_name(&model, template, "InitialParameter").unwrap();
+    assert!(
+        rendered.contains("parameter Boolean branch(fixed = false);"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("initial equation"), "{rendered}");
+    assert!(rendered.contains("branch = true;"), "{rendered}");
+}
+
+#[test]
 fn dae_template_preserves_rank_three_transpose_axis_semantics() {
     let text = "input Real x[2,3,4]; transpose(x)";
     let mut source_map = SourceMap::new();

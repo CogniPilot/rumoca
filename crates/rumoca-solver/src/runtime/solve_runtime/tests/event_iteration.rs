@@ -77,7 +77,7 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
                 event_pre_p: &event_pre_p,
                 max_iters: 4,
                 row_filter: EventUpdateRowFilter::All,
-                root_relation_overrides: &[],
+                root_relation_overrides: &mut Vec::new(),
             },
             |_, _| Ok(false),
         )
@@ -184,8 +184,7 @@ fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
     assert_eq!(p, vec![7.0, 8.0, 1.0]);
 }
 
-#[test]
-fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
+fn event_relation_cascade_model() -> solve::SolveModel {
     let roots = spanned_block(
         vec![
             vec![
@@ -206,7 +205,7 @@ fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
         ]],
         "typed_root_cascade_discrete.mo",
     );
-    let model = solve::SolveModel {
+    solve::SolveModel {
         problem: solve::SolveProblem {
             solve_layout: solve::SolveLayout {
                 solver_maps: solve::SolverNameIndexMaps {
@@ -250,7 +249,12 @@ fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
         initial_y: vec![0.0, 1.0],
         parameters: vec![0.0, 0.0, 0.0],
         ..Default::default()
-    };
+    }
+}
+
+#[test]
+fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
+    let model = event_relation_cascade_model();
     let runtime = SolveRuntime::new_fixture(&model).expect("root cascade runtime should prepare");
     let mut y = model.initial_y.clone();
     let mut p = model.parameters.clone();
@@ -268,7 +272,7 @@ fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
                 event_pre_p: &event_pre_p,
                 max_iters: 8,
                 row_filter: EventUpdateRowFilter::All,
-                root_relation_overrides: &[(0, 1.0)],
+                root_relation_overrides: &mut vec![(0, 1.0)],
             },
             |solver_y, _| {
                 let changed = solver_y[1].to_bits() != (-1.0_f64).to_bits();
@@ -279,6 +283,42 @@ fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
         .expect("a typed root must allow a second relation to join the same event");
 
     assert_eq!(p, vec![1.0, 1.0, 1.0]);
+}
+
+#[test]
+fn event_relation_override_releases_when_projected_input_reverses_sign() {
+    let mut model = event_relation_cascade_model();
+    model.initial_y[1] = -1.0;
+    let runtime = SolveRuntime::new_fixture(&model).unwrap();
+    let mut y = model.initial_y.clone();
+    let mut p = model.parameters.clone();
+    let event_pre_y = y.clone();
+    let event_pre_p = p.clone();
+    let mut overrides = vec![(0, 1.0), (1, 1.0)];
+    runtime
+        .apply_projected_event_update(
+            ProjectedEventUpdateInput {
+                y: &mut y,
+                p: &mut p,
+                t: 0.0,
+                tol: 1e-12,
+                event_pre_y: &event_pre_y,
+                event_pre_p: &event_pre_p,
+                max_iters: 8,
+                row_filter: EventUpdateRowFilter::All,
+                root_relation_overrides: &mut overrides,
+            },
+            |solver_y, _| {
+                let changed = solver_y[1] != 1.0;
+                solver_y[1] = 1.0;
+                Ok(changed)
+            },
+        )
+        .unwrap();
+    // The zero root retains its selected side. The second root moved strictly
+    // positive during the event, so both its relation and consumer are false.
+    assert_eq!(p, vec![1.0, 0.0, 0.0]);
+    assert_eq!(overrides, vec![(0, 1.0)]);
 }
 
 #[test]
@@ -349,7 +389,7 @@ fn event_iteration_advances_discrete_pre_before_the_next_whole_equation_pass() {
                 event_pre_p: &event_pre_p,
                 max_iters: 8,
                 row_filter: EventUpdateRowFilter::All,
-                root_relation_overrides: &[],
+                root_relation_overrides: &mut Vec::new(),
             },
             |solver_y, params| {
                 let projected: f64 = if params[2] != 0.0 { -1.0 } else { 1.0 };
@@ -625,7 +665,7 @@ fn event_iteration_mixes_advanced_discrete_pre_with_event_entry_continuous_pre()
                 event_pre_p: &event_pre_p,
                 max_iters: 8,
                 row_filter: EventUpdateRowFilter::All,
-                root_relation_overrides: &[],
+                root_relation_overrides: &mut Vec::new(),
             },
             |solver_y, _| {
                 let changed = solver_y[0] != -1.0;
@@ -775,7 +815,7 @@ fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
                 event_pre_p: &event_pre_p,
                 max_iters: 8,
                 row_filter: EventUpdateRowFilter::All,
-                root_relation_overrides: &[],
+                root_relation_overrides: &mut Vec::new(),
             },
             |_, _| Ok(false),
         )
@@ -904,7 +944,7 @@ fn clock_owner_observes_projected_relation_memory_on_its_only_event_pass() {
                 event_pre_p: &event_pre_p,
                 max_iters: 8,
                 row_filter: EventUpdateRowFilter::All,
-                root_relation_overrides: &[],
+                root_relation_overrides: &mut Vec::new(),
             },
             |_, _| Ok(false),
         )
@@ -978,9 +1018,8 @@ fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() 
     );
 }
 
-#[test]
-fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
-    let model = solve::SolveModel {
+fn algebraic_relation_partition_model() -> solve::SolveModel {
+    solve::SolveModel {
         problem: solve::SolveProblem {
             continuous: solve::ContinuousSolveSystem {
                 implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
@@ -1052,7 +1091,12 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
         initial_y: vec![0.0, -1.0],
         parameters: vec![-1.0, 0.0],
         ..Default::default()
-    };
+    }
+}
+
+#[test]
+fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
+    let model = algebraic_relation_partition_model();
     let runtime =
         SolveRuntime::new_fixture(&model).expect("typed relation partition should prepare");
     let mut params = model.parameters.clone();
@@ -1062,7 +1106,7 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
             0.0,
             &model.initial_y,
             &mut params,
-            &[],
+            &mut Vec::new(),
         )
         .expect("algebraic relation refresh should succeed");
     assert_eq!(
@@ -1072,15 +1116,30 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
     );
 
     let mut overridden = model.parameters.clone();
+    let mut overrides = vec![(1, 0.0)];
+    let mut zero_y = model.initial_y.clone();
+    zero_y[1] = 0.0;
+    runtime
+        .update_algebraic_relation_memory_from_solver_y_except_overrides(
+            0.0,
+            &zero_y,
+            &mut overridden,
+            &mut overrides,
+        )
+        .expect("an exact-zero root retains its selected side");
+    assert_eq!(overridden, model.parameters);
+    assert_eq!(overrides, vec![(1, 0.0)]);
+
     runtime
         .update_algebraic_relation_memory_from_solver_y_except_overrides(
             0.0,
             &model.initial_y,
             &mut overridden,
-            &[(1, 0.0)],
+            &mut overrides,
         )
-        .expect("a typed located-root override should remain authoritative");
-    assert_eq!(overridden, model.parameters);
+        .expect("an algebraic root leaving its selected side must refresh");
+    assert_eq!(overridden, vec![-1.0, 1.0]);
+    assert!(overrides.is_empty());
 }
 
 #[test]

@@ -19,6 +19,7 @@ mod fmi;
 mod initial_discrete_values;
 mod initialization;
 mod sampling;
+mod scalar_affine;
 mod temporal;
 
 struct TestSource {

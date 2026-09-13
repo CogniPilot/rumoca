@@ -257,7 +257,7 @@ fn test_infer_expr_dims_handles_array_comprehension() {
                     span: test_span(),
                 },
             ],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         }),
         indices: vec![rumoca_core::ComprehensionIndex {

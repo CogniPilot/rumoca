@@ -1,6 +1,7 @@
 //! Unit tests for the user-function interpreter.
 
 use super::*;
+use crate::constant::EvalContext;
 
 fn test_span() -> Span {
     Span::from_offsets(
@@ -305,7 +306,7 @@ fn range_subscript(start: i64, step: Option<i64>, end: i64) -> Subscript {
 fn integer_vector(values: &[i64]) -> Expression {
     Expression::Array {
         elements: values.iter().copied().map(integer_literal).collect(),
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: Span::DUMMY,
     }
 }
@@ -649,7 +650,7 @@ fn slice_assignment_keeps_the_declared_extent() {
         ),
         Expression::Array {
             elements: vec![real_literal(1.0), real_literal(2.0)],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: Span::DUMMY,
         },
     )];

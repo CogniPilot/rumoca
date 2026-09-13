@@ -49,7 +49,8 @@ impl ValueReadInputs {
         for _ in 0..=flat.functions.len() {
             let mut grew = false;
             for (name, function) in &flat.functions {
-                let added = keyed_call_argument_names(function, &masks);
+                let mut added = keyed_call_argument_names(function, &masks);
+                added.extend(keyed_derivative_input_names(flat, function, &masks));
                 let owned = reads.get_mut(name).expect("every function seeds its reads");
                 grew |= added
                     .into_iter()
@@ -71,6 +72,32 @@ impl ValueReadInputs {
             .copied()
             .unwrap_or(false)
     }
+}
+
+fn keyed_derivative_input_names(
+    flat: &flat::Model,
+    function: &rumoca_core::Function,
+    masks: &HashMap<VarName, Vec<bool>>,
+) -> Vec<VarName> {
+    let mut names = Vec::new();
+    for annotation in &function.derivatives {
+        let Some(target) = annotation
+            .derivative_function
+            .resolved_function()
+            .and_then(|reference| flat.get_function_instance(reference.instance_id))
+        else {
+            continue;
+        };
+        let Some(mask) = masks.get(&target.name) else {
+            continue;
+        };
+        for (input, read) in function.inputs.iter().zip(mask) {
+            if *read {
+                names.push(VarName::new(&input.name));
+            }
+        }
+    }
+    names
 }
 
 /// Names `function` passes to a call position the callee keys on by value.

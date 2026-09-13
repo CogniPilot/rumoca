@@ -422,7 +422,7 @@ fn eval_function_expr(
             .map(LocalValue::Real),
         ast::Expression::Array {
             elements,
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             ..
         } => {
             let mut values = Vec::with_capacity(elements.len());

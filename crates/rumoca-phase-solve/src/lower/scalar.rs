@@ -1,3 +1,4 @@
+mod affine_derivative;
 mod arrays;
 mod builtins;
 mod call_scoped_actions;
@@ -13,6 +14,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::*;
+pub(super) use affine_derivative::AffineScalarDerivative;
 
 /// The operands of one checked array-update expression.
 ///
@@ -135,6 +137,9 @@ pub(super) struct ParameterBindingSubstitutions<'dae> {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum ScalarContextFrame<'dae> {
+    NoEvent {
+        parent: u64,
+    },
     Activation {
         parent: u64,
         condition: ActivationCondition<'dae>,
@@ -164,6 +169,20 @@ enum ScalarContextFrame<'dae> {
         parent: u64,
         scenario: u32,
     },
+}
+
+impl ScalarContextFrame<'_> {
+    const fn parent(&self) -> u64 {
+        match self {
+            Self::NoEvent { parent }
+            | Self::Activation { parent, .. }
+            | Self::Function { parent, .. }
+            | Self::Domain { parent, .. }
+            | Self::Parameter { parent, .. }
+            | Self::Derivative { parent, .. }
+            | Self::DerivativeSeed { parent, .. } => *parent,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -654,12 +673,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     function: candidate,
                     ..
                 } if *candidate == function => return context,
-                ScalarContextFrame::Activation { parent, .. }
-                | ScalarContextFrame::Function { parent, .. }
-                | ScalarContextFrame::Domain { parent, .. }
-                | ScalarContextFrame::Parameter { parent, .. }
-                | ScalarContextFrame::Derivative { parent, .. }
-                | ScalarContextFrame::DerivativeSeed { parent, .. } => context = *parent,
+                frame => context = frame.parent(),
             }
         }
         0
@@ -819,38 +833,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(self.ops)
     }
 
-    /// Compile the signed sum `Σ ±termᵢ` into one program.
-    ///
-    /// An empty sum is the value zero: the terms a structural proof hands over
-    /// are already reduced, so a displacement that cancelled leaves nothing to
-    /// add rather than a missing row.
-    pub(super) fn signed_sum_program(
-        mut self,
-        terms: &[(dae::ExprId<'dae>, usize, bool)],
-        span: Span,
-    ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        let mut total: Option<solve::Reg> = None;
-        for (expression, scalar, negated) in terms.iter().copied() {
-            let value = self.expression(expression, scalar)?;
-            let operator = if negated {
-                dae::BinaryOperator::Subtract
-            } else {
-                dae::BinaryOperator::Add
-            };
-            total = Some(match (total, negated) {
-                (None, false) => value,
-                (None, true) => self.unary(dae::UnaryOperator::Negate, value, span)?,
-                (Some(total), _) => self.binary(operator, total, value, span)?,
-            });
-        }
-        let output = match total {
-            Some(total) => total,
-            None => self.constant(0.0, span)?,
-        };
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
-    }
-
     /// Compile `slot - Σ ±termᵢ` into one residual program.
     ///
     /// The coordinate is read from its storage rather than through an
@@ -943,12 +925,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             numerator = self.unary(dae::UnaryOperator::Negate, numerator, input.span)?;
         }
         let coefficient = self.expression(input.coefficient, input.coefficient_scalar)?;
-        let output = self.binary(
-            dae::BinaryOperator::Divide,
-            numerator,
-            coefficient,
-            input.span,
-        )?;
+        let output = self.affine_quotient(numerator, coefficient, input.span)?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
         Ok(self.ops)
     }
@@ -1212,9 +1189,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 ) {
                     return self.pack_promoted_concatenation(expression, builtin, arguments, span);
                 }
+                if builtin == dae::PureBuiltin::NoEvent {
+                    let argument = arguments.get(0).expect("checked noEvent argument");
+                    return self.with_no_event(|compiler| compiler.pack_expression(argument));
+                }
                 let alias = match builtin {
                     dae::PureBuiltin::Smooth => arguments.get(1),
-                    dae::PureBuiltin::NoEvent | dae::PureBuiltin::Vector => arguments.get(0),
+                    dae::PureBuiltin::Vector => arguments.get(0),
                     _ => None,
                 };
                 if let Some(alias) = alias {
@@ -1258,9 +1239,47 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(start)
     }
 
+    fn expression(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        scalar: usize,
+    ) -> Result<solve::Reg, LowerError> {
+        if let Some(index) = self.buffered_relation_slot(expression) {
+            return self.load_slot(
+                solve::scalar_slot_p(index),
+                self.node(expression).provenance().span(),
+            );
+        }
+        self.unbuffered_expression(expression, scalar)
+    }
+
+    fn buffered_relation_slot(&self, expression: dae::ExprId<'dae>) -> Option<usize> {
+        let slot = self.layout.buffered_relations.expression_slot(expression)?;
+        let mut context = self.context_id;
+        while let Some(frame) = self.context_frames.get(&context) {
+            if matches!(frame, ScalarContextFrame::NoEvent { .. }) {
+                return None;
+            }
+            context = frame.parent();
+        }
+        Some(slot)
+    }
+
+    fn with_no_event<T>(
+        &mut self,
+        lower: impl FnOnce(&mut Self) -> Result<T, LowerError>,
+    ) -> Result<T, LowerError> {
+        self.enter_context(ScalarContextFrame::NoEvent {
+            parent: self.context_id,
+        });
+        let result = lower(self);
+        self.leave_context();
+        result
+    }
+
     // SPEC_0021: Exception - exhaustive scalar dispatch over expression operation variants.
     #[allow(clippy::too_many_lines)]
-    fn expression(
+    fn unbuffered_expression(
         &mut self,
         expression: dae::ExprId<'dae>,
         scalar: usize,
@@ -1419,7 +1438,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .get(&context)
                 .expect("non-root scalar context has a frame")
             {
-                ScalarContextFrame::Function { .. } | ScalarContextFrame::DerivativeSeed { .. } => {
+                ScalarContextFrame::NoEvent { .. }
+                | ScalarContextFrame::Function { .. }
+                | ScalarContextFrame::DerivativeSeed { .. } => {
                     return None;
                 }
                 ScalarContextFrame::Activation { parent, .. }

@@ -185,11 +185,7 @@ impl Interpreter {
                 else_branch,
                 ..
             } => self.if_expression(branches, else_branch),
-            Expression::Array {
-                elements,
-                is_matrix,
-                ..
-            } => self.array_expression(elements, *is_matrix),
+            Expression::Array { elements, kind, .. } => self.array_expression(elements, *kind),
             Expression::Range {
                 start, step, end, ..
             } => self.range_expression(start, step.as_deref(), end),
@@ -241,9 +237,9 @@ impl Interpreter {
     fn array_expression(
         &mut self,
         elements: &[Expression],
-        is_matrix: bool,
+        kind: rumoca_core::ArrayConstructor,
     ) -> Result<Value, Refusal> {
-        if is_matrix {
+        if kind.concatenation_axis().is_some() {
             return Err(Refusal::UnsupportedExpression);
         }
         elements

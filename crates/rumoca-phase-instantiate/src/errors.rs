@@ -28,6 +28,7 @@
 //! | EI032 | InvalidTypeAttribute | §4.4.4 |
 //! | EI033 | MissingResolvedIdentity | compiler phase-order invariant |
 //! | EI034 | TypeNotFound | type lookup |
+//! | EI035 | UnsupportedFixedAttribute | §8.6 |
 //! | EI098 | MissingSourceContext | compiler provenance invariant |
 //!
 //! Uses miette for rich diagnostic output with error codes and help text.
@@ -340,6 +341,20 @@ pub enum InstantiateError {
         span: Span,
     },
 
+    /// A supplied fixed attribute cannot be represented without losing initial constraints.
+    #[error("unsupported `fixed` attribute: {value}")]
+    #[diagnostic(
+        code(rumoca::instantiate::EI035),
+        help(
+            "the current declaration owner requires a decidable, uniform Boolean value; the supplied initialization constraint cannot be discarded"
+        )
+    )]
+    UnsupportedFixedAttribute {
+        value: String,
+        #[label("fixed attribute could not be represented")]
+        span: Span,
+    },
+
     /// Resolve did not attach an exact declaration identity required by Instantiation.
     #[error("component `{name}` is missing its resolved declaration identity")]
     #[diagnostic(code(rumoca::instantiate::EI033))]
@@ -498,6 +513,7 @@ impl PhaseError for InstantiateError {
             | Self::InstantiationDepthLimit { span, .. }
             | Self::InstantiationCycle { span, .. }
             | Self::InvalidTypeAttribute { span, .. }
+            | Self::UnsupportedFixedAttribute { span, .. }
             | Self::MissingResolvedIdentity { span, .. } => std::slice::from_ref(span),
             Self::ModelNotFound(_) | Self::MissingSourceContext { .. } => &[],
         };

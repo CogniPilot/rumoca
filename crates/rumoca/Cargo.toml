@@ -189,6 +189,7 @@ rumoca-ir-ast = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
+rumoca-phase-structural = { workspace = true }
 rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-parse = { workspace = true }
 rumoca-phase-codegen = { workspace = true }

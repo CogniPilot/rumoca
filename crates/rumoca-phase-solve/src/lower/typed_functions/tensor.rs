@@ -284,7 +284,10 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         if builtin == dae::PureBuiltin::Skew {
             return self.skew(value_type, arguments, at);
         }
-        if builtin == dae::PureBuiltin::Cross {
+        if matches!(
+            builtin,
+            dae::PureBuiltin::Cross | dae::PureBuiltin::LinearSolve
+        ) {
             let lhs = arguments.get(0).ok_or(
                 solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
             )?;
@@ -298,7 +301,11 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             }
             let lhs = self.expression(lhs)?.only_register(at)?;
             let rhs = self.expression(rhs)?.only_register(at)?;
-            let register = self.builder.cross(lhs, rhs, at)?;
+            let register = match builtin {
+                dae::PureBuiltin::Cross => self.builder.cross(lhs, rhs, at)?,
+                dae::PureBuiltin::LinearSolve => self.builder.linear_solve(lhs, rhs, at)?,
+                _ => unreachable!("guard selects binary tensor kernels"),
+            };
             return Ok(LoweredValue::scalar(value_type, register));
         }
         if matches!(

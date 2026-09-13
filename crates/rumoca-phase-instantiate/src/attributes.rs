@@ -1,7 +1,7 @@
 use super::*;
 use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, eval_state_select_expr_with_source_scope, expr_to_bool, expr_to_string,
-    parse_state_select,
+    InstantiateEvalCtx, eval_state_select_expr_with_source_scope, expr_to_string,
+    parse_state_select, try_eval_uniform_boolean_attribute,
 };
 
 pub(super) struct ComponentAttrsAndBinding {
@@ -360,7 +360,7 @@ pub(super) fn extract_attributes(
     let mut attrs = ExtractedAttributes {
         start_is_explicit: start_from_mod_env.is_some(),
         start: start_from_mod_env,
-        fixed: mod_env.get_attr(comp_name, "fixed").and_then(expr_to_bool),
+        fixed: extract_fixed_attribute(comp, comp_name, eval_ctx, imports)?,
         min: attr_from_mod_env("min"),
         max: attr_from_mod_env("max"),
         nominal: attr_from_mod_env("nominal"),
@@ -381,7 +381,6 @@ pub(super) fn extract_attributes(
                 attrs.start = Some(value.clone());
                 attrs.start_is_explicit = true;
             }
-            "fixed" if attrs.fixed.is_none() => attrs.fixed = expr_to_bool(value),
             "min" if attrs.min.is_none() => attrs.min = Some(value.clone()),
             "max" if attrs.max.is_none() => attrs.max = Some(value.clone()),
             "nominal" if attrs.nominal.is_none() => attrs.nominal = Some(value.clone()),
@@ -403,6 +402,45 @@ pub(super) fn extract_attributes(
     }
 
     Ok(attrs)
+}
+
+fn extract_fixed_attribute(
+    comp: &ast::Component,
+    comp_name: &str,
+    eval_ctx: &InstantiateEvalCtx<'_>,
+    imports: &[(String, String)],
+) -> InstantiateResult<Option<bool>> {
+    let path = ast::QualifiedName::from_ident(comp_name).child("fixed");
+    match eval_ctx.mod_env.get(&path) {
+        Some(value) => {
+            parse_required_fixed(&value.value, eval_ctx, imports, value.source_scope.as_ref())
+                .map(Some)
+        }
+        None => comp
+            .modifications
+            .get("fixed")
+            .map(|value| parse_required_fixed(value, eval_ctx, imports, None))
+            .transpose(),
+    }
+}
+
+fn parse_required_fixed(
+    value: &ast::Expression,
+    eval_ctx: &InstantiateEvalCtx<'_>,
+    imports: &[(String, String)],
+    source_scope: Option<&ast::QualifiedName>,
+) -> InstantiateResult<bool> {
+    try_eval_uniform_boolean_attribute(eval_ctx, value, source_scope)
+        .or_else(|| {
+            let qualified = crate::dims::qualify_shape_expr_imports(eval_ctx.tree, value, imports);
+            try_eval_uniform_boolean_attribute(eval_ctx, &qualified, source_scope)
+        })
+        .ok_or_else(|| {
+            Box::new(InstantiateError::UnsupportedFixedAttribute {
+                value: value.to_string(),
+                span: value.span(),
+            })
+        })
 }
 
 fn parse_required_state_select(

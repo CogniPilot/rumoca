@@ -35,7 +35,7 @@ impl CompiledPureCallTable {
     /// buffers; aggregate shapes remain in `site` and are not scalar IR.
     pub fn call_scalar_payload(
         &self,
-        site: &rumoca_ir_solve::SolvePureCallSite,
+        site: rumoca_eval_solve::PureCallInvocation<'_>,
         input: &[f64],
         output: &mut [f64],
         input_cells: &mut Vec<u64>,
@@ -633,7 +633,7 @@ mod tests {
 
         compiled
             .call_scalar_payload(
-                &site,
+                rumoca_eval_solve::PureCallInvocation::Primal(&site),
                 &[1.25, -2.5, 1.0],
                 &mut output,
                 &mut input_cells,

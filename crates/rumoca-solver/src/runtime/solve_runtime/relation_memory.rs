@@ -107,8 +107,8 @@ impl SolveRuntime {
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
         solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
-            block: &self.model.problem.initialization.update_rhs,
-            targets: &self.model.problem.initialization.update_targets,
+            block: self.model.problem.initialization.update_rhs(),
+            targets: self.model.problem.initialization.update_targets(),
             y,
             p,
             t,
@@ -251,14 +251,8 @@ impl SolveRuntime {
             // whole-event pass; updating it only afterward lets fixed/clocked
             // owners consume the stale side and they are not permitted to run
             // again merely because relation memory changed later in the pass.
-            let relation_changed_before_discrete = self
-                .update_relation_memory_from_solver_y_except_overrides(
-                    t,
-                    y,
-                    p,
-                    tol,
-                    root_relation_overrides,
-                )?;
+            let relation_changed_before_discrete =
+                self.refresh_event_relation_memory(t, y, p, tol, root_relation_overrides)?;
             changed |= relation_changed_before_discrete;
             if relation_changed_before_discrete {
                 changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
@@ -283,13 +277,8 @@ impl SolveRuntime {
                 )?;
                 changed |= discrete_changed;
             }
-            let relation_changed = self.update_relation_memory_from_solver_y_except_overrides(
-                t,
-                y,
-                p,
-                tol,
-                root_relation_overrides,
-            )?;
+            let relation_changed =
+                self.refresh_event_relation_memory(t, y, p, tol, root_relation_overrides)?;
             changed |= relation_changed;
             let overrides_changed =
                 self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
@@ -364,13 +353,13 @@ impl SolveRuntime {
         Ok(changed)
     }
 
-    pub(crate) fn update_relation_memory_from_solver_y_except_overrides(
+    pub(crate) fn refresh_event_relation_memory(
         &self,
         t: f64,
         y: &[f64],
         p: &mut [f64],
         _tol: f64,
-        root_relation_overrides: &[(usize, f64)],
+        root_relation_overrides: &mut Vec<(usize, f64)>,
     ) -> Result<bool, RuntimeSolveError> {
         if self
             .model
@@ -383,7 +372,11 @@ impl SolveRuntime {
             return Ok(false);
         }
         let roots = self.eval_root_conditions_from_solver_y(t, y, p)?;
-        self.update_root_relation_memory_from_values(&roots, p, root_relation_overrides)
+        let released =
+            self.release_reversed_relation_overrides(&roots, root_relation_overrides, |_| true)?;
+        let changed =
+            self.update_root_relation_memory_from_values(&roots, p, root_relation_overrides)?;
+        Ok(released || changed)
     }
 
     pub(crate) fn update_algebraic_relation_memory_from_solver_y_except_overrides(
@@ -391,22 +384,53 @@ impl SolveRuntime {
         t: f64,
         y: &[f64],
         p: &mut [f64],
-        root_relation_overrides: &[(usize, f64)],
+        root_relation_overrides: &mut Vec<(usize, f64)>,
     ) -> Result<bool, RuntimeSolveError> {
         let roots = self.eval_root_conditions_from_solver_y(t, y, p)?;
-        self.update_root_relation_memory_from_values_where(
+        let algebraic = |root_index| {
+            self.model
+                .problem
+                .events
+                .root_relation_refresh_roles
+                .get(root_index)
+                .is_some_and(|role| *role == solve::RootRelationRefreshRole::AlgebraicDependent)
+        };
+        let released =
+            self.release_reversed_relation_overrides(&roots, root_relation_overrides, algebraic)?;
+        let changed = self.update_root_relation_memory_from_values_where(
             &roots,
             p,
             root_relation_overrides,
-            |root_index| {
-                self.model
-                    .problem
-                    .events
-                    .root_relation_refresh_roles
-                    .get(root_index)
-                    .is_some_and(|role| *role == solve::RootRelationRefreshRole::AlgebraicDependent)
-            },
-        )
+            algebraic,
+        )?;
+        Ok(released || changed)
+    }
+
+    /// A located side seeds event iteration; it cannot constrain a relation
+    /// whose inputs subsequently move to the opposite side (MLS Appendix B).
+    /// Keep the selection at an exact zero and carry released selections out
+    /// to post-commit canonicalization so they cannot be reintroduced there.
+    fn release_reversed_relation_overrides<F>(
+        &self,
+        roots: &[f64],
+        overrides: &mut Vec<(usize, f64)>,
+        mut include: F,
+    ) -> Result<bool, RuntimeSolveError>
+    where
+        F: FnMut(usize) -> bool,
+    {
+        if let Some((index, _)) = overrides.iter().find(|(index, _)| *index >= roots.len()) {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "event relation override {index} is outside the root vector"
+            )));
+        }
+        let before = overrides.len();
+        overrides.retain(|(index, selected)| {
+            !include(*index)
+                || roots[*index] == 0.0
+                || relation_memory_value_from_root(roots[*index]) == *selected
+        });
+        Ok(overrides.len() != before)
     }
 
     pub(super) fn update_root_relation_memory_from_values(
@@ -466,13 +490,17 @@ impl SolveRuntime {
                     "root relation-memory parameter index {parameter_index} is out of bounds"
                 ))
             })?;
-            let value = relation_memory_value_from_root(*root);
+            let root = crate::runtime::solve_ops::orient_typed_root_zero(
+                *root,
+                self.model.problem.events.root_zero_domains[root_index],
+            );
+            let value = relation_memory_value_from_root(root);
             let before = *slot;
             tracing::trace!(
                 target: "rumoca_solver::relation_memory",
                 root_index,
                 parameter_index,
-                root = *root,
+                root,
                 before,
                 value,
                 "refresh root relation memory"

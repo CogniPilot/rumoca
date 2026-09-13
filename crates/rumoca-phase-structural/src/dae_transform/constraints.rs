@@ -14,16 +14,30 @@
 //! definitions are read in either orientation, so the `w - der(phi)` form MSL
 //! components use supplies `d/dt phi` exactly as `der(phi) - w` would.
 
+mod materialization;
+mod state_derivative;
+
+use state_derivative::has_state_only_first_derivative;
+
+use materialization::{
+    can_materialize_holonomic_value, can_materialize_holonomic_value_in_context,
+};
+
 use rumoca_core::{Span, StateSelect};
+use rumoca_eval_dae::FunctionCallContext;
 use rumoca_ir_dae as dae;
 
 use crate::CausalDefinitions;
+use crate::residual_normalization::equation_sides;
 
+use super::builtin_profiles::{is_differentiable_binary, is_differentiable_builtin};
+use super::component_constraint::ComponentConstraint;
+use super::component_projection::projected_element;
 use super::equalities::{
-    EqualityAnchor, EqualitySign, FunctionCallContext, SingletonRealProjection, SystemEqualities,
-    forwarded_call_argument, is_time_invariant, singleton_real_projection,
+    EqualityAnchor, EqualitySign, SystemEqualities, forwarded_call_argument, is_time_invariant,
 };
 use super::initial_pins::represented_initial_values;
+use super::tensor_maps::has_invariant_subscripts;
 use super::{DirectStateConstraint, HolonomicConstraint, HolonomicDifferentiationProof};
 use crate::StructuralError;
 
@@ -33,6 +47,7 @@ pub(super) struct DifferentiationFacts {
     pub(super) equalities: SystemEqualities,
     pub(super) derivative_definitions: Vec<Option<u32>>,
     pub(super) algebraic_definitions: Vec<Option<u32>>,
+    pub(super) auxiliary_blocks: Vec<Option<super::auxiliary_blocks::AuxiliaryBlock>>,
 }
 
 impl DifferentiationFacts {
@@ -47,11 +62,14 @@ impl DifferentiationFacts {
                     .map(dae::ExprId::index)
             })
             .collect();
-        Self {
+        let mut facts = Self {
             equalities: SystemEqualities::collect(view),
             derivative_definitions: explicit_derivative_definitions(view),
             algebraic_definitions,
-        }
+            auxiliary_blocks: vec![None; view.variable_count()],
+        };
+        facts.auxiliary_blocks = super::auxiliary_blocks::derive_blocks(view, &facts);
+        facts
     }
 
     pub(super) fn algebraic_definition<'dae>(
@@ -59,8 +77,46 @@ impl DifferentiationFacts {
         view: dae::DaeView<'dae>,
         algebraic: dae::AlgebraicId<'dae>,
     ) -> Option<dae::ExprId<'dae>> {
+        if self.auxiliary_blocks[algebraic.index() as usize].is_some() {
+            return None;
+        }
         self.algebraic_definitions[algebraic.index() as usize]
             .and_then(|definition| view.expression_id(definition as usize))
+    }
+
+    pub(super) fn can_materialize_value(&self, view: dae::DaeView<'_>, expression: u32) -> bool {
+        self.materialized_state_anchors(view, expression).is_some()
+    }
+
+    pub(super) fn materialized_state_anchors(
+        &self,
+        view: dae::DaeView<'_>,
+        expression: u32,
+    ) -> Option<Vec<u32>> {
+        self.materialized_state_anchors_in_context(
+            view,
+            expression,
+            &FunctionCallContext::default(),
+        )
+    }
+
+    pub(super) fn materialized_state_anchors_in_context<'dae>(
+        &self,
+        view: dae::DaeView<'dae>,
+        expression: u32,
+        context: &FunctionCallContext<'dae>,
+    ) -> Option<Vec<u32>> {
+        let expression = view.expression_id(expression as usize)?;
+        let mut states = Vec::new();
+        can_materialize_holonomic_value_in_context(
+            view,
+            self,
+            expression,
+            &mut vec![Visit::Pending; view.expression_count()],
+            context,
+            &mut states,
+        )
+        .then_some(states)
     }
 
     /// Whether the finalized source proves this instantiated expression is the
@@ -73,6 +129,12 @@ impl DifferentiationFacts {
     ) -> bool {
         let scoped_context = context.scoped_to_expression(view, expression);
         let context = &scoped_context;
+        if let Some(branch) = context.selected_branch(view, expression) {
+            return self.expression_is_zero(view, branch, context);
+        }
+        if let Some(element) = projected_element(view, self, expression) {
+            return self.expression_is_zero(view, element, context);
+        }
         if let Some((result, nested)) = context.call_result(view, expression) {
             return self.expression_is_zero(view, result, &nested);
         }
@@ -591,15 +653,7 @@ fn direct_state_constraint<'dae>(
     residual_id: dae::ExprId<'dae>,
     owner: dae::DaeProvenance,
 ) -> Option<DirectStateConstraint> {
-    let residual = view.expression(residual_id)?;
-    let dae::ExpressionOperation::Binary {
-        operator: dae::BinaryOperator::Subtract,
-        lhs,
-        rhs,
-    } = residual.operation()
-    else {
-        return None;
-    };
+    let (lhs, rhs) = equation_sides(view, residual_id)?;
     direct_state_definition(view, facts, lhs, rhs, owner)
         .or_else(|| direct_state_definition(view, facts, rhs, lhs, owner))
 }
@@ -752,16 +806,16 @@ pub(super) fn index_reduction_constraints(view: dae::DaeView<'_>) -> Vec<Holonom
             residuals
                 .flat_map(|(body_ordinal, residual)| {
                     let ordinary =
-                        prove_holonomic_differentiation(view, &facts, &mut scratch, residual).map(
-                            |proof| HolonomicConstraint {
+                        holonomic_differentiation_proofs(view, &facts, &mut scratch, residual)
+                            .into_iter()
+                            .map(move |proof| HolonomicConstraint {
                                 owner_ordinal,
                                 body_ordinal,
                                 residual: residual.index(),
                                 owner,
                                 proof,
                                 lifted_algebraic: None,
-                            },
-                        );
+                            });
                     let lifted = causal_definition(view, &causal, residual).and_then(
                         |(algebraic, definition)| {
                             let proof = prove_algebraic_lift_differentiation(
@@ -780,7 +834,7 @@ pub(super) fn index_reduction_constraints(view: dae::DaeView<'_>) -> Vec<Holonom
                             })
                         },
                     );
-                    ordinary.into_iter().chain(lifted)
+                    ordinary.chain(lifted)
                 })
                 .collect::<Vec<_>>()
                 .into_iter()
@@ -798,40 +852,110 @@ pub(super) fn index_reduction_constraints(view: dae::DaeView<'_>) -> Vec<Holonom
 /// component aliases such as `state - connector = 0`: differentiating those
 /// would only replace a defining equation with a tautology. The older direct
 /// state-only form remains admissible with one state.
+fn holonomic_differentiation_proofs<'dae>(
+    view: dae::DaeView<'dae>,
+    facts: &DifferentiationFacts,
+    scratch: &mut HolonomicProofScratch,
+    residual: dae::ExprId<'dae>,
+) -> Vec<HolonomicDifferentiationProof> {
+    if is_materialized_definition(view, facts, residual) {
+        return Vec::new();
+    }
+    if let Some(proof) = prove_holonomic_differentiation(view, facts, scratch, residual, None) {
+        return vec![proof];
+    }
+    let count = view
+        .expression(residual)
+        .and_then(|expression| expression.value_type().scalar_count())
+        .unwrap_or(0);
+    (0..count)
+        .filter_map(|scalar| {
+            let component = ComponentConstraint::derive(view, facts, residual, scalar)?;
+            prove_holonomic_differentiation(view, facts, scratch, residual, Some(component))
+        })
+        .collect()
+}
+
+/// The value proof would substitute this very equation's RHS for its target,
+/// so differentiating the residual yields an identity and loses its owner.
+fn is_materialized_definition<'dae>(
+    view: dae::DaeView<'dae>,
+    facts: &DifferentiationFacts,
+    residual: dae::ExprId<'dae>,
+) -> bool {
+    let Some((lhs, rhs)) = equation_sides(view, residual) else {
+        return false;
+    };
+    [(lhs, rhs), (rhs, lhs)].into_iter().any(|(target, value)| {
+        let Some(node) = view.expression(target) else {
+            return false;
+        };
+        let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) =
+            node.operation()
+        else {
+            return false;
+        };
+        facts
+            .equalities
+            .value_anchor_of(algebraic.index())
+            .is_none()
+            && facts.algebraic_definition(view, algebraic) == Some(value)
+    })
+}
+
 fn prove_holonomic_differentiation<'dae>(
     view: dae::DaeView<'dae>,
     facts: &DifferentiationFacts,
     scratch: &mut HolonomicProofScratch,
     residual: dae::ExprId<'dae>,
+    component: Option<ComponentConstraint>,
 ) -> Option<HolonomicDifferentiationProof> {
     scratch.begin_root();
     let mut walk = HolonomicProofWalk {
         view,
         facts,
+        residual: residual.index(),
         anchored_states: Vec::new(),
         saw_algebraic: false,
         function_context: FunctionCallContext::default(),
         scratch,
     };
-    if !walk.can_differentiate_order(residual, 1, true) {
+    let leaves = component
+        .as_ref()
+        .map_or_else(|| vec![residual.index()], ComponentConstraint::leaves);
+    let leaves = leaves
+        .into_iter()
+        .map(|index| view.expression_id(index as usize).unwrap())
+        .collect::<Vec<_>>();
+    if !leaves
+        .iter()
+        .all(|&leaf| walk.can_differentiate_order(leaf, 1, true))
+    {
         return None;
     }
     let mut value_visited = vec![Visit::Pending; view.expression_count()];
-    if !can_materialize_holonomic_value(view, facts, residual, &mut value_visited) {
+    if !leaves
+        .iter()
+        .all(|&leaf| can_materialize_holonomic_value(view, facts, leaf, &mut value_visited))
+    {
         return None;
     }
-    let second_order = walk.can_differentiate_order(residual, 2, true);
+    let second_order = leaves
+        .iter()
+        .all(|&leaf| walk.can_differentiate_order(leaf, 2, true));
     let maximum_order = if second_order {
         let mut derivative_visited = vec![Visit::Pending; view.expression_count()];
         let mut derivative_states = vec![Visit::Pending; view.variable_count()];
-        if has_state_only_first_derivative(
-            view,
-            facts,
-            residual,
-            &mut derivative_visited,
-            &mut derivative_states,
-            &mut value_visited,
-        ) {
+        if leaves.iter().all(|&leaf| {
+            has_state_only_first_derivative(
+                view,
+                facts,
+                leaf,
+                &mut derivative_visited,
+                &mut derivative_states,
+                &mut value_visited,
+            )
+        }) {
             2
         } else {
             1
@@ -848,6 +972,7 @@ fn prove_holonomic_differentiation<'dae>(
         residual: residual.index(),
         maximum_order,
         anchored_states: walk.anchored_states.into_boxed_slice(),
+        component,
     })
 }
 
@@ -856,14 +981,7 @@ fn causal_definition<'dae>(
     causal: &CausalDefinitions<'dae>,
     residual: dae::ExprId<'dae>,
 ) -> Option<(dae::AlgebraicId<'dae>, dae::ExprId<'dae>)> {
-    let dae::ExpressionOperation::Binary {
-        operator: dae::BinaryOperator::Subtract,
-        lhs,
-        rhs,
-    } = view.expression(residual)?.operation()
-    else {
-        return None;
-    };
+    let (lhs, rhs) = equation_sides(view, residual)?;
     [(lhs, rhs), (rhs, lhs)]
         .into_iter()
         .find_map(|(target, value)| {
@@ -895,6 +1013,7 @@ fn prove_algebraic_lift_differentiation<'dae>(
     let mut walk = HolonomicProofWalk {
         view,
         facts,
+        residual: definition.index(),
         anchored_states: Vec::new(),
         saw_algebraic: false,
         function_context: FunctionCallContext::default(),
@@ -916,257 +1035,14 @@ fn prove_algebraic_lift_differentiation<'dae>(
         residual: definition.index(),
         maximum_order: 1,
         anchored_states: walk.anchored_states.into_boxed_slice(),
+        component: None,
     })
-}
-
-/// Whether the retained position-level residual can be reconstructed entirely
-/// from exact state/invariant value anchors.
-fn can_materialize_holonomic_value<'dae>(
-    view: dae::DaeView<'dae>,
-    facts: &DifferentiationFacts,
-    expression: dae::ExprId<'dae>,
-    visited: &mut [Visit],
-) -> bool {
-    can_materialize_holonomic_value_in_context(
-        view,
-        facts,
-        expression,
-        visited,
-        &FunctionCallContext::default(),
-    )
-}
-
-fn can_materialize_holonomic_value_in_context<'dae>(
-    view: dae::DaeView<'dae>,
-    facts: &DifferentiationFacts,
-    expression: dae::ExprId<'dae>,
-    visited: &mut [Visit],
-    context: &FunctionCallContext<'dae>,
-) -> bool {
-    let scoped_context = context.scoped_to_expression(view, expression);
-    let context = &scoped_context;
-    let index = expression.index() as usize;
-    if context.is_empty() {
-        match visited[index] {
-            Visit::Differentiable => return true,
-            Visit::InProgress => return false,
-            Visit::Pending => visited[index] = Visit::InProgress,
-        }
-    }
-    if let Some((result, nested)) = context.call_result(view, expression) {
-        let materializable =
-            can_materialize_holonomic_value_in_context(view, facts, result, visited, &nested);
-        if context.is_empty() {
-            visited[index] = if materializable {
-                Visit::Differentiable
-            } else {
-                Visit::Pending
-            };
-        }
-        return materializable;
-    }
-    if let Some(argument) = forwarded_call_argument(view, expression) {
-        return can_materialize_holonomic_value_in_context(view, facts, argument, visited, context);
-    }
-    let Some(expression) = view.expression(expression) else {
-        return false;
-    };
-    let materializable = match expression.operation() {
-        dae::ExpressionOperation::Literal(_)
-        | dae::ExpressionOperation::Coordinate(
-            dae::CoordinateView::Parameter(_)
-            | dae::CoordinateView::Time
-            | dae::CoordinateView::State(_),
-        ) => true,
-        dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(parameter)) => {
-            context
-                .parameter_argument(parameter)
-                .is_some_and(|argument| {
-                    can_materialize_holonomic_value_in_context(
-                        view, facts, argument, visited, context,
-                    )
-                })
-        }
-        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => facts
-            .equalities
-            .value_anchor_of(algebraic.index())
-            .and_then(|(anchor, _)| facts.equalities.anchor_expression(anchor))
-            .and_then(|anchor| view.expression_id(anchor as usize))
-            .or_else(|| facts.algebraic_definition(view, algebraic))
-            .is_some_and(|anchor| {
-                can_materialize_holonomic_value_in_context(view, facts, anchor, visited, context)
-            }),
-        dae::ExpressionOperation::Unary {
-            operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
-            operand,
-        } => can_materialize_holonomic_value_in_context(view, facts, operand, visited, context),
-        dae::ExpressionOperation::Binary {
-            operator:
-                dae::BinaryOperator::Add | dae::BinaryOperator::Subtract | dae::BinaryOperator::Multiply,
-            lhs,
-            rhs,
-        } => {
-            can_materialize_holonomic_value_in_context(view, facts, lhs, visited, context)
-                && can_materialize_holonomic_value_in_context(view, facts, rhs, visited, context)
-        }
-        dae::ExpressionOperation::Array(elements) => elements.iter().all(|element| {
-            can_materialize_holonomic_value_in_context(view, facts, element, visited, context)
-        }),
-        dae::ExpressionOperation::Field { base, field } => context
-            .projected_field(view, base, field)
-            .is_some_and(|(projected, nested)| {
-                can_materialize_holonomic_value_in_context(view, facts, projected, visited, &nested)
-            }),
-        dae::ExpressionOperation::Builtin {
-            builtin: dae::PureBuiltin::Sin | dae::PureBuiltin::Cos | dae::PureBuiltin::Atan2,
-            arguments,
-        } => arguments.iter().all(|argument| {
-            can_materialize_holonomic_value_in_context(view, facts, argument, visited, context)
-        }),
-        _ => false,
-    };
-    if context.is_empty() {
-        visited[index] = if materializable {
-            Visit::Differentiable
-        } else {
-            Visit::Pending
-        };
-    }
-    materializable
-}
-
-/// Whether the retained velocity-level residual materializes through state
-/// coordinates rather than derivative or algebraic coordinates.
-fn has_state_only_first_derivative<'dae>(
-    view: dae::DaeView<'dae>,
-    facts: &DifferentiationFacts,
-    expression: dae::ExprId<'dae>,
-    visited: &mut [Visit],
-    state_visited: &mut [Visit],
-    value_visited: &mut [Visit],
-) -> bool {
-    let index = expression.index() as usize;
-    match visited[index] {
-        Visit::Differentiable => return true,
-        Visit::InProgress => return false,
-        Visit::Pending => visited[index] = Visit::InProgress,
-    }
-    if let Some(argument) = forwarded_call_argument(view, expression) {
-        return has_state_only_first_derivative(
-            view,
-            facts,
-            argument,
-            visited,
-            state_visited,
-            value_visited,
-        );
-    }
-    let Some(expression) = view.expression(expression) else {
-        return false;
-    };
-    let materializable = match expression.operation() {
-        dae::ExpressionOperation::Literal(_)
-        | dae::ExpressionOperation::Coordinate(
-            dae::CoordinateView::Parameter(_) | dae::CoordinateView::Time,
-        ) => true,
-        dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) => {
-            state_has_materializable_derivative(
-                view,
-                facts,
-                state.index(),
-                state_visited,
-                value_visited,
-            )
-        }
-        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
-            match facts.equalities.value_anchor_of(algebraic.index()) {
-                Some((EqualityAnchor::Invariant { .. }, _)) => true,
-                Some((EqualityAnchor::State(state), _)) => state_has_materializable_derivative(
-                    view,
-                    facts,
-                    state,
-                    state_visited,
-                    value_visited,
-                ),
-                None => facts
-                    .algebraic_definition(view, algebraic)
-                    .is_some_and(|definition| {
-                        has_state_only_first_derivative(
-                            view,
-                            facts,
-                            definition,
-                            visited,
-                            state_visited,
-                            value_visited,
-                        )
-                    }),
-            }
-        }
-        dae::ExpressionOperation::Unary {
-            operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
-            operand,
-        } => has_state_only_first_derivative(
-            view,
-            facts,
-            operand,
-            visited,
-            state_visited,
-            value_visited,
-        ),
-        dae::ExpressionOperation::Binary {
-            operator:
-                dae::BinaryOperator::Add | dae::BinaryOperator::Subtract | dae::BinaryOperator::Multiply,
-            lhs,
-            rhs,
-        } => {
-            has_state_only_first_derivative(view, facts, lhs, visited, state_visited, value_visited)
-                && has_state_only_first_derivative(
-                    view,
-                    facts,
-                    rhs,
-                    visited,
-                    state_visited,
-                    value_visited,
-                )
-        }
-        _ => false,
-    };
-    visited[index] = if materializable {
-        Visit::Differentiable
-    } else {
-        Visit::Pending
-    };
-    materializable
-}
-
-fn state_has_materializable_derivative<'dae>(
-    view: dae::DaeView<'dae>,
-    facts: &DifferentiationFacts,
-    state: u32,
-    state_visited: &mut [Visit],
-    value_visited: &mut [Visit],
-) -> bool {
-    match state_visited[state as usize] {
-        Visit::Differentiable => return true,
-        Visit::InProgress => return false,
-        Visit::Pending => state_visited[state as usize] = Visit::InProgress,
-    }
-    let materializable = facts.derivative_definitions[state as usize]
-        .and_then(|definition| view.expression_id(definition as usize))
-        .is_some_and(|definition| {
-            can_materialize_holonomic_value(view, facts, definition, value_visited)
-        });
-    state_visited[state as usize] = if materializable {
-        Visit::Differentiable
-    } else {
-        Visit::Pending
-    };
-    materializable
 }
 
 struct HolonomicProofWalk<'facts, 'dae> {
     view: dae::DaeView<'dae>,
     facts: &'facts DifferentiationFacts,
+    residual: u32,
     anchored_states: Vec<u32>,
     saw_algebraic: bool,
     function_context: FunctionCallContext<'dae>,
@@ -1195,8 +1071,44 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
         order: u8,
         on_residual: bool,
     ) -> bool {
+        if let Some(branch) = self.function_context.selected_branch(self.view, expression) {
+            return self.can_differentiate_order(branch, order, on_residual);
+        }
+        if let Some(element) = projected_element(self.view, self.facts, expression) {
+            return self.can_differentiate_order(element, order, on_residual);
+        }
         let index = expression.index() as usize;
         let context = usize::from(on_residual);
+        if let Some(selected) = super::function_derivatives::select_derivative(
+            self.view,
+            &self.function_context,
+            expression,
+            order,
+        ) {
+            let mut value_visited = vec![Visit::Pending; self.view.expression_count()];
+            if !selected.arguments.iter().all(|argument| {
+                can_materialize_holonomic_value_in_context(
+                    self.view,
+                    self.facts,
+                    argument,
+                    &mut value_visited,
+                    &self.function_context,
+                    &mut Vec::new(),
+                )
+            }) {
+                return false;
+            }
+            return selected.link.tangent_inputs().all(|ordinal| {
+                self.can_differentiate_order(
+                    selected
+                        .arguments
+                        .get(ordinal)
+                        .expect("checked derivative argument"),
+                    1,
+                    on_residual,
+                )
+            });
+        }
         if self.function_context.is_empty() {
             match self.scratch.state(index, order as usize, context) {
                 Visit::Differentiable => return true,
@@ -1235,7 +1147,18 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
             self.cache_differentiability(index, order, context, true);
             return true;
         }
-        let differentiable = match expression.operation() {
+        let differentiable = self.can_differentiate_operation(expression, order, on_residual);
+        self.cache_differentiability(index, order, context, differentiable);
+        differentiable
+    }
+
+    fn can_differentiate_operation(
+        &mut self,
+        expression: dae::ExpressionView<'dae>,
+        order: u8,
+        on_residual: bool,
+    ) -> bool {
+        match expression.operation() {
             dae::ExpressionOperation::Literal(_) => true,
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
                 parameter,
@@ -1251,30 +1174,18 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
                 operand,
             } => self.can_differentiate_order(operand, order, on_residual),
             dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
-                matches!(
-                    operator,
-                    dae::BinaryOperator::Add
-                        | dae::BinaryOperator::Subtract
-                        | dae::BinaryOperator::Multiply
-                ) && self.can_differentiate_order(lhs, order, on_residual)
+                is_differentiable_binary(operator)
+                    && self.can_differentiate_order(lhs, order, on_residual)
                     && self.can_differentiate_order(rhs, order, on_residual)
             }
-            dae::ExpressionOperation::Builtin { builtin, arguments } if order == 1 => {
-                matches!(
-                    builtin,
-                    dae::PureBuiltin::Zeros
-                        | dae::PureBuiltin::Ones
-                        | dae::PureBuiltin::Identity
-                        | dae::PureBuiltin::Sin
-                        | dae::PureBuiltin::Cos
-                        | dae::PureBuiltin::Atan2
-                        | dae::PureBuiltin::Vector
-                        | dae::PureBuiltin::Transpose
-                        | dae::PureBuiltin::Diagonal
-                        | dae::PureBuiltin::Skew
-                        | dae::PureBuiltin::Cross
-                        | dae::PureBuiltin::OuterProduct
-                ) && arguments
+            dae::ExpressionOperation::Index { base, subscripts } => {
+                has_invariant_subscripts(self.view, subscripts)
+                    && self.can_differentiate_order(base, order, on_residual)
+            }
+            dae::ExpressionOperation::Builtin { builtin, arguments }
+                if is_differentiable_builtin(builtin, order) =>
+            {
+                arguments
                     .iter()
                     .all(|argument| self.can_differentiate_order(argument, order, on_residual))
             }
@@ -1292,9 +1203,7 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
                     differentiable
                 }),
             _ => false,
-        };
-        self.cache_differentiability(index, order, context, differentiable);
-        differentiable
+        }
     }
 
     fn cache_differentiability(
@@ -1331,6 +1240,10 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
             }
             dae::CoordinateView::Algebraic(algebraic) => {
                 self.saw_algebraic |= on_residual;
+                if let Some(block) = self.facts.auxiliary_blocks[algebraic.index() as usize].clone()
+                {
+                    return self.can_differentiate_auxiliary(&block, order, on_residual);
+                }
                 match self.facts.equalities.anchor_of(algebraic.index()) {
                     Some((EqualityAnchor::Invariant { .. }, _)) => true,
                     Some((anchor @ EqualityAnchor::State(state), _)) => {
@@ -1340,12 +1253,39 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
                         .facts
                         .algebraic_definition(self.view, algebraic)
                         .is_some_and(|definition| {
-                            self.can_differentiate_order(definition, order, false)
+                            self.can_differentiate_order(definition, order, on_residual)
                         }),
                 }
             }
             _ => false,
         }
+    }
+
+    fn can_differentiate_auxiliary(
+        &mut self,
+        block: &super::auxiliary_blocks::AuxiliaryBlock,
+        order: u8,
+        on_residual: bool,
+    ) -> bool {
+        if block.contains_residual(self.residual) {
+            return false;
+        }
+        if on_residual {
+            self.anchored_states.extend_from_slice(&block.state_anchors);
+        }
+        block.operands().all(|operand| {
+            let previous =
+                std::mem::replace(&mut self.function_context, operand.context(self.view));
+            let result = self.can_differentiate_order(
+                self.view
+                    .expression_id(operand.expression as usize)
+                    .unwrap(),
+                order,
+                false,
+            );
+            self.function_context = previous;
+            result
+        })
     }
 
     fn can_differentiate_equality_anchor(
@@ -1420,7 +1360,20 @@ fn is_differentiable_in_context<'dae>(
 ) -> bool {
     let scoped_context = context.scoped_to_expression(view, expression);
     let context = &scoped_context;
+    if let Some(branch) = context.selected_branch(view, expression) {
+        return is_differentiable_in_context(view, facts, branch, demoted, visited, context);
+    }
+    if let Some(element) = projected_element(view, facts, expression) {
+        return is_differentiable_in_context(view, facts, element, demoted, visited, context);
+    }
     let index = expression.index() as usize;
+    if let Some(selected) =
+        super::function_derivatives::select_derivative(view, context, expression, 1)
+    {
+        return selected_derivative_is_differentiable(
+            view, facts, selected, demoted, visited, context,
+        );
+    }
     if context.is_empty() {
         match visited[index] {
             Visit::Differentiable => return true,
@@ -1453,7 +1406,27 @@ fn is_differentiable_in_context<'dae>(
         visited[index] = Visit::Differentiable;
         return true;
     }
-    let differentiable = match node.operation() {
+    let differentiable =
+        operation_is_differentiable(view, facts, node.operation(), demoted, visited, context);
+    if context.is_empty() {
+        visited[index] = if differentiable {
+            Visit::Differentiable
+        } else {
+            Visit::Pending
+        };
+    }
+    differentiable
+}
+
+fn operation_is_differentiable<'dae>(
+    view: dae::DaeView<'dae>,
+    facts: &DifferentiationFacts,
+    operation: dae::ExpressionOperation<'dae>,
+    demoted: dae::StateId<'dae>,
+    visited: &mut [Visit],
+    context: &FunctionCallContext<'dae>,
+) -> bool {
+    match operation {
         dae::ExpressionOperation::Literal(_) => true,
         dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(parameter)) => {
             context
@@ -1469,15 +1442,9 @@ fn is_differentiable_in_context<'dae>(
             operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
             operand,
         } => is_differentiable_in_context(view, facts, operand, demoted, visited, context),
-        dae::ExpressionOperation::Binary {
-            operator:
-                dae::BinaryOperator::Add
-                | dae::BinaryOperator::Subtract
-                | dae::BinaryOperator::Multiply
-                | dae::BinaryOperator::Divide,
-            lhs,
-            rhs,
-        } => {
+        dae::ExpressionOperation::Binary { operator, lhs, rhs }
+            if is_differentiable_binary(operator) =>
+        {
             is_differentiable_in_context(view, facts, lhs, demoted, visited, context)
                 && is_differentiable_in_context(view, facts, rhs, demoted, visited, context)
         }
@@ -1499,22 +1466,45 @@ fn is_differentiable_in_context<'dae>(
                     &projected_context,
                 )
             }),
-        dae::ExpressionOperation::Index { .. } => {
-            match singleton_real_projection(view, expression) {
-                Some(SingletonRealProjection::State(state)) => state != demoted.index(),
-                _ => false,
-            }
+        dae::ExpressionOperation::Index { base, subscripts } => {
+            has_invariant_subscripts(view, subscripts)
+                && is_differentiable_in_context(view, facts, base, demoted, visited, context)
         }
         _ => false,
-    };
-    if context.is_empty() {
-        visited[index] = if differentiable {
-            Visit::Differentiable
-        } else {
-            Visit::Pending
-        };
     }
-    differentiable
+}
+
+fn selected_derivative_is_differentiable<'dae>(
+    view: dae::DaeView<'dae>,
+    facts: &DifferentiationFacts,
+    selected: super::function_derivatives::SelectedFunctionDerivative<'dae>,
+    demoted: dae::StateId<'dae>,
+    visited: &mut [Visit],
+    context: &FunctionCallContext<'dae>,
+) -> bool {
+    let mut value_visited = vec![Visit::Pending; view.expression_count()];
+    selected.arguments.iter().all(|argument| {
+        can_materialize_holonomic_value_in_context(
+            view,
+            facts,
+            argument,
+            &mut value_visited,
+            context,
+            &mut Vec::new(),
+        )
+    }) && selected.link.tangent_inputs().all(|ordinal| {
+        is_differentiable_in_context(
+            view,
+            facts,
+            selected
+                .arguments
+                .get(ordinal)
+                .expect("checked derivative argument"),
+            demoted,
+            visited,
+            context,
+        )
+    })
 }
 
 /// Admit exactly the pure builtins whose first derivative has a closed DAE
@@ -1530,23 +1520,10 @@ fn builtin_is_differentiable<'dae>(
     visited: &mut [Visit],
     context: &FunctionCallContext<'dae>,
 ) -> bool {
-    use dae::PureBuiltin as Builtin;
-
-    match builtin {
-        Builtin::Zeros | Builtin::Ones | Builtin::Identity => true,
-        Builtin::Sin
-        | Builtin::Cos
-        | Builtin::Atan2
-        | Builtin::Vector
-        | Builtin::Transpose
-        | Builtin::Diagonal
-        | Builtin::Skew
-        | Builtin::Cross
-        | Builtin::OuterProduct => arguments.iter().all(|argument| {
+    is_differentiable_builtin(builtin, 1)
+        && arguments.iter().all(|argument| {
             is_differentiable_in_context(view, facts, argument, demoted, visited, context)
-        }),
-        _ => false,
-    }
+        })
 }
 
 fn is_differentiable_coordinate<'dae>(
@@ -1610,15 +1587,7 @@ pub(super) fn explicit_derivative_definitions(view: dae::DaeView<'_>) -> Vec<Opt
             dae::ContinuousOwnerView::Structured { .. } => continue,
         };
         for residual in residuals {
-            let Some(residual) = view.expression(residual) else {
-                continue;
-            };
-            let dae::ExpressionOperation::Binary {
-                operator: dae::BinaryOperator::Subtract,
-                lhs,
-                rhs,
-            } = residual.operation()
-            else {
+            let Some((lhs, rhs)) = equation_sides(view, residual) else {
                 continue;
             };
             let Some((state, definition)) = derivative_definition(view, lhs, rhs) else {

@@ -4,7 +4,7 @@ use super::*;
 fn vector_subscript_consumes_one_distributed_result_index() {
     let selection = vec![ast::Subscript::Expression(ast::Expression::Array {
         elements: vec![make_int_expr(1), make_int_expr(5)],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: rumoca_core::Span::DUMMY,
     })];
 

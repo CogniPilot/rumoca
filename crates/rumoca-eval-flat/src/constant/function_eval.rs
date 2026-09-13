@@ -22,7 +22,7 @@ use rumoca_core::ExpressionVisitor;
 
 use super::errors::EvalError;
 use super::value::Value;
-use super::{EvalContext, EvalIndexMap};
+use super::{EvalEnvironment, EvalIndexMap};
 
 /// Execution limits for function evaluation.
 #[derive(Debug, Clone)]
@@ -45,7 +45,7 @@ impl Default for EvalLimits {
 /// Evaluation state bundling common parameters to reduce argument count.
 #[derive(Clone, Copy)]
 pub struct EvalState<'a> {
-    pub ctx: &'a EvalContext,
+    pub ctx: &'a dyn EvalEnvironment,
     pub limits: &'a EvalLimits,
     pub depth: usize,
     pub span: Span,
@@ -642,7 +642,7 @@ fn create_array_value(default: &Value, dims: &[i64]) -> Value {
 pub fn eval_function(
     func: &Function,
     args: Vec<Value>,
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     limits: &EvalLimits,
     depth: usize,
     span: Span,
@@ -655,7 +655,7 @@ pub fn eval_function(
 pub fn eval_function_with_call_args(
     func: &Function,
     args: Vec<FunctionCallArg>,
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
     limits: &EvalLimits,
     depth: usize,
     span: Span,
@@ -1118,7 +1118,10 @@ fn eval_expr_in_function(
                 .collect::<Result<_, _>>()?;
             super::eval_builtin(function.name(), &arg_values, eval.span)
         }
-        Expression::Array { elements, .. } => eval_array_expr(elements, env, eval),
+        Expression::Array { elements, kind, .. } => {
+            let values = eval_array_values(elements, env, eval)?;
+            super::array_construction::construct(values, *kind, eval.span)
+        }
         Expression::Range {
             start, step, end, ..
         } => eval_range_expr_inline(start, step, end, env, eval),
@@ -1136,7 +1139,9 @@ fn eval_expr_in_function(
             filter,
             ..
         } => eval_array_comprehension(expr, indices, filter, env, eval),
-        Expression::Tuple { elements, .. } => eval_array_expr(elements, env, eval),
+        Expression::Tuple { elements, .. } => {
+            eval_array_values(elements, env, eval).map(Value::Array)
+        }
         Expression::FieldAccess {
             base,
             field,
@@ -1170,7 +1175,7 @@ fn eval_expr_in_function(
 pub(super) fn is_exact_single_record_output(
     base: &Expression,
     field: rumoca_core::DefId,
-    ctx: &EvalContext,
+    ctx: &dyn EvalEnvironment,
 ) -> bool {
     let Expression::FunctionCall { name, .. } = base else {
         return false;
@@ -1178,7 +1183,7 @@ pub(super) fn is_exact_single_record_output(
     let Some(target) = name.target_def_id() else {
         return false;
     };
-    let Some(function) = ctx.functions.get(name.as_str()) else {
+    let Some(function) = ctx.get_function(name.as_str()) else {
         return false;
     };
     function.def_id == Some(target)
@@ -1208,8 +1213,8 @@ fn eval_var_ref(
     if let Some(val) = env.get(name) {
         return apply_subscripts_flat(val.clone(), subscripts, env, eval);
     }
-    if let Some(val) = eval.ctx.get(name) {
-        return Ok(val.clone());
+    if let Some(val) = eval.ctx.get_value(name) {
+        return Ok(val.into_owned());
     }
     if let Some((type_name, literal)) = eval.ctx.get_enum(name) {
         return Ok(Value::Enum(type_name.clone(), literal.clone()));
@@ -1314,16 +1319,15 @@ fn eval_fn_call_expr(
 }
 
 /// Evaluate an array expression.
-fn eval_array_expr(
+fn eval_array_values(
     elements: &[Expression],
     env: &FunctionEnv,
     eval: &EvalState<'_>,
-) -> Result<Value, EvalError> {
-    let values: Vec<Value> = elements
+) -> Result<Vec<Value>, EvalError> {
+    elements
         .iter()
         .map(|e| eval_expr_in_function(e, env, eval))
-        .collect::<Result<_, _>>()?;
-    Ok(Value::Array(values))
+        .collect()
 }
 
 /// Evaluate a range expression inline.
@@ -1460,7 +1464,7 @@ fn call_function(name: &str, args: Vec<Value>, eval: &EvalState<'_>) -> Result<V
     if super::is_builtin(name) {
         return super::eval_builtin(name, &args, eval.span);
     }
-    if let Some(func) = eval.ctx.functions.get(name) {
+    if let Some(func) = eval.ctx.get_function(name) {
         // Impure/external refusal lives in eval_function_with_call_args, the
         // one entrance every call path shares.
         return eval_function(func, args, eval.ctx, eval.limits, eval.depth + 1, eval.span);
@@ -1859,62 +1863,19 @@ fn set_array_element(
     Ok(Value::Array(vec))
 }
 
-/// Apply AST subscripts to a value.
+/// Apply Flat subscripts using the function's local evaluation environment.
 fn apply_subscripts_flat(
     value: Value,
     subs: &[Subscript],
     env: &FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
-    let mut current = value;
-    for sub in subs {
-        current = apply_single_subscript(current, sub, env, eval)?;
-    }
-    Ok(current)
-}
-
-/// Apply a single subscript to a value.
-fn apply_single_subscript(
-    current: Value,
-    sub: &Subscript,
-    env: &FunctionEnv,
-    eval: &EvalState<'_>,
-) -> Result<Value, EvalError> {
-    match sub {
-        Subscript::Expr { expr, .. } => {
-            let idx_val = eval_expr_in_function(expr, env, eval)?;
-            let idx = idx_val.as_integer().ok_or_else(|| {
-                EvalError::type_mismatch("Integer", idx_val.type_name(), eval.span)
-            })? as usize;
-            let arr = current
-                .as_array()
-                .ok_or_else(|| EvalError::type_mismatch("Array", current.type_name(), eval.span))?;
-            if idx < 1 || idx > arr.len() {
-                return Err(EvalError::IndexOutOfBounds {
-                    index: idx as i64,
-                    size: arr.len(),
-                    span: eval.span,
-                });
-            }
-            Ok(arr[idx - 1].clone())
-        }
-        Subscript::Colon { .. } => Ok(current),
-        Subscript::Index { value: idx, .. } => {
-            let arr = current
-                .as_array()
-                .ok_or_else(|| EvalError::type_mismatch("Array", current.type_name(), eval.span))?;
-            let idx_i64 = *idx;
-            let idx_usize = idx_i64 as usize;
-            if idx_usize < 1 || idx_usize > arr.len() {
-                return Err(EvalError::IndexOutOfBounds {
-                    index: idx_i64,
-                    size: arr.len(),
-                    span: eval.span,
-                });
-            }
-            Ok(arr[idx_usize - 1].clone())
-        }
-    }
+    super::subscripts::apply_subscripts(
+        value,
+        subs,
+        |expr| eval_expr_in_function(expr, env, eval),
+        eval.span,
+    )
 }
 
 #[cfg(test)]

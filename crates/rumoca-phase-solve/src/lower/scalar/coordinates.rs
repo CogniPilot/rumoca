@@ -433,6 +433,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         match rhs {
+            DerivativeRhs::Affine(proof) => proof.lower(self),
             DerivativeRhs::Explicit { expression, scalar } => self.expression(expression, scalar),
             DerivativeRhs::Scaled {
                 numerator,
@@ -443,8 +444,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             } => {
                 let numerator = self.expression(numerator, numerator_scalar)?;
                 let coefficient = self.expression(coefficient, coefficient_scalar)?;
-                self.binary(
-                    dae::BinaryOperator::Divide,
+                self.affine_quotient(
                     numerator,
                     coefficient,
                     if definition_span.is_dummy() {

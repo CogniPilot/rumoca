@@ -624,7 +624,7 @@ fn zero_sized_array_stream_member_of_a_connector_array_lowers_to_an_empty_array(
     assert!(
         matches!(
             observed_expression(&model),
-            rumoca_core::Expression::Array { elements, is_matrix: false, .. }
+            rumoca_core::Expression::Array { elements, kind: rumoca_core::ArrayConstructor::Array, .. }
                 if elements.is_empty()
         ),
         "expected an empty array result: {:?}",
@@ -649,7 +649,7 @@ fn zero_sized_stream_member_projected_off_a_whole_connector_array_lowers() {
     assert!(
         matches!(
             observed_expression(&model),
-            rumoca_core::Expression::Array { elements, is_matrix: false, .. }
+            rumoca_core::Expression::Array { elements, kind: rumoca_core::ArrayConstructor::Array, .. }
                 if elements.is_empty()
         ),
         "expected an empty array result: {:?}",
@@ -676,7 +676,7 @@ fn zero_sized_array_stream_member_lowers_actual_stream_to_an_empty_array() {
     assert!(
         matches!(
             observed_expression(&model),
-            rumoca_core::Expression::Array { elements, is_matrix: false, .. }
+            rumoca_core::Expression::Array { elements, kind: rumoca_core::ArrayConstructor::Array, .. }
                 if elements.is_empty()
         ),
         "expected an empty array result: {:?}",

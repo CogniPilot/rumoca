@@ -101,7 +101,7 @@ pub(crate) fn collect_array_elements(
                 Ok(rumoca_ir_ast::Expression::Array {
                     span,
                     elements,
-                    is_matrix: false,
+                    kind: rumoca_core::ArrayConstructor::Array,
                 })
             }
             modelica_grammar_trait::ArrayArgumentsOptGroup::ForForIndicesArrayArgumentsOpt0(
@@ -126,7 +126,7 @@ pub(crate) fn collect_array_elements(
         Ok(rumoca_ir_ast::Expression::Array {
             span: args.expression.span(),
             elements: vec![args.expression.clone()],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
         })
     }
 }

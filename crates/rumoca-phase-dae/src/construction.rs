@@ -15,6 +15,7 @@ mod function_record_assembly;
 mod function_seeds;
 mod function_shapes;
 mod initial_discrete_values;
+mod initial_parameter_values;
 mod model_algorithm;
 mod model_events;
 mod multi_output_equations;
@@ -436,6 +437,7 @@ fn lower_model_owners<'dae>(
         functions,
         analysis,
     )?;
+    initial_parameter_values::lower(construction, coordinates, functions, analysis)?;
     lower_assertions(
         construction,
         coordinates,

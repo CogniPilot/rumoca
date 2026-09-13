@@ -169,3 +169,174 @@ fn element_redeclare_retargets_clocked_call() {
         "element redeclare must select Triple (y = 6), got {y}"
     );
 }
+
+fn forwarded_function_source(declaration: &str) -> String {
+    let selector = format!(
+        r#"
+  block Wrapper
+    {declaration}
+    Consumer c(redeclare function F = F);
+    Real y;
+  equation
+    y = c.y;
+  end Wrapper;
+"#
+    );
+    fixture("RedeclForwardedAlias", CONTINUOUS_CALL, &selector)
+}
+
+fn forwarded_function_result(declaration: &str) -> f64 {
+    let source = forwarded_function_source(declaration);
+    simulated_final_value(
+        &source,
+        "redecl_forwarded_alias.mo",
+        "RedeclForwardedAlias.Wrapper",
+        "y",
+    )
+}
+
+#[test]
+fn non_replaceable_function_alias_can_be_forwarded() {
+    let y = forwarded_function_result("function F = Triple;");
+    assert!((y - 6.0).abs() < 1.0e-9, "forwarded Triple must yield 6");
+}
+
+/// MLS §6.3/§7.3: references to replaceable declarations use their
+/// constraining interfaces, including when forwarded in a redeclaration.
+#[test]
+fn replaceable_function_alias_can_be_forwarded() {
+    let y = forwarded_function_result("replaceable function F = Triple constrainedby PartialF;");
+    assert!((y - 6.0).abs() < 1.0e-9, "forwarded Triple must yield 6");
+}
+
+#[test]
+fn replaceable_function_with_implicit_constraint_can_be_forwarded() {
+    let y = forwarded_function_result("replaceable function F = Triple;");
+    assert!((y - 6.0).abs() < 1.0e-9, "forwarded Triple must yield 6");
+}
+
+#[test]
+fn non_replaceable_alias_of_replaceable_function_keeps_its_constraint() {
+    let source = forwarded_function_source(
+        "replaceable function Outer = Triple constrainedby PartialF;\n    function F = Outer;",
+    );
+    let y = simulated_final_value(
+        &source,
+        "redecl_forwarded_alias_chain.mo",
+        "RedeclForwardedAlias.Wrapper",
+        "y",
+    );
+    assert!((y - 6.0).abs() < 1.0e-9, "forwarded Triple must yield 6");
+}
+
+#[test]
+fn extends_redeclare_can_forward_replaceable_function() {
+    let source = fixture(
+        "RedeclExtendsForwarded",
+        CONTINUOUS_CALL,
+        "  block Wrapper\n    replaceable function Forwarded = Triple constrainedby PartialF;\n    extends Consumer(redeclare function F = Forwarded);\n  end Wrapper;",
+    );
+    let y = simulated_final_value(
+        &source,
+        "redecl_extends_forwarded.mo",
+        "RedeclExtendsForwarded.Wrapper",
+        "y",
+    );
+    assert!((y - 6.0).abs() < 1.0e-9, "forwarded Triple must yield 6");
+}
+
+#[test]
+fn forwarding_alias_cannot_hide_impure_default() {
+    let source =
+        forwarded_function_source("replaceable impure function F = Triple constrainedby PartialF;")
+            .replace("  function Triple", "  impure function Triple");
+    let error = Compiler::new()
+        .model("RedeclForwardedAlias.Wrapper")
+        .compile_str(&source, "redecl_forwarded_impure.mo")
+        .expect_err("the pure constraint cannot expose an impure default");
+    assert!(
+        error.to_string().contains("violates constrainedby"),
+        "{error}"
+    );
+}
+
+#[test]
+fn forwarding_alias_keeps_bound_additional_input() {
+    let source = forwarded_function_source(
+        "replaceable function F = Triple(gain=3) constrainedby PartialF;",
+    )
+    .replace(
+        "  function Triple\n    extends PartialF;",
+        "  function Triple\n    extends PartialF;\n    input Real gain;",
+    )
+    .replace("y := 3*x;", "y := gain*x;");
+    let y = simulated_final_value(
+        &source,
+        "redecl_forwarded_bound_input.mo",
+        "RedeclForwardedAlias.Wrapper",
+        "y",
+    );
+    assert!((y - 6.0).abs() < 1.0e-9, "forwarded gain must yield 6");
+}
+
+#[test]
+fn forwarding_alias_rejects_required_additional_input() {
+    let source =
+        forwarded_function_source("replaceable function F = Triple constrainedby PartialF;")
+            .replace(
+                "  function Triple\n    extends PartialF;",
+                "  function Triple\n    extends PartialF;\n    input Real gain;",
+            )
+            .replace("y := 3*x;", "y := gain*x;");
+    let error = Compiler::new()
+        .model("RedeclForwardedAlias.Wrapper")
+        .compile_str(&source, "redecl_forwarded_required_input.mo")
+        .expect_err("a required extra input is incompatible with PartialF");
+    assert!(
+        error.to_string().contains("violates constrainedby"),
+        "{error}"
+    );
+}
+
+#[test]
+fn forwarding_checks_constraint_even_when_default_has_required_output() {
+    let source = forwarded_function_source(
+        "replaceable function F = Triple constrainedby PartialF;",
+    )
+    .replace(
+        "  function Double",
+        "  partial function WithOutput\n    extends PartialF;\n    output Real z;\n  end WithOutput;\n\n  function Double",
+    )
+    .replace("function F = Double constrainedby PartialF", "function F = Double constrainedby WithOutput")
+    .replace("  function Double\n    extends PartialF;", "  function Double\n    extends WithOutput;")
+    .replace("  function Triple\n    extends PartialF;", "  function Triple\n    extends WithOutput;")
+    .replace("y := 2*x;", "y := 2*x;\n    z := x;")
+    .replace("y := 3*x;", "y := 3*x;\n    z := x;");
+    let error = Compiler::new()
+        .model("RedeclForwardedAlias.Wrapper")
+        .compile_str(&source, "redecl_forwarded_exposed_interface.mo")
+        .expect_err("PartialF does not promise the receiver's required output z");
+    assert!(
+        error.to_string().contains("violates constrainedby"),
+        "{error}"
+    );
+}
+
+#[test]
+fn forwarded_function_rejects_incompatible_default_before_lowering() {
+    let source =
+        forwarded_function_source("replaceable function F = Triple constrainedby PartialF;")
+            .replace(
+                "  function Triple\n    extends PartialF;",
+                "  function Triple\n    input Boolean x;\n    output Real y;",
+            )
+            .replace("y := 3*x;", "y := if x then 3 else 0;");
+    let error = Compiler::new()
+        .model("RedeclForwardedAlias.Wrapper")
+        .compile_str(&source, "redecl_forwarded_invalid_default.mo")
+        .expect_err("the named constraint does not validate an incompatible default");
+    assert!(
+        error.to_string().contains("violates constrainedby"),
+        "the default must be rejected by redeclaration validation: {error}"
+    );
+}

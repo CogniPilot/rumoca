@@ -164,12 +164,12 @@ fn blocks_under_test(model: &SolveModel) -> Vec<NamedBlock> {
     let initialization = &model.problem.initialization;
     scalarized(
         "initialization.residual",
-        &initialization.residual,
+        initialization.residual(),
         &mut blocks,
     );
     scalar(
         "initialization.update_rhs",
-        &initialization.update_rhs,
+        initialization.update_rhs(),
         &mut blocks,
     );
     let discrete = &model.problem.discrete;

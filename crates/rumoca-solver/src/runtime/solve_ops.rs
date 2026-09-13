@@ -458,14 +458,18 @@ pub fn update_relation_memory_slots(
 /// tolerance; changing that sign would contradict the source relation.
 pub fn orient_typed_root_zeros(roots: &mut [f64], zero_domains: &[solve::RootZeroDomain]) {
     for (root, zero_domain) in roots.iter_mut().zip(zero_domains) {
-        if *root != 0.0 {
-            continue;
-        }
-        *root = match zero_domain {
-            solve::RootZeroDomain::Positive => f64::EPSILON,
-            solve::RootZeroDomain::NonPositive => -f64::EPSILON,
-            solve::RootZeroDomain::Previous => continue,
-        };
+        *root = orient_typed_root_zero(*root, *zero_domain);
+    }
+}
+
+pub(crate) fn orient_typed_root_zero(root: f64, zero_domain: solve::RootZeroDomain) -> f64 {
+    if root != 0.0 {
+        return root;
+    }
+    match zero_domain {
+        solve::RootZeroDomain::Positive => f64::EPSILON,
+        solve::RootZeroDomain::NonPositive => -f64::EPSILON,
+        solve::RootZeroDomain::Previous => root,
     }
 }
 

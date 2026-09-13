@@ -747,7 +747,8 @@ pub(super) fn lower_builtin_arguments(
         | dae::PureBuiltin::Transpose
         | dae::PureBuiltin::Diagonal
         | dae::PureBuiltin::OuterProduct
-        | dae::PureBuiltin::Skew => {
+        | dae::PureBuiltin::Skew
+        | dae::PureBuiltin::LinearSolve => {
             return Err(unsupported(
                 "builtin",
                 format!("builtin `{builtin:?}` has no scalar GALEC mapping"),

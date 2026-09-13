@@ -257,7 +257,8 @@ pub(super) fn divergent_initialization_model(increment: f64) -> solve::SolveMode
     model.problem.solve_layout.parameter_count = 1;
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.parameters = vec![0.0];
-    model.problem.initialization.update_rhs = fixture_block(
+    let mut initialization = model.problem.initialization.clone().into_input();
+    initialization.update_rhs = fixture_block(
         vec![vec![
             solve::LinearOp::LoadP { dst: 0, index: 0 },
             solve::LinearOp::Const {
@@ -274,7 +275,9 @@ pub(super) fn divergent_initialization_model(increment: f64) -> solve::SolveMode
         ]],
         "di.mo",
     );
-    model.problem.initialization.update_targets = vec![solve::scalar_slot_p(0)];
+    initialization.update_targets = vec![solve::scalar_slot_p(0)];
+    model.problem.initialization = solve::InitializationSolveSystem::construct(initialization)
+        .expect("fixture initialization ownership is disjoint");
     model
 }
 

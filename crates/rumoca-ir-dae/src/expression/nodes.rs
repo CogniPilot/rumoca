@@ -112,6 +112,10 @@ pub enum PureBuiltin {
     /// Appended because the wire encoding uses enum ordinals; see
     /// `DAE_SCHEMA_VERSION`.
     Skew,
+    /// Compiler-generated auxiliary solve `A*x=b` with a positive square Real
+    /// matrix and matching Real vector. This is an Appendix-B pure function,
+    /// not a new Modelica source builtin. Singular inputs are outside its domain.
+    LinearSolve,
 }
 
 impl PureBuiltin {
@@ -131,6 +135,7 @@ impl PureBuiltin {
                 | Self::Diagonal
                 | Self::OuterProduct
                 | Self::Skew
+                | Self::LinearSolve
         )
     }
 }

@@ -360,7 +360,7 @@ impl SolveMeKernel {
         event_time: f64,
         solver_y: &mut [f64],
     ) -> Result<(), MeError> {
-        self.canonicalize_committed_event_view(event_time, solver_y, &[])
+        self.canonicalize_committed_event_view(event_time, solver_y, &mut Vec::new())
     }
 
     #[cfg(test)]
@@ -626,7 +626,10 @@ impl SolveMeKernel {
     pub(super) fn continuous_eval_time(&self) -> f64 {
         match self.event_boundary {
             Some(boundary) if self.time >= boundary => {
-                timeline::event_left_probe_time(boundary, self.tolerance)
+                // This is the host's known time-event boundary, not a located
+                // root bracket. Preserve the continuous derivative's left
+                // limit without moving physical time by a state tolerance.
+                timeline::event_left_limit_time(boundary)
             }
             _ => self.public_time_eval_time(self.time),
         }
@@ -648,11 +651,26 @@ impl SolveMeKernel {
         MeAlgebraicProjectionPolicy {
             tolerance: self.tolerance,
             settle: self.numerics_settle(),
+            manifold: if self.initial_event_pending
+                || self.lifecycle.state() == MeState::InitializationMode
+            {
+                ManifoldAction::CertifyInitial
+            } else {
+                ManifoldAction::CorrectContinuous
+            },
         }
     }
 
     pub(super) fn initialization_solver_y(&self) -> Result<Vec<f64>, MeError> {
-        self.current_solver_y()
+        // MLS §8.6 owns the first solve of these coordinates. Ordinary
+        // algebraics can be undefined at declaration guesses even when the
+        // initialization equations determine a regular, unique point.
+        let mut solver_y = self.solver_y_guess.borrow().clone();
+        let states = solver_y.get_mut(..self.states.len()).ok_or_else(|| {
+            contract("initialization solver vector does not contain the current state prefix")
+        })?;
+        states.copy_from_slice(&self.states);
+        Ok(solver_y)
     }
 
     pub(super) fn with_callback_solver_y<R>(&self, f: impl FnOnce(&mut Vec<f64>) -> R) -> R {
@@ -776,16 +794,13 @@ impl SolveMeKernel {
         time: f64,
     ) -> Result<(Vec<f64>, Vec<f64>), MeError> {
         let settle = self.numerics_settle();
-        let states = solver_y
-            .get(..self.state_count)
-            .ok_or_else(|| {
-                contract(format!(
-                    "observation solver vector has {} entries for {} state values",
-                    solver_y.len(),
-                    self.state_count
-                ))
-            })?
-            .to_vec();
+        if solver_y.len() != self.runtime.solver_count {
+            return Err(contract(format!(
+                "observation solver vector has {} entries for {} solver values",
+                solver_y.len(),
+                self.runtime.solver_count
+            )));
+        }
         if self.runtime.has_delay_channels() {
             self.runtime
                 .refresh_delay_values(time, &solver_y, &mut parameters)
@@ -806,12 +821,14 @@ impl SolveMeKernel {
                 settle.max_iters,
             )
             .map_err(MeError::from)?;
+        // Public values need coordinate convergence: a small residual can hide
+        // a large variable error in a nearly singular algebraic block. Both
+        // refreshes retain the frozen continuous-state prefix of this snapshot.
         self.runtime
-            .full_solver_y_with_guess(
+            .refresh_algebraic_and_output_slots_certified(
                 time,
-                &states,
-                &parameters,
                 &mut solver_y,
+                &parameters,
                 settle.tol,
                 settle.max_iters,
             )
@@ -840,11 +857,10 @@ impl SolveMeKernel {
                 return Ok((solver_y, parameters));
             }
             self.runtime
-                .full_solver_y_with_guess(
+                .refresh_algebraic_and_output_slots_certified(
                     time,
-                    &states,
-                    &parameters,
                     &mut solver_y,
+                    &parameters,
                     settle.tol,
                     settle.max_iters,
                 )
@@ -1259,8 +1275,7 @@ impl SolveMeKernel {
         let mut solver_y = iteration_y
             .map(Ok)
             .unwrap_or_else(|| self.event_iteration_solver_y(&event_entry_y))?;
-        let pending_root_overrides = self.take_pending_event_root_overrides();
-        let root_overrides = pending_root_overrides.as_slice();
+        let mut root_overrides = self.take_pending_event_root_overrides();
         let runtime = Rc::clone(&self.runtime);
         let projection_runtime = Rc::clone(&runtime);
         let policy = self.algebraic_projection_policy();
@@ -1276,14 +1291,14 @@ impl SolveMeKernel {
                 event_pre_p: &event_entry_p,
                 max_iters: settle.max_iters,
                 row_filter,
-                root_relation_overrides: root_overrides,
+                root_relation_overrides: &mut root_overrides,
             },
             move |y, p| project_event_algebraics(&projection_runtime, y, p, event_time, policy),
         )?;
         // Unrelated algebraic/output lanes remain lazy in the retained solver
         // seed. Their owning callback refresh plan materializes them if and
         // when a derivative, root, or visible-value consumer asks for them.
-        self.commit_event_runtime_state(event_time, solver_y, root_overrides)?;
+        self.commit_event_runtime_state(event_time, solver_y, &mut root_overrides)?;
         self.record_event_action_outcome(outcome, event_time)?;
         // `commit_event_runtime_state` leaves a checked post-event
         // linearization in the retained solver vector. Event actions do not
@@ -1306,7 +1321,7 @@ impl SolveMeKernel {
         &mut self,
         event_time: f64,
         mut solver_y: Vec<f64>,
-        root_overrides: &[(usize, f64)],
+        root_overrides: &mut Vec<(usize, f64)>,
     ) -> Result<(), MeError> {
         let history_changed = commit_pre_params_after_event_at(
             &self.runtime.model,
@@ -1345,7 +1360,7 @@ impl SolveMeKernel {
         &mut self,
         event_time: f64,
         solver_y: &mut [f64],
-        root_relation_overrides: &[(usize, f64)],
+        root_relation_overrides: &mut Vec<(usize, f64)>,
     ) -> Result<(), MeError> {
         let runtime = Rc::clone(&self.runtime);
         let policy = self.algebraic_projection_policy();

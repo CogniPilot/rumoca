@@ -3,13 +3,17 @@ use rumoca_ir_solve::{LinearOp, TargetAssignmentShape};
 use crate::EvalSolveError;
 
 pub(super) fn eval_assignment_shape(
-    shape: TargetAssignmentShape,
+    shape: &TargetAssignmentShape,
     row_idx: usize,
     regs: &[f64],
     span: Option<rumoca_core::Span>,
 ) -> Result<f64, EvalSolveError> {
     match shape {
-        TargetAssignmentShape::Direct { expr_reg, .. } => read_shape_reg(regs, expr_reg, span),
+        TargetAssignmentShape::Zero { .. } => Ok(0.0),
+        TargetAssignmentShape::TensorAffine { .. } => Err(super::invalid_prepared_row(
+            "tensor-affine assignments require their prepared materialization",
+        )),
+        TargetAssignmentShape::Direct { expr_reg, .. } => read_shape_reg(regs, *expr_reg, span),
         TargetAssignmentShape::Affine {
             target_y_index,
             offset_reg,
@@ -18,37 +22,38 @@ pub(super) fn eval_assignment_shape(
             coefficient_scale,
             ..
         } => {
-            let offset = offset_scale * read_shape_reg(regs, offset_reg, span)?;
+            let offset = offset_scale * read_shape_reg(regs, *offset_reg, span)?;
             let coefficient = coefficient_scale
                 * coefficient_reg.map_or(Ok(1.0), |reg| read_shape_reg(regs, reg, span))?;
             if coefficient == 0.0 || !coefficient.is_finite() {
                 return Err(EvalSolveError::SingularTargetAssignment {
                     row: row_idx,
-                    target_y_index,
+                    target_y_index: *target_y_index,
                     coefficient,
                     span,
                 });
             }
             Ok(-offset / coefficient)
         }
-        TargetAssignmentShape::AffineResidual {
+        TargetAssignmentShape::Additive {
             target_y_index,
-            target_reg,
-            residual_reg,
+            offset_terms,
             coefficient,
             ..
         } => {
-            if coefficient == 0.0 || !coefficient.is_finite() {
+            if *coefficient == 0.0 || !coefficient.is_finite() {
                 return Err(EvalSolveError::SingularTargetAssignment {
                     row: row_idx,
-                    target_y_index,
-                    coefficient,
+                    target_y_index: *target_y_index,
+                    coefficient: *coefficient,
                     span,
                 });
             }
-            let target = read_shape_reg(regs, target_reg, span)?;
-            let residual = read_shape_reg(regs, residual_reg, span)?;
-            Ok(target - residual / coefficient)
+            let mut offset = 0.0;
+            for &(register, scale) in offset_terms.iter() {
+                offset += scale * read_shape_reg(regs, register, span)?;
+            }
+            Ok(-offset / coefficient)
         }
     }
 }

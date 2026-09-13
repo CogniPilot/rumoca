@@ -483,7 +483,7 @@ fn array_discrete_real_binding_keeps_one_target_shaped_b1b_owner() {
                 span: binding_span,
             })
             .collect(),
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: binding_span,
     });
     variable.source_span = declaration_span;
@@ -692,7 +692,7 @@ fn assert_indexed_output_connection_value(output_first: bool) {
                 span: source.span("false", 0),
             },
         ],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: source.span("{true, false}", 0),
     });
 

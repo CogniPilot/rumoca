@@ -95,6 +95,7 @@ pub(crate) struct InitialHomotopySystem<'a, M> {
     pub plan: &'a solve::InitializationProjectionPlan,
     pub homotopy_parameter_index: Option<usize>,
     pub tol: f64,
+    pub max_iters: usize,
 }
 
 /// Drive the initialization homotopy continuation.
@@ -112,7 +113,7 @@ pub(crate) fn project_initial_variables_with_homotopy<M, F>(
 ) -> Result<(), RuntimeSolveError>
 where
     M: AlgebraicProjectionModel,
-    F: FnMut(&mut [f64], &[f64]) -> Result<(), RuntimeSolveError>,
+    F: FnMut(&mut [f64], &mut [f64]) -> Result<(), RuntimeSolveError>,
 {
     homotopy::project_initial_variables_with_homotopy(system, y, p, continuation_dependents)
 }
@@ -973,7 +974,6 @@ fn fill_colored_algebraic_rows(
     // seed layout. Projection colors activate only solver-y columns; parameter
     // lanes remain explicit zero seeds.
     let mut seed = vec![0.0; y.len().saturating_add(p.len())];
-    let mut jvp = vec![0.0; y.len()];
     for group in structure.coloring().groups() {
         let mut has_dependency = false;
         for &column in group.iter() {
@@ -989,8 +989,23 @@ fn fill_colored_algebraic_rows(
             has_dependency |= column_rows[column].iter().any(|&row| selected_rows[row]);
         }
         if has_dependency {
-            model.eval_jacobian_v(y, p, t, &seed, &mut jvp)?;
-            fill_colored_group_rows(jacobian, group, &column_rows, selected_rows, &jvp, rows)?;
+            let active_rows = colored_group_entries(group, &column_rows, selected_rows)
+                .map(|(row, _)| rows[row])
+                .collect::<Vec<_>>();
+            let jvp = implicit_selected_jacobian_v_rows(
+                model,
+                y,
+                p,
+                t,
+                &seed,
+                &active_rows,
+                "colored algebraic block Jacobian-vector product",
+            )?;
+            for ((row, column), value) in
+                colored_group_entries(group, &column_rows, selected_rows).zip(jvp)
+            {
+                jacobian[(row, column)] = value;
+            }
         }
         for &column in group.iter() {
             seed[y_indices[column as usize]] = 0.0;
@@ -999,27 +1014,18 @@ fn fill_colored_algebraic_rows(
     Ok(())
 }
 
-fn fill_colored_group_rows(
-    jacobian: &mut DMatrix<f64>,
-    group: &[u32],
-    column_rows: &[Vec<usize>],
-    selected_rows: &[bool],
-    jvp: &[f64],
-    rows: &[usize],
-) -> Result<(), RuntimeSolveError> {
-    for &column in group {
-        let column = column as usize;
-        for &local_row in &column_rows[column] {
-            if selected_rows[local_row] {
-                jacobian[(local_row, column)] = residual_at(
-                    jvp,
-                    rows[local_row],
-                    "colored algebraic block Jacobian-vector product",
-                )?;
-            }
-        }
-    }
-    Ok(())
+fn colored_group_entries<'a>(
+    group: &'a [u32],
+    column_rows: &'a [Vec<usize>],
+    selected_rows: &'a [bool],
+) -> impl Iterator<Item = (usize, usize)> + 'a {
+    group.iter().flat_map(move |&column| {
+        column_rows[column as usize]
+            .iter()
+            .copied()
+            .filter(move |&row| selected_rows[row])
+            .map(move |row| (row, column as usize))
+    })
 }
 
 fn validate_projection_structure(

@@ -10,6 +10,11 @@ use super::errors::DeferredParameterSource;
 use super::value::Value;
 use super::{EvalIndexMap, Function, VarName};
 
+#[cfg(test)]
+thread_local! {
+    static PARAMETER_INSERTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Evaluation context providing variable/parameter values.
 #[derive(Clone, Debug)]
 pub struct EvalContext {
@@ -91,7 +96,14 @@ impl EvalContext {
 
     /// Add a parameter value.
     pub fn add_parameter(&mut self, name: impl Into<String>, value: Value) {
+        #[cfg(test)]
+        PARAMETER_INSERTIONS.with(|count| count.set(count.get() + 1));
         self.parameters.insert(name.into(), value);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parameter_insertions() -> usize {
+        PARAMETER_INSERTIONS.get()
     }
 
     /// Drop the value bound to `name`, if any.
@@ -166,18 +178,23 @@ impl EvalContext {
     }
 
     fn lookup_value<'a, T>(&'a self, values: &'a EvalIndexMap<T>, name: &str) -> Option<&'a T> {
+        self.lookup(name, |candidate| values.get(candidate))
+    }
+
+    /// Apply the shared scope order to an inventory without copying its entries.
+    pub(crate) fn lookup<T>(&self, name: &str, get: impl Fn(&str) -> Option<T>) -> Option<T> {
         let name_path = ComponentPath::from_flat_path(name);
         if name_path.len() == 1
             && let Some(scope) = self.lookup_scope.as_ref()
-            && let Some(value) = lookup_scoped(values, name, &scope.to_flat_string())
+            && let Some(value) = lookup_scoped_with(&get, name, &scope.to_flat_string())
         {
             return Some(value);
         }
-        if let Some(value) = values.get(name) {
+        if let Some(value) = get(name) {
             return Some(value);
         }
         if let Some(scope) = self.lookup_scope.as_ref()
-            && let Some(value) = lookup_scoped(values, name, &scope.to_flat_string())
+            && let Some(value) = lookup_scoped_with(&get, name, &scope.to_flat_string())
         {
             return Some(value);
         }
@@ -193,10 +210,14 @@ fn lookup_scoped<'a, T, S>(
 where
     S: BuildHasher,
 {
+    lookup_scoped_with(&|candidate| map.get(candidate), name, scope)
+}
+
+fn lookup_scoped_with<T>(get: &impl Fn(&str) -> Option<T>, name: &str, scope: &str) -> Option<T> {
     let name_path = ComponentPath::from_flat_path(name);
     let scope_path = ComponentPath::from_flat_path(scope);
     for candidate in scoped_component_path_candidates(&name_path, &scope_path) {
-        if let Some(value) = map.get(&candidate) {
+        if let Some(value) = get(&candidate) {
             return Some(value);
         }
     }

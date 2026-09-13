@@ -978,7 +978,7 @@ fn retarget_reference_base(expression: &Expression, target: &VarName, span: Span
 fn empty_stream_result(span: Span) -> Expression {
     Expression::Array {
         elements: Vec::new(),
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span,
     }
 }

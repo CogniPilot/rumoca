@@ -37,11 +37,7 @@ pub trait ExpressionVisitor {
                 else_branch,
                 ..
             } => self.visit_if(branches, else_branch),
-            Expression::Array {
-                elements,
-                is_matrix,
-                ..
-            } => self.visit_array(elements, *is_matrix),
+            Expression::Array { elements, kind, .. } => self.visit_array(elements, *kind),
             Expression::Tuple { elements, .. } => self.visit_tuple(elements),
             Expression::Range {
                 start, step, end, ..
@@ -139,7 +135,7 @@ pub trait ExpressionVisitor {
         self.visit_expression(else_branch);
     }
 
-    fn visit_array(&mut self, elements: &[Expression], _is_matrix: bool) {
+    fn visit_array(&mut self, elements: &[Expression], _kind: crate::ArrayConstructor) {
         for element in elements {
             self.visit_expression(element);
         }
@@ -224,11 +220,7 @@ pub trait FallibleExpressionVisitor {
                 else_branch,
                 ..
             } => self.visit_if(branches, else_branch),
-            Expression::Array {
-                elements,
-                is_matrix,
-                ..
-            } => self.visit_array(elements, *is_matrix),
+            Expression::Array { elements, kind, .. } => self.visit_array(elements, *kind),
             Expression::Tuple { elements, .. } => self.visit_tuple(elements),
             Expression::Range {
                 start, step, end, ..
@@ -333,7 +325,7 @@ pub trait FallibleExpressionVisitor {
     fn visit_array(
         &mut self,
         elements: &[Expression],
-        _is_matrix: bool,
+        _kind: crate::ArrayConstructor,
     ) -> Result<(), Self::Error> {
         for element in elements {
             self.visit_expression(element)?;

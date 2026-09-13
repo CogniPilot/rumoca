@@ -1190,9 +1190,9 @@ pub(crate) fn substitute_index_in_expression(
 
         ast::Expression::Array {
             elements,
-            is_matrix,
+            kind,
             span,
-        } => substitute_index_in_array_expression(elements, *is_matrix, *span, var_name, value),
+        } => substitute_index_in_array_expression(elements, *kind, *span, var_name, value),
 
         ast::Expression::If {
             branches,
@@ -1300,14 +1300,14 @@ fn substitute_index_in_parenthesized_expression(
 
 fn substitute_index_in_array_expression(
     elements: &[ast::Expression],
-    is_matrix: bool,
+    kind: rumoca_core::ArrayConstructor,
     span: rumoca_core::Span,
     var_name: &str,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::Array {
         elements: substitute_index_in_expression_list(elements, var_name, value),
-        is_matrix,
+        kind,
         span,
     }
 }

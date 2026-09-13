@@ -1,5 +1,7 @@
 use super::*;
 
+mod dimension_preparation;
+
 fn test_span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("eval_flat_phase_constant_source_7.mo"),
@@ -1086,25 +1088,25 @@ fn infer_array_dims_with_context_resolves_scoped_if_matrix_columns() {
         elements: vec![
             rumoca_core::Expression::Array {
                 elements: vec![indexed_var("booleanTable.table", 1), int(0)],
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Horizontal,
                 span: rumoca_core::Span::DUMMY,
             },
             rumoca_core::Expression::Array {
                 elements: vec![table_column, generated_column],
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Horizontal,
                 span: rumoca_core::Span::DUMMY,
             },
         ],
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Vertical,
         span: rumoca_core::Span::DUMMY,
     };
     let else_matrix = rumoca_core::Expression::Array {
         elements: vec![rumoca_core::Expression::Array {
             elements: vec![int(0), int(0)],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Horizontal,
             span: rumoca_core::Span::DUMMY,
         }],
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Vertical,
         span: rumoca_core::Span::DUMMY,
     };
     let expr = rumoca_core::Expression::If {
@@ -1157,7 +1159,7 @@ fn infer_array_dims_with_context_preserves_vector_column_rows() {
     };
     let vector_column_matrix = rumoca_core::Expression::Array {
         elements: vec![var("table"), generated_column],
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Horizontal,
         span: rumoca_core::Span::DUMMY,
     };
     let expr = rumoca_core::Expression::If {
@@ -1212,16 +1214,16 @@ fn infer_array_dims_with_context_resolves_boolean_table_binding() {
         elements: vec![
             rumoca_core::Expression::Array {
                 elements: vec![index_expr(var("booleanTable.table"), 1), real(0.0)],
-                is_matrix: true,
+                kind: rumoca_core::ArrayConstructor::Horizontal,
                 span: rumoca_core::Span::DUMMY,
             },
             rumoca_core::Expression::Array {
                 elements: vec![var("booleanTable.table"), generated_column],
-                is_matrix: true,
+                kind: rumoca_core::ArrayConstructor::Horizontal,
                 span: rumoca_core::Span::DUMMY,
             },
         ],
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Vertical,
         span: rumoca_core::Span::DUMMY,
     };
     let expr = rumoca_core::Expression::If {
@@ -1258,7 +1260,7 @@ fn infer_array_dims_from_nested_comprehension_body_shape() {
     let expr = rumoca_core::Expression::ArrayComprehension {
         expr: Box::new(rumoca_core::Expression::Array {
             elements: vec![var("i"), var("i")],
-            is_matrix: false,
+            kind: rumoca_core::ArrayConstructor::Array,
             span: rumoca_core::Span::DUMMY,
         }),
         indices: vec![rumoca_core::ComprehensionIndex {
@@ -1276,6 +1278,43 @@ fn infer_array_dims_from_nested_comprehension_body_shape() {
 
     let dims = infer_array_dimensions(&expr);
     assert_eq!(dims, Some(vec![3, 2]));
+
+    let mut outer_dims = FxHashMap::default();
+    outer_dims.insert("i".to_owned(), vec![7]);
+    assert_eq!(
+        infer_array_dimensions_full_with_conds(
+            &expr,
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &outer_dims
+        ),
+        Some(vec![3, 2]),
+        "the scalar comprehension index shadows an outer array of the same name",
+    );
+
+    let rumoca_core::Expression::ArrayComprehension { indices, .. } = expr else {
+        unreachable!()
+    };
+    let varying = rumoca_core::Expression::ArrayComprehension {
+        expr: Box::new(call(rumoca_core::BuiltinFunction::Zeros, vec![var("i")])),
+        indices,
+        filter: None,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let mut outer_values = FxHashMap::default();
+    outer_values.insert("i".to_owned(), 7);
+    assert_eq!(
+        infer_array_dimensions_full_with_conds(
+            &varying,
+            &outer_values,
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &FxHashMap::default()
+        ),
+        None,
+        "a varying local index must not use the outer parameter's value to certify a uniform shape",
+    );
 }
 
 #[test]
@@ -1308,16 +1347,16 @@ fn infer_array_dims_vector_of_vertical_matrix_concat_uses_operand_shapes() {
         elements: vec![
             rumoca_core::Expression::Array {
                 elements: vec![zero_rows],
-                is_matrix: true,
+                kind: rumoca_core::ArrayConstructor::Horizontal,
                 span: rumoca_core::Span::DUMMY,
             },
             rumoca_core::Expression::Array {
                 elements: vec![var("b")],
-                is_matrix: true,
+                kind: rumoca_core::ArrayConstructor::Horizontal,
                 span: rumoca_core::Span::DUMMY,
             },
         ],
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Vertical,
         span: rumoca_core::Span::DUMMY,
     };
     let expr = call(rumoca_core::BuiltinFunction::Vector, vec![matrix]);
@@ -1332,6 +1371,81 @@ fn infer_array_dims_vector_of_vertical_matrix_concat_uses_operand_shapes() {
         ),
         Some(vec![3]),
         "MLS §10.4.2 matrix constructors concatenate array operands before vector() flattens them"
+    );
+}
+
+#[test]
+fn comprehension_index_does_not_shadow_a_resolved_component_identity() {
+    let component = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("i").with_instance_id(rumoca_core::InstanceId::new(17)),
+        subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = rumoca_core::Expression::ArrayComprehension {
+        expr: Box::new(component),
+        indices: vec![rumoca_core::ComprehensionIndex {
+            name: "i".to_owned(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(int(1)),
+                step: None,
+                end: Box::new(int(3)),
+                span: rumoca_core::Span::DUMMY,
+            },
+        }],
+        filter: None,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let mut dimensions = FxHashMap::default();
+    dimensions.insert("i".to_owned(), vec![7]);
+    assert_eq!(
+        infer_array_dimensions_full_with_conds(
+            &expr,
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &dimensions
+        ),
+        Some(vec![3, 7]),
+        "an exact component instance is not a lexical index merely because its display name matches",
+    );
+}
+
+#[test]
+fn comprehension_index_selects_a_scalar_without_a_compile_time_value() {
+    let expr = rumoca_core::Expression::ArrayComprehension {
+        expr: Box::new(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("data")
+                .with_instance_id(rumoca_core::InstanceId::new(18)),
+            subscripts: vec![rumoca_core::Subscript::Expr {
+                expr: Box::new(var("i")),
+                span: rumoca_core::Span::DUMMY,
+            }],
+            span: rumoca_core::Span::DUMMY,
+        }),
+        indices: vec![rumoca_core::ComprehensionIndex {
+            name: "i".to_owned(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(int(1)),
+                step: None,
+                end: Box::new(int(3)),
+                span: rumoca_core::Span::DUMMY,
+            },
+        }],
+        filter: None,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let mut dimensions = FxHashMap::default();
+    dimensions.insert("data".to_owned(), vec![3]);
+    assert_eq!(
+        infer_array_dimensions_full_with_conds(
+            &expr,
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &dimensions
+        ),
+        Some(vec![3]),
+        "a scalar index removes its axis independently of its value",
     );
 }
 

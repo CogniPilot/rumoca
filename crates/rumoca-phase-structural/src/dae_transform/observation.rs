@@ -56,6 +56,8 @@ impl From<&DirectStateConstraint> for DirectIdentity {
 #[derive(Clone, Copy)]
 pub(super) struct HolonomicIdentity<'a> {
     pub(super) owner_ordinal: usize,
+    pub(super) body_ordinal: Option<usize>,
+    pub(super) component_scalar: Option<usize>,
     pub(super) residual_ordinal: u32,
     pub(super) owner_span: Span,
     pub(super) anchored_state_ordinals: &'a [u32],
@@ -65,6 +67,12 @@ impl<'a> From<&'a HolonomicConstraint> for HolonomicIdentity<'a> {
     fn from(candidate: &'a HolonomicConstraint) -> Self {
         Self {
             owner_ordinal: candidate.owner_ordinal,
+            body_ordinal: candidate.body_ordinal,
+            component_scalar: candidate
+                .proof
+                .component
+                .as_ref()
+                .map(|component| component.scalar),
             residual_ordinal: candidate.residual,
             owner_span: candidate.owner.span(),
             anchored_state_ordinals: &candidate.proof.anchored_states,
@@ -252,6 +260,8 @@ pub enum ReductionIdentity {
     },
     Holonomic {
         owner_ordinal: usize,
+        body_ordinal: Option<usize>,
+        component_scalar: Option<usize>,
         residual_ordinal: u32,
         owner_span: Span,
         anchored_state_ordinals: Vec<u32>,
@@ -272,11 +282,15 @@ impl From<Identity<'_>> for ReductionIdentity {
             },
             Identity::Holonomic(HolonomicIdentity {
                 owner_ordinal,
+                body_ordinal,
+                component_scalar,
                 residual_ordinal,
                 owner_span,
                 anchored_state_ordinals,
             }) => Self::Holonomic {
                 owner_ordinal,
+                body_ordinal,
+                component_scalar,
                 residual_ordinal,
                 owner_span,
                 anchored_state_ordinals: anchored_state_ordinals.to_vec(),

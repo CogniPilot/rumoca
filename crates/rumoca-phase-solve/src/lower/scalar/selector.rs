@@ -454,7 +454,10 @@ impl<'dae> ScalarSelector<'dae> {
         }
     }
 
-    pub(super) fn node(&self, expression: dae::ExprId<'dae>) -> dae::ExpressionView<'dae> {
+    pub(in crate::lower) fn node(
+        &self,
+        expression: dae::ExprId<'dae>,
+    ) -> dae::ExpressionView<'dae> {
         self.view
             .expression(expression)
             .expect("branded expression resolves in its DAE")

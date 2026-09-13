@@ -500,7 +500,7 @@ fn lower_first_match_accumulator(proof: FirstMatchAccumulator) -> rumoca_core::S
             candidates,
             Expression::Array {
                 elements: vec![sentinel.clone()],
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Array,
                 span,
             },
         ],

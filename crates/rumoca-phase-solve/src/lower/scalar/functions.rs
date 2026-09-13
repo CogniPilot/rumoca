@@ -1216,14 +1216,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .context_frames
                 .get(&current)
                 .expect("non-root scalar context has a frame");
-            let parent = match frame {
-                ScalarContextFrame::Activation { parent, .. }
-                | ScalarContextFrame::Function { parent, .. }
-                | ScalarContextFrame::Domain { parent, .. }
-                | ScalarContextFrame::Parameter { parent, .. }
-                | ScalarContextFrame::Derivative { parent, .. }
-                | ScalarContextFrame::DerivativeSeed { parent, .. } => *parent,
-            };
+            let parent = frame.parent();
             ancestors.push(parent);
             current = parent;
         }

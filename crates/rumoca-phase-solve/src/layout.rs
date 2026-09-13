@@ -5,6 +5,9 @@ use rumoca_ir_solve as solve;
 use crate::LowerError;
 use crate::lower::call_scoped_actions::CallScopedActionCollector;
 
+mod relation_memory;
+use relation_memory::BufferedRelations;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum StorageClass {
     Y,
@@ -24,6 +27,7 @@ pub(crate) struct LoweredLayout<'dae> {
     pub(crate) pre_binding_starts: Vec<Option<usize>>,
     pub(crate) previous_values: Vec<usize>,
     pub(crate) condition_memory: Vec<usize>,
+    pub(crate) buffered_relations: BufferedRelations<'dae>,
     pub(crate) clock_activations: Vec<usize>,
     pub(crate) delay_values: Vec<usize>,
     pub(crate) layout: solve::VarLayout,
@@ -35,8 +39,9 @@ pub(crate) struct LoweredLayout<'dae> {
     pub(crate) marker: std::marker::PhantomData<&'dae mut &'dae ()>,
 }
 
-struct RuntimeLayout {
+struct RuntimeLayout<'dae> {
     condition_memory: Vec<usize>,
+    buffered_relations: BufferedRelations<'dae>,
     clock_activations: Vec<usize>,
     delay_values: Vec<usize>,
     initial_event_parameter_index: Option<usize>,
@@ -129,7 +134,7 @@ pub(crate) fn lower_layout<'dae>(
         input_scalar_names: p.input_names,
         discrete_real_scalar_names: p.discrete_real_names,
         discrete_valued_scalar_names: p.discrete_value_names,
-        relation_memory_parameter_indices: Vec::new(),
+        relation_memory_parameter_indices: runtime.buffered_relations.parameter_indices(),
         initial_event_parameter_index: runtime.initial_event_parameter_index,
         terminal_event_parameter_index: runtime.terminal_event_parameter_index,
         initial_homotopy_parameter_index: runtime.initial_homotopy_parameter_index,
@@ -141,6 +146,7 @@ pub(crate) fn lower_layout<'dae>(
         pre_binding_starts: pre.binding_starts,
         previous_values: pre.previous_values,
         condition_memory: runtime.condition_memory,
+        buffered_relations: runtime.buffered_relations,
         clock_activations: runtime.clock_activations,
         delay_values: runtime.delay_values,
         layout,
@@ -220,11 +226,11 @@ fn solve_variable_value_kind(kind: dae::ScalarType) -> solve::SolveVariableValue
     }
 }
 
-fn append_runtime_layout(
-    view: dae::DaeView<'_>,
+fn append_runtime_layout<'dae>(
+    view: dae::DaeView<'dae>,
     parameter_count: usize,
     pre_count: usize,
-) -> Result<RuntimeLayout, LowerError> {
+) -> Result<RuntimeLayout<'dae>, LowerError> {
     let condition_base = parameter_count
         .checked_add(pre_count)
         .ok_or_else(|| LowerError::contract("pre-value layout overflow", first_model_span(view)))?;
@@ -249,9 +255,11 @@ fn append_runtime_layout(
         .checked_add(clock_activations.len())
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
     let (delay_values, after_delays) = append_delay_values(view, after_clocks)?;
-    let flags = append_runtime_flags(view, after_delays)?;
+    let buffered_relations = BufferedRelations::construct(view, after_delays)?;
+    let flags = append_runtime_flags(view, buffered_relations.end())?;
     Ok(RuntimeLayout {
         condition_memory,
+        buffered_relations,
         clock_activations,
         delay_values,
         initial_event_parameter_index: flags.initial_event_parameter_index,

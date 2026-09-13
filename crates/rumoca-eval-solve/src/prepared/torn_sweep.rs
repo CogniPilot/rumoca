@@ -16,7 +16,6 @@
 
 use rumoca_ir_solve::{LinearOp, ScalarProgramBlock, TargetAssignmentShape};
 
-use super::support::non_causal_linear_op;
 use super::{
     AssignmentProgramBuilder, PreparedScalarProgramBlock, RowOutputRequest,
     TargetAssignmentScratchRequest,
@@ -95,7 +94,7 @@ impl PreparedScalarProgramBlock {
                     self.assignment_shape_for_output(program_row, output_offset, target_y_index)?;
                 Some(PreparedTornStep {
                     program_row,
-                    shape,
+                    shape: shape.clone(),
                     target_y_index,
                 })
             })
@@ -128,7 +127,7 @@ impl PreparedScalarProgramBlock {
             let evaluated =
                 self.eval_target_assignment_row_with_scratch(TargetAssignmentScratchRequest {
                     row_idx: step.program_row,
-                    shape: step.shape,
+                    shape: &step.shape,
                     y,
                     p,
                     t,
@@ -223,7 +222,7 @@ impl PreparedScalarProgramBlock {
     /// error still declines at exactly the same iterates.
     fn torn_step_isolator_program(&self, step: &PreparedTornStep) -> Option<Vec<LinearOp>> {
         let row = self.block.programs().get(step.program_row)?;
-        if row.iter().any(non_causal_linear_op) {
+        if !self.is_causal_row(step.program_row) {
             return None;
         }
         let mut program = row
@@ -238,7 +237,7 @@ impl PreparedScalarProgramBlock {
             .cloned()
             .collect::<Vec<_>>();
         let result = AssignmentProgramBuilder::new(&mut program)?
-            .materialize_poisoning_singular(step.shape)?;
+            .materialize_poisoning_singular(&step.shape)?;
         program.push(LinearOp::StoreOutput { src: result });
         Some(program)
     }

@@ -129,6 +129,10 @@ pub trait CompiledSolveEventTransaction {
 
 /// Optional execution adapter injected by a concrete simulation backend.
 pub trait SolveExecutionBackend {
+    fn pure_call_execution(&self) -> Option<&dyn solve_eval::PureCallExecution> {
+        None
+    }
+
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
@@ -606,7 +610,7 @@ impl SolveRuntime {
             manifold_residual,
             manifold_jacobian_v,
             initial_residual: PreparedComputeBlock::new_with_label(
-                &model.problem.initialization.residual,
+                model.problem.initialization.residual(),
                 "runtime_initial_residual",
             )?,
             initial_residual_jacobian_v: PreparedComputeBlock::new_with_label(
@@ -958,6 +962,10 @@ impl SolveRuntime {
         RowEvalContext {
             external_tables: Some(self.model.external_tables.as_slice()),
             pure_calls: Some(&self.model.pure_calls),
+            pure_call_execution: self
+                .execution_backend
+                .as_deref()
+                .and_then(|backend| backend.pure_call_execution()),
             runtime_state: Some(&self.runtime_state),
             ..Default::default()
         }
@@ -1185,7 +1193,7 @@ impl SolveRuntime {
                 params,
                 tol,
                 max_iters,
-                certify_coordinates: false,
+                certify_coordinates: true,
             },
         )?;
         self.eval_root_conditions_from_refreshed_solver_y(
@@ -1267,7 +1275,7 @@ impl SolveRuntime {
                     params,
                     tol,
                     max_iters,
-                    certify_coordinates: false,
+                    certify_coordinates: true,
                 },
             )?;
         }
@@ -1341,7 +1349,7 @@ impl SolveRuntime {
                     params,
                     tol,
                     max_iters,
-                    certify_coordinates: false,
+                    certify_coordinates: true,
                 },
             )?;
         }
@@ -1547,9 +1555,6 @@ struct StateDerivativeScratch {
     /// the algebraic slots completed by the projection forward-sensitivity, for
     /// the AD Jacobian-vector product.
     seed_buf: Vec<f64>,
-    /// Scratch unit seed used to read a single residual row's diagonal
-    /// sensitivity `∂g_row/∂y_target`; kept all-zero between uses.
-    unit_seed: Vec<f64>,
 }
 
 /// Tolerances for the algebraic projection's fixed-point settle (shared by the

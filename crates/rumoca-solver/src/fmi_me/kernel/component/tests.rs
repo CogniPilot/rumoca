@@ -155,6 +155,46 @@ fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
 }
 
 #[test]
+fn scheduled_boundary_preserves_the_continuous_derivative_coordinate() {
+    use solve::LinearOp::{Binary, Const, LoadTime, StoreOutput};
+    let mut model = steep_algebraic_time_event_model();
+    model.problem.continuous.derivative_rhs =
+        solve::ComputeBlock::from_scalar_program_block(block(
+            vec![vec![
+                LoadTime { dst: 0 },
+                Const {
+                    dst: 1,
+                    value: ALGEBRAIC_SLOPE,
+                },
+                Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                StoreOutput { src: 2 },
+            ]],
+            "scheduled_derivative_coordinate.mo",
+        ));
+    let mut kernel = instantiate(&model);
+    for time in [0.9, 1.0] {
+        kernel.set_time(MeTime::new(time, Some(1.0))).unwrap();
+        let mut derivative = [f64::NAN];
+        kernel
+            .continuous_state_derivatives_into(&mut derivative)
+            .unwrap();
+        // The left limit of a smooth function agrees with its value at the
+        // boundary. Solver state tolerances cannot change physical time.
+        assert!(
+            (derivative[0] - ALGEBRAIC_SLOPE * time).abs() < 1e-6,
+            "at {time}: derivative={}, expected {}",
+            derivative[0],
+            ALGEBRAIC_SLOPE * time
+        );
+    }
+}
+
+#[test]
 fn a_scheduled_event_snapshot_uses_a_one_ulp_left_limit() {
     let mut kernel = instantiate(&steep_algebraic_time_event_model());
     let event_time = 1.0_f64;

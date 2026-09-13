@@ -220,9 +220,51 @@ fn translation_time_guard_selects_its_affine_derivative_branch() {
     assert!(
         !program
             .iter()
-            .any(|operation| matches!(operation, LinearOp::Select { .. })),
-        "a guard fixed at translation time leaves no runtime selection: {program:?}"
+            .any(|operation| matches!(operation, LinearOp::LoadP { index: 0, .. })),
+        "the structural guard is absent from runtime dependencies: {program:?}"
     );
+    let block =
+        rumoca_eval_solve::to_scalar_program_block(&solve.continuous.derivative_rhs).unwrap();
+    for coefficient in [2.0, 4.0] {
+        for guard in [0.0, 1.0] {
+            let mut parameters = vec![0.0; solve.solve_layout.compiled_parameter_len];
+            parameters[0] = guard;
+            parameters[1] = coefficient;
+            let mut output = [f64::NAN];
+            rumoca_eval_solve::eval_scalar_program_block(
+                &block,
+                &[6.0],
+                &parameters,
+                0.0,
+                None,
+                &mut output,
+            )
+            .unwrap();
+            assert_eq!(
+                output[0],
+                6.0 / coefficient,
+                "only the coefficient remains live"
+            );
+        }
+    }
+    for coefficient in [0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+        let mut parameters = vec![0.0; solve.solve_layout.compiled_parameter_len];
+        parameters[1] = coefficient;
+        let mut output = [0.0];
+        let evaluated = rumoca_eval_solve::eval_scalar_program_block(
+            &block,
+            &[6.0],
+            &parameters,
+            0.0,
+            None,
+            &mut output,
+        );
+        assert!(
+            evaluated.is_err() || !output[0].is_finite(),
+            "invalid coefficient {coefficient} returned {}",
+            output[0]
+        );
+    }
 }
 
 #[test]

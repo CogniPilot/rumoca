@@ -155,26 +155,28 @@ pub use expression::{
     BinaryOperator, CoordinateInput, DaeLiteral, ExpressionAt, ExpressionVariability, Expressions,
     PureBuiltin, ScalarType, StringConversionFormatInput, Subscript, UnaryOperator, ValueType,
 };
+pub use ids::InitialParameterValueId;
 pub use ids::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
     DelayId, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId, DiscreteValueOwnerId,
-    DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionFoldId,
-    FunctionId, FunctionParameterId, FunctionValueId, InitialDiscreteValueId,
+    DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionDerivativeId,
+    FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId, InitialDiscreteValueId,
     InitializationEquationId, InitializationFamilyId, InputId, ModelEventTransactionId,
     ParameterId, PeriodicClockId, PreviousId, RelationId, RootId, StateId, StructuredRootId,
     TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
+pub use model::initial_parameters::InitialParameterValueView;
 pub use model::{
     ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae, DaeConstruction, DaeView,
     DomainView, Domains, ExpressionKind, ExpressionOperands, ExpressionOperation, ExpressionView,
     ExternalArgument, ExternalArgumentView, ExternalFunctionBody, ExternalFunctionView,
     ExternalLanguage, ExternalLinkage, FunctionBody, FunctionConditionalView,
-    FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView, FunctionLoop,
-    FunctionParameterView, FunctionPurity, FunctionReservation, FunctionScopeRelation,
-    FunctionScopeView, FunctionSignature, FunctionStatementView, FunctionStatements,
-    FunctionValueRole, FunctionValueView, FunctionView, Functions, InitializationOwnerView,
-    InputVariability, QuotientReplayToken, RangeBoundView, RangeView, RecordFieldLayout,
-    ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
+    FunctionDefinitionValues, FunctionDefinitionView, FunctionDerivativeView, FunctionFoldView,
+    FunctionLoop, FunctionParameterView, FunctionPurity, FunctionReservation,
+    FunctionScopeRelation, FunctionScopeView, FunctionSignature, FunctionStatementView,
+    FunctionStatements, FunctionValueRole, FunctionValueView, FunctionView, Functions,
+    InitializationOwnerView, InputVariability, QuotientReplayToken, RangeBoundView, RangeView,
+    RecordFieldLayout, ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
     StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
     ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
     VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,

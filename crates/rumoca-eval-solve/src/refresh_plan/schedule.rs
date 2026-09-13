@@ -1,24 +1,32 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rumoca_ir_solve as solve;
 
 use super::{AlgebraicRefreshRow, RefreshRowSelection, RefreshStage};
 
-pub fn build_refresh_stages(
+pub(super) fn build_refresh_stages(
     plan: &solve::AlgebraicProjectionPlan,
     block_indices: &[usize],
     rows: &[AlgebraicRefreshRow],
     static_rows: &RefreshRowSelection,
     causal_solution_certified: bool,
+    mut dependencies: impl FnMut(&AlgebraicRefreshRow, &BTreeMap<usize, usize>) -> Option<Vec<usize>>,
 ) -> Result<Vec<RefreshStage>, solve::ContinuousRefreshConstructionError> {
     let exact_rows = rows
         .iter()
         .enumerate()
-        .filter(|(_, row)| causal_solution_certified && row.exact_assignment_certified())
+        .filter(|(_, row)| row.exact_assignment_certified())
         .map(|(index, row)| ((row.equation_index(), row.target_index()), index))
         .collect::<BTreeMap<_, _>>();
     let mut stages = Vec::new();
     let mut assignments = Vec::new();
+    let targets = plan
+        .blocks
+        .iter()
+        .flat_map(|block| block.y_indices.iter().copied())
+        .map(|target| (target, target))
+        .collect::<BTreeMap<_, _>>();
+    let mut available = BTreeSet::new();
     let static_targets = static_rows
         .indices()
         .iter()
@@ -30,11 +38,22 @@ pub fn build_refresh_stages(
         push_causal_seed_sweep(&mut stages, rows, &static_targets)?;
     }
     for (local_block_index, block) in plan.blocks.iter().enumerate() {
-        if let Some(row) = exact_singleton_row(block, &exact_rows) {
+        if let Some(row) = exact_singleton_row(block, &exact_rows)
+            && (causal_solution_certified
+                || dependencies(&rows[row], &targets)
+                    .is_some_and(|inputs| inputs.iter().all(|input| available.contains(input))))
+        {
             assignments.push(row);
+            available.insert(rows[row].target_index());
             continue;
         }
-        flush_assignments(&mut stages, &mut assignments, rows, &static_targets)?;
+        flush_assignments(
+            &mut stages,
+            &mut assignments,
+            rows,
+            &static_targets,
+            causal_solution_certified,
+        )?;
         stages.push(RefreshStage::ProjectionBlock {
             seed_sequence: Default::default(),
             block_index: block_indices
@@ -46,8 +65,15 @@ pub fn build_refresh_stages(
             },
             seed_rows: projection_seed_rows(block, rows)?,
         });
+        available.extend(block.y_indices.iter().copied());
     }
-    flush_assignments(&mut stages, &mut assignments, rows, &static_targets)?;
+    flush_assignments(
+        &mut stages,
+        &mut assignments,
+        rows,
+        &static_targets,
+        causal_solution_certified,
+    )?;
     Ok(stages)
 }
 
@@ -114,16 +140,18 @@ fn flush_assignments(
     assignments: &mut Vec<usize>,
     rows: &[AlgebraicRefreshRow],
     static_targets: &std::collections::BTreeSet<usize>,
+    causal_solution_certified: bool,
 ) -> Result<(), solve::ContinuousRefreshConstructionError> {
     if assignments.is_empty() {
         return Ok(());
     }
     let mut ordered_assignments = std::mem::take(assignments);
-    // `rows` is already the construction-issued topological order. The
-    // simultaneous BLT can order scalar outputs of one compact pure call more
-    // loosely than the exact-assignment dependency certificate, so retain the
-    // canonical row order inside each uninterrupted exact run.
-    ordered_assignments.sort_unstable();
+    // A certified seed order can be stricter than the simultaneous BLT order
+    // for outputs of one compact call. Otherwise admission proved each row's
+    // inputs available in BLT order, and that proved order must be retained.
+    if causal_solution_certified {
+        ordered_assignments.sort_unstable();
+    }
     let (static_rows, dynamic_rows) = ordered_assignments
         .into_iter()
         .partition::<Vec<_>, _>(|index| static_targets.contains(&rows[*index].target_index()));
@@ -211,6 +239,7 @@ mod tests {
             ],
             &RefreshRowSelection::default(),
             true,
+            |_, _| None,
         )
         .unwrap();
 
@@ -247,9 +276,15 @@ mod tests {
         };
 
         let rows = [exact_row(1), exact_row(0)];
-        let stages =
-            build_refresh_stages(&plan, &[0, 1], &rows, &RefreshRowSelection::default(), true)
-                .unwrap();
+        let stages = build_refresh_stages(
+            &plan,
+            &[0, 1],
+            &rows,
+            &RefreshRowSelection::default(),
+            true,
+            |_, _| None,
+        )
+        .unwrap();
 
         assert!(matches!(
             stages.as_slice(),
@@ -289,6 +324,7 @@ mod tests {
             &rows,
             &RefreshRowSelection::default(),
             true,
+            |_, _| None,
         )
         .unwrap();
 
@@ -326,6 +362,7 @@ mod tests {
             &rows,
             &RefreshRowSelection::default(),
             false,
+            |_, _| None,
         )
         .unwrap();
 
@@ -339,5 +376,61 @@ mod tests {
                 },
             ]
         ));
+    }
+
+    #[test]
+    fn local_dependency_proof_retains_blt_order_instead_of_uncertified_seed_order() {
+        let rows = [exact_row(2), exact_row(1), exact_row(0)];
+        let plan = solve::AlgebraicProjectionPlan {
+            blocks: (0..3)
+                .map(|target| solve::AlgebraicProjectionBlock {
+                    rows: vec![target],
+                    y_indices: vec![target],
+                    tearing: None,
+                })
+                .collect(),
+        };
+        let stages = build_refresh_stages(
+            &plan,
+            &[0, 1, 2],
+            &rows,
+            &RefreshRowSelection::default(),
+            false,
+            |row, _| Some(row.target_index().checked_sub(1).into_iter().collect()),
+        )
+        .unwrap();
+        assert!(matches!(
+            stages.as_slice(),
+            [RefreshStage::ExactAssignments { dynamic_rows, .. }]
+                if dynamic_rows.indices() == [2, 1, 0]
+        ));
+    }
+
+    #[test]
+    fn local_assignment_cannot_read_a_dependency_from_a_later_projection() {
+        let rows = [exact_row(0), numerical_seed_row(1)];
+        let plan = solve::AlgebraicProjectionPlan {
+            blocks: (0..2)
+                .map(|target| solve::AlgebraicProjectionBlock {
+                    rows: vec![target],
+                    y_indices: vec![target],
+                    tearing: None,
+                })
+                .collect(),
+        };
+        let stages = build_refresh_stages(
+            &plan,
+            &[0, 1],
+            &rows,
+            &RefreshRowSelection::default(),
+            false,
+            |_, _| Some(vec![1]),
+        )
+        .unwrap();
+        assert!(
+            stages
+                .iter()
+                .all(|stage| matches!(stage, RefreshStage::ProjectionBlock { .. }))
+        );
     }
 }

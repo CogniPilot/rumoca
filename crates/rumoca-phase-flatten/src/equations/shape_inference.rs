@@ -46,6 +46,9 @@ fn infer_component_ref_dims(
     if let Some(dims) = ctx.get_array_dimensions(&qualified) {
         return Some(dims.clone());
     }
+    if ctx.declared_dimensions.proves_scalar_reference(cr) {
+        return Some(Vec::new());
+    }
 
     // Fall back to the unscripted path and project by subscripts in the reference.
     // This handles references like `A[i]` when only `A` has known dimensions.
@@ -304,12 +307,8 @@ pub(crate) fn infer_expression_shape(
                 ExpressionShape::Other
             }
         }
-        ast::Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } => {
-            if *is_matrix {
+        ast::Expression::Array { elements, kind, .. } => {
+            if kind.concatenation_axis().is_some() {
                 ExpressionShape::Other
             } else if elements
                 .iter()
@@ -733,6 +732,32 @@ mod tests {
             ),
             ExpressionShape::Other
         );
+    }
+
+    #[test]
+    fn declared_scalar_references_preserve_array_equation_cardinality() {
+        let source = r#"
+model ScalarElements
+  parameter Real radius = 1;
+  Real s, w, z;
+equation
+  {s, w, z} = {1, 2, radius*radius};
+end ScalarElements;
+"#;
+        let parsed = rumoca_phase_parse::parse_to_ast(source, "scalar_elements.mo").unwrap();
+        let mut tree = ast::ClassTree::from_parsed(parsed);
+        tree.source_map.add("scalar_elements.mo", source);
+        let tree = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+            .unwrap()
+            .into_inner();
+        let mut overlay =
+            rumoca_phase_instantiate::instantiate_model(&tree, "ScalarElements").unwrap();
+        rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "ScalarElements").unwrap();
+        let flat = crate::flatten_ref(&tree, &overlay, "ScalarElements").unwrap();
+
+        assert_eq!(flat.equations.len(), 1);
+        assert_eq!(flat.equations[0].scalar_count, 3);
+        assert_eq!(flat.structured_equations.len(), 1);
     }
 
     #[test]

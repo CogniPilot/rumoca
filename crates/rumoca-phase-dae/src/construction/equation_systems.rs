@@ -17,6 +17,12 @@ pub(super) fn lower_equation_systems<'dae>(
     let no_aggregate_connections = AggregateDiscreteConnections::default();
     let mut excluded_initial_rows = analysis.initialization_family_rows.clone();
     excluded_initial_rows.extend(&analysis.initial_discrete_equation_rows);
+    excluded_initial_rows.extend(
+        analysis
+            .initial_parameter_equations
+            .iter()
+            .map(|definition| definition.row),
+    );
     lower_equations(
         construction,
         discrete_values,

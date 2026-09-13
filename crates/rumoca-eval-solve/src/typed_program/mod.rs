@@ -1,5 +1,10 @@
+mod linear_solve;
 mod number;
 mod tensor;
+#[cfg(test)]
+mod tests;
+
+use std::collections::{HashMap, hash_map::Entry};
 
 use rumoca_core::Span;
 use rumoca_core::StructuredIndexDomain;
@@ -115,6 +120,10 @@ pub enum TypedProgramEvalError {
     InvalidIntegerConversion {
         provenance: Span,
     },
+    LinearSolve {
+        reason: String,
+        provenance: Span,
+    },
 }
 
 impl TypedProgramEvalError {
@@ -125,7 +134,8 @@ impl TypedProgramEvalError {
             Self::InvalidArgument { provenance, .. }
             | Self::InvalidCheckedProgram { provenance, .. }
             | Self::IntegerArithmetic { provenance, .. }
-            | Self::InvalidIntegerConversion { provenance } => Some(*provenance),
+            | Self::InvalidIntegerConversion { provenance }
+            | Self::LinearSolve { provenance, .. } => Some(*provenance),
         }
     }
 }
@@ -133,6 +143,9 @@ impl TypedProgramEvalError {
 impl std::fmt::Display for TypedProgramEvalError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::LinearSolve { reason, .. } => {
+                write!(formatter, "tensor linear solve failed: {reason}")
+            }
             Self::UnknownOwner { owner } => {
                 write!(formatter, "unknown pure-call owner {}", owner.index())
             }
@@ -286,7 +299,12 @@ fn eval_pure_call_with_invocation_counts(
         &mut invocations,
         EvaluationMode::Primal,
     )?;
-    Ok((outputs, invocations.misses))
+    let counts = table
+        .owners()
+        .iter()
+        .map(|owner| invocations.misses.get(&owner.id()).copied().unwrap_or(0))
+        .collect();
+    Ok((outputs, counts))
 }
 
 fn validate_arguments(
@@ -356,25 +374,27 @@ fn eval_region(
 /// of the same sequential function invocation. A compact `Map` or `Fold`
 /// creates one fresh scope per domain point because its binder values are part
 /// of the invocation coordinate.
+/// Only executed calls occupy result storage; unrelated model owners require
+/// no slots, including in leaf calls and per-coordinate loop scopes.
 struct InvocationScope {
-    calls: Vec<Option<Vec<TypedValue>>>,
+    owner_count: usize,
+    calls: HashMap<SolvePureCallOwnerId, Vec<TypedValue>>,
     #[cfg(test)]
-    misses: Vec<u32>,
+    misses: HashMap<SolvePureCallOwnerId, u32>,
 }
 
 impl InvocationScope {
     fn new(table: &SolvePureCallTable) -> Self {
         Self {
-            calls: vec![None; table.owners().len()],
+            owner_count: table.owners().len(),
+            calls: HashMap::new(),
             #[cfg(test)]
-            misses: vec![0; table.owners().len()],
+            misses: HashMap::new(),
         }
     }
 
     fn get(&self, owner: SolvePureCallOwnerId) -> Option<&[TypedValue]> {
-        self.calls
-            .get(owner.index() as usize)
-            .and_then(Option::as_deref)
+        self.calls.get(&owner).map(Vec::as_slice)
     }
 
     fn insert(
@@ -383,16 +403,18 @@ impl InvocationScope {
         values: Vec<TypedValue>,
         provenance: Span,
     ) -> Result<(), TypedProgramEvalError> {
-        let destination = self
-            .calls
-            .get_mut(owner.index() as usize)
-            .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
-        if destination.replace(values).is_some() {
-            return invalid("redefine pure-call invocation", provenance);
+        if owner.index() as usize >= self.owner_count {
+            return Err(TypedProgramEvalError::UnknownOwner { owner });
+        }
+        match self.calls.entry(owner) {
+            Entry::Vacant(destination) => {
+                destination.insert(values);
+            }
+            Entry::Occupied(_) => return invalid("redefine pure-call invocation", provenance),
         }
         #[cfg(test)]
         {
-            self.misses[owner.index() as usize] += 1;
+            *self.misses.entry(owner).or_default() += 1;
         }
         Ok(())
     }
@@ -578,6 +600,11 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                 lhs,
                 rhs,
             } => self.eval_matrix_multiply(*destination, *lhs, *rhs, provenance),
+            SolveOperation::LinearSolve {
+                destination,
+                matrix,
+                rhs,
+            } => self.eval_linear_solve(*destination, *matrix, *rhs, provenance),
             SolveOperation::Cross {
                 destination,
                 lhs,
@@ -1342,6 +1369,3 @@ fn invalid_error(operation: &'static str, provenance: Span) -> TypedProgramEvalE
         provenance,
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -17,6 +17,7 @@ mod callable_scope_identity;
 mod constructor_signature;
 mod deferred_members;
 mod function_context;
+mod function_derivatives;
 mod function_metadata;
 mod function_output_validation;
 mod function_param_alias;
@@ -50,6 +51,7 @@ use function_context::{
     collect_function_context, collect_lexical_constant_aliases, extend_imports_if_absent,
     function_initial_import_map, resolve_import_pairs,
 };
+use function_derivatives::*;
 pub(crate) use function_metadata::FunctionTypeCatalog;
 pub(crate) use function_metadata::lower_record_function_params;
 use function_metadata::*;
@@ -1189,7 +1191,7 @@ fn convert_function<'tree>(
     }
 
     // Extract derivative annotations (MLS §12.7.1)
-    func.derivatives = extract_derivative_annotations(&class_def.annotation);
+    func.derivatives = lower_derivative_annotations(&class_def.annotation, &func.inputs)?;
 
     // MLS §18.3 Inline / LateInline. Carried, not acted on here: whether a call
     // is substituted is a backend question, and this phase is the last place

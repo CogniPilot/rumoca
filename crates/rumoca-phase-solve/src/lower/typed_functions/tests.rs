@@ -5,6 +5,7 @@ use rumoca_core::{SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain,
 use super::*;
 
 mod fixtures;
+mod linear_solve;
 
 use fixtures::{integer_to_real_sibling_folds, lower_root_call, structured_range};
 

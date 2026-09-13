@@ -336,16 +336,16 @@ fn fixed_false_parameter_becomes_an_initialization_projection_unknown() {
     else {
         panic!("a parameter occupies P storage");
     };
-    let [block] = solve.initialization.projection_plan.blocks.as_slice() else {
+    let [block] = solve.initialization.projection_plan().blocks.as_slice() else {
         panic!(
             "one initialization projection block expected, got {:?}",
-            solve.initialization.projection_plan.blocks
+            solve.initialization.projection_plan().blocks
         );
     };
     assert_eq!(block.rows, [0]);
     assert_eq!(block.unknowns, [rumoca_ir_solve::scalar_slot_p(index)]);
     assert_eq!(
-        solve.initialization.projection_unknowns,
+        solve.initialization.projection_unknowns(),
         [rumoca_ir_solve::scalar_slot_p(index)]
     );
 }
@@ -429,21 +429,21 @@ fn fixed_algebraic_initial_equation_joins_the_continuous_initial_solve() {
     let ScalarSlot::P { .. } = q_slot else {
         panic!("q occupies parameter storage");
     };
-    assert_eq!(solve.initialization.projection_unknowns, [q_slot]);
-    let [block] = solve.initialization.projection_plan.blocks.as_slice() else {
+    assert_eq!(solve.initialization.projection_unknowns(), [q_slot]);
+    let [block] = solve.initialization.projection_plan().blocks.as_slice() else {
         panic!("one initialization projection block expected");
     };
     assert_eq!(block.rows, [0]);
     assert_eq!(block.unknowns, [q_slot]);
     assert_eq!(
-        solve.initialization.row_roles,
+        solve.initialization.row_roles(),
         [rumoca_ir_solve::InitializationRowRole::SolvedThroughAlgebraicRefresh]
     );
     let a_slot = solve.layout.binding("a").expect("a has solver storage");
     let ScalarSlot::Y { index: a_index, .. } = a_slot else {
         panic!("a occupies solver storage");
     };
-    assert!(solve.initialization.residual.nodes.iter().any(|node| {
+    assert!(solve.initialization.residual().nodes.iter().any(|node| {
         matches!(node, ComputeNode::ScalarPrograms(rows) if rows.programs().iter().flatten().any(
             |operation| matches!(operation, LinearOp::LoadY { index, .. } if *index == a_index)
         ))
@@ -472,7 +472,7 @@ fn a_parameter_reading_an_initialization_unknown_is_re_applied_after_the_solve()
         .binding("g")
         .expect("the dependent parameter keeps its parameter storage");
     assert_eq!(
-        solve.initialization.update_targets,
+        solve.initialization.update_targets(),
         [dependent_slot],
         "the dependent binding is the only initialization update row"
     );
@@ -488,7 +488,7 @@ fn a_parameter_reading_an_initialization_unknown_is_re_applied_after_the_solve()
         panic!("a parameter occupies P storage");
     };
     assert!(
-        solve.initialization.update_rhs.programs()[0]
+        solve.initialization.update_rhs().programs()[0]
             .iter()
             .any(|operation| matches!(
                 operation,
@@ -499,7 +499,7 @@ fn a_parameter_reading_an_initialization_unknown_is_re_applied_after_the_solve()
     assert!(
         !solve
             .initialization
-            .projection_unknowns
+            .projection_unknowns()
             .contains(&dependent_slot),
         "the dependent parameter is assigned by its binding, not solved as an unknown"
     );

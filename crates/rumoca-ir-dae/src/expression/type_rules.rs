@@ -358,7 +358,7 @@ pub(super) fn builtin_result<'dae>(
 ) -> Result<ValueType, DaeConstructionError> {
     let Some(first) = arguments.first().copied() else {
         let expected = match builtin {
-            PureBuiltin::OuterProduct => 2,
+            PureBuiltin::OuterProduct | PureBuiltin::LinearSolve => 2,
             _ => 1,
         };
         return Err(invalid_arity(expected, 0, at));
@@ -404,9 +404,6 @@ pub(super) fn builtin_result<'dae>(
             expect_arity(arguments, 1, at)?;
             Ok(ValueType::array(ScalarType::Real, first.dimensions()))
         }
-        PureBuiltin::Integer => {
-            unreachable!("the Integer conversion returns before numeric builtin checks")
-        }
         PureBuiltin::Atan2 => {
             expect_arity(arguments, 2, at)?;
             let common = common_value_type(&first, storage.expr_type(arguments[1], at)?, at)?;
@@ -416,7 +413,6 @@ pub(super) fn builtin_result<'dae>(
             expect_arity(arguments, 2, at)?;
             common_value_type(&first, storage.expr_type(arguments[1], at)?, at)
         }
-        PureBuiltin::Homotopy => unreachable!("homotopy returns after checking both branches"),
         PureBuiltin::Smooth => {
             expect_arity(arguments, 2, at)?;
             if !first.is_scalar() || first.scalar_type() != ScalarType::Integer {
@@ -436,7 +432,6 @@ pub(super) fn builtin_result<'dae>(
                 common_value_type(&common, storage.expr_type(*argument, at)?, at)
             })
         }
-        PureBuiltin::Size => unreachable!("size returns after checking its dimension argument"),
         PureBuiltin::Zeros
         | PureBuiltin::Ones
         | PureBuiltin::Fill
@@ -449,11 +444,12 @@ pub(super) fn builtin_result<'dae>(
         | PureBuiltin::Transpose
         | PureBuiltin::Diagonal
         | PureBuiltin::OuterProduct
-        | PureBuiltin::Skew => {
+        | PureBuiltin::Skew
+        | PureBuiltin::LinearSolve => {
             unreachable!("array constructors return before numeric builtins")
         }
-        PureBuiltin::NoEvent => {
-            unreachable!("type-preserving noEvent returns before numeric builtin checks")
+        PureBuiltin::NoEvent | PureBuiltin::Integer | PureBuiltin::Homotopy | PureBuiltin::Size => {
+            unreachable!("type-directed builtins return before numeric dispatch")
         }
     }
 }
@@ -567,6 +563,7 @@ fn shaped_builtin_result(
             return outer_product_result(storage, arguments, first, at);
         }
         PureBuiltin::Skew => return skew_result(arguments, first, at),
+        PureBuiltin::LinearSolve => return linear_solve_result(storage, arguments, first, at),
         _ => unreachable!("only compact shaped builtins use this validator"),
     };
     let dimensions = extents
@@ -687,6 +684,28 @@ fn skew_result(
     expect_arity(arguments, 1, at)?;
     real_three_vector(input, at)?;
     Ok(ValueType::array(ScalarType::Real, [3, 3]))
+}
+
+fn linear_solve_result(
+    storage: &Storage,
+    arguments: &[ExprId<'_>],
+    matrix: &ValueType,
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    expect_arity(arguments, 2, at)?;
+    let rhs = storage.expr_type(arguments[1], at)?;
+    for input in [matrix, rhs] {
+        if input.scalar_type() != ScalarType::Real {
+            return Err(type_mismatch(ScalarType::Real, input.scalar_type(), at));
+        }
+    }
+    let ([rows, columns], [extent]) = (matrix.dimensions(), rhs.dimensions()) else {
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    };
+    if *rows == 0 || rows != columns || rows != extent {
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    }
+    Ok(rhs.clone())
 }
 
 fn real_three_vector(input: &ValueType, at: DaeProvenance) -> Result<(), DaeConstructionError> {

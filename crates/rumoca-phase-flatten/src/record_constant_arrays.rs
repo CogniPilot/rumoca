@@ -25,12 +25,7 @@ pub(crate) fn try_extract_record_array_constructor_constant(
     scope: &str,
     full_name: &str,
 ) -> Option<rumoca_core::Expression> {
-    let ast::Expression::Array {
-        elements,
-        is_matrix,
-        ..
-    } = expr
-    else {
+    let ast::Expression::Array { elements, kind, .. } = expr else {
         return None;
     };
     let mut evaluated = Vec::with_capacity(elements.len());
@@ -49,7 +44,7 @@ pub(crate) fn try_extract_record_array_constructor_constant(
     }
     Some(rumoca_core::Expression::Array {
         elements: evaluated,
-        is_matrix: *is_matrix,
+        kind: *kind,
         span: expr.span(),
     })
 }
@@ -85,7 +80,7 @@ fn synthesize_each_array_component_modification_binding(
     let span = scalar.span();
     Some(ast::Expression::Array {
         elements: vec![scalar; *len],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span,
     })
 }

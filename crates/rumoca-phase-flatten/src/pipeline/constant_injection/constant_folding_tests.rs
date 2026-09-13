@@ -149,7 +149,7 @@ fn infers_constant_range_binding_dimensions() {
 fn fill_with_array_seed_prefixes_dimensions_including_zero() {
     let seed = ast::Expression::Array {
         elements: vec![int_expr("1"), int_expr("2"), int_expr("3")],
-        is_matrix: false,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: rumoca_core::Span::DUMMY,
     };
     let expr = ast::Expression::FunctionCall {
@@ -171,16 +171,16 @@ fn size_of_string_matrix_literal_uses_shape_without_value_evaluation() {
         elements: vec![
             ast::Expression::Array {
                 elements: vec![string_expr("\"a\""), string_expr("\"b\"")],
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Array,
                 span: rumoca_core::Span::DUMMY,
             },
             ast::Expression::Array {
                 elements: vec![string_expr("\"c\""), string_expr("\"d\"")],
-                is_matrix: false,
+                kind: rumoca_core::ArrayConstructor::Array,
                 span: rumoca_core::Span::DUMMY,
             },
         ],
-        is_matrix: true,
+        kind: rumoca_core::ArrayConstructor::Array,
         span: rumoca_core::Span::DUMMY,
     };
 

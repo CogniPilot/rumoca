@@ -147,7 +147,7 @@ impl SolveRuntime {
                 event_pre_p: &event_pre_p,
                 max_iters,
                 row_filter,
-                root_relation_overrides: &[],
+                root_relation_overrides: &mut Vec::new(),
             },
             project_algebraics,
         )
@@ -340,7 +340,7 @@ impl SolveRuntime {
                     event_pre_p,
                     max_iters,
                     row_filter,
-                    root_relation_overrides: &[],
+                    root_relation_overrides: &mut Vec::new(),
                 },
                 |y, p| project_algebraics(y, p, t),
             );
@@ -357,7 +357,7 @@ impl SolveRuntime {
                 event_pre_p: &event_pre_p,
                 max_iters,
                 row_filter: EventUpdateRowFilter::All,
-                root_relation_overrides: &[],
+                root_relation_overrides: &mut Vec::new(),
             },
             |y, p| project_algebraics(y, p, t),
         )

@@ -197,7 +197,13 @@ accepted endpoint, sets each sampled time/state with standard FMI calls, and
 classifies the full `fmi3GetEventIndicators` vector with FMI's exact `z > 0`
 versus `z <= 0` domains. Sampling resolution and location tolerance come from a
 private checked `MeRootSearchPolicy` constructed by the session, never from the
-plugin. The policy also owns finite positive absolute and relative
+plugin. Default batch and live option construction uses
+`accepted_step_roundoff(start_time, scan_resolution)`, capped by the scan
+resolution, for the root-location duration. State-unit rescaling must leave
+that duration unchanged; representable rescalings of all time coordinates
+away from the positive-time floor must rescale it.
+Explicit root-location options remain separately checked durations. The policy
+also owns finite positive absolute and relative
 state-consistency tolerances. The session constructs it from host options and
 the positive finite state nominals returned by
 `fmi3GetNominalsOfContinuousStates`; a non-finite or non-positive nominal is a

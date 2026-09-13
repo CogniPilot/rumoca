@@ -22,13 +22,11 @@
 //!   reading — but they are folded into the rows that read them instead of
 //!   standing as extra rows over extra unknowns. `initial equation der(x) = 0`
 //!   is therefore a row over `x`, not over `der(x)`.
-//! * **A `fixed = true` start is an equation, not an unknown.** MLS 3.6 §8.6:
-//!   "For every Real variable `vc` with `fixed = true`, the equation
-//!   `vc = startExpression` is added to the initialization equations." The
-//!   runtime seeds that coordinate from its own declaration, which *is* that
-//!   equation, so the coordinate is determined and must never also be offered
-//!   to the projection — one storage slot with two owners is the seed and the
-//!   projection fighting over one number.
+//! * **A `fixed = true` start determines its state.** A source start proved
+//!   independent of initialization unknowns supplies a given coordinate that
+//!   projection cannot write. A start that depends on an unknown parameter is
+//!   only a seed until its `state = startExpression` residual joins the same
+//!   projection as the initial equations and retained manifold.
 //! * **A start with `fixed = false`, or with no `fixed` at all, is a guess.**
 //!   MLS 3.6 §4.8.1 gives `fixed` the default `false` for everything that is
 //!   not a parameter or constant, and §8.6 says of such a start only that "the
@@ -40,11 +38,12 @@
 //!   them"). `initial_parameters` owns that half and its binding-substitution
 //!   ordering; this module only reads the coordinates it published.
 //!
-//! What is left is therefore square by the same count MLS states: the unknowns
-//! are the coordinates whose value nothing else fixes — unpinned states and
-//! unbound `fixed = false` parameters — and the equations are the initialization
-//! rows (initial equations, initial-algorithm residuals, and the transferred
-//! §8.6 values `initial_pins` could only place beside another stated one).
+//! The resulting unknowns are states without given values and unbound
+//! `fixed = false` parameters. Dependent fixed starts and transferred pins
+//! remain explicit equations, alongside initial equations and every retained
+//! manifold row.
+//! A rectangular system keeps its surplus equations as consistency checks;
+//! a free state without a determining equation retains its start guess.
 //!
 //! ## What is deliberately not an unknown, and what that costs
 //!
@@ -88,7 +87,7 @@
 //! structured family points, substituted parameter bindings, and matched
 //! derivative rows use the same checked scalar dependency projection as
 //! structural incidence. A projection failure remains unowned. A fixed state
-//! declaration or transferred pin owns only the scalars it actually determines.
+//! declaration or transferred pin contributes only its actual scalar equations.
 //!
 //! ## Two choices this phase makes that the model does not
 //!
@@ -113,7 +112,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
-use rumoca_phase_structural::{InitialValuePin, InitialValueRole};
 
 use super::initial_parameters::InitializationParameterOwnership;
 use super::{DerivativeRowIndex, ScalarRowSource, scalar_count, variable_scalar_slot};
@@ -149,27 +147,13 @@ impl InitialUnknown {
     }
 }
 
-/// What determines one state coordinate at the initialization instant.
-#[derive(Clone, Copy)]
-enum StateInitialOwner {
-    /// The projection: the declaration states only a guess, so the
-    /// initialization rows are what determine it. Carries its Y-slot index.
-    Projection(usize),
-    /// The declaration itself: MLS §8.6 turns a `fixed = true` start into the
-    /// equation `vc = startExpression`, and the structural phase may also have
-    /// proved another declaration's stated value *defines* this coordinate
-    /// (`InitialValueRole::Definition`), which lowers to an update row. Either
-    /// way the coordinate holds a determined value a row may read, and offering
-    /// it to the projection as well would give one slot two owners.
-    Stated,
-}
-
 /// The coordinate space one model's initialization system solves over.
 pub(super) struct InitializationUnknownSpace<'a, 'dae> {
     view: dae::DaeView<'dae>,
     ownership: &'a InitializationParameterOwnership<'dae>,
     derivatives: &'a DerivativeRowIndex<'dae>,
-    states: HashMap<(u32, usize), StateInitialOwner>,
+    states: HashMap<(u32, usize), usize>,
+    given_state_indices: BTreeSet<usize>,
 }
 
 /// Everything the initialization unknown space is assembled from.
@@ -178,7 +162,7 @@ pub(super) struct InitializationUnknownInputs<'a, 'dae> {
     pub(super) layout: &'a LoweredLayout<'dae>,
     pub(super) ownership: &'a InitializationParameterOwnership<'dae>,
     pub(super) derivatives: &'a DerivativeRowIndex<'dae>,
-    pub(super) pins: &'a [InitialValuePin],
+    pub(super) given_state_indices: &'a [usize],
 }
 
 /// Decide, once per model, who owns every coordinate the §8.6 system touches.
@@ -190,13 +174,14 @@ pub(super) fn initialization_unknown_space<'a, 'dae>(
         layout,
         ownership,
         derivatives,
-        pins,
+        given_state_indices,
     } = inputs;
     Ok(InitializationUnknownSpace {
         view,
         ownership,
         derivatives,
-        states: state_initial_owners(view, layout, pins)?,
+        states: state_initial_slots(view, layout)?,
+        given_state_indices: given_state_indices.iter().copied().collect(),
     })
 }
 
@@ -205,49 +190,41 @@ impl<'dae> InitializationUnknownSpace<'_, 'dae> {
         self.ownership
             .all_projection_unknown_slots()
             .map(InitialUnknown::Parameter)
-            .chain(self.states.values().filter_map(|owner| match owner {
-                StateInitialOwner::Projection(index) => Some(InitialUnknown::State(*index)),
-                StateInitialOwner::Stated => None,
-            }))
+            .chain(
+                self.states
+                    .values()
+                    .copied()
+                    .filter(|index| !self.given_state_indices.contains(index))
+                    .map(InitialUnknown::State),
+            )
             .collect()
     }
 }
 
-/// Who determines each state scalar, keyed by declaration and scalar index.
-fn state_initial_owners(
+/// Exact state coordinates of the simultaneous initialization system.
+fn state_initial_slots(
     view: dae::DaeView<'_>,
     layout: &LoweredLayout<'_>,
-    pins: &[InitialValuePin],
-) -> Result<HashMap<(u32, usize), StateInitialOwner>, LowerError> {
-    let defined: BTreeSet<(u32, usize)> = pins
-        .iter()
-        .filter(|pin| matches!(pin.role, InitialValueRole::Definition))
-        .map(|pin| (pin.coordinate, pin.scalar as usize))
-        .collect();
-    let mut owners = HashMap::new();
+) -> Result<HashMap<(u32, usize), usize>, LowerError> {
+    let mut slots = HashMap::new();
     for (id, variable) in view.variables() {
         if variable.role() != dae::VariableRole::State {
             continue;
         }
         let span = variable.declaration().span();
         for scalar in 0..variable.scalar_count() {
-            let key = (id.index(), scalar);
-            if variable.fixed() == Some(true) || defined.contains(&key) {
-                owners.insert(key, StateInitialOwner::Stated);
-                continue;
-            }
             let solve::ScalarSlot::Y { index, .. } =
                 variable_scalar_slot(layout, id.index(), scalar, span)?
             else {
                 return Err(LowerError::contract(
-                    format!("state `{}` does not occupy solver storage", variable.name()),
+                    "a state does not occupy solver storage",
                     span,
                 ));
             };
-            owners.insert(key, StateInitialOwner::Projection(index));
+            slots.insert((id.index(), scalar), index);
         }
     }
-    Ok(owners)
+    Ok(slots)
 }
 
 /// Where one initialization row's coordinate incidence is read from.
@@ -256,20 +233,11 @@ fn state_initial_owners(
 pub(super) enum InitialRowIncidence<'dae> {
     /// The same scalar and structured domain point the emitted residual reads.
     Residual(ScalarRowSource<'dae>),
-    /// A stated initial value carried onto a coordinate that already holds one
-    /// (`initial_pins`). The row is `coordinate - Σ terms`, and the coordinate is
-    /// a state the initialization instant has already seeded, so only the terms
-    /// carry unknowns — which is exactly what lets such a row determine a
-    /// `fixed = false` parameter its displacement reads.
-    ///
-    /// The coordinate itself is never one of those unknowns, and that is a fact
-    /// rather than a restriction: `initial_pins::class_pins` emits a `Check` only
-    /// for a *second* stated value about a class whose state already carries the
-    /// first — either as its own `fixed = true` start or as a `Definition` pin —
-    /// so the coordinate is always one [`StateInitialOwner::Stated`] covers. A
-    /// `Check` that failed to converge is therefore two declarations contradicting
-    /// each other, not a coordinate nothing solved.
-    CarriedValue(Vec<(dae::ExprId<'dae>, usize)>),
+    /// An explicit fixed-value equation about one exact state scalar.
+    StateValue {
+        index: usize,
+        terms: Vec<(dae::ExprId<'dae>, usize)>,
+    },
     /// A fixed algebraic/output checked after solving the simultaneous
     /// continuous algebraic system. Its exact total incidence is implicit in
     /// that solve, so it conservatively joins every initialization unknown;
@@ -279,7 +247,6 @@ pub(super) enum InitialRowIncidence<'dae> {
 }
 
 pub(super) struct InitialProjection {
-    pub(super) unknowns: Vec<solve::ScalarSlot>,
     pub(super) plan: solve::InitializationProjectionPlan,
     /// What the projection does with each row, positionally by equation index.
     pub(super) row_roles: Vec<solve::InitializationRowRole>,
@@ -314,7 +281,7 @@ pub(super) struct InitialProjection {
 pub(super) fn plan_initialization_projection<'dae>(
     space: &InitializationUnknownSpace<'_, 'dae>,
     rows: &[InitialRowIncidence<'dae>],
-) -> InitialProjection {
+) -> Result<InitialProjection, LowerError> {
     // Every row starts as a check between values the rest of the system fixed,
     // and is downgraded or promoted below by what the walk and the matching find.
     let mut row_roles = vec![solve::InitializationRowRole::SurplusCheck; rows.len()];
@@ -334,24 +301,13 @@ pub(super) fn plan_initialization_projection<'dae>(
         }
     }
     let mut blocks = Vec::new();
-    let mut unknowns = Vec::new();
     for component in connected_components(&incidence) {
         let matched = match_component(&component).unwrap_or_default();
         record_component_roles(&component, &matched, &mut row_roles);
         if matched.is_empty() {
             continue;
         }
-        let mut block_rows = Vec::with_capacity(matched.len());
-        let mut block_unknowns = Vec::with_capacity(matched.len());
-        for (row, unknown) in matched {
-            block_rows.push(row);
-            block_unknowns.push(unknown.slot());
-        }
-        unknowns.extend(block_unknowns.iter().copied());
-        blocks.push(solve::InitializationProjectionBlock {
-            rows: block_rows,
-            unknowns: block_unknowns,
-        });
+        blocks.extend(ordered_projection_blocks(&component, &matched)?);
     }
     for (row, source) in rows.iter().enumerate() {
         if !matches!(source, InitialRowIncidence::ImplicitAlgebraic) {
@@ -367,11 +323,63 @@ pub(super) fn plan_initialization_projection<'dae>(
             role => role,
         };
     }
-    InitialProjection {
-        unknowns,
+    Ok(InitialProjection {
         plan: solve::InitializationProjectionPlan { blocks },
         row_roles,
-    }
+    })
+}
+
+/// Triangularize the selected matching before numerical projection.
+///
+/// Sharing an unknown does not imply mutual dependence. A row defining `q`
+/// must run before a row defining `y` from `q`, particularly when the latter
+/// changes a Boolean branch between the start guess and the solved value.
+fn ordered_projection_blocks(
+    component: &ProjectionComponent,
+    matched: &[(usize, InitialUnknown)],
+) -> Result<Vec<solve::InitializationProjectionBlock>, LowerError> {
+    let producer: BTreeMap<_, _> = matched
+        .iter()
+        .enumerate()
+        .map(|(position, (_, unknown))| (*unknown, position))
+        .collect();
+    let reads: BTreeMap<_, _> = component
+        .rows
+        .iter()
+        .copied()
+        .zip(&component.row_unknowns)
+        .collect();
+    let dependencies = matched
+        .iter()
+        .enumerate()
+        .map(|(position, (row, _))| {
+            reads[row]
+                .iter()
+                .filter_map(|unknown| producer.get(unknown).copied())
+                .filter(|dependency| *dependency != position)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let components =
+        rumoca_core::dependency_graph::dependency_first_sccs(&dependencies).map_err(|error| {
+            LowerError::UnspannedContractViolation {
+                reason: format!("initialization matching has invalid dependency indices: {error}"),
+            }
+        })?;
+    Ok(components
+        .into_iter()
+        .map(|component| {
+            let (rows, unknowns) = component
+                .members
+                .iter()
+                .map(|position| {
+                    let (row, unknown) = matched[*position];
+                    (row, unknown.slot())
+                })
+                .unzip();
+            solve::InitializationProjectionBlock { rows, unknowns }
+        })
+        .collect())
 }
 
 /// Say, per row of one component, what the projection ended up doing with it.
@@ -419,7 +427,7 @@ fn row_unknowns<'dae>(
 ) -> RowIncidence {
     let pending = match row {
         InitialRowIncidence::Residual(residual) => vec![residual.clone()],
-        InitialRowIncidence::CarriedValue(terms) => terms
+        InitialRowIncidence::StateValue { terms, .. } => terms
             .iter()
             .map(|(expression, scalar)| ScalarRowSource {
                 expression: *expression,
@@ -432,7 +440,14 @@ fn row_unknowns<'dae>(
         }
     };
     let mut incidence = InitialIncidence {
-        unknowns: BTreeSet::new(),
+        unknowns: match row {
+            InitialRowIncidence::StateValue { index, .. }
+                if !space.given_state_indices.contains(index) =>
+            {
+                BTreeSet::from([InitialUnknown::State(*index)])
+            }
+            _ => BTreeSet::new(),
+        },
         excluded: None,
         substituted: BTreeSet::new(),
         expanded: BTreeSet::new(),
@@ -597,11 +612,10 @@ impl<'dae> InitialIncidence<'dae> {
         scalar: usize,
     ) {
         match space.states.get(&(state.index(), scalar)) {
-            Some(StateInitialOwner::Projection(index)) => {
+            Some(index) if !space.given_state_indices.contains(index) => {
                 self.unknowns.insert(InitialUnknown::State(*index));
             }
-            // A stated value is a number the row may read, not an unknown.
-            Some(StateInitialOwner::Stated) => {}
+            Some(_) => {}
             None => self.exclude(solve::InitializationCoordinateKind::Unreadable),
         }
     }
@@ -769,9 +783,8 @@ struct ProjectionComponent {
 
 /// Group rows that share an initialization unknown into one solvable component.
 ///
-/// Two rows that read the same unknown must be solved together, so the components
-/// of the row/unknown bipartite graph are the coarsest blocks that stay
-/// independent.
+/// These components bound the matching problem. The selected matching later
+/// determines which rows are mutually dependent and need a simultaneous solve.
 fn connected_components(
     incidence: &[(usize, BTreeSet<InitialUnknown>)],
 ) -> Vec<ProjectionComponent> {

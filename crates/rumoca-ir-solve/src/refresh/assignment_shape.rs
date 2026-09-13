@@ -1,3 +1,6 @@
+mod additive;
+pub(super) mod tensor_affine;
+
 use super::dependency::{ScalarProgramYDependency, register_is_written_by, y_load_indices};
 use crate::{BinaryOp, LinearOp, StridedOperand, TargetAssignmentShape, UnaryOp};
 
@@ -25,29 +28,47 @@ fn canonical_assignment_shape(
         .into_iter()
         .flatten()
         .find_map(|(target, expression, target_scale)| {
-            if target_load_index(prefix, target) != Some(target_y_index)
-                || dependencies.depends_on(expression, target_y_index)
-            {
+            let load = target_load(prefix, target)?;
+            if load.index != target_y_index || dependencies.depends_on(expression, target_y_index) {
                 return None;
             }
             Some(TargetAssignmentShape::Direct {
                 target_y_index,
                 expr_reg: expression,
                 target_scale,
-                expr_eval_len: producer_position(prefix, expression)?.checked_add(1)?,
+                expr_eval_len: producer_position(prefix, expression)?
+                    .checked_add(1)?
+                    .max(load.required_eval_len),
             })
         });
     direct
+        .or_else(|| zero_assignment_shape(prefix, output, target_y_index))
         .or_else(|| {
             affine_assignment_shapes(prefix, output, dependencies)
                 .into_iter()
                 .find(|shape| shape.target_y_index() == target_y_index)
         })
+        .or_else(|| additive::derive(prefix, output, target_y_index, dependencies))
         .or_else(|| {
-            affine_residual_assignment_shapes(prefix, output, dependencies)
-                .into_iter()
-                .find(|shape| shape.target_y_index() == target_y_index)
+            Some(TargetAssignmentShape::TensorAffine {
+                target_y_index,
+                projection: tensor_affine::derive(prefix, output, target_y_index, dependencies)?,
+                expr_eval_len: prefix.len(),
+            })
         })
+}
+
+fn zero_assignment_shape(
+    prefix: &[LinearOp],
+    output: u32,
+    target_y_index: usize,
+) -> Option<TargetAssignmentShape> {
+    let (register, _) = strip_affine_output_wrappers(prefix, output);
+    let load = target_load(prefix, register)?;
+    (load.index == target_y_index).then_some(TargetAssignmentShape::Zero {
+        target_y_index,
+        expr_eval_len: prefix.len(),
+    })
 }
 
 /// Derive every assignment isolator owned by one checked scalar program.
@@ -160,9 +181,10 @@ fn push_affine_assignment_shape(
     dependencies: &ScalarProgramYDependency<'_>,
 ) {
     let (target, coefficient, coefficient_scale) = target_term;
-    let Some(target_y_index) = target_load_index(program, target) else {
+    let Some(load) = target_load(program, target) else {
         return;
     };
+    let target_y_index = load.index;
     if dependencies.depends_on(offset, target_y_index)
         || coefficient.is_some_and(|register| dependencies.depends_on(register, target_y_index))
     {
@@ -183,7 +205,7 @@ fn push_affine_assignment_shape(
         coefficient_reg: coefficient,
         offset_scale,
         coefficient_scale,
-        expr_eval_len,
+        expr_eval_len: expr_eval_len.max(load.required_eval_len),
     };
     if shapes
         .iter()
@@ -214,110 +236,6 @@ fn affine_target_terms(program: &[LinearOp], register: u32) -> [Option<(u32, Opt
         (false, true) => [Some((*rhs, Some(*lhs))), None],
         (true, true) => [Some((*lhs, Some(*rhs))), Some((*rhs, Some(*lhs)))],
         (false, false) => [None, None],
-    }
-}
-
-fn affine_residual_assignment_shapes(
-    program: &[LinearOp],
-    residual: u32,
-    dependencies: &ScalarProgramYDependency<'_>,
-) -> Vec<TargetAssignmentShape> {
-    let Some(expr_eval_len) =
-        producer_position(program, residual).and_then(|position| position.checked_add(1))
-    else {
-        return Vec::new();
-    };
-    let mut loads = Vec::new();
-    collect_affine_y_loads(
-        program,
-        residual,
-        &mut std::collections::BTreeSet::new(),
-        &mut loads,
-    );
-    let mut shapes = Vec::new();
-    for (target_y_index, target_reg) in loads {
-        let Some(coefficient) =
-            additive_target_coefficient(program, residual, target_y_index, dependencies)
-        else {
-            continue;
-        };
-        if coefficient == 0.0 || !coefficient.is_finite() {
-            continue;
-        }
-        shapes.push(TargetAssignmentShape::AffineResidual {
-            target_y_index,
-            target_reg,
-            residual_reg: residual,
-            coefficient,
-            expr_eval_len,
-        });
-    }
-    shapes
-}
-
-fn additive_target_coefficient(
-    program: &[LinearOp],
-    register: u32,
-    target_y_index: usize,
-    dependencies: &ScalarProgramYDependency<'_>,
-) -> Option<f64> {
-    if !dependencies.depends_on(register, target_y_index) {
-        return Some(0.0);
-    }
-    if let Some((op @ (BinaryOp::Add | BinaryOp::Sub), lhs, rhs)) =
-        binary_operands(program, register)
-    {
-        let lhs = additive_target_coefficient(program, lhs, target_y_index, dependencies)?;
-        let rhs = additive_target_coefficient(program, rhs, target_y_index, dependencies)?;
-        return Some(if op == BinaryOp::Add {
-            lhs + rhs
-        } else {
-            lhs - rhs
-        });
-    }
-    match producer(program, register)? {
-        _ if target_load_index(program, register) == Some(target_y_index) => Some(1.0),
-        LinearOp::Move { src, .. } => {
-            additive_target_coefficient(program, *src, target_y_index, dependencies)
-        }
-        LinearOp::Unary {
-            op: UnaryOp::Neg,
-            arg,
-            ..
-        } => additive_target_coefficient(program, *arg, target_y_index, dependencies)
-            .map(|value| -value),
-        _ => None,
-    }
-}
-
-fn collect_affine_y_loads(
-    program: &[LinearOp],
-    register: u32,
-    visited: &mut std::collections::BTreeSet<u32>,
-    loads: &mut Vec<(usize, u32)>,
-) {
-    if !visited.insert(register) {
-        return;
-    }
-    if let Some((BinaryOp::Add | BinaryOp::Sub, lhs, rhs)) = binary_operands(program, register) {
-        collect_affine_y_loads(program, lhs, visited, loads);
-        collect_affine_y_loads(program, rhs, visited, loads);
-        return;
-    }
-    if let Some(index) = target_load_index(program, register) {
-        if loads.iter().all(|(existing, _)| *existing != index) {
-            loads.push((index, register));
-        }
-        return;
-    }
-    match producer(program, register) {
-        Some(LinearOp::Move { src, .. })
-        | Some(LinearOp::Unary {
-            op: UnaryOp::Neg,
-            arg: src,
-            ..
-        }) => collect_affine_y_loads(program, *src, visited, loads),
-        _ => {}
     }
 }
 
@@ -522,22 +440,78 @@ fn subtraction_assignment_registers(
 }
 
 fn target_load_index(program: &[LinearOp], register: u32) -> Option<usize> {
-    match *producer(program, register)? {
-        LinearOp::LoadY { dst, index } if dst == register => Some(index),
-        LinearOp::TensorLoad {
-            dst_start,
-            input: crate::TensorInputKind::Y,
-            input_start,
-            count,
-            lanes,
-            ..
-        } => {
-            let offset = register.checked_sub(dst_start)? as usize;
-            (lanes != 0 && offset < count.checked_mul(lanes)? && offset.is_multiple_of(lanes))
-                .then(|| input_start.checked_add(offset / lanes))?
+    target_load(program, register).map(|load| load.index)
+}
+
+struct TargetLoad {
+    index: usize,
+    required_eval_len: usize,
+}
+
+fn target_load(mut program: &[LinearOp], mut register: u32) -> Option<TargetLoad> {
+    let mut required_eval_len = 0;
+    loop {
+        let position = producer_position(program, register)?;
+        match &program[position] {
+            LinearOp::LoadY { index, .. } => {
+                return Some(TargetLoad {
+                    index: *index,
+                    required_eval_len,
+                });
+            }
+            LinearOp::TensorLoad {
+                dst_start,
+                input: crate::TensorInputKind::Y,
+                input_start,
+                count,
+                lanes,
+                ..
+            } => {
+                let offset = register.checked_sub(*dst_start)? as usize;
+                if *lanes == 0
+                    || offset >= count.checked_mul(*lanes)?
+                    || !offset.is_multiple_of(*lanes)
+                {
+                    return None;
+                }
+                return Some(TargetLoad {
+                    index: input_start.checked_add(offset / lanes)?,
+                    required_eval_len,
+                });
+            }
+            LinearOp::Move { src, .. } => register = *src,
+            operation => {
+                register = projected_input_register(operation, register)?;
+                required_eval_len = required_eval_len.max(position.checked_add(1)?);
+            }
         }
-        _ => None,
+        program = &program[..position];
     }
+}
+
+fn projected_input_register(operation: &LinearOp, register: u32) -> Option<u32> {
+    let (starts, projection) = match operation {
+        LinearOp::PureCall {
+            dst_start,
+            input_starts,
+            site,
+        } => (
+            input_starts,
+            site.projected_input_coordinate(register.checked_sub(*dst_start)? as usize)?,
+        ),
+        LinearOp::PureCallDirectional {
+            dst_start,
+            input_starts,
+            site,
+        } => (
+            input_starts,
+            site.projected_input_coordinate(register.checked_sub(*dst_start)? as usize)?,
+        ),
+        _ => return None,
+    };
+    starts
+        .get(projection.0)?
+        .checked_add(u32::try_from(projection.1).ok()?)
 }
 
 fn producer(program: &[LinearOp], register: u32) -> Option<&LinearOp> {
