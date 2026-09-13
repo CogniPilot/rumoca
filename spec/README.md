@@ -44,6 +44,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) | Solve Grammar and Effect Catalog | IR | ~214 | REFERENCE |
 | [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) | Trace Evidence Catalog | process/verification | ~26 | REFERENCE |
 | [SPEC_0051](SPEC_0051_JACOBIAN_SYNTHESIS.md) | Jacobian Synthesis by Forward-Mode Differentiation | phase/verification | ~212 | PROPOSED |
+| [SPEC_0052](SPEC_0052_RUMOCA_LEAN_CYBER_PHYSICAL_SYSTEMS.md) | Rumoca plus Lean: Roadmap for Formally Verified Cyber-Physical Systems | architecture/verification | ~100 | PROPOSED |
 
 ### Reference annexes
 
