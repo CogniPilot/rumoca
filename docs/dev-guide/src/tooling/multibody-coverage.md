@@ -6,6 +6,33 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-selected-jvp-full` passes the local MSL quality gate
+at commit `45cd3b9054be6b57c80fcceba0feedb22818d315`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The complete 566-model run finishes in 122.61 seconds with eleven requested,
+effective, and pinned simulation workers. **152 models compare and all 152
+remain strict-high (26.86% of 566)**; seventeen existing reviewed exclusions
+account for the other simulation completions, with zero missing or
+nonidentifiable traces. All 17,606 initial channels are high and no trajectory
+channel deviates. Every model's simulation band and execution outcome is
+unchanged from `electrical-affine-polished-full`, including all nine original
+electrical counterexamples. The only phase-status change is Inverse_sh_TX
+returning its earlier Flatten refusal instead of a DAE refusal.
+
+MultiBody remains **19/42 high**, with nineteen compared, all 8,477 trajectory
+and initial channels high, and no skipped, missing, excluded, or
+nonidentifiable MultiBody traces. DAE completion remains 35/42; the remaining
+23 examples have the same failure classifications listed below. RollingWheel
+now reports 9.409 seconds of simulation including initialization, versus
+12.601 seconds in the preceding full run. The selected native JVP change
+retains every prior high model but does not yet unlock another example.
+The per-model delta and artifact hashes are recorded in
+`rolling-wheel/selected-jvp-full-delta.json`. The known contact-circle core
+failure remains open; this MSL gate does not establish `verify quick` or
+`verify full` success or complete MultiBody coverage.
+
+## Previous complete measurement: electrical parity recovery
+
 `target/msl/electrical-affine-polished-full` passes the local MSL quality
 gate against the checked-in fallback baseline. Its complete 566-model
 comparison finishes in 132.74 seconds at commit
@@ -112,7 +139,7 @@ invalid coordinates and extents, and an unrelated missing-table program
 that must not execute. All affected all-target/all-feature Clippy checks
 pass. Core validation has 556 passes and the same one contact-circle
 structural failure, 6/7. Original-model OMC/perf, canary, and full-cohort
-validation remain pending at this point. Logs and the red dispatch failures
+validation are recorded below and in the latest measurement. The red failures
 are recorded in `rolling-wheel/selected-jvp-receipt.json`.
 
 The originating comparison `target/msl/multibody-selected-jvp-origin` at
@@ -143,8 +170,9 @@ channels are high, with zero skipped, missing, excluded, nonidentifiable,
 or deviating traces. Its working-tree digest at the same HEAD is
 `35c3a4205ecd131713a68486f37f4104d563cb5a5dd98500d450e4f73596e34a`.
 The durable delta is `rolling-wheel/selected-jvp-canary-delta.json`.
-Formatting passes. The next complete cohort will use eleven simulation
-workers and retain all preceding high models and electrical counterexamples.
+Formatting passes. The subsequent complete cohort at `45cd3b90` uses eleven
+simulation workers and retains all preceding high models and electrical
+counterexamples, as recorded in the latest measurement.
 
 ## Previous complete measurement: first direct affine solve
 
