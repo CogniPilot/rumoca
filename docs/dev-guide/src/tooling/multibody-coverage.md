@@ -6,6 +6,37 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-shared-call-full` passes the local fallback gate at
+commit `51459c19c3aa59db8925b3a0d8eb40846d666d67`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The complete 566-model sweep takes 140.11 seconds with eleven workers.
+**All 153 compared models are strict-high (27.03% of 566)**, with seventeen
+reviewed exclusions and zero missing or nonidentifiable traces. All 18,498
+initial channels are high and no trajectory channel deviates. All nine
+named electrical counterexamples retain their high bands.
+
+MultiBody returns to **20/42 high**. RollingWheelSetDriving completes in
+11.304 seconds, with all 892 trajectory and initial channels high. Its worst
+channel's bounded normalized L1 score remains `5.061492181479045e-6`.
+Build takes 11.199 seconds, including 7.809 seconds of Solve lowering.
+RollingWheel remains high at 8.682 seconds of simulation. The wheel-set
+restoration is the only phase/simulation or band change from
+`multibody-parameter-branch-full`; the receipt and artifact digests are in
+`rolling-wheel/shared-call-full-delta.json`. The solver budget remains twelve
+seconds. This completes the shared-interface equality fix's cohort check.
+
+Thirty-five of 42 MultiBody examples reach the DAE boundary. The remaining
+22 without high parity comprise thirteen timeouts (two Flatten, ten Solve,
+one simulation), four structural refusals, and five earlier producer errors
+(three record derivative-specialization refusals, one function-shape refusal,
+one array-valued `fixed` attribute refusal). Fourbar_analytic still reports
+1622/1659 structural matches; its OMC derivative chain is the next focus.
+The combined `verify quick` passed before the last three implementation changes;
+the focused suites, canary, and full MSL checks pass as recorded below.
+`verify full` has not run. No PR, release, or baseline promotion is claimed.
+
+## Previous complete measurement: wheel-set timeout
+
 `target/msl/multibody-parameter-branch-full` passes the local fallback gate
 at commit `c89fde703f82afc323d9f38bdf1e8f316452d723`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
