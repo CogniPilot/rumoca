@@ -38,6 +38,7 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | Component operations are exact FMI 3.0.2 semantic projections | FMI component | Private extensions cannot become solver dependencies |
 | Integrator boundary values use checked constructors and private fields | solver facade | Invalid outcomes never enter the master algorithm |
 | Native in-process calls may be zero-copy | FMI host | Preserve current performance |
+| Completed-step callbacks execute their event/history dependencies and never evaluate state derivatives solely to populate a cache | FMI component | Numerical plugins request derivatives when their method needs them |
 | A speculative event-left observation retains its sampled state and pre-callback FMU snapshot; output evaluation is deferred until publication is required, with the current component state restored on every exit | FMI host | Unpublished candidates must not force complete algebraic evaluation on every integration step |
 | Repeated directional seeds may reuse a bitwise-identical settled coordinate | FMI component | Avoid redundant algebraic projection |
 | Root evaluation may warm-start its complete checked refresh plan from a bitwise-identical derivative-settled coordinate | FMI component | Keep roots on the same algebraic branch without omitting root dependencies |

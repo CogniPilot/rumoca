@@ -428,6 +428,7 @@ impl SolveMeKernel {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn get_continuous_state_derivatives(
         &self,
         derivatives: &mut Vec<f64>,
@@ -496,15 +497,6 @@ impl SolveMeKernel {
             self.clear_runtime_caches();
         } else if self.last_projection_changed {
             self.clear_derivative_cache();
-        } else {
-            // FMI does not let an importer hand an FSAL stage into the FMU.
-            // Keep the ordinary accepted-point cache private by evaluating it
-            // through the same standard derivative operation the importer
-            // could call here. A located event stays cache-free until Event
-            // Mode consumes it. The frozen solver profile caches only callback
-            // values that its importer actually requests.
-            let mut accepted_derivatives = Vec::new();
-            self.get_continuous_state_derivatives(&mut accepted_derivatives)?;
         }
         self.commit_delay_point()
             .map_err(|error| error.at_stage(MeStage::Integration))?;

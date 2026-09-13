@@ -7,6 +7,7 @@
 
 mod failure_atomicity;
 mod manifold;
+mod on_demand_derivatives;
 
 use indexmap::IndexMap;
 use rumoca_ir_solve as solve;

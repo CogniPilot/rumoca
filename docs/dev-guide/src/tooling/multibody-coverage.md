@@ -233,6 +233,49 @@ The runtime repair and its focused/canary checks are complete. The remaining
 passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
 
+## Request derivatives only when the numerical method needs them
+
+`SolveMeKernel::completed_integrator_step` evaluated state derivatives solely to
+warm its private accepted-point cache. This executes the derivative algebraic
+closure even when the numerical method has no derivative request at that point.
+The component now performs only its required event/history work and cache
+invalidation during completion. The ordinary derivative getter still evaluates
+and caches requested points. SPEC_0038 records this ownership rule; no equation,
+integration tolerance, or required observation changes.
+
+The focused harmonic-oscillator regression uses a counting native-interface
+adapter executing the real prepared residual. Before the fix the first
+completion makes one unrequested RHS call (`on-demand-derivatives-red-2.log`).
+Afterward completion makes none, explicit requests return the expected
+derivatives, and identical requests reuse their cache across successive steps.
+The first attempted RED exposed a fixture type error and is not behavioral
+evidence. All 607 solver, simulation, BDF, and RK45 tests pass, as does
+all-target/all-feature Clippy (`on-demand-derivatives-libraries-2.log`,
+`on-demand-derivatives-clippy-1.log`). All seventeen repository inspection
+gates pass (`on-demand-derivatives-repo-gates-1.log`). The first library build exposed the now
+test-only allocating derivative wrapper; production uses the existing borrowed
+slice operation.
+
+The fixed `multibody-on-demand-derivatives-canary` preserves all twenty phase
+and agreement-band outcomes against `multibody-deferred-observation-canary`.
+Its nine compared models and 175 initialization channels remain high, with no
+skipped, missing, nonidentifiable, or deviating trace. Source: `e6017e33` plus
+working-tree digest
+`ff2f7b90df633432c6fa82da8d08a77d5558d48c8f3c8169d4cac837f374c542`;
+the exact delta is `rolling-wheel/on-demand-derivatives-canary-delta.json`.
+
+The isolated `critical-on-demand-derivatives-profile-1` improves RollingWheel
+Sim from 1.640 to 1.309 seconds, with user CPU decreasing from 1.61 to 1.30
+seconds. This single pair supports an approximately 20% improvement. The trace
+remains byte-identical, SHA-256
+`61e23f642f39489afa0717c767501558972f2e29419b77b088befbe8b2aff3dd`,
+and canonical Solve JSON is unchanged. Worker SHA-256:
+`23b491debb8eb362a357762d42d5d3a46ac3f94acc1dae24f590caa8c070405a`.
+The profile retains 255 CPU samples with zero lost samples. Algebraic JVP and
+typed pure-call directional programs remain prominent; this is still much
+slower than the existing OMC reference. The complete cohort gate is pending
+for this change; no coverage increase or release readiness is claimed.
+
 ## Defer speculative event-left outputs
 
 An actual-worker census at `94d0d2ce` identifies a host-level source of
