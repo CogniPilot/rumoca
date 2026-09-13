@@ -2,10 +2,12 @@
 
 mod linear_map;
 mod reconstruction;
+mod scalar_system;
 mod tensor_expression;
 mod tensor_reconstruction;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use rumoca_ir_dae as dae;
 
@@ -31,6 +33,12 @@ enum AuxiliarySystem {
         matrix: TensorExpression,
         rhs: SourceValue,
     },
+    Scalars {
+        variables: Box<[u32]>,
+        residuals: Box<[u32]>,
+        matrix: TensorExpression,
+        rhs: TensorExpression,
+    },
 }
 
 /// A square source block whose coefficient and RHS values have independent
@@ -50,6 +58,7 @@ impl AuxiliaryBlock {
         match &self.system {
             AuxiliarySystem::DotRows(rows) => rows.len(),
             AuxiliarySystem::Map { matrix, .. } => matrix.node_count(),
+            AuxiliarySystem::Scalars { matrix, rhs, .. } => matrix.node_count() + rhs.node_count(),
         }
     }
 
@@ -59,6 +68,7 @@ impl AuxiliaryBlock {
             AuxiliarySystem::Map {
                 residual: owner, ..
             } => *owner == residual,
+            AuxiliarySystem::Scalars { residuals, .. } => residuals.contains(&residual),
         }
     }
 
@@ -66,6 +76,7 @@ impl AuxiliaryBlock {
         match &self.system {
             AuxiliarySystem::DotRows(rows) => rows[0].residual,
             AuxiliarySystem::Map { residual, .. } => *residual,
+            AuxiliarySystem::Scalars { residuals, .. } => residuals[0],
         }
     }
 
@@ -81,6 +92,10 @@ impl AuxiliaryBlock {
                 matrix.operands(&mut operands);
                 operands.push(rhs);
             }
+            AuxiliarySystem::Scalars { matrix, rhs, .. } => {
+                matrix.operands(&mut operands);
+                rhs.operands(&mut operands);
+            }
         }
         operands.into_iter()
     }
@@ -95,7 +110,7 @@ struct CandidateBlock {
 pub(super) fn derive_blocks(
     view: dae::DaeView<'_>,
     facts: &DifferentiationFacts,
-) -> Vec<Option<AuxiliaryBlock>> {
+) -> Vec<Option<Arc<AuxiliaryBlock>>> {
     let mut candidates = BTreeMap::<u32, CandidateBlock>::new();
     for owner in view.continuous_owners() {
         let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
@@ -126,14 +141,15 @@ pub(super) fn derive_blocks(
         };
         state_anchors.sort_unstable();
         state_anchors.dedup();
-        blocks[variable as usize] = Some(AuxiliaryBlock {
+        blocks[variable as usize] = Some(Arc::new(AuxiliaryBlock {
             variable,
             extent: candidate.extent,
             system: AuxiliarySystem::DotRows(candidate.rows.into_boxed_slice()),
             state_anchors: state_anchors.into_boxed_slice(),
-        });
+        }));
     }
     linear_map::derive_maps(view, facts, &mut blocks);
+    scalar_system::derive_systems(view, facts, &mut blocks);
     blocks
 }
 

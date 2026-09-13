@@ -9,6 +9,7 @@ mod manifold_fields;
 mod reconstruction_failures;
 mod reduction_observation;
 mod runtime_quotients;
+mod scalar_auxiliary_blocks;
 mod shared_differentiation;
 mod tensor_linear_map;
 

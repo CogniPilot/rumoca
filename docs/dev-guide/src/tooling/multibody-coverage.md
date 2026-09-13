@@ -27,9 +27,95 @@ now reports 9.409 seconds of simulation including initialization, versus
 12.601 seconds in the preceding full run. The selected native JVP change
 retains every prior high model but does not yet unlock another example.
 The per-model delta and artifact hashes are recorded in
-`rolling-wheel/selected-jvp-full-delta.json`. The known contact-circle core
-failure remains open; this MSL gate does not establish `verify quick` or
-`verify full` success or complete MultiBody coverage.
+`rolling-wheel/selected-jvp-full-delta.json`. That run precedes the scalar
+contact-coordinate repair below; this MSL gate does not establish
+`verify quick` or `verify full` success or complete MultiBody coverage.
+
+### Coupled scalar contact coordinates
+
+The outstanding core fixture replaces the direct circular constraint with
+`s+w=x`, `s-w=y`, and `2*(s*s+w*w)=radius*radius`. Its source and DAE retain
+all seven equations, but structural matching previously stops at 6/7.
+The auxiliary recognizer admits aggregate vector maps and dot equations;
+it cannot materialize these two separately declared scalar coordinates.
+The direct-coordinate control already passes. This is the known reduced
+core failure, not evidence that a remaining MultiBody example has closed.
+
+The repair applies the existing SPEC_0007 STRUCT-T03 square linear auxiliary
+profile to blocks of source-authored scalar residuals. A closed affine proof
+admits sums, signs, and products with unknown-independent state/invariant
+coefficients. Connected components must be square; nonlinear and
+underdetermined components remain refused. Membership, equation identity,
+and state anchors belong to one shared block. Its coordinates project one
+aggregate `LinearSolve` result, with one function and derivative cache per
+block. The recognizer never consumes tensor scalar views or enumerates a
+tensor extent. Source residuals remain owners, and their own reconstruction
+cannot be used to replace them with identities. This preserves MLS §8.3.1
+equation semantics and §8.6 initialization obligations through the existing
+checked DAE construction and SPEC_0032 aggregate execution.
+
+For `A*q=b`, reconstruction uses the existing aggregate relations
+`A*q'=b'-A'*q` and `A*q''=b''-A''*q-2*A'*q'`; runtime singularity remains a
+checked solve failure. The original circular-motion regression now passes
+with both BDF and RK. Thirteen manifold tests pass, including linear and
+quadratic time-dependent coefficients, state-dependent coefficients, and
+rejection of inconsistent fixed initial positions. All 153 structural
+library tests pass, including shared membership and refusal controls; the
+complete core suite passes 559 tests with zero failures. Affected
+all-target/all-feature Clippy checks pass after extracting the component
+membership update from an excessively nested loop.
+
+Review then finds that memoizing affine decisions alone still copies shared
+coefficient subexpressions into trees. A focused RED doubles source-DAG depth
+from four to eight and grows the coefficient recipe from 174 to 2,574 nodes.
+The corrected recipe shares source expressions and coefficient identities;
+operand traversal visits each shared recipe once. Reconstruction caches each
+coefficient with its source identity, coordinate/offset role, derivative
+order, exact call context, reconstruction mode, and provenance. The DAG-growth
+regression now passes, and all 154 structural library tests pass. Core and
+canary validation are repeated for this final representation change: all
+560 core tests and the affected all-target/all-feature Clippy checks pass.
+
+An added producer test passes: source DAE has zero aggregate linear solves;
+the prepared DAE has exactly one, retains seven continuous equation owners
+and both position/velocity manifolds, and both original scalar definitions
+still reference both auxiliary coordinates. The worker's current
+`ir-structural-dae.*` writer serializes its input DAE before reduction, so
+those files are not used as evidence of this producer change.
+
+The OMC stage dump explicitly retains `der(s)`, `der(w)`, and their second
+derivatives. Its original circular fixture produces twelve rows and agrees
+with the analytic solution in all seven physical channels; maximum absolute
+error is 6.485e-8. A separate changing-coefficient fixture fails OMC
+initialization (`0 != 1 = $START.vy-vy`) and produces no data rows. It has
+analytic Rumoca regression evidence only; no OMC trace agreement is claimed
+for that fixture. An initial test written with powers also exposed the
+existing structural refusal of `u^2`; the coefficient regression uses
+multiplication to isolate this repair, and power differentiation remains
+separate work. A native worker run of each fixture checks all seven channels
+at eleven samples through 0.1 seconds against the analytic solution; maximum
+absolute error is 2.731e-10. The original fixture also matches OMC at all
+nine exactly shared timestamps, with maximum absolute difference 6.485e-8;
+two Rumoca timestamps have different floating-point encodings from the OMC
+grid and are covered by the analytic check only.
+
+The fixed `target/msl/multibody-scalar-contact-canary` passes with all twenty
+phase, simulation, initial-condition, and band outcomes unchanged from
+`multibody-selected-jvp-canary`. Nine models compare high and all 175 initial
+channels are high, with zero skipped, missing, excluded, nonidentifiable,
+or deviating traces. At HEAD `705ad773801b86f51e01c1ba63822ea58e92703a`, its
+working-tree digest is
+`b4737e571d9ded6073b571cc86dd997c1acea27a5d08f620cc0585d9589e69eb`.
+The delta is `rolling-wheel/scalar-contact-canary-delta.json`; fixture traces
+and equations are under `rolling-wheel/scalar-contact-*`. The subsequent
+complete comparison remains pending. The repeated
+`target/msl/multibody-scalar-contact-shared-canary` retains all twenty outcomes
+and the same nine compared high models, 175 high initial channels, and zero
+boundary/deviating counts. Its digest at the same HEAD is
+`f1ab545d8ddecd19f40edda2b3a6cd8bd1c1cc179b9d2214d9c42d04d312934f`;
+the delta is `rolling-wheel/scalar-contact-shared-canary-delta.json`.
+Native fixture reruns retain all seven channels within 2.731e-10 of the
+analytic solution. Formatting and `git diff --check` pass.
 
 ## Previous complete measurement: electrical parity recovery
 

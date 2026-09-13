@@ -37,15 +37,106 @@ fn fixed_initial_values_survive_holonomic_reduction() {
 
 #[test]
 fn implicit_algebraic_contact_coordinates_preserve_circular_motion() {
-    let source = circular_motion(
+    check_motion(&implicit_contact_motion(), 1.0, 0.0);
+}
+
+fn implicit_contact_motion() -> String {
+    circular_motion(
         "Real x(start=1,fixed=true); Real y(start=0,fixed=true); Real vx(start=0,fixed=true); Real vy(start=1,fixed=true); Real s; Real w;",
         "",
     )
     .replace(
         "x*x + y*y = radius*radius;",
         "s + w = x; s - w = y; 2*(s*s + w*w) = radius*radius;",
-    );
-    check_motion(&source, 1.0, 0.0);
+    )
+}
+
+#[test]
+fn implicit_contact_coordinates_differentiate_changing_coefficients() {
+    for coefficient in ["1+time", "1+time+time*time", "1+x*x"] {
+        let mapped = format!("(({coefficient})*s+w)");
+        let equations = format!(
+            "{mapped} = x; s - 2*w = y; {mapped}*{mapped} + (s-2*w)*(s-2*w) = radius*radius;"
+        );
+        let source = implicit_contact_motion().replace(
+            "s + w = x; s - w = y; 2*(s*s + w*w) = radius*radius;",
+            &equations,
+        );
+        check_motion_with_constants(&source, 1.0, 0.0, &[("lambda", 1.0)]);
+    }
+}
+
+#[test]
+fn implicit_contact_reduction_preserves_inconsistent_initial_constraints() {
+    let source =
+        implicit_contact_motion().replace("x(start=1,fixed=true)", "x(start=0.5,fixed=true)");
+    let compiled = Compiler::new()
+        .model("CircularMotion")
+        .compile_str(&source, "inconsistent_implicit_contact.mo")
+        .unwrap();
+    for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+        let error = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                solver_mode,
+                ..Default::default()
+            },
+        )
+        .expect_err("implicit coordinate reconstruction must retain the position constraint");
+        assert!(
+            error.to_string().contains("initial variable projection"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn implicit_contact_reduction_owns_one_aggregate_solve_and_both_manifolds() {
+    let compiled = Compiler::new()
+        .model("CircularMotion")
+        .compile_str(&implicit_contact_motion(), "implicit_contact_owners.mo")
+        .unwrap();
+    let solve_count = |view: rumoca_ir_dae::DaeView<'_>| {
+        (0..view.expression_count())
+            .filter(|&index| {
+                matches!(
+                    view.expression(view.expression_id(index).unwrap())
+                        .unwrap()
+                        .operation(),
+                    rumoca_ir_dae::ExpressionOperation::Builtin {
+                        builtin: rumoca_ir_dae::PureBuiltin::LinearSolve,
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    assert_eq!(compiled.dae.inspect(solve_count), 0);
+    let prepared = rumoca_phase_structural::prepare_for_solve(&compiled.dae).unwrap();
+    prepared.inspect(|system| {
+        assert_eq!(solve_count(system.view), 1);
+        assert_eq!(system.view.continuous_owners().count(), 7);
+        assert_eq!(system.manifold.len(), 2);
+        for ordinal in [4, 5] {
+            let rumoca_ir_dae::ContinuousOwnerView::Residual { equation, .. } =
+                system.view.continuous_owner(ordinal).unwrap()
+            else {
+                panic!("source scalar definition survives");
+            };
+            for name in ["s", "w"] {
+                let (variable, _) = system
+                    .view
+                    .variables()
+                    .find(|(_, variable)| variable.name().as_str() == name)
+                    .unwrap();
+                assert!(rumoca_ir_dae::expr_contains_var(
+                    system.view,
+                    equation.residual(),
+                    variable
+                ));
+            }
+        }
+    });
 }
 
 #[test]

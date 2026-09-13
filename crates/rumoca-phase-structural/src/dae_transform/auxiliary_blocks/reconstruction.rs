@@ -18,16 +18,14 @@ pub(in crate::dae_transform) fn create_functions<'target>(
     target: &mut dae::DaeConstruction<'target>,
     facts: &DifferentiationFacts,
 ) -> Result<Vec<Option<dae::FunctionId<'target>>>, dae::DaeConstructionError> {
-    facts
-        .auxiliary_blocks
-        .iter()
-        .map(|block| {
-            block
-                .as_ref()
-                .map(|block| create_function(source, target, block))
-                .transpose()
-        })
-        .collect()
+    let mut functions = vec![None; facts.auxiliary_blocks.len()];
+    for block in facts.auxiliary_blocks.iter().flatten() {
+        let owner = &mut functions[block.variable as usize];
+        if owner.is_none() {
+            *owner = Some(create_function(source, target, block)?);
+        }
+    }
+    Ok(functions)
 }
 
 fn create_function<'target>(
@@ -89,8 +87,30 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         order: u8,
         provenance: dae::DaeProvenance,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
-        self.auxiliary_expression(variable, order, provenance)
-            .map(|expression| expression.value)
+        let block = self.facts.auxiliary_blocks[variable as usize]
+            .as_ref()
+            .expect("proved auxiliary membership")
+            .clone();
+        let value = self
+            .auxiliary_expression(block.variable, order, provenance)?
+            .value;
+        let AuxiliarySystem::Scalars { variables, .. } = &block.system else {
+            return Ok(value);
+        };
+        let offset = variables
+            .binary_search(&variable)
+            .expect("proved scalar block membership");
+        let index = self
+            .target
+            .at(provenance)
+            .literal(dae::DaeLiteral::Integer(offset as i64 + 1))?;
+        self.target.at(provenance).index(
+            value,
+            [dae::Subscript::Index {
+                expression: index,
+                provenance,
+            }],
+        )
     }
 
     fn auxiliary_expression(
@@ -170,6 +190,12 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 return Ok((
                     self.tensor_coefficient(matrix, order, provenance)?,
                     self.auxiliary_operand(rhs, order, provenance)?,
+                ));
+            }
+            AuxiliarySystem::Scalars { matrix, rhs, .. } => {
+                return Ok((
+                    self.tensor_coefficient(matrix, order, provenance)?,
+                    self.tensor_coefficient(rhs, order, provenance)?,
                 ));
             }
         };

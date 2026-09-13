@@ -13,6 +13,27 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
         match expression {
             TensorExpression::Source(value) => self.auxiliary_operand(value, order, at),
+            TensorExpression::Shared {
+                source,
+                variable,
+                value,
+            } => {
+                let source = self
+                    .source
+                    .expression_id(*source as usize)
+                    .expect("coefficient retains its source expression");
+                let key = (self.scoped_reconstruction_key(source, order, at), *variable);
+                if let Some(&value) = self.scoped_cache.coefficients.get(&key) {
+                    return Ok(value);
+                }
+                let result = self.tensor_coefficient(value, order, at)?;
+                self.scoped_cache.coefficients.insert(key, result);
+                Ok(result)
+            }
+            TensorExpression::One => self
+                .target
+                .at(at)
+                .literal(dae::DaeLiteral::Real(if order == 0 { 1.0 } else { 0.0 })),
             TensorExpression::Identity(extent) if order == 0 => {
                 let size = self
                     .target

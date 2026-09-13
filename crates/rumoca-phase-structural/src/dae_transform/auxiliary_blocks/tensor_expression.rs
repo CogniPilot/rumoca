@@ -2,6 +2,8 @@
 
 use rumoca_eval_dae::FunctionCallContext;
 use rumoca_ir_dae as dae;
+use std::collections::BTreeSet;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub(in crate::dae_transform) struct SourceValue {
@@ -54,6 +56,12 @@ pub(super) enum Product {
 #[derive(Clone)]
 pub(super) enum TensorExpression {
     Source(SourceValue),
+    Shared {
+        source: u32,
+        variable: Option<u32>,
+        value: Arc<Self>,
+    },
+    One,
     Identity(u32),
     Zero(Box<[u32]>),
     Negate(Box<Self>),
@@ -66,29 +74,39 @@ pub(super) enum TensorExpression {
 impl TensorExpression {
     #[cfg(test)]
     pub(super) fn node_count(&self) -> usize {
-        1 + match self {
-            Self::Source(_) | Self::Identity(_) | Self::Zero(_) => 0,
-            Self::Negate(value) | Self::Index(value, _) => value.node_count(),
-            Self::Sum(_, lhs, rhs) | Self::Product(_, lhs, rhs) => {
-                lhs.node_count() + rhs.node_count()
-            }
-            Self::Array(elements) => elements.iter().map(Self::node_count).sum(),
-        }
+        let mut count = 0;
+        self.visit(|_| count += 1);
+        count
     }
 
     pub(super) fn operands<'a>(&'a self, result: &mut Vec<&'a SourceValue>) {
-        match self {
-            Self::Source(source) => result.push(source),
-            Self::Identity(_) | Self::Zero(_) => (),
-            Self::Negate(value) | Self::Index(value, _) => value.operands(result),
-            Self::Sum(_, lhs, rhs) | Self::Product(_, lhs, rhs) => {
-                lhs.operands(result);
-                rhs.operands(result);
+        self.visit(|node| {
+            if let Self::Source(source) = node {
+                result.push(source);
             }
-            Self::Array(elements) => {
-                for element in elements {
-                    element.operands(result);
+        });
+    }
+
+    fn visit<'a>(&'a self, mut visit: impl FnMut(&'a Self)) {
+        let mut pending = vec![self];
+        let mut shared = BTreeSet::new();
+        while let Some(node) = pending.pop() {
+            if let Self::Shared {
+                source, variable, ..
+            } = node
+                && !shared.insert((*source, *variable))
+            {
+                continue;
+            }
+            visit(node);
+            match node {
+                Self::Shared { value, .. } => pending.push(value),
+                Self::Negate(value) | Self::Index(value, _) => pending.push(value),
+                Self::Sum(_, lhs, rhs) | Self::Product(_, lhs, rhs) => {
+                    pending.extend([rhs.as_ref(), lhs.as_ref()]);
                 }
+                Self::Array(elements) => pending.extend(elements.iter().rev()),
+                _ => (),
             }
         }
     }

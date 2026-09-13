@@ -6,11 +6,12 @@ use super::{AuxiliaryBlock, AuxiliarySystem, vector_unknown};
 use rumoca_eval_dae::FunctionCallContext;
 use rumoca_ir_dae as dae;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 pub(super) fn derive_maps(
     view: dae::DaeView<'_>,
     facts: &DifferentiationFacts,
-    blocks: &mut [Option<AuxiliaryBlock>],
+    blocks: &mut [Option<Arc<AuxiliaryBlock>>],
 ) {
     let mut traversal = dae::ExpressionTraversal::new();
     for residual in view.continuous_owners().flat_map(source_residuals) {
@@ -22,7 +23,7 @@ fn derive_equation_map<'dae>(
     view: dae::DaeView<'dae>,
     facts: &DifferentiationFacts,
     residual: dae::ExprId<'dae>,
-    blocks: &mut [Option<AuxiliaryBlock>],
+    blocks: &mut [Option<Arc<AuxiliaryBlock>>],
     traversal: &mut dae::ExpressionTraversal<'dae>,
 ) {
     let node = view.expression(residual).unwrap();
@@ -79,7 +80,7 @@ fn derive_equation_map<'dae>(
             }
             states.sort_unstable();
             states.dedup();
-            blocks[variable as usize] = Some(AuxiliaryBlock {
+            blocks[variable as usize] = Some(Arc::new(AuxiliaryBlock {
                 variable,
                 extent: *extent,
                 system: AuxiliarySystem::Map {
@@ -88,7 +89,7 @@ fn derive_equation_map<'dae>(
                     rhs: SourceValue::model(value.index()),
                 },
                 state_anchors: states.into_boxed_slice(),
-            });
+            }));
         }
     }
 }

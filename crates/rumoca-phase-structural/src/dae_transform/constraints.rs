@@ -47,7 +47,8 @@ pub(super) struct DifferentiationFacts {
     pub(super) equalities: SystemEqualities,
     pub(super) derivative_definitions: Vec<Option<u32>>,
     pub(super) algebraic_definitions: Vec<Option<u32>>,
-    pub(super) auxiliary_blocks: Vec<Option<super::auxiliary_blocks::AuxiliaryBlock>>,
+    pub(super) auxiliary_blocks:
+        Vec<Option<std::sync::Arc<super::auxiliary_blocks::AuxiliaryBlock>>>,
 }
 
 impl DifferentiationFacts {
