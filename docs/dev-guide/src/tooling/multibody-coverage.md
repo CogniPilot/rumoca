@@ -6,6 +6,46 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+The MSL step of `verify quick --early-exit` at commit
+`03865c4e9e2fb3e4c6cae86b1b9b233cd5237e91`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`,
+compares **151 models, all strict-high (26.68% of 566)**, with seventeen
+reviewed exclusions and zero missing or nonidentifiable traces. All 17,422
+initial channels are high, and no trajectory channel deviates. Its result,
+comparison, and band table are preserved in
+`target/msl/multibody-quick-after-scalar-contact-full`; the delta is
+`rolling-wheel/verify-quick-msl-delta.json`.
+
+MultiBody falls to **18/42 high** because RollingWheel exceeds the unchanged
+twelve-second simulation budget, after successful initialization. This is
+an execution regression, with no observed deviating trace. PrismaticConstraint
+and IMC_Transformer also change from structural refusals to Solve timeouts.
+This invocation used the quick suite's automatic four-worker schedule, while
+the preceding explicit full run used eleven. The timeout is retained as a
+failure; neither the passing fallback gate nor earlier successful measurements
+establish reliable completion. All nine original electrical counterexamples
+retain high parity.
+
+The combined quick suite passes lint, MSL parity, and the pinned external
+corpus, then fails its architecture gate: Solve has 274 runtime totality
+assertions against the unchanged ceiling of 272. Workspace tests do not run
+after this early exit. Neither `verify quick` nor `verify full` is green.
+The repair selects binary tensor builtin kinds and binary scalar operators
+once in Solve lowering, then consumes those narrowed values. This removes
+two impossible-case assertions without changing operand checks, operation
+ordering, tensor ownership, or the gate. All 120 Solve library tests and 243
+architecture-hardening tests pass. The next gate exposes oversized specs:
+SPEC_0007 has 2680 words; SPEC_0036 has 2810 words and 367 lines. Their detailed
+target-product, continuous-refresh, relation, and initialization requirements
+move verbatim into the existing SPEC_0040/0043 catalogs, retaining mandatory
+parent links and every requirement. No status or budget changes. The parents
+now contain 2403/2414 words and 328/325 lines. All 243 architecture-hardening and seventeen size/spec gates pass.
+`rolling-wheel/spec-catalog-move-receipt.json` verifies each moved passage
+byte-for-byte against the prior commit. RollingWheel performance remains the next investigation
+before MultiBody breadth work resumes.
+
+## Previous complete measurement: function scope indexing
+
 `target/msl/multibody-function-scope-index-full` passes the local fallback
 MSL gate at commit `a2bf9abc7ea12a0c16a2674e22626d9abfd03c92`, digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.

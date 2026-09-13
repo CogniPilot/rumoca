@@ -5,16 +5,17 @@ REFERENCE
 
 ## Summary
 
-Lookup catalog of the per-stage DAE, Solve, and structural-lowering contract
-rows referenced by [SPEC_0007](SPEC_0007_IR_PIPELINE.md).
+Lookup catalog of the DAE, Solve, structural-lowering, and target-product
+contracts referenced by [SPEC_0007](SPEC_0007_IR_PIPELINE.md).
 
 ## How To Use This Catalog
 
-This annex holds no rules of its own. Every row below is a SPEC_0007 stage
-contract and is **normative by reference from SPEC_0007**; the owning stage
+This annex holds no rules of its own. Every requirement below belongs to
+SPEC_0007 and is **normative by reference from SPEC_0007**; the owning
 section in SPEC_0007 states the governing requirement and links here. Cite rows
 by their catalog ID (`DAE-C07`, `SOLVE-C13`, `STRUCT-T04`) so a reviewer can
-find the exact obligation without loading the whole pipeline spec.
+find the exact obligation without loading the whole pipeline spec. Target
+product requirements use §4.
 
 ## Specification
 
@@ -121,6 +122,24 @@ lowering. Anything absent from this catalog requires a SPEC_0007 update.
 | STRUCT-T06 | Algebraic-loop tearing (Greedy Cellier) | `rumoca-phase-structural::tearing` | Identifies tear variables for cyclic algebraic blocks. |
 | STRUCT-T07 | State selection | `rumoca-phase-structural` | **Pending (pre-implementation).** Pick a consistent state set and return a newly finalized DAE. |
 | STRUCT-T08 | Equation normalization | `rumoca-phase-structural::residual_normalization` | Structural equation recognition shares one source-bound normal form over checked DAE expressions. Its initial profile removes only unary signs and literal-zero additive wrappers at a residual root and exposes existing equality operands. This is a borrowed zero-set proof, not a value-expression rewrite: original residual owners, provenance, tensor domains, calls, assertions, and numerical residual evaluation remain intact. It must be idempotent, retain tensor operands without coordinate enumeration, and leave unsupported forms unchanged. Division, cancellation, reassociation, and removal of nonliteral operands require separate domain/effect proofs. |
+
+### 4. Built-in Target Product Contract (SPEC_0007)
+
+| Rule | Required evidence |
+|---|---|
+| Public names describe artifacts or interface profiles | Target IDs remain meaningful without IR knowledge |
+| Consumed IR is a separate manifest dimension | `target.toml` declares `ir`; `rumoca targets` reports it |
+| The target has a concrete present-day user workflow | `README.md` names the intended user, input IR, produced artifact, invocation, and the decision or deployment task the artifact supports |
+| The target states its semantic boundary honestly | `README.md` and `target.toml` name non-goals, unsupported semantics, readiness, and whether the artifact is source, analysis output, a runtime component, or a standards container |
+| The target emits a non-empty artifact | At least one `[[files]]` entry renders through the checked target path; manifest-only future placeholders are prohibited |
+| Unsupported input fails closed | Focused negative tests prove that unsupported semantic operations cannot become comments, stubs, zero values, omitted sections, or successful-looking artifacts |
+| The artifact is checked at the strongest practical boundary | Unit tests always cover manifest parsing and real rendering; language targets parse or compile; executable targets run a numerical fixture; package/standard targets validate metadata, lifecycle, and execution against the exact claimed revision |
+| Documentation and tests are target-local and discoverable | The target `README.md` lists the exact focused tests and external gates that support its readiness claim |
+| Experimental status narrows claims, not evidence | A readiness-zero target may expose a pinned experimental interface, but still emits and validates a useful artifact; readiness zero cannot excuse a non-product |
+
+Proposed-future-use targets stay in specs or notes until an artifact and
+evidence exist. Templates MUST fail with a span-bearing error on an unsupported
+checked construct; lossy placeholder text is never acceptable.
 
 ## References
 

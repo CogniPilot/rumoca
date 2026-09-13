@@ -2,6 +2,11 @@
 
 use super::*;
 
+enum BinaryTensorBuiltin {
+    Cross,
+    LinearSolve,
+}
+
 impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
     // SPEC_0021: Exception - exhaustive binary-operator lowering dispatch.
     #[allow(clippy::too_many_lines)]
@@ -284,10 +289,12 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         if builtin == dae::PureBuiltin::Skew {
             return self.skew(value_type, arguments, at);
         }
-        if matches!(
-            builtin,
-            dae::PureBuiltin::Cross | dae::PureBuiltin::LinearSolve
-        ) {
+        let tensor_builtin = match builtin {
+            dae::PureBuiltin::Cross => Some(BinaryTensorBuiltin::Cross),
+            dae::PureBuiltin::LinearSolve => Some(BinaryTensorBuiltin::LinearSolve),
+            _ => None,
+        };
+        if let Some(tensor_builtin) = tensor_builtin {
             let lhs = arguments.get(0).ok_or(
                 solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
             )?;
@@ -301,28 +308,25 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             }
             let lhs = self.expression(lhs)?.only_register(at)?;
             let rhs = self.expression(rhs)?.only_register(at)?;
-            let register = match builtin {
-                dae::PureBuiltin::Cross => self.builder.cross(lhs, rhs, at)?,
-                dae::PureBuiltin::LinearSolve => self.builder.linear_solve(lhs, rhs, at)?,
-                _ => unreachable!("guard selects binary tensor kernels"),
+            let register = match tensor_builtin {
+                BinaryTensorBuiltin::Cross => self.builder.cross(lhs, rhs, at)?,
+                BinaryTensorBuiltin::LinearSolve => self.builder.linear_solve(lhs, rhs, at)?,
             };
             return Ok(LoweredValue::scalar(value_type, register));
         }
-        if matches!(
-            builtin,
-            dae::PureBuiltin::Atan2 | dae::PureBuiltin::Min | dae::PureBuiltin::Max
-        ) && arguments.len() == 2
+        let binary_operator = match builtin {
+            dae::PureBuiltin::Atan2 => Some(solve::SolveBinaryOperator::Atan2),
+            dae::PureBuiltin::Min => Some(solve::SolveBinaryOperator::Min),
+            dae::PureBuiltin::Max => Some(solve::SolveBinaryOperator::Max),
+            _ => None,
+        };
+        if let Some(operator) = binary_operator
+            && arguments.len() == 2
         {
             let lhs = self.expression(arguments.get(0).expect("checked binary builtin lhs"))?;
             let rhs = self.expression(arguments.get(1).expect("checked binary builtin rhs"))?;
             let lhs = self.coerce_value(lhs, value_type, at)?.only_register(at)?;
             let rhs = self.coerce_value(rhs, value_type, at)?.only_register(at)?;
-            let operator = match builtin {
-                dae::PureBuiltin::Atan2 => solve::SolveBinaryOperator::Atan2,
-                dae::PureBuiltin::Min => solve::SolveBinaryOperator::Min,
-                dae::PureBuiltin::Max => solve::SolveBinaryOperator::Max,
-                _ => unreachable!("guarded above"),
-            };
             let register = self.builder.binary(operator, lhs, rhs, at)?;
             return Ok(LoweredValue::scalar(value_type, register));
         }

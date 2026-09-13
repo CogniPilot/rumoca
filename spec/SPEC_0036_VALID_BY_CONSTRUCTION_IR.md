@@ -47,27 +47,9 @@ supplied proofs and local integrity.
 rules are
 [SPEC_0043 §6](SPEC_0043_CONSTRUCTION_CATALOG.md#6-solve-aggregate-and-discrete-definition-catalog-spec_0036-solve-aggregate).
 
-Continuous refresh optimizations require constructor-issued facts bound to the
-canonical residual and unknown inventories; wire replay rederives those facts,
-and consumers may use only the property proved by the certificate.
-
-An additive isolator derives a finite nonzero constant target coefficient and
-a compact weighted selection of target-independent source registers. Shared
-source subexpressions stay shared. Evaluation retains the original source
-prefix before computing the isolated value from that selection; a correction
-formed by subtracting the residual from the old target value is not an exact
-causal assignment. Wire replay rederives the coefficient and register selection.
-
-An affine tensor isolator may instead issue a source-bound projection of the
-residual's compact operation DAG. Each selected source operation has one checked
-offset/coefficient rule; independent subexpressions refer to their already
-evaluated source ranges. Products require a target-independent operand and
-division requires a target-independent denominator. Tensor extents and shared
-subexpressions remain compact. Only final execution adapters materialize the
-paired arithmetic, after the unchanged original prefix; calls and assertions
-are never re-executed with a substituted target. Runtime zero or nonfinite
-coefficients retain the preserved implicit projection. Wire replay rederives
-the complete source selection and rules.
+Continuous refresh optimizations MUST consume constructor-issued facts and
+preserve source evaluation and checked wire replay under
+[SPEC_0043 §6a](SPEC_0043_CONSTRUCTION_CATALOG.md#6a-continuous-refresh-construction).
 
 For target `x`, the first true `(a_k, v_k)` gives `x' = v_k`; otherwise
 `x' = x`. Activations are shared per iteration; inactive values are skipped.
@@ -174,33 +156,9 @@ Partition ordinals are layout, never semantic identity.
 Per-system equation contracts are
 [SPEC_0043 §4](SPEC_0043_CONSTRUCTION_CATALOG.md#4-equation-contract-catalog-spec_0036-expressions-and-equations).
 
-Solve lowering gives each unclocked scalar model relation with a checked root
-one dedicated current-truth buffer keyed by its exact source expression.
-DAE condition lowering consumes the expression's constructed variability:
-parameter-only comparisons become literal discrete conditions, without
-continuous crossing roots or relation buffers (MLS §3.8.3/§8.5). This preserves
-parameter bindings when they are reevaluated during initialization.
-Expression consumers read that buffer; root evaluation retains the original
-relation operands. The buffer is distinct from condition-edge history and from
-any whole B.1c Boolean result. Clocked, structured, suppressed, and call-scoped
-relations retain their own checked activation and storage contracts. A
-`noEvent` operand has a literal-evaluation context, including its descendants
-and expression caches, even when it shares an expression with a monitored root.
-The corresponding construction row is in [SPEC_0043 §6](SPEC_0043_CONSTRUCTION_CATALOG.md).
-
-Each initialization homotopy step settles the numeric initialization equations,
-covered algebraic equations, relation truth, and ordinary Boolean definitions
-together before advancing lambda. Ordinary `pre` values remain fixed during
-that solve. A rejected step restores both numeric and discrete coordinates to
-the last accepted step; exhausting discrete iteration is a typed failure.
-
-A scalar discrete coordinate determined by an initial algorithm assignment or
-by an explicit initial equation `m = value` / `pre(m) = value` has one typed
-initial-value owner. Recognition only selects this owner; construction derives
-the target role and scalar type, proves that the value reads only
-initialization-settled coordinates, and rejects a second owner for the same
-target. The claimed Flat row therefore cannot also enter the numeric
-initialization residual system.
+Relation truth, homotopy iteration, and scalar discrete initialization MUST
+preserve their distinct checked owners, evaluation contexts, and rollback
+semantics under [SPEC_0043 §6b](SPEC_0043_CONSTRUCTION_CATALOG.md#6b-relation-and-initialization-construction).
 
 Each non-input `m` has exactly one B.1c definition owner. A source
 `when`/`elsewhen` chain becomes one atomic, source-priority-ordered conditional

@@ -80,21 +80,8 @@ MUST NOT be advertised as FMI components or deployment substitutes.
 Every target registered below `rumoca-phase-codegen/src/templates/` MUST be an
 executable or inspectable product satisfying these rules:
 
-| Rule | Required evidence |
-|---|---|
-| Public names describe artifacts or interface profiles | Target IDs remain meaningful without IR knowledge |
-| Consumed IR is a separate manifest dimension | `target.toml` declares `ir`; `rumoca targets` reports it |
-| The target has a concrete present-day user workflow | `README.md` names the intended user, input IR, produced artifact, invocation, and the decision or deployment task the artifact supports |
-| The target states its semantic boundary honestly | `README.md` and `target.toml` name non-goals, unsupported semantics, readiness, and whether the artifact is source, analysis output, a runtime component, or a standards container |
-| The target emits a non-empty artifact | At least one `[[files]]` entry renders through the checked target path; manifest-only future placeholders are prohibited |
-| Unsupported input fails closed | Focused negative tests prove that unsupported semantic operations cannot become comments, stubs, zero values, omitted sections, or successful-looking artifacts |
-| The artifact is checked at the strongest practical boundary | Unit tests always cover manifest parsing and real rendering; language targets parse or compile; executable targets run a numerical fixture; package/standard targets validate metadata, lifecycle, and execution against the exact claimed revision |
-| Documentation and tests are target-local and discoverable | The target `README.md` lists the exact focused tests and external gates that support its readiness claim |
-| Experimental status narrows claims, not evidence | A readiness-zero target may expose a pinned experimental interface, but still emits and validates a useful artifact; readiness zero cannot excuse a non-product |
-
-Proposed-future-use targets stay in specs or notes until an artifact and
-evidence exist. Templates MUST fail with a span-bearing error on an unsupported
-checked construct; lossy placeholder text is never acceptable.
+The complete product and evidence requirements are normative in
+[SPEC_0040 §4](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#4-built-in-target-product-contract-spec_0007).
 
 ---
 
