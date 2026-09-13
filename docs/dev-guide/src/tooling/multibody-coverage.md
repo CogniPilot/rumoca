@@ -42,6 +42,35 @@ scans the full expression arena once per function. Indexing those existing
 function scopes once is the next hypothesis; no repair is claimed yet.
 This diagnostic completion does not replace the full-run timeout.
 
+### Function scope indexing
+
+The performance repair extends the existing function-expression inventory
+pass with per-function scope lists. Orphan recovery visits each function's
+existing branded expression identities in the same ascending source order;
+the final completeness check remains intact. This removes the repeated
+whole-arena scan without changing function statements, definitions, or
+construction order. All 154 structural library tests pass.
+
+The matched standalone DCPM_Drive diagnostic reduces Solve lowering from
+11.436 to 7.804 seconds and build time from 12.168 to 8.302 seconds. The
+new perf capture has 9,153 samples and zero lost samples. These are diagnostic
+timings, not a statistical benchmark. Separate before/after artifact runs
+produce byte-identical DAE, Solve IR, and simulation traces: the Solve SHA-256
+is `095f50d80afa1cf221f3362fa4195d3b607b4899715bad02e9f6d7e4d926bcb3` and
+the trace SHA-256 is
+`b80f5af6dc932435adfc419704b75e0b5553f38cd520cedc316d78c8d29209ad`.
+`rolling-wheel/function-scope-index-equivalence.json` records all hashes.
+Affected all-target/all-feature Clippy checks and formatting pass. The fixed
+`target/msl/multibody-function-scope-index-canary` passes with all twenty
+phase, simulation, initial-condition, and band outcomes unchanged. Nine
+models compare high, all 175 initial channels are high, and skipped, missing,
+excluded, nonidentifiable, and deviating counts are zero. At HEAD
+`09e66c8be6c5df71fbf964564516ff15eb678d0c`, its working-tree digest is
+`94c4aafbbe07bf098a355f7069b749bfae1541297682197261500d1d2024eeca`.
+`rolling-wheel/function-scope-index-canary-delta.json` records the delta.
+The original full run's four Solve timeouts remain open until measured again
+after this change.
+
 ## Previous complete measurement: selected native Jacobians
 
 `target/msl/multibody-selected-jvp-full` passes the local MSL quality gate

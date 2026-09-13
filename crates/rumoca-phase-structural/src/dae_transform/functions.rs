@@ -119,7 +119,7 @@ pub(super) fn rebuild_functions<'source, 'target>(
     rebuilt: &mut [Option<dae::ExprId<'target>>],
     quotients: &mut RuntimeQuotientReplayPlan<'target>,
 ) -> Result<Vec<RebuiltFunction<'target>>, dae::DaeConstructionError> {
-    let (function_use_groups, function_uses) = index_function_uses(source);
+    let function_expressions = index_function_expressions(source);
     let function_definitions = (0..source.function_count())
         .map(|index| {
             let id = source
@@ -139,8 +139,9 @@ pub(super) fn rebuild_functions<'source, 'target>(
         candidate,
         rebuilt,
         pending: Vec::new(),
-        function_use_groups,
-        function_uses,
+        function_use_groups: function_expressions.groups,
+        function_uses: function_expressions.uses,
+        function_scopes: function_expressions.scopes,
         function_definitions,
         quotients,
         active_function: None,
@@ -250,8 +251,15 @@ struct FunctionUseGroup {
     materialized: bool,
 }
 
-fn index_function_uses(source: dae::DaeView<'_>) -> (Vec<FunctionUseGroup>, Vec<u32>) {
+struct FunctionExpressionIndex<'dae> {
+    groups: Vec<FunctionUseGroup>,
+    uses: Vec<u32>,
+    scopes: Vec<Vec<dae::ExprId<'dae>>>,
+}
+
+fn index_function_expressions(source: dae::DaeView<'_>) -> FunctionExpressionIndex<'_> {
     let mut indexed = Vec::new();
+    let mut scopes = vec![Vec::new(); source.function_count()];
     for index in 0..source.expression_count() {
         let source_id = source
             .expression_id(index)
@@ -259,6 +267,9 @@ fn index_function_uses(source: dae::DaeView<'_>) -> (Vec<FunctionUseGroup>, Vec<
         let expression = source
             .expression(source_id)
             .expect("finalized expression identity resolves");
+        if let Some(function) = expression.function_scope() {
+            scopes[function.index() as usize].push(source_id);
+        }
         if let dae::ExpressionOperation::FunctionValue { value, definition } =
             expression.operation()
         {
@@ -307,7 +318,11 @@ fn index_function_uses(source: dae::DaeView<'_>) -> (Vec<FunctionUseGroup>, Vec<
             .range
             .end = expressions.len();
     }
-    (groups, expressions)
+    FunctionExpressionIndex {
+        groups,
+        uses: expressions,
+        scopes,
+    }
 }
 
 fn function_components(source: dae::DaeView<'_>) -> Vec<rumoca_core::DependencyScc> {
@@ -345,6 +360,7 @@ struct FunctionRebuilder<'source, 'borrow, 'target> {
     pending: Vec<(dae::ExprId<'source>, bool)>,
     function_use_groups: Vec<FunctionUseGroup>,
     function_uses: Vec<u32>,
+    function_scopes: Vec<Vec<dae::ExprId<'source>>>,
     function_definitions: Vec<Vec<Option<dae::FunctionDefinitionId<'target>>>>,
     quotients: &'borrow mut RuntimeQuotientReplayPlan<'target>,
     active_function: Option<usize>,
@@ -950,20 +966,9 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         function: usize,
         body: &dae::FunctionBody<'target>,
     ) -> Result<(), dae::DaeConstructionError> {
-        for index in 0..self.source.expression_count() {
-            let source_id = self
-                .source
-                .expression_id(index)
-                .expect("finalized expression ordinal resolves");
-            let expression = self
-                .source
-                .expression(source_id)
-                .expect("finalized expression identity resolves");
-            if expression
-                .function_scope()
-                .is_some_and(|owner| owner.index() as usize == function)
-                && self.rebuilt[source_id.index() as usize].is_none()
-            {
+        for index in 0..self.function_scopes[function].len() {
+            let source_id = self.function_scopes[function][index];
+            if self.rebuilt[source_id.index() as usize].is_none() {
                 self.rebuild_postorder(target, source_id, Some(body))?;
             }
         }
