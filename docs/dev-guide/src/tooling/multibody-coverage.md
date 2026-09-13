@@ -6,6 +6,40 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-native-singleton-full` passes the local fallback gate
+at commit `27bc2c8d711703fc679b492a26e542486bb19019`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The complete 566-model sweep takes 138.19 seconds with eleven workers.
+**All 153 compared models are strict-high (27.03% of 566)**, with seventeen
+reviewed exclusions and zero missing or nonidentifiable traces. Every
+previously high model retains its band, including all nine original
+electrical counterexamples. All 18,498 initial channels are high and no
+trajectory channel deviates.
+
+MultiBody reaches **20/42 high**, with twenty compared and no trace boundaries.
+RollingWheelSetDriving advances from a twelve-second simulation timeout to
+high parity on all 892 trajectory and initial channels. Its worst channel's
+bounded normalized L1 score is `5.061492181479045e-6`. The enclosing simulation
+call takes 12.050 seconds, including its own initialization work; the solver
+budget remains twelve seconds and the parent watchdog remains fourteen.
+Build takes 10.467 seconds, including 7.194 seconds of Solve lowering, and
+the separate initialization check takes 0.142 seconds. This is a measured
+high result with little runtime margin, not proof of reliable completion
+under every host load. RollingWheel retains all 184 high channels at 9.261
+seconds of simulation.
+
+IMC_Transformer returns from a Solve timeout to its structural refusal.
+These are the only two phase/simulation changes relative to
+`multibody-quick-after-architecture-full`; RollingWheelSetDriving is the only
+band change. The retained receipt and artifact hashes are in
+`rolling-wheel/native-singleton-full-delta.json`. No tolerance, baseline,
+timeout, target-list, or exclusion changes were made. `verify quick` passed
+before this implementation, and its focused tests and gates pass as recorded
+below. `verify full` has not run. Twenty-two MultiBody examples still lack
+high parity; Fourbar_analytic's structural refusal is the next investigation.
+
+## Previous complete measurement: quick-suite success
+
 The MSL step of `verify quick --early-exit` at commit
 `be391b3f25e216616af9167a16c48f5e95c6eb1d`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`,
