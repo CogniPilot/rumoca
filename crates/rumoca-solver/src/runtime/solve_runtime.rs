@@ -44,6 +44,7 @@ mod guarded_assignments;
 mod initial_continuation;
 mod initial_event;
 mod initial_projection;
+mod manifold_execution;
 mod native_projection_assignments;
 mod native_specialization;
 use native_specialization::{RowEvalPoint, SpecializedRows};
@@ -70,8 +71,7 @@ pub use initial_event::{
 use plans::{
     RootConditionPlan, RootConditionPlanEntry, VisibleValuePlan, VisibleValuePlanEntry,
     copy_grouped_expression_values, direct_time_root_search_default, direct_time_root_value,
-    direct_visible_value, prepare_manifold_projection_programs, root_condition_plan,
-    total_root_condition_count, visible_value_plan,
+    direct_visible_value, root_condition_plan, total_root_condition_count, visible_value_plan,
 };
 use refresh_execution::static_refresh_parameter_indices;
 use refresh_projection::*;
@@ -267,8 +267,7 @@ pub struct SolveRuntime {
     implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
     refresh_program_rows: FxHashMap<solve::RefreshScalarProgramSource, usize>,
-    manifold_residual: PreparedComputeBlock,
-    manifold_jacobian_v: PreparedComputeBlock,
+    manifold: manifold_execution::PreparedManifoldProjection,
     initial_residual: PreparedComputeBlock,
     initial_residual_jacobian_v: PreparedComputeBlock,
     initial_scalar_residual: PreparedScalarProgramBlock,
@@ -465,7 +464,10 @@ impl SolveRuntime {
             )
         });
         let implicit_scalar_rhs = PreparedScalarProgramBlock::new(implicit_scalar_programs)?;
-        let (manifold_residual, manifold_jacobian_v) = prepare_manifold_projection_programs(model)?;
+        let manifold = manifold_execution::PreparedManifoldProjection::new(
+            model,
+            execution_backend.as_deref(),
+        )?;
         let derivative_scalar_rhs =
             to_scalar_program_block(&model.problem.continuous.derivative_rhs)?;
         // Scalarization is an evaluator-boundary view of the compact
@@ -625,8 +627,7 @@ impl SolveRuntime {
             )?,
             implicit_scalar_rhs,
             refresh_program_rows,
-            manifold_residual,
-            manifold_jacobian_v,
+            manifold,
             initial_residual: PreparedComputeBlock::new_with_label(
                 model.problem.initialization.residual(),
                 "runtime_initial_residual",

@@ -6,7 +6,7 @@ use std::hash::Hasher;
 use std::io::{self, Write};
 
 use crate::RuntimeSolveError;
-use rumoca_eval_solve::{EvalSolveError, PreparedComputeBlock, RowEvalContext};
+use rumoca_eval_solve::{EvalSolveError, RowEvalContext};
 
 #[derive(Clone, Copy)]
 pub(super) enum DirectVisibleSource {
@@ -453,22 +453,6 @@ pub(super) fn copy_grouped_expression_values(
 pub(super) fn visible_plan_output_index_error(index: usize, len: usize) -> RuntimeSolveError {
     RuntimeSolveError::solve_ir(format!(
         "visible value plan output index {index} out of bounds for {len} values"
-    ))
-}
-
-/// Prepare the manifold residual and its Jacobian-vector product.
-pub(super) fn prepare_manifold_projection_programs(
-    model: &solve::SolveModel,
-) -> Result<(PreparedComputeBlock, PreparedComputeBlock), EvalSolveError> {
-    Ok((
-        PreparedComputeBlock::new_with_label(
-            &model.problem.continuous.manifold_residual,
-            "runtime_manifold_residual",
-        )?,
-        PreparedComputeBlock::new_with_label(
-            &model.artifacts.continuous.manifold_jacobian_v,
-            "runtime_manifold_jacobian_v",
-        )?,
     ))
 }
 

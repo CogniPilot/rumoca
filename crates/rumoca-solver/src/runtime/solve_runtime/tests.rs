@@ -1,5 +1,7 @@
 //! Runtime projection and event regression tests.
 
+mod native_manifold;
+
 use super::*;
 use rumoca_eval_solve::refresh_plan::{
     build_algebraic_refresh_plan, build_derivative_refresh_plan,

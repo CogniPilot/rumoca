@@ -45,6 +45,54 @@ The runtime repair and its focused/canary checks are complete. The remaining
 passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
 
+## Critical RollingWheel performance investigation
+
+The 48x cached-OMC runtime gap is an open critical performance bug. An isolated
+worker at `8b0794d8` takes 6.094 seconds in its declared Sim phase: 6.05 seconds
+of user CPU, no system CPU at the counter resolution, and zero major page
+faults. A fresh execution of the existing OMC artifact takes 0.114 seconds
+including process startup and output. OMC reports 1,028 DASSL steps and 1,329
+ODE calls. The earlier Rumoca census has 1,404 BDF steps; that difference does
+not explain the runtime gap. These diagnostic runs are not stable benchmarks.
+
+`perf` and a temporary positive-time program census identify repeated tensor
+execution. Implicit program 223 has 766 operations and three outputs, and runs
+66,589 times. Four state-manifold directional programs each run 48,880 times.
+The first concrete dispatch defect is in runtime preparation: manifold residual
+and directional blocks were never offered to the execution backend, and every
+projection unconditionally used the interpreter. The diagnostic receipt is
+`rolling-wheel/critical-runtime-diagnosis.json`; temporary probes are removed.
+
+The repair offers both unchanged, source-bound manifold blocks to the existing
+backend once during preparation. A backend may decline compilation; an admitted
+native execution error propagates without an interpreter retry. This follows
+SPEC_0007's checked-product ownership and SPEC_0038's non-semantic native
+execution boundary. State selection, tensor owners, constraints, tolerances,
+and the numerical projection algorithm are unchanged. Two reduced tests fail
+on the old code and pass with native dispatch, interpreter-decline, state-only
+input, and execution-failure controls.
+
+One isolated candidate run takes 5.144 seconds (5.09 user CPU seconds, zero
+major faults). Its trace is byte-identical to the baseline and to the last
+full run's RollingWheel trace:
+`340e0a5bab67e9a05b160f3b50a623126edd2660863fa9cd0f25461b16bc334b`.
+The remaining runtime gap is still critical. Repeated full tensor evaluations
+for selected algebraic residuals and sensitivities remain the next target;
+this improvement is not closure of the performance issue.
+
+All 453 solver and 127 simulation library tests pass, as do all-target,
+all-feature Clippy checks for both crates. The fixed
+`target/msl/multibody-native-manifold-canary` passes at parent `8b0794d8`,
+working-tree digest
+`6f6c0b37c0cf4b88fb8d6adc7061ca3c9a2f46d5e944857ed7c73a0be2bfb74e`.
+All twenty phase/simulation outcomes and bands match the indexed-alias canary.
+Nine models compare high, all 175 initial channels are high, and there are
+zero skipped, missing, excluded, nonidentifiable, or deviating comparisons.
+Eleven workers were requested and admitted. Logs and the exact delta are
+`rolling-wheel/native-manifold-{libraries-1,clippy-1,canary-1}.log` and
+`rolling-wheel/native-manifold-canary-delta.json`. The named-commit full sweep
+is next; combined `verify quick` and `verify full` have not run for this change.
+
 ## Fourbar indexed-alias definition repair
 
 The original Fourbar_analytic DAE contains both `position_b[i].y = k` and

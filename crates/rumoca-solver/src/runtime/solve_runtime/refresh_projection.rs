@@ -227,9 +227,8 @@ impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.runtime
-            .manifold_residual
-            .eval_with_context(y, p, t, self.runtime.row_eval_context(), out)
-            .map_err(Into::into)
+            .manifold
+            .eval_residual(y, p, t, self.runtime.row_eval_context(), out)
     }
 
     fn eval_manifold_jacobian_v(
@@ -241,22 +240,12 @@ impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.runtime
-            .manifold_jacobian_v
-            .eval_with_context(
-                y,
-                p,
-                t,
-                RowEvalContext {
-                    seed: Some(v),
-                    ..self.runtime.row_eval_context()
-                },
-                out,
-            )
-            .map_err(Into::into)
+            .manifold
+            .eval_directional(y, p, t, self.runtime.row_eval_context(), v, out)
     }
 
     fn manifold_residual_len(&self) -> usize {
-        self.runtime.manifold_residual.len()
+        self.runtime.manifold.len()
     }
 
     fn manifold_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
