@@ -6,6 +6,83 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-singleton-degree-full` passes the local fallback gate at
+commit `39cb7f2384de9d15cf3d022bf16d1d2c5b1d168c`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The complete 566-model sweep takes 130.23 seconds with eleven Rumoca workers.
+All 152 compared models are strict-high (26.86% of 566), with seventeen
+reviewed exclusions, zero missing/nonidentifiable traces, and all 17,606 initial
+channels high. No compared trajectory channel deviates; all nine electrical
+counterexamples remain high. MultiBody remains **19/42 high**.
+
+There are no band changes from `multibody-derivative-chain-full`.
+PrismaticConstraint and IMC_Transformer reach structural refusals within budget.
+LineForceWithTwoMasses now exceeds the Solve budget instead of panicking;
+the separate completed DAE inspection below establishes the preflight repair,
+but this full attempt does not reach that final structural refusal.
+RollingWheelSetDriving still times out after twelve simulation seconds
+(12.110 seconds including call overhead), with 10.715 seconds of build time.
+The receipt is `rolling-wheel/singleton-degree-full-delta.json` under the
+campaign directory. The earlier twentieth high model remains a performance
+regression requiring repair.
+
+The fixed 145-model performance cohort reports 2.245 median simulation speedup
+over OMC; the expanded 169-completion cohort reports 1.523. The medians have
+different populations. Neither summarizes the expensive MultiBody tail:
+RollingWheel takes 9.234 seconds of simulation versus OMC's 0.134 seconds;
+DoublePendulum takes 1.482 versus 0.122 seconds. These exclude Rumoca build time.
+Combined `verify quick` last passed before six subsequent implementation
+changes; `verify full` has not run. No PR or baseline promotion is claimed.
+
+### RollingWheel runtime census and state-only projection
+
+The MSL worker uses the in-process FMI Model Exchange host, Diffsol BDF for
+this model, Cranelift where execution is admitted, and prepared interpretation
+for remaining work. These measurements do not execute an exported C FMU.
+The current Solve artifact retains twelve scalar states, 899 algebraic slots,
+and four state constraints; OMC selects eight states. A temporary numerical
+census records 1,404 BDF steps, 27 resets, 336 linear setups, and 2,324 nonlinear
+iterations through 4 seconds. Accepted orders 1 through 5 have counts
+54/255/242/339/514. OMC's generated DASSL executable takes 1,028 steps, 1,329
+ODE calls, 42 Jacobian evaluations, and zero events. A permanently low BDF
+order therefore does not explain the large runtime gap.
+
+The refresh census records 6,843 full-algebraic refreshes taking 6.748 seconds,
+3,670 derivative refreshes taking 2.279 seconds, and 2,512 root refreshes taking
+0.189 seconds. These counters include preparation, initialization, and simulation;
+they are not exclusive declared-Sim samples. Both instrumented trajectories are
+byte-identical to the complete sweep's RollingWheel trace. The temporary probes
+are removed; exact patches, binary/source hashes, logs, and scope are retained
+in `rolling-wheel/rolling-wheel-runtime-census.json`. The first OMC executable
+invocation lacked its relative sparsity assets; that setup failure and the
+corrected working-directory invocation are both retained.
+
+The concrete ordering defect is in the FMI kernel's state projection: it
+reconstructs all algebraics before evaluating the retained state-only manifold.
+Solve lowering already rejects algebraic/derivative dependencies in that
+manifold (`lower.rs::manifold_state_slots`, SPEC_0007 structural/Solve boundary).
+The reduced regression projects an off-manifold state from -1 to 4 before
+observing `a*a=x`; the old code fails trying to find a real `a` at -1. Its
+negative control keeps an invalid post-projection observation as an error.
+The candidate passes only the state prefix to the unchanged residual/JVP
+projection, preserving tensor owners, numerical tolerances, and the accepted
+step's existing restart policy. An invalid manifold that reads an algebraic
+warm start is refused by the checked evaluator and leaves the state unchanged.
+All 451 solver tests, all-target/all-feature solver Clippy, formatting,
+243 architecture tests, and seventeen size/spec gates pass. The positive
+regression first failed on the old premature algebraic solve; the invalid-output
+control already passed. Logs are `rolling-wheel/state-only-manifold-red-1.log`,
+`state-only-manifold-green-2.log`, and `state-only-manifold-canary-1.log`.
+The fixed twenty-model `target/msl/multibody-state-only-manifold-canary` has no
+phase or band changes: nine comparisons and all 175 initial channels high,
+zero missing/skipped/excluded/nonidentifiable traces. It ran at parent `39cb7f23`
+with dirty digest `a3031f39be8bb4047180ee0e1142d4a5c9a43b65010c3b9b861017d54a8008a0`.
+Eleven workers were requested, but the memory limiter admitted one; this is
+not an eleven-worker timing comparison. The delta is retained in
+`rolling-wheel/state-only-manifold-canary-delta.json`. A new full sweep is pending.
+
+## Previous complete measurement: supplied derivative chains
+
 `target/msl/multibody-derivative-chain-full` passes the local fallback gate at
 commit `7fa18fa1c93b4b65c588e98da6509aaf794dc03d`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.

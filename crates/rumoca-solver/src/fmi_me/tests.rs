@@ -6,6 +6,7 @@
 //! whole point is that the *component* owns the derivative.
 
 mod failure_atomicity;
+mod manifold;
 
 use indexmap::IndexMap;
 use rumoca_ir_solve as solve;

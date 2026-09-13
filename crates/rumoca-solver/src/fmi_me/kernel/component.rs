@@ -1205,30 +1205,27 @@ impl SolveMeKernel {
         &self,
         states: &mut [f64],
     ) -> Result<bool, MeError> {
+        if states.len() != self.state_count {
+            return Err(contract(format!(
+                "state projection received {} states, expected {}",
+                states.len(),
+                self.state_count
+            )));
+        }
         if !self.runtime.requires_state_manifold_projection() {
             return Ok(false);
         }
-        let time = self.time;
-        let settle = self.numerics_settle();
-        let mut solver_y = self.solver_y_guess.borrow().clone();
-        self.runtime.full_solver_y_with_guess(
-            time,
+        // Solve lowering excludes algebraics from retained constraints.
+        // Passing the state prefix enforces that boundary during evaluation;
+        // an algebraic output may be undefined before this correction.
+        let changed = self.runtime.project_state_manifold(
             states,
             &self.params,
-            &mut solver_y,
-            settle.tol,
-            settle.max_iters,
-        )?;
-        let changed = self.runtime.project_state_manifold(
-            &mut solver_y,
-            &self.params,
-            time,
+            self.time,
             ALGEBRAIC_REFRESH_TOL,
         )?;
-        states.copy_from_slice(&solver_y[..self.state_count]);
-        solver_y[..self.state_count].copy_from_slice(states);
         self.invalidate_continuous_linearization();
-        *self.solver_y_guess.borrow_mut() = solver_y;
+        self.solver_y_guess.borrow_mut()[..self.state_count].copy_from_slice(states);
         Ok(changed)
     }
 
