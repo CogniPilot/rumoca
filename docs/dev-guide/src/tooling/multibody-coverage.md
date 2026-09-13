@@ -42,8 +42,60 @@ and cached OMC timings prevent interpreting this pair as an isolated speedup.
 
 The runtime repair and its focused/canary checks are complete. The remaining
 22 MultiBody models still need investigation. Combined `verify quick` last
-passed before seven subsequent implementation changes; `verify full` has not
+passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
+
+## Fourbar indexed-alias definition repair
+
+The original Fourbar_analytic DAE contains both `position_b[i].y = k` and
+`prismatic.position_b[i] = position_b[i].y`. Causal analysis interpreted the
+second equality as another definition of the scalar output, then discarded
+both definitions as duplicates. The source rows are retained in
+`fourbar-analytic/mixed-alias-source-rows.json`. OMC's saved equation inventory
+assigns the three outputs `0.0`, `0.2`, and `0.0` during initialization
+(`indexed-alias-omc-equations.json`, equations 799–801).
+
+The governing requirements are MLS §9.2 connection equalities and §10 array
+coordinates, SPEC_0007 Stage 3's orthogonal input/output causality, and
+SPEC_0032 §1–2's source-owned arrays and structural scalar views. Exact
+scalar/element aliases now defer their direction until independent whole
+definitions have been considered. A complete component definition may follow
+the already proved, transitively closed whole-definition graph. An externally
+solved algebraic cannot seed that proof, and a continuous dependency cannot
+become event-held. The same dependency walk supplies closure and variability;
+this adds no second traversal of whole-definition expression graphs.
+
+The initial three-test reduction fails two assertions on the old code
+(`indexed-alias-red-1.log`). Five strengthened tests now cover either equality
+orientation, scalar alias chains, output arrays, an independently defined
+whole array supplying scalar outputs, incomplete coverage, duplicate scalar
+and component equations, cycles through the array, and a transitive continuous
+source. All 161 structural tests and all-target/all-feature structural Clippy
+pass in `indexed-alias-green-4.log`. Earlier fixture-construction and lint
+failures remain in the numbered logs.
+
+The original DAE inspection now proves all three scalar output definitions and
+complete coverage of variable 476, `jointSSP.prismatic.position_b`. The exact
+before/after records and hashes are in `indexed-alias-definition-delta.json`.
+Its 829 structural reduction records remain byte-identical: differentiation
+still lacks consumption of complete component definitions and filters out
+output definitions. The original 1622/1659 structural refusal remains; this
+repair alone establishes neither compilation nor a new model's trace parity.
+Downstream checks pass: 115 GALEC library and six integration tests, 120 Solve
+tests, 127 simulation tests, 572 compiler-core tests, 243 architecture tests,
+and seventeen size/spec gates. The log is
+`fourbar-analytic/indexed-alias-consumers-canary-1.log`.
+
+The fixed `target/msl/multibody-indexed-alias-canary` passes at parent
+`84aa78ccb64c88647244a15b5d624732e68b2104`, working-tree digest
+`053bb1f4e3cd33b143fe730e7905586165adde1a91bb1db1f2fea592bbb74cd4`.
+All twenty phase and simulation outcomes and bands match
+`multibody-state-only-manifold-canary`; nine models compare high with all 175
+initial channels high and zero missing, skipped, excluded, nonidentifiable, or
+deviating comparisons. Eleven workers were requested; the memory limiter
+admitted four. `indexed-alias-canary-delta.json` retains the comparison and
+artifact hashes. Tier 1 is complete; the latest full-cohort measurement remains
+the `f485ef13` run above. No additional model pass or isolated speedup is claimed.
 
 ## Previous complete measurement: singleton degree queries
 

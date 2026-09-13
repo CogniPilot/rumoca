@@ -6,11 +6,16 @@
 //! side. Ambiguous aliases, duplicate targets, self-dependencies, structured
 //! families, and cycles remain residual owners.
 
+#[cfg(test)]
+mod indexed_alias_tests;
+mod scalar_definitions;
+
 use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_dae as dae;
 
 use crate::residual_normalization::equation_sides;
+use scalar_definitions::{append_indexed_aliases, derive_scalar_definitions, scalar_algebraic};
 
 /// Immutable elimination evidence tied to one branded DAE view.
 pub struct CausalDefinitions<'dae> {
@@ -28,7 +33,12 @@ pub struct CausalDefinitions<'dae> {
 impl<'dae> CausalDefinitions<'dae> {
     pub fn derive(view: dae::DaeView<'dae>) -> Self {
         let (candidates, total_owners) = collect_definition_candidates(view);
-        let (emitted, order, mut event_held) = acyclic_target_order(view, &candidates);
+        let CausalOrder {
+            emitted,
+            order,
+            closed,
+            mut event_held,
+        } = acyclic_target_order(view, &candidates);
 
         let definitions: HashMap<_, _> = candidates
             .iter()
@@ -60,7 +70,13 @@ impl<'dae> CausalDefinitions<'dae> {
             })
             .collect::<HashSet<_>>();
         let (scalar_definitions, fully_scalar_defined, scalar_equations, scalar_event_held) =
-            derive_scalar_definitions(view, &definitions, &consumed_equations);
+            derive_scalar_definitions(
+                view,
+                &definitions,
+                &closed,
+                &event_held,
+                &consumed_equations,
+            );
         event_held.extend(scalar_event_held);
         consumed_equations.extend(scalar_equations);
         Self {
@@ -172,6 +188,7 @@ fn collect_definition_candidates<'dae>(
 ) -> (Vec<DefinitionCandidate<'dae>>, usize) {
     let mut candidates = Vec::new();
     let mut aliases = Vec::new();
+    let mut indexed_aliases = Vec::new();
     let mut target_counts = HashMap::<u32, usize>::new();
     let mut total_owners = 0usize;
     for continuous in view.continuous_owners() {
@@ -189,12 +206,17 @@ fn collect_definition_candidates<'dae>(
         if expression_references(view, value, target) {
             continue;
         }
+        if scalar_algebraic(view, value).is_some() {
+            indexed_aliases.push((owner, target, value));
+            continue;
+        }
         *target_counts.entry(target.index()).or_default() += 1;
         candidates.push((owner, target, value));
     }
     append_discrete_connection_candidates(view, &mut candidates, &mut target_counts);
     candidates.retain(|(_, target, _)| target_counts[&target.index()] == 1);
     append_oriented_aliases(&mut candidates, aliases);
+    append_indexed_aliases(&mut candidates, indexed_aliases);
     (candidates, total_owners)
 }
 
@@ -215,10 +237,17 @@ fn append_discrete_connection_candidates<'dae>(
     }
 }
 
+struct CausalOrder<'dae> {
+    emitted: HashSet<u32>,
+    order: Vec<dae::AlgebraicId<'dae>>,
+    closed: HashSet<u32>,
+    event_held: HashSet<u32>,
+}
+
 fn acyclic_target_order<'dae>(
     view: dae::DaeView<'dae>,
     candidates: &[DefinitionCandidate<'dae>],
-) -> (HashSet<u32>, Vec<dae::AlgebraicId<'dae>>, HashSet<u32>) {
+) -> CausalOrder<'dae> {
     let targets = candidates
         .iter()
         .map(|(_, target, _)| target.index())
@@ -228,6 +257,7 @@ fn acyclic_target_order<'dae>(
         .map(|(_, target, value)| (target.index(), expression_dependencies(view, *value)))
         .collect::<HashMap<_, _>>();
     let mut emitted = HashSet::new();
+    let mut closed = HashSet::new();
     let mut event_held = HashSet::new();
     let mut order = Vec::with_capacity(candidates.len());
     while order.len() < candidates.len() {
@@ -242,6 +272,15 @@ fn acyclic_target_order<'dae>(
             break;
         };
         let target_dependencies = &dependencies[&target.index()];
+        // Topological emission permits externally solved algebraics. Only a
+        // transitively closed definition can safely seed component coverage.
+        if target_dependencies
+            .algebraic
+            .iter()
+            .all(|dependency| closed.contains(dependency))
+        {
+            closed.insert(target.index());
+        }
         if !target_dependencies.has_continuous_source
             && target_dependencies
                 .algebraic
@@ -253,7 +292,12 @@ fn acyclic_target_order<'dae>(
         emitted.insert(target.index());
         order.push(*target);
     }
-    (emitted, order, event_held)
+    CausalOrder {
+        emitted,
+        order,
+        closed,
+        event_held,
+    }
 }
 
 #[derive(Default)]
@@ -381,162 +425,6 @@ fn append_oriented_aliases<'dae>(
             candidates.push(candidate);
         }
     }
-}
-
-type ScalarDefinitionMap<'dae> = HashMap<(u32, u32), dae::ExprId<'dae>>;
-
-fn derive_scalar_definitions<'dae>(
-    view: dae::DaeView<'dae>,
-    whole: &HashMap<u32, dae::ExprId<'dae>>,
-    already_consumed: &HashSet<u32>,
-) -> (
-    ScalarDefinitionMap<'dae>,
-    HashSet<u32>,
-    HashSet<u32>,
-    HashSet<u32>,
-) {
-    let mut candidates = Vec::new();
-    let mut counts = HashMap::<(u32, u32), usize>::new();
-    for owner in view.continuous_owners() {
-        let dae::ContinuousOwnerView::Residual { id, equation } = owner else {
-            continue;
-        };
-        if already_consumed.contains(&id.index()) {
-            continue;
-        }
-        let Some((variable, scalar, value)) = scalar_direct_definition(view, equation.residual())
-        else {
-            continue;
-        };
-        let dependencies = expression_dependencies(view, value);
-        if whole.contains_key(&variable.index()) || !dependencies.algebraic.is_empty() {
-            continue;
-        }
-        *counts.entry((variable.index(), scalar)).or_default() += 1;
-        candidates.push((
-            id,
-            variable,
-            scalar,
-            value,
-            !dependencies.has_continuous_source,
-        ));
-    }
-    candidates.retain(|(_, variable, scalar, _, _)| counts[&(variable.index(), *scalar)] == 1);
-    let candidate_definitions = candidates
-        .iter()
-        .map(|(_, variable, scalar, value, _)| ((variable.index(), *scalar), *value))
-        .collect::<HashMap<_, _>>();
-    let candidate_event_held = candidates
-        .iter()
-        .map(|(_, variable, scalar, _, event_held)| ((variable.index(), *scalar), *event_held))
-        .collect::<HashMap<_, _>>();
-    let fully_defined = view
-        .variables()
-        .filter(|(variable, entry)| {
-            let Ok(scalar_count) = u32::try_from(entry.scalar_count()) else {
-                return false;
-            };
-            entry.role() == dae::VariableRole::Algebraic
-                && scalar_count > 0
-                && (0..scalar_count)
-                    .all(|scalar| candidate_definitions.contains_key(&(variable.index(), scalar)))
-        })
-        .map(|(variable, _)| variable.index())
-        .collect::<HashSet<_>>();
-    let definitions = candidate_definitions
-        .into_iter()
-        .filter(|((variable, _), _)| fully_defined.contains(variable))
-        .collect();
-    let consumed = candidates
-        .iter()
-        .filter(|(_, variable, _, _, _)| fully_defined.contains(&variable.index()))
-        .map(|(equation, _, _, _, _)| equation.index())
-        .collect::<HashSet<_>>();
-    let event_held = fully_defined
-        .iter()
-        .copied()
-        .filter(|variable| {
-            let declaration = view
-                .variable_id(
-                    usize::try_from(*variable)
-                        .expect("checked variable ordinal is representable as usize"),
-                )
-                .and_then(|id| view.variable(id))
-                .expect("complete scalar definition target resolves in its branded DAE");
-            u32::try_from(declaration.scalar_count()).is_ok_and(|scalar_count| {
-                (0..scalar_count).all(|scalar| {
-                    candidate_event_held
-                        .get(&(*variable, scalar))
-                        .copied()
-                        .unwrap_or(false)
-                })
-            })
-        })
-        .collect();
-    (definitions, fully_defined, consumed, event_held)
-}
-
-fn scalar_direct_definition<'dae>(
-    view: dae::DaeView<'dae>,
-    residual: dae::ExprId<'dae>,
-) -> Option<(dae::AlgebraicId<'dae>, u32, dae::ExprId<'dae>)> {
-    let (lhs, rhs) = equation_sides(view, residual)?;
-    match (scalar_algebraic(view, lhs), scalar_algebraic(view, rhs)) {
-        (Some((target, scalar)), None) => scalar_compatible_definition(view, target, scalar, rhs),
-        (None, Some((target, scalar))) => scalar_compatible_definition(view, target, scalar, lhs),
-        _ => None,
-    }
-}
-
-fn scalar_compatible_definition<'dae>(
-    view: dae::DaeView<'dae>,
-    target: dae::AlgebraicId<'dae>,
-    scalar: u32,
-    value: dae::ExprId<'dae>,
-) -> Option<(dae::AlgebraicId<'dae>, u32, dae::ExprId<'dae>)> {
-    let variable = view.variable(dae::VariableId::from(target))?;
-    let value_type = view.expression(value)?.value_type();
-    (value_type.is_scalar() && variable.value_type().scalar_type() == value_type.scalar_type())
-        .then_some((target, scalar, value))
-}
-
-fn scalar_algebraic<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-) -> Option<(dae::AlgebraicId<'dae>, u32)> {
-    let node = view.expression(expression)?;
-    let dae::ExpressionOperation::Index { base, subscripts } = node.operation() else {
-        return None;
-    };
-    let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(variable)) =
-        view.expression(base)?.operation()
-    else {
-        return None;
-    };
-    let dimensions = view
-        .variable(dae::VariableId::from(variable))?
-        .value_type()
-        .dimensions();
-    if dimensions.len() != subscripts.len() {
-        return None;
-    }
-    let mut scalar = 0_u32;
-    for (subscript, extent) in subscripts.iter().zip(dimensions) {
-        let dae::SubscriptView::Index { expression, .. } = subscript else {
-            return None;
-        };
-        let dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(index)) =
-            view.expression(expression)?.operation()
-        else {
-            return None;
-        };
-        let coordinate = u32::try_from(*index).ok()?.checked_sub(1)?;
-        if coordinate >= *extent {
-            return None;
-        }
-        scalar = scalar.checked_mul(*extent)?.checked_add(coordinate)?;
-    }
-    Some((variable, scalar))
 }
 
 /// Recover the causal direction of one exact connection between a discrete
