@@ -6,6 +6,36 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-deferred-observation-full` passes at commit
+`9639fad96b733e94fb4aadc454cdb04e0eedcf55`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The full 566-model gate takes 152.48 seconds with eleven Rumoca workers.
+All **154 compared models remain strict-high (27.21%)**, with eighteen existing
+reviewed exclusions skipped, zero missing/nonidentifiable traces, and zero
+deviating channels. All 18,693 initial channels remain high. **MultiBody stays
+20/42 high**; every preceding high model is retained.
+
+RollingWheel takes 1.657 seconds in concurrent Sim and RollingWheelSetDriving
+takes 2.060 seconds. The isolated RollingWheel profile below establishes the
+performance improvement separately. ThyristorBridge2Pulse_RLV_Characteristic
+now completes in 11.181 seconds under the unchanged budget; its pre-existing
+exclusion concerns insufficiently converged OMC period-aggregate reference
+values, so it earns no high-parity credit. This accounts for the eighteenth
+skipped completion. Inverse_sh_TX returns its previous Flatten refusal; no model
+changes agreement band. Exact deltas are in
+`rolling-wheel/deferred-event-left-full-delta.json`.
+
+All seventeen repository inspection gates also pass, including spec budgets,
+source citations, and production file-size checks
+(`deferred-event-left-repo-gates-1.log`).
+
+The critical RollingWheel runtime gap remains open. Combined `verify quick`
+and `verify full` remain pending; no PR, release, or baseline promotion is
+claimed. The next measured target is proactive completed-step derivative
+evaluation, followed by repeated algebraic linearization work.
+
+## Previous complete measurement: grouped Jacobian outputs
+
 `target/msl/multibody-grouped-jvp-full` passes at commit
 `2c637488b3c88703d4f729eb30f7d6453b58543e` (compiler change `b51acb48`),
 working-tree digest
@@ -246,7 +276,8 @@ and canonical Solve JSON is unchanged. The native worker SHA-256 is
 309 CPU samples have zero lost samples. This single isolated pair supports an
 approximately 23% improvement, not parity with OMC. Temporary probes are removed;
 `kernel-census-probes` preserves their patch, original files, and manifest.
-Full-cohort validation is next. The critical performance gap remains open.
+The subsequent full cohort passes at `9639fad9`, as recorded above. The critical
+performance gap remains open.
 
 ## Reuse all tensor JVP outputs within a prepared color
 
