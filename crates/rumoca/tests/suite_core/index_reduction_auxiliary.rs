@@ -87,8 +87,7 @@ fn a_singular_auxiliary_matrix_fails_at_the_checked_execution_boundary() {
                 ..Default::default()
             },
         )
-        .err()
-        .expect("a singular auxiliary matrix must refuse simulation");
+        .expect_err("a singular auxiliary matrix must refuse simulation");
         assert!(
             error
                 .to_string()

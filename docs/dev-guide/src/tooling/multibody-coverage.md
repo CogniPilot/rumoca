@@ -6,6 +6,137 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/electrical-fixed-pre-full` completes the full 566-model MSL/OMC
+comparison in 149.53 seconds at HEAD
+`49477020cc7706352fa314fe8384c08d9695b1d8`, working-tree digest
+`ee6f7e2ea0ff9fd0f00ee2d581f7340c07b021e55635f049c1dcd961a9130d46`.
+Of 168 simulation completions, **150 compare and all 150 are strict-high**
+(26.50% of 566). There are zero near models and zero deviating or severe
+channels among 17,115 compared trajectory channels; all 17,115 initial
+channels are high. Eighteen skipped traces have existing reviewed policy
+exclusions; missing and nonidentifiable traces are both zero. The exclusion
+policy is unchanged: `RectifierBridge2mPulse.ThyristorBridge2mPulse_RL` now
+completes and enters its already tracked exclusion, increasing the observed
+excluded count from 17 to 18.
+
+Eight of the preceding nine electrical counterexamples now compare high.
+The remaining `RectifierCenterTapmPulse.ThyristorCenterTapmPulse_R` fails
+with `EX002: event condition equations did not converge with fixed pre at
+t=0.00333333333333337`. This is an execution regression, not counterexample
+closure. It also loses baseline-certified high status, so the quality gate
+fails. Investigation remains focused on this switching event.
+
+MultiBody measures **18/42 strict-high**, with 18 compared and zero skipped,
+missing, or nonidentifiable MultiBody traces. The previously high elementary
+`RollingWheel` now exceeds the unchanged 12-second solver budget. Its
+simulation timing is 12.598 seconds including initialization; the remaining
+24 examples have no comparable successful trace. DAE completion stays
+35/42. The scheduler requested 16 workers and memory-capped execution at 11
+pinned workers, which the user accepted. The cause of the RollingWheel
+timeout has not yet been profiled; the preceding 19/42 result is historical.
+Budgets, thresholds, references, and the baseline were not relaxed.
+
+### Fixed-pre event equation investigation
+
+The originating `Rectifier1Pulse.Thyristor1Pulse_R_Characteristic` has the
+source equation `off = s < 0 or pre(off) and not fire`. Its source, DAE, and
+Solve program retain that equation and the separate `pre(off)` slot. The
+old runtime turned the thyristor on at time 0.020000000000019592, before its
+correct firing edge at 0.02002002002004838. OMC changes both `off` and `fire`
+at 0.02002002002102569. At time 5.005, Rumoca previously conducted while
+`fire` was false and OMC held the device off. The final firing pulses agree;
+the defect is not a shifted controller waveform or lost source operator.
+
+A periodic timer/reset/latch reduction reproduces the defect with both BDF
+and RK: at time 1.01 the latch wrongly holds true, before the required 1.1
+firing edge. A one-shot control already passes. OMC agrees with the periodic
+fixture's analytical latch, timer, and integral, with maximum integral error
+2.494e-13. Both solver regressions now pass. The governing contracts are
+MLS Appendix B, SPEC_0022 SIM-001/SIM-008/SIM-009, and SPEC_0040 SOLVE-C22:
+solve current discrete and condition equations with fixed `pre` before
+advancing ordinary event history atomically.
+
+The runtime had refreshed condition memory only after settling discrete
+equations, then advanced `pre` before the changed conditions could correct
+a transient latch value. The new inner iteration settles current equations
+and condition memory together under the same history snapshot. It retains
+the clocked first-pass restriction and fails explicitly on nonconvergence.
+The original focused MSL comparison passes on all 95 trajectory and initial
+channels, with zero skipped, missing, excluded, or nonidentifiable traces.
+Its regenerated OMC trace is byte-identical to the preceding reference.
+
+The fixed 20-model canary retains every preceding phase, simulation,
+initialization, and band outcome: nine compared, nine high, all 175 initial
+channels high, and zero skipped, missing, excluded, or nonidentifiable
+traces. Solver tests pass 434/434. Core tests pass 552 with the one known
+implicit-contact-circle structural failure; focused all-feature Clippy
+passes. Combined `verify quick` and `verify full` are not green. Evidence,
+artifact hashes, and the full delta are under
+`buffered-relation-counterexamples/thyristor-1pulse` in the campaign directory.
+
+### Remaining rectifier: stale affine coordinates
+
+The next investigation maps the center-tap failure to thyristor 3: its `off`
+value is Solve P230, its switching variable `s` is Y108, and root 5 writes
+relation-memory P383. Its 39-variable algebraic block tears on Y113, the
+common output voltage. OMC preserves the same `off` equation as regular
+equation 329 inside coupled block 354. Rumoca's 32 fixed-pre iterations
+alternate `off` between true and false: the projected `s` alternates between
+3.7526e-15 and -9.0816e-14. No root overrides remain during the oscillation.
+
+At the failing time, a 70-digit solution of the original resistor network
+using its binary64 source voltages gives `s = -1.81523e-12` on the off
+branch and `s = -9.08160e-14` on the conducting branch. Both are negative,
+so the all-off branch is consistent. The runtime instead retains the
+preceding conducting output voltage after changing branch: its residual
+and correction are both below tolerance, but the resulting switching
+variable has the wrong sign. The first divergence is the algebraic
+projection, not the source equation, event history, or a physically
+unsolvable switching state.
+
+A two-variable affine regression reproduces the admission error without
+MSL: a certified solve returns the incoming positive 1e-20 instead of the
+unique negative -5e-21 solution. A source reduction using three instances
+of a scalar switch also exposes BDF's delayed turn-off at time
+0.10001431503167271. Both BDF and RK now match the analytical switching
+state, current, and current integral. OMC matches the same fixture on 204
+rows, with maximum current error 1.089e-13 and integral error 1.302e-14.
+Two initial reduction variants encountered separate DAE array `pre` shape
+and projected Boolean-assignment refusals; those are preserved as distinct
+failures, not evidence of this runtime defect.
+
+Construction-certified affine blocks now compute `A*x = -F(0)` and validate
+the resulting residual using the existing tolerance. Exact singleton
+assignments retain their direct path; nonlinear blocks retain their
+existing branch-preserving iteration. This uses the existing block-affinity
+proof, Jacobian, and factorization cache, without changing canonical IR,
+relation thresholds, event budgets, or comparator policy.
+
+The original center-tap model passes the focused run
+`target/msl/electrical-affine-origin` at HEAD `49477020`, working-tree digest
+`913bd843d9ec054f9f969571429aca3317a58a221bf2a7a56608cd8ecec6ad4a`:
+one compared model, all 307 trajectory and initial channels high, zero
+skipped, missing, excluded, or nonidentifiable traces. Worst channel
+bounded normalized L1 is 9.174e-6. This is focused evidence; the latest
+complete cohort above still records its failure. Projection tests pass
+60/60, event integration tests 54/54, and core tests 554 with only the known
+implicit-contact-circle failure. The existing affine refresh test is
+strengthened from accepting a small-residual iterate to requiring its
+unique exact zero solution. Evidence is under
+`buffered-relation-counterexamples/center-tap-mpulse`.
+
+The fixed 20-model canary `target/msl/electrical-affine-canary` retains every
+preceding phase, simulation, initialization, and band outcome: nine compared,
+nine high, all 175 initial channels high, and zero skipped, missing, excluded,
+nonidentifiable, or deviating traces. Its working-tree digest is
+`ec3bde07fcd915bdebb58cff20412e7250d4ac6ba2d04cb389cbf6ee809f8240` at the same
+HEAD. Solver tests pass 435/435; focused all-feature solver and core Clippy
+pass. The full 566-model sweep is next, with 11 simulation workers explicitly
+accepted by the user. No full-cohort closure or release readiness is claimed
+from these focused results.
+
+## Previous complete measurement: RollingWheel completion
+
 `target/msl/multibody-rolling-wheel-full` completes the full 566-model
 MSL/OMC comparison in 298.66 seconds at HEAD
 `bc71577f85df24957e5c9ab30fdaf4ed48da4311`, working-tree digest

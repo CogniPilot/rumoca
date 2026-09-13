@@ -50,6 +50,8 @@ mod component_redeclare_dimensions;
 mod connection_normalization_golden;
 mod coupled_refresh_schedule;
 mod enumeration_compact_range_test;
+mod event_commutation;
+mod event_latch_cascade;
 mod event_relation_cascade;
 mod fmi_me_host_divergence;
 mod for_eq_array_test;

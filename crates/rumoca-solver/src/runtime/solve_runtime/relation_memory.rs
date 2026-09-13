@@ -257,46 +257,74 @@ impl SolveRuntime {
             if relation_changed_before_discrete {
                 changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
             }
-            let snapshot = DiscretePreSnapshot {
-                row_filter,
-                root_relation_overrides,
-                event_iteration,
-            };
-            {
-                let mut settle_input = DiscreteRowsSettleInput {
+            changed |= self.settle_event_equations_with_fixed_pre(
+                &mut DiscreteRowsSettleInput {
                     y,
                     p,
                     t,
                     tol,
                     max_iters,
-                };
-                let discrete_changed = self.settle_discrete_rows_for_pre_snapshot(
-                    &snapshot,
-                    &mut settle_input,
-                    &mut project_algebraics,
-                )?;
-                changed |= discrete_changed;
-            }
-            let relation_changed =
-                self.refresh_event_relation_memory(t, y, p, tol, root_relation_overrides)?;
-            changed |= relation_changed;
-            let overrides_changed =
-                self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
-            changed |= overrides_changed;
-            // The discrete settle returns from a projected coordinate with
-            // runtime assignments stable. Reproject only if relation-memory
-            // writes changed an input after that certificate; an unconditional
-            // second full projection doubled unchanged clock ticks.
-            if relation_changed || overrides_changed {
-                changed |= project_algebraics(y, p)?;
-                changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
-            }
+                },
+                row_filter,
+                event_iteration,
+                root_relation_overrides,
+                &mut project_algebraics,
+            )?;
             if !changed && event_iteration_plan_settled(&self.model, y, p)? {
                 return self.eval_event_actions(y, p, event_pre_p, t, row_filter);
             }
         }
         Err(RuntimeSolveError::solve_ir(format!(
             "event update iteration did not converge at t={t}"
+        )))
+    }
+
+    fn settle_event_equations_with_fixed_pre<P>(
+        &self,
+        input: &mut DiscreteRowsSettleInput<'_>,
+        row_filter: EventUpdateRowFilter,
+        event_iteration: usize,
+        root_relation_overrides: &mut Vec<(usize, f64)>,
+        project_algebraics: &mut P,
+    ) -> Result<bool, RuntimeSolveError>
+    where
+        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
+    {
+        let mut changed_any = false;
+        for relation_iteration in 0..input.max_iters {
+            let snapshot = DiscretePreSnapshot {
+                row_filter,
+                root_relation_overrides,
+                event_iteration: event_iteration.max(relation_iteration),
+            };
+            changed_any |=
+                self.settle_discrete_rows_for_pre_snapshot(&snapshot, input, project_algebraics)?;
+            // MLS Appendix B: condition equations belong to the same solve as
+            // current discrete values. Advancing pre before these relations
+            // settle would preserve a transient latch value in event history.
+            let relation_changed = self.refresh_event_relation_memory(
+                input.t,
+                input.y,
+                input.p,
+                input.tol,
+                root_relation_overrides,
+            )?;
+            if !relation_changed {
+                return Ok(changed_any);
+            }
+            changed_any = true;
+            project_algebraics(input.y, input.p)?;
+            self.apply_runtime_assignments_until_stable(
+                input.y,
+                input.p,
+                input.t,
+                input.tol,
+                input.max_iters,
+            )?;
+        }
+        Err(RuntimeSolveError::solve_ir(format!(
+            "event condition equations did not converge with fixed pre at t={}",
+            input.t
         )))
     }
 

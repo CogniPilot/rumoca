@@ -44,7 +44,8 @@ pub(super) const ALGEBRAIC_PROJECTION_ITER_FACTOR: usize = 4;
 /// Per-iteration bound on a block's Newton step.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum StepLimit {
-    /// Complete Newton step for a construction-certified affine block.
+    /// Unbounded control for nonlinear projection regression tests.
+    #[cfg(test)]
     None,
     /// No unknown may move more than this fraction of its own magnitude (or of
     /// its declared scale, whichever is larger) in one accepted step.
@@ -62,6 +63,7 @@ impl StepLimit {
     ) -> f64 {
         let fraction = match self {
             Self::Fraction(fraction) => fraction,
+            #[cfg(test)]
             Self::None => return 1.0,
         };
         let mut alpha = 1.0_f64;

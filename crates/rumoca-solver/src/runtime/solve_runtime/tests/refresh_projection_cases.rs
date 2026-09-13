@@ -1,4 +1,4 @@
-//! Refresh-projection regression cases: assignment-seed tolerance, Newton
+//! Refresh-projection regression cases: affine coordinates, Newton
 //! backtracking across expression-domain boundaries, rank-deficient and
 //! singular starts, staged-seed coverage, and missing-producer rejection.
 //!
@@ -89,7 +89,7 @@ fn projection_affinity_treats_earlier_block_values_as_coefficients() {
 }
 
 #[test]
-fn refresh_accepts_assignment_seed_only_when_residual_is_within_tolerance() {
+fn refresh_solves_affine_coordinates_even_when_the_seed_residual_is_small() {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
             solve_layout: solve::SolveLayout {
@@ -128,8 +128,8 @@ fn refresh_accepts_assignment_seed_only_when_residual_is_within_tolerance() {
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-6, 4)
         .expect("the preserved residual system should be projected");
 
-    assert!((solver_y[0] - 2.0e-7).abs() <= f64::EPSILON);
-    assert!((solver_y[1] - 1.5e-7).abs() <= f64::EPSILON);
+    // x = 2*y and y = 0.75*x have the unique solution x = y = 0.
+    assert_eq!(solver_y, vec![0.0, 0.0]);
 }
 
 #[test]

@@ -1,3 +1,4 @@
+mod affine_coordinates;
 mod certification;
 mod colored_rows;
 mod manifold;

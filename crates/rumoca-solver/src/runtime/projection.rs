@@ -1,3 +1,4 @@
+mod affine;
 mod branch_continuity;
 mod homotopy;
 mod initial;
@@ -158,8 +159,8 @@ pub(crate) trait ImplicitProjectionModel {
     }
 
     /// Whether construction proved that every residual in this block is affine
-    /// in solver-Y. Affine blocks have no nonlinear branch to preserve and may
-    /// take the complete Newton correction.
+    /// in solver-Y. Affine blocks have no nonlinear branch to preserve and can
+    /// compute their coordinates directly from A*x = -F(0).
     fn algebraic_projection_block_is_affine(&self, _block_index: usize) -> bool {
         false
     }
@@ -628,12 +629,9 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     let AlgebraicBlockProjectionPolicy {
         tolerance: tol,
-        mut step_limit,
+        step_limit,
         certify_coordinates,
     } = policy;
-    if model.algebraic_projection_block_is_affine(block_index) {
-        step_limit = StepLimit::None;
-    }
     require_square_projection_block(block.rows.len(), block.y_indices.len(), "algebraic")?;
     let mut changed = false;
     if block.rows.is_empty() || block.y_indices.is_empty() {
@@ -641,6 +639,12 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
             changed,
             settled: !changed,
         });
+    }
+    if model.algebraic_projection_block_is_affine(block_index) {
+        if let Some(update) = project_algebraic_singleton_assignment(model, y, p, t, block, tol)? {
+            return Ok(update);
+        }
+        return affine::project_affine_block(model, y, p, t, block, block_index, tol);
     }
     // A block with a constructor-provided tearing takes the torn solve ahead of,
     // and instead of, the dense block Newton below: it iterates Newton over the
