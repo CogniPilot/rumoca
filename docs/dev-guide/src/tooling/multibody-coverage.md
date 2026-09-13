@@ -144,6 +144,70 @@ before this implementation, and its focused tests and gates pass as recorded
 below. `verify full` has not run. Twenty-two MultiBody examples still lack
 high parity; Fourbar_analytic's structural refusal is the next investigation.
 
+### Fourbar_analytic: supplied derivative chains
+
+MLS §12.7.1 permits a higher-order annotation only in the differentiation
+chain that issued its arguments. The candidate follows checked predecessor
+links in source priority order and records each original argument together
+with its derivative order. Each link appends only derivatives of the previous
+link's last tangent group. Reconstruction consumes this same compact plan;
+whole tensor arguments remain whole. Governing contracts are SPEC_0007's
+structural stage, SPEC_0032, and SPEC_0036/SPEC_0043 §10.
+
+The reduced oscillator has `der(q)=v`, `der(v)=-q`, a position function with
+the same max-like branch as the MSL joint, and both kinematic derivatives.
+Its first-order control passes, while requesting acceleration fails at 4/5
+structural matches (`fourbar-analytic/derivative-chain-red-1.log`). OMC accepts
+both branches and the first-order control. Additional quadratic-function and
+direct-call controls verify the full argument history; all seven OMC cases
+match their analytic trajectories within `4.40e-8` absolute error. The two
+`analytic-comparison.json` receipts are under `derivative-chain-omc` and
+`derivative-chain-quadratic-omc`.
+
+Extending selection alone is insufficient: holonomic value materialization
+and its first-derivative proof also looked through the primal function body.
+Value reconstruction now retains the checked pure call after proving every
+argument reconstructible from state/invariant values. Its supplied first
+derivative is checked through the same selected argument plan. This preserves
+the original assertion behavior and avoids requiring a parameter-only guard
+proof inside the supplied function. The reduced second-order system retains
+two dependent states with two manifold constraints, leaving two independent
+states; both BDF and RK traces agree with the analytic oscillator.
+
+Six focused tests cover both branches, a nonlinear second derivative, whole
+tensor argument/result shapes, a direct call lacking the higher-order context,
+and both valid and invalid assertion domains. The quadratic direct-call
+control supplies `q_d=2*v`; incorrectly assuming this is `der(q)` would change
+its derivative by `4*v*v`. It retains the structural refusal. All 154
+structural tests and the then-571 compiler-core tests pass, followed by the
+expanded six-case suite and thirty derivative regressions. Structural and
+compiler-core Clippy, 243 architecture tests, seventeen size/spec gates,
+formatting, and whitespace checks pass. Logs include
+`derivative-chain-gates-build-{1,2}.log`, `derivative-chain-green-6.log`, and
+`derivative-chain-final-checks-2.log` under `fourbar-analytic`.
+
+The fixed twenty-model `target/msl/multibody-derivative-chain-canary` has no
+phase or band changes from `multibody-shared-call-canary`. Its nine compared
+models and all 175 initial channels remain high, with zero skipped, missing,
+excluded, or nonidentifiable traces. This Tier 1 capture uses parent
+`5d0f62d147caa94e04befb9532f437b0b16cb9de` and candidate worktree digest
+`7a0bca0656d146c6225b43f0262d9039b35092b9b6966bda0ed399af6cd1b641`;
+`fourbar-analytic/derivative-chain-canary-delta.json` retains the exact delta.
+
+The originating `target/msl/multibody-derivative-chain-fourbar` attempt still
+reports 1622/1659 structural matches, with 7.872 seconds of build time and no
+simulation. Its gate correctly fails as parity unmeasured. The current
+inspector again emits the same 829 reduction records
+(`reduction-after-derivative-chain-1.log`). A bounded generic rejection probe,
+removed after capture, identifies an earlier obstruction: the joint's
+`prismatic.position_b` input is driven by three Constant-block outputs.
+Flatten emits three indexed connection equations (`source-stages/ir-flat.mo`
+lines 991–993), but variable 476 has no whole-vector causal definition.
+The differentiation proof stops on this vector before reaching the supplied
+derivative chain. `rejection-probe-2.log` retains that evidence. The next
+investigation is preservation of the source aggregate connection through
+Flatten and ToDAE; no coverage gain is attributed to this reduced fix yet.
+
 ### Fourbar_analytic: differentiating a parameter-selected position
 
 The existing `omc-structure` inspector reproduces the original 1622/1659

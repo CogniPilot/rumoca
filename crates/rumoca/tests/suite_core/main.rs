@@ -85,6 +85,7 @@ mod homotopy_branch_selection;
 mod index_reduction_auxiliary;
 mod index_reduction_components;
 mod index_reduction_contact;
+mod index_reduction_derivative_chain;
 mod index_reduction_manifold;
 mod index_reduction_parameter_branch;
 mod indexed_function_constraint;

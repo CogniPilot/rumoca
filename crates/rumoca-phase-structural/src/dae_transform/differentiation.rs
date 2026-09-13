@@ -20,7 +20,7 @@ use rumoca_ir_dae as dae;
 use super::HolonomicDifferentiationProof;
 use super::builtin_profiles::{is_linear_tensor_map, is_materializable_builtin};
 use super::component_projection::projected_element;
-use super::equalities::{EqualityAnchor, EqualitySign, forwarded_call_argument, is_time_invariant};
+use super::equalities::{EqualityAnchor, EqualitySign, is_time_invariant};
 use super::expressions::ExpressionRebuilder;
 use super::variables::TargetVariable;
 
@@ -290,21 +290,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         provenance: dae::DaeProvenance,
     ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
         let mut arguments = Vec::new();
-        for argument in selected.arguments.iter() {
-            let value = if self.state_only_derivative {
-                self.materialize_exact_value(argument, provenance)?
+        for argument in selected.arguments {
+            let value = if argument.order > 0 {
+                let tangent =
+                    self.differentiate_order(argument.source, argument.order, provenance)?;
+                self.materialize_derivative(tangent, argument.source, provenance)?
+            } else if self.state_only_derivative {
+                self.materialize_exact_value(argument.source, provenance)?
             } else {
-                self.rebuild_instantiated(argument)?
+                self.rebuild_instantiated(argument.source)?
             };
             arguments.push(value);
-        }
-        for ordinal in selected.link.tangent_inputs() {
-            let argument = selected
-                .arguments
-                .get(ordinal)
-                .expect("checked derivative input");
-            let tangent = self.differentiate_order(argument, 1, provenance)?;
-            arguments.push(self.materialize_derivative(tangent, argument, provenance)?);
         }
         let target = self.rebuilt_function(selected.link.target());
         self.target
@@ -469,15 +465,6 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         if let Some(element) = projected_element(self.source, self.facts, source_id) {
             return self.materialize_exact_value(element, provenance);
         }
-        if let Some((result, nested)) = self.function_context.call_result(self.source, source_id) {
-            let previous = std::mem::replace(&mut self.function_context, nested);
-            let materialized = self.materialize_exact_value(result, provenance);
-            self.function_context = previous;
-            return materialized;
-        }
-        if let Some(argument) = forwarded_call_argument(self.source, source_id) {
-            return self.materialize_exact_value(argument, provenance);
-        }
         let source = self
             .source
             .expression(source_id)
@@ -521,6 +508,21 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .map(|element| self.materialize_exact_value(element, provenance))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.target.at(provenance).array(elements)
+            }
+            dae::ExpressionOperation::Call {
+                function,
+                output,
+                arguments,
+                ..
+            } => {
+                let arguments = arguments
+                    .iter()
+                    .map(|argument| self.materialize_exact_value(argument, provenance))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let function = self.rebuilt_function(function);
+                self.target
+                    .at(provenance)
+                    .call(function, output as usize, arguments)
             }
             dae::ExpressionOperation::Conditional(operands) => {
                 self.materialize_parameter_conditional(operands, None, provenance)

@@ -2,8 +2,8 @@
 
 use super::super::builtin_profiles::is_materializable_builtin;
 use super::{
-    DifferentiationFacts, FunctionCallContext, Visit, forwarded_call_argument,
-    has_invariant_subscripts, is_differentiable_binary, projected_element,
+    DifferentiationFacts, FunctionCallContext, Visit, has_invariant_subscripts,
+    is_differentiable_binary, projected_element,
 };
 use rumoca_ir_dae as dae;
 
@@ -52,24 +52,6 @@ pub(super) fn can_materialize_holonomic_value_in_context<'dae>(
             Visit::InProgress => return false,
             Visit::Pending => visited[index] = Visit::InProgress,
         }
-    }
-    if let Some((result, nested)) = context.call_result(view, expression) {
-        let materializable = can_materialize_holonomic_value_in_context(
-            view, facts, result, visited, &nested, states,
-        );
-        if context.is_empty() {
-            visited[index] = if materializable {
-                Visit::Differentiable
-            } else {
-                Visit::Pending
-            };
-        }
-        return materializable;
-    }
-    if let Some(argument) = forwarded_call_argument(view, expression) {
-        return can_materialize_holonomic_value_in_context(
-            view, facts, argument, visited, context, states,
-        );
     }
     let Some(expression) = view.expression(expression) else {
         return false;
@@ -147,7 +129,11 @@ fn materialize_operation<'dae>(
                     view, facts, rhs, visited, context, states,
                 )
         }
-        dae::ExpressionOperation::Array(elements) => elements.iter().all(|element| {
+        dae::ExpressionOperation::Array(elements)
+        | dae::ExpressionOperation::Call {
+            arguments: elements,
+            ..
+        } => elements.iter().all(|element| {
             can_materialize_holonomic_value_in_context(
                 view, facts, element, visited, context, states,
             )

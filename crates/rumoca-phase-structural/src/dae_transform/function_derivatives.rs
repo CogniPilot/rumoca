@@ -4,10 +4,27 @@ use rumoca_ir_dae as dae;
 use rumoca_eval_dae::FunctionCallContext;
 
 #[derive(Clone, Copy)]
+pub(super) struct DerivativeArgument<'dae> {
+    pub(super) source: dae::ExprId<'dae>,
+    pub(super) order: u8,
+}
+
 pub(super) struct SelectedFunctionDerivative<'dae> {
     pub(super) link: dae::FunctionDerivativeView<'dae>,
     pub(super) output: usize,
-    pub(super) arguments: dae::ExpressionOperands<'dae>,
+    pub(super) arguments: Vec<DerivativeArgument<'dae>>,
+}
+
+impl SelectedFunctionDerivative<'_> {
+    fn append_tangents(&mut self) {
+        for ordinal in self.link.tangent_inputs() {
+            let previous = self.arguments[ordinal];
+            self.arguments.push(DerivativeArgument {
+                source: previous.source,
+                order: previous.order + 1,
+            });
+        }
+    }
 }
 
 /// Select an annotation only for the derivative order its call protocol covers.
@@ -18,7 +35,7 @@ pub(super) fn select_derivative<'dae>(
     expression: dae::ExprId<'dae>,
     order: u8,
 ) -> Option<SelectedFunctionDerivative<'dae>> {
-    if order != 1 {
+    if order == 0 {
         return None;
     }
     let dae::ExpressionOperation::Call {
@@ -44,11 +61,35 @@ pub(super) fn select_derivative<'dae>(
                 })
         })
         .min_by_key(|link| link.priority())?;
-    Some(SelectedFunctionDerivative {
+    let mut selected = SelectedFunctionDerivative {
         link,
         output: link.result(output as usize)?,
-        arguments,
-    })
+        arguments: arguments
+            .iter()
+            .map(|source| DerivativeArgument { source, order: 0 })
+            .collect(),
+    };
+    selected.append_tangents();
+    for _ in 1..order {
+        let next = view
+            .function(selected.link.target())?
+            .derivatives()
+            .filter(|link| link.previous() == Some(selected.link.id()))
+            .filter(|link| {
+                link.inputs()
+                    .iter()
+                    .zip(&selected.arguments)
+                    .all(|(role, argument)| {
+                        *role != FunctionDerivativeInput::ZeroDerivative
+                            || argument_is_invariant(view, context, argument.source)
+                    })
+            })
+            .min_by_key(|link| link.priority())?;
+        selected.output = next.result(selected.output)?;
+        selected.link = next;
+        selected.append_tangents();
+    }
+    Some(selected)
 }
 
 fn argument_is_invariant<'dae>(

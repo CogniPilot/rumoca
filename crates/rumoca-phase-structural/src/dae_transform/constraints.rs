@@ -1051,6 +1051,28 @@ struct HolonomicProofWalk<'facts, 'dae> {
 }
 
 impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
+    fn can_apply_derivative(
+        &mut self,
+        selected: super::function_derivatives::SelectedFunctionDerivative<'dae>,
+        on_residual: bool,
+    ) -> bool {
+        let mut value_visited = vec![Visit::Pending; self.view.expression_count()];
+        selected.arguments.iter().all(|argument| {
+            if argument.order == 0 {
+                can_materialize_holonomic_value_in_context(
+                    self.view,
+                    self.facts,
+                    argument.source,
+                    &mut value_visited,
+                    &self.function_context,
+                    &mut Vec::new(),
+                )
+            } else {
+                self.can_differentiate_order(argument.source, argument.order, on_residual)
+            }
+        })
+    }
+
     fn can_differentiate_order(
         &mut self,
         expression: dae::ExprId<'dae>,
@@ -1086,29 +1108,7 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
             expression,
             order,
         ) {
-            let mut value_visited = vec![Visit::Pending; self.view.expression_count()];
-            if !selected.arguments.iter().all(|argument| {
-                can_materialize_holonomic_value_in_context(
-                    self.view,
-                    self.facts,
-                    argument,
-                    &mut value_visited,
-                    &self.function_context,
-                    &mut Vec::new(),
-                )
-            }) {
-                return false;
-            }
-            return selected.link.tangent_inputs().all(|ordinal| {
-                self.can_differentiate_order(
-                    selected
-                        .arguments
-                        .get(ordinal)
-                        .expect("checked derivative argument"),
-                    1,
-                    on_residual,
-                )
-            });
+            return self.can_apply_derivative(selected, on_residual);
         }
         if self.function_context.is_empty() {
             match self.scratch.state(index, order as usize, context) {
@@ -1498,28 +1498,28 @@ fn selected_derivative_is_differentiable<'dae>(
     context: &FunctionCallContext<'dae>,
 ) -> bool {
     let mut value_visited = vec![Visit::Pending; view.expression_count()];
-    selected.arguments.iter().all(|argument| {
-        can_materialize_holonomic_value_in_context(
-            view,
-            facts,
-            argument,
-            &mut value_visited,
-            context,
-            &mut Vec::new(),
-        )
-    }) && selected.link.tangent_inputs().all(|ordinal| {
-        is_differentiable_in_context(
-            view,
-            facts,
-            selected
-                .arguments
-                .get(ordinal)
-                .expect("checked derivative argument"),
-            demoted,
-            visited,
-            context,
-        )
-    })
+    selected
+        .arguments
+        .iter()
+        .all(|argument| match argument.order {
+            0 => can_materialize_holonomic_value_in_context(
+                view,
+                facts,
+                argument.source,
+                &mut value_visited,
+                context,
+                &mut Vec::new(),
+            ),
+            1 => is_differentiable_in_context(
+                view,
+                facts,
+                argument.source,
+                demoted,
+                visited,
+                context,
+            ),
+            _ => false,
+        })
 }
 
 /// Admit exactly the pure builtins whose first derivative has a closed DAE
