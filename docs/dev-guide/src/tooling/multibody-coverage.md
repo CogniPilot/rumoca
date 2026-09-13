@@ -6,6 +6,44 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-scalar-contact-full` passes the local fallback-baseline
+MSL gate at commit `adc5d4b2ac965d1b1778647ad78bc26dc16f5a6a`, digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The full 566-model comparison finishes in 125.72 seconds with eleven model
+workers. **All 152 compared models remain strict-high (26.86% of 566)**,
+including all nine original electrical counterexamples. There are 16 existing
+reviewed exclusions and zero missing or nonidentifiable traces. All 17,606
+initial channels are high; trajectory channels comprise 17,589 high and
+seventeen minor, with none deviating or severe.
+
+MultiBody remains **19/42 high**, with nineteen compared and all 8,477
+trajectory and initial channels high. There are no MultiBody trace boundaries;
+DAE completion remains 35/42. No additional example closes in this run.
+The repaired contact-coordinate core regression is independently green.
+
+Four models lose completion of the Solve phase: PrismaticConstraint,
+GearConstraint, GenerationOfFMUs, and DCPM_Drive. The first three previously
+reported structural refusals; DCPM_Drive previously completed simulation
+under an existing reviewed exclusion and now hits the ten-second Solve
+budget. This lowers raw simulation completions from 169 to 168, initial
+completions from 183 to 182, and Solve completion from 257 to 253. The
+exclusion policy and all model bands are unchanged. The passing baseline
+gate does not excuse these execution regressions; performance repair takes
+priority over further capability work. The full delta and hashes are in
+`rolling-wheel/scalar-contact-full-delta.json`.
+
+A bounded standalone DCPM_Drive perf diagnostic captures 5,489 samples with
+zero lost samples. It completes simulation, but Solve lowering takes 11.436
+seconds and total build takes 12.168 seconds, confirming work beyond the
+cohort's unchanged phase budget. Function reconstruction accounts for 16.25%
+of self samples, causal-definition derivation 7.58%, and scalar affine
+recognition 2.23%. Source inspection finds that orphaned-expression recovery
+scans the full expression arena once per function. Indexing those existing
+function scopes once is the next hypothesis; no repair is claimed yet.
+This diagnostic completion does not replace the full-run timeout.
+
+## Previous complete measurement: selected native Jacobians
+
 `target/msl/multibody-selected-jvp-full` passes the local MSL quality gate
 at commit `45cd3b9054be6b57c80fcceba0feedb22818d315`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
@@ -31,7 +69,7 @@ The per-model delta and artifact hashes are recorded in
 contact-coordinate repair below; this MSL gate does not establish
 `verify quick` or `verify full` success or complete MultiBody coverage.
 
-### Coupled scalar contact coordinates
+## Coupled scalar contact coordinates
 
 The outstanding core fixture replaces the direct circular constraint with
 `s+w=x`, `s-w=y`, and `2*(s*s+w*w)=radius*radius`. Its source and DAE retain
@@ -108,7 +146,7 @@ working-tree digest is
 `b4737e571d9ded6073b571cc86dd997c1acea27a5d08f620cc0585d9589e69eb`.
 The delta is `rolling-wheel/scalar-contact-canary-delta.json`; fixture traces
 and equations are under `rolling-wheel/scalar-contact-*`. The subsequent
-complete comparison remains pending. The repeated
+complete comparison is recorded in the latest measurement. The repeated
 `target/msl/multibody-scalar-contact-shared-canary` retains all twenty outcomes
 and the same nine compared high models, 175 high initial channels, and zero
 boundary/deviating counts. Its digest at the same HEAD is
