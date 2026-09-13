@@ -6,6 +6,33 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-derivative-chain-full` passes the local fallback gate at
+commit `7fa18fa1c93b4b65c588e98da6509aaf794dc03d`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The complete 566-model sweep takes 124.74 seconds with eleven Rumoca workers.
+**All 152 compared models are strict-high (26.86% of 566)**, with seventeen
+reviewed exclusions, zero missing/nonidentifiable traces, and all 17,606 initial
+channels high. No compared trajectory channel deviates; all nine electrical
+counterexamples retain their high bands.
+
+MultiBody measures **19/42 high**. RollingWheelSetDriving initializes but again
+exhausts its twelve-second simulation budget (12.113 seconds including call
+overhead). It is the only band loss from `multibody-shared-call-full`.
+PrismaticConstraint and IMC_Transformer change from structural refusals to
+Solve timeouts. LineForceWithTwoMasses reaches a compiler panic instead of its
+previous Solve timeout: `holonomic preflight proves a causal algebraic definition`.
+The panic is the immediate triage priority; the wheel-set performance loss also
+remains open. A passing fallback gate does not discharge either defect.
+`fourbar-analytic/derivative-chain-full-delta.json` retains all four phase deltas,
+the band delta, electrical checks, and result/comparison/band artifact hashes.
+
+Fourbar_analytic still reports 1622/1659 structural matches. The combined
+`verify quick` passed before the last four implementation changes; focused
+checks and the fixed canary pass as recorded below. `verify full` has not run.
+No PR, release, or baseline promotion is claimed.
+
+## Previous complete measurement: restored wheel-set completion
+
 `target/msl/multibody-shared-call-full` passes the local fallback gate at
 commit `51459c19c3aa59db8925b3a0d8eb40846d666d67`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
@@ -31,7 +58,7 @@ one simulation), four structural refusals, and five earlier producer errors
 (three record derivative-specialization refusals, one function-shape refusal,
 one array-valued `fixed` attribute refusal). Fourbar_analytic still reports
 1622/1659 structural matches; its OMC derivative chain is the next focus.
-The combined `verify quick` passed before the last three implementation changes;
+At that checkpoint, the combined `verify quick` passed before the preceding three implementation changes;
 the focused suites, canary, and full MSL checks pass as recorded below.
 `verify full` has not run. No PR, release, or baseline promotion is claimed.
 
