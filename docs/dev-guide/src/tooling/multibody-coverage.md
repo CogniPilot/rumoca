@@ -6,6 +6,28 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-on-demand-derivatives-full` passes at commit
+`c1145fa9a50e0af44e4bc4ac02c74a5317bd14f9`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The full 566-model gate takes 137.07 seconds with eleven Rumoca workers.
+All **154 compared models remain strict-high (27.21%)**, with eighteen unchanged
+reviewed exclusions skipped, zero missing/nonidentifiable traces, and zero
+deviating channels. All 18,693 initial channels remain high. **MultiBody stays
+20/42 high**. Every model retains its previous phase outcome and agreement band;
+the exact delta is `rolling-wheel/on-demand-derivatives-full-delta.json`.
+
+The isolated profile below improves RollingWheel Sim from 1.640 to 1.309 seconds
+with a byte-identical trace. The critical OMC performance gap remains open.
+Combined `verify quick` and `verify full` remain pending; no PR, release, or
+baseline promotion is claimed. Next: repeated algebraic matrix work at fixed
+directional-derivative coordinates and source-backed elimination in the dynamics
+block. `rolling-wheel/algebraic-kernel-next-target.json` records the comparison
+with OMC's six-variable system: Rumoca retains 21 unknowns, and its existing
+tearing only reduces that to fourteen. That is a structural lead, not proof that
+changing the solve dispatch preserves the earlier electrical fixes.
+
+## Previous complete measurement: deferred observation evaluation
+
 `target/msl/multibody-deferred-observation-full` passes at commit
 `9639fad96b733e94fb4aadc454cdb04e0eedcf55`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
@@ -252,9 +274,9 @@ The first attempted RED exposed a fixture type error and is not behavioral
 evidence. All 607 solver, simulation, BDF, and RK45 tests pass, as does
 all-target/all-feature Clippy (`on-demand-derivatives-libraries-2.log`,
 `on-demand-derivatives-clippy-1.log`). All seventeen repository inspection
-gates pass (`on-demand-derivatives-repo-gates-1.log`). The first library build exposed the now
-test-only allocating derivative wrapper; production uses the existing borrowed
-slice operation.
+gates pass (`on-demand-derivatives-repo-gates-1.log`). The first library build
+exposed the now test-only allocating derivative wrapper; production uses the
+existing borrowed slice operation.
 
 The fixed `multibody-on-demand-derivatives-canary` preserves all twenty phase
 and agreement-band outcomes against `multibody-deferred-observation-canary`.
@@ -273,8 +295,9 @@ and canonical Solve JSON is unchanged. Worker SHA-256:
 `23b491debb8eb362a357762d42d5d3a46ac3f94acc1dae24f590caa8c070405a`.
 The profile retains 255 CPU samples with zero lost samples. Algebraic JVP and
 typed pure-call directional programs remain prominent; this is still much
-slower than the existing OMC reference. The complete cohort gate is pending
-for this change; no coverage increase or release readiness is claimed.
+slower than the existing OMC reference. The subsequent complete cohort passes
+at `c1145fa9`, as recorded above; no coverage increase or release readiness is
+claimed.
 
 ## Defer speculative event-left outputs
 
