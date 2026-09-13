@@ -863,12 +863,10 @@ impl MeSimulationSession<'_, '_> {
     ///
     /// `fmi3CompletedIntegratorStep` commits the component's history, relation
     /// memory, and delay state, so every observation that must describe the
-    /// *left* of an event at this endpoint is taken before the callback runs.
-    /// The candidate is observed unconditionally, because the host cannot know
-    /// before the callback whether a step event is coming; it is published
-    /// immediately when the endpoint reaches the cached `nextEventTime` (the
-    /// host already knows that is an event) and otherwise only if the callback
-    /// returns `enterEventMode`. No FMI getter runs retroactively
+    /// *left* of an event at this endpoint retains its sampled states and FMU
+    /// snapshot before the callback runs. Getters run only when an event needs
+    /// that candidate: at a known time event or after `enterEventMode`, using
+    /// the captured component state and restoring the completed state afterward.
     fn commit_accepted_endpoint(
         &mut self,
         step: &MeAcceptedStep,
@@ -908,8 +906,8 @@ impl MeSimulationSession<'_, '_> {
         }
         if completed.enter_event_mode {
             // The callback originated this event, so its pre-callback left
-            // candidate is retained now. Every preceding observation is already
-            // durable, so entering Event Mode here cannot strand evidence.
+            // candidate is evaluated now. Every preceding nominal observation
+            // is durable, so entering Event Mode here cannot strand evidence.
             self.publish_event_left(pending.take())?;
             let cause = if reaches_time_event {
                 MeEventCause::TimeEvent
@@ -927,8 +925,8 @@ impl MeSimulationSession<'_, '_> {
     ///
     /// This runs while the plugin's native interval still exists and before
     /// `fmi3CompletedIntegratorStep`, so the coordinate, the sampled states, and
-    /// the observed outputs are all the same continuous-left point. Whether the
-    /// row is admissible at all is decided here, before any FMI getter runs; the
+    /// retained component context describe the same continuous-left point. The
+    /// row's admissibility is decided here, before any FMI getter runs; the
     /// recorder makes its own atomic decision when the row is published.
     ///
     /// `None` means there is nothing to publish: the coordinate is inadmissible
@@ -953,8 +951,12 @@ impl MeSimulationSession<'_, '_> {
         }
         let mut states = try_filled(self.host.state_count, 0.0, "event-left sample")?;
         self.sample_states(coordinate, &mut states)?;
-        let values = self.host.observe_off_point(coordinate, &states)?;
-        Ok(Some(PendingEventLeft { coordinate, values }))
+        let component = self.host.kernel.borrow().fmu_state();
+        Ok(Some(PendingEventLeft {
+            coordinate,
+            states,
+            component,
+        }))
     }
 
     /// Retain a captured left candidate as published evidence.
@@ -965,11 +967,13 @@ impl MeSimulationSession<'_, '_> {
         let Some(pending) = pending else {
             return Ok(());
         };
-        self.host.record_observed(
-            TraceObservationRole::EventLeft,
+        let values = self.host.observe_saved_point(
+            &pending.component,
             pending.coordinate,
-            &pending.values,
-        )
+            &pending.states,
+        )?;
+        self.host
+            .record_observed(TraceObservationRole::EventLeft, pending.coordinate, &values)
     }
 
     fn apply_located_root(
@@ -1304,12 +1308,12 @@ fn continues_at(next_event_time: Option<f64>, event_time: f64) -> bool {
     next_event_time.is_some_and(|next| canonical_coordinate(next).to_bits() == coordinate.to_bits())
 }
 
-/// The left-limit evidence of an accepted endpoint, observed before
-/// `fmi3CompletedIntegratorStep` and retained only if that endpoint turns out to
-/// be an event.
+/// A left-limit coordinate sampled while the native interval exists, with its
+/// pre-callback FMU state. Algebraics are evaluated only if an event needs it.
 struct PendingEventLeft {
     coordinate: f64,
-    values: Vec<f64>,
+    states: Vec<f64>,
+    component: super::MeFmuState,
 }
 
 /// One turn of the master loop.

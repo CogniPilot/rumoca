@@ -203,6 +203,51 @@ The runtime repair and its focused/canary checks are complete. The remaining
 passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
 
+## Defer speculative event-left outputs
+
+An actual-worker census at `94d0d2ce` identifies a host-level source of
+unnecessary algebraic work. RollingWheel takes 1,432 accepted steps, 3,571
+derivative-kernel calls, and 444 directional calls. The full algebraic refresh
+runs 1,932 times: 500 requested positive-time samples plus an unconditional
+event-left output candidate for every accepted step. Uneventful endpoints
+discard those candidates. OMC's repeated reference runs take 1,028 steps and
+1,329 ODE calls; step count alone cannot explain the runtime gap.
+
+`commit_accepted_endpoint` now retains the admissible left coordinate, native
+sampled states, and opaque pre-callback FMU snapshot. It evaluates outputs only
+when a known time event or returned step event needs publication. Evaluation
+restores that snapshot, uses the ordinary output operation, and restores the
+current complete component state on success, failure, or unwind. No derivative,
+root, event, or required observation is omitted. SPEC_0038 and SPEC_0044 §6
+record this host rule; FMI 3.0.2's state restore and completed-step semantics
+remain the component boundary.
+
+The reduced RED has a valid endpoint and an unrequested interior observation
+whose algebraic branch is undefined. The old host fails solely on that discarded
+candidate (`deferred-event-left-red-1.log`); the repaired host advances. A known
+time event still propagates the same getter failure. Separate regressions prove
+saved-input evaluation, complete current-state restoration after errors and
+panic, original panic propagation, and foreign-snapshot rejection. All 606
+solver, BDF, RK45, and simulation tests pass, as does all-target/all-feature
+Clippy (`deferred-event-left-libraries-2.log`, `deferred-event-left-clippy-1.log`).
+
+The fixed `multibody-deferred-observation-canary` takes 47.10 seconds, preserving
+all twenty phase/band outcomes. All nine compared models and 175 initialization
+channels remain high; no trace is skipped, missing, nonidentifiable, or deviating.
+The measured source is `94d0d2ce` plus digest
+`b18a0e7f309402e31be3b624c5510115e4eefb7f8d261f8e9b63daaf774eff1e`.
+
+The clean `critical-deferred-observation-profile-1` run improves RollingWheel
+Sim from 2.138 to 1.640 seconds (user CPU 2.11 to 1.61 seconds). The complete
+trace remains byte-identical, SHA-256
+`61e23f642f39489afa0717c767501558972f2e29419b77b088befbe8b2aff3dd`,
+and canonical Solve JSON is unchanged. The native worker SHA-256 is
+`22a5ba80fa1bde722f5898d9f1b59d468592ba288721372345d1b2f228666d2a`;
+309 CPU samples have zero lost samples. This single isolated pair supports an
+approximately 23% improvement, not parity with OMC. Temporary probes are removed;
+`kernel-census-probes` preserves their patch, original files, and manifest.
+Full-cohort validation is next. The critical performance gap remains open.
+
 ## Reuse all tensor JVP outputs within a prepared color
 
 The selected-row interface recomputed an entire JVP program to return each

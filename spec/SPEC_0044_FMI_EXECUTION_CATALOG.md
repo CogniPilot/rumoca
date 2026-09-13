@@ -303,8 +303,13 @@ completes exactly one point for every accepted interval: the accepted endpoint
 when no earlier event exists, or the truncated application point when root
 search finds one. When `needsCompletedIntegratorStep` is true it calls
 `fmi3CompletedIntegratorStep` exactly once at that point; otherwise it performs
-no such call. If the callback requests Event Mode, all preceding observations
-are already durable.
+no such call. Required preceding nominal observations are already durable.
+An unknown step event retains its admissible left coordinate, sampled states,
+and pre-callback FMU snapshot before the callback or any history truncation.
+If the callback requests Event Mode, the host evaluates and publishes that left
+observation using the saved state before entering Event Mode. Every saved-state
+evaluation restores the current component state on success, failure, or unwind;
+an endpoint that produces no event discards its candidate without output getters.
 
 Backends do not receive event-indicator callbacks and do not contain crossing,
 root-finder, arming, application-side, or simultaneous-event policy. RK dense

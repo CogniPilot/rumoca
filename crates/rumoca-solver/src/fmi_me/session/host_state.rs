@@ -5,6 +5,8 @@
 //! It is not a second owner: `MeHostState` is private to the session module and
 //! every operation here is reached only from the one master algorithm.
 
+mod saved_observation;
+
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,

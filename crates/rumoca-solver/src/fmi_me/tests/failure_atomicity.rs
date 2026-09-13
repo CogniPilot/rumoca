@@ -415,6 +415,23 @@ fn retained_branch_component(model: &solve::SolveModel) -> me::session::MeRetain
     .expect("the algebraic-branch component instantiates")
 }
 
+#[test]
+fn an_uneventful_endpoint_does_not_evaluate_speculative_output_algebraics() {
+    let model = algebraic_branch_component(false);
+    let mut retained = retained_branch_component(&model);
+    let mut session = faulty_session(&mut retained, PluginFault::PoisonsTheInterior);
+    let mut cursor = me::session::MeOutputCursor::empty();
+    session
+        .advance_to(0.1, &mut cursor)
+        .expect("an unpublished event-left candidate needs no output evaluation");
+    assert_eq!(session.time().to_bits(), 0.1_f64.to_bits());
+    assert_eq!(
+        session.verification_component_point(),
+        session.verification_session_point(),
+        "discarding the candidate preserves the accepted component point"
+    );
+}
+
 /// Ablation: an **output-getter** failure during the endpoint's event-left
 /// observation.
 ///
@@ -423,7 +440,9 @@ fn retained_branch_component(model: &solve::SolveModel) -> me::session::MeRetain
 /// endpoint while the component still stood at the off-point coordinate.
 #[test]
 fn an_output_getter_failure_off_the_accepted_point_restores_that_point() {
-    let model = algebraic_branch_component(false);
+    let mut model = algebraic_branch_component(false);
+    model.problem.events.scheduled_time_events = vec![0.1];
+    let model = refresh_owned(model);
     let mut retained = retained_branch_component(&model);
     let mut session = faulty_session(&mut retained, PluginFault::PoisonsTheInterior);
     let mut cursor = me::session::MeOutputCursor::empty();
