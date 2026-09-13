@@ -6,6 +6,33 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-affinity-full` passes the local fallback gate at commit
+`aecb01dc7038c7cedede5fe6dbc85c62b0c3c74e`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The complete 566-model run takes 139.77 seconds with eleven requested,
+admitted, and pinned workers. All **154 compared models remain strict-high
+(27.21%)**, with seventeen unchanged reviewed exclusions, zero missing or
+nonidentifiable traces, and all 18,693 initial channels high. There are zero
+deviating trajectory channels. Every prior high model, including the nine
+electrical counterexamples and DCPM_Cooling, remains high. **MultiBody stays
+20/42 high**.
+
+RollingWheel's changed trace passes with **184/184 channels high**, maximum
+channel bounded normalized L1 `1.0279228736061218e-4`. Its concurrent Sim time
+is 3.597 seconds; source/Solve/backend preparation is separately 3.722 seconds.
+RollingWheelSetDriving retains 892/892 high channels and takes 4.850 seconds
+in Sim. No model changes band. The sole phase change is GenerationOfFMUs,
+which remains absent and returns its earlier structural `EL005` refusal rather
+than the preceding run's Solve-stage timeout. The complete delta is
+`rolling-wheel/affinity-full-delta.json`.
+
+The isolated profile pair below supports the RollingWheel improvement; this
+cohort timing is not a head-to-head benchmark. The critical runtime gap remains
+open. Combined `verify quick` and `verify full` have not run for this change;
+no PR, release, or baseline promotion is claimed.
+
+## Previous complete measurement: prepared algebraic refresh
+
 `target/msl/multibody-prepared-stages-full` passes the local fallback gate at
 commit `440f4466fec6987eb1cbcb6c68f34500566319ae`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
@@ -182,11 +209,24 @@ Both runs have zero Sim major-fault and system-CPU deltas. The new worker SHA is
 `f81a7c6ae2193579dbd7ecd7470612bf17a7590a8d322a14d6e345d04ea3c80f`.
 Its trace SHA is
 `61e23f642f39489afa0717c767501558972f2e29419b77b088befbe8b2aff3dd`;
-the changed arithmetic path requires a new OMC comparison. Perf records 675
+the changed arithmetic path passes the subsequent complete OMC comparison
+recorded above. Perf records 675
 user-CPU samples without loss; trigonometry, row evaluation, and allocation
 remain visible costs, with incomplete native/JIT stack unwinding. The critical
-OMC runtime gap remains open. A complete cohort comparison at the implementation
-commit, combined `verify quick`, and `verify full` are pending.
+OMC runtime gap remains open. Combined `verify quick` and `verify full` are
+pending.
+
+A second profile uses Cranelift 0.125.4's built-in `PERF_BUILDID_DIR` support
+to emit the JIT symbol map, with no source probes. Sim takes 3.439 seconds and
+the trace is byte-identical to the first affinity profile. Its 672 samples
+have no loss; the largest named generated self costs are
+`rumoca_jacobian_row_223` (5.65%), the directional owner 563 (4.61%), and
+residual program 223 (2.98%). Sine/cosine together account for 11.01% self
+samples. Stack unwinding still stops at generated frames, so these are not
+inclusive caller fractions. The exact map, perf data, and reports are retained
+under `rolling-wheel/critical-affinity-symbols-profile-1`. This points the next
+investigation at coefficient/Jacobian evaluation and repeated rotation work;
+it does not establish how much further runtime can be recovered.
 
 ## OMC profile and remaining algebraic refresh overhead
 
