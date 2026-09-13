@@ -7,6 +7,35 @@ complete MultiBody support has not been established.
 ## Latest complete measurement
 
 The MSL step of `verify quick --early-exit` at commit
+`be391b3f25e216616af9167a16c48f5e95c6eb1d`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`,
+passes the local fallback gate in 296.88 seconds with the quick suite's four
+model workers. Its result, comparison, and band table are preserved in
+`target/msl/multibody-quick-after-architecture-full`.
+**All 152 compared models are strict-high (26.86% of 566)**, with seventeen
+reviewed exclusions and zero missing or nonidentifiable traces. All 17,606
+initial channels are high; no trajectory channel deviates. Every high model
+from `multibody-function-scope-index-full` retains its band, including all nine
+original electrical counterexamples.
+
+MultiBody is **19/42 high**, with nineteen compared and no trace boundaries.
+RollingWheel completes with all 184 channels high and 9.656 seconds of
+simulation including initialization. Its earlier twelve-second timeout remains
+recorded below: this run follows an architecture repair, not a demonstrated
+runtime performance fix. IMC_Transformer still changes from a structural
+refusal to a Solve timeout relative to `multibody-function-scope-index-full`;
+the full delta is `rolling-wheel/verify-quick-architecture-msl-delta.json`.
+
+The combined quick suite passes workspace lint, MSL parity, all 28 pinned
+corpus rows (89.3 seconds), 243 architecture-hardening tests, and seventeen
+size/spec gates. Workspace tests are building. Combined `verify quick`
+success is still pending; `verify full` has not run. Further explicit MSL
+runs retain the approved eleven simulation workers. RollingWheel profiling
+remains next after the owned test execution finishes.
+
+## Previous complete measurement: quick-suite gate failures
+
+The MSL step of `verify quick --early-exit` at commit
 `03865c4e9e2fb3e4c6cae86b1b9b233cd5237e91`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`,
 compares **151 models, all strict-high (26.68% of 566)**, with seventeen
