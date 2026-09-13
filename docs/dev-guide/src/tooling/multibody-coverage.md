@@ -6,6 +6,35 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-affine-seed-full` passes the local fallback gate at commit
+`9fb1b2476977ea27225287751e2d8adbb4afafea`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The full 566-model comparison takes 152.98 seconds with eleven requested,
+admitted, and pinned Rumoca workers. All **154 compared models remain
+strict-high (27.21%)**, with seventeen unchanged reviewed exclusions, zero
+missing/nonidentifiable traces, and zero deviating channels. All 18,693
+initial channels remain high. Every prior high model, including all nine
+electrical counterexamples and DCPM_Cooling, is retained; **MultiBody remains
+20/42 high**.
+
+RollingWheel retains **184/184 high channels** and the same maximum channel
+bounded normalized L1 `1.0279228736061218e-4`. Concurrent Sim takes 2.394
+seconds, with 3.887 seconds of separate source/Solve/backend preparation.
+RollingWheelSetDriving retains 892/892 high channels and takes 4.385 seconds
+in Sim. These cohort timings are not isolated benchmarks; the clean profile
+pair below measures the seed-removal change separately.
+
+No model changes agreement band. GenerationOfFMUs remains absent: this run
+hits the unchanged ten-second Solve budget before returning the previous
+structural `EL005` refusal. That phase outcome is retained in
+`rolling-wheel/affine-seed-full-delta.json`; it earns no coverage credit.
+The complete MSL gate is green, but the critical RollingWheel performance
+gap remains open. Combined `verify quick` and `verify full` remain pending
+while that compiler performance work continues. No PR, release, or baseline
+promotion is claimed.
+
+## Previous complete measurement: affine tensor functions
+
 `target/msl/multibody-affinity-full` passes the local fallback gate at commit
 `aecb01dc7038c7cedede5fe6dbc85c62b0c3c74e`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
