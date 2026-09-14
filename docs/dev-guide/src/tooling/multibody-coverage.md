@@ -4,6 +4,31 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest complete cohort: tensor-state reconstruction preserves parity
+
+The complete `target/msl/multibody-component-definition-full` gate passes at
+`27dd45f57af983cae6faf5f6ec9c2b7936129f4c`, using eleven Rumoca workers,
+the unchanged 566-model roster, and unchanged tolerances and budgets. All
+158 previously strict-high models retain their bands: 158/566 (27.92%),
+including 22/42 MultiBody examples. The comparator measures 158 models,
+retains eighteen reviewed exclusions, and reports zero missing traces,
+nonidentifiable traces, or deviating channels. All 20,379 initialization
+channels are high.
+
+RollingWheel completes the normal pipeline with eleven integrated coordinates
+and all 184 trajectory and initialization channels high. Sim measures
+1.071142 seconds. This establishes cohort safety for the tensor-state change;
+it does not establish a meaningful speed improvement or erase the preceding
+single-model startup failure. The only phase/status delta is the already
+excluded `ThyristorBridge2Pulse_RLV_Characteristic`, which completes instead
+of timing out and returns the exclusion count from seventeen to eighteen.
+No comparison band changes and no coverage credit comes from this timing delta.
+
+Receipt: `rolling-wheel/component-definition-full-delta.json`; worktree digest:
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+OMC version is `a96aa1a-cmake`. RollingWheel remains slower than OMC; its
+velocity reconstruction and the combined quick/full gates remain open.
+
 ## Latest focused work: inverse coordinates of tensor states
 
 `TensorStateContact` reproduces RollingWheel's source pattern: a position
@@ -64,9 +89,9 @@ and band from `multibody-direct-auxiliary-canary`: nine models compared high,
 missing, nonidentifiable, or deviating results. Receipt:
 `rolling-wheel/component-definition-canary-delta.json`; worktree digest:
 `b98745ba9ee53b6a18d5d99a9ef2b3501a67c8cc9922b7f0b9fd9995f15edbc1`.
-The complete cohort below predates this component reconstruction change.
+The complete cohort above validates this component reconstruction change.
 
-## Latest complete cohort: auxiliary derivative reconstruction
+## Previous complete cohort: auxiliary derivative reconstruction
 
 The complete `target/msl/multibody-direct-auxiliary-full` gate passes at
 `ae6dbf5bab8be88da2b203ad38698ab98ef32adf`, with eleven Rumoca workers,
