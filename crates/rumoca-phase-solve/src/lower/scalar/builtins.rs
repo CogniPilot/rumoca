@@ -136,13 +136,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     arguments.get(0).expect("checked unary builtin argument"),
                     scalar,
                 )?;
-                let dst = self.register(span)?;
-                self.ops.push(solve::LinearOp::Unary {
-                    dst,
-                    op: unary_builtin(builtin),
-                    arg: argument,
-                });
-                Ok(dst)
+                self.solve_unary(unary_builtin(builtin), argument, span)
             }
             dae::PureBuiltin::Atan2 => self.atan2(arguments, scalar, span),
             dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem => {

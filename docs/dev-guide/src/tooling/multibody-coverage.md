@@ -4,6 +4,33 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest focused work: reuse geometry without changing the trace
+
+On top of `0dc3858bd6f0a8864f354df4560157395634c192`, scalar Solve construction
+and AD share repeated unary arithmetic within each exact context. Native pure
+calls retain a result only under a construction-issued complete input
+coordinate; every input bit, including directional seeds, must match.
+Failure and assertion behavior remain covered by regressions.
+
+RollingWheel's focused Sim falls from 2.164 to 1.568 seconds. The separate
+actual-worker profile falls from 2.225 to 1.506 seconds, with an identical
+trace. Trig calls fall from 32,623,972 to 5,187,414. The normal focused gate
+`target/msl/multibody-pure-input-reuse-origin-2` compares one model with all
+184 trajectory and 184 initialization channels high, and zero skipped,
+missing, nonidentifiable, or deviating results. The first attempt hit a
+source-loading startup limit and measured no parity; its artifacts are kept.
+
+The fixed `target/msl/multibody-pure-input-reuse-canary` has no phase, status,
+or band deltas against `target/msl/multibody-auxiliary-primal-canary`: nine
+models compared high, 175 initialization channels high, no skipped/missing/
+nonidentifiable/deviating results, and eleven unchanged refusals. Worktree
+digest: `e333300748c075ba3708f0749572e75e452536c98726a4e6d610e4603c73b8dc`.
+The exact receipt is `rolling-wheel/pure-input-reuse-canary-delta.json`.
+
+The OMC performance gap remains open. The latest full-cohort count below is
+unchanged. Details and reduced RED/GREEN evidence are in the
+[generated-kernel comparison](rolling-wheel-kernel-comparison.md).
+
 ## Latest complete measurement
 
 `target/msl/multibody-seed-linearization-full` passes at commit

@@ -261,6 +261,29 @@ Continuous refresh optimizations require constructor-issued facts bound to the
 canonical residual and unknown inventories; wire replay rederives those facts,
 and consumers may use only the property proved by the certificate.
 
+Within one scalar program and its exact lowering context, construction may
+reuse a pure unary arithmetic result for the same operator and immutable
+operand register. Numerical AD applies the same rule to its emitted primal and
+tangent arithmetic. The first evaluation remains in order; operand evaluation,
+calls, assertions, lazy regions, and compact tensor owners remain unchanged.
+This local register relation neither identifies distinct function occurrences
+nor authorizes reuse between invocations, coordinates, or activation contexts.
+
+A checked pure-call owner may issue a closed-input coordinate: its entire
+readable environment consists of its typed inputs, constants, initialized
+method locals, and earlier closed-input call owners. Structured regions retain
+the same restriction. At a fixed owner and arithmetic profile, bitwise equality
+of the complete input tuple proves identical ordered results and assertion
+predicates. The mechanically derived directional owner issues a separate
+coordinate including every tangent input. Native execution may retain one
+successful result per issued coordinate, comparing all input cells without
+hashing or approximate equality. Misses invalidate the entry before evaluation;
+failures never publish it, and consumers still check returned assertion
+predicates on every invocation. Cache storage belongs to that compiled owner,
+cannot be accessed concurrently, and outlives every native reference to it.
+This relation is a projection of the complete evaluation coordinate, not an
+identity inferred from matching function bodies or observed model behavior.
+
 An additive isolator derives a finite nonzero constant target coefficient and
 a compact weighted selection of target-independent source registers. Shared
 source subexpressions stay shared. Evaluation retains the original source

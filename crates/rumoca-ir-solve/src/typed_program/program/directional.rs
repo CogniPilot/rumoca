@@ -61,7 +61,8 @@ impl TypedProgram {
             dependencies,
             projections,
             affinity,
-        )))
+            provenance,
+        )?))
     }
 }
 

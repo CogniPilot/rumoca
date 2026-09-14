@@ -5,6 +5,7 @@
 //! row that uses it.
 
 mod function_calls;
+mod unary_reuse;
 
 use super::*;
 

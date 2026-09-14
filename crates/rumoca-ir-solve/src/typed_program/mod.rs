@@ -7,8 +7,8 @@ mod types;
 pub use call::dependency::SolveCallDependency;
 pub use call::{
     SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite, SolvePureCallIdentity,
-    SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner, SolvePureCallOwnerId,
-    SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
+    SolvePureCallInputCoordinate, SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner,
+    SolvePureCallOwnerId, SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
 };
 pub use program::{
     ProgramRegister, ProgramSlot, ProgramTensorViewAxis, SolveBinaryOperator, SolveCompareOperator,

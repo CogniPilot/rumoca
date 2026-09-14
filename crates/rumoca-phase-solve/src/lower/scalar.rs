@@ -420,6 +420,7 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     ops: Vec<solve::LinearOp>,
     next_register: solve::Reg,
     integer_registers: Vec<Option<i64>>,
+    unary_values: HashMap<(u64, solve::UnaryOp, solve::Reg), solve::Reg>,
     expression_cache: rustc_hash::FxHashMap<(u64, dae::ExprId<'dae>, usize), solve::Reg>,
     packed_expression_cache: rustc_hash::FxHashMap<(u64, dae::ExprId<'dae>), solve::Reg>,
     typed_pure_call_cache: rustc_hash::FxHashMap<
@@ -495,6 +496,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             ops: Vec::new(),
             next_register: 0,
             integer_registers: Vec::new(),
+            unary_values: HashMap::new(),
             expression_cache: rustc_hash::FxHashMap::default(),
             packed_expression_cache: rustc_hash::FxHashMap::default(),
             typed_pure_call_cache: rustc_hash::FxHashMap::default(),

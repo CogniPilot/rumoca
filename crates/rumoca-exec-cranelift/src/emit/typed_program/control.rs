@@ -34,12 +34,12 @@ impl ProgramLowerer<'_, '_> {
 
         self.builder.switch_to_block(true_block);
         self.builder.seal_block(true_block);
-        self.lower_region(if_true, input, output, true)?;
+        self.lower_region(if_true, input, output)?;
         self.builder.ins().jump(continuation, &[]);
 
         self.builder.switch_to_block(false_block);
         self.builder.seal_block(false_block);
-        self.lower_region(if_false, input, output, true)?;
+        self.lower_region(if_false, input, output)?;
         self.builder.ins().jump(continuation, &[]);
 
         self.builder.switch_to_block(continuation);
@@ -117,7 +117,7 @@ impl ProgramLowerer<'_, '_> {
             current,
             carried_cells + capture_cells,
         )?;
-        self.lower_region(transition, current, next_frame, false)?;
+        self.lower_region(transition, current, next_frame)?;
         let next = self.builder.ins().iadd_imm(ordinal, 1);
         self.builder
             .ins()
@@ -177,7 +177,7 @@ impl ProgramLowerer<'_, '_> {
         self.builder.seal_block(iteration);
         self.copy_register_types(captures, capture_values, 0, input, 0)?;
         self.store_domain_binders(domain, &extents, &strides, ordinal, input, capture_cells)?;
-        self.lower_region(body, input, output, false)?;
+        self.lower_region(body, input, output)?;
         self.copy_map_output(output, &destination, ordinal, output_cells)?;
         let next = self.builder.ins().iadd_imm(ordinal, 1);
         self.builder.ins().jump(header, &[next.into()]);
@@ -193,7 +193,6 @@ impl ProgramLowerer<'_, '_> {
         region: &solve::SolveProgramRegion,
         input: Value,
         output: Value,
-        inherit_invocations: bool,
     ) -> Result<(), CompileError> {
         let layout = ProgramLayout::region(region)?;
         let tape = create_tape(self.builder, self.pointer_type, layout.tape_cells)?;
@@ -207,12 +206,6 @@ impl ProgramLowerer<'_, '_> {
             tape,
             layout: &layout,
             functions: self.functions,
-            invocation_cache: inherit_invocations
-                .then_some(self.invocation_cache)
-                .flatten(),
-            invocation_layout: inherit_invocations
-                .then_some(self.invocation_layout)
-                .flatten(),
             flags: self.flags,
         };
         nested.lower(region.body())

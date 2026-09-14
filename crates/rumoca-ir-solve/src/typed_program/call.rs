@@ -11,6 +11,55 @@ use dependency::affinity::{self, Affinity};
 use dependency::value_projection::{self, ValueProjections};
 pub(super) use view::SolvePureCallTableView;
 
+/// Complete runtime input coordinate of its issuing pure-call owner.
+///
+/// Pure-call construction admits only input/output/method-local slots and the
+/// closed typed-operation vocabulary. Region construction enforces the same
+/// slot restriction; calls name earlier checked owners. Thus every result,
+/// assertion predicate, and numerical failure is determined by these input
+/// cells at the owner's fixed arithmetic profile. No ambient runtime state is
+/// readable. Directional owners include all tangent cells in their coordinate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SolvePureCallInputCoordinate {
+    input_cells: u64,
+    output_cells: u64,
+}
+
+impl SolvePureCallInputCoordinate {
+    fn construct(
+        inputs: &[SolveValueType],
+        outputs: &[SolvePureCallOutput],
+        provenance: Span,
+    ) -> Result<Self, SolveProgramConstructionError> {
+        let input_cells = inputs
+            .iter()
+            .try_fold(0u64, |count, value| {
+                count.checked_add(u64::from(value.scalar_count()))
+            })
+            .ok_or(SolveProgramConstructionError::IdentityOverflow { provenance })?;
+        let output_cells = outputs
+            .iter()
+            .try_fold(0u64, |count, output| {
+                count.checked_add(u64::from(output.value_type().scalar_count()))
+            })
+            .ok_or(SolveProgramConstructionError::IdentityOverflow { provenance })?;
+        Ok(Self {
+            input_cells,
+            output_cells,
+        })
+    }
+
+    #[must_use]
+    pub const fn input_cells(self) -> u64 {
+        self.input_cells
+    }
+
+    #[must_use]
+    pub const fn output_cells(self) -> u64 {
+        self.output_cells
+    }
+}
+
 use super::program::wire::{TypedProgramWire, replay_program};
 use super::program::{
     ProgramSlot, SolveOperation, SolveProgramConstructionError, SolveSlotAccess, SolveStorageClass,
@@ -103,6 +152,7 @@ pub(super) struct SolvePureCallInterface<'owner> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolvePureCallDirectionalOwner {
+    input_coordinate: SolvePureCallInputCoordinate,
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
     projections: Option<Arc<ValueProjections>>,
     affinity: Option<Arc<Affinity>>,
@@ -113,6 +163,8 @@ pub struct SolvePureCallDirectionalOwner {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolvePureCallOwner {
+    #[serde(skip)]
+    input_coordinate: SolvePureCallInputCoordinate,
     #[serde(skip)]
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
     #[serde(skip)]
@@ -259,6 +311,11 @@ impl SolvePureCallDirectionalSite {
 }
 
 impl SolvePureCallDirectionalOwner {
+    #[must_use]
+    pub const fn input_coordinate(&self) -> SolvePureCallInputCoordinate {
+        self.input_coordinate
+    }
+
     pub(super) fn new(
         inputs: Vec<SolveValueType>,
         outputs: Vec<SolvePureCallOutput>,
@@ -266,15 +323,18 @@ impl SolvePureCallDirectionalOwner {
         dependencies: Box<[Box<[SolveCallDependency]>]>,
         projections: Option<ValueProjections>,
         affinity: Option<Affinity>,
-    ) -> Self {
-        Self {
+        provenance: Span,
+    ) -> Result<Self, SolveProgramConstructionError> {
+        let input_coordinate = validate_owner_body(&body, &inputs, &outputs, provenance)?;
+        Ok(Self {
+            input_coordinate,
             dependencies: dependencies.into(),
             projections: projections.map(Arc::new),
             affinity: affinity.map(Arc::new),
             inputs: inputs.into(),
             outputs: outputs.into(),
             body,
-        }
+        })
     }
 
     #[must_use]
@@ -329,6 +389,10 @@ impl SolvePureCallDirectionalOwner {
 }
 
 impl SolvePureCallOwner {
+    #[must_use]
+    pub const fn input_coordinate(&self) -> SolvePureCallInputCoordinate {
+        self.input_coordinate
+    }
     #[must_use]
     pub const fn id(&self) -> SolvePureCallOwnerId {
         self.id
@@ -532,7 +596,7 @@ impl SolvePureCallTableBuilder {
                 .collect::<Result<Vec<_>, _>>()?;
             build(builder, &input_slots, &output_slots)
         })?;
-        validate_owner_body(&body, &inputs, &outputs, provenance)?;
+        let input_coordinate = validate_owner_body(&body, &inputs, &outputs, provenance)?;
         let directional_interfaces = SolvePureCallTableView::directional(&self.owners);
         let directional =
             body.derive_directional_owner(&inputs, &outputs, directional_interfaces, provenance)?;
@@ -540,6 +604,7 @@ impl SolvePureCallTableBuilder {
         let projections = derive_value_projections(&body, inputs.len(), &outputs, &self.owners);
         let affinity = derive_affinity(&body, inputs.len(), outputs.len(), &self.owners);
         self.owners.push(SolvePureCallOwner {
+            input_coordinate,
             dependencies: dependencies.into(),
             projections: projections.map(Arc::new),
             affinity: affinity.map(Arc::new),
@@ -631,7 +696,7 @@ fn validate_owner_body(
     inputs: &[SolveValueType],
     outputs: &[SolvePureCallOutput],
     provenance: Span,
-) -> Result<(), SolveProgramConstructionError> {
+) -> Result<SolvePureCallInputCoordinate, SolveProgramConstructionError> {
     let input_count = inputs.len();
     let output_count = outputs.len();
     let interface_count = input_count
@@ -680,7 +745,7 @@ fn validate_owner_body(
     if stores.iter().any(|count| *count != 1) {
         return Err(SolveProgramConstructionError::IncompleteCallOutput { provenance });
     }
-    Ok(())
+    SolvePureCallInputCoordinate::construct(inputs, outputs, provenance)
 }
 
 impl<'de> Deserialize<'de> for SolvePureCallTable {
@@ -726,8 +791,9 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
             .map_err(serde::de::Error::custom)?;
             let interfaces = SolvePureCallTableView::primal(&owners);
             let body = replay_program(&owner.body, interfaces).map_err(serde::de::Error::custom)?;
-            validate_owner_body(&body, &owner.inputs, &owner.outputs, owner.provenance)
-                .map_err(serde::de::Error::custom)?;
+            let input_coordinate =
+                validate_owner_body(&body, &owner.inputs, &owner.outputs, owner.provenance)
+                    .map_err(serde::de::Error::custom)?;
             let directional_interfaces = SolvePureCallTableView::directional(&owners);
             let directional = body
                 .derive_directional_owner(
@@ -744,6 +810,7 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
                 derive_value_projections(&body, owner.inputs.len(), &owner.outputs, &owners);
             let affinity = derive_affinity(&body, owner.inputs.len(), owner.outputs.len(), &owners);
             owners.push(SolvePureCallOwner {
+                input_coordinate,
                 dependencies: dependencies.into(),
                 projections: projections.map(Arc::new),
                 affinity: affinity.map(Arc::new),
@@ -916,6 +983,54 @@ mod tests {
         let replayed: SolvePureCallTable =
             serde_json::from_str(&json).expect("call table wire replays with issued interfaces");
         assert_eq!(replayed, table);
+        for owner in replayed.owners() {
+            let primal = owner.input_coordinate();
+            assert_eq!(primal.input_cells(), u64::from(vector.scalar_count()));
+            assert_eq!(primal.output_cells(), u64::from(vector.scalar_count()) + 1);
+            let directional = owner.directional().unwrap().input_coordinate();
+            assert_eq!(
+                directional.input_cells(),
+                2 * u64::from(vector.scalar_count())
+            );
+            assert_eq!(
+                directional.output_cells(),
+                2 * u64::from(vector.scalar_count()) + 1
+            );
+        }
+    }
+
+    #[test]
+    fn complete_input_coordinates_keep_large_tensors_compact() {
+        let vector =
+            SolveValueType::tensor(SolveScalarType::real(profile()), vec![u32::MAX]).unwrap();
+        let table = SolvePureCallTable::construct(profile(), |table| {
+            table.add_owner(
+                identity(1),
+                vec![vector.clone(), vector.clone()],
+                vec![SolvePureCallOutput::result(vector)],
+                span(0),
+                |builder, inputs, outputs| {
+                    let value = builder.load(inputs[0], span(1))?;
+                    builder.store(outputs[0], value, span(2))
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let owner = &table.owners()[0];
+        assert_eq!(owner.body().operations().len(), 2);
+        assert_eq!(
+            owner.input_coordinate().input_cells(),
+            2 * u64::from(u32::MAX)
+        );
+        assert_eq!(
+            owner
+                .directional()
+                .unwrap()
+                .input_coordinate()
+                .input_cells(),
+            4 * u64::from(u32::MAX)
+        );
     }
 
     #[test]

@@ -1,9 +1,91 @@
 # RollingWheel: generated OMC C and Rumoca's integration kernel
 
-This investigation compares the xtask-generated OMC executable with the
-requested-state/derivative-alias candidate based on
-`eb325ac7173ddd0757783f6c3ed5cc77e894c251`. It identifies repeated computation;
-it does not establish a performance fix or a new cohort result.
+This investigation compares the xtask-generated OMC executable with Rumoca's
+requested-state/derivative-alias kernel. The latest focused changes, based on
+`0dc3858bd6f0a8864f354df4560157395634c192`, reduce repeated numeric work while
+preserving the previous trace byte for byte. The OMC performance gap remains
+open; these focused results do not establish a new cohort count.
+
+## Latest focused result: shared arithmetic and pure-call inputs
+
+Two producer defects account for unnecessary geometry evaluation:
+
+- Solve program 224 issued 48 sine/cosine operations for just six distinct
+  operator/operand-register pairs. Programs 200, 201, and 213 each issued 24
+  for four pairs. Scalar construction now retains each pure unary result once
+  within its exact lowering context; numerical AD shares its emitted primal
+  and tangent arithmetic under the same rule. Arithmetic order and compact
+  tensor operations remain unchanged.
+- Native pure-call storage previously lasted for one caller invocation.
+  Repeated Jacobian directions therefore reran identical function inputs.
+  Checked pure-call construction now issues a complete input coordinate from
+  its closed input/output/local environment and earlier pure-call owners.
+  The native helper compares every input cell bitwise and retains one successful
+  ordered result. Directional coordinates include all tangent cells and have
+  separate storage. Numerical failures invalidate the entry; assertion
+  predicates remain outputs that the caller checks on every invocation.
+  The previous owner-only invocation cache is removed.
+
+These rules are grounded in SPEC_0007/SOLVE-C51/C56 and SPEC_0043 §6a.
+No source function bodies are matched or merged, and no runtime schedule is
+discovered. Native reuse needs a numerical input comparison, so the compiler
+issues the closed-input relation and the final execution adapter implements
+its exact coordinate check. The IR keeps tensor extents compact, including
+input tuples larger than a native `u32` addressable range.
+
+Both reduced regressions failed before implementation: scalar/AD construction
+emitted four trig calls where two suffice (`unary-reuse-red-1.log`), and three
+identical native invocations executed sine three times
+(`pure-input-reuse-red-1.log`). Tests also cover changed seeds, signed zero,
+whole tensor inputs, assertion predicates, repeated singular solves, different
+arguments within one caller, independent compiled tables, and wire replay.
+
+| Measurement | Previous auxiliary-primal kernel | Current kernel |
+|---|---:|---:|
+| Pinned focused gate, declared Sim | 2.164149 s | 1.568135 s |
+| Separate actual-worker profile, declared Sim | 2.224935 s | 1.506166 s |
+| Forwarding-shim sine + cosine results during Sim | 32,623,972 | 5,187,414 |
+
+The reduction in trig work is about 84%; the measured Sim reduction is about
+28–32%. Instrumented counting durations are not benchmarks. The new worker
+SHA-256 is `0ce8e06306ddafc641727942e5dd79dd594304c910755fd32a53a02f6ecab541`.
+Both the profiled and counted traces are byte-identical to the preceding
+auxiliary-primal trace, SHA-256
+`f46cbcf4bf00620007139eb17416c2ece8c3ddf5665e577a3c4e22ef2dadc47c`.
+The profile collected only 42 samples, so it is insufficient to rank remaining
+hotspots precisely. OMC's earlier Sim and total-process timers have different
+boundaries; the table does not claim a directly comparable OMC speed ratio.
+
+The first focused gate, `target/msl/multibody-pure-input-reuse-origin`, failed
+its 60-second worker SourceRootLoad startup limit and measured no parity.
+That failure is retained. A separate diagnostic allowed 180 seconds overall
+for source loading and artifact emission, with the same 12-second simulation
+budget. The fresh normal gate
+`target/msl/multibody-pure-input-reuse-origin-2` passes: one model compared,
+184 trajectory and 184 initial-condition channels high, with zero skipped,
+missing, nonidentifiable, or deviating results.
+
+The fixed `target/msl/multibody-pure-input-reuse-canary` has no phase, status,
+or band changes against `target/msl/multibody-auxiliary-primal-canary`: nine
+models compared high, all 175 initialization channels high, zero skipped,
+missing, nonidentifiable, or deviating results, and eleven unchanged refusals.
+`pure-input-reuse-canary-delta.json` records artifact digests and worktree digest
+`e333300748c075ba3708f0749572e75e452536c98726a4e6d610e4603c73b8dc`.
+The 515 IR/Solve/native library tests, 99 `rumoca` library tests, and 582 core
+regressions pass. All-target/all-feature Clippy for the three changed crates
+plus `rumoca` also passes. Combined quick/full and the next complete cohort
+comparison remain pending.
+
+A temporary counter probe on the previous kernel ruled out callback count as
+the whole explanation: Rumoca made 3,267 RHS and 742 directional requests in
+2,100 BDF steps, with 15 error-test failures and no nonlinear failures. OMC's
+earlier run reported 1,329 ODE requests and 1,028 steps. The probe's trace was
+byte-identical, and the probes were removed. Evidence is
+`callback-count-origin-3/callback-counts.json`.
+
+Rumoca still retains fourteen integrated coordinates and a 24-unknown dynamics
+block with sixteen tears, versus OMC's eight coordinates and six tears.
+These remain structural optimization targets requiring independent proofs.
 
 ## Measured discrepancy
 

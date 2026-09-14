@@ -707,6 +707,7 @@ struct AdBuilder {
     ops: Vec<LinearOp>,
     next_reg: Reg,
     map: HashMap<Reg, DualReg>,
+    unary_values: HashMap<(UnaryOp, Reg), Reg>,
     cached_zero: Option<Reg>,
     cached_one: Option<Reg>,
     cached_ln10: Option<Reg>,
@@ -724,6 +725,7 @@ impl Default for AdBuilder {
             ops: Vec::new(),
             next_reg: 0,
             map: HashMap::new(),
+            unary_values: HashMap::new(),
             cached_zero: None,
             cached_one: None,
             cached_ln10: None,
@@ -3326,8 +3328,12 @@ impl AdBuilder {
     }
 
     fn emit_unary(&mut self, op: UnaryOp, arg: Reg) -> Result<Reg, LowerError> {
+        if let Some(&value) = self.unary_values.get(&(op, arg)) {
+            return Ok(value);
+        }
         let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::Unary { dst, op, arg });
+        self.unary_values.insert((op, arg), dst);
         Ok(dst)
     }
 

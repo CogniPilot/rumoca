@@ -92,7 +92,19 @@ fn with_current_external_tables(f: impl FnOnce(&[ExternalTableData]) -> f64) -> 
 }
 
 extern "C" fn rumoca_host_sin(x: f64) -> f64 {
+    #[cfg(test)]
+    SIN_CALLS.with(|calls| calls.set(calls.get() + 1));
     x.sin()
+}
+
+#[cfg(test)]
+thread_local! {
+    static SIN_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn take_sin_calls() -> usize {
+    SIN_CALLS.with(|calls| calls.replace(0))
 }
 extern "C" fn rumoca_host_cos(x: f64) -> f64 {
     x.cos()

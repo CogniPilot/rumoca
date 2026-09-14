@@ -44,12 +44,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             LoweredUnaryOperator::Negate => solve::UnaryOp::Neg,
             LoweredUnaryOperator::Not => solve::UnaryOp::Not,
         };
-        let dst = self.register(span)?;
-        self.ops.push(solve::LinearOp::Unary {
-            dst,
-            op,
-            arg: operand,
-        });
+        let dst = self.solve_unary(op, operand, span)?;
         let integer = self
             .integer_register(operand)
             .and_then(|value| match operator {
@@ -464,12 +459,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         argument: solve::Reg,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        let key = (self.context_id, op, argument);
+        if let Some(&value) = self.unary_values.get(&key) {
+            return Ok(value);
+        }
         let dst = self.register(span)?;
         self.ops.push(solve::LinearOp::Unary {
             dst,
             op,
             arg: argument,
         });
+        self.unary_values.insert(key, dst);
         Ok(dst)
     }
 }
