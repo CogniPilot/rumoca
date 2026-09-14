@@ -1,5 +1,37 @@
 use super::*;
 
+#[test]
+fn sparse_row_scaling_preserves_finite_maxima_and_zero_or_nonfinite_fallbacks() {
+    let provenance = solve::PatternProvenance::derived(
+        solve::PatternDerivation::DependencyPropagation,
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("row_scales.mo"),
+            0,
+            1,
+        ),
+    )
+    .unwrap();
+    let pattern = solve::StructuralPattern::from_row_dependencies(
+        4,
+        4,
+        &[vec![0, 2], vec![1], vec![1], vec![3]],
+        provenance,
+    )
+    .unwrap();
+    let mut matrix = DMatrix::zeros(4, 4);
+    matrix[(0, 0)] = 2e-9;
+    matrix[(0, 2)] = -3.0;
+    matrix[(1, 1)] = f64::INFINITY;
+    matrix[(2, 1)] = f64::NAN;
+    let variables = [1e12, 7.0, 11.0, 0.0];
+    let fallback = [4.0, 5.0, 6.0, 7.0];
+    for structure in [None, Some(&pattern)] {
+        let result = jacobian_row_scales(&matrix, &variables, &fallback, structure);
+        assert!((result[0] - 2000.0).abs() < 1e-12);
+        assert_eq!(&result[1..], &[5.0, 6.0, 7.0]);
+    }
+}
+
 struct NominalScaledProjectionModel {
     plan: solve::AlgebraicProjectionPlan,
     coefficient: f64,

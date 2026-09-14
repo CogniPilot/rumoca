@@ -195,14 +195,14 @@ fn sparse_jacobian_row_scales(
     pattern: &solve::StructuralPattern,
 ) -> Vec<f64> {
     let mut scales = vec![0.0_f64; jacobian.nrows()];
-    for (row, column) in pattern.nonzero_coordinates() {
-        let contribution =
-            jacobian[(row, column)].abs() * valid_variable_scale(variable_scales[column]);
-        if contribution.is_finite() {
-            scales[row] = scales[row].max(contribution);
-        }
-    }
     for (row, scale) in scales.iter_mut().enumerate() {
+        pattern.visit_row_columns(row, |column| {
+            let contribution =
+                jacobian[(row, column)].abs() * valid_variable_scale(variable_scales[column]);
+            if contribution.is_finite() {
+                *scale = scale.max(contribution);
+            }
+        });
         if *scale == 0.0 {
             *scale = fallback_scales.get(row).copied().unwrap_or(1.0);
         }

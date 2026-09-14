@@ -4,7 +4,39 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest focused work: evaluate shared residual outputs once
+## Latest focused work: stream structural row scales
+
+On top of `fce39f4e`, sparse Jacobian row scaling consumes the pattern's ordered
+borrowed row visitor instead of allocating every nonzero coordinate on each
+projection. Arithmetic, finite-contribution selection, and fallback scales are
+unchanged. The regression covers finite maxima and zero/nonfinite fallback rows
+against the dense implementation. Formatting, all 70 projection tests, and
+solver all-target/all-feature Clippy pass in `streamed-row-scales-focused-1.log`.
+
+The fixed `target/msl/multibody-streamed-row-scales-canary` retains nine high
+models and all 175 high initialization channels, with unchanged phase/status/
+band outcomes and no skipped, missing, nonidentifiable, or deviating comparisons.
+Receipt: `rolling-wheel/streamed-row-scales-canary-delta.json`.
+Controlled RollingWheel Sim is 0.133409 seconds versus the immediate archived
+baseline's 0.136935 seconds, a single-pair 2.58% reduction. All four compiler IR
+artifacts and the complete trace are byte-identical. Candidate worker SHA-256:
+`754b3278ea9b2f246385c01e3143ec9665d0d0f81c09c34e74780b2a6f535978`.
+Receipt: `rolling-wheel/streamed-row-scales-profile-delta-1.json`.
+
+The attempted `multibody-streamed-row-scales-full` sweep was interrupted with
+exit 130 before completion. Its initial memory budget capped compilation and
+simulation at one worker despite the requested eleven. Its retained log is
+`rolling-wheel/streamed-row-scales-full-1.log`; it earns no cohort credit.
+The latest complete cohort below still predates both recent projection changes.
+RollingWheel remains slower than OMC; the next investigation is retained numeric
+factorization storage and scratch allocation.
+
+The post-commit `target/msl/electrical-grouped-residual-origin` run at `fce39f4e`
+also retains all 15 high models and 3,486 high initialization channels, with
+unchanged phase/status/band outcomes and no skipped, missing, nonidentifiable,
+or deviating comparisons. Receipt: `rolling-wheel/grouped-residual-electrical-delta.json`.
+
+## Previous focused work: evaluate shared residual outputs once
 
 On top of `02706ddf`, construction binds each affine block's selected residuals
 to unique, complete, repeatable canonical programs. The same output-selection
