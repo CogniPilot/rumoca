@@ -4,6 +4,54 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest focused work: consume BDF correction history at the corrected point
+
+Diffsol's backtracking Newton path never populated the correction-norm history
+used by its convergence-rate estimate. Three direct dependency regressions fail
+against that path (`bdf-convergence-history-red-2.log`): it repeats residual
+evaluation for affine solves, oversolves a rapidly contracting nonlinear root,
+and fails to reject a rate that cannot meet the iteration budget. The earlier
+`red-1` attempt only exposed test-import errors.
+
+A history-only change is incorrect: a successful line-search trial has computed
+the next Newton correction but has not applied it. The negative control in
+`bdf-convergence-naive-history-red.log` returns 0.0098039 for an exact root of
+zero when the requested nonlinear bound is 0.0002. The corrected iteration
+consumes that pending correction and its norm together, applying the correction
+before success. Armijo backtracking, tolerances, iteration budgets, and the
+existing Jacobian/timestep estimate-reset policy remain unchanged. Frozen
+upstream commit `7036380f908dbd93baa4253d2e0a34aa115cbbb5` retains the original
+behavior; the dependency patch and provenance are recorded in
+`vendor/diffsol/RUMOCA_PATCH.md`.
+
+All eight direct dependency tests, 162 simulation tests, both sampled-integral
+event-entry regressions, and affected-package all-target/all-feature Clippy
+pass (`bdf-convergence-history-focused-{1,2}.log`). The ordinary worker
+`1e90fe17cb1338e608a6de49b4a12fa635107ecf0818b4132b7017baa9ca6a6a` takes
+79.153 ms against the immediate archived `4b4dc9c5…` recheck at 98.345 ms:
+19.51% improvement for that pair. Compiler artifacts are identical; trajectory
+bits change with the nonlinear iteration (`bdf-convergence-history-profile-delta-1.json`).
+The separate 40-run profile has a 79.444 ms median (78.917–83.315 ms), with every
+repeated trace bit-identical. RHS calls fall from 2,248 to 1,560; accepted steps
+change from 1,054 to 1,051. The new run has 58 error-test failures, two nonlinear
+failures, 109 linear setups, and 17 complete matrix evaluations. These remain
+numerical statistics, not parity evidence. Diagnostic probes are removed and
+their two source files restored exactly before ordinary validation.
+
+The canary retains all phase/band rows: nine high comparisons and 175 high
+initialization channels. All 15 electrical regression comparisons and 3,486
+initialization channels remain high. Both scopes have zero skipped, missing,
+nonidentifiable, or deviating comparisons. The five-model origin attempt has
+three high comparisons, including RollingWheel, plus the existing GenerationOfFMUs
+EL005 refusal and a GyroscopicEffects Solve-phase timeout at 12.561 seconds.
+That timeout remains a failed normal-budget attempt. An isolated control with
+the phase watchdog absent takes 7.246 seconds in Solve lowering versus 7.423
+seconds for the archived worker and produces identical compiler artifacts
+(`bdf-gyro-solve-control-delta.json`); it earns no normal-budget parity credit.
+Receipts are `bdf-convergence-history-{canary,electrical,origin}-delta.json`.
+The complete cohort comparison for this change is pending. RollingWheel is
+still slower than OMC; no victory or release-ready claim is made.
+
 ## Latest focused work: block-specific numerical AD seed domains
 
 RollingWheel's hottest projection JVP reads 47 seed coordinates, but only six
@@ -46,6 +94,15 @@ set also retains every phase and band: all 15 comparisons and 3,486 initializati
 channels are high, with zero skipped, missing, nonidentifiable, or deviating
 comparisons (`block-seed-domain-electrical-delta.json`). These are focused checks,
 not a new cohort claim.
+
+The subsequent complete `multibody-block-seed-domain-full-11` sweep at clean
+commit `755c2169d66197da9d4853ff723a2017b9464658` passes with 158/566 strict-high
+models, including 22/42 MultiBody. All 158 comparisons and 20,379 initialization
+channels are high; the same 18 reviewed exclusions remain, with zero missing,
+nonidentifiable, or deviating comparisons. Every comparison band is unchanged.
+GearConstraint returns from the preceding standalone attempt's timeout to its
+existing StructuralAnalysis EL005 refusal; it still produces no trace.
+Receipt: `block-seed-domain-full-delta.json`.
 
 ## Latest focused work: prepare complete colored Jacobian applications
 

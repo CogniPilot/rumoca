@@ -134,12 +134,18 @@ impl<V: Vector> LineSearch<V> for BacktrackingLineSearch<V> {
             if self.norm.is_nan() {
                 warn!("Linesearch: Convergence norm is NaN on first iteration. Check model for NaN in residual computation.");
             }
+        }
 
-            // if we've already converged, take the step and return
-            if let ConvergenceStatus::Converged = convergence.check_norm(self.norm) {
+        // The contraction estimate bounds error after this correction. A
+        // correction computed by the preceding line search is still pending;
+        // apply it before returning success, and record its norm only once.
+        match convergence.check_new_iteration(self.norm) {
+            ConvergenceStatus::Converged => {
                 x.sub_assign(&*delta);
                 return Ok(ConvergenceStatus::Converged);
             }
+            ConvergenceStatus::Diverged => return Ok(ConvergenceStatus::Diverged),
+            ConvergenceStatus::Continue => {}
         }
 
         if self.x0.len() == 0 {
@@ -177,7 +183,9 @@ impl<V: Vector> LineSearch<V> for BacktrackingLineSearch<V> {
 
             if phi1 <= phi0 - self.c * alpha * two_phi0 {
                 self.norm = new_norm;
-                return Ok(convergence.check_norm(new_norm));
+                // delta now belongs to the accepted trial point. Its next
+                // outer iteration consumes both the correction and its norm.
+                return Ok(ConvergenceStatus::Continue);
             }
             if alpha < min_alpha {
                 warn!(

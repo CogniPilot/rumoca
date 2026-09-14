@@ -1,7 +1,8 @@
 # Diffsol numerical corrections
 
 This directory contains the published `diffsol` 0.13.2 crate, with source
-changes confined to `src/ode_solver/bdf.rs`. Original authorship and licensing are
+changes confined to `src/ode_solver/bdf.rs` and
+`src/nonlinear_solver/line_search.rs`. Original authorship and licensing are
 preserved in the upstream sources and `LICENSE.txt` (copied from the same
 upstream commit because the published crate omits the repository license file).
 
@@ -10,6 +11,8 @@ Published crate SHA-256:
 `3690b3729a291ac097453742215a1884fcde8bf480a444fb6287d6357d86baaf`.
 The pristine `bdf.rs` SHA-256 is
 `c190d0a0fbccbb0ea98b3557283c501b0253e7e1c4767d5bd7f4b3da22e89e6a`.
+The pristine `line_search.rs` SHA-256 is
+`7c66486751575500d8f8ad858afcc06977b307ceba98a8e72b7a9d8db3ac5eba`.
 
 After Newton convergence, Diffsol updates its backward differences using the
 accepted correction, but copies the uncorrected predictor into `state.y`.
@@ -40,6 +43,30 @@ failure is `RectifierBridge2mPulse.HalfControlledBridge2mPulse`; it remains
 subject to its existing comparator exclusion and is not a parity claim.
 Upstream commit `a33f02a4952c6837979754cab92eef70763a2f41` was inspected during
 triage and retains the original initial-step/minimum-step interaction.
+
+The third correction makes backtracking Newton consume correction-norm history
+through the same convergence interface as full-step Newton. The original path
+never populated the history used for its contraction estimate. It reevaluated
+already converged affine problems and failed to reject rates that could not
+meet its iteration budget. Upstream commit
+`7036380f908dbd93baa4253d2e0a34aa115cbbb5` retains that behavior in
+`crates/diffsol-nl/src/line_search.rs`.
+
+History alone is insufficient: the line search computes the next Newton
+correction at its accepted trial point, but has not applied that correction.
+The patch carries that pending correction to the next outer iteration, records
+its norm once, and applies it before returning a convergence certificate for
+the remaining error. Armijo conditions, tolerances, Jacobian/timestep estimate
+resets, and the iteration budget are unchanged. Rejected line-search trials do
+not advance convergence history.
+
+Four direct dependency regressions in
+`rumoca-solver-diffsol/src/me_integrator/convergence_tests.rs` cover affine solve
+reuse, early rejection of inadequate contraction, retained backtracking, and
+accuracy against a manufactured nonlinear root. A history-only negative control
+returns `0.0098039` for an exact root of zero when its requested nonlinear bound
+is `0.0002`; the corrected iteration applies the pending correction and meets
+that bound with two residual evaluations instead of four.
 
 The workspace patch makes local, CI, native, and Wasm builds use the same
 corrected source. A registry-published Rumoca crate cannot rely on a workspace

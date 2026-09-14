@@ -5,6 +5,9 @@
 //! extension. FMI lifecycle, roots, events, output cadence, and trace policy
 //! remain in the common host.
 
+#[cfg(test)]
+mod convergence_tests;
+
 use std::{cell::Cell, rc::Rc};
 
 use diffsol::{
