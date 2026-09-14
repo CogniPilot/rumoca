@@ -522,6 +522,7 @@ enum ResidualFuncIds {
     Chunked(Vec<FuncId>),
 }
 
+const MAX_STATIC_MATRIX_WORK: usize = 64;
 const RESIDUAL_CHUNK_THRESHOLD: usize = 16_000;
 const RESIDUAL_CHUNK_OPS: usize = 4_000;
 const RESIDUAL_BATCH_OPS: usize = 12_000;
@@ -4165,7 +4166,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .checked_mul(columns)
             .and_then(|outputs| outputs.checked_mul(inner))
             .and_then(|work| work.checked_mul(lanes));
-        if self.backing_regs_ptr.is_none() || static_work.is_some_and(|work| work <= 64) {
+        if self.backing_regs_ptr.is_none()
+            || static_work.is_some_and(|work| work <= MAX_STATIC_MATRIX_WORK)
+        {
             self.lower_static_matrix_multiply(StaticMatrixMultiply {
                 dst_start,
                 lhs_start,

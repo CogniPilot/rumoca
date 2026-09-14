@@ -13,6 +13,8 @@ mod linear_solve;
 mod local_store_tests;
 mod storage;
 mod tensor;
+#[cfg(test)]
+mod tensor_product_tests;
 
 use super::host_runtime::register_math_symbols;
 use super::owned_jit_module::{OwnedJitModule, declare_far_call_in_func};
@@ -1220,9 +1222,12 @@ impl ProgramLowerer<'_, '_> {
         count: u32,
         mut body: impl FnMut(&mut Self, Value) -> Result<(), CompileError>,
     ) -> Result<(), CompileError> {
-        if count == 1 {
-            let zero = self.builder.ins().iconst(types::I64, 0);
-            return body(self, zero);
+        if count <= 16 {
+            for index in 0..count {
+                let index = self.builder.ins().iconst(types::I64, i64::from(index));
+                body(self, index)?;
+            }
+            return Ok(());
         }
         let header = self.builder.create_block();
         let loop_body = self.builder.create_block();

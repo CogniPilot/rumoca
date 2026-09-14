@@ -4,7 +4,48 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest focused work: select manifold derivative programs
+## Latest focused work: emit small native tensor arithmetic directly
+
+On top of `6306f702d820717ad506fe705e0bb35253b43158`, typed native function
+helpers now use the same bounded direct matrix arithmetic as scalar kernels.
+Previously even a 3-by-3 product emitted two counted loops and dynamic tape
+addresses. Products costing at most 64 terms now emit ordered multiply/add
+operations; short elementwise operations emit at most sixteen elements directly.
+Larger operations retain loops. This is final backend emission under
+SPEC_0032 §4 and SOLVE-C53: canonical tensor owners, call identities, and
+floating-point accumulation order stay unchanged.
+
+An isolated million-call 3-by-3 diagnostic improves from 86.9 to 51.8 ms;
+the temporary throughput probe is removed. The two permanent regressions cover
+vector/matrix orientations, both sides of the emission-size boundary,
+cancellation-sensitive accumulation, and changing directional seeds. All 86
+native backend tests, affected-package Clippy, 99 compiler library tests,
+582 core tests, and 17 gates pass.
+
+The controlled actual-worker profile `rolling-wheel/typed-small-tensor-profile-2`
+measures Sim at 1.134402 seconds versus 1.347903 before this change (15.8% lower),
+with 1.12 seconds of user CPU. DAE and canonical Solve artifacts are byte-identical
+to the prior profile, as is the trace (SHA-256
+`f46cbcf4bf00620007139eb17416c2ece8c3ddf5665e577a3c4e22ef2dadc47c`). Worker
+SHA-256 is `2f61244a39e14ed4b7c1f0c51d2b0a68e080dc28f4d6285e408fae7e39675c10`.
+The first controlled profile reached its 180-second outer limit during source
+loading and measured no simulation; those artifacts remain retained.
+
+The normal `target/msl/multibody-typed-small-tensor-origin` run measures Sim
+at 1.142239 seconds. Its first comparator step lacked OMC on PATH; using the
+pinned `nix develop .#modelica` shell compares the existing trace without
+rerunning Rumoca. One model is compared, all 184 trajectory and initialization
+channels high, with zero skipped/missing/nonidentifiable/deviating results.
+The fixed `multibody-typed-small-tensor-canary` preserves every phase, status,
+and band from `multibody-manifold-selection-canary`: nine compared models high,
+175 initialization channels high, eleven unchanged refusals, and zero
+skipped/missing/nonidentifiable/deviating results. Receipt:
+`rolling-wheel/typed-small-tensor-canary-delta.json`; worktree digest:
+`ad3a2ce8142fe8847c6f41d663005a5b9601ea229c7727364b87f8a00fee0608`.
+The OMC speed target and combined quick/full remain outstanding. The latest
+complete cohort below predates these two native execution optimizations.
+
+## Previous focused work: select manifold derivative programs
 
 RollingWheel's three independent manifold blocks previously replayed all six
 directional programs for every state direction and discarded unrelated rows.
