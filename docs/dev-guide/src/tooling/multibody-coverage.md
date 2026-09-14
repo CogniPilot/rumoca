@@ -87,6 +87,59 @@ gates also pass in `rolling-wheel/cancelled-offset-core-suite-1.log`. The
 complete cohort and combined quick/full suites have not been rerun after this
 repair; the remaining near-budget MultiBody Solve costs are still open.
 
+## Focused performance repair: reuse complete source dependency witnesses
+
+The actual GyroscopicEffects worker spends 8.534372 seconds in Solve at
+`79347dca`, with 8.48 seconds of user CPU. The recorded Solve profile includes
+repeated source materialization walks, expression decoding, and allocations.
+Source inspection shows that each affine candidate starts the same root
+dependency proofs again, allocating a whole-DAE visited array per query.
+An initial singleton-projection prefilter avoids constructing a numeric
+evaluator for ineligible aggregate shapes and literal integer indices, but
+alone only changes the controlled Solve measurement to 8.424262 seconds.
+
+Affine discovery now owns a cache bound to one immutable DAE view and facts
+pass. Its key retains the exact source expression and function call path;
+its value retains the complete state-anchor witness or the original refusal.
+Every candidate still checks its own state against that witness. No cached
+boolean independence result or visited marker can erase an anchor, and no
+cache survives a facts-update boundary. This preserves the STRUCT-T03
+independence contract and source tensor ownership. New checked-DAE tests
+exercise alternating candidate states, nonlinear self-dependence, shared
+function bodies with distinct arguments/refusals, and extents 3 and 4096.
+
+`shared-materialization-focused-1.log` passes 168 structural and 22 contact
+tests; its test-only nesting lint was corrected, and
+`shared-materialization-focused-2.log` passes the two new tests, formatting,
+and all-target/all-feature structural Clippy. The normal five-target
+`target/msl/multibody-shared-materialization-origin` comparison has unchanged
+phases and bands against `multibody-singleton-prefilter-origin`: four models
+and all 2,960 initialization channels high, with zero skipped, missing,
+excluded, nonidentifiable, or deviating comparisons. Thermal GenerationOfFMUs
+retains its prior `EL005` fixed-initial-value refusal without a worker crash.
+GyroscopicEffects Solve measures 8.967672 seconds; SphericalConstraint
+4.596436; RollingWheelSetDriving 9.132433. RollingWheel retains its 184 high
+channels and Sim measures 0.782056 seconds, still slower than OMC. Receipt:
+`rolling-wheel/shared-materialization-origin-delta.json`, at `79347dca` plus
+worktree digest
+`bfd38449f5f27a9b11501de6973429b0e48a98f1d56404a28f9a4977cda696d9`.
+
+The controlled actual-worker `shared-materialization-gyro-solve-profile-1`
+measures Solve 7.759928 seconds and 7.72 seconds user CPU, versus the 8.534372
+baseline. The profile has zero lost samples and archives its exact worker
+binary for subsequent symbolization. This single-worker diagnostic bypasses
+the parent Solve watchdog and earns no coverage credit; the normal gate above
+supplies the parity evidence. The fixed twenty-model
+`target/msl/multibody-shared-materialization-canary` has unchanged phases and
+bands against `multibody-cancelled-offset-canary`: nine compared models and
+175 initialization channels high, eleven unchanged refusals, and zero skipped,
+missing, excluded, nonidentifiable, or deviating comparisons. Receipt:
+`rolling-wheel/shared-materialization-canary-delta.json`. All 99 Rumoca
+library tests, 595 core tests, and seventeen architecture/spec gates pass in
+`rolling-wheel/shared-materialization-core-suite-1.log`. Full-cohort
+restoration is not established by these focused measurements; combined
+quick/full verification remains open.
+
 ## Previous complete cohort: two state-reduction regressions recorded
 
 The complete `target/msl/multibody-no-slip-full` run at

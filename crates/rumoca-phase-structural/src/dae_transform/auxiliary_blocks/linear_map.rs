@@ -1,12 +1,14 @@
 //! Prove source tensor maps affine in one aggregate coordinate.
 
 mod affine;
+mod materialized_sources;
 mod state_rows;
 
 use super::super::constraints::DifferentiationFacts;
 use super::tensor_expression::{SourceValue, TensorExpression};
 use super::{AuxiliaryBlock, AuxiliarySystem, vector_unknown};
 use affine::AffineMap;
+use materialized_sources::MaterializedSources;
 use rumoca_eval_dae::FunctionCallContext;
 use rumoca_ir_dae as dae;
 pub(in crate::dae_transform) use state_rows::derive_state_blocks;
@@ -17,19 +19,21 @@ pub(super) fn derive_maps(
     facts: &DifferentiationFacts,
     blocks: &mut [Option<Arc<AuxiliaryBlock>>],
 ) {
+    let mut sources = MaterializedSources::new(view, facts);
     let mut traversal = dae::ExpressionTraversal::new();
     for residual in view.continuous_owners().flat_map(source_residuals) {
-        derive_equation_map(view, facts, residual, blocks, &mut traversal);
+        derive_equation_map(&mut sources, residual, blocks, &mut traversal);
     }
 }
 
 fn derive_equation_map<'dae>(
-    view: dae::DaeView<'dae>,
-    facts: &DifferentiationFacts,
+    sources: &mut MaterializedSources<'dae, '_>,
     residual: dae::ExprId<'dae>,
     blocks: &mut [Option<Arc<AuxiliaryBlock>>],
     traversal: &mut dae::ExpressionTraversal<'dae>,
 ) {
+    let view = sources.view;
+    let facts = sources.facts;
     let node = view.expression(residual).unwrap();
     let [extent] = node.value_type().dimensions() else {
         return;
@@ -58,7 +62,7 @@ fn derive_equation_map<'dae>(
         candidates.sort_unstable();
         candidates.dedup();
         for variable in candidates {
-            let mut walk = AffineMap::new(view, facts, variable, *extent);
+            let mut walk = AffineMap::new(sources, variable, *extent);
             let Some(affine) = walk.expression(map, &FunctionCallContext::default()) else {
                 continue;
             };

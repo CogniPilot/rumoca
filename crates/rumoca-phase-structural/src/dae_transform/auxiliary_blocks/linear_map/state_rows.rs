@@ -10,6 +10,7 @@ use super::super::super::constraints::DifferentiationFacts;
 use super::super::tensor_expression::TensorExpression;
 use super::super::{AuxiliaryBlock, AuxiliarySystem};
 use super::affine::{AffineMap, AffineValue};
+use super::materialized_sources::MaterializedSources;
 
 struct SourceRow {
     residual: u32,
@@ -21,6 +22,7 @@ pub(in crate::dae_transform) fn derive_state_blocks(
     view: dae::DaeView<'_>,
     facts: &DifferentiationFacts,
 ) -> Vec<Arc<AuxiliaryBlock>> {
+    let mut sources = MaterializedSources::new(view, facts);
     let residuals = view
         .continuous_owners()
         .flat_map(super::source_residuals)
@@ -37,19 +39,19 @@ pub(in crate::dae_transform) fn derive_state_blocks(
             {
                 return None;
             }
-            derive_block(view, facts, id.index(), *extent, &residuals).map(Arc::new)
+            derive_block(&mut sources, id.index(), *extent, &residuals).map(Arc::new)
         })
         .collect()
 }
 
 fn derive_block<'dae>(
-    view: dae::DaeView<'dae>,
-    facts: &DifferentiationFacts,
+    sources: &mut MaterializedSources<'dae, '_>,
     variable: u32,
     extent: u32,
     residuals: &[dae::ExprId<'dae>],
 ) -> Option<AuxiliaryBlock> {
-    let mut affine = AffineMap::new(view, facts, variable, extent);
+    let view = sources.view;
+    let mut affine = AffineMap::new(sources, variable, extent);
     let mut rows = Vec::new();
     for &residual in residuals {
         collect_rows(view, &mut affine, residual, &mut rows);
@@ -63,11 +65,15 @@ fn derive_block<'dae>(
         row.coefficient.operands(&mut operands);
         row.rhs.operands(&mut operands);
         for operand in operands {
-            anchors.extend(facts.materialized_state_anchors_in_context(
-                view,
-                operand.expression,
-                &operand.context(view),
-            )?);
+            anchors.extend(
+                sources
+                    .state_anchors(
+                        view.expression_id(operand.expression as usize)?,
+                        &operand.context(view),
+                    )?
+                    .iter()
+                    .copied(),
+            );
         }
     }
     if anchors.contains(&variable) {
@@ -91,7 +97,7 @@ fn derive_block<'dae>(
 
 fn collect_rows<'dae>(
     view: dae::DaeView<'dae>,
-    affine: &mut AffineMap<'dae, '_>,
+    affine: &mut AffineMap<'dae, '_, '_>,
     residual: dae::ExprId<'dae>,
     rows: &mut Vec<SourceRow>,
 ) {

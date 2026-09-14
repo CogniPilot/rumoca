@@ -9,6 +9,7 @@ use rumoca_ir_dae as dae;
 use super::super::super::constraints::{DifferentiationFacts, exact_state_anchor};
 use super::super::super::equalities::EqualitySign;
 use super::super::tensor_expression::{Product, SourceValue, TensorExpression};
+use super::materialized_sources::MaterializedSources;
 
 #[derive(Clone)]
 pub(super) struct AffineValue {
@@ -16,25 +17,26 @@ pub(super) struct AffineValue {
     pub(super) offset: TensorExpression,
 }
 
-pub(super) struct AffineMap<'dae, 'facts> {
+pub(super) struct AffineMap<'dae, 'facts, 'sources> {
     view: dae::DaeView<'dae>,
     facts: &'facts DifferentiationFacts,
+    sources: &'sources mut MaterializedSources<'dae, 'facts>,
     variable: u32,
     extent: u32,
     active: BTreeSet<SourceValue>,
     cache: BTreeMap<SourceValue, Option<AffineValue>>,
 }
 
-impl<'dae, 'facts> AffineMap<'dae, 'facts> {
+impl<'dae, 'facts, 'sources> AffineMap<'dae, 'facts, 'sources> {
     pub(super) fn new(
-        view: dae::DaeView<'dae>,
-        facts: &'facts DifferentiationFacts,
+        sources: &'sources mut MaterializedSources<'dae, 'facts>,
         variable: u32,
         extent: u32,
     ) -> Self {
         Self {
-            view,
-            facts,
+            view: sources.view,
+            facts: sources.facts,
+            sources,
             variable,
             extent,
             active: BTreeSet::new(),
@@ -234,15 +236,11 @@ impl<'dae, 'facts> AffineMap<'dae, 'facts> {
     }
 
     fn independent(
-        &self,
+        &mut self,
         expression: dae::ExprId<'dae>,
         context: &FunctionCallContext<'dae>,
     ) -> Option<TensorExpression> {
-        let anchors = self.facts.materialized_state_anchors_in_context(
-            self.view,
-            expression.index(),
-            context,
-        )?;
+        let anchors = self.sources.state_anchors(expression, context)?;
         (!anchors.contains(&self.variable)).then(|| {
             if self
                 .facts

@@ -925,11 +925,7 @@ pub(super) fn singleton_real_projection<'dae>(
     let dae::ExpressionOperation::Index { base, subscripts } = node.operation() else {
         return None;
     };
-    if subscripts.is_empty()
-        || !subscripts
-            .iter()
-            .all(|subscript| is_static_one_subscript(view, subscript))
-    {
+    if subscripts.is_empty() {
         return None;
     }
     let coordinate = match whole_model_expression(view, base)?.operation() {
@@ -952,10 +948,16 @@ pub(super) fn singleton_real_projection<'dae>(
         _ => return None,
     };
     let declaration = view.variable(view.variable_id(variable as usize)?)?;
-    (!declaration.value_type().is_scalar()
-        && is_single_scalar_real_payload(declaration)
-        && subscripts.len() == declaration.value_type().dimensions().len())
-    .then_some(projection)
+    if declaration.value_type().is_scalar()
+        || !is_single_scalar_real_payload(declaration)
+        || subscripts.len() != declaration.value_type().dimensions().len()
+    {
+        return None;
+    }
+    subscripts
+        .iter()
+        .all(|subscript| is_static_one_subscript(view, subscript))
+        .then_some(projection)
 }
 
 fn is_static_one_subscript<'dae>(
@@ -971,6 +973,9 @@ fn is_static_one_subscript<'dae>(
     if !node.value_type().is_scalar() || node.value_type().scalar_type() != dae::ScalarType::Integer
     {
         return false;
+    }
+    if let dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(value)) = node.operation() {
+        return *value == 1;
     }
     NumericEvaluator::new(view)
         .expression(expression)
