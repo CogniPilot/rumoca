@@ -585,13 +585,19 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         let projection_model = RefreshProjectionModel {
             runtime: self,
+            seed_linearizations: Some(RefCell::new(SeedProjectionCache::at_point(
+                &self.seed_projection_cache,
+                lin,
+                solver_y,
+                self.continuous_structural.algebraic_projection().len(),
+            ))),
             #[cfg(test)]
             plan: &plan.simultaneous_plan,
             block_indices: &plan.simultaneous_block_indices,
             plan_validated: false,
             jacobian_v: ProjectionJacobian::SolverYAndParameters(&self.implicit_jacobian_v),
         };
-        project_algebraic_seed_with_plan(
+        let result = project_algebraic_seed_with_plan(
             &projection_model,
             &plan.simultaneous_plan,
             solver_y,
@@ -602,6 +608,12 @@ impl SolveRuntime {
                 tolerance: lin.settle.tol,
             },
             seed,
-        )
+        );
+        if result.is_err()
+            && let Some(cache) = &projection_model.seed_linearizations
+        {
+            cache.borrow_mut().clear();
+        }
+        result
     }
 }

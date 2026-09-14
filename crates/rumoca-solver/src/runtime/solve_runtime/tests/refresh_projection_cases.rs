@@ -72,6 +72,7 @@ fn projection_affinity_treats_earlier_block_values_as_coefficients() {
     };
     let runtime = SolveRuntime::new_fixture(&model).unwrap();
     let projection = RefreshProjectionModel {
+        seed_linearizations: None,
         runtime: &runtime,
         plan: &runtime.algebraic_refresh.simultaneous_plan,
         block_indices: &runtime.algebraic_refresh.simultaneous_block_indices,

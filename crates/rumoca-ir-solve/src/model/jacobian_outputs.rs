@@ -71,12 +71,20 @@ impl ContinuousStructuralArtifacts {
     pub fn with_algebraic_output_evaluations(
         mut self,
         plan: &AlgebraicProjectionPlan,
+        primal: &ScalarProgramBlock,
         solver_y: &ScalarProgramBlock,
         full: &ScalarProgramBlock,
     ) -> Self {
+        let primal_outputs = ProgramOutputCatalog::new(primal);
         let y_outputs = ProgramOutputCatalog::new(solver_y);
         let full_outputs = ProgramOutputCatalog::new(full);
         for (structure, block) in self.algebraic_projection.iter_mut().zip(&plan.blocks) {
+            structure.linearization_repeatable = structure.pattern.rows() as usize
+                == block.rows.len()
+                && structure.pattern.columns() as usize == block.y_indices.len()
+                && [&primal_outputs, &y_outputs, &full_outputs]
+                    .iter()
+                    .all(|catalog| catalog.covers_repeatable_rows(&block.rows));
             structure.output_evaluations =
                 color_output_evaluations(structure, block, &y_outputs, &full_outputs);
         }
@@ -119,6 +127,11 @@ type ProgramOutput = (usize, usize, usize);
 struct ProgramOutputCatalog(BTreeMap<usize, Option<ProgramOutput>>);
 
 impl ProgramOutputCatalog {
+    fn covers_repeatable_rows(&self, rows: &[usize]) -> bool {
+        rows.iter()
+            .all(|row| self.0.get(row).is_some_and(Option::is_some))
+    }
+
     fn new(block: &ScalarProgramBlock) -> Self {
         let mut outputs = BTreeMap::new();
         let mut indices = block.output_indices().iter();

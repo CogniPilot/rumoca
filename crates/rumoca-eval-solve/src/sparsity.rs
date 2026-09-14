@@ -177,6 +177,7 @@ pub fn derive_solve_structural_artifacts(
     )
     .with_algebraic_output_evaluations(
         &problem.continuous.algebraic_projection_plan,
+        &to_scalar_program_block(&problem.continuous.implicit_rhs)?,
         &to_scalar_program_block(&artifacts.continuous.implicit_jacobian_v)?,
         &artifacts.continuous.implicit_jacobian_v_scalar,
     );

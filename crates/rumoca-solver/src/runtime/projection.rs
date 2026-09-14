@@ -6,6 +6,7 @@ mod initial_diagnostics;
 mod manifold;
 mod plan;
 mod scaling;
+mod seed_linearization;
 mod singleton;
 mod step_limit;
 mod tearing;
@@ -13,6 +14,7 @@ mod tearing;
 mod tests;
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use nalgebra::{DMatrix, DVector};
 use rumoca_ir_solve as solve;
@@ -33,6 +35,7 @@ use step_limit::StepLimit;
 pub(crate) use manifold::{
     ManifoldProjectionModel, certify_state_manifold, project_state_manifold,
 };
+pub(crate) use seed_linearization::SeedBlockLinearization;
 pub(crate) use tearing::per_row_torn_block_sweep;
 
 #[cfg(test)]
@@ -53,6 +56,19 @@ pub(crate) struct AlgebraicProjectionArgs<'a> {
 }
 
 pub(crate) trait ImplicitProjectionModel {
+    fn algebraic_seed_linearization(
+        &self,
+        block_index: usize,
+        block: &solve::AlgebraicProjectionBlock,
+        y: &[f64],
+        args: AlgebraicProjectionArgs<'_>,
+    ) -> Result<Rc<SeedBlockLinearization>, RuntimeSolveError>
+    where
+        Self: Sized,
+    {
+        SeedBlockLinearization::build(self, block_index, block, y, args).map(Rc::new)
+    }
+
     /// Evaluate construction-issued output groups at one immutable point.
     /// The mask omits rows already supplied by the reverse Jacobian path.
     fn eval_implicit_jacobian_v_outputs(
@@ -391,32 +407,13 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
             &block.rows,
             "algebraic seed projection",
         )?;
-        let structure = model.algebraic_projection_block_structure(block_index);
-        let jacobian = algebraic_block_jacobian(
-            model,
-            y,
-            args.parameters,
-            args.time,
-            &block.rows,
-            &block.y_indices,
-            structure,
-        )?;
-        // The primal Y/P/time point stays fixed throughout this seed sweep.
-        row_scales.extend(
-            algebraic_block_scales(
-                model,
-                y,
-                block,
-                &jacobian,
-                structure.map(solve::JacobianStructure::pattern),
-            )
-            .0,
-        );
+        let linearization = model.algebraic_seed_linearization(block_index, block, y, args)?;
+        row_scales.extend_from_slice(linearization.row_scales());
         let rhs = DVector::from_iterator(
             block.rows.len(),
             block_residual.into_iter().map(|value| -value),
         );
-        let Some(solution) = jacobian.lu().solve(&rhs) else {
+        let Some(solution) = linearization.solve(&rhs) else {
             return Err(RuntimeSolveError::DirectionalDerivativeUnavailable {
                 reason: "algebraic projection sensitivity matrix is singular".to_string(),
             });

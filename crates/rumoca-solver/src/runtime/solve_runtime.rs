@@ -53,6 +53,7 @@ mod refresh_batch;
 mod refresh_execution;
 mod refresh_projection;
 mod relation_memory;
+mod seed_linearization;
 mod sensitivity;
 mod support;
 use discrete_rows::PreparedStructuredDiscreteRows;
@@ -75,6 +76,7 @@ use plans::{
 };
 use refresh_execution::static_refresh_parameter_indices;
 use refresh_projection::*;
+use seed_linearization::SeedProjectionCache;
 use support::{
     build_visible_name_index, copy_runtime_values, copy_runtime_values_into,
     fill_inactive_root_output, optional_compiled, reserve_runtime_index_map_capacity,
@@ -330,6 +332,7 @@ pub struct SolveRuntime {
     continuous_structural: solve::ContinuousStructuralArtifacts,
     initialization_structural: solve::InitializationStructuralArtifacts,
     algebraic_newton_caches: Vec<RefCell<crate::runtime::projection::SparseNewtonCache>>,
+    seed_projection_cache: RefCell<SeedProjectionCache>,
     algebraic_refresh: solve::RefreshPlan,
     derivative_refresh: solve::RefreshPlan,
     root_refresh: solve::RefreshPlan,
@@ -691,6 +694,7 @@ impl SolveRuntime {
             continuous_structural,
             initialization_structural,
             algebraic_newton_caches,
+            seed_projection_cache: RefCell::new(SeedProjectionCache::default()),
             algebraic_refresh,
             derivative_refresh,
             root_refresh,

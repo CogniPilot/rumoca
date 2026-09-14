@@ -27,6 +27,14 @@ fn source(indices: Vec<usize>, aggregate_first: bool) -> ScalarProgramBlock {
 }
 
 fn outputs(y: &ScalarProgramBlock, full: &ScalarProgramBlock) -> ContinuousStructuralArtifacts {
+    outputs_with_primal(y, y, full)
+}
+
+fn outputs_with_primal(
+    primal: &ScalarProgramBlock,
+    y: &ScalarProgramBlock,
+    full: &ScalarProgramBlock,
+) -> ContinuousStructuralArtifacts {
     let provenance =
         PatternProvenance::derived(PatternDerivation::DependencyPropagation, span()).unwrap();
     let pattern =
@@ -40,7 +48,47 @@ fn outputs(y: &ScalarProgramBlock, full: &ScalarProgramBlock) -> ContinuousStruc
         }],
     };
     ContinuousStructuralArtifacts::derived(None, vec![pattern], vec![false], None, vec![], None)
-        .with_algebraic_output_evaluations(&plan, y, full)
+        .with_algebraic_output_evaluations(&plan, primal, y, full)
+}
+
+#[test]
+fn retained_linearizations_require_repeatable_primal_and_both_directional_owners() {
+    let pure = source(vec![7, 3, 11], true);
+    let full = source(vec![11, 3, 7], false);
+    assert!(
+        outputs_with_primal(&pure, &pure, &full).algebraic_projection()[0]
+            .linearization_is_repeatable()
+    );
+    let mut programs = pure.programs().to_vec();
+    programs[0].extend([
+        LinearOp::Const {
+            dst: 8,
+            value: 42.0,
+        },
+        LinearOp::ImpureRandomInit { dst: 9, seed: 8 },
+    ]);
+    let impure = ScalarProgramBlock::with_output_indices(
+        programs,
+        pure.program_spans().to_vec(),
+        pure.output_indices().to_vec(),
+    )
+    .unwrap();
+    for (primal, y, full) in [
+        (&impure, &pure, &full),
+        (&pure, &impure, &full),
+        (&pure, &pure, &impure),
+    ] {
+        assert!(
+            !outputs_with_primal(primal, y, full).algebraic_projection()[0]
+                .linearization_is_repeatable()
+        );
+    }
+    for missing in [source(vec![3, 3, 11], true), source(vec![3, 8, 11], true)] {
+        assert!(
+            !outputs_with_primal(&missing, &pure, &full).algebraic_projection()[0]
+                .linearization_is_repeatable()
+        );
+    }
 }
 
 #[test]

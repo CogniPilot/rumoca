@@ -132,6 +132,7 @@ fn failed_native_refresh_restores_values_without_disabling_native_execution() {
 fn projection(runtime: &SolveRuntime) -> RefreshProjectionModel<'_> {
     RefreshProjectionModel {
         runtime,
+        seed_linearizations: None,
         plan: &runtime.algebraic_refresh.simultaneous_plan,
         block_indices: &runtime.algebraic_refresh.simultaneous_block_indices,
         plan_validated: true,

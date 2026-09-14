@@ -255,6 +255,55 @@ The runtime repair and its focused/canary checks are complete. The remaining
 passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
 
+## Retain algebraic linearizations across directional seeds
+
+The state-only Jacobian path already retains its settled algebraic coordinate,
+but `project_algebraic_seed_with_plan_inner` rebuilt and factorized every
+selected block for every direction. Its Y/P/time point is unchanged across
+successive seeds. The focused nonlinear tensor-output regression records a
+second matrix evaluation for the second seed (`seed-linearization-red-3.log`).
+The preceding RED attempts exposed an incomplete fixture and a counter that
+missed the scalar reverse path; neither is the behavioral reproduction.
+
+Derived structural construction now certifies repeatability from the complete
+primal and both directional output catalogs, including otherwise discarded
+effects. The runtime retains the same block matrix, row scales, and LU for
+that exact complete Y/P/time coordinate. Constructor-issued block indexes keep
+the matrices attached to their original systems. Each requested seed still
+propagates its own right-hand side and passes the original residual check.
+Coordinate changes invalidate retained matrices, failure clears the entries and
+restores the caller's seed, and cloned runtimes start with empty numerical
+caches. The model's table/call context is immutable. Neither canonical programs
+nor tensor structure changes; SPEC_0038 records the numerical reuse condition.
+
+Regressions cover state and algebraic values, parameter and time changes,
+adjacent state bits, signed-zero time, parameter seeds, a singular coordinate,
+missing construction proofs, clone isolation, and impure or ambiguous primal/JVP
+output owners. All 1,110 tests across Solve IR, evaluation, solver, simulation,
+BDF, and RK45 pass (`seed-linearization-libraries-1.log`), together with their
+all-target/all-feature Clippy (`seed-linearization-clippy-1.log`).
+All seventeen repository inspection gates pass
+(`seed-linearization-repo-gates-2.log`); the first pass caught SPEC_0038 twelve
+words over budget, resolved by shortening the new rule without changing it.
+
+`multibody-seed-linearization-canary` preserves all twenty phase and band
+outcomes against `multibody-on-demand-derivatives-canary`. Its nine compared
+models and 175 initialization channels remain high, with no skipped, missing,
+nonidentifiable, or deviating traces. Source: `24c1d944` plus digest
+`7f0bb9aae11fcef6efc474ae27774035517cde8c1be898636d9a512d69ffe1d4`;
+the exact delta is `rolling-wheel/seed-linearization-canary-delta.json`.
+
+The isolated `critical-seed-linearization-profile-1` measures RollingWheel Sim
+at 1.248 seconds against 1.309 previously; user CPU decreases from 1.30 to 1.23
+seconds. The roughly 4.7% change is a single-pair measurement. The complete trace
+is byte-identical, SHA-256
+`61e23f642f39489afa0717c767501558972f2e29419b77b088befbe8b2aff3dd`,
+and canonical Solve JSON is unchanged. Worker SHA-256:
+`7b4d386c05122e0f57dbacb1085b4ff495d361ec2fe80e28d00267820bbd49db`.
+The profile retains 236 CPU samples with zero lost samples. Residual/JVP program
+223 and trigonometric calls remain prominent. This modest change does not close
+the critical OMC gap; the complete cohort gate is pending for this change.
+
 ## Request derivatives only when the numerical method needs them
 
 `SolveMeKernel::completed_integrator_step` evaluated state derivatives solely to

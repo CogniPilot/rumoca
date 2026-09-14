@@ -326,6 +326,7 @@ impl SolveRuntime {
         };
         let projection_model = RefreshProjectionModel {
             runtime: self,
+            seed_linearizations: None,
             #[cfg(test)]
             plan: projection_plan,
             block_indices: &plan.simultaneous_block_indices,

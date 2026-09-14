@@ -214,6 +214,7 @@ pub(super) struct RefreshProjectionModel<'a> {
     pub(super) block_indices: &'a [usize],
     pub(super) plan_validated: bool,
     pub(super) jacobian_v: ProjectionJacobian<'a>,
+    pub(super) seed_linearizations: Option<RefCell<std::cell::RefMut<'a, SeedProjectionCache>>>,
 }
 
 pub(super) struct RuntimeManifoldProjection<'a> {
@@ -317,6 +318,16 @@ impl<'a> ProjectionJacobian<'a> {
 }
 
 impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
+    fn algebraic_seed_linearization(
+        &self,
+        block_index: usize,
+        block: &solve::AlgebraicProjectionBlock,
+        y: &[f64],
+        args: crate::runtime::projection::AlgebraicProjectionArgs<'_>,
+    ) -> Result<Rc<crate::runtime::projection::SeedBlockLinearization>, RuntimeSolveError> {
+        self.seed_block_linearization(block_index, block, y, args)
+    }
+
     fn eval_implicit_jacobian_v_outputs(
         &self,
         selection: &solve::ProjectionJacobianOutputs,
@@ -1120,6 +1131,7 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         let model = RefreshProjectionModel {
             runtime: self,
+            seed_linearizations: None,
             #[cfg(test)]
             plan,
             block_indices: std::slice::from_ref(&block_index),

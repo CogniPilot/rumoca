@@ -46,6 +46,7 @@ pub(super) fn selected_projection(
 ) -> RefreshProjectionModel<'_> {
     RefreshProjectionModel {
         runtime,
+        seed_linearizations: None,
         plan: &runtime.algebraic_refresh.simultaneous_plan,
         block_indices: &runtime.algebraic_refresh.simultaneous_block_indices,
         plan_validated: true,
