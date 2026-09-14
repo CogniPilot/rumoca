@@ -4,7 +4,70 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest complete cohort: expression-view inlining restores the floor
+## Latest complete cohort: fixed affine conditioning preserves all traces
+
+`target/msl/multibody-affine-conditioning-full`, at `b6a78cda` plus tracked
+worktree digest `27b72247987f290dce47b2ab24944aeada03cbb440d69135beaf7451206a2b05`,
+retains 158/566 strict-high models (27.92%), including 22/42 MultiBody models.
+All 158 compared models and 20,379 initialization channels remain high.
+Eighteen reviewed exclusions remain; there are zero missing, nonidentifiable,
+or deviating comparisons. Every phase, simulation status, and band matches
+`multibody-inline-dae-view-full`. Concurrent RollingWheel Sim is 0.163662
+seconds, Driving 0.524226, and GyroscopicEffects 0.840462. Receipt:
+`rolling-wheel/affine-conditioning-full-delta.json`. Combined quick/full gates
+remain pending, and RollingWheel remains slower than OMC.
+
+The temporary `runtime-cost-probe-1` counters preserve the baseline trace
+byte for byte. Across that worker's execution, the 24-unknown affine block
+has 2,794 Jacobian evaluations, 8,355 residual evaluations, and 5,561 linear
+solves. Its sparse cache performs 5,538 numeric factorizations: changing
+candidate-derived conditioning defeats reuse within the same fixed-matrix
+refinement. The counters include initialization checks, not only Sim. The
+active BDF session reports 1,054 accepted steps, 50 error-test failures,
+2,245 nonlinear iterations, and zero nonlinear failures; its equation counters
+report 2,248 RHS calls and 160 Jacobian products, including setup probes.
+All temporary probes are archived in `runtime-cost-probe.patch` and removed.
+
+Under the constructor-issued affine relation (SPEC_0043 §6), one invocation
+already retains its exact block Jacobian. Its conditioning now belongs to
+that same immutable matrix. Corrections solve with the original row/variable
+scales so the existing bitwise matrix cache can reuse LU. Acceptance still
+reevaluates the original residual, computes fresh candidate-derived scales,
+and performs the required small-coordinate correction. Nothing is reused
+across changed matrices by an approximate comparison. This follows the
+fixed-factor correction pattern in
+[LAPACK DGERFS](https://netlib.org/lapack/explore-html/df/d32/dgerfs_8f_source.html),
+while retaining Rumoca's existing convergence policy and source residual.
+
+The reduced offset-port electrical regression first fails the new conditioning
+reuse assertion (`affine-conditioning-red-1.log`). All 69 projection tests,
+including tiny junction voltages, opposing large currents, and fresh solution
+scales, then pass with affected-package Clippy in
+`affine-conditioning-focused-2.log`. The first focused command stopped at
+formatting; it did not run tests. The five-target origin retains four high
+MultiBody models and 2,960 initialization channels. The fixed canary retains
+nine high models and 175 initialization channels with unchanged statuses and
+bands. All fifteen models in the electrical affine-regression list compare
+high, with 3,486 initialization channels high and no skipped, missing, or
+deviating comparisons. Their bands match the corresponding members of the
+preceding full cohort; the older fifteen-model focused snapshot predates four
+already-landed recoveries, so its four apparent gains earn no new credit.
+Receipts: `affine-conditioning-origin-delta.json`,
+`affine-conditioning-canary-delta.json`, and
+`affine-conditioning-electrical-delta.json`.
+
+The controlled candidate measures 0.153893 seconds against an immediate
+archived baseline recheck of 0.169451 seconds, a 9.18% reduction. Both exit
+successfully. Flat, DAE, structural DAE, and canonical Solve files are identical;
+floating-point traces differ and are validated by the OMC comparisons above.
+The candidate worker hash is
+`5b7273e9cc0b2e2464f810e6298d3cc4b71ebd6b8591fa1e38f9d1296f4cfa87`.
+Receipt: `affine-conditioning-profile-delta-1.json`. The candidate's 148 leaf
+samples include seventeen in JVP program 212 and five in sparse numeric LU;
+these self samples are distinct from invocation counts. Jacobian evaluation
+remains the next measured runtime target.
+
+## Previous complete cohort: expression-view inlining restores the floor
 
 `target/msl/multibody-inline-dae-view-full`, at `fdef84cc` plus tracked
 worktree digest `3f8fdd535362d6a4caf8c3279f4248ce82cf2dfb2f9bc65cad93bc70cbee50bd`,

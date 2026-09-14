@@ -2,6 +2,7 @@ use super::super::*;
 
 struct OffsetPortVoltages {
     plan: solve::AlgebraicProjectionPlan,
+    conditioning: std::cell::RefCell<Vec<(Vec<f64>, Vec<f64>)>>,
 }
 
 impl ImplicitProjectionModel for OffsetPortVoltages {
@@ -47,11 +48,23 @@ impl ImplicitProjectionModel for OffsetPortVoltages {
     fn algebraic_projection_block_is_affine(&self, _block: usize) -> bool {
         true
     }
+
+    fn solve_algebraic_newton_delta(
+        &self,
+        _block: usize,
+        system: ScaledNewtonSystem<'_>,
+    ) -> Option<DVector<f64>> {
+        self.conditioning
+            .borrow_mut()
+            .push((system.row_scales.to_vec(), system.variable_scales.to_vec()));
+        scaled_newton_delta(system)
+    }
 }
 
 #[test]
 fn affine_projection_preserves_a_small_junction_voltage_beside_offset_ports() {
     let model = OffsetPortVoltages {
+        conditioning: Default::default(),
         plan: solve::AlgebraicProjectionPlan {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1, 2, 3],
@@ -78,6 +91,12 @@ fn affine_projection_preserves_a_small_junction_voltage_beside_offset_ports() {
     assert!(
         (y[0] / expected - 1.0).abs() < 1e-3,
         "junction voltage must remain negative: {y:?}, expected {expected}"
+    );
+    let conditioning = model.conditioning.borrow();
+    assert!(conditioning.len() > 1, "the small voltage needs refinement");
+    assert!(
+        conditioning.windows(2).all(|pair| pair[0] == pair[1]),
+        "refinement must reuse one conditioned affine matrix"
     );
 }
 

@@ -29,6 +29,13 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         &block.y_indices,
         structure,
     )?;
+    let (row_scales, variable_scales) = algebraic_block_scales(
+        model,
+        &candidate,
+        block,
+        &jacobian,
+        structure.map(solve::JacobianStructure::pattern),
+    );
     let system = AffineBlockSystem {
         model,
         parameters: p,
@@ -36,11 +43,13 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         block,
         block_index,
         jacobian,
+        row_scales,
+        variable_scales,
         structure,
         tolerance: tol,
     };
     let residual = system.residual(&candidate)?;
-    let Some(solution) = system.solve(&candidate, &residual) else {
+    let Some(solution) = system.solve(&residual) else {
         return Ok(ProjectionBlockUpdate {
             changed: false,
             settled: false,
@@ -73,6 +82,8 @@ struct AffineBlockSystem<'a, M> {
     block: &'a solve::AlgebraicProjectionBlock,
     block_index: usize,
     jacobian: DMatrix<f64>,
+    row_scales: Vec<f64>,
+    variable_scales: Vec<f64>,
     structure: Option<&'a solve::JacobianStructure>,
     tolerance: f64,
 }
@@ -99,16 +110,17 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
         )
     }
 
-    fn solve(&self, y: &[f64], residual: &[f64]) -> Option<DVector<f64>> {
-        let (row_scales, variable_scales) = self.scales(y);
+    fn solve(&self, residual: &[f64]) -> Option<DVector<f64>> {
+        // Conditioning belongs to this fixed matrix. Candidate-dependent
+        // scales still certify the fresh source residual in `refine`.
         self.model
             .solve_algebraic_newton_delta(
                 self.block_index,
                 ScaledNewtonSystem {
                     jacobian: &self.jacobian,
                     residual,
-                    row_scales: &row_scales,
-                    variable_scales: &variable_scales,
+                    row_scales: &self.row_scales,
+                    variable_scales: &self.variable_scales,
                     structure: self.structure.map(solve::JacobianStructure::pattern),
                     tolerance: self.tolerance,
                 },
@@ -133,7 +145,7 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             // Factorization roundoff can leave small coordinates inaccurate
             // in a block containing much larger currents or forces. Refine
             // against the original residual with the same certified matrix.
-            let Some(delta) = self.solve(y, &residual) else {
+            let Some(delta) = self.solve(&residual) else {
                 return Ok(false);
             };
             let Some(changed) = self.apply_correction(y, delta.as_slice()) else {
