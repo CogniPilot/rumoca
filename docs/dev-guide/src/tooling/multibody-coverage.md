@@ -4,6 +4,26 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest complete cohort: execution optimizations preserve parity
+
+The complete `target/msl/multibody-nested-call-sharing-full` gate passes at
+`eb7f32ec05bc98eed453a5ad643f9b777d968e44`, using eleven Rumoca workers and
+the unchanged budgets, tolerances, and 566-model roster. It confirms the three
+focused optimizations below: 157/566 models remain strict-high (27.74%),
+including 21/42 MultiBody examples. The comparator measures 157 models,
+retains eighteen reviewed exclusions, and reports zero missing traces,
+nonidentifiable traces, or deviating channels. All 19,412 initialization
+channels are high. Every model retains its preceding comparison band.
+
+Seven unsuccessful models change phase/status: the six Fluid startup failures
+from `multibody-causal-ready-full` reach their existing typed frontend refusals,
+while `IMC_Transformer` times out instead of reaching its prior `EL005` refusal.
+These are recorded as failures, with no new semantic coverage credit. Receipt:
+`rolling-wheel/nested-call-sharing-full-delta.json`; worktree digest:
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+OMC version is `a96aa1a-cmake`. The OMC speed target and combined quick/full
+remain outstanding.
+
 ## Latest focused work: share exact nested source call owners
 
 On top of `0b273fb17391f0ce960e718a4ce20cd1d0670884`, pure-call registration
@@ -44,8 +64,8 @@ nine compared models high, 175 initialization channels high, eleven unchanged
 refusals, and zero skipped/missing/nonidentifiable/deviating results.
 Receipt: `rolling-wheel/nested-call-sharing-canary-delta.json`; worktree digest:
 `d928c2253b88de30dbe8b40378311c89483c6bafcba6943c944aeec04e686481`.
-The OMC speed target and combined quick/full remain outstanding. The complete
-cohort below predates these three execution/construction optimizations.
+The complete cohort above confirms these three execution/construction
+optimizations. The OMC speed target and combined quick/full remain outstanding.
 
 ## Previous focused work: emit small native tensor arithmetic directly
 
