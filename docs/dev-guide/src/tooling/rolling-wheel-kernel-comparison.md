@@ -93,8 +93,12 @@ the exact earliest-ready order, including cycles and external dependencies.
 Solve falls from a diagnostic 10.137 seconds to 8.226 seconds; the normal gate
 measures 8.149 seconds under its unchanged 10-second budget. The fixed canary
 has no phase/status/band delta, nine compared high and eleven unchanged
-refusals (`causal-ready-canary-delta.json`). Complete cohort confirmation is
-still pending. Four compact-range regressions and an exhaustive comparison of
+refusals (`causal-ready-canary-delta.json`). The complete
+`target/msl/multibody-causal-ready-full` comparison at
+`4585575a610fd989625d2cd12fa63df398c70247` confirms restoration: 157/566
+strict-high, 157 compared, eighteen reviewed exclusions skipped, zero missing,
+nonidentifiable, or deviating traces. Every preceding high model remains high;
+all 19,412 initialization channels are high. Four compact-range regressions and an exhaustive comparison of
 all 512 directed three-node graphs prove the construction-order obligations.
 
 A controlled actual-worker capture starts perf before compilation and enables

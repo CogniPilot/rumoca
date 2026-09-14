@@ -63,6 +63,29 @@ The OMC performance gap remains open. Details and reduced RED/GREEN evidence are
 
 ## Latest complete measurement
 
+`target/msl/multibody-causal-ready-full` passes at commit
+`4585575a610fd989625d2cd12fa63df398c70247`. The complete 566-model comparison
+measures **157/566 strict-high (27.74%)**: 157 models compared, eighteen
+reviewed exclusions skipped, zero missing/nonidentifiable traces, and zero
+deviating channels. All 19,412 initialization channels are high. **MultiBody is
+21/42 high**. Every previously high model stays high; `RollingWheelSetDriving`
+regains high parity under the unchanged Solve budget. The sole band change is
+that restoration. Ten phase/status rows change: six unpassed Fluid cases now
+report harness failures, and three existing simulation refusals reach typed
+structural failures instead of timing out. Those changes earn no parity credit.
+
+The gate takes 463.64 seconds with eleven Rumoca simulation workers; the OMC
+reference/comparison stage takes 313.85 seconds. Host I/O pressure was substantial
+during trace handling, so this gate duration is not a solver benchmark. The
+per-model receipt is `rolling-wheel/causal-ready-full-delta.json`; comparator
+SHA-256 is `ba7faf4f96e4f2c38e1a8c76ef10ddb4ccc0cda74e35f2652690c50b7e098e53`.
+Worktree digest is
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`;
+the preserved untracked communication file accounts for the dirty marker.
+Combined quick/full and the OMC speed target remain outstanding.
+
+## Previous complete measurement: exact pure-call input reuse
+
 `target/msl/multibody-pure-input-reuse-full` passes the checked-in quality
 gate at commit `716bba8bef01f04259655e88dcb0e6112b66011a` in 185.80 seconds.
 The comparator measures **156/566 strict-high (27.56%)**: 156 models compared,
@@ -74,9 +97,9 @@ Against `multibody-seed-linearization-full`, `Rectifier`,
 `CompareTransformers`, and `DoublePendulumInitTip` advance from refusal to
 strict-high. `RollingWheelSetDriving` loses its previous strict-high result:
 the worker exceeds the 10-second Solve construction budget before simulation.
-The aggregate gain does not excuse that regression. The focused repair above
-still requires complete cohort confirmation; no regression-free milestone or
-baseline promotion is claimed. Fourteen models change phase/status details in total. The exact
+The aggregate gain does not excuse that regression. The newer complete run above
+confirms its repair; no baseline promotion is claimed. Fourteen models change
+phase/status details in total. The exact
 receipt is `rolling-wheel/pure-input-reuse-full-delta.json`.
 
 The worktree digest is
