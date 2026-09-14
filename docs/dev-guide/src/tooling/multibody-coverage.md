@@ -4,7 +4,33 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest complete cohort: previous high-parity floor restored
+## Latest complete cohort: identity affinity preserves the restored floor
+
+The complete `target/msl/multibody-identity-affinity-full` comparison at
+`cc51f08ac23451e75ed9705085183900cc2e05ab` retains 158/566 strict-high models
+(27.92%), including 22/42 MultiBody examples. All 20,379 compared
+initialization channels are high. Eighteen reviewed exclusions remain;
+there are zero missing, nonidentifiable, or deviating comparisons. The entire
+566-row band table is unchanged from `multibody-shared-materialization-full`.
+Media Inverse_sh_TX changes its existing frontend refusal from EF015 to ED019;
+this earns no coverage credit and no model changes simulation status or band.
+
+RollingWheel retains all 184 trajectory and initialization channels high.
+Concurrent Sim falls from 0.782661 to 0.327667 seconds; the controlled
+measurement below is 0.288191 seconds. It remains slower than OMC. Solve costs
+are SphericalConstraint 4.522983 seconds, RollingWheelSetDriving 9.211795,
+and GyroscopicEffects 9.539006. The latter two still need more margin under
+the unchanged ten-second budget. The run uses eleven simulation workers,
+the named commit's tracked source, and the existing clean tracked-tree digest;
+the foreign untracked communication file remains untouched. Receipt:
+`rolling-wheel/identity-affinity-full-delta.json`.
+
+All focused, fixed-canary, core, and architecture/spec checks recorded below
+pass. Combined quick/full verification and the remaining runtime performance
+gap remain open. This is not a baseline promotion, 100% MultiBody result, or
+release approval.
+
+## Previous complete cohort: previous high-parity floor restored
 
 The complete `target/msl/multibody-shared-materialization-full` comparison at
 `f494d96207769c257168356e29fc5285b022fedb` restores 158/566 high models
