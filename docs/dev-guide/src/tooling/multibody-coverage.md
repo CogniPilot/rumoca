@@ -4,7 +4,37 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest complete cohort: two state-reduction regressions recorded
+## Latest complete cohort: fixed-anchor repair and remaining regressions
+
+The complete `target/msl/multibody-fixed-anchor-full` run at
+`cf0c2c61f01b914cfa76b1813c1ffaa4f293cc33` compares 156/566 models high
+(27.56%), including 20/42 MultiBody examples. The comparator measures 156
+models, retains eighteen reviewed exclusions, and reports zero missing,
+nonidentifiable, or deviating traces. All 18,520 initialization channels are
+high. The configured CLI gate exits zero; the unresolved regressions still
+prevent promotion or release.
+
+SphericalConstraint regains its high band, with Solve 5.225251 seconds and
+Sim 0.261808 seconds. GyroscopicEffects again exceeds the unchanged ten-second
+Solve budget, despite passing the preceding focused comparison in 9.499843
+seconds. RollingWheelSetDriving loses its prior high band to the same Solve
+budget; its preceding full-run Solve time was already 9.430834 seconds. These
+failures remain measured failures, without retries or changed limits. The
+elementary RollingWheel retains all 184 trajectory and initialization channels
+high; Sim is 0.830653 seconds, still slower than OMC.
+
+The full run also changes Thermal HeatTransfer `GenerationOfFMUs` from its
+previous typed fixed-initial-value refusal to a worker stack overflow
+(`SIGABRT`). This is an actionable compiler regression to reduce and repair,
+even though the model had no prior high band. The original log records
+`rumoca-worker-main` stack exhaustion. PrismaticConstraint now reaches a
+structural refusal instead of timing out, and Media `Inverse_sh_TX` changes
+its frontend refusal phase; neither earns coverage credit. The complete
+per-model receipt is `rolling-wheel/fixed-anchor-full-delta.json`. The next
+work is the stack-overflow root cause and remaining Solve costs; no full-cohort
+restoration is claimed from the focused three-model success.
+
+## Previous complete cohort: two state-reduction regressions recorded
 
 The complete `target/msl/multibody-no-slip-full` run at
 `5be301f43b2738cde950733e59de1e5e57aa9faa` compares 156/566 models high
