@@ -6,6 +6,32 @@ complete MultiBody support has not been established.
 
 ## Latest complete measurement
 
+`target/msl/multibody-seed-linearization-full` passes at commit
+`5fbcc036d50f1124b99069797a64a41fcd500d00`, working-tree digest
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The full 566-model gate takes 153.51 seconds with eleven Rumoca workers.
+All **154 compared models remain strict-high (27.21%)**, with eighteen unchanged
+reviewed exclusions skipped, zero missing/nonidentifiable traces, and zero
+deviating channels. All 18,693 initial channels remain high. **MultiBody stays
+20/42 high**. Every model retains its previous phase outcome and agreement band;
+the exact delta is `rolling-wheel/seed-linearization-full-delta.json`.
+
+The isolated profile measures RollingWheel Sim at 1.248 seconds, versus 1.309
+before fixed-coordinate matrix reuse, with a byte-identical trace. The critical
+OMC performance gap remains open. Combined `verify quick` and `verify full`
+remain pending; no PR, release, or baseline promotion is claimed.
+
+The next structural investigation compares the requested and selected state
+coordinates. Flat and both DAE artifacts retain `StateSelect.always` on
+`wheel1.x`, `wheel1.y`, `wheel1.angles`, and `wheel1.der_angles`, but classify
+these eight coordinates as algebraic. Rumoca integrates twelve other
+coordinates; OMC integrates those eight requested coordinates. This establishes
+a selection difference, not yet its causal contribution to the runtime gap.
+The 21-variable dynamics block versus OMC's six-variable block remains a
+related lead, recorded in `rolling-wheel/algebraic-kernel-next-target.json`.
+
+## Previous complete measurement: on-demand derivatives
+
 `target/msl/multibody-on-demand-derivatives-full` passes at commit
 `c1145fa9a50e0af44e4bc4ac02c74a5317bd14f9`, working-tree digest
 `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
@@ -302,7 +328,9 @@ and canonical Solve JSON is unchanged. Worker SHA-256:
 `7b4d386c05122e0f57dbacb1085b4ff495d361ec2fe80e28d00267820bbd49db`.
 The profile retains 236 CPU samples with zero lost samples. Residual/JVP program
 223 and trigonometric calls remain prominent. This modest change does not close
-the critical OMC gap; the complete cohort gate is pending for this change.
+the critical OMC gap. The complete `multibody-seed-linearization-full` gate
+passes at `5fbcc036` with all 566 phase and band outcomes unchanged; see the
+latest complete measurement above.
 
 ## Request derivatives only when the numerical method needs them
 
