@@ -848,30 +848,31 @@ fn compile_assignment_schedule_slices(
 pub(crate) fn compile_jacobian_rows(
     rows: &[Vec<LinearOp>],
 ) -> Result<CompiledJacobianRows, CompileError> {
-    compile_jacobian_rows_attached(rows, None)
+    compile_jacobian_rows_attached(rows, None, None)
 }
 
 pub(crate) fn compile_jacobian_rows_with_pure_calls(
     rows: &[Vec<LinearOp>],
     pure_calls: Rc<typed_program::CompiledPureCallTable>,
 ) -> Result<CompiledJacobianRows, CompileError> {
-    compile_jacobian_rows_attached(rows, Some(pure_calls))
+    compile_jacobian_rows_attached(rows, Some(pure_calls), None)
 }
 
 fn compile_jacobian_rows_attached(
     rows: &[Vec<LinearOp>],
     pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
+    projection: Option<usize>,
 ) -> Result<CompiledJacobianRows, CompileError> {
     let mut emitter = CraneliftEmitter::new(pure_calls.as_deref())?;
     let plans = plan_rows(rows)?;
     let mut func_ids = checked_vec_with_capacity(rows.len(), "Jacobian row function ids")?;
     for (index, row) in rows.iter().enumerate() {
         validate_row_supported_by_jit(row, RowKind::JacobianV)?;
-        let func_id = emitter.compile_row(
-            row,
-            RowKind::JacobianV,
-            &format!("rumoca_jacobian_row_{index}"),
-        )?;
+        let name = match projection {
+            Some(block) => format!("rumoca_projection_{block}_jacobian_row_{index}"),
+            None => format!("rumoca_jacobian_row_{index}"),
+        };
+        let func_id = emitter.compile_row(row, RowKind::JacobianV, &name)?;
         func_ids.push(func_id);
     }
     finalize_jit_module(&mut emitter.module)?;

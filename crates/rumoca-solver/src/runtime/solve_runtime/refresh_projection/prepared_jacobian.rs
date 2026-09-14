@@ -30,7 +30,7 @@ pub(crate) fn prepare_projection_jacobians(
             else {
                 return Ok(None);
             };
-            if !source.shares_program_owner(application.source()) {
+            if !source.shares_program_owner(application.canonical_source()) {
                 return Ok(None);
             }
             let all_forward = application.rows().iter().all(|&row| {
@@ -87,4 +87,27 @@ impl RefreshProjectionModel<'_> {
             .map_err(RuntimeSolveError::solve_ir)?;
         Ok(true)
     }
+}
+
+pub(crate) fn validate_projection_primal_source(
+    primal: &solve::ScalarProgramBlock,
+    structures: &solve::ContinuousStructuralArtifacts,
+) -> Result<(), EvalSolveError> {
+    for application in structures
+        .algebraic_projection()
+        .iter()
+        .filter_map(solve::JacobianStructure::jacobian_application)
+    {
+        if application
+            .primal_source()
+            .is_some_and(|source| !primal.shares_program_owner(source))
+        {
+            return Err(EvalSolveError::InvalidRow {
+                message: "projection metadata belongs to a different canonical primal source"
+                    .into(),
+                span: primal.first_source_span(),
+            });
+        }
+    }
+    Ok(())
 }

@@ -4,6 +4,49 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest focused work: block-specific numerical AD seed domains
+
+RollingWheel's hottest projection JVP reads 47 seed coordinates, but only six
+belong to that block's unknowns. The other 41 coordinates are fixed during the
+block solve. The compiler now issues a separate numerical AD kernel for the
+block's exact seed domain, preserving ordered primal operations, whole-program
+outputs, canonical primal/JVP owners, and the unrestricted state/parameter
+derivatives. Partially active tensor loads split at domain boundaries; compact
+register-run packing preserves the exact ordered register values.
+
+All 1,041 focused IR, AD, native-execution, and solver tests and affected-package
+all-target/all-feature Clippy pass (`block-seed-domain-focused-3.log`). Earlier
+attempts retain a missing re-export and a nesting lint. Regressions check fixed
+orientation matrix products, partial tensors of 4,096 elements, exact register
+bits, fresh Y/P/time, and stale canonical primal rejection.
+
+The ordinary worker `4b4dc9c53ac993e1bc3a3d73d6d18d468bc26672305960213b5ae2cb06562dc8`
+takes 96.962 ms against the immediate archived `21e0c64e…` recheck at 112.555 ms:
+13.85% improvement for that pair. Flat, DAE, structural DAE, serialized Solve,
+and complete trace bytes are identical (`block-seed-domain-profile-delta-1.json`).
+The separate 40-run diagnostic has a 98.874 ms median (98.592–104.560 ms), with
+all complete traces bit-identical. The hottest selected program shrinks from
+1,012 to 536 operations; its leaf samples fall from 561 in the earlier profile
+to 212 in the new profile. These are sampled profiles, not instruction timings.
+RollingWheel remains slower than OMC.
+
+The first diagnostic attempt hit the 6 GiB worker limit because the temporary
+artifact probe duplicated shared general programs. Its exit 70 is retained and
+earns no validation credit. The bounded second probe dumps only specialized
+sources. All probe code is removed before ordinary verification; the restored
+worker source has SHA-256 `0138785a9c71c923eb46793cbb95c5b069323b40af0f4df3fa0861244a24a5ee`.
+
+The fixed 20-model canary retains every phase and band: nine high comparisons,
+175 high initialization channels, and zero skipped, missing, nonidentifiable,
+or deviating comparisons. The five-model origin check retains four high
+comparisons, 2,960 high initialization channels, and the existing
+GenerationOfFMUs EL005 refusal. Receipts are
+`block-seed-domain-{canary,origin}-delta.json`. The 15-model electrical regression
+set also retains every phase and band: all 15 comparisons and 3,486 initialization
+channels are high, with zero skipped, missing, nonidentifiable, or deviating
+comparisons (`block-seed-domain-electrical-delta.json`). These are focused checks,
+not a new cohort claim.
+
 ## Latest focused work: prepare complete colored Jacobian applications
 
 The candidate binds each projection's colors and output placements to its

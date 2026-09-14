@@ -8,6 +8,8 @@ pub struct ProjectionJacobianApplication {
     y_indices: Box<[usize]>,
     output_len: usize,
     source: ScalarProgramBlock,
+    canonical_source: ScalarProgramBlock,
+    primal_source: Option<ScalarProgramBlock>,
     colors: Box<[ProjectionJacobianColor]>,
 }
 
@@ -63,8 +65,50 @@ impl ProjectionJacobianApplication {
             y_indices: block.y_indices.clone().into_boxed_slice(),
             output_len,
             source: source.clone(),
+            canonical_source: source.clone(),
+            primal_source: None,
             colors,
         })
+    }
+
+    pub const fn canonical_source(&self) -> &ScalarProgramBlock {
+        &self.canonical_source
+    }
+    pub const fn primal_source(&self) -> Option<&ScalarProgramBlock> {
+        self.primal_source.as_ref()
+    }
+
+    pub(super) fn with_specialized_source(
+        mut self,
+        primal: &ScalarProgramBlock,
+        source: ScalarProgramBlock,
+    ) -> Option<Self> {
+        let catalog = ProgramOutputCatalog::new(&source);
+        let colors = self
+            .colors
+            .iter()
+            .map(|color| {
+                let placements = color
+                    .outputs()
+                    .programs()
+                    .iter()
+                    .flat_map(|program| {
+                        program
+                            .placements()
+                            .iter()
+                            .map(|&(_, target)| (self.rows[target % self.rows.len()], target))
+                    })
+                    .collect::<Vec<_>>();
+                Some(ProjectionJacobianColor {
+                    seed_indices: color.seed_indices.clone(),
+                    outputs: catalog.selection(&placements, self.output_len)?,
+                })
+            })
+            .collect::<Option<Box<[_]>>>()?;
+        self.colors = colors;
+        self.source = source;
+        self.primal_source = Some(primal.clone());
+        Some(self)
     }
 
     pub const fn block_index(&self) -> usize {

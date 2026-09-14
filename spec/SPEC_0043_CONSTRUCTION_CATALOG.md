@@ -296,6 +296,21 @@ status, and publishes the matrix only after success. Failed calls cannot leave
 active seeds for the next call. This permits neither numerical result caching
 nor narrowing general initialization or parameter-sensitivity seed domains.
 
+A separate block-Jacobian kernel may restrict numerical AD to the unknown
+coordinates issued by that projection block. Its construction retains the
+canonical primal and unrestricted directional owners, selected logical outputs,
+and exact seed domain. Coordinates outside that domain have zero tangents;
+their primal evaluations and validation effects remain ordered. Tensor loads
+split only at seed-domain boundaries and remain compact ranges. Native execution
+may consume this kernel only for its owning block and issued colors; canonical
+source replacement invalidates it. Initialization, general directional calls,
+and parameter sensitivity retain their unrestricted seed domains. Wire replay
+reconstructs the specialization through the same numerical AD producer.
+
+AD register packing may join exact contiguous or repeated register-version
+runs into tensor concatenations. Packing preserves the ordered input tuple;
+its compact structure follows run boundaries rather than tensor scalar extent.
+
 An algebraic block's residual selection may group logical outputs of the same
 canonical program when construction proves unique, complete, repeatable source
 ownership. One residual evaluation executes each issued program once at the

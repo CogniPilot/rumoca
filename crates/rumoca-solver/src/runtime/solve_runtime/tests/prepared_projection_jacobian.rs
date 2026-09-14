@@ -203,3 +203,34 @@ fn complete_projection_declines_a_separately_materialized_source_view() {
     assert!(prepared.iter().all(Option::is_none));
     assert_eq!(native.prepares.get(), 0);
 }
+
+#[test]
+fn prepared_projection_rejects_a_replaced_canonical_primal_source() {
+    let mut model = grouped_projection_jvp::coupled_model();
+    let primal = to_scalar_program_block(&model.problem.continuous.implicit_rhs).unwrap();
+    let structure = &mut model.artifacts.continuous.structural;
+    let application = structure.algebraic_projection()[0]
+        .jacobian_application()
+        .unwrap();
+    let domain = solve::ProjectionJacobianSeedDomain::derive(application, &primal).unwrap();
+    let derivative = application.source().clone();
+    let specialized = domain.with_lowered_derivative(derivative).unwrap();
+    structure
+        .bind_algebraic_jacobian_application(specialized)
+        .unwrap();
+    assert!(SolveRuntime::new_fixture(&model).is_ok());
+    let replaced = solve::ScalarProgramBlock::with_output_indices(
+        primal.programs().to_vec(),
+        primal.program_spans().to_vec(),
+        primal.output_indices().to_vec(),
+    )
+    .unwrap();
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::ScalarPrograms(replaced)],
+    };
+    let result = SolveRuntime::new_fixture(&model);
+    assert!(
+        matches!(result, Err(EvalSolveError::InvalidRow { message, .. })
+        if message.contains("different canonical primal source"))
+    );
+}

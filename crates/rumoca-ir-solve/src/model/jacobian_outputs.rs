@@ -2,6 +2,7 @@
 
 mod program_effects;
 mod projection_application;
+mod seed_domain;
 
 #[cfg(test)]
 mod tests;
@@ -11,6 +12,7 @@ use std::collections::BTreeMap;
 use super::*;
 
 pub use projection_application::{ProjectionJacobianApplication, ProjectionJacobianColor};
+pub use seed_domain::ProjectionJacobianSeedDomain;
 
 /// One invocation of an existing tensor/scalar program and its selected outputs.
 #[derive(Clone, Debug)]
@@ -70,6 +72,31 @@ impl ProjectionJacobianOutputs {
 }
 
 impl ContinuousStructuralArtifacts {
+    /// Install only a specialization derived from this exact issued application.
+    pub fn bind_algebraic_jacobian_application(
+        &mut self,
+        application: ProjectionJacobianApplication,
+    ) -> Result<(), &'static str> {
+        let structure = self
+            .algebraic_projection
+            .get_mut(application.block_index())
+            .ok_or("projection specialization block is outside the issued plan")?;
+        let original = structure
+            .jacobian_application
+            .as_ref()
+            .ok_or("projection specialization has no canonical application")?;
+        if !original
+            .canonical_source()
+            .shares_program_owner(application.canonical_source())
+            || original.rows() != application.rows()
+            || original.y_indices() != application.y_indices()
+        {
+            return Err("projection specialization belongs to a different source or block");
+        }
+        structure.jacobian_application = Some(application);
+        Ok(())
+    }
+
     /// Bind the retained state constraints to their exact directional outputs.
     pub fn with_manifold_output_evaluations(
         mut self,

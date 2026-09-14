@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl AdBuilder {
+impl AdBuilder<'_> {
     pub(super) fn tangent_is_zero(&self, value: DualReg) -> bool {
         self.cached_zero == Some(value.du)
     }

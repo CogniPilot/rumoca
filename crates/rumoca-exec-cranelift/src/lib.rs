@@ -177,12 +177,23 @@ impl CompiledJacobianV {
         &self,
         application: &rumoca_ir_solve::ProjectionJacobianApplication,
     ) -> Result<CompiledProjectionJacobian, CompileError> {
-        if !self.source.shares_program_owner(application.source()) {
+        if !self
+            .source
+            .shares_program_owner(application.canonical_source())
+        {
             return Err(CompileError::Input(
                 "projection application belongs to a different scalar-program owner".into(),
             ));
         }
-        CompiledProjectionJacobian::new(self.jit.clone(), application.clone())
+        let jit = if self.source.shares_program_owner(application.source()) {
+            self.jit.clone()
+        } else {
+            Rc::new(self.jit.compile_projection_rows(
+                application.source().programs(),
+                application.block_index(),
+            )?)
+        };
+        CompiledProjectionJacobian::new(jit, application.clone())
     }
     /// Execute one existing program once, retaining all local outputs.
     pub fn call_program_outputs(

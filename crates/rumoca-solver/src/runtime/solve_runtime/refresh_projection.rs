@@ -2,7 +2,9 @@ mod grouped_jacobian;
 mod grouped_residual;
 mod prepared_jacobian;
 
-pub(super) use prepared_jacobian::{prepare_projection_jacobians, projection_jacobian_source};
+pub(super) use prepared_jacobian::{
+    prepare_projection_jacobians, projection_jacobian_source, validate_projection_primal_source,
+};
 
 use crate::runtime::projection::{ScaledNewtonSystem, per_row_torn_block_sweep};
 use nalgebra::DVector;

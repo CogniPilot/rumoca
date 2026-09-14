@@ -8,7 +8,11 @@
 #[cfg(test)]
 mod inactive_tangent_tests;
 mod inactive_tangents;
+mod seed_domain;
+#[cfg(test)]
+mod seed_domain_tests;
 mod tensor_packing;
+pub(crate) use seed_domain::lower_projection_domain;
 
 use crate::LowerError;
 use rumoca_ir_solve::{
@@ -57,7 +61,7 @@ pub fn lower_compute_block_full_jvp(
 
 fn lower_compute_block_jvp_with_seed_mode(
     block: &ComputeBlock,
-    seed_mode: SeedMode,
+    seed_mode: SeedMode<'_>,
 ) -> Result<ComputeBlock, LowerError> {
     let span = compute_block_context_span(block);
     let mut nodes = ad_vec_with_capacity(block.nodes.len(), "compute block JVP node count", span)?;
@@ -69,7 +73,7 @@ fn lower_compute_block_jvp_with_seed_mode(
 
 fn lower_compute_node_jvp(
     node: &ComputeNode,
-    seed_mode: SeedMode,
+    seed_mode: SeedMode<'_>,
 ) -> Result<ComputeNode, LowerError> {
     match node {
         ComputeNode::ScalarPrograms(rows) => {
@@ -163,7 +167,7 @@ fn lower_affine_jvp_ops(
     load_strides: &[AffineStencilLoadStride],
     const_strides: &[AffineStencilConstStride],
     span: rumoca_core::Span,
-    seed_mode: SeedMode,
+    seed_mode: SeedMode<'_>,
 ) -> Result<AffineJvpOps, LowerError> {
     validate_affine_jvp_stride_targets(base_ops, load_strides, const_strides, span)?;
     let mut builder = AdBuilder::new_with_span(seed_mode, span);
@@ -269,7 +273,7 @@ fn validate_affine_jvp_stride_targets(
 
 fn lower_matmul_jvp_node(
     node: &ComputeNode,
-    seed_mode: SeedMode,
+    seed_mode: SeedMode<'_>,
 ) -> Result<ComputeNode, LowerError> {
     let ComputeNode::MatMul {
         lhs_ops,
@@ -366,14 +370,14 @@ fn full_tensor_pattern(
         .map_err(|error| ad_contract_violation(error.to_string(), span))
 }
 
-fn lower_tensor_operand(
+fn lower_tensor_operand<'seed>(
     ops: &[LinearOp],
     value_start: Reg,
     value_count: usize,
     next_reg: Reg,
     span: rumoca_core::Span,
-    seed_mode: SeedMode,
-) -> Result<(AdBuilder, Vec<DualReg>), LowerError> {
+    seed_mode: SeedMode<'seed>,
+) -> Result<(AdBuilder<'seed>, Vec<DualReg>), LowerError> {
     let mut builder = AdBuilder::new_with_span(seed_mode, span);
     builder.next_reg = next_reg;
     for op in ops {
@@ -484,7 +488,7 @@ fn compute_node_context_span(node: &ComputeNode) -> Option<rumoca_core::Span> {
     }
 }
 
-fn ops_reference_seeded_inputs(ops: &[LinearOp], seed_mode: SeedMode) -> bool {
+fn ops_reference_seeded_inputs(ops: &[LinearOp], seed_mode: SeedMode<'_>) -> bool {
     ops.iter().any(|op| {
         matches!(op, LinearOp::LoadY { .. })
             || matches!(seed_mode, SeedMode::SolverYAndP { .. })
@@ -503,7 +507,7 @@ struct LinSolveJvpInput<'ops> {
     matrix_pattern: rumoca_ir_solve::StructuralPattern,
     metadata: rumoca_ir_solve::TensorNodeMetadata,
     span: rumoca_core::Span,
-    seed_mode: SeedMode,
+    seed_mode: SeedMode<'ops>,
 }
 
 fn lower_linsolve_jvp_node(input: LinSolveJvpInput<'_>) -> Result<ComputeNode, LowerError> {
@@ -616,7 +620,7 @@ pub fn lower_scalar_program_block_full_ad_with_spans(
 fn lower_scalar_program_rows_ad(
     primal_rows: &[Vec<LinearOp>],
     row_spans: &[rumoca_core::Span],
-    seed_mode: SeedMode,
+    seed_mode: SeedMode<'_>,
     context: &'static str,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let span = first_non_dummy_span(row_spans);
@@ -679,7 +683,7 @@ fn first_non_dummy_span(spans: &[rumoca_core::Span]) -> Option<rumoca_core::Span
 
 fn lower_row_ad_with_span(
     primal_ops: &[LinearOp],
-    seed_mode: SeedMode,
+    seed_mode: SeedMode<'_>,
     span: Option<rumoca_core::Span>,
     fold_program_cache: FoldAdCache,
 ) -> Result<Vec<LinearOp>, LowerError> {
@@ -692,9 +696,12 @@ fn lower_row_ad_with_span(
 }
 
 #[derive(Clone, Copy, Default)]
-enum SeedMode {
+enum SeedMode<'a> {
     #[default]
     SolverYOnly,
+    SolverYSubset {
+        active: &'a [usize],
+    },
     SolverYAndP {
         p_seed_offset: usize,
     },
@@ -708,7 +715,7 @@ enum StoreOutputMode {
     Dual,
 }
 
-struct AdBuilder {
+struct AdBuilder<'a> {
     ops: Vec<LinearOp>,
     next_reg: Reg,
     map: HashMap<Reg, DualReg>,
@@ -718,14 +725,14 @@ struct AdBuilder {
     cached_one: Option<Reg>,
     cached_ln10: Option<Reg>,
     cached_two: Option<Reg>,
-    seed_mode: SeedMode,
+    seed_mode: SeedMode<'a>,
     span: Option<rumoca_core::Span>,
     store_output_mode: StoreOutputMode,
     fold_program_cache: FoldAdCache,
     conditional_program_cache: ConditionalAdCache,
 }
 
-impl Default for AdBuilder {
+impl Default for AdBuilder<'_> {
     fn default() -> Self {
         Self {
             ops: Vec::new(),
@@ -746,12 +753,12 @@ impl Default for AdBuilder {
     }
 }
 
-impl AdBuilder {
-    fn new_with_span(seed_mode: SeedMode, span: rumoca_core::Span) -> Self {
+impl<'a> AdBuilder<'a> {
+    fn new_with_span(seed_mode: SeedMode<'a>, span: rumoca_core::Span) -> Self {
         Self::new_with_optional_span(seed_mode, Some(span))
     }
 
-    fn new_with_optional_span(seed_mode: SeedMode, span: Option<rumoca_core::Span>) -> Self {
+    fn new_with_optional_span(seed_mode: SeedMode<'a>, span: Option<rumoca_core::Span>) -> Self {
         Self {
             seed_mode,
             span,
@@ -760,7 +767,7 @@ impl AdBuilder {
     }
 
     fn new_with_optional_span_and_fold_cache(
-        seed_mode: SeedMode,
+        seed_mode: SeedMode<'a>,
         span: Option<rumoca_core::Span>,
         fold_program_cache: FoldAdCache,
     ) -> Self {
@@ -1759,14 +1766,18 @@ impl AdBuilder {
 
     fn lower_load_y(&mut self, dst: Reg, index: usize) -> Result<(), LowerError> {
         let re = self.emit_load_y(index)?;
-        let du = self.emit_load_seed(index)?;
+        let du = if self.seed_mode.y_is_active(index) {
+            self.emit_load_seed(index)?
+        } else {
+            self.zero_reg()?
+        };
         self.bind(dst, DualReg { re, du })
     }
 
     fn lower_load_p(&mut self, dst: Reg, index: usize) -> Result<(), LowerError> {
         let re = self.emit_load_p(index)?;
         let du = match self.seed_mode {
-            SeedMode::SolverYOnly => self.zero_reg()?,
+            SeedMode::SolverYOnly | SeedMode::SolverYSubset { .. } => self.zero_reg()?,
             SeedMode::SolverYAndP { .. } => self.emit_load_seed(self.p_seed_index(index)?)?,
         };
         self.bind(dst, DualReg { re, du })
@@ -1787,7 +1798,7 @@ impl AdBuilder {
         let idx = self.lookup(index)?;
         let re = self.emit_load_indexed_p(base, count, idx.re)?;
         let du = match self.seed_mode {
-            SeedMode::SolverYOnly => self.zero_reg()?,
+            SeedMode::SolverYOnly | SeedMode::SolverYSubset { .. } => self.zero_reg()?,
             SeedMode::SolverYAndP { .. } => {
                 self.emit_load_indexed_seed(self.p_seed_index(base)?, count, idx.re)?
             }
@@ -2778,9 +2789,17 @@ impl AdBuilder {
                 "forward AD expects a primal tensor load with one lane and no seed",
             ));
         }
+        if input == rumoca_ir_solve::TensorInputKind::Y
+            && let SeedMode::SolverYSubset { active } = self.seed_mode
+        {
+            return self.lower_domain_tensor_load(dst_start, input_start, count, active);
+        }
         let seed_start = match (input, self.seed_mode) {
             (rumoca_ir_solve::TensorInputKind::Y, _) => Some(input_start),
-            (rumoca_ir_solve::TensorInputKind::P, SeedMode::SolverYOnly) => None,
+            (
+                rumoca_ir_solve::TensorInputKind::P,
+                SeedMode::SolverYOnly | SeedMode::SolverYSubset { .. },
+            ) => None,
             (rumoca_ir_solve::TensorInputKind::P, SeedMode::SolverYAndP { .. }) => {
                 Some(self.p_seed_index(input_start)?)
             }
@@ -2797,35 +2816,7 @@ impl AdBuilder {
                 }
             });
         }
-        let dual_start = self.next_reg;
-        for _ in 0..checked_ad_product(count, 2, self.span, "tensor load dual output")? {
-            self.alloc_reg()?;
-        }
-        self.ops.push(LinearOp::TensorLoad {
-            dst_start: dual_start,
-            input,
-            input_start,
-            count,
-            seed_start,
-            lanes: 2,
-        });
-        for offset in 0..count {
-            let primal = checked_ad_reg_offset(dst_start, offset, self.span, "tensor load output")?;
-            let dual = checked_ad_reg_offset(
-                dual_start,
-                checked_ad_product(offset, 2, self.span, "tensor load dual lane")?,
-                self.span,
-                "tensor load dual output",
-            )?;
-            self.bind(
-                primal,
-                DualReg {
-                    re: dual,
-                    du: dual + 1,
-                },
-            )?;
-        }
-        Ok(())
+        self.lower_active_tensor_load(dst_start, input, input_start, count, seed_start)
     }
 
     fn lower_compare(
@@ -3339,7 +3330,7 @@ impl AdBuilder {
 
     fn p_seed_index(&self, index: usize) -> Result<usize, LowerError> {
         match self.seed_mode {
-            SeedMode::SolverYOnly => Ok(index),
+            SeedMode::SolverYOnly | SeedMode::SolverYSubset { .. } => Ok(index),
             SeedMode::SolverYAndP { p_seed_offset } => {
                 p_seed_offset.checked_add(index).ok_or_else(|| {
                     ad_optional_contract_violation(
@@ -3526,7 +3517,7 @@ fn ad_vec_with_capacity<T>(
 }
 
 fn collect_dual_range(
-    builder: &AdBuilder,
+    builder: &AdBuilder<'_>,
     start: Reg,
     len: usize,
     span: impl Into<Option<rumoca_core::Span>>,

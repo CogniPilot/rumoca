@@ -8,7 +8,7 @@ fn source_span() -> rumoca_core::ProvenanceSpan {
         .unwrap()
 }
 
-fn lower_dual(program: Vec<LinearOp>, seed_mode: SeedMode) -> ScalarProgramBlock {
+fn lower_dual(program: Vec<LinearOp>, seed_mode: SeedMode<'_>) -> ScalarProgramBlock {
     let mut builder = AdBuilder::new_with_span(seed_mode, source_span().span());
     builder.store_output_mode = StoreOutputMode::Dual;
     for operation in program {

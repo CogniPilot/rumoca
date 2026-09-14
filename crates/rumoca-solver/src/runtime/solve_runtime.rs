@@ -509,6 +509,10 @@ impl SolveRuntime {
             }
         }
         let implicit_scalar_programs = implicit_scalar_projection.into_block();
+        refresh_projection::validate_projection_primal_source(
+            &implicit_scalar_programs,
+            &continuous_structural,
+        )?;
         let compiled_implicit_rhs = execution_backend.as_ref().and_then(|backend| {
             optional_compiled(
                 "implicit_rhs",

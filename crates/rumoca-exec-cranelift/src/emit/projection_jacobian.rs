@@ -147,3 +147,13 @@ fn program_output_capacity(
     }
     Ok(count)
 }
+
+impl CompiledJacobianRows {
+    pub(crate) fn compile_projection_rows(
+        &self,
+        rows: &[Vec<LinearOp>],
+        block: usize,
+    ) -> Result<Self, CompileError> {
+        compile_jacobian_rows_attached(rows, self._pure_calls.clone(), Some(block))
+    }
+}

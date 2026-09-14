@@ -176,3 +176,105 @@ fn prepared_projection_preserves_output_on_failure_and_clears_seeds_before_reuse
         .unwrap();
     assert_eq!(out, [2.0, 12.0, 3.0, 12.0]);
 }
+
+fn domain_primal() -> ScalarProgramBlock {
+    use LinearOp as L;
+    let original = source();
+    let first = vec![
+        L::LoadY { dst: 0, index: 0 },
+        L::LoadY { dst: 1, index: 1 },
+        L::LoadP { dst: 2, index: 0 },
+        L::LoadTime { dst: 3 },
+        L::Const { dst: 4, value: 0.5 },
+        L::Binary {
+            dst: 5,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 0,
+        },
+        L::Binary {
+            dst: 6,
+            op: BinaryOp::Mul,
+            lhs: 4,
+            rhs: 5,
+        },
+        L::Binary {
+            dst: 7,
+            op: BinaryOp::Mul,
+            lhs: 2,
+            rhs: 1,
+        },
+        L::Binary {
+            dst: 8,
+            op: BinaryOp::Add,
+            lhs: 6,
+            rhs: 7,
+        },
+        L::Binary {
+            dst: 9,
+            op: BinaryOp::Mul,
+            lhs: 3,
+            rhs: 1,
+        },
+        L::StoreOutputRange {
+            start: 8,
+            count: 2,
+            stride: 1,
+        },
+    ];
+    ScalarProgramBlock::with_output_indices(
+        vec![first, original.programs()[1].clone()],
+        vec![fixture_span(); 2],
+        vec![7, 3, 11],
+    )
+    .unwrap()
+}
+
+#[test]
+fn prepared_projection_compiles_a_source_bound_selected_seed_kernel() {
+    let source = source();
+    let original = application(&source, vec![3, 7]);
+    let primal = domain_primal();
+    let domain = rumoca_ir_solve::ProjectionJacobianSeedDomain::derive(&original, &primal).unwrap();
+    assert_eq!(domain.primal().programs().len(), 1);
+    let derivative = ScalarProgramBlock::with_output_indices(
+        vec![source.programs()[0].clone()],
+        vec![fixture_span()],
+        vec![7, 3],
+    )
+    .unwrap();
+    let specialized = domain.with_lowered_derivative(derivative).unwrap();
+    assert!(specialized.canonical_source().shares_program_owner(&source));
+    assert!(
+        specialized
+            .primal_source()
+            .unwrap()
+            .shares_program_owner(&primal)
+    );
+    assert!(!specialized.source().shares_program_owner(&source));
+    let compiled = compile_jacobian_scalar_program_block(&source).unwrap();
+    let general = compiled.prepare_projection(&original).unwrap();
+    let prepared = compiled.prepare_projection(&specialized).unwrap();
+    drop(compiled);
+    for (y, p, t) in [([3.0, 4.0], 2.0, 0.5), ([-1.0, 9.0], 8.0, 2.0)] {
+        let mut expected = [0.0; 4];
+        let mut actual = [0.0; 4];
+        general.call(&y, &[p], t, &[], &mut expected).unwrap();
+        prepared.call(&y, &[p], t, &[], &mut actual).unwrap();
+        assert_eq!(actual.map(f64::to_bits), expected.map(f64::to_bits));
+    }
+}
+
+#[test]
+fn projection_domain_rejects_even_an_unused_seed_outside_its_unknowns() {
+    let source = source();
+    let original = application(&source, vec![3, 7]);
+    let domain =
+        rumoca_ir_solve::ProjectionJacobianSeedDomain::derive(&original, &domain_primal()).unwrap();
+    let mut program = source.programs()[0].clone();
+    program.push(LinearOp::LoadSeed { dst: 99, index: 9 });
+    let derivative =
+        ScalarProgramBlock::with_output_indices(vec![program], vec![fixture_span()], vec![7, 3])
+            .unwrap();
+    assert!(domain.with_lowered_derivative(derivative).is_none());
+}

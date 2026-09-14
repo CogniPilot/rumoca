@@ -1,5 +1,7 @@
 //! Compact copies between constant, planar, and interleaved AD register runs.
 
+mod piecewise;
+
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -25,7 +27,7 @@ fn register_run(registers: &[Reg], offset: usize, stride: usize) -> Option<Regis
         .then_some(RegisterRun::Contiguous(first))
 }
 
-impl AdBuilder {
+impl AdBuilder<'_> {
     fn emit_register_run(&mut self, run: RegisterRun, count: usize) -> Result<Reg, LowerError> {
         match run {
             RegisterRun::Contiguous(start) => Ok(start),
@@ -48,30 +50,39 @@ impl AdBuilder {
             return self.emit_register_run(run, registers.len()).map(Some);
         }
         if registers.len() < 4 || !registers.len().is_multiple_of(2) {
-            return Ok(None);
+            return self.pack_piecewise_registers(registers);
         }
         let (Some(left), Some(right)) =
             (register_run(registers, 0, 2), register_run(registers, 1, 2))
         else {
-            return Ok(None);
+            return self.pack_piecewise_registers(registers);
         };
         let count = registers.len() / 2;
-        let dimension =
-            u32::try_from(count).map_err(|_| unsupported("interleaved AD extent exceeds u32"))?;
         let left = self.emit_register_run(left, count)?;
         let right = self.emit_register_run(right, count)?;
+        self.emit_interleaved_planes(left, right, count).map(Some)
+    }
+
+    fn emit_interleaved_planes(
+        &mut self,
+        left: Reg,
+        right: Reg,
+        count: usize,
+    ) -> Result<Reg, LowerError> {
+        let dimension =
+            u32::try_from(count).map_err(|_| unsupported("interleaved AD extent exceeds u32"))?;
         let sources = [left, right].map(|start| rumoca_ir_solve::TensorConcatenateSource {
             start,
             dimensions: Box::new([dimension, 1]),
         });
-        self.emit_result_operation(registers.len(), |dst_start| LinearOp::TensorConcatenate {
+        let size = checked_ad_product(count, 2, self.span, "interleaved AD output")?;
+        self.emit_result_operation(size, |dst_start| LinearOp::TensorConcatenate {
             dst_start,
             sources: Box::new(sources),
             dimensions: Box::new([dimension, 2]),
             axis: 1,
             lanes: 1,
         })
-        .map(Some)
     }
 
     pub(super) fn interleaved_dual_range(

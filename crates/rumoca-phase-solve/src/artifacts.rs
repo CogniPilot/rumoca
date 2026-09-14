@@ -61,5 +61,35 @@ pub(crate) fn lower_solve_artifacts(
     })?;
     artifacts.continuous.structural = continuous;
     artifacts.initialization.structural = initialization;
+    specialize_algebraic_jacobians(problem, &implicit_rhs, &mut artifacts.continuous.structural)?;
     Ok(artifacts)
+}
+
+fn specialize_algebraic_jacobians(
+    problem: &solve::SolveProblem,
+    primal: &solve::ScalarProgramBlock,
+    structures: &mut solve::ContinuousStructuralArtifacts,
+) -> Result<(), LowerError> {
+    let [solve::ComputeNode::ScalarPrograms(canonical)] =
+        problem.continuous.implicit_rhs.nodes.as_slice()
+    else {
+        return Ok(());
+    };
+    if !canonical.shares_program_owner(primal) {
+        return Ok(());
+    }
+    let domains = structures
+        .algebraic_projection()
+        .iter()
+        .filter_map(|structure| structure.jacobian_application())
+        .filter(|application| application.y_indices().len() > 1)
+        .filter_map(|application| solve::ProjectionJacobianSeedDomain::derive(application, primal))
+        .collect::<Vec<_>>();
+    for domain in domains {
+        let application = crate::ad::lower_projection_domain(domain)?;
+        structures
+            .bind_algebraic_jacobian_application(application)
+            .map_err(LowerError::unspanned_non_computable)?;
+    }
+    Ok(())
 }
