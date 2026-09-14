@@ -304,7 +304,7 @@ substitution and differentiation. Reuse requires the same source, exact call
 substitutions, derivative order, reconstruction mode, and provenance; it cannot
 merge unrelated call contexts or equation owners.
 
-STRUCT-T03's linear auxiliary profile:
+STRUCT-T03's auxiliary and component reconstruction profile:
 
 | Rule | Owner | Why |
 |---|---|---|

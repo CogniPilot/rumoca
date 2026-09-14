@@ -49,6 +49,7 @@ pub(super) struct DifferentiationFacts {
     pub(super) equalities: SystemEqualities,
     pub(super) derivative_definitions: Vec<Option<u32>>,
     pub(super) algebraic_definitions: Vec<Option<u32>>,
+    pub(super) component_definitions: Vec<Option<std::sync::Arc<ComponentConstraint>>>,
     pub(super) auxiliary_blocks:
         Vec<Option<std::sync::Arc<super::auxiliary_blocks::AuxiliaryBlock>>>,
 }
@@ -69,9 +70,11 @@ impl DifferentiationFacts {
             equalities: SystemEqualities::collect(view),
             derivative_definitions: explicit_derivative_definitions(view),
             algebraic_definitions,
+            component_definitions: vec![None; view.variable_count()],
             auxiliary_blocks: vec![None; view.variable_count()],
         };
         facts.auxiliary_blocks = super::auxiliary_blocks::derive_blocks(view, &facts);
+        facts.component_definitions = super::component_constraint::derive_definitions(view, &facts);
         facts
     }
 
@@ -1285,6 +1288,15 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
                 {
                     return self.can_differentiate_auxiliary(&block, order, on_residual);
                 }
+                if let Some(definition) =
+                    self.facts.component_definitions[algebraic.index() as usize].clone()
+                {
+                    return self.can_differentiate_component_definition(
+                        &definition,
+                        order,
+                        on_residual,
+                    );
+                }
                 match self.facts.equalities.anchor_of(algebraic.index()) {
                     Some((EqualityAnchor::Invariant { .. }, _)) => true,
                     Some((anchor @ EqualityAnchor::State(state), _)) => {
@@ -1300,6 +1312,21 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
             }
             _ => false,
         }
+    }
+
+    fn can_differentiate_component_definition(
+        &mut self,
+        definition: &ComponentConstraint,
+        order: u8,
+        on_residual: bool,
+    ) -> bool {
+        definition.leaves().into_iter().all(|leaf| {
+            self.can_differentiate_order(
+                self.view.expression_id(leaf as usize).unwrap(),
+                order,
+                on_residual,
+            )
+        })
     }
 
     fn can_differentiate_auxiliary(
@@ -1596,6 +1623,17 @@ fn is_differentiable_coordinate<'dae>(
                             &operand.context(view),
                         )
                     });
+            }
+            if let Some(definition) = &facts.component_definitions[algebraic.index() as usize] {
+                return definition.leaves().into_iter().all(|leaf| {
+                    is_differentiable(
+                        view,
+                        facts,
+                        view.expression_id(leaf as usize).unwrap(),
+                        demoted,
+                        visited,
+                    )
+                });
             }
             match facts.equalities.anchor_of(algebraic.index()) {
                 Some((EqualityAnchor::Invariant { .. }, _)) => true,

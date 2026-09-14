@@ -160,6 +160,13 @@ impl<'dae> StateDerivativeWalk<'_, 'dae> {
                 )
             });
         }
+        if let Some(definition) =
+            self.facts.component_definitions[algebraic.index() as usize].clone()
+        {
+            return definition.leaves().into_iter().all(|leaf| {
+                self.expression(self.view.expression_id(leaf as usize).unwrap(), context)
+            });
+        }
         match self.facts.equalities.value_anchor_of(algebraic.index()) {
             Some((EqualityAnchor::Invariant { .. }, _)) => true,
             Some((EqualityAnchor::State(state), _)) => self.state(state),

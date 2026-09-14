@@ -1,6 +1,12 @@
 //! A component view used by index reduction without replacing tensor owners.
 
+mod definitions;
+mod projection;
+
 use rumoca_ir_dae as dae;
+
+pub(super) use definitions::derive_definitions;
+use projection::ComponentProjection;
 
 use super::constraints::DifferentiationFacts;
 use super::differentiation::Derivative;
@@ -17,6 +23,7 @@ pub(super) struct ComponentConstraint {
 
 #[derive(Clone, PartialEq, Eq)]
 enum ComponentExpression {
+    Zero,
     Source {
         expression: u32,
         indices: Box<[u32]>,
@@ -43,7 +50,7 @@ impl ComponentConstraint {
         if indices.is_empty() {
             return None;
         }
-        let expression = ComponentExpression::derive(view, facts, residual, scalar)?;
+        let expression = ComponentProjection::new(view, facts, None).derive(residual, scalar)?;
         if expression.is_identically_zero() {
             return None;
         }
@@ -64,6 +71,7 @@ impl ComponentConstraint {
 impl ComponentExpression {
     fn is_identically_zero(&self) -> bool {
         match self {
+            Self::Zero => true,
             Self::Source { .. } => false,
             Self::Sum { operator, lhs, rhs } => {
                 (*operator == dae::BinaryOperator::Subtract && lhs == rhs)
@@ -72,72 +80,9 @@ impl ComponentExpression {
         }
     }
 
-    fn derive<'dae>(
-        view: dae::DaeView<'dae>,
-        facts: &DifferentiationFacts,
-        expression: dae::ExprId<'dae>,
-        scalar: usize,
-    ) -> Option<Self> {
-        let node = view.expression(expression)?;
-        let indices = component_indices(node.value_type(), scalar)?;
-        if indices.is_empty() {
-            return Some(Self::Source {
-                expression: expression.index(),
-                indices,
-            });
-        }
-        match node.operation() {
-            dae::ExpressionOperation::Array(elements) => {
-                let first = elements.get(0)?;
-                let stride = view.expression(first)?.value_type().scalar_count()?;
-                let element = elements.get(scalar.checked_div(stride)?)?;
-                return Self::derive(view, facts, element, scalar.checked_rem(stride)?);
-            }
-            dae::ExpressionOperation::Binary {
-                operator: operator @ (dae::BinaryOperator::Add | dae::BinaryOperator::Subtract),
-                lhs,
-                rhs,
-            } => {
-                return Some(Self::Sum {
-                    operator,
-                    lhs: Box::new(Self::derive(view, facts, lhs, scalar)?),
-                    rhs: Box::new(Self::derive(view, facts, rhs, scalar)?),
-                });
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
-                if let Some(definition) = facts.algebraic_definition(view, algebraic) {
-                    return Self::derive(view, facts, definition, scalar);
-                }
-            }
-            dae::ExpressionOperation::ArrayUpdate {
-                base,
-                value,
-                subscripts,
-            } => {
-                let selection = super::component_projection::literal_indices(view, subscripts)?;
-                if selection.len() != indices.len() {
-                    return None;
-                }
-                let selected = selection
-                    .iter()
-                    .zip(&indices)
-                    .all(|(&selected, &index)| selected == index as usize - 1);
-                return if selected {
-                    Self::derive(view, facts, value, 0)
-                } else {
-                    Self::derive(view, facts, base, scalar)
-                };
-            }
-            _ => {}
-        }
-        Some(Self::Source {
-            expression: expression.index(),
-            indices,
-        })
-    }
-
     fn collect_leaves(&self, leaves: &mut Vec<u32>) {
         match self {
+            Self::Zero => {}
             Self::Source { expression, .. } => leaves.push(*expression),
             Self::Sum { lhs, rhs, .. } => {
                 lhs.collect_leaves(leaves);
@@ -176,6 +121,10 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         provenance: dae::DaeProvenance,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
         match expression {
+            ComponentExpression::Zero => self
+                .target
+                .at(provenance)
+                .literal(dae::DaeLiteral::Real(0.0)),
             ComponentExpression::Source {
                 expression,
                 indices,
@@ -219,6 +168,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         provenance: dae::DaeProvenance,
     ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
         match expression {
+            ComponentExpression::Zero => Ok(Derivative::Zero),
             ComponentExpression::Source {
                 expression,
                 indices,

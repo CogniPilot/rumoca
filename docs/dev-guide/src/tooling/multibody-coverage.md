@@ -4,6 +4,68 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest focused work: inverse coordinates of tensor states
+
+`TensorStateContact` reproduces RollingWheel's source pattern: a position
+state array equals `{x,y,z}`, its derivative is a velocity array, and independent
+orientation constraints determine the contact vector. Structural discovery
+could not derive `z=-delta[3]` through those array equalities. The RED test keeps
+five state declarations (nine scalar coordinates), while OMC selects only
+`theta`, `x`, and `y`. Its generated equations and eighteen analytical channels
+agree to 4.44e-16 over twelve output rows in
+`rolling-wheel/omc/component-definition-1`.
+
+The STRUCT-T03 component profile now follows unique literal-array definitions
+of non-`Always` states while discovering their inverse scalar coordinates.
+It captures one component expression for proof and reconstruction, rejects
+cyclic/self-dependent definitions, and retains the source tensor owners,
+assertions, and initialization obligations. Both ordinary residuals and the
+existing row-major structured bodies participate. The reduced model reaches
+three states under BDF and RK, with independently checked position, velocity,
+and force. Reversed and zero-residual forms agree; source assertions still
+execute; a free-fall negative control retains its free position and velocity.
+All fourteen contact tests, 162 structural library tests, 99 compiler library
+tests, 587 core tests, seventeen gates, formatting, and structural Clippy pass.
+
+An initial broader component-definition candidate made six existing contact
+tests structurally singular by introducing unrelated scalar definitions into
+holonomic discovery. The final profile admits only inverse coordinates of the
+explicit state-array definition. All affected tests pass again. The initial
+free-fall fixture also needed two missing free horizontal variables to balance
+its intended equations. RED/intermediate evidence remains in
+`rolling-wheel/component-definition-{red-1,probe-1,probe-2,contact-1}.log`.
+
+The normal `multibody-component-definition-origin` attempt failed its unchanged
+sixty-second worker startup budget during source loading, before model
+compilation; its parity is unmeasured. A separate archived-DAE diagnostic and
+the controlled actual-worker `component-definition-profile-1` both complete
+and produce byte-identical eleven-state traces with SHA-256
+`91cd3b96b253f0b05162a29f22564644ef595acece2884f844a37dffafed7184`.
+The position array is reconstructed; the three body velocity coordinates are
+still integrated. Existing `plot-compare --reuse-traces` compares all 184
+trajectory channels against OMC: the maximum bounded channel score is
+1.188e-4, below the unchanged high threshold. These diagnostics do not replace
+the failed normal attempt or provide cohort coverage credit.
+
+The controlled profile measures Sim at 1.062014 seconds (1.05 seconds user CPU).
+This does not establish a meaningful speed gain over the preceding 1.088924
+seconds, and remains slower than OMC. Projection Jacobian programs consume
+15.60% of sampled CPU self time, manifold Jacobians 12.43%, and typed
+directional calls 11.82%; all JIT sample addresses map to generated code.
+Worker SHA-256:
+`bca1176e41b141f86e3d49c2cd9f56b15ce9128b24012b2f7286bf67351ef5fc`.
+The next unresolved proof is reconstruction of the remaining velocity vector
+from the no-slip constraints and independent angular motion. The original
+scalar-state `TensorContact` still retains three states.
+
+The fixed `multibody-component-definition-canary` retains every phase, status,
+and band from `multibody-direct-auxiliary-canary`: nine models compared high,
+175 initialization channels high, eleven unchanged refusals, and zero skipped,
+missing, nonidentifiable, or deviating results. Receipt:
+`rolling-wheel/component-definition-canary-delta.json`; worktree digest:
+`b98745ba9ee53b6a18d5d99a9ef2b3501a67c8cc9922b7f0b9fd9995f15edbc1`.
+The complete cohort below predates this component reconstruction change.
+
 ## Latest complete cohort: auxiliary derivative reconstruction
 
 The complete `target/msl/multibody-direct-auxiliary-full` gate passes at
@@ -29,7 +91,7 @@ Receipt: `rolling-wheel/direct-auxiliary-full-delta.json`; worktree digest:
 OMC version is `a96aa1a-cmake`. RollingWheel's OMC speed target and combined
 quick/full remain outstanding.
 
-## Latest focused work: preserve auxiliary derivatives across reduction rounds
+## Previous focused work: preserve auxiliary derivatives across reduction rounds
 
 The explicit-height control of `TensorContact` retained three states despite
 the existing auxiliary proof determining its contact vector from orientation.

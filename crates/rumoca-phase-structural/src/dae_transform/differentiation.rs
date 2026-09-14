@@ -359,6 +359,11 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 .auxiliary_value(algebraic.index(), order, provenance)
                 .map(Derivative::Expression);
         }
+        if let Some(definition) =
+            self.facts.component_definitions[algebraic.index() as usize].clone()
+        {
+            return self.differentiate_component(&definition, order, provenance);
+        }
         let Some((anchor, sign)) = self.facts.equalities.anchor_of(algebraic.index()) else {
             let definition = self
                 .facts
@@ -577,6 +582,11 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
         if self.facts.auxiliary_blocks[algebraic.index() as usize].is_some() {
             return self.auxiliary_value(algebraic.index(), 0, provenance);
+        }
+        if let Some(definition) =
+            self.facts.component_definitions[algebraic.index() as usize].clone()
+        {
+            return self.materialize_component_value(&definition, provenance);
         }
         let Some((anchor, sign)) = self.facts.equalities.value_anchor_of(algebraic.index()) else {
             let definition = self

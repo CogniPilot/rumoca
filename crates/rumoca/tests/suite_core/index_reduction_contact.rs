@@ -12,6 +12,106 @@ const ANNOTATED_SOURCE: &str =
 const ROLLING_SOURCE: &str = include_str!("../fixtures/index_reduction/RollingContact.mo");
 const ANGULAR_RATE_SOURCE: &str = include_str!("../fixtures/index_reduction/AngularRateContact.mo");
 const SCOPED_SOURCE: &str = include_str!("../fixtures/index_reduction/ScopedContact.mo");
+const TENSOR_STATE_SOURCE: &str = include_str!("../fixtures/index_reduction/TensorStateContact.mo");
+
+#[test]
+fn tensor_state_contact_reconstructs_dependent_position_and_velocity() {
+    for source in [
+        TENSOR_STATE_SOURCE.to_owned(),
+        TENSOR_STATE_SOURCE.replace("delta = road - r;", "road - r = delta;"),
+        TENSOR_STATE_SOURCE.replace("delta = road - r;", "{0,0,0} = delta - (road - r);"),
+    ] {
+        for solver in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+            check_motion(
+                &source,
+                "TensorStateContact",
+                solver,
+                3,
+                tensor_state_values,
+            );
+        }
+    }
+}
+
+#[test]
+fn tensor_state_reconstruction_retains_source_assertions() {
+    let source = TENSOR_STATE_SOURCE.replace("abs(axis[3]) < 0.99", "theta < 0.25");
+    let compiled = Compiler::new()
+        .model("TensorStateContact")
+        .compile_str(&source, "TensorStateContact.mo")
+        .unwrap();
+    for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+        let error = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 0.1,
+                dt: Some(0.01),
+                solver_mode,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("Contact basis is singular"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn tensor_state_definition_cannot_determine_its_own_free_coordinate() {
+    let source = r#"
+model FallingTensor
+  Real r[3](start={0,0,2});
+  Real v[3](start={0,0,3});
+  Real x;
+  Real y;
+  Real z(start=2);
+equation
+  r = {x,y,z};
+  der(r) = v;
+  der(v) = {0,0,-1};
+end FallingTensor;
+"#;
+    for solver in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+        check_motion(source, "FallingTensor", solver, 2, |t| {
+            vec![
+                ("z", 2.0 + 3.0 * t - 0.5 * t * t),
+                ("r[1]", 0.0),
+                ("r[2]", 0.0),
+                ("r[3]", 2.0 + 3.0 * t - 0.5 * t * t),
+                ("v[1]", 0.0),
+                ("v[2]", 0.0),
+                ("v[3]", 3.0 - t),
+            ]
+        });
+    }
+}
+
+fn tensor_state_values(time: f64) -> Vec<(&'static str, f64)> {
+    let theta = 0.2 + time;
+    let (sin, cos) = theta.sin_cos();
+    vec![
+        ("theta", theta),
+        ("x", 0.2),
+        ("y", 0.3),
+        ("z", cos),
+        ("r[1]", 0.2),
+        ("r[2]", 0.3),
+        ("r[3]", cos),
+        ("v[1]", 0.0),
+        ("v[2]", 0.0),
+        ("v[3]", -sin),
+        ("force[1]", 0.0),
+        ("force[2]", 0.0),
+        ("force[3]", -cos),
+        ("s", 0.2),
+        ("w", 0.3 + sin),
+        ("delta[1]", 0.0),
+        ("delta[2]", sin),
+        ("delta[3]", -cos),
+    ]
+}
 
 #[test]
 fn shared_function_derivatives_preserve_nested_call_arguments() {

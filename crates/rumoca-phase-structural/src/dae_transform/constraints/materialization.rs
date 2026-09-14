@@ -93,28 +93,9 @@ fn materialize_operation<'dae>(
                     )
                 })
         }
-        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic))
-            if facts.auxiliary_blocks[algebraic.index() as usize].is_some() =>
-        {
-            states.extend_from_slice(
-                &facts.auxiliary_blocks[algebraic.index() as usize]
-                    .as_ref()
-                    .unwrap()
-                    .state_anchors,
-            );
-            true
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
+            materialize_algebraic(view, facts, algebraic, visited, context, states)
         }
-        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => facts
-            .equalities
-            .value_anchor_of(algebraic.index())
-            .and_then(|(anchor, _)| facts.equalities.anchor_expression(anchor))
-            .and_then(|anchor| view.expression_id(anchor as usize))
-            .or_else(|| facts.algebraic_definition(view, algebraic))
-            .is_some_and(|anchor| {
-                can_materialize_holonomic_value_in_context(
-                    view, facts, anchor, visited, context, states,
-                )
-            }),
         dae::ExpressionOperation::Unary {
             operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
             operand,
@@ -170,4 +151,41 @@ fn materialize_operation<'dae>(
         }
         _ => false,
     }
+}
+
+fn materialize_algebraic<'dae>(
+    view: dae::DaeView<'dae>,
+    facts: &DifferentiationFacts,
+    algebraic: dae::AlgebraicId<'dae>,
+    visited: &mut [Visit],
+    context: &FunctionCallContext<'dae>,
+    states: &mut Vec<u32>,
+) -> bool {
+    if let Some(block) = &facts.auxiliary_blocks[algebraic.index() as usize] {
+        states.extend_from_slice(&block.state_anchors);
+        return true;
+    }
+    if let Some(definition) = &facts.component_definitions[algebraic.index() as usize] {
+        return definition.leaves().into_iter().all(|leaf| {
+            can_materialize_holonomic_value_in_context(
+                view,
+                facts,
+                view.expression_id(leaf as usize).unwrap(),
+                visited,
+                context,
+                states,
+            )
+        });
+    }
+    facts
+        .equalities
+        .value_anchor_of(algebraic.index())
+        .and_then(|(anchor, _)| facts.equalities.anchor_expression(anchor))
+        .and_then(|anchor| view.expression_id(anchor as usize))
+        .or_else(|| facts.algebraic_definition(view, algebraic))
+        .is_some_and(|definition| {
+            can_materialize_holonomic_value_in_context(
+                view, facts, definition, visited, context, states,
+            )
+        })
 }
