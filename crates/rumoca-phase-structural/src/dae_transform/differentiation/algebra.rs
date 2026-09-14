@@ -79,7 +79,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .map(Derivative::Expression)
     }
 
-    pub(super) fn twice(
+    pub(in crate::dae_transform) fn twice(
         &mut self,
         value: Derivative<'target>,
         provenance: dae::DaeProvenance,

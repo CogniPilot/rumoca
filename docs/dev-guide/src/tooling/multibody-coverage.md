@@ -4,7 +4,7 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest complete cohort: two state-reduction regressions remain
+## Latest complete cohort: two state-reduction regressions recorded
 
 The complete `target/msl/multibody-no-slip-full` run at
 `5be301f43b2738cde950733e59de1e5e57aa9faa` compares 156/566 models high
@@ -29,17 +29,75 @@ directly and does not apply the cohort parent's ten-second Solve watchdog;
 it does not replace the timed-out cohort result or earn coverage credit.
 Profiling was enabled at Solve entry and retained through the refusal. Leading
 self costs include DAE operation/view access, projected incidence traversal,
-and materialization proofs. The next task is to locate the first changed
-state-reduction decision and reproduce the regression before fixing it.
+and materialization proofs. The controlled reproduction below locates the
+responsible state-reconstruction decision.
 
 The source-DAE inspection in `no-slip-spherical-reduction-2.log` selects a new
 auxiliary definition for `freeMotionScalarInit.initAngle.angle` after three
 direct state demotions, and later selects one for `constraint.frame_b.r_0`.
 The direct-first lane stalls after reducing the unmatched residue from fifty
-to six; the pristine holonomic-first attempt also fails. A leading hypothesis
-is that an auxiliary identity solve hides explicit component kinematics needed
-by a later reduction. This is not yet a proved root cause: the next comparison
-must isolate the new auxiliary admission and inspect its actual source rows.
+to six; the pristine holonomic-first attempt also fails. The initial hypothesis
+that the angle identity solve hides explicit component kinematics is rejected
+by the controlled comparison below.
+
+## Fixed-anchor regression: retaining exact derivative zeros
+
+The source-DAE controls in `rolling-wheel/no-slip-spherical-aux-control-2.log`
+isolate `constraint.frame_b.r_0`: disabling only its new auxiliary definition
+restores structural reduction in 3.885 seconds. Disabling only the angle
+definition still fails after 21.757 seconds. These temporary diagnostic
+controls have been removed from the compiler and retained only in the private
+campaign evidence. The production fix makes no decisions from model names or
+variable ordinals.
+
+The reduced `TensorFixedAnchor.mo` fixture contains eighteen scalar equations
+and unknowns. Its constant matrix constrains a position vector to a fixed
+anchor, while source derivative equations define velocity and acceleration.
+Before the fix, structural reduction matches only twelve of eighteen unknowns.
+OMC eliminates all dynamic states and agrees with the independent analytical
+solution on all eighteen channels over twelve rows, with zero observed error
+(`rolling-wheel/omc/fixed-anchor-1/analytical-comparison.json`).
+
+The first divergent layer is auxiliary tensor differentiation. For
+`A*q=b`, it materialized a zero derivative matrix and retained `A'*q` even
+when `A'=0`, creating a false primal-coordinate dependency. Coefficient
+reconstruction and its shared cache now preserve the existing
+`Derivative::Zero` distinction. Only nonzero coefficient derivatives read the
+primal coordinate or its first derivative. The original checked aggregate
+solve with `A` remains authoritative, including its nonsingularity requirement.
+This follows MLS array equality and continuous-equation semantics, SPEC_0022
+§3.7, and SPEC_0007/0040 STRUCT-T03. It introduces no scalarized tensor owner.
+
+The reduced fixture now has no dynamic states and checks all eighteen
+analytical channels with both BDF and RK. A singular constant-matrix variant
+is still rejected by both integrators. All 165 structural library tests,
+22 contact tests, formatting, and structural all-target/all-feature Clippy pass
+in `rolling-wheel/fixed-anchor-focused-2.log`.
+
+The normal `target/msl/multibody-fixed-anchor-origin` comparison measures all
+three selected models high, with zero skipped, missing, excluded,
+nonidentifiable, or deviating traces. All 2,068 initialization channels are
+high. SphericalConstraint completes Solve in 4.898042 seconds and Sim in
+0.247828 seconds with thirteen states; GyroscopicEffects completes Solve in
+9.499843 seconds and Sim in 1.494477 seconds with eighteen states. The original
+ten-second Solve budget is unchanged, leaving GyroscopicEffects little margin.
+RollingWheel retains eight states and all 184 channels high, with Solve
+1.269984 seconds and Sim 0.782680 seconds. It remains slower than OMC.
+The receipt is `rolling-wheel/fixed-anchor-origin-receipt.json`, at
+`7602af65` plus worktree digest
+`786ae41e9185c7215630f8c3892cef53bf52aa7f8fd07eb20773e946c93ef3e2`.
+
+The same-source fixed twenty-model canary
+`target/msl/multibody-fixed-anchor-canary` has no phase, status, or band changes
+against `multibody-no-slip-canary-2`: nine compared models and 175
+initialization channels remain high, with eleven unchanged refusals and zero
+skipped, missing, excluded, nonidentifiable, or deviating comparisons. Receipt:
+`rolling-wheel/fixed-anchor-canary-delta.json`. Complete-cohort validation
+remains pending; these focused checks do not revise the measured cohort above.
+The broader focused checkpoint passes all 99 Rumoca library tests, 595 core
+tests, and seventeen architecture/spec gates in
+`rolling-wheel/fixed-anchor-core-suite-1.log`. The combined `verify quick`
+and `verify full` suites have not been rerun for this checkpoint.
 
 ## Previous complete cohort: tensor-state reconstruction preserves parity
 

@@ -4,13 +4,13 @@ use rumoca_core::VarName;
 use rumoca_ir_dae as dae;
 
 use super::super::constraints::DifferentiationFacts;
+use super::super::differentiation::Derivative;
 use super::super::expressions::ExpressionRebuilder;
 use super::super::variables::TargetVariable;
 use super::{AuxiliaryBlock, AuxiliarySystem, SourceValue};
 
 #[derive(Clone, Copy)]
 pub(in crate::dae_transform) struct AuxiliaryExpression<'dae> {
-    pub(super) matrix: dae::ExprId<'dae>,
     pub(super) value: dae::ExprId<'dae>,
 }
 
@@ -185,79 +185,86 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .as_ref()
             .expect("auxiliary source proof exists")
             .clone();
-        let (matrix, mut rhs) = self.auxiliary_operands(&block, order, provenance)?;
-        let solve_matrix = if order == 0 {
-            matrix
-        } else {
-            let primal = if self.state_only_derivative {
-                self.auxiliary_expression(variable, 0, provenance)?
-            } else {
-                self.auxiliary_primal_reference(&block, provenance)?
-            };
-            let product = self.target.at(provenance).binary(
-                dae::BinaryOperator::Multiply,
-                matrix,
-                primal.value,
-            )?;
-            rhs = self
-                .target
-                .at(provenance)
-                .binary(dae::BinaryOperator::Subtract, rhs, product)?;
-            if order == 2 {
-                let first = self.auxiliary_expression(variable, 1, provenance)?;
-                let mixed = self.target.at(provenance).binary(
-                    dae::BinaryOperator::Multiply,
-                    first.matrix,
-                    first.value,
-                )?;
-                let two = self
-                    .target
-                    .at(provenance)
-                    .literal(dae::DaeLiteral::Real(2.0))?;
-                let mixed =
-                    self.target
-                        .at(provenance)
-                        .binary(dae::BinaryOperator::Multiply, two, mixed)?;
-                rhs =
-                    self.target
-                        .at(provenance)
-                        .binary(dae::BinaryOperator::Subtract, rhs, mixed)?;
-            }
-            primal.matrix
-        };
+        let rhs = self.auxiliary_rhs(&block, order, provenance)?;
+        let solve_matrix = self.auxiliary_matrix(&block, 0, provenance)?;
+        let rhs = self.auxiliary_derivative_rhs(&block, order, rhs, provenance)?;
         let function = self.auxiliary_functions.by_variable[variable as usize]
             .expect("proved block function reserved");
         let value = self
             .target
             .at(provenance)
             .call(function, 0, [solve_matrix, rhs])?;
-        let expression = AuxiliaryExpression { matrix, value };
+        let expression = AuxiliaryExpression { value };
         self.auxiliary_expressions.insert(key, expression);
         Ok(expression)
     }
 
-    fn auxiliary_operands(
+    fn auxiliary_derivative_rhs(
+        &mut self,
+        block: &AuxiliaryBlock,
+        order: u8,
+        mut rhs: dae::ExprId<'target>,
+        at: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        if order == 0 {
+            return Ok(rhs);
+        }
+        if let Derivative::Expression(matrix) =
+            self.auxiliary_matrix_derivative(block, order, at)?
+        {
+            let primal = if self.state_only_derivative {
+                self.auxiliary_expression(block.variable, 0, at)?.value
+            } else {
+                self.auxiliary_primal_reference(block, at)?
+            };
+            let product =
+                self.target
+                    .at(at)
+                    .binary(dae::BinaryOperator::Multiply, matrix, primal)?;
+            rhs = self
+                .target
+                .at(at)
+                .binary(dae::BinaryOperator::Subtract, rhs, product)?;
+        }
+        if order == 2
+            && let Derivative::Expression(matrix) =
+                self.auxiliary_matrix_derivative(block, 1, at)?
+        {
+            let first = self.auxiliary_expression(block.variable, 1, at)?;
+            let mixed =
+                self.target
+                    .at(at)
+                    .binary(dae::BinaryOperator::Multiply, matrix, first.value)?;
+            if let Derivative::Expression(mixed) = self.twice(Derivative::Expression(mixed), at)? {
+                rhs = self
+                    .target
+                    .at(at)
+                    .binary(dae::BinaryOperator::Subtract, rhs, mixed)?;
+            }
+        }
+        Ok(rhs)
+    }
+
+    fn auxiliary_rhs(
         &mut self,
         block: &AuxiliaryBlock,
         order: u8,
         provenance: dae::DaeProvenance,
-    ) -> Result<(dae::ExprId<'target>, dae::ExprId<'target>), dae::DaeConstructionError> {
-        let matrix = self.auxiliary_matrix(block, order, provenance)?;
-        let rhs = match &block.system {
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        match &block.system {
             AuxiliarySystem::DotRows(rows) => {
                 let values = rows
                     .iter()
                     .map(|row| self.auxiliary_operand(&row.rhs, order, provenance))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.target.at(provenance).array(values)?
+                self.target.at(provenance).array(values)
             }
             AuxiliarySystem::Map { rhs, .. }
             | AuxiliarySystem::VectorRows { rhs, .. }
             | AuxiliarySystem::Scalars { rhs, .. } => {
-                self.tensor_coefficient(rhs, order, provenance)?
+                self.tensor_coefficient(rhs, order, provenance)
             }
-        };
-        Ok((matrix, rhs))
+        }
     }
 
     fn auxiliary_matrix(
@@ -286,8 +293,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         &mut self,
         block: &AuxiliaryBlock,
         provenance: dae::DaeProvenance,
-    ) -> Result<AuxiliaryExpression<'target>, dae::DaeConstructionError> {
-        let matrix = self.auxiliary_matrix(block, 0, provenance)?;
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
         let value = if let AuxiliarySystem::Scalars { variables, .. } = &block.system {
             let values = variables
                 .iter()
@@ -297,7 +303,51 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         } else {
             self.auxiliary_coordinate(block.variable, provenance)?
         };
-        Ok(AuxiliaryExpression { matrix, value })
+        Ok(value)
+    }
+
+    fn auxiliary_matrix_derivative(
+        &mut self,
+        block: &AuxiliaryBlock,
+        order: u8,
+        at: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        match &block.system {
+            AuxiliarySystem::Map { matrix, .. }
+            | AuxiliarySystem::VectorRows { matrix, .. }
+            | AuxiliarySystem::Scalars { matrix, .. } => {
+                self.tensor_coefficient_value(matrix, order, at)
+            }
+            AuxiliarySystem::DotRows(rows) => {
+                let values = rows
+                    .iter()
+                    .map(|r| self.auxiliary_derivative(&r.coefficient, order, at))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if values.iter().all(|v| matches!(v, Derivative::Zero)) {
+                    Ok(Derivative::Zero)
+                } else {
+                    self.auxiliary_matrix(block, order, at)
+                        .map(Derivative::Expression)
+                }
+            }
+        }
+    }
+
+    pub(super) fn auxiliary_derivative(
+        &mut self,
+        expression: &SourceValue,
+        order: u8,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        let source = self
+            .source
+            .expression_id(expression.expression as usize)
+            .unwrap();
+        let previous =
+            std::mem::replace(&mut self.function_context, expression.context(self.source));
+        let result = self.differentiate_order(source, order, provenance);
+        self.function_context = previous;
+        result
     }
 
     fn auxiliary_coordinate(
