@@ -4,7 +4,62 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest complete cohort: fixed affine conditioning preserves all traces
+## Latest complete cohort: inactive AD tangents preserve the parity floor
+
+`target/msl/multibody-native-inactive-tangents-full`, at `c300c58d` plus tracked
+worktree digest `0a5cc5ca811daf460bfc208afbce15ec01a29ae837671709aee525d4be01082b`,
+retains 158/566 strict-high models (27.92%), including 22/42 MultiBody models.
+All 158 compared models and 20,379 initialization channels remain high.
+There are 18 reviewed exclusions, zero missing traces, zero nonidentifiable
+comparisons, and zero deviations. Every comparison band matches
+`multibody-affine-conditioning-full`. The already failing
+ChopperBuckBoost_DutyCycle reaches the checked interval-endpoint disagreement
+EX002 before its previous timeout; it remains a refusal and earns no credit.
+Concurrent RollingWheel Sim is 0.159451 seconds. Receipt:
+`rolling-wheel/native-inactive-tangents-full-delta.json`. Combined quick/full
+verification and complete MultiBody coverage remain open.
+
+AD propagates constructor-proved zero tangents while retaining primal
+operations and their call owners, assertions, and domains. Solver-Y parameter
+loads may have zero tangents; full Y|P initialization and sensitivities retain
+parameter seeds. Inactive bilinear factors use the remaining product-rule term,
+with compact tensor packing and exact immutable-run transpose reuse. A
+numerically zero primal does not establish an inactive tangent. This follows
+SPEC_0039's declared seed-domain rule and does not change Modelica equations.
+
+`native-inactive-tangents-focused-2.log` records formatting, all 134 Solve
+library tests, and affected-package Clippy. Tests include finite-difference
+bilinear checks, parameter sensitivities, changing primal values, assertions,
+and retained invalid primal arithmetic. The first focused attempt failed
+formatting because restored sibling modules were absent; no tests ran until
+the complete candidate was restored. The fixed canary retains nine high
+models and 175 high initialization channels, with no status or band changes,
+skips, missing traces, or deviations. Receipt:
+`native-inactive-tangents-canary-delta.json`.
+
+With bounded native SSA storage already landed, the general AD candidate
+measures 0.150045 seconds against the immediate archived baseline recheck of
+0.152998 seconds. Both workers exit successfully and produce identical trace
+bytes (`a81708c82927bf5721cf527c75b80f83c9c7fb97aedab05cda49da22d5e3c619`).
+This single-pair 1.93% improvement is small; it is not a broad performance
+claim. Profiles are `native-inactive-tangents-profile-1` and
+`native-inactive-tangents-baseline-recheck-1`; candidate worker SHA-256 is
+`68f4d57b6d43d1b86bd170a19f8c2dfc10f20fd8a31be8e33ed9f75ef4f149aa`.
+The older pre-SSA trial remains rejected; its evidence is not reused as a pass.
+
+A separate temporary diagnostic restricts each program's Y seeds to the union
+of all projection unknowns selecting its outputs. It measures 0.137266 seconds
+with identical RollingWheel trace bytes (`native-projection-seed-probe-1`).
+The diagnostic changes a general derivative artifact and therefore is not a
+production implementation or coverage evidence. Its sources are archived in
+`native-projection-seed-probe-trial.json` and completely removed. A retained
+optimization needs a separate source-bound domain and must preserve unrestricted
+initialization and sensitivity derivatives. OMC's generated system 731 solves
+six variables and reconstructs other forces/accelerations; Rumoca's current
+certified affine dynamics block retains 24 variables. RollingWheel remains
+slower than OMC.
+
+## Previous complete cohort: fixed affine conditioning preserves all traces
 
 `target/msl/multibody-affine-conditioning-full`, at `b6a78cda` plus tracked
 worktree digest `27b72247987f290dce47b2ab24944aeada03cbb440d69135beaf7451206a2b05`,

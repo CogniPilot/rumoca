@@ -5,6 +5,11 @@
 //! multi-output programs are being stabilized. split plan: move tensor-node JVP
 //! lowering and indexed-load AD helpers into sibling modules behind this facade.
 
+#[cfg(test)]
+mod inactive_tangent_tests;
+mod inactive_tangents;
+mod tensor_packing;
+
 use crate::LowerError;
 use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, BinaryOp, CompareOp, ComputeBlock,
@@ -708,6 +713,7 @@ struct AdBuilder {
     next_reg: Reg,
     map: HashMap<Reg, DualReg>,
     unary_values: HashMap<(UnaryOp, Reg), Reg>,
+    tangent_planes: HashMap<(Reg, usize), Reg>,
     cached_zero: Option<Reg>,
     cached_one: Option<Reg>,
     cached_ln10: Option<Reg>,
@@ -726,6 +732,7 @@ impl Default for AdBuilder {
             next_reg: 0,
             map: HashMap::new(),
             unary_values: HashMap::new(),
+            tangent_planes: HashMap::new(),
             cached_zero: None,
             cached_one: None,
             cached_ln10: None,
@@ -1101,6 +1108,9 @@ impl AdBuilder {
         })?;
         if input_starts.len() != site.inputs().len() {
             return Err(unsupported("typed pure-call AD input interface mismatch"));
+        }
+        if self.lower_zero_tangent_call(dst_start, input_starts, &site)? {
+            return Ok(());
         }
         let mut directional_inputs = Vec::with_capacity(directional.inputs().len());
         for (&start, value_type) in input_starts.iter().zip(site.inputs()) {
@@ -2165,6 +2175,10 @@ impl AdBuilder {
 
     fn lower_unary(&mut self, dst: Reg, op: UnaryOp, arg: Reg) -> Result<(), LowerError> {
         let x = self.lookup(arg)?;
+        if self.tangent_is_zero(x) {
+            let re = self.emit_unary(op, x.re)?;
+            return self.bind(dst, DualReg { re, du: x.du });
+        }
         let out = self.unary_dual(op, x)?;
         self.bind(dst, out)
     }
@@ -2193,16 +2207,10 @@ impl AdBuilder {
         for term in 0..count {
             let lhs = self.lookup(lhs_operand.start + (term * lhs_operand.stride) as Reg)?;
             let rhs = self.lookup(rhs_operand.start + (term * rhs_operand.stride) as Reg)?;
-            let re = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.re)?;
-            let lhs_du = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re)?;
-            let rhs_du = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du)?;
-            let du = self.emit_binary(BinaryOp::Add, lhs_du, rhs_du)?;
+            let product = self.binary_dual(BinaryOp::Mul, lhs, rhs)?;
             sum = Some(match sum {
-                Some(sum) => DualReg {
-                    re: self.emit_binary(BinaryOp::Add, sum.re, re)?,
-                    du: self.emit_binary(BinaryOp::Add, sum.du, du)?,
-                },
-                None => DualReg { re, du },
+                Some(sum) => self.binary_dual(BinaryOp::Add, sum, product)?,
+                None => product,
             });
         }
         let sum = match sum {
@@ -2236,6 +2244,22 @@ impl AdBuilder {
         let lhs_count = checked_ad_product(rows, inner, self.span, "matrix multiply lhs")?;
         let rhs_count = checked_ad_product(inner, columns, self.span, "matrix multiply rhs")?;
         let output_count = checked_ad_product(rows, columns, self.span, "matrix multiply output")?;
+        if self.lower_inactive_bilinear_factors(
+            dst_start,
+            [(lhs_start, lhs_count), (rhs_start, rhs_count)],
+            output_count,
+            |dst_start, lhs_start, rhs_start| LinearOp::MatrixMultiply {
+                dst_start,
+                lhs_start,
+                rhs_start,
+                rows,
+                inner,
+                columns,
+                lanes: 1,
+            },
+        )? {
+            return Ok(());
+        }
         let lhs_start = self.pack_dual_register_range(lhs_start, lhs_count)?;
         let rhs_start = self.pack_dual_register_range(rhs_start, rhs_count)?;
         let dual_start = self.next_reg;
@@ -2296,6 +2320,43 @@ impl AdBuilder {
         }
         let lhs_count = if lhs_stride == 0 { 1 } else { count };
         let rhs_count = if rhs_stride == 0 { 1 } else { count };
+        if op == BinaryOp::Mul
+            && self.lower_inactive_bilinear_factors(
+                dst_start,
+                [(lhs_start, lhs_count), (rhs_start, rhs_count)],
+                count,
+                |dst_start, lhs_start, rhs_start| LinearOp::TensorBinary {
+                    dst_start,
+                    op,
+                    lhs_start,
+                    rhs_start,
+                    count,
+                    lhs_stride,
+                    rhs_stride,
+                    lanes: 1,
+                },
+            )?
+        {
+            return Ok(());
+        }
+        if self.range_tangent_is_zero(lhs_start, lhs_count)?
+            && self.range_tangent_is_zero(rhs_start, rhs_count)?
+        {
+            let lhs_start = self.pack_primal_range(lhs_start, lhs_count)?;
+            let rhs_start = self.pack_primal_range(rhs_start, rhs_count)?;
+            return self.emit_zero_tangent_result(dst_start, count, |dst_start| {
+                LinearOp::TensorBinary {
+                    dst_start,
+                    op,
+                    lhs_start,
+                    rhs_start,
+                    count,
+                    lhs_stride,
+                    rhs_stride,
+                    lanes: 1,
+                }
+            });
+        }
         let lhs_start = self.pack_dual_register_range(lhs_start, lhs_count)?;
         let rhs_start = self.pack_dual_register_range(rhs_start, rhs_count)?;
         let dual_start = self.next_reg;
@@ -2343,6 +2404,19 @@ impl AdBuilder {
             return Err(unsupported(
                 "forward AD expects a primal tensor cross product with one lane",
             ));
+        }
+        if self.lower_inactive_bilinear_factors(
+            dst_start,
+            [(lhs_start, 3), (rhs_start, 3)],
+            3,
+            |dst_start, lhs_start, rhs_start| LinearOp::TensorCross {
+                dst_start,
+                lhs_start,
+                rhs_start,
+                lanes: 1,
+            },
+        )? {
+            return Ok(());
         }
         let lhs_start = self.pack_dual_register_range(lhs_start, 3)?;
         let rhs_start = self.pack_dual_register_range(rhs_start, 3)?;
@@ -2397,6 +2471,19 @@ impl AdBuilder {
             self.span,
             "tensor transpose element width",
         )?;
+        if self.range_tangent_is_zero(src_start, count)? {
+            let src_start = self.pack_primal_range(src_start, count)?;
+            return self.emit_zero_tangent_result(dst_start, count, |dst_start| {
+                LinearOp::TensorTranspose {
+                    dst_start,
+                    src_start,
+                    rows,
+                    columns,
+                    element_width,
+                    lanes: 1,
+                }
+            });
+        }
         let src_start = self.pack_dual_register_range(src_start, count)?;
         let dual_start = self.next_reg;
         for _ in 0..checked_ad_product(count, 2, self.span, "tensor transpose dual output")? {
@@ -2618,6 +2705,16 @@ impl AdBuilder {
             ));
         }
         let value = self.lookup(value_start)?;
+        if self.tangent_is_zero(value) {
+            return self.emit_zero_tangent_result(dst_start, count, |dst_start| {
+                LinearOp::TensorFill {
+                    dst_start,
+                    value_start: value.re,
+                    count,
+                    lanes: 1,
+                }
+            });
+        }
         let value_start = self.pack_registers(&[value.re, value.du])?;
         let dual_start = self.next_reg;
         for _ in 0..checked_ad_product(count, 2, self.span, "tensor fill dual output")? {
@@ -2660,33 +2757,11 @@ impl AdBuilder {
             ));
         }
         let count = checked_ad_product(size, size, self.span, "tensor identity")?;
-        let dual_start = self.next_reg;
-        for _ in 0..checked_ad_product(count, 2, self.span, "tensor identity dual output")? {
-            self.alloc_reg()?;
-        }
-        self.ops.push(LinearOp::TensorIdentity {
-            dst_start: dual_start,
+        self.emit_zero_tangent_result(dst_start, count, |dst_start| LinearOp::TensorIdentity {
+            dst_start,
             size,
-            lanes: 2,
-        });
-        for offset in 0..count {
-            let primal =
-                checked_ad_reg_offset(dst_start, offset, self.span, "tensor identity output")?;
-            let dual = checked_ad_reg_offset(
-                dual_start,
-                checked_ad_product(offset, 2, self.span, "tensor identity dual lane")?,
-                self.span,
-                "tensor identity dual output",
-            )?;
-            self.bind(
-                primal,
-                DualReg {
-                    re: dual,
-                    du: dual + 1,
-                },
-            )?;
-        }
-        Ok(())
+            lanes: 1,
+        })
     }
 
     fn lower_tensor_load(
@@ -2710,6 +2785,18 @@ impl AdBuilder {
                 Some(self.p_seed_index(input_start)?)
             }
         };
+        if seed_start.is_none() {
+            return self.emit_zero_tangent_result(dst_start, count, |dst_start| {
+                LinearOp::TensorLoad {
+                    dst_start,
+                    input,
+                    input_start,
+                    count,
+                    seed_start: None,
+                    lanes: 1,
+                }
+            });
+        }
         let dual_start = self.next_reg;
         for _ in 0..checked_ad_product(count, 2, self.span, "tensor load dual output")? {
             self.alloc_reg()?;
@@ -2831,14 +2918,7 @@ impl AdBuilder {
                         != usize::try_from(register).ok()
                 })
         {
-            let packed_start = self.next_reg;
-            for source in &sources {
-                let destination = self.alloc_reg()?;
-                self.ops.push(LinearOp::Move {
-                    dst: destination,
-                    src: *source,
-                });
-            }
+            let packed_start = self.pack_registers(&sources)?;
             self.ops.push(LinearOp::StoreOutputRange {
                 start: packed_start,
                 count: sources.len(),
@@ -2997,6 +3077,10 @@ impl AdBuilder {
         lhs: DualReg,
         rhs: DualReg,
     ) -> Result<DualReg, LowerError> {
+        if op != BinaryOp::Div && self.tangent_is_zero(lhs) && self.tangent_is_zero(rhs) {
+            let re = self.emit_binary(op, lhs.re, rhs.re)?;
+            return Ok(DualReg { re, du: lhs.du });
+        }
         let out = match op {
             BinaryOp::Add => self.binary_add(lhs, rhs)?,
             BinaryOp::Sub => self.binary_sub(lhs, rhs)?,
@@ -3039,6 +3123,10 @@ impl AdBuilder {
         let safe_re = self.emit_binary(BinaryOp::Div, lhs.re, rhs.re)?;
         let denom_zero_re = self.emit_select(numer_zero, zero, safe_re)?;
         let re = self.emit_select(denom_zero, denom_zero_re, safe_re)?;
+
+        if self.tangent_is_zero(lhs) && self.tangent_is_zero(rhs) {
+            return Ok(DualReg { re, du: zero });
+        }
 
         let term1 = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re)?;
         let term2 = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du)?;
@@ -3160,6 +3248,9 @@ impl AdBuilder {
         {
             return Ok(start);
         }
+        if let Some(start) = self.pack_compact_registers(regs)? {
+            return Ok(start);
+        }
         let start = self.next_reg;
         for &src in regs {
             let dst = self.alloc_reg()?;
@@ -3176,25 +3267,8 @@ impl AdBuilder {
         if count == 0 {
             return Ok(self.next_reg);
         }
-        let first = self.lookup(primal_start)?;
-        let already_interleaved = first.du == first.re.saturating_add(1)
-            && (0..count).all(|offset| {
-                let Ok(primal) =
-                    checked_ad_reg_offset(primal_start, offset, self.span, "dual register range")
-                else {
-                    return false;
-                };
-                let Ok(value) = self.lookup(primal) else {
-                    return false;
-                };
-                let Ok(lane) = u32::try_from(offset.saturating_mul(2)) else {
-                    return false;
-                };
-                value.re == first.re.saturating_add(lane)
-                    && value.du == first.re.saturating_add(lane).saturating_add(1)
-            });
-        if already_interleaved {
-            return Ok(first.re);
+        if let Some(start) = self.interleaved_dual_range(primal_start, count)? {
+            return Ok(start);
         }
         let capacity = checked_ad_product(count, 2, self.span, "dual register range")?;
         let mut registers = ad_vec_with_capacity(capacity, "dual register range", self.span)?;
