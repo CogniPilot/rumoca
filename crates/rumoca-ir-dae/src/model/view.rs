@@ -380,6 +380,7 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
+    #[inline]
     pub fn expression(self, id: ExprId<'dae>) -> Option<ExpressionView<'dae>> {
         let index = id.index() as usize;
         Some(ExpressionView {
@@ -1221,6 +1222,7 @@ impl<'dae> ExpressionView<'dae> {
         }
     }
 
+    #[inline]
     pub fn operation(self) -> ExpressionOperation<'dae> {
         match self.node {
             ExprNode::Literal(_)

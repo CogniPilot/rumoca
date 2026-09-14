@@ -4,7 +4,43 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest complete cohort: native speedup with an unresolved Solve timeout
+## Latest complete cohort: expression-view inlining restores the floor
+
+`target/msl/multibody-inline-dae-view-full`, at `fdef84cc` plus tracked
+worktree digest `3f8fdd535362d6a4caf8c3279f4248ce82cf2dfb2f9bc65cad93bc70cbee50bd`,
+restores 158/566 strict-high models (27.92%), including 22/42 MultiBody models.
+All 158 compared trajectories and 20,379 initialization channels are high;
+eighteen reviewed exclusions remain, with zero missing, nonidentifiable, or
+deviating comparisons. The complete band table matches
+`multibody-identity-affinity-full`. Driving completes Solve in 8.729543 seconds
+and GyroscopicEffects in 8.478000 seconds under the unchanged ten-second
+budget. The existing Media Inverse_sh_TX refusal changes ED019 to EF015;
+this earns no coverage. Receipt: `rolling-wheel/inline-dae-view-full-delta.json`.
+
+Driving's isolated Solve profile attributes 7.88% of self samples to
+`ExpressionView::operation` and 4.80% to `DaeView::expression`. These borrowed
+view accessors construct checked wrappers that consumers immediately inspect.
+Adding ordinary cross-crate inline hints exposes their bodies to consumer
+optimization without changing checks, data ownership, or evaluation. Isolated
+Solve falls from 8.574600 to 7.925615 seconds. DAE, structural DAE, canonical
+Solve, and trace files are byte-identical between
+`direct-row-storage-driving-solve-profile-1` and
+`inline-dae-view-driving-solve-profile-1`.
+
+Formatting, 43 evaluation-DAE tests, 187 DAE-IR tests, 125 Solve-phase tests,
+and affected-package Clippy pass in `inline-dae-view-focused-1.log`. The
+five-target origin retains four high models and all 2,960 initialization
+channels; the fixed twenty-target canary retains nine high models and all
+175 initialization channels. Neither focused target set changes phase,
+simulation status, or band, and neither has missing or deviating comparisons.
+Receipts: `inline-dae-view-origin-delta.json` and
+`inline-dae-view-canary-delta.json`.
+
+RollingWheel remains high with concurrent Sim 0.175470 seconds. It is still
+slower than OMC; no baseline promotion, complete MultiBody claim, or combined
+quick/full verification result is implied. Runtime profiling continues.
+
+## Previous complete cohort: native speedup exposed a Solve timeout
 
 `target/msl/multibody-direct-row-storage-full`, at `6fd321b2` plus worktree
 digest `81a504337fd25db9d9e228bca672e474abd1a25f9b375805247b00dec8593c63`,
