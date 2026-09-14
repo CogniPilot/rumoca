@@ -118,6 +118,7 @@ pub struct PreparedScalarProgramBlock {
     row_registers: Vec<usize>,
     row_lazy_plans: Vec<Option<PreparedLazyRowPlan>>,
     row_requirements: Vec<RowInputRequirements>,
+    row_reverse_y_gradient_supported: Vec<bool>,
     row_is_causal: Vec<bool>,
     row_assignment_shapes: Vec<Box<[(usize, TargetAssignmentShape)]>>,
     row_tensor_affine_assignments: Vec<tensor_affine_assignment::PreparedTensorAffineAssignments>,
@@ -160,13 +161,10 @@ impl PreparedScalarProgramBlock {
     }
 
     pub fn reverse_row_y_gradient_supported(&self, row_idx: usize) -> bool {
-        self.block.programs().get(row_idx).is_some_and(|row| {
-            row.iter()
-                .filter(|op| matches!(op, LinearOp::StoreOutput { .. }))
-                .count()
-                == 1
-                && row.iter().all(crate::reverse::reverse_row_op_supported)
-        })
+        self.row_reverse_y_gradient_supported
+            .get(row_idx)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Whether the row's complete solver-Y gradient depends only on parameters.

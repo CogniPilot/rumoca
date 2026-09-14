@@ -10,6 +10,7 @@ impl Clone for PreparedScalarProgramBlock {
             row_registers: self.row_registers.clone(),
             row_lazy_plans: self.row_lazy_plans.clone(),
             row_requirements: self.row_requirements.clone(),
+            row_reverse_y_gradient_supported: self.row_reverse_y_gradient_supported.clone(),
             row_is_causal: self.row_is_causal.clone(),
             row_assignment_shapes: self.row_assignment_shapes.clone(),
             row_tensor_affine_assignments: self.row_tensor_affine_assignments.clone(),
@@ -36,6 +37,11 @@ impl PreparedScalarProgramBlock {
             prepared_vec_with_capacity(row_count, "prepared lazy row plan count", block_span)?;
         let mut row_requirements =
             prepared_vec_with_capacity(row_count, "prepared row requirement count", block_span)?;
+        let mut row_reverse_y_gradient_supported = prepared_vec_with_capacity(
+            row_count,
+            "prepared reverse gradient capability count",
+            block_span,
+        )?;
         let mut row_is_causal =
             prepared_vec_with_capacity(row_count, "prepared row causality count", block_span)?;
         let mut row_assignment_shapes = prepared_vec_with_capacity(
@@ -66,6 +72,7 @@ impl PreparedScalarProgramBlock {
             row_registers.push(register_count);
             row_lazy_plans.push(PreparedLazyRowPlan::new(row, register_count));
             row_requirements.push(row_requirement);
+            row_reverse_y_gradient_supported.push(reverse_y_gradient_supported(row));
             row_is_causal.push(!row.iter().any(non_causal_linear_op));
             row_assignment_shapes.push(
                 target_assignment_shapes_with_output_offsets(row)
@@ -90,6 +97,7 @@ impl PreparedScalarProgramBlock {
             row_registers,
             row_lazy_plans,
             row_requirements,
+            row_reverse_y_gradient_supported,
             row_is_causal,
             row_assignment_shapes,
             row_tensor_affine_assignments,
@@ -104,4 +112,12 @@ impl PreparedScalarProgramBlock {
     pub fn from_compute_block(block: &ComputeBlock) -> Result<Self, EvalSolveError> {
         Self::new(crate::to_scalar_program_block(block)?)
     }
+}
+
+fn reverse_y_gradient_supported(row: &[LinearOp]) -> bool {
+    row.iter()
+        .filter(|op| matches!(op, LinearOp::StoreOutput { .. }))
+        .count()
+        == 1
+        && row.iter().all(crate::reverse::reverse_row_op_supported)
 }

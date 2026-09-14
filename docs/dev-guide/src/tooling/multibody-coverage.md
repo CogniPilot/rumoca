@@ -67,6 +67,26 @@ samples include seventeen in JVP program 212 and five in sparse numeric LU;
 these self samples are distinct from invocation counts. Jacobian evaluation
 remains the next measured runtime target.
 
+## Prepared reverse-mode capability
+
+`PreparedScalarProgramBlock` now derives its immutable per-program reverse-AD
+capability once, alongside existing row requirements, and preserves that
+metadata on clone. Previously every Jacobian call rescanned all operations,
+even to decline a multi-output tensor program. The capability predicate and
+input validation are unchanged; its cache is bound to the private immutable
+program block and contains no numeric results.
+
+All 190 evaluator library tests, formatting, and Clippy pass in
+`prepared-reverse-focused-1.log`. The fixed twenty-member canary retains every
+phase, status, and band: nine compared models and 175 initialization channels
+high, with no skipped, missing, or deviating comparisons. Receipt:
+`prepared-reverse-canary-delta.json`. An isolated candidate measures 0.151358
+seconds against an immediate 0.153747-second control. This single-pair 1.55%
+difference is small; it does not establish a broad runtime speedup. All Flat,
+DAE, structural DAE, Solve, and trace bytes match. Receipt:
+`prepared-reverse-profile-delta-1.json`. The complete-cohort claim remains
+bound to the preceding full run above.
+
 ## Previous complete cohort: expression-view inlining restores the floor
 
 `target/msl/multibody-inline-dae-view-full`, at `fdef84cc` plus tracked
