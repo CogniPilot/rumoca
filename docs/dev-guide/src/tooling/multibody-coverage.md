@@ -4,7 +4,50 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest focused work: emit small native tensor arithmetic directly
+## Latest focused work: share exact nested source call owners
+
+On top of `0b273fb17391f0ce960e718a4ce20cd1d0670884`, pure-call registration
+now reuses completed nested DAE call owners within the same Solve table.
+Previously only root calls shared this lookup, expanding a shared source call
+graph into an invocation tree. The reduced five-owner example produced seven
+owners before the repair. Distinct source calls remain distinct even with
+identical names, spans, or bodies; the active-function recursion check still
+precedes reuse. Actual arguments, directional seeds, and each invocation's
+assertion predicates retain their own execution coordinates. Finishing a table
+discards the registration scope. This refines the existing pure-call
+construction contract in SPEC_0043 under SOLVE-C51/C52.
+
+All three focused regressions pass, covering increasing graph depth, different
+arguments/seeds and predicate outcomes, and table-scope reset. All 315
+Solve-phase/evaluator library tests, 99 compiler library tests, 582 core tests,
+17 gates, formatting, and affected-package Clippy pass. RED/GREEN evidence is
+in `rolling-wheel/nested-call-sharing-{red-1,green-2}.log`.
+
+RollingWheel's canonical call table shrinks from 1,216 to 214 owners. In the
+controlled actual-worker profile `nested-call-sharing-profile-1`, native build
+time falls from 2.476045721 to 1.516248235 seconds. Sim measures 1.088924 seconds
+(1.07 seconds user CPU), versus 1.134402 in the preceding controlled profile;
+the trace remains byte-identical with SHA-256
+`f46cbcf4bf00620007139eb17416c2ece8c3ddf5665e577a3c4e22ef2dadc47c`.
+Worker SHA-256 is
+`c8fc7489fda11426c4f43c3d228e3cc08866bc2c7c737f22e1f6e126ac98da6f`.
+Solve construction itself does not improve in this measurement. Native
+algebraic projection and manifold Jacobian programs still account for 14.30%
+and 11.91% of CPU samples, respectively; these are self costs.
+
+The normal `target/msl/multibody-nested-call-sharing-origin` gate measures
+Sim at 1.073520 seconds and compares one model: all 184 trajectory and
+initialization channels high, with zero skipped, missing, nonidentifiable,
+or deviating results. The fixed `multibody-nested-call-sharing-canary` retains
+every phase, status, and band from `multibody-typed-small-tensor-canary`:
+nine compared models high, 175 initialization channels high, eleven unchanged
+refusals, and zero skipped/missing/nonidentifiable/deviating results.
+Receipt: `rolling-wheel/nested-call-sharing-canary-delta.json`; worktree digest:
+`d928c2253b88de30dbe8b40378311c89483c6bafcba6943c944aeec04e686481`.
+The OMC speed target and combined quick/full remain outstanding. The complete
+cohort below predates these three execution/construction optimizations.
+
+## Previous focused work: emit small native tensor arithmetic directly
 
 On top of `6306f702d820717ad506fe705e0bb35253b43158`, typed native function
 helpers now use the same bounded direct matrix arithmetic as scalar kernels.

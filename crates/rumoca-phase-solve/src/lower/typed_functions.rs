@@ -37,8 +37,7 @@ use rumoca_ir_solve as solve;
 /// the resulting table is finite and topological by construction.
 pub(crate) struct PureCallRegistry<'dae> {
     table: solve::SolvePureCallTableBuilder,
-    identities: NestedIdentityIssuer,
-    roots: HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
+    identities: CallRegistration<'dae>,
 }
 
 impl<'dae> PureCallRegistry<'dae> {
@@ -46,8 +45,7 @@ impl<'dae> PureCallRegistry<'dae> {
         let arithmetic = arithmetic_profile();
         Self {
             table: solve::SolvePureCallTable::builder(arithmetic),
-            identities: NestedIdentityIssuer::new(None),
-            roots: HashMap::new(),
+            identities: CallRegistration::new(None),
         }
     }
 
@@ -56,38 +54,20 @@ impl<'dae> PureCallRegistry<'dae> {
         view: dae::DaeView<'dae>,
         call: dae::ExprId<'dae>,
     ) -> Result<RegisteredCall<'dae>, solve::SolveProgramConstructionError> {
-        let call_node = view
-            .expression(call)
-            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-        let dae::ExpressionOperation::Call { owner, .. } = call_node.operation() else {
-            return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
-                provenance: call_node.provenance().span(),
-            });
-        };
-        if let Some(registered) = self.roots.get(&owner) {
-            return Ok(registered.clone());
-        }
-        let provenance = view
-            .expression(owner)
-            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
-            .provenance()
-            .span();
-        let identity = self.identities.issue(provenance)?;
-        let registered = register_call(
+        register_call(
             &mut self.table,
             view,
-            owner,
-            identity,
+            call,
+            None,
             arithmetic_profile(),
             &mut self.identities,
             &mut Vec::new(),
-        )?;
-        self.roots.insert(owner, registered.clone());
-        Ok(registered)
+        )
     }
 
     pub(crate) fn finish(&mut self) -> solve::SolvePureCallTable {
         let replacement = solve::SolvePureCallTable::builder(arithmetic_profile());
+        self.identities = CallRegistration::new(None);
         std::mem::replace(&mut self.table, replacement).finish()
     }
 }
@@ -106,12 +86,12 @@ pub(super) fn lower_exact_call<'dae>(
 ) -> Result<solve::SolvePureCallTable, solve::SolveProgramConstructionError> {
     let arithmetic = arithmetic_profile();
     let mut table = solve::SolvePureCallTable::builder(arithmetic);
-    let mut identities = NestedIdentityIssuer::new(Some(identity));
+    let mut identities = CallRegistration::new(Some(identity));
     register_call(
         &mut table,
         view,
         call,
-        identity,
+        Some(identity),
         arithmetic,
         &mut identities,
         &mut Vec::new(),
@@ -232,14 +212,19 @@ impl<'program, 'dae> LoweredValue<'program, 'dae> {
     }
 }
 
-struct NestedIdentityIssuer {
+struct CallRegistration<'dae> {
     reserved: Option<solve::SolvePureCallIdentity>,
     next: u64,
+    calls: HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
 }
 
-impl NestedIdentityIssuer {
-    const fn new(reserved: Option<solve::SolvePureCallIdentity>) -> Self {
-        Self { reserved, next: 1 }
+impl CallRegistration<'_> {
+    fn new(reserved: Option<solve::SolvePureCallIdentity>) -> Self {
+        Self {
+            reserved,
+            next: 1,
+            calls: HashMap::new(),
+        }
     }
 
     fn issue(

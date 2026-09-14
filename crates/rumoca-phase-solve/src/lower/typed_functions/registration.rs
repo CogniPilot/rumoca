@@ -6,15 +6,18 @@ pub(super) fn register_call<'dae>(
     table: &mut solve::SolvePureCallTableBuilder,
     view: dae::DaeView<'dae>,
     call: dae::ExprId<'dae>,
-    identity: solve::SolvePureCallIdentity,
+    identity: Option<solve::SolvePureCallIdentity>,
     arithmetic: solve::SolveArithmeticProfile,
-    identities: &mut NestedIdentityIssuer,
+    identities: &mut CallRegistration<'dae>,
     active: &mut Vec<dae::FunctionId<'dae>>,
 ) -> Result<RegisteredCall<'dae>, solve::SolveProgramConstructionError> {
     let node = view
         .expression(call)
         .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-    let dae::ExpressionOperation::Call { function, .. } = node.operation() else {
+    let dae::ExpressionOperation::Call {
+        function, owner, ..
+    } = node.operation()
+    else {
         return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
             provenance: node.provenance().span(),
         });
@@ -25,9 +28,19 @@ pub(super) fn register_call<'dae>(
             provenance: node.provenance().span(),
         });
     }
+    if let Some(registered) = identities.calls.get(&owner) {
+        return Ok(registered.clone());
+    }
+    let identity = match identity {
+        Some(identity) => identity,
+        None => identities.issue(node.provenance().span())?,
+    };
     active.push(function);
-    let result = register_call_body(table, view, call, identity, arithmetic, identities, active);
+    let result = register_call_body(table, view, owner, identity, arithmetic, identities, active);
     active.pop();
+    if let Ok(registered) = &result {
+        identities.calls.insert(owner, registered.clone());
+    }
     result
 }
 
@@ -39,7 +52,7 @@ fn register_call_body<'dae>(
     call: dae::ExprId<'dae>,
     identity: solve::SolvePureCallIdentity,
     arithmetic: solve::SolveArithmeticProfile,
-    identities: &mut NestedIdentityIssuer,
+    identities: &mut CallRegistration<'dae>,
     active: &mut Vec<dae::FunctionId<'dae>>,
 ) -> Result<RegisteredCall<'dae>, solve::SolveProgramConstructionError> {
     let call_node = view
@@ -63,15 +76,11 @@ fn register_call_body<'dae>(
     let nested_call_ids = nested_calls(view, function, &assertions);
     let mut callees = HashMap::new();
     for nested_call in nested_call_ids.iter().copied() {
-        let nested_node = view
-            .expression(nested_call)
-            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-        let nested_identity = identities.issue(nested_node.provenance().span())?;
         let registered = register_call(
             table,
             view,
             nested_call,
-            nested_identity,
+            None,
             arithmetic,
             identities,
             active,

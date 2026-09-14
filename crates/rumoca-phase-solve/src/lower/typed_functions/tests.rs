@@ -6,6 +6,7 @@ use super::*;
 
 mod fixtures;
 mod linear_solve;
+mod shared_nested_calls;
 
 use fixtures::{integer_to_real_sibling_folds, lower_root_call, structured_range};
 
