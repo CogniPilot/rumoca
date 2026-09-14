@@ -4,6 +4,56 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Current cohort and RollingWheel measurement
+
+The complete `multibody-bdf-step-budget-full-11` sweep at commit
+`6e3b5c2d3a415db5d1191c7208e9c2968697d2ad` passes: 159/566 strict-high
+models (28.09%), including 22/42 MultiBody. All 159 compared models and 20,964
+initialization channels are high. There are 19 reviewed exclusions and zero
+missing, typed nonidentifiable, near, or deviating comparisons. Every previously
+high model is retained; IMC_YD additionally becomes high after the step recovery
+budget correction. BevelGear1D remains a reviewed exclusion, never a high result.
+The tracked source was clean; the foreign untracked communication file accounts
+for the harness dirty flag. The receipt is `bdf-step-budget-full-delta.json`.
+
+RollingWheel remains slower than OMC. At that same commit, the ordinary release
+worker takes 71.411 ms versus an immediate msl-fast control at 77.773 ms. This
+8.18% difference is a paired measurement, not repeated medians; release already
+uses ThinLTO and no build profile was changed. All Flat, DAE, structural DAE,
+Solve, and complete trace bytes are identical (`release-lto-profile-delta-1.json`).
+
+OMC's reported 16.582 ms simulation median excludes its solver timer. Inspection
+of `solver_main.c` at pinned OMC revision
+`a96aa1a682c463b0fd2d285b486c09a8b7fe496d` establishes the subtraction used by
+`finishSimulation`. Per-run sums over the archived 40 runs give 17.722 ms for
+simulation plus solver, 18.924 ms for total minus output, and 18.236 ms after
+also subtracting initialization and preinitialization. Total including CSV
+output is 50.655 ms. Those scopes differ from Rumoca's prepared run with
+in-memory output; none establishes a Rumoca speed advantage. The receipt is
+`omc-timer-accounting-1.json`.
+
+A removed 40-run timer probe has an 80.721 ms median, including instrumentation
+overhead. Numerical advance takes 52.475 ms median. Inclusive accumulated
+timings identify the 24-coordinate affine block at 38.306 ms per run, including
+14.474 ms for Jacobian evaluation and 10.422 ms for linear solves. Timings include
+small build/initialization contributions and nested categories must not be
+summed. All repeated traces and compiler artifacts match the ordinary release
+byte-for-byte. Exact executable/JIT maps, perf leaf samples, source restoration
+hashes, and the measurement limits are retained in
+`release-cost-repeat-profile-1` and `release-cost-repeat-summary-1.json`.
+
+An experiment specializing AD further to each color passed 1,043 focused tests
+and affected-package Clippy. Its complete compiler artifacts and trace were
+byte-identical, but an immediate ordinary-worker pair took 82.120 ms versus
+77.854 ms for the archived baseline (5.48% slower). Preparation took 9.677 s
+versus 9.743 s. No performance improvement was demonstrated, so the experiment
+and its proposed contract extension were removed. The exact patch, both worker
+executables, tests, and receipts remain in `color-seed-domain-experiment-1.patch`,
+`color-seed-domain-focused-{1,2,3}.log`, and
+`color-seed-domain-profile-delta-1.json`; the second focused attempt only exposed
+a test constructor unavailable under that feature set. This is rejected
+performance evidence, with no additional MSL coverage claim.
+
 ## Latest focused work: distinguish step recovery from cumulative statistics
 
 The full `multibody-bdf-convergence-history-full-11` comparison at clean commit
@@ -41,7 +91,8 @@ reviewed exclusion, and zero missing or deviating comparisons. The fixed
 `multibody-bdf-step-budget-canary` preserves every preceding phase and band:
 nine comparisons, 175 high initialization channels, and zero skipped, missing,
 nonidentifiable, or deviating comparisons (`bdf-step-budget-canary-delta.json`).
-The tracked-exclusion validation test passes; complete cohort validation is next.
+The tracked-exclusion validation test passes; the subsequent complete cohort
+result is recorded above.
 
 BevelGear's reference was examined independently of Rumoca: the unchanged,
 xtask-generated OMC executable produces `revolute1.phi(1)` of 72.3016880708 rad
