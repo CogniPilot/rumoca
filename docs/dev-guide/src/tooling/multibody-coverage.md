@@ -30,6 +30,57 @@ pass. Combined quick/full verification and the remaining runtime performance
 gap remain open. This is not a baseline promotion, 100% MultiBody result, or
 release approval.
 
+## Runtime investigation: repeated coefficient evaluation
+
+`identity-affinity-symbols-profile-1` resolves the previous native-code blind
+spot without compiler instrumentation. Cranelift writes its JIT map when
+`PERF_BUILDID_DIR` is present at worker startup. The archived worker's hash is
+`46722de1fb006b880281c8c9e7b213f7815cc9c4a0b65ce0c64fdc87570988af`.
+Of 287 leaf samples, 148 map into the captured nonoverlapping JIT ranges.
+Program 212 accounts for 36 Jacobian samples and 35 residual samples, about
+25% combined. These are sampled self costs, not inclusive call-chain costs.
+The three outputs still originate from `Body.mo`'s `a_0 = der(v_0)`.
+
+A private seed-domain probe binds each source program to the union of the
+unknowns of projection blocks selecting its outputs. Replacing other seeds
+with literal zeros alone changes Sim from 0.290190 to 0.293735 seconds and
+barely changes the hot Jacobian's 59,968-byte code size. A subsequent prototype
+omitting structurally zero tangent calculations reduces the restricted kernel
+to 42,800 bytes and Sim to 0.274063 seconds. This is diagnostic evidence only:
+a restricted kernel cannot replace the general sensitivity artifact.
+
+The attempted unrestricted production change also removes inactive bilinear
+terms and preserves compact storage through tensor fills, transposes, and
+concatenations. Its 134 Solve tests, 111 projection tests, 99 library tests,
+595 core tests, seventeen architecture/spec gates, and Clippy pass. The
+five-target `multibody-inactive-tangents-origin` comparison retains four high
+models, all 2,960 initialization channels, zero skipped/missing/excluded or
+deviating comparisons, and the prior thermal `EL005` refusal. However, the
+isolated candidate measures 0.304896 seconds, while an immediate archived
+baseline recheck measures 0.286091 seconds. Their trace files are identical.
+The extra packing outweighs the arithmetic savings, so the candidate and its
+temporary instrumentation are removed. Source, tests, and spec proposal are
+preserved privately in `rolling-wheel/inactive-tangents-rejected-source.json`;
+the normal worker was rebuilt and matches the archived baseline byte for byte.
+No new compiler capability or cohort improvement is claimed from this trial.
+
+The next boundary is source coefficient evaluation across the entire solve.
+The read-only `coefficient-frontier-2.log` probe uses the production dependency
+deriver on every producer output of the current 24-unknown block. In program
+212, 313 of 391 producer operations are independent of that block's unknowns,
+including four of eight pure calls. Program 214 has 98 independent operations
+out of 112. Both programs occur in six of the block's nine issued forward
+color selections; these are construction selections, not measured invocation
+counts. Merely reducing tangent arithmetic leaves this primal coefficient work
+inside each selected evaluation. OMC's corresponding system 731 is a
+six-unknown linear solve with a symbolic Jacobian. The next experiment should
+bind a reusable coefficient evaluation to the exact immutable block coordinate
+and source owners, preserving assertions and fresh residual certification,
+then measure matrix assembly and residual evaluation together. General
+state/parameter sensitivities retain their complete seed domain. The latest
+complete cohort remains the 158/566, 22/42 checkpoint above; combined
+quick/full verification and the performance gap remain open.
+
 ## Previous complete cohort: previous high-parity floor restored
 
 The complete `target/msl/multibody-shared-materialization-full` comparison at
