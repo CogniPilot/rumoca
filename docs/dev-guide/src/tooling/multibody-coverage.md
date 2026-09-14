@@ -4,7 +4,41 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest complete cohort: fixed-anchor repair and remaining regressions
+## Latest complete cohort: previous high-parity floor restored
+
+The complete `target/msl/multibody-shared-materialization-full` comparison at
+`f494d96207769c257168356e29fc5285b022fedb` restores 158/566 high models
+(27.92%), including 22/42 MultiBody examples. All 20,379 compared
+initialization channels are high. The eighteen reviewed exclusions remain;
+there are zero missing, nonidentifiable, or deviating comparisons. Against
+the preceding `multibody-fixed-anchor-full`, GyroscopicEffects and
+RollingWheelSetDriving both recover their high bands. Against the earlier
+158-model `multibody-component-definition-full` checkpoint, the complete
+566-row band table is unchanged: no earlier high model has been exchanged for
+a different success. The run uses the unchanged phase budgets and eleven
+simulation workers. This restores the prior floor but does not establish
+100% MultiBody coverage, a 28.00% floor, or release readiness.
+
+GyroscopicEffects Solve measures 8.399072 seconds; RollingWheelSetDriving
+9.541474; SphericalConstraint 4.684997. Driving remains close to the ten-second
+budget and still needs margin. Thermal HeatTransfer GenerationOfFMUs returns
+its explicit `EL005` fixed-initial-value refusal without the earlier worker
+crash. Fourbar_analytic and GearConstraint reach structural refusals instead
+of timing out; Media Inverse_sh_TX changes its frontend refusal phase. These
+diagnostic changes earn no simulation coverage. RollingWheel retains all 184
+trajectory and initialization channels high, with Sim 0.782661 seconds. It
+remains slower than OMC; the next runtime investigation is the repeated
+algebraic projection block and its causal assignment/tear selection.
+
+Receipts are `rolling-wheel/shared-materialization-full-delta.json` and
+`rolling-wheel/shared-materialization-full-restoration-delta.json`. All
+tracked files match the named commit; the comparator's dirty flag reflects
+the retained foreign untracked `comm_fastdyn.md`. Its tracked worktree digest
+is `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+The focused and core validation below passes. Combined quick/full validation
+remains open; this cohort result is not a baseline promotion or release gate.
+
+## Previous complete cohort: fixed-anchor repair and remaining regressions
 
 The complete `target/msl/multibody-fixed-anchor-full` run at
 `cf0c2c61f01b914cfa76b1813c1ffaa4f293cc33` compares 156/566 models high
