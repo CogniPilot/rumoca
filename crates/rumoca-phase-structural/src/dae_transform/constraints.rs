@@ -1584,6 +1584,19 @@ fn is_differentiable_coordinate<'dae>(
         dae::CoordinateView::Parameter(_) | dae::CoordinateView::Time => true,
         dae::CoordinateView::State(state) => state != demoted,
         dae::CoordinateView::Algebraic(algebraic) => {
+            if let Some(block) = &facts.auxiliary_blocks[algebraic.index() as usize] {
+                return !block.state_anchors.contains(&demoted.index())
+                    && block.operands().all(|operand| {
+                        is_differentiable_in_context(
+                            view,
+                            facts,
+                            view.expression_id(operand.expression as usize).unwrap(),
+                            demoted,
+                            visited,
+                            &operand.context(view),
+                        )
+                    });
+            }
             match facts.equalities.anchor_of(algebraic.index()) {
                 Some((EqualityAnchor::Invariant { .. }, _)) => true,
                 Some((anchor @ EqualityAnchor::State(_), _)) => facts

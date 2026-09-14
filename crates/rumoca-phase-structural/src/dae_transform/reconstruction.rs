@@ -277,7 +277,7 @@ pub(super) fn rebuild_with_state_demotion_and_manifold(
 
 #[derive(Clone, Copy)]
 struct RebuildContext<'source, 'borrow, 'target> {
-    auxiliary_functions: &'borrow [Option<dae::FunctionId<'target>>],
+    auxiliary_functions: &'borrow super::auxiliary_blocks::AuxiliaryFunctions<'target>,
     source: dae::DaeView<'source>,
     types: &'borrow [dae::ValueTypeId<'target>],
     functions: &'borrow [super::functions::RebuiltFunction<'target>],

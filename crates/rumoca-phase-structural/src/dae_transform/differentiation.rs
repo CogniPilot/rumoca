@@ -14,6 +14,7 @@
 mod algebra;
 mod conditionals;
 mod geometry;
+mod linear_solve;
 
 use rumoca_ir_dae as dae;
 
@@ -607,11 +608,16 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         arguments: dae::ExpressionOperands<'source>,
         provenance: dae::DaeProvenance,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let function = (builtin == dae::PureBuiltin::LinearSolve)
+            .then(|| self.linear_solve_function(arguments));
         let arguments = arguments
             .iter()
             .map(|argument| self.materialize_exact_value(argument, provenance))
             .collect::<Result<Vec<_>, _>>()?;
-        self.target.at(provenance).builtin(builtin, arguments)
+        match function {
+            Some(function) => self.target.at(provenance).call(function, 0, arguments),
+            None => self.target.at(provenance).builtin(builtin, arguments),
+        }
     }
 
     fn differentiate_array(
@@ -712,6 +718,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 self.differentiate_unary_geometry(builtin, arguments, order, provenance)
             }
             Builtin::Atan2 => self.differentiate_atan2_builtin(arguments, provenance),
+            Builtin::LinearSolve => self.differentiate_linear_solve(arguments, order, provenance),
             _ => unreachable!("differentiability preflight rejects this builtin"),
         }
     }

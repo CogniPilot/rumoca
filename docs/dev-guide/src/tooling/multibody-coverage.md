@@ -4,6 +4,57 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest focused work: preserve auxiliary derivatives across reduction rounds
+
+The explicit-height control of `TensorContact` retained three states despite
+the existing auxiliary proof determining its contact vector from orientation.
+Direct-state derivative preflight did not consume that proof. Once admitted,
+height demotion succeeded, but velocity demotion stopped at a generated
+`LinearSolve` expression. Supporting its derivative then exposed a Solve
+ownership rejection: a bare aggregate solve cannot enter scalar lowering.
+The retained RED and intermediate failures are
+`rolling-wheel/direct-auxiliary-{red-1,candidate-1,candidate-2}.log`.
+
+Preflight now follows the auxiliary block's exact operand contexts and excludes
+the state being demoted. First and second derivatives of a checked linear solve
+use the implicit matrix equations on the same nonsingular domain. Reconstructed
+solves retain aggregate function owners, generated once per checked Real
+matrix/vector signature, with distinct source-bound invocation identities.
+SPEC_0007's STRUCT-T03 profile and its SPEC_0040 reconstruction rows govern this
+extension; the existing supplied-derivative rule moved into those referenced
+rows to keep the parent within its word budget.
+
+The explicit-height control now uses one state and preserves all analytical
+channels under both BDF and RK. The reciprocal-motion regression verifies
+`q''=2/(1+theta)^3` when `theta'=1`: the matrix and right-hand side have zero
+second derivatives, so the mixed term is essential. `AngularRateContact` also
+drops from three state declarations to two while preserving its analytical
+motion. All eleven contact tests, 162 structural tests, 99 compiler library
+tests, 584 core tests, 17 gates, formatting, and structural-package Clippy pass.
+The reciprocal fixture's first attempts needed the checked optional `fixed`
+attribute and an unfixed algebraic start guess; these were fixture corrections,
+not compiler failures or additional coverage.
+
+The normal `target/msl/multibody-direct-auxiliary-origin` gate compares one
+RollingWheel trace: all 184 trajectory and initialization channels high, zero
+skipped/missing/nonidentifiable/deviating results. Sim measures 1.055705 seconds,
+with the same fourteen integrated coordinates and byte-identical trace SHA-256
+`f46cbcf4bf00620007139eb17416c2ece8c3ddf5665e577a3c4e22ef2dadc47c`.
+This does not establish a meaningful RollingWheel speed improvement. The
+controlled `direct-auxiliary-profile-1` attempt expired after 180 seconds in
+source loading, before Sim; it provides no profiling measurement.
+
+The fixed `multibody-direct-auxiliary-canary` retains every phase, status, and
+band from `multibody-nested-call-sharing-canary`: nine models compared high,
+175 initialization channels high, eleven unchanged refusals, and zero
+skipped/missing/nonidentifiable/deviating results. Receipt:
+`rolling-wheel/direct-auxiliary-canary-delta.json`; worktree digest:
+`90691544006cba292c109a5c2d88f90f894836c0920f6d0eb7d1f3ae706ec964`.
+The original tensor-form contact model still retains three states. Its missing
+component-definition proof, RollingWheel's extra state coordinates, the OMC
+speed target, and combined quick/full remain open. The complete cohort below
+predates this focused structural change.
+
 ## Latest complete cohort: execution optimizations preserve parity
 
 The complete `target/msl/multibody-nested-call-sharing-full` gate passes at
@@ -24,7 +75,7 @@ These are recorded as failures, with no new semantic coverage credit. Receipt:
 OMC version is `a96aa1a-cmake`. The OMC speed target and combined quick/full
 remain outstanding.
 
-## Latest focused work: share exact nested source call owners
+## Previous focused work: share exact nested source call owners
 
 On top of `0b273fb17391f0ce960e718a4ce20cd1d0670884`, pure-call registration
 now reuses completed nested DAE call owners within the same Solve table.

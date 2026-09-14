@@ -30,6 +30,7 @@ pub(super) fn is_materializable_builtin(builtin: dae::PureBuiltin) -> bool {
                 | dae::PureBuiltin::Cos
                 | dae::PureBuiltin::Sqrt
                 | dae::PureBuiltin::Atan2
+                | dae::PureBuiltin::LinearSolve
         )
 }
 

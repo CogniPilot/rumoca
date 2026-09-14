@@ -55,7 +55,7 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     previous: &'borrow [dae::PreviousId<'target>],
     terminals: &'borrow [dae::TerminalId<'target>],
     pub(super) facts: &'borrow DifferentiationFacts,
-    pub(super) auxiliary_functions: &'borrow [Option<dae::FunctionId<'target>>],
+    pub(super) auxiliary_functions: &'borrow super::auxiliary_blocks::AuxiliaryFunctions<'target>,
     pub(super) auxiliary_expressions: std::collections::BTreeMap<
         (u32, u8, bool),
         super::auxiliary_blocks::AuxiliaryExpression<'target>,
@@ -70,7 +70,7 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
 
 #[derive(Clone, Copy)]
 pub(super) struct RebuiltBaseIdentities<'borrow, 'target> {
-    pub(super) auxiliary_functions: &'borrow [Option<dae::FunctionId<'target>>],
+    pub(super) auxiliary_functions: &'borrow super::auxiliary_blocks::AuxiliaryFunctions<'target>,
     pub(super) types: &'borrow [dae::ValueTypeId<'target>],
     pub(super) variables: &'borrow [ReservedVariable<'target>],
     pub(super) domains: &'borrow [RebuiltDomain<'target>],

@@ -14,46 +14,86 @@ pub(in crate::dae_transform) struct AuxiliaryExpression<'dae> {
     pub(super) value: dae::ExprId<'dae>,
 }
 
+pub(in crate::dae_transform) struct AuxiliaryFunctions<'dae> {
+    by_variable: Vec<Option<dae::FunctionId<'dae>>>,
+    by_extent: std::collections::BTreeMap<u32, dae::FunctionId<'dae>>,
+}
+
+impl<'dae> AuxiliaryFunctions<'dae> {
+    pub(in crate::dae_transform) fn linear_solve(&self, extent: u32) -> dae::FunctionId<'dae> {
+        self.by_extent[&extent]
+    }
+}
+
 pub(in crate::dae_transform) fn create_functions<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     facts: &DifferentiationFacts,
-) -> Result<Vec<Option<dae::FunctionId<'target>>>, dae::DaeConstructionError> {
-    let mut functions = vec![None; facts.auxiliary_blocks.len()];
+) -> Result<AuxiliaryFunctions<'target>, dae::DaeConstructionError> {
+    let mut functions = AuxiliaryFunctions {
+        by_variable: vec![None; facts.auxiliary_blocks.len()],
+        by_extent: std::collections::BTreeMap::new(),
+    };
     for block in facts.auxiliary_blocks.iter().flatten() {
-        let owner = &mut functions[block.variable as usize];
-        if owner.is_none() {
-            *owner = Some(create_function(source, target, block)?);
+        let source_row = source.expression_id(block.residual() as usize).unwrap();
+        let at = source.expression(source_row).unwrap().provenance();
+        let function = insert_function(target, &mut functions, block.extent, at)?;
+        functions.by_variable[block.variable as usize] = Some(function);
+    }
+    for index in 0..source.expression_count() {
+        let node = source
+            .expression(source.expression_id(index).unwrap())
+            .unwrap();
+        if matches!(
+            node.operation(),
+            dae::ExpressionOperation::Builtin {
+                builtin: dae::PureBuiltin::LinearSolve,
+                ..
+            }
+        ) {
+            insert_function(
+                target,
+                &mut functions,
+                node.value_type().dimensions()[0],
+                node.provenance(),
+            )?;
         }
     }
     Ok(functions)
 }
 
-fn create_function<'target>(
-    source: dae::DaeView<'_>,
+fn insert_function<'target>(
     target: &mut dae::DaeConstruction<'target>,
-    block: &AuxiliaryBlock,
+    functions: &mut AuxiliaryFunctions<'target>,
+    extent: u32,
+    source: dae::DaeProvenance,
 ) -> Result<dae::FunctionId<'target>, dae::DaeConstructionError> {
-    let source_row = source.expression_id(block.residual() as usize).unwrap();
-    let at = dae::DaeProvenance::generated(
-        dae::DaeGeneration::IndexReduction,
-        source.expression(source_row).unwrap().provenance().span(),
-    )?;
+    if let Some(&function) = functions.by_extent.get(&extent) {
+        return Ok(function);
+    }
+    let at = dae::DaeProvenance::generated(dae::DaeGeneration::IndexReduction, source.span())?;
+    let function = create_function(target, extent, at)?;
+    functions.by_extent.insert(extent, function);
+    Ok(function)
+}
+
+fn create_function<'target>(
+    target: &mut dae::DaeConstruction<'target>,
+    extent: u32,
+    at: dae::DaeProvenance,
+) -> Result<dae::FunctionId<'target>, dae::DaeConstructionError> {
     let (matrix_type, vector_type) = target.types(|types| {
         Ok((
             types.derived(
-                dae::ValueType::array(dae::ScalarType::Real, [block.extent, block.extent]),
+                dae::ValueType::array(dae::ScalarType::Real, [extent, extent]),
                 at,
             )?,
-            types.derived(
-                dae::ValueType::array(dae::ScalarType::Real, [block.extent]),
-                at,
-            )?,
+            types.derived(dae::ValueType::array(dae::ScalarType::Real, [extent]), at)?,
         ))
     })?;
     let (function, ()) = target.function(
         dae::FunctionSignature::new(
-            VarName::new(format!("$auxiliary_linear_{}", block.variable)),
+            VarName::new(format!("$linear_solve_{extent}")),
             [matrix_type, vector_type],
             [vector_type],
             at,
@@ -185,8 +225,8 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             }
             primal.matrix
         };
-        let function =
-            self.auxiliary_functions[variable as usize].expect("proved block function reserved");
+        let function = self.auxiliary_functions.by_variable[variable as usize]
+            .expect("proved block function reserved");
         let value = self
             .target
             .at(provenance)

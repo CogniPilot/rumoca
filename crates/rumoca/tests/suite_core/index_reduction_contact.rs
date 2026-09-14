@@ -1,5 +1,7 @@
 //! Coupled tensor contact geometry and its explicitly solved diagnostic control.
 
+mod linear_solve;
+
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae_with_diagnostics};
 
@@ -38,7 +40,7 @@ fn tensor_angular_rate_map_permits_the_second_contact_derivative() {
             ANGULAR_RATE_SOURCE,
             "AngularRateContact",
             solver,
-            3,
+            2,
             angular_rate_values,
         );
     }
@@ -109,6 +111,18 @@ fn explicitly_solved_contact_coordinates_preserve_the_same_motion() {
     let source = SOURCE.replace(
         "0 = delta*axis;\n  0 = delta*longitudinal;\n  radius = delta*cross(longitudinal,axis);",
         "s = 0;\n  w = radius*sin(theta);\n  z = radius*cos(theta);",
+    );
+    assert_ne!(source, SOURCE);
+    for solver in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+        check_contact(&source, solver, 1);
+    }
+}
+
+#[test]
+fn explicit_contact_height_uses_the_proved_auxiliary_derivative() {
+    let source = SOURCE.replace(
+        "delta = road - {0,0,z};",
+        "delta[1] = s;\n  delta[2] = w;\n  z = -delta[3];",
     );
     assert_ne!(source, SOURCE);
     for solver in [SimSolverMode::Bdf, SimSolverMode::RkLike] {

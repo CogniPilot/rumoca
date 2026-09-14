@@ -13,7 +13,7 @@ use rumoca_ir_dae as dae;
 
 use super::constraints::DifferentiationFacts;
 
-pub(super) use reconstruction::{AuxiliaryExpression, create_functions};
+pub(super) use reconstruction::{AuxiliaryExpression, AuxiliaryFunctions, create_functions};
 use tensor_expression::{SourceValue, TensorExpression};
 
 /// One source-authored scalar dot equation, `unknown * coefficient = rhs`.

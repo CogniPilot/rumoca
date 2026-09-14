@@ -313,7 +313,7 @@ STRUCT-T03's linear auxiliary profile:
 | In continuous derivative equations for a proved auxiliary system `A*q=b`, retain the source primal coordinate `q` and ordinary algebraic coefficient reads in `A*der(q)=der(b)-der(A)*q`; state-only manifold reconstruction must still expand through its proved state/invariant anchors | structural reconstruction | The original equations already own the primal solve; differentiating must not recursively solve that same primal again. The derivative solve retains the same checked nonsingular-matrix domain |
 | Keep identity, projection, matrix product, and outer product aggregate; never enumerate a tensor basis to obtain coefficients | structural reconstruction | Compiler representation must stay compact |
 | Reject singular runtime matrices through the checked aggregate solve | native evaluation | Structural shape cannot prove numerical nonsingularity |
-| Select supplied derivatives only at a supported order; a first-order annotation does not forbid a separately proved higher derivative of the checked function body (MLS §12.7.1) | structural differentiation | Annotation availability is not a smoothness bound |
+| Auxiliary reconstruction and repeated derivatives satisfy the [STRUCT-T03 reconstruction rows](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope) | structural reconstruction | Preserve subsequent reduction and aggregate execution |
 
 **Placement requirement:**
 
