@@ -8,6 +8,7 @@ mod plan;
 mod scaling;
 mod seed_linearization;
 mod singleton;
+mod sparse_newton;
 mod step_limit;
 mod tearing;
 #[cfg(test)]
@@ -21,15 +22,14 @@ use rumoca_ir_solve as solve;
 
 use super::solve_ops::RuntimeSolveError;
 use initial_diagnostics::initial_projection_error;
-pub(crate) use scaling::{
-    ScaledNewtonSystem, SparseNewtonCache, scaled_newton_delta, scaled_newton_delta_with_cache,
-};
+pub(crate) use scaling::{ScaledNewtonSystem, scaled_newton_delta, scaled_newton_delta_with_cache};
 use scaling::{
     algebraic_block_scales, algebraic_plan_row_scales, initial_block_fallback_scales,
     initial_residual_scales, jacobian_row_scales, model_variable_scale,
     scaled_correction_converged, scaled_residual_converged, scaled_residual_norm, scaled_tolerance,
 };
 use singleton::{SingletonAssignmentStep, initial_row_target_name, singleton_assignment_improves};
+pub(crate) use sparse_newton::SparseNewtonCache;
 use step_limit::StepLimit;
 
 pub(crate) use manifold::{

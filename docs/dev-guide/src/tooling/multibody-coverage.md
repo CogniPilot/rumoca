@@ -4,7 +4,45 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest focused work: stream structural row scales
+## Latest focused work: retain sparse numeric factorization storage
+
+On top of `c9e60096`, the sparse projection owner retains faer's numeric LU
+storage, exact conditioned coefficient bits, and a scratch buffer sufficient
+for both factorization and solving. The high-level API previously allocated
+a new numeric factor and scratch on each refactorization, then separate RHS,
+solution, and scratch buffers on each solve. The new owner uses the same faer
+symbolic/numeric kernels and pivot policy, with one owned result vector.
+Changed matrix patterns reconstruct the owner. Refactorization consumes the
+usable-factor state before modifying numeric storage; rejected factors cannot
+solve a RHS, and an identical rejected matrix is not refactored. Cloning owns
+independent factor and scratch storage. SPEC_0043 §6a states the ownership rule.
+
+`retained-sparse-workspace-focused-3.log` records all 486 solver library tests
+and all-target/all-feature Clippy passing. Differential tests compare retained
+and freshly allocated faer solves bit for bit under coefficient, scaling, RHS,
+pivot, pattern, and dimension changes, plus singular failure/recovery and clone
+independence. Scratch addresses stay unchanged across repeated refactorizations.
+The first command had a test fixture integer-type error. The second caught an
+incorrect test assumption that every infinite coefficient produces a nonfinite
+solution; the final test compares faer's existing behavior and checks recovery,
+without changing production acceptance or fallback policy.
+
+The fixed `target/msl/multibody-retained-sparse-workspace-canary` retains nine
+high models and 175 high initialization channels. The five-model
+`target/msl/multibody-retained-sparse-workspace-origin` retains four high models
+and 2,960 high initialization channels. Both have unchanged phase/status/band
+outcomes, zero skipped/missing/nonidentifiable comparisons, and zero deviations.
+Receipts: `rolling-wheel/retained-sparse-workspace-{canary,origin}-delta.json`.
+
+Controlled RollingWheel Sim is 0.125927 seconds versus the immediate archived
+baseline's 0.136581 seconds, a single-pair 7.80% reduction. Flat, DAE, structural
+DAE, canonical Solve, and complete trace bytes are identical. Candidate worker
+SHA-256: `0669bf7946f1d278887c3940424f223b7ec3a81b6a6bf01da5c2c89f803c0916`.
+Receipt: `rolling-wheel/retained-sparse-workspace-profile-delta-1.json`.
+RollingWheel remains slower than OMC. Complete-cohort validation and combined
+quick/full verification remain open.
+
+## Previous focused work: stream structural row scales
 
 On top of `fce39f4e`, sparse Jacobian row scaling consumes the pattern's ordered
 borrowed row visitor instead of allocating every nonzero coordinate on each

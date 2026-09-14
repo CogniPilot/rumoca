@@ -1,28 +1,16 @@
 use faer::{
     Col,
     prelude::Solve,
-    sparse::{
-        SparseColMat, Triplet,
-        linalg::solvers::{Lu, SymbolicLu},
-    },
+    sparse::{SparseColMat, Triplet, linalg::solvers::Lu},
 };
 use nalgebra::{DMatrix, DVector};
 use rumoca_eval_solve::tensor_policy::{LinearSolveKernel, select_linear_solve_kernel};
 use rumoca_ir_solve as solve;
 
 use super::{
-    AlgebraicProjectionModel, ImplicitProjectionModel, RuntimeSolveError, algebraic_block_jacobian,
-    initial_block_jacobian, y_index_for_slot,
+    AlgebraicProjectionModel, ImplicitProjectionModel, RuntimeSolveError, SparseNewtonCache,
+    algebraic_block_jacobian, initial_block_jacobian, y_index_for_slot,
 };
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct SparseNewtonCache {
-    symbolic_lu: Option<SymbolicLu<usize>>,
-    matrix: Option<SparseColMat<usize, f64>>,
-    coordinates: Box<[(usize, usize)]>,
-    factor_values: Box<[u64]>,
-    factorization: Option<Lu<usize, f64>>,
-}
 
 pub(super) fn scaled_residual_converged(residual: &[f64], scales: &[f64], tol: f64) -> bool {
     residual.len() == scales.len()
@@ -66,7 +54,7 @@ pub(super) fn scaled_tolerance(tol: f64, scale: f64) -> f64 {
     }
 }
 
-fn valid_variable_scale(scale: f64) -> f64 {
+pub(super) fn valid_variable_scale(scale: f64) -> f64 {
     if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -402,14 +390,7 @@ fn sparse_scaled_newton_delta(
         return None;
     }
     if let Some(cache) = cache {
-        return solve_cached_sparse_matrix(
-            matrix,
-            rhs,
-            row_scales,
-            variable_scales,
-            structure,
-            cache,
-        );
+        return cache.solve_scaled(matrix, rhs, row_scales, variable_scales, structure);
     }
     let triplets = structure
         .nonzero_coordinates()
@@ -446,67 +427,6 @@ fn solve_sparse_triplets(
         SparseColMat::<usize, f64>::try_new_from_triplets(dimension, dimension, triplets).ok()?;
     let factorization = sparse.sp_lu().ok()?;
     solve_with_sparse_factor(&factorization, rhs)
-}
-
-fn solve_cached_sparse_matrix(
-    source: &DMatrix<f64>,
-    rhs: &DVector<f64>,
-    row_scales: &[f64],
-    variable_scales: &[f64],
-    structure: &solve::StructuralPattern,
-    cache: &mut SparseNewtonCache,
-) -> Option<DVector<f64>> {
-    prepare_sparse_cache(source.nrows(), structure, cache)?;
-    let coordinates = &cache.coordinates;
-    let sparse = cache.matrix.as_mut()?;
-    for (value, &(row, column)) in sparse.val_mut().iter_mut().zip(coordinates) {
-        *value = source[(row, column)] * valid_variable_scale(variable_scales[column])
-            / valid_variable_scale(row_scales[row]);
-    }
-    let values_changed = sparse.val().len() != cache.factor_values.len()
-        || sparse
-            .val()
-            .iter()
-            .zip(cache.factor_values.iter())
-            .any(|(value, cached)| value.to_bits() != *cached);
-    if values_changed {
-        let symbolic = cache.symbolic_lu.as_ref()?.clone();
-        cache.factorization = Lu::try_new_with_symbolic(symbolic, sparse.as_ref()).ok();
-        cache.factor_values = sparse
-            .val()
-            .iter()
-            .map(|value| value.to_bits())
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-    }
-    solve_with_sparse_factor(cache.factorization.as_ref()?, rhs)
-}
-
-fn prepare_sparse_cache(
-    dimension: usize,
-    structure: &solve::StructuralPattern,
-    cache: &mut SparseNewtonCache,
-) -> Option<()> {
-    if cache.matrix.is_some() {
-        return Some(());
-    }
-    let triplets = structure
-        .nonzero_coordinates()
-        .into_iter()
-        .map(|(row, column)| Triplet::new(row, column, 0.0))
-        .collect::<Vec<_>>();
-    let sparse =
-        SparseColMat::<usize, f64>::try_new_from_triplets(dimension, dimension, &triplets).ok()?;
-    let coordinates = sparse
-        .as_ref()
-        .triplet_iter()
-        .map(|entry| (entry.row, entry.col))
-        .collect::<Vec<_>>()
-        .into_boxed_slice();
-    cache.symbolic_lu = SymbolicLu::try_new(sparse.symbolic()).ok();
-    cache.coordinates = coordinates;
-    cache.matrix = Some(sparse);
-    Some(())
 }
 
 fn solve_with_sparse_factor(
