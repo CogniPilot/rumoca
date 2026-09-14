@@ -4,6 +4,39 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest complete cohort: projection optimizations preserve all outcomes
+
+`target/msl/multibody-retained-sparse-workspace-full-11`, at `e4817572` with a
+clean tracked worktree, retains 158/566 strict-high models (27.92%), including
+22/42 MultiBody models. All 158 compared models and 20,379 initialization
+channels remain high. The 18 reviewed exclusions remain; there are zero missing,
+nonidentifiable, or deviating comparisons. Every phase, simulation status, and
+comparison band matches `multibody-native-inactive-tangents-full`. This complete
+sweep covers grouped residual evaluation, streamed row scaling, and retained
+sparse factorization storage. Receipt:
+`rolling-wheel/retained-sparse-workspace-full-delta.json`.
+
+The preceding `multibody-retained-sparse-workspace-full` attempt was interrupted
+with exit 130 while the initial memory budget restricted it to one worker.
+After the external memory-intensive job exited, the named `-full-11` run used
+the requested eleven workers. The earlier incomplete log remains preserved and
+earns no credit; no model was retried within the completed sweep.
+
+Removed timing probes identify the remaining cost. `sim-step-probe-1` measures
+1,054 accepted steps: 93.276 ms in numerical advances and 33.202 ms in the
+following host work. The latter includes 0.668 ms of sampler validation,
+2.216 ms of event scanning, and 29.959 ms of endpoint/output work. Lease and
+initialization take 0.944 ms and plugin setup 0.465 ms. Its complete trace is
+byte-identical to the retained-workspace reference. `sim-phase-probe-1` likewise
+shows initialization/setup around 1.5 ms, with identical trace bytes. These
+are attribution diagnostics, not additional coverage or comparative-speed
+measurements. Source archives and summaries are
+`rolling-wheel/sim-{phase,step}-probe-{original,source}.json` and
+`rolling-wheel/sim-{phase,step}-probe-1-summary.json`; all probes are removed.
+
+RollingWheel remains slower than OMC. Combined quick/full verification and
+complete MultiBody coverage remain open.
+
 ## Latest focused work: retain sparse numeric factorization storage
 
 On top of `c9e60096`, the sparse projection owner retains faer's numeric LU
@@ -39,8 +72,8 @@ baseline's 0.136581 seconds, a single-pair 7.80% reduction. Flat, DAE, structura
 DAE, canonical Solve, and complete trace bytes are identical. Candidate worker
 SHA-256: `0669bf7946f1d278887c3940424f223b7ec3a81b6a6bf01da5c2c89f803c0916`.
 Receipt: `rolling-wheel/retained-sparse-workspace-profile-delta-1.json`.
-RollingWheel remains slower than OMC. Complete-cohort validation and combined
-quick/full verification remain open.
+The complete-cohort result above now covers this change. Combined quick/full
+verification remains open.
 
 ## Previous focused work: stream structural row scales
 
@@ -120,7 +153,7 @@ SHA-256 is `4ca1831140c8a3ef38919a2e525c9469eb1f4988abac07864f95a96deddefc66`.
 Receipt: `grouped-residual-profile-delta-1.json`. RollingWheel remains slower
 than OMC; no broader speed or complete-cohort claim is made.
 
-## Latest complete cohort: inactive AD tangents preserve the parity floor
+## Previous complete cohort: inactive AD tangents preserve the parity floor
 
 `target/msl/multibody-native-inactive-tangents-full`, at `c300c58d` plus tracked
 worktree digest `0a5cc5ca811daf460bfc208afbce15ec01a29ae837671709aee525d4be01082b`,
