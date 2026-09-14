@@ -136,6 +136,19 @@ pub(crate) trait ImplicitProjectionModel {
         Ok(None)
     }
 
+    /// Evaluate a constructor-issued residual output selection once per source
+    /// program. A decline must precede execution and leave `out` unchanged.
+    fn eval_implicit_residual_outputs(
+        &self,
+        _selection: &solve::ProjectionOutputSelection,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        _out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        Ok(false)
+    }
+
     /// Evaluate one logical implicit Jacobian-vector product row without
     /// evaluating the complete JVP block. Models may return `None` when the
     /// row has no scalar view.

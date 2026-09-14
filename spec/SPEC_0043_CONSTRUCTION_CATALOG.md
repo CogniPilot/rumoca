@@ -265,6 +265,14 @@ Continuous refresh optimizations require constructor-issued facts bound to the
 canonical residual and unknown inventories; wire replay rederives those facts,
 and consumers may use only the property proved by the certificate.
 
+An algebraic block's residual selection may group logical outputs of the same
+canonical program when construction proves unique, complete, repeatable source
+ownership. One residual evaluation executes each issued program once at the
+unchanged coordinate and scatters its complete selected outputs in block order.
+Distinct source programs remain distinct. Grouping preserves every executed
+operation, assertion, numerical failure, and atomic projection update; it
+neither caches values between coordinates nor discovers groups during execution.
+
 Within one scalar program and its exact lowering context, construction may
 reuse a pure unary arithmetic result for the same operator and immutable
 operand register. Numerical AD applies the same rule to its emitted primal and

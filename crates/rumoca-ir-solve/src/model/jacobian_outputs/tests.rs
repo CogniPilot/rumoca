@@ -158,6 +158,12 @@ fn projections_preserve_distinct_program_and_output_maps_in_both_seed_spaces() {
         &source(vec![7, 3, 11], true),
         &source(vec![11, 3, 7], false),
     );
+    let residual = artifacts.algebraic_projection()[0]
+        .residual_output_evaluation()
+        .unwrap();
+    assert_eq!(residual.programs().len(), 1);
+    assert_eq!(residual.programs()[0].program(), 0);
+    assert_eq!(residual.programs()[0].placements(), [(1, 0), (0, 1)]);
     let structure = &artifacts.algebraic_projection()[0];
     assert_eq!(structure.coloring().groups().len(), 2);
     for color in 0..2 {
@@ -179,6 +185,11 @@ fn projections_preserve_distinct_program_and_output_maps_in_both_seed_spaces() {
 fn ambiguous_or_missing_output_ownership_cannot_issue_a_batch() {
     for indices in [vec![3, 3, 11], vec![3, 8, 11]] {
         let artifacts = outputs(&source(indices, true), &ScalarProgramBlock::default());
+        assert!(
+            artifacts.algebraic_projection()[0]
+                .residual_output_evaluation()
+                .is_none()
+        );
         let evaluation = artifacts.algebraic_projection()[0]
             .output_evaluation(0)
             .unwrap();
@@ -205,6 +216,11 @@ fn unused_impure_operations_cannot_be_reused_through_output_grouping() {
     )
     .unwrap();
     let artifacts = outputs(&impure, &ScalarProgramBlock::default());
+    assert!(
+        artifacts.algebraic_projection()[0]
+            .residual_output_evaluation()
+            .is_none()
+    );
     assert!(
         artifacts.algebraic_projection()[0]
             .output_evaluation(0)

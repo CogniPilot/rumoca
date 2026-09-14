@@ -1,4 +1,5 @@
 mod grouped_jacobian;
+mod grouped_residual;
 
 use crate::runtime::projection::{ScaledNewtonSystem, per_row_torn_block_sweep};
 use nalgebra::DVector;
@@ -224,7 +225,7 @@ pub(super) struct RuntimeManifoldProjection<'a> {
 impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
     fn eval_manifold_jacobian_outputs(
         &self,
-        selection: &solve::JacobianOutputSelection,
+        selection: &solve::ProjectionOutputSelection,
         inputs: solve_eval::JacobianEvalInputs<'_>,
         out: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {
@@ -333,6 +334,18 @@ impl<'a> ProjectionJacobian<'a> {
 }
 
 impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
+    fn eval_implicit_residual_outputs(
+        &self,
+        selection: &solve::ProjectionOutputSelection,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        self.eval_grouped_residual_outputs(selection, y, p, t, out)?;
+        Ok(true)
+    }
+
     fn algebraic_seed_linearization(
         &self,
         block_index: usize,

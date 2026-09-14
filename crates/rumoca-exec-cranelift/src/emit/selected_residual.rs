@@ -9,6 +9,38 @@ pub(super) fn has_shared_conditional_owner(rows: &[Vec<LinearOp>]) -> bool {
 }
 
 impl CompiledResidualRows {
+    pub(crate) fn call_program_outputs(
+        &self,
+        program: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[ExternalTableData],
+        out: &mut Vec<f64>,
+    ) -> Result<bool, CompileError> {
+        let row = self.rows.get(program).ok_or_else(|| {
+            CompileError::Input(format!(
+                "residual program {program} is outside compiled rows"
+            ))
+        })?;
+        if !self.selectable {
+            return Ok(false);
+        }
+        validate_input_requirements(row_input_requirements(&row.plan), y, p, None)?;
+        out.resize(row.plan.output_count(), 0.0);
+        let inputs = RowInputs {
+            y,
+            p,
+            t,
+            seed: None,
+            external_tables,
+        };
+        with_active_external_tables(external_tables, || {
+            self.call_selected_active(program, row, inputs, out)
+        })?;
+        Ok(true)
+    }
+
     pub(crate) fn call_program_output(
         &self,
         (program, offset): (usize, usize),

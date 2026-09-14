@@ -88,6 +88,20 @@ use support::{
 /// block. Native execution adapters implement this contract; the runtime
 /// retains the prepared evaluator as the correctness fallback.
 pub trait CompiledSolveExpression {
+    /// Execute all local outputs of one retained source program. A decline
+    /// occurs before execution; admitted execution errors must propagate.
+    fn call_program_outputs(
+        &self,
+        _program: usize,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        _external_tables: &[rumoca_core::ExternalTableData],
+        _out: &mut Vec<f64>,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
     /// Evaluate one source program output at `(program index, output offset)`.
     /// Other programs must not execute. `None` declines this optional entry
     /// point; an admitted execution error must propagate to the caller.

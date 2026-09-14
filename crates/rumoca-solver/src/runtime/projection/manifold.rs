@@ -41,7 +41,7 @@ pub(crate) trait ManifoldProjectionModel {
 
     fn eval_manifold_jacobian_outputs(
         &self,
-        _selection: &solve::JacobianOutputSelection,
+        _selection: &solve::ProjectionOutputSelection,
         _inputs: rumoca_eval_solve::JacobianEvalInputs<'_>,
         _out: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {

@@ -1,4 +1,4 @@
-//! Construction-owned logical output projections of shared JVP programs.
+//! Construction-owned logical output projections of residual and JVP programs.
 
 use std::collections::BTreeMap;
 
@@ -10,13 +10,13 @@ mod tests;
 
 /// One invocation of an existing tensor/scalar program and its selected outputs.
 #[derive(Clone, Debug)]
-pub struct JacobianProgramOutputs {
+pub struct ProjectionProgramOutputs {
     program: usize,
     output_count: usize,
     placements: Vec<(usize, usize)>,
 }
 
-impl JacobianProgramOutputs {
+impl ProjectionProgramOutputs {
     pub const fn program(&self) -> usize {
         self.program
     }
@@ -31,19 +31,19 @@ impl JacobianProgramOutputs {
     }
 }
 
-/// Exact ordered source-program invocations for one projection color.
+/// Exact ordered source-program invocations for one projection evaluation.
 #[derive(Clone, Debug)]
-pub struct JacobianOutputSelection {
+pub struct ProjectionOutputSelection {
     output_len: usize,
-    programs: Vec<JacobianProgramOutputs>,
+    programs: Vec<ProjectionProgramOutputs>,
 }
 
-impl JacobianOutputSelection {
+impl ProjectionOutputSelection {
     pub const fn output_len(&self) -> usize {
         self.output_len
     }
 
-    pub fn programs(&self) -> &[JacobianProgramOutputs] {
+    pub fn programs(&self) -> &[ProjectionProgramOutputs] {
         &self.programs
     }
 }
@@ -51,16 +51,16 @@ impl JacobianOutputSelection {
 /// The same logical row projection in both canonical AD seed spaces.
 #[derive(Clone, Debug)]
 pub struct ProjectionJacobianOutputs {
-    solver_y: Option<JacobianOutputSelection>,
-    solver_y_and_parameters: Option<JacobianOutputSelection>,
+    solver_y: Option<ProjectionOutputSelection>,
+    solver_y_and_parameters: Option<ProjectionOutputSelection>,
 }
 
 impl ProjectionJacobianOutputs {
-    pub const fn solver_y(&self) -> Option<&JacobianOutputSelection> {
+    pub const fn solver_y(&self) -> Option<&ProjectionOutputSelection> {
         self.solver_y.as_ref()
     }
 
-    pub const fn solver_y_and_parameters(&self) -> Option<&JacobianOutputSelection> {
+    pub const fn solver_y_and_parameters(&self) -> Option<&ProjectionOutputSelection> {
         self.solver_y_and_parameters.as_ref()
     }
 }
@@ -104,6 +104,15 @@ impl ContinuousStructuralArtifacts {
                 && [&primal_outputs, &y_outputs, &full_outputs]
                     .iter()
                     .all(|catalog| catalog.covers_repeatable_rows(&block.rows));
+            let residual_rows = block
+                .rows
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(local, source)| (source, local))
+                .collect::<Vec<_>>();
+            structure.residual_output_evaluation =
+                primal_outputs.shared_selection(&residual_rows, block.rows.len());
             structure.output_evaluations =
                 color_output_evaluations(structure, block, &y_outputs, &full_outputs);
         }
@@ -183,13 +192,13 @@ impl ProgramOutputCatalog {
         &self,
         rows: &[(usize, usize)],
         output_len: usize,
-    ) -> Option<JacobianOutputSelection> {
+    ) -> Option<ProjectionOutputSelection> {
         let mut positions = BTreeMap::new();
-        let mut programs = Vec::<JacobianProgramOutputs>::new();
+        let mut programs = Vec::<ProjectionProgramOutputs>::new();
         for &(source, target) in rows {
             let &(program, offset, output_count) = self.0.get(&source)?.as_ref()?;
             let position = *positions.entry(program).or_insert_with(|| {
-                programs.push(JacobianProgramOutputs {
+                programs.push(ProjectionProgramOutputs {
                     program,
                     output_count,
                     placements: Vec::new(),
@@ -198,7 +207,7 @@ impl ProgramOutputCatalog {
             });
             programs[position].placements.push((offset, target));
         }
-        Some(JacobianOutputSelection {
+        Some(ProjectionOutputSelection {
             output_len,
             programs,
         })
@@ -208,7 +217,7 @@ impl ProgramOutputCatalog {
         &self,
         rows: &[(usize, usize)],
         output_len: usize,
-    ) -> Option<JacobianOutputSelection> {
+    ) -> Option<ProjectionOutputSelection> {
         self.selection(rows, output_len)
             .filter(|selection| selection.programs.iter().any(|p| p.placements.len() > 1))
     }

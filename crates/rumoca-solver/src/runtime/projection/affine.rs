@@ -90,6 +90,21 @@ struct AffineBlockSystem<'a, M> {
 
 impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
     fn residual(&self, y: &[f64]) -> Result<Vec<f64>, RuntimeSolveError> {
+        if let Some(selection) = self
+            .structure
+            .and_then(solve::JacobianStructure::residual_output_evaluation)
+        {
+            let mut residual = vec![0.0; self.block.rows.len()];
+            if self.model.eval_implicit_residual_outputs(
+                selection,
+                y,
+                self.parameters,
+                self.time,
+                &mut residual,
+            )? {
+                return Ok(residual);
+            }
+        }
         implicit_selected_residuals(
             self.model,
             y,

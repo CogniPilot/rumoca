@@ -16,6 +16,20 @@ struct CraneliftEventTransaction {
 }
 
 impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
+    fn call_program_outputs(
+        &self,
+        program: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[rumoca_core::ExternalTableData],
+        out: &mut Vec<f64>,
+    ) -> Result<bool, String> {
+        self.0
+            .call_program_outputs(program, y, p, t, external_tables, out)
+            .map_err(|error| error.to_string())
+    }
+
     fn call_program_output(
         &self,
         coordinate: (usize, usize),

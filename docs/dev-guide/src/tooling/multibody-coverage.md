@@ -4,6 +4,52 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest focused work: evaluate shared residual outputs once
+
+On top of `02706ddf`, construction binds each affine block's selected residuals
+to unique, complete, repeatable canonical programs. The same output-selection
+utility now serves residuals and JVPs. Native and interpreted execution evaluate
+each selected program once and scatter its outputs in block order. Distinct
+owners stay distinct; assertions and failures remain part of complete program
+execution. Numerical projection, refinement, and acceptance are unchanged.
+
+The RollingWheel dynamics block's 24 residual outputs come from eight programs,
+three outputs apiece. The previous per-output API invokes each tensor program
+three times. `grouped-residual-source-census.json` records the source mapping.
+The longer `repeated-sim-profile-1` diagnostic collects 6,062 leaf samples over
+40 identical traces; 1,581 are in mapped JIT code. The main JVP program remains
+the largest kernel, and complete-input pure-call cache comparisons account for
+much of the sampled `memcmp` work. Repeated-run instrumentation is archived in
+`repeated-sim-probe-source.json` and removed from production source.
+
+`grouped-residual-red-2.log` reproduces the absent grouped evaluation and failure
+propagation. The first RED command stopped at an unused-trait-method compiler
+error and is not a failing-test witness. Focused native tests prove one call
+per complete program, changing inputs, source output placement, prevalidation,
+explicit decline, and admitted table errors. Runtime tests cover changing
+coefficients and failure without replay or partial state commit. Ownership
+checks reject missing, ambiguous, and impure output selections. All 884 relevant
+library tests pass in `grouped-residual-libraries-1.log`; Clippy's diagnostic
+nesting issues are corrected, with final affected-package Clippy green in
+`grouped-residual-libraries-3.log` and six grouped projection tests green in
+`grouped-residual-libraries-2.log`.
+
+`target/msl/multibody-grouped-residual-origin` retains the same four high models
+and 2,960 high initialization channels. The fixed
+`target/msl/multibody-grouped-residual-canary` retains nine high models and 175
+high initialization channels. Both have unchanged phase/status/band outcomes
+and zero skipped, missing, nonidentifiable, or deviating comparisons. Receipts:
+`grouped-residual-origin-delta.json` and `grouped-residual-canary-delta.json`.
+These are focused results; the complete cohort measurement below predates this
+change.
+
+Controlled Sim is 0.144187 seconds versus an immediate archived baseline of
+0.148633 seconds, a single-pair 2.99% reduction. Flat, DAE, structural DAE,
+canonical Solve, and the complete trace are byte-identical. Candidate worker
+SHA-256 is `4ca1831140c8a3ef38919a2e525c9469eb1f4988abac07864f95a96deddefc66`.
+Receipt: `grouped-residual-profile-delta-1.json`. RollingWheel remains slower
+than OMC; no broader speed or complete-cohort claim is made.
+
 ## Latest complete cohort: inactive AD tangents preserve the parity floor
 
 `target/msl/multibody-native-inactive-tangents-full`, at `c300c58d` plus tracked

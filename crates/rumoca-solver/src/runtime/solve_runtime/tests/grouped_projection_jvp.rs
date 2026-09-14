@@ -142,6 +142,114 @@ fn coupled_model() -> solve::SolveModel {
     model
 }
 
+#[derive(Default)]
+struct GroupedResidual {
+    single_calls: Cell<usize>,
+    grouped_calls: Cell<usize>,
+    fail: bool,
+}
+
+impl CompiledSolveExpression for GroupedResidual {
+    fn call(
+        &self,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        _tables: &[rumoca_core::ExternalTableData],
+        _out: &mut [f64],
+    ) -> Result<(), String> {
+        panic!("selected residuals must not execute unrelated programs")
+    }
+
+    fn call_program_output(
+        &self,
+        (program, offset): (usize, usize),
+        y: &[f64],
+        p: &[f64],
+        _t: f64,
+        _tables: &[rumoca_core::ExternalTableData],
+    ) -> Result<Option<f64>, String> {
+        assert_eq!(program, 0);
+        self.single_calls.set(self.single_calls.get() + 1);
+        Ok(Some(
+            [y[0] + p[0] * y[1] - 2.0, p[0] * y[0] - y[1] - 1.0][offset],
+        ))
+    }
+
+    fn call_program_outputs(
+        &self,
+        program: usize,
+        y: &[f64],
+        p: &[f64],
+        _t: f64,
+        _tables: &[rumoca_core::ExternalTableData],
+        out: &mut Vec<f64>,
+    ) -> Result<bool, String> {
+        assert_eq!(program, 0);
+        self.grouped_calls.set(self.grouped_calls.get() + 1);
+        if self.fail {
+            return Err("grouped native residual failed".into());
+        }
+        out.clear();
+        out.extend([y[0] + p[0] * y[1] - 2.0, p[0] * y[0] - y[1] - 1.0]);
+        Ok(true)
+    }
+}
+
+#[test]
+fn grouped_projection_residual_evaluates_shared_outputs_once_at_each_point() {
+    let mut runtime = SolveRuntime::new_fixture(&coupled_model()).unwrap();
+    let native = Rc::new(GroupedResidual::default());
+    runtime.compiled_implicit_rhs = Some(native.clone());
+    let projection = super::native_projection_jvp::selected_projection(&runtime, false);
+    let selection = runtime.continuous_structural.algebraic_projection()[0]
+        .residual_output_evaluation()
+        .unwrap();
+    let mut selected = [0.0; 2];
+    assert!(
+        projection
+            .eval_implicit_residual_outputs(selection, &[8.0, -5.0], &[2.0], 1.0, &mut selected)
+            .unwrap()
+    );
+    assert_eq!(selected, [-4.0, 20.0]);
+    for k in [2.0, -3.0, 0.0, 2.0] {
+        let before = native.grouped_calls.get();
+        let mut y = vec![8.0, -5.0];
+        runtime
+            .refresh_algebraic_and_output_slots_certified(1.0, &mut y, &[k], 1e-10, 4)
+            .unwrap();
+        assert!((y[0] - (2.0 + k) / (1.0 + k * k)).abs() < 1e-9);
+        assert!((y[1] - (2.0 * k - 1.0) / (1.0 + k * k)).abs() < 1e-9);
+        assert!(
+            native.grouped_calls.get() > before,
+            "changed coordinates need fresh residuals"
+        );
+        assert_eq!(
+            native.single_calls.get(),
+            0,
+            "tensor residual outputs must share one invocation"
+        );
+    }
+}
+
+#[test]
+fn grouped_projection_residual_failure_propagates_without_replay_or_partial_commit() {
+    let mut runtime = SolveRuntime::new_fixture(&coupled_model()).unwrap();
+    let native = Rc::new(GroupedResidual {
+        fail: true,
+        ..Default::default()
+    });
+    runtime.compiled_implicit_rhs = Some(native.clone());
+    let mut y = vec![8.0, -5.0];
+    let error = runtime
+        .refresh_algebraic_and_output_slots_certified(1.0, &mut y, &[2.0], 1e-10, 4)
+        .unwrap_err();
+    assert!(error.to_string().contains("grouped native residual failed"));
+    assert_eq!(native.grouped_calls.get(), 1);
+    assert_eq!(native.single_calls.get(), 0);
+    assert_eq!(y, [8.0, -5.0]);
+}
+
 #[test]
 fn grouped_projection_jvp_executes_once_per_color_at_changing_coefficients() {
     let model = coupled_model();

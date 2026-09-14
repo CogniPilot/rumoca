@@ -5,7 +5,7 @@ use super::*;
 impl RefreshProjectionModel<'_> {
     pub(super) fn eval_grouped_jacobian_outputs(
         &self,
-        selection: &solve::JacobianOutputSelection,
+        selection: &solve::ProjectionOutputSelection,
         inputs: solve_eval::JacobianEvalInputs<'_>,
         enabled: &[bool],
         out: &mut [f64],

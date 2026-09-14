@@ -327,6 +327,21 @@ impl CompiledAssignmentSchedule {
 }
 
 impl CompiledExpressionRows {
+    /// Execute one retained source program and return all its local outputs.
+    /// Products without independent program entries decline before execution.
+    pub fn call_program_outputs(
+        &self,
+        program: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[ExternalTableData],
+        out: &mut Vec<f64>,
+    ) -> Result<bool, CompileError> {
+        self.jit
+            .call_program_outputs(program, y, p, t, external_tables, out)
+    }
+
     /// Execute a complete source program and select its local output offset.
     /// Batched products without an independent program entry return `None`.
     pub fn call_program_output(

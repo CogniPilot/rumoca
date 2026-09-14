@@ -142,6 +142,53 @@ fn selected_native_residual_skips_unrelated_programs_and_preserves_coordinates()
 }
 
 #[test]
+fn selected_native_residual_returns_the_complete_program_once_and_prevalidates() {
+    let block = aggregate_and_table();
+    let compiled = compile_selectable_expression_scalar_program_block(&block, None).unwrap();
+    let mut out = vec![99.0];
+    for (run, (y, p, t, expected)) in [(3.0, 2.0, 0.5, [6.0, 3.5]), (-1.0, 8.0, 2.0, [-8.0, 1.0])]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(
+            compiled
+                .call_program_outputs(0, &[y], &[p], t, &[], &mut out)
+                .unwrap()
+        );
+        assert_eq!(out, expected);
+        assert_eq!(compiled.jit.jit_call_count(), run + 1);
+    }
+    let preserved = out.clone();
+    for (program, y, p) in [
+        (2, vec![3.0], vec![2.0]),
+        (0, vec![], vec![2.0]),
+        (0, vec![3.0], vec![]),
+    ] {
+        assert!(
+            compiled
+                .call_program_outputs(program, &y, &p, 0.0, &[], &mut out)
+                .is_err()
+        );
+        assert_eq!(out, preserved);
+        assert_eq!(compiled.jit.jit_call_count(), 2);
+    }
+    assert!(
+        compiled
+            .call_program_outputs(1, &[3.0], &[2.0], 0.0, &[], &mut out)
+            .is_err(),
+        "an admitted table failure cannot become a decline"
+    );
+    let batch = compile_expression_scalar_program_block(&block).unwrap();
+    let mut untouched = vec![99.0];
+    assert!(
+        !batch
+            .call_program_outputs(0, &[3.0], &[2.0], 0.0, &[], &mut untouched)
+            .unwrap()
+    );
+    assert_eq!(untouched, [99.0]);
+}
+
+#[test]
 fn selected_native_residual_preserves_tables_and_full_sparse_output_placement() {
     let compiled =
         compile_selectable_expression_scalar_program_block(&aggregate_and_table(), None).unwrap();

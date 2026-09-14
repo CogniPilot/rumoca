@@ -169,7 +169,7 @@ impl ManifoldProjectionModel for Model {
 
     fn eval_manifold_jacobian_outputs(
         &self,
-        selection: &solve::JacobianOutputSelection,
+        selection: &solve::ProjectionOutputSelection,
         inputs: JacobianEvalInputs<'_>,
         out: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {

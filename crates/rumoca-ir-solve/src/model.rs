@@ -104,6 +104,7 @@ pub struct JacobianStructure {
     pattern: StructuralPattern,
     coloring: ColumnColoring,
     output_evaluations: Box<[ProjectionJacobianOutputs]>,
+    residual_output_evaluation: Option<ProjectionOutputSelection>,
     linearization_repeatable: bool,
 }
 
@@ -114,6 +115,7 @@ impl JacobianStructure {
             pattern,
             coloring,
             output_evaluations: Box::default(),
+            residual_output_evaluation: None,
             linearization_repeatable: false,
         }
     }
@@ -128,6 +130,10 @@ impl JacobianStructure {
 
     pub fn output_evaluation(&self, color: usize) -> Option<&ProjectionJacobianOutputs> {
         self.output_evaluations.get(color)
+    }
+
+    pub const fn residual_output_evaluation(&self) -> Option<&ProjectionOutputSelection> {
+        self.residual_output_evaluation.as_ref()
     }
 
     pub const fn linearization_is_repeatable(&self) -> bool {

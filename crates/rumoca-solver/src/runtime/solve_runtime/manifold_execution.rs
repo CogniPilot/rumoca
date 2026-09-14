@@ -58,7 +58,7 @@ impl PreparedManifoldProjection {
 
     pub(super) fn eval_selected_directional(
         &self,
-        selection: &solve::JacobianOutputSelection,
+        selection: &solve::ProjectionOutputSelection,
         inputs: solve_eval::JacobianEvalInputs<'_>,
         context: RowEvalContext<'_>,
         out: &mut [f64],

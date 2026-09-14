@@ -355,7 +355,7 @@ impl CompiledResidualRows {
     }
 
     #[cfg(test)]
-    fn jit_call_count(&self) -> usize {
+    pub(crate) fn jit_call_count(&self) -> usize {
         self.jit_call_count.get()
     }
 }
