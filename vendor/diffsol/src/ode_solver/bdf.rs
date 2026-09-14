@@ -1262,6 +1262,7 @@ where
         let output_in_error_control = problem.output_in_error_control();
         let integrate_sens = self.s_op.is_some();
         let old_num_error_test_failures = self.statistics.number_of_error_test_failures;
+        let old_num_nonlinear_solver_fails = self.statistics.number_of_nonlinear_solver_fails;
 
         let mut convergence_fail = false;
 
@@ -1349,13 +1350,13 @@ where
             // handle case where either nonlinear solve failed
             if solve_result.is_err() {
                 self.statistics.number_of_nonlinear_solver_fails += 1;
-                if self.statistics.number_of_nonlinear_solver_fails
-                    > self.config.maximum_newton_fails
-                {
+                let step_failures = self.statistics.number_of_nonlinear_solver_fails
+                    - old_num_nonlinear_solver_fails;
+                if step_failures > self.config.maximum_newton_fails {
                     return Err(DiffsolError::from(
                         OdeSolverError::TooManyNonlinearSolverFailures {
                             time: self.state.t.to_f64().unwrap(),
-                            num_failures: self.statistics.number_of_nonlinear_solver_fails,
+                            num_failures: step_failures,
                         },
                     ));
                 }

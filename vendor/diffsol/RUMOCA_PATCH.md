@@ -68,6 +68,19 @@ returns `0.0098039` for an exact root of zero when its requested nonlinear bound
 is `0.0002`; the corrected iteration applies the pending correction and meets
 that bound with two residual evaluations instead of four.
 
+The fourth correction scopes the nonlinear-failure budget to one attempted
+accepted step, as the existing error-test budget already does. Lifetime
+statistics remain cumulative. With measured Newton contraction enabled,
+`OvervoltageProtection` stopped after 804 successful steps because 51 recovered
+failures had accumulated across 50 distinct steps; no individual step had more
+than two failures. The configured limit of 50 is unchanged. The direct
+dependency tests in `me_integrator/failure_budget_tests.rs` require accurate
+continued integration after earlier recoveries and retain rejection of a step
+with persistent failures. Upstream commit
+`7036380f908dbd93baa4253d2e0a34aa115cbbb5` retains the cumulative-limit check in
+`crates/diffsol/src/ode_solver/bdf.rs`. A per-step convergence-failure budget is
+also the documented [CVODE recovery contract](https://sundials.readthedocs.io/en/v7.5.0/cvode/Usage/).
+
 The workspace patch makes local, CI, native, and Wasm builds use the same
 corrected source. A registry-published Rumoca crate cannot rely on a workspace
 `[patch]`: registry publication still requires an upstream release containing

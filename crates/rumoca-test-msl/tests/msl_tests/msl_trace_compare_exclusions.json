@@ -66,6 +66,10 @@
       "reason": "The differing meanVoltage.y channel is the event-latched output of Blocks.Math.Mean. Tiny PWM event-time shifts make raw pointwise comparison of the held aggregate non-identifying; the switching waveform and physical states agree, and both solvers converge to the same 19.999995992 V endpoint within 2.7e-10 V."
     },
     {
+      "model_name": "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.BevelGear1D",
+      "reason": "The default OMC trajectory is not converged under integration refinement: at t=1 s, revolute1.phi is 72.3016881 rad at 1e-6, 48.8580302 at 1e-9, and 48.1459607 at 1e-12. At 1e-12, changing only its fixed initial angle by 1e-8 rad changes the endpoint by 7.1132384 rad. Rumoca and OMC agree on all 5020 state derivatives evaluated at 502 identical OMC points (maximum abs(error)/max(1,abs(reference)) is 1.45e-11), separating equation evaluation from trajectory sensitivity. One default-tolerance OMC trajectory cannot identify pointwise refinement for this sensitive drive train; invariant and sensitivity analysis remain outstanding, and this exclusion is not strict-high certification. Reproduction, source/trace digests, and limitations are recorded in the MultiBody coverage ledger."
+    },
+    {
       "model_name": "Modelica.Mechanics.Translational.Examples.PreLoad",
       "reason": "Nonsmooth contact-event force and acceleration channels exhibit tiny event-time phase shifts while smooth state and position behavior agree; raw pointwise algebraic acceleration at contact is non-identifying."
     },

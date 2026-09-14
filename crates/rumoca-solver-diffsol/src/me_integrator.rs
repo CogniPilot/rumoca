@@ -7,6 +7,8 @@
 
 #[cfg(test)]
 mod convergence_tests;
+#[cfg(test)]
+mod failure_budget_tests;
 
 use std::{cell::Cell, rc::Rc};
 

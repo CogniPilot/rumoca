@@ -4,7 +4,84 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest focused work: consume BDF correction history at the corrected point
+## Latest focused work: distinguish step recovery from cumulative statistics
+
+The full `multibody-bdf-convergence-history-full-11` comparison at clean commit
+`6f203e1cc5e809229ac25a554c742beb1766e7e7` failed its quality gate. Of 566 targets,
+158 were compared: 157 strict-high, one near (`BevelGear1D`, including one
+deviating channel), 18 reviewed exclusions, and zero missing or typed
+nonidentifiable traces. All 20,900 initialization channels were high.
+`OvervoltageProtection` regressed from strict-high to nonlinear-solver
+exhaustion; `BevelGear1D` previously refused a projection sensitivity and now
+finishes with an unacceptable trajectory. Neither is a performance success.
+GyroscopicEffects completes high in this full run; its earlier focused timeout
+remains recorded. `Inverse_sh_TX` changes from Flatten EF015 to ToDae ED019
+without a compiler source change. The complete delta is retained in
+`rolling-wheel/bdf-convergence-history-full-delta.json`.
+
+The electrical failure is at the numerical dependency, not a changed equation:
+the BDF failure counter accumulates 51 failures across 50 distinct accepted-step
+indices, with at most two failures in any one step. It aborts after 804 accepted
+steps at t=0.3748128288461084. The step limit is incorrectly checked against
+lifetime statistics. This remains present in upstream Diffsol commit
+`7036380f908dbd93baa4253d2e0a34aa115cbbb5`; the frozen source and diagnostic
+receipts are `diffsol-upstream-bdf.rs` and `bdf-failure-count-probe-summary.json`.
+
+The direct constant-derivative regression with injected recoverable failures
+fails before the correction, while its persistent-failure negative control
+already passes (`bdf-failure-budget-red-2.log`; `red-1` only exposed a missing
+test type annotation). BDF now checks the unchanged configured recovery limit
+against failures in its current step, preserving lifetime statistics and
+rejection of an unresolved step. All ten dependency tests and all-target,
+all-feature Clippy pass (`bdf-failure-budget-focused-1.log`). The ordinary
+`multibody-bdf-step-budget-origin` run restores OvervoltageProtection: all 45
+trajectory and initialization channels are high. RollingWheel retains all 184
+high channels and a byte-identical trace. These are two comparisons, one
+reviewed exclusion, and zero missing or deviating comparisons. The fixed
+`multibody-bdf-step-budget-canary` preserves every preceding phase and band:
+nine comparisons, 175 high initialization channels, and zero skipped, missing,
+nonidentifiable, or deviating comparisons (`bdf-step-budget-canary-delta.json`).
+The tracked-exclusion validation test passes; complete cohort validation is next.
+
+BevelGear's reference was examined independently of Rumoca: the unchanged,
+xtask-generated OMC executable produces `revolute1.phi(1)` of 72.3016880708 rad
+at its default `1e-6` tolerance, 48.8580301756 at `1e-9`, and 48.1459606592 at
+`1e-12`. Each diagnostic uses a separate copy of its initialization XML with
+only `DefaultExperiment.tolerance` changed, supplied with `-f`; the tracked
+reference and Rumoca tolerances remain unchanged. At `1e-12`, perturbing only
+the fixed initial `revolute1.phi` by `1e-8` rad changes the endpoint to
+41.0327222753 rad. The first diagnostic incorrectly used
+`-override=tolerance=...`; OMC warned that this variable did not exist, so those
+runs provide **no tolerance-refinement evidence**. Both attempts are retained
+as `rolling-wheel/bevel-omc-convergence-{1,2}/receipt.json` with the exact
+commands and executable, XML, and trace digests.
+The OMC executable SHA-256 is
+`444907bed49f3347e26913253c351bbd73c4e086e72a3c481fbcfdb4247325cf`;
+the original XML is
+`03427ae6499f2835cd528f80fa6ad0ddf8a92708f90aa2118fb74fc6daf7f139`.
+The `1e-12` unperturbed trace used by the derivative comparison is
+`a273bce69959d7dada8f34d653a91f26cd1a9c4cefc03e00c943c06247ff78ac`.
+
+To reject a different-equations explanation, an isolated, removed adapter
+probe calls the ordinary component derivative handle at all 502 output points
+from the `1e-12` OMC trace. State order comes from the actual Solve layout;
+the extra gear-output angle derivative is the connected `inertia2.w`.
+All 5,020 derivatives agree: maximum absolute error is `6.8453e-8`, and maximum
+`abs(error)/max(1,abs(reference))` is `1.4462e-11`. Every Flat, DAE, structural
+DAE, and Solve artifact is byte-identical to the preceding BevelGear worker.
+`bevel-point-probe-summary-1.json` retains the worst values and their times;
+`bevel-omc-points-1.json` binds the exact reference CSV. The adapter is restored
+to its archived source hash before ordinary validation.
+
+The reviewed exclusion records this demonstrated default-reference limitation.
+It does not claim a proved positive infinite-time Lyapunov exponent, invariant
+refinement, or high trajectory parity. The strong initial-condition sensitivity
+and OMC self-divergence make a single default OMC trajectory non-identifying;
+the model remains outside the strict-high count, with invariant and sensitivity
+obligations outstanding. No compiler, runtime, tolerance, or model-name branch
+is added to obtain agreement.
+
+## Prior focused work: consume BDF correction history at the corrected point
 
 Diffsol's backtracking Newton path never populated the correction-norm history
 used by its convergence-rate estimate. Three direct dependency regressions fail
@@ -49,8 +126,8 @@ the phase watchdog absent takes 7.246 seconds in Solve lowering versus 7.423
 seconds for the archived worker and produces identical compiler artifacts
 (`bdf-gyro-solve-control-delta.json`); it earns no normal-budget parity credit.
 Receipts are `bdf-convergence-history-{canary,electrical,origin}-delta.json`.
-The complete cohort comparison for this change is pending. RollingWheel is
-still slower than OMC; no victory or release-ready claim is made.
+The complete cohort comparison subsequently failed as recorded above.
+RollingWheel is still slower than OMC; no victory or release-ready claim is made.
 
 ## Latest focused work: block-specific numerical AD seed domains
 

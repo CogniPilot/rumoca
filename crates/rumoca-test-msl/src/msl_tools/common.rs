@@ -797,6 +797,7 @@ mod tests {
             "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic",
             "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV",
             "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL",
+            "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.BevelGear1D",
             "Modelica.Mechanics.Translational.Examples.PreLoad",
             "Modelica.Thermal.FluidHeatFlow.Examples.ParallelPumpDropOut",
         ];
