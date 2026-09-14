@@ -4,7 +4,91 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest complete cohort: identity affinity preserves the restored floor
+## Latest complete cohort: native speedup with an unresolved Solve timeout
+
+`target/msl/multibody-direct-row-storage-full`, at `6fd321b2` plus worktree
+digest `81a504337fd25db9d9e228bca672e474abd1a25f9b375805247b00dec8593c63`,
+compares 157/566 models high (27.74%), including 21/42 MultiBody examples.
+All 19,487 compared initialization channels are high. Eighteen reviewed
+exclusions remain; no comparison is missing, nonidentifiable, or deviating.
+The prior 158-model floor is not preserved: RollingWheelSetDriving times out
+in Solve after 11.159 seconds against the unchanged ten-second budget. It
+completed Solve in 8.831501 seconds in the focused run. No timeout retry or
+budget change is used to recover coverage.
+
+Fourbar_analytic and GearConstraint also reach their Solve watchdog instead
+of their previous structural refusals, and Media Inverse_sh_TX changes its
+existing frontend refusal back to EF015. None earns coverage. RollingWheel
+remains high with Sim 0.195300 seconds; the same run's stored OMC simulation
+system timer is 0.133511 seconds. These concurrent timings are distinct from
+the isolated measurements below. The configured command exits zero, but the
+lost certified model prevents floor promotion. Receipt:
+`rolling-wheel/direct-row-storage-full-delta.json`. Combined quick/full
+verification and complete MultiBody coverage remain open.
+
+## Native performance repair: bounded tensor rows retain direct values
+
+The seed-dependency census `seed-frontier-1.log` uses the production dependency
+deriver on every producer output of the checked RollingWheel JVP. Program 212
+contains 1,106 producer operations: 571 wholly seed-independent, 128 mixed,
+and 407 wholly seed-dependent. All 31 matrix products and eight directional
+calls are mixed. Most independent operations are copies. Skipping only whole
+seed-independent operations would leave the expensive tensor work intact.
+
+The native emitter exposes a separate concrete cost: any row-level tensor
+operation creates a register tape for every intermediate, including tiny
+three-vector operations. Existing direct lowering was already available for
+these operations. Under SPEC_0032 §§4–5 and SOLVE-C53, final native storage
+selection now retains direct SSA values when every tensor operation fits the
+existing 64-unit static-work bound. Matrix work includes contraction extent
+and AD lanes; other tensor ranges include their storage lanes. Larger tensors,
+overflowing work estimates, and tensor-update slices retain the prior tape
+selection. Canonical tensor owners and floating-point accumulation order do
+not change. The rule is independent of model identity or numerical values.
+
+The reduced regression fails on the previous allocation policy in
+`direct-row-storage-red-1.log`. It then checks direct and tape-backed dual
+matrix products, two transposes, cancellation-sensitive accumulation, and
+changing seeds against the interpreter. A 4,096-element fill retains bounded
+loop storage and reloads changing inputs, including negative zero. All 88
+native tests, formatting, and affected-package Clippy pass in
+`direct-row-storage-focused-2.log`; the first focused command stopped at
+formatting before running tests. All 99 compiler library tests, 595 core tests,
+seventeen architecture/spec gates, and 111 projection tests pass in
+`direct-row-storage-core-1.log`.
+
+The controlled actual-worker trial measures Sim 0.168387 seconds. An immediate
+archived baseline recheck measures 0.287090 seconds: a 41.35% reduction.
+Both workers exit successfully. Flat, DAE, structural DAE, canonical Solve,
+and trace files are byte-identical; trace SHA-256 remains
+`c9be85f47452aba0d450ab626c98a4cfdc838127d62df3eceea9edfd23f034e0`.
+The hot residual kernel shrinks from 24,792 to 10,928 bytes and its JVP from
+59,968 to 35,280 bytes. The trial worker is
+`599f608b7be9f51b262bf39fe452bb00ef58d4641deeff10650f512b80a6f7eb`;
+its exact source patch and profile are retained in
+`direct-row-storage-trial-1.patch` and `direct-row-storage-profile-1`.
+The retained implementation moves the same selector to a dedicated module.
+Receipt: `direct-row-storage-profile-delta-1.json`.
+
+The new profile has 168 leaf samples, 40 mapped to nonoverlapping JIT ranges.
+Sparse numeric LU contributes 21 samples, JVP program 212 contributes nineteen,
+and residual program 212 contributes four. These are self samples, not
+inclusive costs. Repeated algebraic factorization and JVP evaluation remain
+targets; this change does not establish that RollingWheel is faster than OMC.
+
+The normal five-target origin comparison retains four high MultiBody models,
+all 2,960 initialization channels high, zero skipped/missing/excluded,
+nonidentifiable, or deviating comparisons, and the thermal GenerationOfFMUs
+EL005 refusal. RollingWheel Sim is 0.170735 seconds, GyroscopicEffects 1.018274,
+RollingWheelSetDriving 0.582798, and SphericalConstraint 0.177060. The fixed
+twenty canary members retain every phase, status, and band: nine models and
+all 175 initialization channels high, with eleven unchanged refusals and no
+unmeasured or deviating comparison. Receipts:
+`direct-row-storage-origin-delta.json` and `direct-row-storage-canary-delta.json`.
+The complete-cohort timeout above remains unresolved despite these focused
+checks.
+
+## Previous complete cohort: identity affinity preserves the restored floor
 
 The complete `target/msl/multibody-identity-affinity-full` comparison at
 `cc51f08ac23451e75ed9705085183900cc2e05ab` retains 158/566 strict-high models

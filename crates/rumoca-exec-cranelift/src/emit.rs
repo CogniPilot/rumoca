@@ -30,6 +30,9 @@ mod host_runtime;
 mod input_validation;
 mod interpreter;
 mod owned_jit_module;
+mod register_storage;
+#[cfg(test)]
+mod register_storage_tests;
 mod selected_jvp;
 mod selected_residual;
 mod status;
@@ -1824,6 +1827,9 @@ fn create_row_register_tape(
     pointer_type: cranelift_codegen::ir::Type,
     row: &[LinearOp],
 ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+    if register_storage::can_use_direct_registers(row) {
+        return Ok(None);
+    }
     if !row.iter().any(|operation| {
         matches!(
             operation,
