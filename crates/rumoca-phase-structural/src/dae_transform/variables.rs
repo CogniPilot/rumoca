@@ -1,8 +1,8 @@
 //! Reserve and define the rebuilt variables, carrying the demotion decision.
 //!
 //! Reservation is where a proved role change actually happens: a selected
-//! state can become algebraic, or a frontier algebraic can become a state for
-//! one Pantelides lift. Every other variable keeps its source role.
+//! state can become algebraic, while requested coordinates and Pantelides
+//! frontier algebraics can become states. Other variables keep their source role.
 //! [`TargetVariable`] records the resulting role so later stages can translate
 //! coordinates without re-deriving the decision, and definition replays the
 //! full attribute set once the rebuilt expressions backing them exist.
@@ -28,6 +28,7 @@ impl Clone for TargetVariable<'_> {
 
 pub(super) struct ReservedVariable<'dae> {
     pub(super) identity: TargetVariable<'dae>,
+    pub(super) derivative_alias: Option<dae::AlgebraicId<'dae>>,
     reservation: Option<dae::VariableReservation<'dae>>,
 }
 
@@ -36,7 +37,7 @@ pub(super) fn reserve_variables<'target>(
     target: &mut dae::DaeConstruction<'target>,
     types: &[dae::ValueTypeId<'target>],
     demoted: Option<u32>,
-    promoted: Option<u32>,
+    promoted: &[u32],
 ) -> Result<Vec<ReservedVariable<'target>>, dae::DaeConstructionError> {
     target.variables(|variables| {
         source
@@ -59,7 +60,7 @@ fn reserve_variable<'target>(
     variable: dae::VariableView<'_>,
     value_type: dae::ValueTypeId<'target>,
     demoted: Option<u32>,
-    promoted: Option<u32>,
+    promoted: &[u32],
 ) -> Result<ReservedVariable<'target>, dae::DaeConstructionError> {
     let name = variable.name().clone();
     let declaration = variable.declaration();
@@ -86,7 +87,9 @@ fn reserve_variable<'target>(
             let (id, reservation) = variables.reserve_state(name, value_type, declaration)?;
             (TargetVariable::State(id), reservation)
         }
-        dae::VariableRole::Algebraic if Some(variable.id().index()) == promoted => {
+        dae::VariableRole::Algebraic | dae::VariableRole::Output
+            if promoted.contains(&variable.id().index()) =>
+        {
             let (id, reservation) = variables.reserve_state(name, value_type, declaration)?;
             (TargetVariable::State(id), reservation)
         }
@@ -111,6 +114,7 @@ fn reserve_variable<'target>(
     };
     Ok(ReservedVariable {
         identity,
+        derivative_alias: None,
         reservation: Some(reservation),
     })
 }

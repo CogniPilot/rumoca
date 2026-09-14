@@ -781,25 +781,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .source
             .expression(source_value)
             .expect("differentiated source expression resolves");
-        if source.value_type().is_scalar() {
-            return self
-                .target
-                .at(provenance)
-                .literal(dae::DaeLiteral::Real(0.0));
-        }
-        let extents = source
-            .value_type()
-            .dimensions()
-            .iter()
-            .map(|extent| {
-                self.target
-                    .at(provenance)
-                    .literal(dae::DaeLiteral::Integer(i64::from(*extent)))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.target
-            .at(provenance)
-            .builtin(dae::PureBuiltin::Zeros, extents)
+        super::expressions::shaped_zero(self.target, source.value_type().dimensions(), provenance)
     }
 
     fn multiply(

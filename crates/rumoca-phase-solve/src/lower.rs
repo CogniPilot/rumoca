@@ -1838,10 +1838,8 @@ fn derivative_rhs<'dae>(
         rhs,
     } = node.operation()
     else {
-        return Err(LowerError::non_computable(
-            "state equation is not a subtractive derivative residual",
-            node.provenance().span(),
-        ));
+        return AffineScalarDerivative::derive(selector, residual, scalar, state, state_scalar)
+            .map(DerivativeRhs::Affine);
     };
     // A branch the model fixes at translation time is the equation's only
     // reachable form, so the affine decomposition reads through it.

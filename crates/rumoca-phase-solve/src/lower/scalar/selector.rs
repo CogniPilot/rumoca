@@ -99,6 +99,16 @@ impl<'dae> ScalarSelector<'dae> {
     ) -> Result<(dae::ExprId<'dae>, usize), LowerError> {
         loop {
             let node = self.node(expression);
+            if let dae::ExpressionOperation::ArrayUpdate {
+                base,
+                value,
+                subscripts,
+            } = node.operation()
+            {
+                (expression, scalar) =
+                    self.select_updated_component(base, value, subscripts, scalar)?;
+                continue;
+            }
             let dae::ExpressionOperation::Array(elements) = node.operation() else {
                 return Ok((expression, scalar));
             };
@@ -123,6 +133,38 @@ impl<'dae> ScalarSelector<'dae> {
             })?;
             scalar %= element_count;
         }
+    }
+
+    fn select_updated_component(
+        &self,
+        base: dae::ExprId<'dae>,
+        value: dae::ExprId<'dae>,
+        subscripts: dae::SubscriptsView<'dae>,
+        scalar: usize,
+    ) -> Result<(dae::ExprId<'dae>, usize), LowerError> {
+        if !subscripts.iter().all(|subscript| match subscript {
+            dae::SubscriptView::Whole { .. } => true,
+            dae::SubscriptView::Index { expression, .. }
+            | dae::SubscriptView::Slice { expression, .. } => {
+                self.node(expression).variability() == dae::ExpressionVariability::Constant
+            }
+        }) {
+            return Err(LowerError::non_computable(
+                "a derivative residual requires a constant tensor update selection",
+                self.node(base).provenance().span(),
+            ));
+        }
+        Ok(
+            match self.array_update_value_scalar(
+                base,
+                subscripts,
+                self.node(value).value_type().dimensions(),
+                scalar,
+            )? {
+                Some(selected) => (value, selected),
+                None => (base, scalar),
+            },
+        )
     }
 
     pub(super) fn indexed_base_scalar(

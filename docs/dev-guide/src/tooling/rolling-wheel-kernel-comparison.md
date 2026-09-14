@@ -1,0 +1,131 @@
+# RollingWheel: generated OMC C and Rumoca's integration kernel
+
+This investigation compares the xtask-generated OMC executable with the
+requested-state/derivative-alias candidate based on
+`eb325ac7173ddd0757783f6c3ed5cc77e894c251`. It identifies repeated computation;
+it does not establish a performance fix or a new cohort result.
+
+## Measured discrepancy
+
+The candidate's isolated `sim_run_seconds` is **2.324479 seconds**. Its `perf`
+capture spans only the declared Sim phase: 447 samples, no lost samples,
+11.19% in cosine and 6.49% in sine. The preceding validated candidate was
+about 1.248 seconds. Correct requested-state selection has therefore exposed
+a slower kernel that still needs optimization.
+
+A process-local forwarding libm shim counts calls without changing their
+arguments or returned values. Rumoca counting is enabled on observing Sim
+start and disabled on completion, using 1 ms polling; it can miss boundary
+calls. OMC counting covers its whole process, including initialization and
+output. Neither instrumented duration is used as a benchmark.
+
+| Calls | Rumoca Sim window | OMC whole process |
+|---|---:|---:|
+| `sin` | 16,935,194 | 6,270 |
+| `cos` | 16,935,194 | 6,273 |
+| `sincos` | 0 | 14 |
+| Trigonometric results, counting `sincos` as two | 33,870,388 | 12,571 |
+
+Both output traces are byte-identical to their uninstrumented references.
+Even with the narrower Rumoca counting window, it computes approximately
+2,694 times as many trigonometric results. This is evidence of duplicated
+numeric work, not a claim that trigonometry explains the entire time ratio.
+
+## OMC's generated execution path
+
+The executable is under
+`target/msl/multibody-selected-jvp-origin/omc_sim_work/`, with basename
+`Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheel`.
+Its `_03lsy.c`, `_09alg.c`, and `_12jac.c` are byte-identical to the earlier
+private `rolling-wheel/omc/` copies. The main C differs only in resource
+directories and the generated GUID; its equation and callback code agrees.
+
+| Generated owner | Work performed |
+|---|---|
+| Main `.c:1954`, `functionODE_system0` | Fixed schedule of 44 equation functions |
+| Equations 635, 638–640, 644, 647 | Compute three sines and three cosines of the selected angles |
+| Equations 632–634 | Copy the selected angular rates into angle derivatives |
+| Equations 663, 664, 677, 678 | Solve kinematic linear systems of sizes 2, 3, 2, 3 |
+| Equation 731, `.c:972` | Solve the six-dimensional torn dynamic system |
+| Equations 748–749 | Solve a 2×2 angular-acceleration map and assign the remaining derivative |
+| `_03lsy.c:584`, `residualFunc731` | Assign six tear inputs, execute 19 causal equations, then evaluate six residuals |
+| `_03lsy.c:1750` | Register system 731 as linear with a generated analytic Jacobian |
+| `_12jac.c:950`, `functionJacLSJac1_column` | Execute 25 compiled tangent equations using existing primal geometry values |
+| `_09alg.c:73`, `functionAlg_system0` | Separate schedule of 62 algebraic/observation equation functions |
+
+OMC's six dynamic tear variables are the three world-frame contact forces,
+vertical body acceleration, and the two second derivatives of the horizontal
+contact-offset coordinates. Other acceleration/force variables are computed
+by the local causal schedule. The matrices can depend on state, so this is
+not evidence that numerical factors remain valid across different states.
+The reusable object is the compiled computation and its dependency structure.
+
+OMC integrates eight coordinates: x/y position, three angles, and three
+angular rates. The previous 40-run measurement reports 1,028 steps, 1,329
+ODE calls, 42 Jacobian evaluations, eight error-test failures, and no
+convergence-test failures. Its median reported simulation time was 16.58 ms
+and total runtime 50.66 ms. These timer boundaries differ from Rumoca's
+Sim measurement; the call census is the stronger direct evidence here.
+
+## Rumoca's corresponding work
+
+The candidate now retains all eight requested states, plus six dependent
+body-velocity/joint-position coordinates. Its derivative refresh closure owns
+113 algebraic scalar targets, five exact-assignment stages, and seven
+projection stages. The coupled dynamic block has 24 unknowns and still
+retains 16 tear variables. The complete observation closure owns 888 scalar
+targets; these are separate construction-issued plans.
+
+Three hot tensor residual programs, 200, 201, and 224, each contain 17 typed
+pure-call sites. Program 224 contains 431 instructions, including 22 matrix
+multiplies and eight cross products. Their generated geometry is executed
+again in directional programs. The native call table compiles value and
+directional functions separately; the fact that code is compiled does not
+establish that its intermediate values are reused across residual rows or
+Jacobian seeds. The measured trigonometric count confirms that they are not
+being reused sufficiently.
+
+Relevant code owners are `rumoca-phase-solve/src/lower/typed_functions/`,
+`rumoca-phase-solve/src/lower/scalar/`,
+`rumoca-exec-cranelift/src/emit/typed_program.rs`, and
+`rumoca-solver/src/runtime/solve_runtime/{refresh_execution,sensitivity}.rs`.
+The existing seed-linearization cache already reuses algebraic
+linearizations at fixed coordinates. It does not remove repeated primal
+geometry embedded in separate residual and tangent programs.
+
+## Next proof and implementation targets
+
+1. Construct a shared tensor computation for state/parameter-dependent
+   geometry, and have residuals and tangent programs consume its results.
+   Reuse must follow typed dependencies and the exact evaluation coordinate;
+   effects, assertions, event changes, and parameter changes remain observable.
+2. Reduce the coupled dynamics through a compiled causal schedule and smaller
+   linear solve. Compare its equations and tear set directly with OMC's six
+   unknowns; preserve singularity/rank checks.
+3. Remove the six dependent integrated coordinates through a proved state
+   reduction. Their absence from OMC is a lead, not a sufficient proof by
+   itself.
+4. Keep observation-only computation outside integrator callbacks, and measure
+   actual callback/solve counts alongside elapsed time after each change.
+
+The originating focused gate, `target/msl/multibody-requested-aliases-origin`,
+compared one model: all 184 channels and all 184 initialization channels were
+high, with zero skipped, missing, nonidentifiable, or deviating traces.
+This is focused regression evidence only. The latest full-cohort result
+remains the run recorded in [MultiBody coverage](multibody-coverage.md).
+
+## Reproduction evidence
+
+Private evidence is under `.git/multibody-campaign/rolling-wheel/`:
+
+- `requested-aliases-origin-1/`: actual prepared DAE, Solve, trace, perf data,
+  and phase-specific timings; worker SHA-256
+  `d9164677ddae3067aaa8fd833c54a8e000bfb5bfdf9d41ffea69bb42fc3d70f8`.
+- `omc-generated-c-walk-1/`: generated-C inventory, equation comments,
+  line-preserving readable views, Rumoca kernel inventory, forwarding-shim
+  source, call-count driver, logs, and `trig-counts.json`.
+- `omc-perf-repeated-1/`: the earlier unmodified executable's 40-run timing,
+  call-statistics, and whole-process perf evidence.
+
+The shim is enabled only for the diagnostic subprocesses; no instrumentation
+is installed in the compiler or runtime.

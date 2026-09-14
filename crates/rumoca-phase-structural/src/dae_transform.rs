@@ -1,6 +1,7 @@
 //! Constructor-only structural DAE-to-DAE lowering.
 //!
-//! Regular systems remain borrowed. A singular system is rebuilt only when a
+//! Requested states are selected before matching; already selected regular
+//! systems remain borrowed. A singular system is rebuilt when a
 //! scalar state is directly defined by a differentiable constraint. The
 //! replacement DAE demotes that state and substitutes the exact symbolic
 //! derivative of its definition at every derivative occurrence.
@@ -11,6 +12,7 @@ mod component_constraint;
 mod component_projection;
 mod constraints;
 mod declarations;
+mod derivative_aliases;
 mod differentiation;
 mod equalities;
 mod event_owners;
@@ -418,6 +420,38 @@ fn prepare_for_solve_with_observer<'source>(
     model: &'source dae::Dae,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'source>, StructuralError> {
+    let selected = match reconstruction::rebuild_requested_states(model) {
+        Ok(Some(selected)) => selected,
+        Ok(None) => return reduce_for_solve_with_observer(model, observer),
+        Err(error) => return observed_failure(error, observer),
+    };
+    match reduce_for_solve_with_observer(&selected, observer)? {
+        PreparedDae::Borrowed {
+            pins, structural, ..
+        } => Ok(PreparedDae::Transformed {
+            dae: Box::new(selected),
+            manifold: Box::new([]),
+            pins,
+            structural,
+        }),
+        PreparedDae::Transformed {
+            dae,
+            manifold,
+            pins,
+            structural,
+        } => Ok(PreparedDae::Transformed {
+            dae,
+            manifold,
+            pins,
+            structural,
+        }),
+    }
+}
+
+fn reduce_for_solve_with_observer<'source>(
+    model: &'source dae::Dae,
+    observer: &mut impl ReductionObserver,
+) -> Result<PreparedDae<'source>, StructuralError> {
     let singular = match structural_analysis(model) {
         Ok(structural) => return borrowed_with_observer(model, structural, observer),
         Err(error @ StructuralError::Singular { .. }) => error,
@@ -550,10 +584,11 @@ fn borrowed_with_observer<'source>(
     structural: PreparedStructuralAnalysis,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'source>, StructuralError> {
-    let result = borrowed(model, structural);
+    let result = borrowed(model, structural).and_then(derivative_aliases::normalize);
     observer.observe(ReductionEvent::Stopped {
         outcome: match &result {
-            Ok(_) => StoppedOutcome::Borrowed,
+            Ok(PreparedDae::Borrowed { .. }) => StoppedOutcome::Borrowed,
+            Ok(PreparedDae::Transformed { .. }) => StoppedOutcome::Sorted,
             Err(error) => StoppedOutcome::Failure { error },
         },
     });
@@ -582,7 +617,7 @@ fn transformed_with_observer(
     structural: PreparedStructuralAnalysis,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'static>, StructuralError> {
-    let result = transformed(model, manifold, structural);
+    let result = transformed(model, manifold, structural).and_then(derivative_aliases::normalize);
     observer.observe(ReductionEvent::Stopped {
         outcome: match &result {
             Ok(_) => StoppedOutcome::Sorted,

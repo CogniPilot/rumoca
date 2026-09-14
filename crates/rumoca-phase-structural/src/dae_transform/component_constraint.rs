@@ -109,6 +109,25 @@ impl ComponentExpression {
                     return Self::derive(view, facts, definition, scalar);
                 }
             }
+            dae::ExpressionOperation::ArrayUpdate {
+                base,
+                value,
+                subscripts,
+            } => {
+                let selection = super::component_projection::literal_indices(view, subscripts)?;
+                if selection.len() != indices.len() {
+                    return None;
+                }
+                let selected = selection
+                    .iter()
+                    .zip(&indices)
+                    .all(|(&selected, &index)| selected == index as usize - 1);
+                return if selected {
+                    Self::derive(view, facts, value, 0)
+                } else {
+                    Self::derive(view, facts, base, scalar)
+                };
+            }
             _ => {}
         }
         Some(Self::Source {

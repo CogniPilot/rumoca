@@ -59,7 +59,7 @@ pub(super) fn projected_element<'dae>(
     Some(base)
 }
 
-fn literal_indices<'dae>(
+pub(super) fn literal_indices<'dae>(
     view: dae::DaeView<'dae>,
     subscripts: dae::SubscriptsView<'dae>,
 ) -> Option<VecDeque<usize>> {

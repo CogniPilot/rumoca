@@ -10,6 +10,7 @@
 mod scoped_cache;
 
 use rumoca_ir_dae as dae;
+
 use scoped_cache::ScopedReconstructionCache;
 
 use super::DirectStateConstraint;
@@ -20,6 +21,27 @@ use super::functions::RebuiltFunction;
 use super::temporal::RebuiltClock;
 use super::variables::{ReservedVariable, TargetVariable};
 use rumoca_eval_dae::FunctionCallContext;
+
+pub(super) fn shaped_zero<'target>(
+    target: &mut dae::Expressions<'_, 'target>,
+    dimensions: &[u32],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+    if dimensions.is_empty() {
+        return target.at(provenance).literal(dae::DaeLiteral::Real(0.0));
+    }
+    let extents = dimensions
+        .iter()
+        .map(|&extent| {
+            target
+                .at(provenance)
+                .literal(dae::DaeLiteral::Integer(i64::from(extent)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    target
+        .at(provenance)
+        .builtin(dae::PureBuiltin::Zeros, extents)
+}
 
 pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     pub(super) source: dae::DaeView<'source>,
@@ -552,6 +574,14 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         {
             return self.rebuild_demoted_derivative(candidate);
         }
+        if let dae::CoordinateView::Derivative(state) = coordinate
+            && let Some(alias) = self.variables[state.index() as usize].derivative_alias
+        {
+            return self
+                .target
+                .at(provenance)
+                .coordinate(dae::CoordinateInput::Algebraic(alias));
+        }
         let coordinate = match coordinate {
             dae::CoordinateView::Parameter(id) => {
                 match self.variables[id.index() as usize].identity {
@@ -708,23 +738,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .value_type()
             .dimensions()
             .to_vec();
-        if dimensions.is_empty() {
-            return self
-                .target
-                .at(provenance)
-                .literal(dae::DaeLiteral::Real(0.0));
-        }
-        let extents = dimensions
-            .into_iter()
-            .map(|extent| {
-                self.target
-                    .at(provenance)
-                    .literal(dae::DaeLiteral::Integer(i64::from(extent)))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.target
-            .at(provenance)
-            .builtin(dae::PureBuiltin::Zeros, extents)
+        shaped_zero(self.target, &dimensions, provenance)
     }
 
     fn rebuild_discrete_coordinate(

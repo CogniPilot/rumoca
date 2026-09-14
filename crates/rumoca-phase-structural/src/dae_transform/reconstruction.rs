@@ -1,13 +1,13 @@
 //! Drive a whole-DAE reconstruction for one accepted constraint.
 //!
-//! Both entry points replay the source system into a fresh
+//! Each entry point replays the source system into a fresh
 //! [`dae::DaeConstruction`] in dependency order — types, domains, variable
 //! reservations, conditions, clocks, temporal and delay coordinates,
 //! functions, expressions, then semantic owners — so the replacement DAE is a
-//! finalized peer of the original rather than a patched copy. The two differ
-//! only in what they substitute: a demotion reserves the chosen state as
-//! algebraic, while a holonomic reduction replaces one residual with its
-//! second derivative and reports the manifold expressions it displaced.
+//! finalized peer of the original rather than a patched copy. Promotion changes
+//! requested variable roles. Demotion also substitutes the removed derivatives;
+//! holonomic reduction replaces a residual with its second derivative and
+//! reports the manifold expressions it displaced.
 
 use rumoca_ir_dae as dae;
 
@@ -24,6 +24,102 @@ use super::variables::{
 use super::{DirectStateConstraint, HolonomicConstraint, LiftedManifoldOwner, ManifoldConstraint};
 use crate::StructuralError;
 
+pub(super) fn rebuild_derivative_aliases(
+    model: &dae::Dae,
+    selected: &[u32],
+    prior_manifold: &[u32],
+) -> Result<(dae::Dae, Vec<u32>), StructuralError> {
+    let mut manifold = Vec::with_capacity(prior_manifold.len());
+    let rebuilt = model.inspect(|source| {
+        dae::Dae::construct(model.source_map().clone(), |target| {
+            prepare_rebuild(source, target, None, &[], selected, |prepared| {
+                let PreparedRebuild {
+                    context,
+                    target,
+                    variables,
+                    expressions,
+                    quotients,
+                    ..
+                } = prepared;
+                manifold.extend(
+                    prior_manifold
+                        .iter()
+                        .map(|&id| expressions[id as usize].index()),
+                );
+                define_variables(source, target, &expressions, variables)?;
+                rebuild_semantic_owners(
+                    source,
+                    target,
+                    &expressions,
+                    RebuiltOwnerIdentities {
+                        variables,
+                        domains: context.domains,
+                        conditions: context.conditions,
+                        clocks: context.clocks,
+                    },
+                    None,
+                    quotients,
+                )?;
+                super::derivative_aliases::append_definitions(source, target, variables)
+            })
+        })
+    });
+    rebuilt
+        .map(|model| (model, manifold))
+        .map_err(construction_failure)
+}
+
+pub(super) fn rebuild_requested_states(
+    model: &dae::Dae,
+) -> Result<Option<dae::Dae>, StructuralError> {
+    model
+        .inspect(|source| {
+            let requested = source
+                .variables()
+                .filter(|(_, variable)| {
+                    matches!(
+                        variable.role(),
+                        dae::VariableRole::Algebraic | dae::VariableRole::Output
+                    ) && variable.variability() == dae::ExpressionVariability::Continuous
+                        && variable.value_type().scalar_type() == dae::ScalarType::Real
+                        && variable.state_select() == rumoca_core::StateSelect::Always
+                })
+                .map(|(id, _)| id.index())
+                .collect::<Vec<_>>();
+            if requested.is_empty() {
+                return Ok(None);
+            }
+            dae::Dae::construct(model.source_map().clone(), |target| {
+                prepare_rebuild(source, target, None, &requested, &[], |prepared| {
+                    let PreparedRebuild {
+                        context,
+                        target,
+                        variables,
+                        expressions,
+                        quotients,
+                        ..
+                    } = prepared;
+                    define_variables(source, target, &expressions, variables)?;
+                    rebuild_semantic_owners(
+                        source,
+                        target,
+                        &expressions,
+                        RebuiltOwnerIdentities {
+                            variables,
+                            domains: context.domains,
+                            conditions: context.conditions,
+                            clocks: context.clocks,
+                        },
+                        None,
+                        quotients,
+                    )
+                })
+            })
+            .map(Some)
+        })
+        .map_err(construction_failure)
+}
+
 pub(super) fn rebuild_holonomic_constraint(
     model: &dae::Dae,
     constraint: &HolonomicConstraint,
@@ -36,7 +132,8 @@ pub(super) fn rebuild_holonomic_constraint(
                 source,
                 target,
                 None,
-                constraint.lifted_algebraic,
+                constraint.lifted_algebraic.as_slice(),
+                &[],
                 |prepared| {
                     let PreparedRebuild {
                         context,
@@ -136,7 +233,7 @@ pub(super) fn rebuild_with_state_demotion_and_manifold(
     let mut manifold = Vec::with_capacity(prior_manifold.len());
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
-            prepare_rebuild(source, target, Some(candidate), None, |prepared| {
+            prepare_rebuild(source, target, Some(candidate), &[], &[], |prepared| {
                 let PreparedRebuild {
                     context,
                     target,
@@ -227,7 +324,8 @@ fn prepare_rebuild<'source, 'target>(
     source: dae::DaeView<'source>,
     target: &mut dae::DaeConstruction<'target>,
     candidate: Option<DirectStateConstraint>,
-    lifted_algebraic: Option<u32>,
+    promoted: &[u32],
+    derivative_aliases: &[u32],
     finish: impl FnOnce(PreparedRebuild<'source, '_, 'target>) -> Result<(), dae::DaeConstructionError>,
 ) -> Result<(), dae::DaeConstructionError> {
     let mut quotients = begin_reconstruction(source, target)?;
@@ -238,7 +336,14 @@ fn prepare_rebuild<'source, 'target>(
         target,
         &types,
         candidate.map(|candidate| candidate.state),
-        lifted_algebraic,
+        promoted,
+    )?;
+    super::derivative_aliases::reserve_aliases(
+        source,
+        target,
+        &types,
+        &mut variables,
+        derivative_aliases,
     )?;
     let conditions = reserve_conditions(source, target)?;
     let clocks = rebuild_clocks(source, target, &variables, &conditions)?;

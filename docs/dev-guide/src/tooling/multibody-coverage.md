@@ -281,6 +281,110 @@ The runtime repair and its focused/canary checks are complete. The remaining
 passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
 
+## In progress: requested states and repeated tensor reduction
+
+The candidate based on `eb325ac7173ddd0757783f6c3ed5cc77e894c251`
+promotes continuous Real declarations marked `StateSelect.always` through one
+checked whole-DAE reconstruction before matching. MLS §4.8.7.1 and STRUCT-T07
+govern this selection; SPEC_0032 governs preservation of tensor owners.
+The initial reduced alias model selects `q[1:2]` before the change and `x[1:2]`
+after it, agreeing with OMC. Output causality, parameter roles, assertions, and
+contradictory fixed initial values have focused regressions.
+
+Promotion alone regressed RollingWheel to structural refusal
+(`rolling-wheel/requested-states-origin-1`). The actual reduction recorder
+shows the demoted path reaching one unmatched `der(wheel1.y)`. A previous
+component replacement had wrapped the position residual in `ArrayUpdate`;
+the next component proof did not read through that checked update to its
+untouched y component. The pristine retry was less reduced and is not evidence
+that the earlier angular-state demotion failed.
+
+The six-equation `SelectedComponents` regression reproduces the same gap with
+`der(p)=-p; p={x,y,z}` and requested x/y states. It fails structural preparation
+before the component-selection repair (`requested-components-red-1.log`).
+Following the exact literal, full-rank update selection makes RollingWheel
+structurally regular (`requested-states-reduction-probe-2.log`). The prepared
+DAE retains all eight requested coordinates plus body velocity and joint
+position tensors: fourteen integrated coordinates versus OMC's eight.
+Complete elimination of these dependent coordinates remains open.
+
+The reduced model then exposed Solve derivative extraction failing on the
+updated tensor (`requested-components-green-1.log`). Reusing its existing
+constant update selector repairs that boundary. Both integrators now reproduce
+all six analytic channels (`requested-components-green-2.log`). OMC also
+simulates this exact source, selecting x, y, and p[3]; its maximum analytic
+channel error is below 1e-5 (`requested-components-omc-1`).
+
+The next actual-model gate, `target/msl/multibody-requested-components-origin`,
+still fails Solve and compares zero models. Differentiating the first no-slip
+constraint produces a sum of products equal to zero, but the derivative
+extractor required a subtractive root. A second reduced model,
+`der(q)=-q; 0=x*q+1`, with x requested, reproduces that error
+(`requested-product-red-1.log`). Passing the complete residual to the existing
+scalar affine proof makes both integrators agree with its analytic solution
+(`requested-product-green-1.log`).
+OMC also simulates the exact product fixture successfully
+(`requested-product-omc-1/comparison.json`).
+
+RollingWheel remains refused after this repair
+(`requested-components-lowering-probe-3.log`). The equivalent dot-product
+fixture `0={x,1}*{q,1}` also reproduces this refusal
+(`requested-dot-product-red-1.log`). Inspecting the actual prepared BLT shows
+a more fundamental problem: block 484 contains three angular accelerations and
+21 algebraics (`requested-state-blocks-probe-1.log`). Solve drops the derivative
+entries from the algebraic projection and then tries to isolate those
+derivatives separately. A scalar pivot need not be invertible even when this
+joint system is regular.
+
+The proposed STRUCT-T09 normalization introduces exact whole-tensor algebraic
+aliases for implicit derivatives, substitutes their typed coordinate reads,
+and appends `der(state)=alias`. The joint equations then remain one compiled
+algebraic system. MLS Appendix B and §8.3.1 justify the equivalent extension;
+§8.6 initialization obligations and existing runtime rank/convergence checks
+remain required. No coefficient is estimated by subtracting residual samples.
+The normalization is implemented and its originating-model gate now completes:
+`target/msl/multibody-requested-aliases-origin` compares one model, with all 184
+channels and initialization channels high and zero skipped, missing,
+nonidentifiable, or deviating traces. This focused result is not a new cohort
+measurement. Its isolated Sim time is 2.324479 seconds, slower than the prior
+1.248-second candidate. The generated-C comparison and diagnostic counters
+identify substantial repeated geometry evaluation; see
+[RollingWheel kernel comparison](rolling-wheel-kernel-comparison.md).
+
+The new mixed derivative/dot-product reproduction fails before normalization
+(`requested-mixed-dot-red-1.log`) and passes both integrators afterward
+(`requested-aliases-green-2.log`). The same source also passes OMC, with maximum
+analytic invariant error below 4e-6 (`requested-mixed-dot-omc-1/comparison.json`).
+All six requested-state regressions pass (`requested-aliases-selected-tests-2.log`).
+Broader validation exposed native tensor linear-solve, explicit derivative
+family, and scalar affine paths being unnecessarily replaced by aliases. The
+selection now retains those owners, using exact matching and compact family
+bodies. Outside mixed BLT blocks, admission requires a derivative consumed
+through a tensor expression. Scalar-only equations keep their existing affine
+construction and rejection checks. No existing regression was weakened.
+
+All 961 library/core tests pass (`requested-aliases-libraries-4.log`), as does
+all-target/all-feature Clippy for structural, Solve, and the public compiler
+crate (`requested-aliases-clippy-1.log`). Temporary compiler probes were removed.
+The fixed canary `target/msl/multibody-requested-aliases-canary` has no phase,
+simulation-status, or comparison-band changes against
+`target/msl/multibody-requested-states-canary`: nine compared models are high,
+all 175 compared initialization channels are high, and skipped, missing,
+nonidentifiable, and deviating counts are zero. The eleven remaining targets
+retain their prior refusals. The candidate worktree digest is
+`3dd6c3edbc76ce9f91b6cfb4c4f3203d91c8e29e72c84e93d42cd187b231dc39`;
+`requested-aliases-canary-delta.json` records the exact comparison and artifact
+digests. This is Tier 1 regression evidence only.
+The final originating-model rerun after native-owner preservation,
+`target/msl/multibody-requested-aliases-final-origin`, also compares one model
+with all 184 channels and 184 initialization channels high, zero skipped,
+missing, nonidentifiable, or deviating traces, and Sim time 2.358592 seconds.
+
+Combined quick/full and a new full cohort gate remain pending while the
+RollingWheel kernel work continues. The original-model refusal is closed by
+the focused comparison; the performance regression remains open.
+Private logs in this section are under `.git/multibody-campaign/rolling-wheel/`.
+
 ## Inspect the actual structurally transformed equations
 
 The worker wrote the pre-transform input into `ir-structural-dae.json` and

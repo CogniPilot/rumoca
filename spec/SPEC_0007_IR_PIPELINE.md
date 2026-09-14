@@ -294,7 +294,7 @@ finalized DAE and returns another through root-owned checked changes. Partial
 mutation, independently replayable proof receipts, and mutable partition
 callbacks are prohibited.
 
-**In scope:** exactly rows `STRUCT-T01`–`STRUCT-T08` in
+**In scope:** exactly rows `STRUCT-T01`–`STRUCT-T09` in
 [SPEC_0040 §3](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
 A transformation absent from that catalog is out of scope until this spec is
 amended.
@@ -318,8 +318,11 @@ STRUCT-T03's linear auxiliary profile:
 
 DAE structural transformations live in `rumoca-phase-structural`, return a
 finalized DAE, and keep analysis products outside DAE. `rumoca-phase-solve`
-only lowers finalized DAE. General dummy derivatives, unrelated symbolic
-simplification, and control-design linearization require a spec update.
+only lowers finalized DAE. STRUCT-T09 permits exact aliases for implicit
+derivatives and mixed derivative/algebraic blocks; it does not choose scalar
+pivots or construct numerical coefficient matrices. Other dummy-derivative transformations,
+unrelated symbolic simplification, and control-design linearization require a
+spec update.
 
 ## References
 
