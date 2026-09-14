@@ -1,7 +1,10 @@
 //! Reconstruct coefficient values while retaining exact structural derivative zeros.
 
+#[cfg(test)]
+mod tests;
+
 use super::super::differentiation::Derivative;
-use super::super::expressions::ExpressionRebuilder;
+use super::super::expressions::{ExpressionRebuilder, shaped_zero};
 use super::tensor_expression::{Product, SourceValue, TensorExpression};
 use rumoca_ir_dae as dae;
 
@@ -25,7 +28,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 // Auxiliary admission proves every primal coefficient is materializable.
                 let primal = self.tensor_coefficient(expression, 0, at)?;
                 let dimensions = self.target.value_type(primal, at)?.dimensions().to_vec();
-                self.coefficient_zero(&dimensions, at)
+                shaped_zero(self.target, &dimensions, at)
             }
         }
     }
@@ -88,13 +91,11 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .builtin(dae::PureBuiltin::Identity, [size])
                     .map(Derivative::Expression)
             }
-            TensorExpression::Zero(dimensions) => self
-                .coefficient_zero(dimensions, at)
-                .map(Derivative::Expression),
+            TensorExpression::Zero(dimensions) => {
+                shaped_zero(self.target, dimensions, at).map(Derivative::Expression)
+            }
             TensorExpression::Sum(operator, lhs, rhs) => {
-                let lhs = self.tensor_coefficient_value(lhs, order, at)?;
-                let rhs = self.tensor_coefficient_value(rhs, order, at)?;
-                self.combine_sum(*operator, lhs, rhs, at)
+                self.coefficient_sum(*operator, lhs, rhs, order, at)
             }
             TensorExpression::Product(kind, lhs, rhs) => {
                 self.coefficient_product(*kind, lhs, rhs, order, at)
@@ -113,6 +114,37 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 self.coefficient_unary(CoefficientUnary::Projection(*ordinal), base, order, at)
             }
         }
+    }
+
+    fn coefficient_sum(
+        &mut self,
+        operator: dae::BinaryOperator,
+        lhs: &TensorExpression,
+        rhs: &TensorExpression,
+        order: u8,
+        at: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        if order > 0 {
+            let lhs = self.tensor_coefficient_value(lhs, order, at)?;
+            let rhs = self.tensor_coefficient_value(rhs, order, at)?;
+            return self.combine_sum(operator, lhs, rhs, at);
+        }
+        let lhs = self.tensor_coefficient(lhs, 0, at)?;
+        let rhs = self.tensor_coefficient(rhs, 0, at)?;
+        let value = match self.combine_sum(
+            operator,
+            Derivative::Expression(lhs),
+            Derivative::Expression(rhs),
+            at,
+        )? {
+            Derivative::Expression(value) => value,
+            Derivative::Zero => {
+                // Primal cancellation is between identical checked operands.
+                let dimensions = self.target.value_type(lhs, at)?.dimensions().to_vec();
+                shaped_zero(self.target, &dimensions, at)?
+            }
+        };
+        Ok(Derivative::Expression(value))
     }
 
     fn coefficient_unary(
@@ -195,25 +227,6 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         let result = self.materialize_exact_value(source, at);
         self.function_context = previous;
         result
-    }
-
-    fn coefficient_zero(
-        &mut self,
-        dimensions: &[u32],
-        at: dae::DaeProvenance,
-    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
-        if dimensions.is_empty() {
-            return self.target.at(at).literal(dae::DaeLiteral::Real(0.0));
-        }
-        let sizes = dimensions
-            .iter()
-            .map(|&size| {
-                self.target
-                    .at(at)
-                    .literal(dae::DaeLiteral::Integer(i64::from(size)))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.target.at(at).builtin(dae::PureBuiltin::Zeros, sizes)
     }
 
     fn coefficient_product(

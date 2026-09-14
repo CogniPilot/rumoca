@@ -32,7 +32,60 @@ structural refusal instead of timing out, and Media `Inverse_sh_TX` changes
 its frontend refusal phase; neither earns coverage credit. The complete
 per-model receipt is `rolling-wheel/fixed-anchor-full-delta.json`. The next
 work is the stack-overflow root cause and remaining Solve costs; no full-cohort
-restoration is claimed from the focused three-model success.
+restoration is claimed from the focused three-model success. The subsequent
+focused repair below addresses the crash without revising this cohort result.
+
+## Focused repair: cancellation retains a shaped primal zero
+
+The actual-worker `rolling-wheel/fixed-anchor-thermal-profile-1` reproduces
+the thermal `GenerationOfFMUs` stack overflow. Its core dump repeatedly enters
+`tensor_coefficient` while attempting to recover the shape of a zero primal.
+The temporary source-DAE probe in `cancelled-offset-source-probe-1.log` locates
+the exact recipe: two references to the same shared zero offset are subtracted
+and negated. The source operand is the heat capacitor's `der_T` coordinate.
+This is not a cycle in the source expression DAG. A separate source-level
+`theta-theta` control already passes; the failure is in reconstruction of the
+derived shared coefficient recipe.
+
+The prior derivative repair reused exact-sum differentiation for order-zero
+values. Its `Derivative::Zero` result lost the primal shape, and shape recovery
+requested the same cancelled primal recursively. Primal cancellation now
+constructs a zero with the identical checked operands' shape before returning
+or caching its value. Positive derivative orders retain the structural-zero
+tag. Reconstruction uses the existing shared `shaped_zero` constructor, with
+no duplicated zero builder, tensor scalarization, raised stack limit, or
+model-specific condition. The original equations and initialization checks
+remain authoritative under SPEC_0007/0040 STRUCT-T03 and MLS §8.6.
+
+The reduced checked-DAE regression reproduces the captured recipe and checks
+scalar, vector, matrix, and empty-tensor values through derivative order two
+with the independent DAE numeric evaluator. `cancelled-offset-shape-red-1.log`
+records the failed shape-recovery boundary; `cancelled-offset-focused-2.log`
+passes all 166 structural tests, 22 contact tests, formatting, and structural
+all-target/all-feature Clippy. Temporary diagnostics have been removed.
+
+The normal `target/msl/multibody-cancelled-offset-origin` gate compares all
+four selected MultiBody models high, with all 2,960 initialization channels
+high and zero skipped, missing, excluded, nonidentifiable, or deviating traces.
+The fifth target, thermal GenerationOfFMUs, again returns its prior explicit
+`EL005` fixed-initial-value refusal for `inverseCapacity.mass.T`; the crash is
+repaired, but this is not thermal-model simulation support. SphericalConstraint
+Solve is 4.906882 seconds; GyroscopicEffects is 9.893319 seconds; and
+RollingWheelSetDriving is 9.252459 seconds. These near-budget Solve costs still
+require profiling. RollingWheel Sim is 0.784325 seconds and remains slower than
+OMC. Receipt: `rolling-wheel/cancelled-offset-origin-receipt.json`, at
+`9cd80190` plus worktree digest
+`2cff66a4996d90fafb05aec84234a5594c0a7d5dad05c5d85c8c9a18a22bbebe`.
+
+The same-source `target/msl/multibody-cancelled-offset-canary` retains all
+twenty phase, status, and band rows from `multibody-fixed-anchor-canary`:
+nine compared models and 175 initialization channels high, eleven unchanged
+refusals, and zero skipped, missing, excluded, nonidentifiable, or deviating
+comparisons. Receipt: `rolling-wheel/cancelled-offset-canary-delta.json`.
+All 99 Rumoca library tests, 595 core tests, and seventeen architecture/spec
+gates also pass in `rolling-wheel/cancelled-offset-core-suite-1.log`. The
+complete cohort and combined quick/full suites have not been rerun after this
+repair; the remaining near-budget MultiBody Solve costs are still open.
 
 ## Previous complete cohort: two state-reduction regressions recorded
 
