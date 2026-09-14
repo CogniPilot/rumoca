@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod selected_tests;
+
 use nalgebra::DMatrix;
 use rumoca_ir_solve as solve;
 
@@ -35,6 +38,15 @@ pub(crate) trait ManifoldProjectionModel {
 
     fn manifold_residual_len(&self) -> usize;
     fn manifold_projection_plan(&self) -> &solve::AlgebraicProjectionPlan;
+
+    fn eval_manifold_jacobian_outputs(
+        &self,
+        _selection: &solve::JacobianOutputSelection,
+        _inputs: rumoca_eval_solve::JacobianEvalInputs<'_>,
+        _out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        Ok(false)
+    }
 
     fn manifold_projection_block_structure(
         &self,
@@ -199,18 +211,7 @@ fn evaluate_manifold_block<M: ManifoldProjectionModel>(
         .iter()
         .map(|&row| full_residual[row])
         .collect::<Vec<_>>();
-    let mut jacobian = DMatrix::zeros(block.rows.len(), block.y_indices.len());
-    let mut seed = vec![0.0; y.len()];
-    let mut jvp = vec![0.0; residual_len];
-    for (column, state) in block.y_indices.iter().copied().enumerate() {
-        seed[state] = 1.0;
-        model.eval_manifold_jacobian_v(y, p, t, &seed, &mut jvp)?;
-        for (row_position, row) in block.rows.iter().copied().enumerate() {
-            jacobian[(row_position, column)] = jvp[row];
-        }
-        seed[state] = 0.0;
-        jvp.fill(0.0);
-    }
+    let jacobian = manifold_block_jacobian(model, y, p, t, block, block_index)?;
     let structure = model
         .manifold_projection_block_structure(block_index)
         .map(solve::JacobianStructure::pattern);
@@ -222,6 +223,78 @@ fn evaluate_manifold_block<M: ManifoldProjectionModel>(
         row_scales,
         variable_scales,
     })
+}
+
+fn manifold_block_jacobian<M: ManifoldProjectionModel>(
+    model: &M,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    block: &solve::AlgebraicProjectionBlock,
+    block_index: usize,
+) -> Result<DMatrix<f64>, RuntimeSolveError> {
+    if let Some(structure) = model.manifold_projection_block_structure(block_index)
+        && let Some(jacobian) = selected_manifold_jacobian(model, y, p, t, block, structure)?
+    {
+        return Ok(jacobian);
+    }
+    let mut jacobian = DMatrix::zeros(block.rows.len(), block.y_indices.len());
+    let mut seed = vec![0.0; y.len()];
+    let mut jvp = vec![0.0; model.manifold_residual_len()];
+    for (column, state) in block.y_indices.iter().copied().enumerate() {
+        seed[state] = 1.0;
+        model.eval_manifold_jacobian_v(y, p, t, &seed, &mut jvp)?;
+        for (row_position, row) in block.rows.iter().copied().enumerate() {
+            jacobian[(row_position, column)] = jvp[row];
+        }
+        seed[state] = 0.0;
+        jvp.fill(0.0);
+    }
+    Ok(jacobian)
+}
+
+fn selected_manifold_jacobian<M: ManifoldProjectionModel>(
+    model: &M,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    block: &solve::AlgebraicProjectionBlock,
+    structure: &solve::JacobianStructure,
+) -> Result<Option<DMatrix<f64>>, RuntimeSolveError> {
+    let mut jacobian = DMatrix::zeros(block.rows.len(), block.y_indices.len());
+    let column_rows = structure.pattern().column_rows();
+    let mut seed = vec![0.0; y.len()];
+    let mut values = vec![0.0; block.rows.len()];
+    for (color, group) in structure.coloring().groups().iter().enumerate() {
+        let Some(selection) = structure
+            .output_evaluation(color)
+            .and_then(|owner| owner.solver_y())
+        else {
+            return Ok(None);
+        };
+        for &column in group.iter() {
+            seed[block.y_indices[column as usize]] = 1.0;
+        }
+        if !model.eval_manifold_jacobian_outputs(
+            selection,
+            rumoca_eval_solve::JacobianEvalInputs {
+                y,
+                p,
+                t,
+                seed: &seed,
+            },
+            &mut values,
+        )? {
+            return Ok(None);
+        }
+        for &column in group.iter() {
+            for &row in &column_rows[column as usize] {
+                jacobian[(row, column as usize)] = values[row];
+            }
+            seed[block.y_indices[column as usize]] = 0.0;
+        }
+    }
+    Ok(Some(jacobian))
 }
 
 /// Certify a settled initialization point without obtaining mutable state storage.

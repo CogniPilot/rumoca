@@ -222,6 +222,21 @@ pub(super) struct RuntimeManifoldProjection<'a> {
 }
 
 impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
+    fn eval_manifold_jacobian_outputs(
+        &self,
+        selection: &solve::JacobianOutputSelection,
+        inputs: solve_eval::JacobianEvalInputs<'_>,
+        out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        self.runtime.manifold.eval_selected_directional(
+            selection,
+            inputs,
+            self.runtime.row_eval_context(),
+            out,
+        )?;
+        Ok(true)
+    }
+
     fn eval_manifold_residual(
         &self,
         y: &[f64],

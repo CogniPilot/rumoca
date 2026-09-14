@@ -5,6 +5,8 @@ use std::cell::Cell;
 struct Backend {
     residual_calls: Rc<Cell<usize>>,
     directional_calls: Rc<Cell<usize>>,
+    directional_programs: Rc<RefCell<Vec<usize>>>,
+    failing_program: Rc<Cell<Option<usize>>>,
     fail_residual: Rc<Cell<bool>>,
     fail_directional: Rc<Cell<bool>>,
     decline: bool,
@@ -14,6 +16,8 @@ struct Expression {
     prepared: PreparedScalarProgramBlock,
     calls: Rc<Cell<usize>>,
     fail: Rc<Cell<bool>>,
+    programs: Rc<RefCell<Vec<usize>>>,
+    failing_program: Rc<Cell<Option<usize>>>,
 }
 
 impl CompiledSolveExpression for Expression {
@@ -46,6 +50,9 @@ impl CompiledSolveJacobianExpression for Expression {
         out: &mut [f64],
     ) -> Result<(), String> {
         self.calls.set(self.calls.get() + 1);
+        self.programs
+            .borrow_mut()
+            .extend(0..self.prepared.block().programs().len());
         if self.fail.get() {
             return Err("native manifold directional failed".into());
         }
@@ -62,6 +69,34 @@ impl CompiledSolveJacobianExpression for Expression {
             )
             .map_err(|error| error.to_string())
     }
+
+    fn call_program_outputs(
+        &self,
+        program: usize,
+        inputs: solve_eval::JacobianEvalInputs<'_>,
+        _tables: &[rumoca_core::ExternalTableData],
+        out: &mut Vec<f64>,
+    ) -> Result<bool, String> {
+        self.calls.set(self.calls.get() + 1);
+        self.programs.borrow_mut().push(program);
+        if self.fail.get() || self.failing_program.get() == Some(program) {
+            return Err("native manifold directional failed".into());
+        }
+        self.prepared
+            .eval_row_outputs_unchecked_with_context(
+                program,
+                inputs.y,
+                inputs.p,
+                inputs.t,
+                RowEvalContext {
+                    seed: Some(inputs.seed),
+                    ..Default::default()
+                },
+                out,
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(true)
+    }
 }
 
 impl SolveExecutionBackend for Backend {
@@ -76,6 +111,8 @@ impl SolveExecutionBackend for Backend {
             prepared: PreparedScalarProgramBlock::new(block.clone()).unwrap(),
             calls: self.residual_calls.clone(),
             fail: self.fail_residual.clone(),
+            programs: Rc::default(),
+            failing_program: Rc::default(),
         }))
     }
 
@@ -90,6 +127,8 @@ impl SolveExecutionBackend for Backend {
             prepared: PreparedScalarProgramBlock::new(block.clone()).unwrap(),
             calls: self.directional_calls.clone(),
             fail: self.fail_directional.clone(),
+            programs: self.directional_programs.clone(),
+            failing_program: self.failing_program.clone(),
         }))
     }
 
@@ -225,4 +264,102 @@ fn native_manifold_failure_propagates_and_projection_rolls_back() {
             usize::from(fail_directional)
         );
     }
+}
+
+fn independent_runtime(backend: Rc<Backend>) -> SolveRuntime {
+    use solve::LinearOp::{LoadSeed, LoadY, StoreOutput};
+    let mut model = warm_start_test_model();
+    model.problem.solve_layout.state_scalar_count = 2;
+    model.problem.solve_layout.algebraic_scalar_count = 0;
+    model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 0);
+    model.problem.continuous.derivative_rhs = model.problem.continuous.implicit_rhs.clone();
+    model.artifacts.continuous.full_jacobian_v = model
+        .artifacts
+        .continuous
+        .implicit_jacobian_v_scalar
+        .clone();
+    model.problem.continuous.algebraic_projection_plan = Default::default();
+    let programs = |directional| {
+        solve::ScalarProgramBlock::with_output_indices(
+            (0..2)
+                .map(|index| {
+                    vec![
+                        if directional {
+                            LoadSeed { dst: 0, index }
+                        } else {
+                            LoadY { dst: 0, index }
+                        },
+                        StoreOutput { src: 0 },
+                    ]
+                })
+                .collect(),
+            vec![test_span("independent_manifolds.mo"); 2],
+            vec![1, 0],
+        )
+        .unwrap()
+    };
+    model.problem.continuous.manifold_residual =
+        solve::ComputeBlock::from_scalar_program_block(programs(false));
+    model.artifacts.continuous.manifold_jacobian_v =
+        solve::ComputeBlock::from_scalar_program_block(programs(true));
+    model.problem.continuous.manifold_projection_plan = solve::AlgebraicProjectionPlan {
+        blocks: vec![
+            solve::AlgebraicProjectionBlock {
+                rows: vec![1],
+                y_indices: vec![0],
+                tearing: None,
+            },
+            solve::AlgebraicProjectionBlock {
+                rows: vec![0],
+                y_indices: vec![1],
+                tearing: None,
+            },
+        ],
+    };
+    model.problem.continuous.refresh_owners =
+        solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem).unwrap();
+    derive_test_structural_artifacts(&mut model);
+    SolveRuntime::new_with_execution_backend(&model, Some(backend)).unwrap()
+}
+
+#[test]
+fn independent_manifold_blocks_do_not_evaluate_each_others_directional_programs() {
+    for decline in [false, true] {
+        let backend = Rc::new(Backend {
+            decline,
+            ..Default::default()
+        });
+        let runtime = independent_runtime(backend.clone());
+        for mut states in [[0.0, 0.0], [3.0, -4.0], [-2.0, 5.0]] {
+            backend.directional_programs.borrow_mut().clear();
+            runtime
+                .project_state_manifold(&mut states, &[], 0.5, 1e-8)
+                .unwrap();
+            assert_eq!(states, [0.0, 0.0]);
+            let expected: &[usize] = if decline { &[] } else { &[0, 1] };
+            assert_eq!(
+                &*backend.directional_programs.borrow(),
+                expected,
+                "each independent block should execute only its own source program"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_selected_manifold_failure_restores_preceding_block_corrections() {
+    let backend = Rc::new(Backend::default());
+    let runtime = independent_runtime(backend.clone());
+    backend.failing_program.set(Some(1));
+    let mut states = [3.0, -4.0];
+    let error = runtime
+        .project_state_manifold(&mut states, &[], 0.0, 1e-8)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("native manifold directional failed")
+    );
+    assert_eq!(states, [3.0, -4.0]);
+    assert_eq!(&*backend.directional_programs.borrow(), &[0, 1]);
 }

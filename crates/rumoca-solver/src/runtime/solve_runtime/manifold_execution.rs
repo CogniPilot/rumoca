@@ -5,6 +5,8 @@ use super::*;
 pub(super) struct PreparedManifoldProjection {
     residual: PreparedComputeBlock,
     directional: PreparedComputeBlock,
+    directional_scalar: PreparedScalarProgramBlock,
+    output_scratch: RefCell<Vec<f64>>,
     compiled_residual: Option<Rc<dyn CompiledSolveExpression>>,
     compiled_directional: Option<Rc<dyn CompiledSolveJacobianExpression>>,
 }
@@ -41,6 +43,10 @@ impl PreparedManifoldProjection {
                 directional,
                 "runtime_manifold_jacobian_v",
             )?,
+            directional_scalar: PreparedScalarProgramBlock::new(to_scalar_program_block(
+                directional,
+            )?)?,
+            output_scratch: RefCell::default(),
             compiled_residual,
             compiled_directional,
         })
@@ -48,6 +54,63 @@ impl PreparedManifoldProjection {
 
     pub(super) fn len(&self) -> usize {
         self.residual.len()
+    }
+
+    pub(super) fn eval_selected_directional(
+        &self,
+        selection: &solve::JacobianOutputSelection,
+        inputs: solve_eval::JacobianEvalInputs<'_>,
+        context: RowEvalContext<'_>,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if out.len() != selection.output_len() {
+            return Err(RuntimeSolveError::solve_ir(
+                "manifold output extent mismatch",
+            ));
+        }
+        out.fill(0.0);
+        let mut values = self.output_scratch.borrow_mut();
+        for program in selection.programs() {
+            self.eval_program_outputs(program.program(), inputs, context, &mut values)?;
+            if values.len() != program.output_count() {
+                return Err(RuntimeSolveError::solve_ir(
+                    "manifold program output count mismatch",
+                ));
+            }
+            for &(offset, row) in program.placements() {
+                out[row] = values[offset];
+            }
+        }
+        Ok(())
+    }
+
+    fn eval_program_outputs(
+        &self,
+        program: usize,
+        inputs: solve_eval::JacobianEvalInputs<'_>,
+        context: RowEvalContext<'_>,
+        out: &mut Vec<f64>,
+    ) -> Result<(), RuntimeSolveError> {
+        if let Some(compiled) = &self.compiled_directional
+            && compiled
+                .call_program_outputs(program, inputs, context.external_tables.unwrap_or(&[]), out)
+                .map_err(RuntimeSolveError::solve_ir)?
+        {
+            return Ok(());
+        }
+        self.directional_scalar
+            .eval_row_outputs_unchecked_with_context(
+                program,
+                inputs.y,
+                inputs.p,
+                inputs.t,
+                RowEvalContext {
+                    seed: Some(inputs.seed),
+                    ..context
+                },
+                out,
+            )
+            .map_err(Into::into)
     }
 
     pub(super) fn eval_residual(

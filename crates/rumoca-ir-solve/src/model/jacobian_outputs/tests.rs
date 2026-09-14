@@ -51,6 +51,67 @@ fn outputs_with_primal(
         .with_algebraic_output_evaluations(&plan, primal, y, full)
 }
 
+fn manifold_outputs(source: &ScalarProgramBlock) -> ContinuousStructuralArtifacts {
+    let provenance =
+        PatternProvenance::derived(PatternDerivation::DependencyPropagation, span()).unwrap();
+    let pattern =
+        StructuralPattern::from_row_dependencies(2, 2, &[vec![0, 1], vec![0, 1]], provenance)
+            .unwrap();
+    let plan = AlgebraicProjectionPlan {
+        blocks: vec![AlgebraicProjectionBlock {
+            rows: vec![3, 7],
+            y_indices: vec![1, 0],
+            tearing: None,
+        }],
+    };
+    ContinuousStructuralArtifacts::derived(None, vec![], vec![], None, vec![pattern], None)
+        .with_manifold_output_evaluations(&plan, source)
+}
+
+#[test]
+fn manifold_colors_preserve_shared_output_identity_and_reject_unproved_ownership() {
+    let valid = source(vec![7, 3, 11], true);
+    let artifacts = manifold_outputs(&valid);
+    for color in 0..2 {
+        let selection = artifacts.manifold_projection()[0]
+            .output_evaluation(color)
+            .unwrap()
+            .solver_y()
+            .unwrap();
+        assert_eq!(selection.programs().len(), 1);
+        assert_eq!(selection.programs()[0].program(), 0);
+        assert_eq!(selection.programs()[0].placements(), [(1, 0), (0, 1)]);
+    }
+    let mut operations = valid.programs().to_vec();
+    operations[0].extend([
+        LinearOp::Const {
+            dst: 8,
+            value: 42.0,
+        },
+        LinearOp::ImpureRandomInit { dst: 9, seed: 8 },
+    ]);
+    let impure = ScalarProgramBlock::with_output_indices(
+        operations,
+        valid.program_spans().to_vec(),
+        valid.output_indices().to_vec(),
+    )
+    .unwrap();
+    for unproved in [
+        source(vec![3, 3, 11], true),
+        source(vec![3, 8, 11], true),
+        impure,
+    ] {
+        let artifacts = manifold_outputs(&unproved);
+        assert!(
+            artifacts.manifold_projection()[0]
+                .output_evaluation(0)
+                .unwrap()
+                .solver_y()
+                .is_none()
+        );
+    }
+}
+
 #[test]
 fn retained_linearizations_require_repeatable_primal_and_both_directional_owners() {
     let pure = source(vec![7, 3, 11], true);

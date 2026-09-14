@@ -4,7 +4,47 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest focused work: bound construction cost
+## Latest focused work: select manifold derivative programs
+
+RollingWheel's three independent manifold blocks previously replayed all six
+directional programs for every state direction and discarded unrelated rows.
+Solve construction now binds each checked sparsity color to its exact program
+outputs, including shared tensor outputs. Execution calls each selected program
+once per color. Full residual certification and atomic state correction remain
+unchanged; native failures propagate without retrying the complete block.
+The governing owners are SPEC_0007's Solve contract, SPEC_0032's tensor ownership,
+and SPEC_0036/0039's constructed output and sparsity proofs.
+
+The reduced independent-block test fails before the repair: it observes four
+program executions where the two constraints require two
+(`manifold-selection-red-2.log`). Thirteen focused regressions pass afterward,
+covering permuted output placements, shared tensor programs, changing parameters,
+native/reference execution, and rollback after a later block fails. All 982
+IR/evaluator/solver library tests, 99 compiler library tests, 582 core tests,
+17 gates, formatting, and affected-package Clippy pass.
+
+The controlled actual-worker Sim profile falls from 1.498229 to 1.347903 seconds
+(10.0%); the trace remains byte-identical with SHA-256
+`f46cbcf4bf00620007139eb17416c2ece8c3ddf5665e577a3c4e22ef2dadc47c`.
+The normal `target/msl/multibody-manifold-selection-origin` gate measures Sim
+at 1.356090 seconds and compares one model: all 184 trajectory and initialization
+channels are high, with zero skipped, missing, nonidentifiable, or deviating
+results. This is still slower than OMC; differing timing boundaries preclude
+equating these measurements to OMC's reported integration-only time.
+
+The fixed `target/msl/multibody-manifold-selection-canary` retains every phase,
+status, and agreement band from `multibody-causal-ready-canary`: nine models
+compared high, all 175 initialization channels high, eleven unchanged refusals,
+and zero skipped/missing/nonidentifiable/deviating results. The receipt is
+`rolling-wheel/manifold-selection-canary-delta.json`, worktree digest
+`a38f20cd00a5bed30dc189c4850eac38882b424ba6eab04ebbfd064d39610004`.
+Profile artifacts are in `rolling-wheel/manifold-selection-profile-1`; worker
+SHA-256 is `e2f9cd7b5dd61591b47bd0d8709fe0f1561b298e486d8193abb825b2d6454b60`.
+This completes focused/canary validation. The latest complete cohort below
+predates this optimization; combined quick/full and the OMC speed target remain
+outstanding.
+
+## Previous focused work: bound construction cost
 
 The `RollingWheelSetDriving` Solve timeout below was traced to repeated
 operation-prefix scans and repeated searches through causal candidates. A
@@ -15,7 +55,7 @@ The normal `target/msl/multibody-causal-ready-origin` gate compares one model:
 all 892 trajectory and 892 initialization channels are high, with zero skipped,
 missing, nonidentifiable, or deviating results. Solve takes 8.149 seconds under
 the unchanged 10-second budget; Sim takes 1.206 seconds. This restores the
-originating focused case; a complete cohort confirmation remains pending.
+originating focused case; the complete cohort confirmation is recorded below.
 
 The fixed `target/msl/multibody-causal-ready-canary` has no phase, status, or
 band changes against `multibody-pure-input-reuse-canary`: nine models compared

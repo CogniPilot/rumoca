@@ -180,6 +180,10 @@ pub fn derive_solve_structural_artifacts(
         &to_scalar_program_block(&problem.continuous.implicit_rhs)?,
         &to_scalar_program_block(&artifacts.continuous.implicit_jacobian_v)?,
         &artifacts.continuous.implicit_jacobian_v_scalar,
+    )
+    .with_manifold_output_evaluations(
+        &problem.continuous.manifold_projection_plan,
+        &to_scalar_program_block(&artifacts.continuous.manifold_jacobian_v)?,
     );
     let initialization_columns = solver_columns
         .checked_add(problem.layout.p_scalars())

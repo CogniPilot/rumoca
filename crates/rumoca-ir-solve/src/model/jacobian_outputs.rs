@@ -66,6 +66,25 @@ impl ProjectionJacobianOutputs {
 }
 
 impl ContinuousStructuralArtifacts {
+    /// Bind the retained state constraints to their exact directional outputs.
+    pub fn with_manifold_output_evaluations(
+        mut self,
+        plan: &AlgebraicProjectionPlan,
+        directional: &ScalarProgramBlock,
+    ) -> Self {
+        let outputs = ProgramOutputCatalog::new(directional);
+        for (structure, block) in self.manifold_projection.iter_mut().zip(&plan.blocks) {
+            structure.output_evaluations = color_rows(structure, block)
+                .into_iter()
+                .map(|rows| ProjectionJacobianOutputs {
+                    solver_y: outputs.selection(&rows, block.rows.len()),
+                    solver_y_and_parameters: None,
+                })
+                .collect();
+        }
+        self
+    }
+
     /// Bind output projections before evaluator preparation. No programs are
     /// cloned or rewritten; source output identities determine every placement.
     pub fn with_algebraic_output_evaluations(
@@ -98,10 +117,23 @@ fn color_output_evaluations(
     y_outputs: &ProgramOutputCatalog,
     full_outputs: &ProgramOutputCatalog,
 ) -> Box<[ProjectionJacobianOutputs]> {
+    color_rows(structure, block)
+        .into_iter()
+        .map(|rows| ProjectionJacobianOutputs {
+            solver_y: y_outputs.shared_selection(&rows, block.rows.len()),
+            solver_y_and_parameters: full_outputs.shared_selection(&rows, block.rows.len()),
+        })
+        .collect()
+}
+
+fn color_rows(
+    structure: &JacobianStructure,
+    block: &AlgebraicProjectionBlock,
+) -> Vec<Vec<(usize, usize)>> {
     if structure.pattern.rows() as usize != block.rows.len()
         || structure.pattern.columns() as usize != block.y_indices.len()
     {
-        return Box::default();
+        return Vec::new();
     }
     let column_rows = structure.pattern.column_rows();
     structure
@@ -109,15 +141,11 @@ fn color_output_evaluations(
         .groups()
         .iter()
         .map(|group| {
-            let rows = group
+            group
                 .iter()
                 .flat_map(|&column| column_rows[column as usize].iter().copied())
                 .map(|row| (block.rows[row], row))
-                .collect::<Vec<_>>();
-            ProjectionJacobianOutputs {
-                solver_y: y_outputs.selection(&rows, block.rows.len()),
-                solver_y_and_parameters: full_outputs.selection(&rows, block.rows.len()),
-            }
+                .collect()
         })
         .collect()
 }
@@ -170,13 +198,18 @@ impl ProgramOutputCatalog {
             });
             programs[position].placements.push((offset, target));
         }
-        // A singleton output already has the direct selected-row entry point.
-        programs
-            .iter()
-            .any(|p| p.placements.len() > 1)
-            .then_some(JacobianOutputSelection {
-                output_len,
-                programs,
-            })
+        Some(JacobianOutputSelection {
+            output_len,
+            programs,
+        })
+    }
+
+    fn shared_selection(
+        &self,
+        rows: &[(usize, usize)],
+        output_len: usize,
+    ) -> Option<JacobianOutputSelection> {
+        self.selection(rows, output_len)
+            .filter(|selection| selection.programs.iter().any(|p| p.placements.len() > 1))
     }
 }
