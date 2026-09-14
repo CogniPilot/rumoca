@@ -17,7 +17,7 @@ use rumoca_ir_solve::visitor::SolveVisitor;
 use rumoca_ir_solve::{LinearOp, SolveModel};
 use rumoca_sim::sim_trace_compare::{TraceCertificationProfile, TraceRandomOpKind};
 use rumoca_sim::{
-    BuildSimulationTimings, SimError, build_simulation_with_stage_timing_and_solve_model,
+    BuildSimulationTimings, SimError, build_simulation_with_stage_timing_and_lowered_model,
     check_prepared_initialization, run_prepared_simulation,
 };
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
@@ -699,7 +699,7 @@ fn run_simulation_pipeline(
     let mut build_timings = BuildSimulationTimings::default();
     let mut solve_ir_error: Option<String> = None;
     let mut certification_profile = None;
-    let prepared = build_simulation_with_stage_timing_and_solve_model(
+    let prepared = build_simulation_with_stage_timing_and_lowered_model(
         dae,
         opts,
         |stage| {
@@ -710,7 +710,8 @@ fn run_simulation_pipeline(
             };
             watchdog.enter(stage, timeout_seconds);
         },
-        |solve_model| {
+        |lowered| {
+            let solve_model = lowered.model();
             certification_profile = certification_profile_for_solve_model(solve_model);
             match measure_solve_ir(solve_ir.path, solve_model, solve_ir.budget) {
                 Ok(bytes) => solve_ir.bytes = Some(bytes),

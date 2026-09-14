@@ -22,7 +22,7 @@ OMC performance gap remains open. Combined `verify quick` and `verify full`
 remain pending; no PR, release, or baseline promotion is claimed.
 
 The next structural investigation compares the requested and selected state
-coordinates. Flat and both DAE artifacts retain `StateSelect.always` on
+coordinates. Flat and the checked DAE retain `StateSelect.always` on
 `wheel1.x`, `wheel1.y`, `wheel1.angles`, and `wheel1.der_angles`, but classify
 these eight coordinates as algebraic. Rumoca integrates twelve other
 coordinates; OMC integrates those eight requested coordinates. This establishes
@@ -280,6 +280,59 @@ The runtime repair and its focused/canary checks are complete. The remaining
 22 MultiBody models still need investigation. Combined `verify quick` last
 passed before eight subsequent implementation changes; `verify full` has not
 run. No PR, release, or baseline promotion is claimed.
+
+## Inspect the actual structurally transformed equations
+
+The worker wrote the pre-transform input into `ir-structural-dae.json` and
+`ir-structural-dae.mo`. This made an apparent DAE-to-DAE comparison compare the
+same input twice. The build observer now borrows the immutable
+`LoweredSolveModel` pair already retained by phase-solve and serializes its
+`prepared_dae()`. No structural pass is repeated, and no numerical program or
+simulation calculation changes. A failed lowering leaves no structural artifact;
+recognized prior structural files are cleared before a new request.
+
+The focused source model `der(x)=v; der(v)=a; v=-x`, with `x` initially fixed,
+reduces from two states to one. Before the fix its structural artifact still
+names both (`structural-artifact-red-2.log`); afterward the artifact and Solve
+both retain only `x`. The first RED attempt was a fixture compilation error.
+A second regression checks that failed reduction leaves neither prior nor
+mislabelled structural products while preserving unrelated files. Its initial
+fixture failed too early in ToDae; the corrected balanced singular fixture
+reaches the intended structural failure (`structural-artifact-green-2.log`).
+
+All 186 simulation, worker, parameter-override, and legacy simulation-worker
+tests pass (`structural-artifact-libraries-1.log`). The obsolete import noted
+by that run was removed; all-target/all-feature Clippy for the four affected
+crates and rustfmt pass (`structural-artifact-clippy-1.log`). The fixed
+`multibody-structural-artifact-canary` retains all twenty phase and band outcomes
+against `multibody-seed-linearization-canary`: nine compared models and 175
+initial channels high, zero skipped/missing/nonidentifiable/deviating traces.
+Source: `40a22015` plus digest
+`905e884225824a8e240af7db6c6b1d69b028a79547ac099698336b15c893642a`;
+receipt: `rolling-wheel/structural-artifact-canary-delta.json`.
+
+`structural-artifact-origin-1` records the actual RollingWheel transformation:
+3,199 input expressions become 4,024, with all 255 continuous equation owners
+retained. The body-frame position changes from state to algebraic; the twelve
+remaining state coordinates and all eight unselected `always` coordinates are
+now verified in the transformed DAE. Canonical Solve JSON and the complete trace
+remain identical to the preceding profile. Trace SHA-256:
+`61e23f642f39489afa0717c767501558972f2e29419b77b088befbe8b2aff3dd`.
+The diagnostic profile takes 1.265 seconds in Sim with 237 samples; this is no
+performance improvement. Worker SHA-256:
+`dc0a892657723018dfdc4685e32a549ca7cf1dd97debe5c94ff3c1fc29f28019`.
+
+The reduced `PreferredTensorState` model has `x=q; der(q)=-q`, with whole
+array `x[2]` marked `StateSelect.always` and `q[2]` marked `avoid`. Rumoca keeps
+`q` as its state array through structural lowering; OMC selects `x[1:2]`.
+This rules out lost parameter binding or a MultiBody-specific cause. The
+[MLS StateSelect contract](https://specification.modelica.org/maint/3.6/class-predefined-types-and-declarations.html#stateselect)
+and SPEC_0007/STRUCT-T07 place the missing selection in structural lowering.
+No state-promotion fix or causal runtime benefit is claimed yet. Source, actual
+stage dumps, OMC generated equations, and the next proof obligation are retained
+in `rolling-wheel/state-selection-diagnosis.json`. These small diagnostic runs
+are not cohort parity or comparative performance measurements; their process
+executions briefly overlapped, so their timings are not used for comparison.
 
 ## Retain algebraic linearizations across directional seeds
 

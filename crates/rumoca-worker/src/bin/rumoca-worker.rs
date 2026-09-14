@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod artifact_tests;
+
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -18,7 +21,7 @@ use rumoca_compile::compile::{
 };
 use rumoca_sim::{
     BuildSimulationTimings, PreparedSimulation, SimError, SimFailureStage, SimOptions, SimResult,
-    SimSolverMode, build_simulation_with_stage_timing_and_solve_model,
+    SimSolverMode, build_simulation_with_stage_timing_and_lowered_model,
     check_prepared_initialization, run_prepared_simulation,
 };
 use rumoca_worker::{
@@ -540,6 +543,8 @@ fn remove_stale_stage_artifacts(request: &ModelWorkerRequest) {
         "ir-ast.json",
         "ir-flat.json",
         "ir-dae.json",
+        "ir-structural-dae.json",
+        "ir-structural-dae.mo",
         "ir-solve.json",
         "sim-trace.json",
     ] {
@@ -1035,12 +1040,12 @@ fn build_worker_prepared_simulation(
 ) -> Result<WorkerPreparedSimulation, Box<WorkerRunErr>> {
     let build_started = Instant::now();
     let mut solve_file = None;
-    let mut solve_error = initial_structural_dae_artifact_error(dae, opts, request);
+    let mut solve_error = None;
     let solve_completed = Cell::new(false);
     let mut sim_build_started = false;
     let tensor_kpi = None;
     let tensor_error = None;
-    let prepared = build_simulation_with_stage_timing_and_solve_model(
+    let prepared = build_simulation_with_stage_timing_and_lowered_model(
         dae,
         opts,
         |stage| {
@@ -1051,7 +1056,9 @@ fn build_worker_prepared_simulation(
                 &mut sim_build_started,
             );
         },
-        |solve_model| {
+        |lowered| {
+            solve_error = write_structural_dae_artifacts(lowered.prepared_dae(), request);
+            let solve_model = lowered.model();
             let solve_model_wire = match rumoca_phase_solve::solve_model_wire(solve_model) {
                 Ok(wire) => wire,
                 Err(error) => {
@@ -1101,15 +1108,13 @@ fn build_worker_prepared_simulation(
     })
 }
 
-fn initial_structural_dae_artifact_error(
+fn write_structural_dae_artifacts(
     dae: &rumoca_compile::compile::Dae,
-    opts: &SimOptions,
     request: &ModelWorkerRequest,
 ) -> Option<String> {
     if !request.emit_json && !request.emit_modelica {
         return None;
     }
-    let _ = opts;
     let mut error = None;
     if request.emit_modelica {
         error = error.or(write_modelica_dae_artifact(request, "ir-structural-dae.mo", dae).err());
@@ -1677,7 +1682,7 @@ mod tests {
             .expect("compile zero-sized standalone model")
     }
 
-    fn simulation_request(model_name: &str) -> ModelWorkerRequest {
+    pub(super) fn simulation_request(model_name: &str) -> ModelWorkerRequest {
         ModelWorkerRequest {
             protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
             model_name: model_name.to_string(),

@@ -8,7 +8,7 @@
 use rumoca::Compiler;
 use rumoca_ir_solve::ScalarSlot;
 use rumoca_sim::{
-    SimOptions, build_simulation_with_stage_timing_and_solve_model, lower_dae_for_simulation,
+    SimOptions, build_simulation_with_stage_timing_and_lowered_model, lower_dae_for_simulation,
     lower_for_simulation_with_overrides, refresh_prepared_vectors,
 };
 use std::sync::Arc;
@@ -113,11 +113,11 @@ fn aoa_override_rederives_promoted_array_mask() {
     }
 
     let mut timed_mask = None;
-    let (_prepared, _timings) = build_simulation_with_stage_timing_and_solve_model(
+    let (_prepared, _timings) = build_simulation_with_stage_timing_and_lowered_model(
         &dae,
         &opts,
         |_| {},
-        |model| timed_mask = Some(mask_param_values(model)),
+        |lowered| timed_mask = Some(mask_param_values(lowered.model())),
     )
     .expect("build prepared override path");
     assert_eq!(

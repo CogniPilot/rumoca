@@ -4,7 +4,6 @@ use std::time::Instant;
 #[cfg(feature = "scheduled-sim")]
 use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
-use rumoca_ir_solve as solve;
 
 use crate::BuildSimulationTimings;
 #[cfg(feature = "scheduled-sim")]
@@ -160,14 +159,15 @@ pub fn build_simulation_with_stage_timing(
     opts: &rumoca_solver::SimOptions,
     begin_stage: impl FnMut(&'static str),
 ) -> Result<(PreparedSimulation, BuildSimulationTimings), SimError> {
-    build_simulation_with_stage_timing_and_solve_model(dae_model, opts, begin_stage, |_| {})
+    build_simulation_with_stage_timing_and_lowered_model(dae_model, opts, begin_stage, |_| {})
 }
 
-pub fn build_simulation_with_stage_timing_and_solve_model(
+/// Observe the exact immutable DAE/Solve pair before it becomes an FMI component.
+pub fn build_simulation_with_stage_timing_and_lowered_model(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
     mut begin_stage: impl FnMut(&'static str),
-    mut observe_solve_model: impl FnMut(&solve::SolveModel),
+    mut observe_lowered_model: impl FnMut(&rumoca_phase_solve::LoweredSolveModel<'_>),
 ) -> Result<(PreparedSimulation, BuildSimulationTimings), SimError> {
     let param_overrides = tunable_param_overrides(dae_model, opts).map_err(diagnostic_sim_error)?;
     let (mut lowered, solve_timings) =
@@ -183,7 +183,7 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
     apply_correlated_simulation_overrides(&mut lowered, dae_model, opts)
         .map_err(diagnostic_sim_error)?;
     let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
-    observe_solve_model(lowered.model());
+    observe_lowered_model(&lowered);
     begin_stage("sim_build");
     let backend_build_start = Instant::now();
     let (artifact, execution_backend) =
