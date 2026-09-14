@@ -4,7 +4,44 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Latest complete cohort: tensor-state reconstruction preserves parity
+## Latest complete cohort: two state-reduction regressions remain
+
+The complete `target/msl/multibody-no-slip-full` run at
+`5be301f43b2738cde950733e59de1e5e57aa9faa` compares 156/566 models high
+(27.56%), including 20/42 MultiBody examples. Eighteen reviewed exclusions
+remain; there are zero missing, nonidentifiable, or deviating comparisons.
+All 18,495 compared initialization channels are high. Although the configured
+CLI gate exits zero, this is a regression against the preceding 158-model
+checkpoint and is not acceptable for promotion or release.
+
+`SphericalConstraint` and `GyroscopicEffects` both lose their prior high bands
+because Solve exceeds its unchanged ten-second parent budget. The preceding
+Solve measurements were 5.220201 and 8.457811 seconds, respectively. Their
+failures remain visible in `rolling-wheel/no-slip-full-delta.json`; no timeout
+or comparator policy was relaxed. RollingWheel retains all 184 trajectory and
+initialization channels high with eight states, and Sim measures 0.835341
+seconds in this cohort run. This still does not meet the OMC speed objective.
+
+The separate `no-slip-spherical-solve-profile-1` diagnostic reveals that
+SphericalConstraint's expensive reduction attempts end in a structural refusal:
+2194 matched of 2219 equations and unknowns. This diagnostic invokes the worker
+directly and does not apply the cohort parent's ten-second Solve watchdog;
+it does not replace the timed-out cohort result or earn coverage credit.
+Profiling was enabled at Solve entry and retained through the refusal. Leading
+self costs include DAE operation/view access, projected incidence traversal,
+and materialization proofs. The next task is to locate the first changed
+state-reduction decision and reproduce the regression before fixing it.
+
+The source-DAE inspection in `no-slip-spherical-reduction-2.log` selects a new
+auxiliary definition for `freeMotionScalarInit.initAngle.angle` after three
+direct state demotions, and later selects one for `constraint.frame_b.r_0`.
+The direct-first lane stalls after reducing the unmatched residue from fifty
+to six; the pristine holonomic-first attempt also fails. A leading hypothesis
+is that an auxiliary identity solve hides explicit component kinematics needed
+by a later reduction. This is not yet a proved root cause: the next comparison
+must isolate the new auxiliary admission and inspect its actual source rows.
+
+## Previous complete cohort: tensor-state reconstruction preserves parity
 
 The complete `target/msl/multibody-component-definition-full` gate passes at
 `27dd45f57af983cae6faf5f6ec9c2b7936129f4c`, using eleven Rumoca workers,
