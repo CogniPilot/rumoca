@@ -4,6 +4,31 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest complete cohort: auxiliary derivative reconstruction
+
+The complete `target/msl/multibody-direct-auxiliary-full` gate passes at
+`ae6dbf5bab8be88da2b203ad38698ab98ef32adf`, with eleven Rumoca workers,
+unchanged budgets and tolerances, and the same 566-model roster. It measures
+158/566 strict-high models (27.92%), including 22/42 MultiBody examples.
+All 158 compared models and all 20,379 initialization channels are high;
+seventeen reviewed exclusions remain, with zero missing, nonidentifiable,
+or deviating traces. Every previously strict-high model retains its band.
+
+`GyroscopicEffects` completes Solve in 9.963 seconds and simulation in 1.506
+seconds, gaining a high comparison where the preceding run timed out in Solve.
+This is close to the unchanged ten-second Solve budget; it does not establish
+a robust performance margin or attribute the gain to this structural change.
+`IMC_Transformer` reaches its existing structural refusal instead of timing out.
+The already excluded `ThyristorBridge2Pulse_RLV_Characteristic` times out during
+simulation instead of completing: its failure remains visible and accounts for
+the exclusion count dropping from eighteen to seventeen, without changing a
+comparison band. No coverage claim relies on a retry.
+
+Receipt: `rolling-wheel/direct-auxiliary-full-delta.json`; worktree digest:
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
+OMC version is `a96aa1a-cmake`. RollingWheel's OMC speed target and combined
+quick/full remain outstanding.
+
 ## Latest focused work: preserve auxiliary derivatives across reduction rounds
 
 The explicit-height control of `TensorContact` retained three states despite
@@ -52,10 +77,10 @@ skipped/missing/nonidentifiable/deviating results. Receipt:
 `90691544006cba292c109a5c2d88f90f894836c0920f6d0eb7d1f3ae706ec964`.
 The original tensor-form contact model still retains three states. Its missing
 component-definition proof, RollingWheel's extra state coordinates, the OMC
-speed target, and combined quick/full remain open. The complete cohort below
-predates this focused structural change.
+speed target, and combined quick/full remain open. The complete cohort above
+validates this focused structural change.
 
-## Latest complete cohort: execution optimizations preserve parity
+## Previous complete cohort: execution optimizations preserve parity
 
 The complete `target/msl/multibody-nested-call-sharing-full` gate passes at
 `eb7f32ec05bc98eed453a5ad643f9b777d968e44`, using eleven Rumoca workers and
