@@ -5,6 +5,7 @@ use rumoca_ir_dae as dae;
 
 use super::super::constraints::DifferentiationFacts;
 use super::super::expressions::ExpressionRebuilder;
+use super::super::variables::TargetVariable;
 use super::{AuxiliaryBlock, AuxiliarySystem, SourceValue};
 
 #[derive(Clone, Copy)]
@@ -119,11 +120,24 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         order: u8,
         provenance: dae::DaeProvenance,
     ) -> Result<AuxiliaryExpression<'target>, dae::DaeConstructionError> {
+        let previous = self.state_only_derivative;
+        self.state_only_derivative |= order == 0;
+        let result = self.auxiliary_expression_in_mode(variable, order, provenance);
+        self.state_only_derivative = previous;
+        result
+    }
+
+    fn auxiliary_expression_in_mode(
+        &mut self,
+        variable: u32,
+        order: u8,
+        provenance: dae::DaeProvenance,
+    ) -> Result<AuxiliaryExpression<'target>, dae::DaeConstructionError> {
         assert!(
             order <= 2,
             "auxiliary preflight admits orders zero through two"
         );
-        let key = (variable, order, order > 0 && self.state_only_derivative);
+        let key = (variable, order, self.state_only_derivative);
         if let Some(&expression) = self.auxiliary_expressions.get(&key) {
             return Ok(expression);
         }
@@ -135,7 +149,11 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         let solve_matrix = if order == 0 {
             matrix
         } else {
-            let primal = self.auxiliary_expression(variable, 0, provenance)?;
+            let primal = if self.state_only_derivative {
+                self.auxiliary_expression(variable, 0, provenance)?
+            } else {
+                self.auxiliary_primal_reference(&block, provenance)?
+            };
             let product = self.target.at(provenance).binary(
                 dae::BinaryOperator::Multiply,
                 matrix,
@@ -184,30 +202,72 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         order: u8,
         provenance: dae::DaeProvenance,
     ) -> Result<(dae::ExprId<'target>, dae::ExprId<'target>), dae::DaeConstructionError> {
-        let source_rows = match &block.system {
-            AuxiliarySystem::DotRows(rows) => rows,
-            AuxiliarySystem::Map { matrix, rhs, .. } => {
-                return Ok((
-                    self.tensor_coefficient(matrix, order, provenance)?,
-                    self.auxiliary_operand(rhs, order, provenance)?,
-                ));
+        let matrix = self.auxiliary_matrix(block, order, provenance)?;
+        let rhs = match &block.system {
+            AuxiliarySystem::DotRows(rows) => {
+                let values = rows
+                    .iter()
+                    .map(|row| self.auxiliary_operand(&row.rhs, order, provenance))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.target.at(provenance).array(values)?
             }
-            AuxiliarySystem::Scalars { matrix, rhs, .. } => {
-                return Ok((
-                    self.tensor_coefficient(matrix, order, provenance)?,
-                    self.tensor_coefficient(rhs, order, provenance)?,
-                ));
+            AuxiliarySystem::Map { rhs, .. } => self.auxiliary_operand(rhs, order, provenance)?,
+            AuxiliarySystem::Scalars { rhs, .. } => {
+                self.tensor_coefficient(rhs, order, provenance)?
             }
         };
-        let mut rows = Vec::with_capacity(source_rows.len());
-        let mut rhs = Vec::with_capacity(source_rows.len());
-        for row in source_rows {
-            rows.push(self.auxiliary_operand(&row.coefficient, order, provenance)?);
-            rhs.push(self.auxiliary_operand(&row.rhs, order, provenance)?);
-        }
-        let matrix = self.target.at(provenance).array(rows)?;
-        let rhs = self.target.at(provenance).array(rhs)?;
         Ok((matrix, rhs))
+    }
+
+    fn auxiliary_matrix(
+        &mut self,
+        block: &AuxiliaryBlock,
+        order: u8,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        match &block.system {
+            AuxiliarySystem::DotRows(rows) => {
+                let values = rows
+                    .iter()
+                    .map(|row| self.auxiliary_operand(&row.coefficient, order, provenance))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.target.at(provenance).array(values)
+            }
+            AuxiliarySystem::Map { matrix, .. } | AuxiliarySystem::Scalars { matrix, .. } => {
+                self.tensor_coefficient(matrix, order, provenance)
+            }
+        }
+    }
+
+    fn auxiliary_primal_reference(
+        &mut self,
+        block: &AuxiliaryBlock,
+        provenance: dae::DaeProvenance,
+    ) -> Result<AuxiliaryExpression<'target>, dae::DaeConstructionError> {
+        let matrix = self.auxiliary_matrix(block, 0, provenance)?;
+        let value = if let AuxiliarySystem::Scalars { variables, .. } = &block.system {
+            let values = variables
+                .iter()
+                .map(|&variable| self.auxiliary_coordinate(variable, provenance))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.target.at(provenance).array(values)?
+        } else {
+            self.auxiliary_coordinate(block.variable, provenance)?
+        };
+        Ok(AuxiliaryExpression { matrix, value })
+    }
+
+    fn auxiliary_coordinate(
+        &mut self,
+        variable: u32,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let coordinate = match self.variables[variable as usize].identity {
+            TargetVariable::Algebraic(id) => dae::CoordinateInput::Algebraic(id),
+            TargetVariable::State(id) => dae::CoordinateInput::State(id),
+            _ => unreachable!("proved continuous Real auxiliary coordinate retains its role"),
+        };
+        self.target.at(provenance).coordinate(coordinate)
     }
 
     pub(super) fn auxiliary_operand(
@@ -223,7 +283,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         let previous =
             std::mem::replace(&mut self.function_context, expression.context(self.source));
         let value = if order == 0 {
-            self.materialize_exact_value(source, provenance)
+            self.differentiation_value(source, provenance)
         } else {
             self.differentiate_order(source, order, provenance)
                 .and_then(|derivative| self.materialize_derivative(derivative, source, provenance))

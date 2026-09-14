@@ -37,7 +37,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .map(Derivative::Expression)
     }
 
-    pub(super) fn differentiation_value(
+    pub(in crate::dae_transform) fn differentiation_value(
         &mut self,
         expression: dae::ExprId<'source>,
         provenance: dae::DaeProvenance,

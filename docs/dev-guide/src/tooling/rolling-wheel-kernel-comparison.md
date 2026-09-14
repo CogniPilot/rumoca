@@ -95,6 +95,55 @@ geometry embedded in separate residual and tangent programs.
 
 ## Next proof and implementation targets
 
+The first concrete producer defect is in structural auxiliary reconstruction.
+For a source-owned linear system `A*q=b`, continuous differentiation recursively
+reconstructed `q=solve(A,b)` inside the tangent solve. That also materialized
+the coefficient geometry through state anchors again. OMC's preceding
+kinematic schedule already stores these primal values for its dynamic rows.
+
+A reduced varying-matrix contact fixture reproduces three nested linear
+solves in a second derivative, where the source primal value and two tangent
+solves suffice (`auxiliary-primal-red-2.log`; the first attempt was a fixture
+compilation error). The candidate retains the original primal coordinate in
+`A*q'=b'-A'*q` and ordinary algebraic coefficient reads. State-only manifold
+reconstruction still expands through proved anchors, and every tangent solve
+retains its checked nonsingularity domain. This follows SPEC_0007's auxiliary
+profile rather than introducing a runtime value cache. The seven auxiliary
+and nine contact regressions pass, followed by all 962 library/core tests
+(`auxiliary-primal-libraries-1.log`).
+
+The focused `target/msl/multibody-auxiliary-primal-origin` gate compares one
+model: all 184 trajectory channels and 184 initialization channels are high,
+with zero skipped, missing, nonidentifiable, or deviating traces. Sim time is
+2.164149 seconds; a separate actual-worker perf run measures 2.224935 seconds.
+The latter keeps the earlier profile's measurement boundary. Hot programs
+200/201/224 fall from 17 to three pure calls each and from 271/273/431 to
+236/238/406 instructions. The derivative closure and state counts are unchanged.
+The forwarding shim counts 32,623,972 trigonometric results, about 3.7% fewer;
+both instrumented traces remain byte-identical to their uninstrumented
+references. This removes real work but leaves most of the original discrepancy.
+Evidence is in `auxiliary-primal-origin-1/`, `auxiliary-primal-counts-1/`, and
+`auxiliary-primal-triage.json`. All-target/all-feature Clippy passes for the
+structural, Solve, and public compiler crates (`auxiliary-primal-clippy-1.log`).
+The fixed `target/msl/multibody-auxiliary-primal-canary` has no phase, status,
+or band changes against `target/msl/multibody-requested-aliases-canary`: nine
+models compared high, all 175 initialization channels high, and zero skipped,
+missing, nonidentifiable, or deviating results. Eleven targets retain prior
+refusals. `auxiliary-primal-canary-delta.json` records the artifact digests and
+worktree digest `17bfd2df24a6e1fb11a938fe3cac4bff46bf304a0ec06fef80e1a919a936cb0e`.
+Combined quick/full and a new complete cohort comparison remain pending.
+
+A second forwarding-shim experiment records the immediate return address for
+each trig call and resolves it against the same process's Cranelift perf map
+(`auxiliary-primal-callers-2/`). The total is again 32,623,972 results; both
+instrumented traces are byte-identical to their uninstrumented references.
+Typed directional functions account for 19,860,192 results and row directional
+kernels for another 6,367,872: about 80.4% is in derivative evaluation.
+Row 224 alone accounts for 2,661,120 directional and 1,650,864 primal results.
+The first caller-count run lacked the JIT symbol map and is not used for
+attribution. This localizes the next optimization to sharing primal geometry
+across derivative directions, while preserving the exact linearization point.
+
 1. Construct a shared tensor computation for state/parameter-dependent
    geometry, and have residuals and tangent programs consume its results.
    Reuse must follow typed dependencies and the exact evaluation coordinate;

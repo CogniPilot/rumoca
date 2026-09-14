@@ -55,6 +55,96 @@ fn varying_tensor_coefficients_preserve_shape_and_second_derivative() {
 }
 
 #[test]
+fn a_second_auxiliary_derivative_does_not_resolve_the_primal_system() {
+    use rumoca_ir_dae as dae;
+    let source = SOURCE.replace(
+        "q*{1.0,1.0} = theta;",
+        "q*{1.0+theta,2.0+theta} = theta*theta;",
+    );
+    let compiled = Compiler::new()
+        .model("ImplicitTensorAuxiliary")
+        .compile_str(&source, "ImplicitTensorAuxiliary.mo")
+        .unwrap();
+    let prepared = rumoca_phase_structural::prepare_for_solve(&compiled.dae).unwrap();
+    prepared.inspect(|system| {
+        let view = system.view;
+        for residual in system.manifold {
+            dae::for_each_expression(view, *residual, |_, node| {
+                assert!(!matches!(
+                    node.operation(),
+                    dae::ExpressionOperation::Coordinate(
+                        dae::CoordinateView::Algebraic(_) | dae::CoordinateView::Derivative(_)
+                    )
+                ));
+            });
+        }
+        let max_depth = view
+            .continuous_owners()
+            .map(|owner| match owner {
+                dae::ContinuousOwnerView::Residual { equation, .. } => {
+                    auxiliary_solve_depth(view, equation.residual())
+                }
+                dae::ContinuousOwnerView::Structured { family, .. } => family
+                    .bodies()
+                    .iter()
+                    .map(|body| auxiliary_solve_depth(view, body))
+                    .max()
+                    .unwrap_or(0),
+            })
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            max_depth, 2,
+            "second derivative needs two tangent solves; the source equations own the primal solve"
+        );
+    });
+}
+
+fn auxiliary_solve_depth<'dae>(
+    view: rumoca_ir_dae::DaeView<'dae>,
+    root: rumoca_ir_dae::ExprId<'dae>,
+) -> usize {
+    use rumoca_ir_dae as dae;
+    let mut depth = 0;
+    dae::for_each_expression_pruned(view, root, |_, node| {
+        let dae::ExpressionOperation::Call {
+            function,
+            arguments,
+            ..
+        } = node.operation()
+        else {
+            return true;
+        };
+        let has_solve = view
+            .function(function)
+            .unwrap()
+            .result_values()
+            .iter()
+            .any(|value| {
+                let mut found = false;
+                dae::for_each_expression(view, value.rhs(), |_, node| {
+                    found |= matches!(
+                        node.operation(),
+                        dae::ExpressionOperation::Builtin {
+                            builtin: dae::PureBuiltin::LinearSolve,
+                            ..
+                        }
+                    );
+                });
+                found
+            });
+        let nested = arguments
+            .iter()
+            .map(|arg| auxiliary_solve_depth(view, arg))
+            .max()
+            .unwrap_or(0);
+        depth = depth.max(nested + usize::from(has_solve));
+        false
+    });
+    depth
+}
+
+#[test]
 fn a_nonlinear_tensor_block_remains_outside_the_affine_proof() {
     let source = SOURCE.replace("q*{1.0,1.0} = theta;", "q*{q[1],1.0} = theta;");
     let compiled = Compiler::new()
