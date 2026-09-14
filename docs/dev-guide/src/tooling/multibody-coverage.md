@@ -4,6 +4,25 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Verification checkpoint: remove asserted projection preconditions
+
+`rolling-wheel/verify-quick-projection-milestone-1.log` preserves the failed
+combined quick run: MSL and the 28-model corpus passed, while test-helper lint,
+two added production assertions, and missing `cargo-nextest` blocked completion.
+The fixed tensor-update branch now consumes static-only subscripts. Logical
+output iteration borrows its checked source owner. Test helper refactoring
+retains every case and tolerance; the worker artifact test uses a normal
+success assertion. Neither architecture ceiling nor validation policy changes.
+
+The focused checks pass: 316 Solve IR tests, all 243 architecture checks,
+22 contact regressions, and all-target/all-feature Clippy for Solve IR, the
+worker, and the compiler facade. Logs are `quick-blocker-focused-{1,2}.log`.
+The first command stopped after architecture because its contact command named
+a nonexistent feature; the corrected command ran those tests successfully.
+The repository's `full` Nix shell supplies nextest for subsequent combined
+verification. Combined quick/full are still pending, and this checkpoint makes
+no new performance or cohort claim.
+
 ## Latest complete cohort: projection optimizations preserve all outcomes
 
 `target/msl/multibody-retained-sparse-workspace-full-11`, at `e4817572` with a

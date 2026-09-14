@@ -62,7 +62,8 @@ fn structural_artifact_records_the_dae_that_produced_solve() {
         &progress,
         &request,
     )
-    .unwrap_or_else(|failure| panic!("build failed: {}", failure.err));
+    .map_err(|failure| failure.err)
+    .expect("build prepared simulation");
     assert!(result.solve_error.is_none(), "{:?}", result.solve_error);
     let artifact: rumoca_compile::compile::Dae =
         serde_json::from_slice(&fs::read(directory.0.join("ir-structural-dae.json")).unwrap())

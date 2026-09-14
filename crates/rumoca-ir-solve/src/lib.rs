@@ -19,6 +19,7 @@ mod layout;
 mod linear_op;
 mod model;
 mod refresh;
+mod scalar_program_outputs;
 #[cfg(test)]
 mod scalar_program_tests;
 mod shape_error;

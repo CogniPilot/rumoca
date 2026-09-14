@@ -266,6 +266,11 @@ Continuous refresh optimizations require constructor-issued facts bound to the
 canonical residual and unknown inventories; wire replay rederives those facts,
 and consumers may use only the property proved by the certificate.
 
+Logical output bindings borrow the checked scalar-program block that proves
+their complete cardinality and ordering. Consumers iterate this issued pairing
+of source program, local output, and logical index without asserting a second
+independently advanced iterator's length. Wire replay checks the same pairing.
+
 An algebraic block's residual selection may group logical outputs of the same
 canonical program when construction proves unique, complete, repeatable source
 ownership. One residual evaluation executes each issued program once at the

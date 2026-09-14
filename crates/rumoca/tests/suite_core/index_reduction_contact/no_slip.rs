@@ -183,12 +183,7 @@ fn check_motion_with_position_sign(source: &str, position_sign: f64) {
         )
         .unwrap();
         for (row, &time) in result.times.iter().enumerate() {
-            for (name, expected) in analytical_values(time) {
-                let expected = if name.starts_with("r[") {
-                    position_sign * expected
-                } else {
-                    expected
-                };
+            for (name, expected) in analytical_values(time, position_sign) {
                 let column = result.names.iter().position(|value| value == name).unwrap();
                 let actual = result.data[column][row];
                 assert!(
@@ -200,7 +195,7 @@ fn check_motion_with_position_sign(source: &str, position_sign: f64) {
     }
 }
 
-fn analytical_values(time: f64) -> Vec<(&'static str, f64)> {
+fn analytical_values(time: f64, position_sign: f64) -> Vec<(&'static str, f64)> {
     let theta = 0.2 + time;
     let (sin, cos) = theta.sin_cos();
     let y = 0.3 + 0.2_f64.sin() - sin;
@@ -209,9 +204,9 @@ fn analytical_values(time: f64) -> Vec<(&'static str, f64)> {
         ("x", 0.2),
         ("y", y),
         ("z", cos),
-        ("r[1]", 0.2),
-        ("r[2]", y),
-        ("r[3]", cos),
+        ("r[1]", position_sign * 0.2),
+        ("r[2]", position_sign * y),
+        ("r[3]", position_sign * cos),
         ("v[1]", 0.0),
         ("v[2]", -cos),
         ("v[3]", -sin),

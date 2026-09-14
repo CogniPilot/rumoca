@@ -1,12 +1,13 @@
 //! Construction-owned logical output projections of residual and JVP programs.
 
-use std::collections::BTreeMap;
-
-use super::*;
 mod program_effects;
 
 #[cfg(test)]
 mod tests;
+
+use std::collections::BTreeMap;
+
+use super::*;
 
 /// One invocation of an existing tensor/scalar program and its selected outputs.
 #[derive(Clone, Debug)]
@@ -171,19 +172,20 @@ impl ProgramOutputCatalog {
 
     fn new(block: &ScalarProgramBlock) -> Self {
         let mut outputs = BTreeMap::new();
-        let mut indices = block.output_indices().iter();
-        for (program, ops) in block.programs().iter().enumerate() {
-            let count = ScalarProgramBlock::program_output_count(ops);
-            let repeatable = program_effects::program_is_repeatable(ops);
-            for offset in 0..count {
-                let &index = indices
-                    .next()
-                    .expect("checked program output count matches its output catalog");
-                outputs
-                    .entry(index)
-                    .and_modify(|owner| *owner = None)
-                    .or_insert(repeatable.then_some((program, offset, count)));
-            }
+        let repeatable = block
+            .programs()
+            .iter()
+            .map(|ops| program_effects::program_is_repeatable(ops))
+            .collect::<Vec<_>>();
+        for binding in block.output_bindings() {
+            outputs
+                .entry(binding.logical_index)
+                .and_modify(|owner| *owner = None)
+                .or_insert(repeatable[binding.program].then_some((
+                    binding.program,
+                    binding.offset,
+                    binding.output_count,
+                )));
         }
         Self(outputs)
     }

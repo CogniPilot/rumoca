@@ -5,6 +5,50 @@ fn source_span(source: &'static str, start: usize, end: usize) -> Span {
 }
 
 #[test]
+fn logical_output_bindings_preserve_mixed_program_order_on_wire_replay() {
+    let span = source_span("OutputBindings.mo", 1, 10);
+    let block = ScalarProgramBlock::with_output_indices(
+        vec![
+            vec![
+                LinearOp::Const { dst: 0, value: 2.0 },
+                LinearOp::Const { dst: 1, value: 3.0 },
+                LinearOp::StoreOutputRange {
+                    start: 0,
+                    count: 2,
+                    stride: 1,
+                },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 4.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        vec![span, span],
+        vec![9, 2, 9],
+    )
+    .unwrap();
+    let wire = serde_json::to_value(&block).unwrap();
+    let replay: ScalarProgramBlock = serde_json::from_value(wire.clone()).unwrap();
+    for owner in [&block, &replay] {
+        let bindings = owner
+            .output_bindings()
+            .map(|binding| {
+                (
+                    binding.program,
+                    binding.offset,
+                    binding.output_count,
+                    binding.logical_index,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(bindings, [(0, 0, 2, 9), (0, 1, 2, 2), (1, 0, 1, 9)]);
+    }
+    let mut incomplete = wire;
+    incomplete["output_indices"] = serde_json::json!([9, 2]);
+    assert!(serde_json::from_value::<ScalarProgramBlock>(incomplete).is_err());
+}
+
+#[test]
 fn scalar_program_construction_rejects_missing_output_at_its_source() {
     let span = source_span("MissingOutput.mo", 23, 34);
     let programs = vec![vec![LinearOp::Const { dst: 0, value: 4.0 }]];

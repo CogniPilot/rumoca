@@ -59,6 +59,11 @@ the decoded programs and domains.
 Every initialized register carries one exact may-depend set. Absence from the
 register table is a construction error; there is no unknown dependency state.
 
+Fixed tensor-update dependency selection consumes a rank-sized view containing
+only whole axes and constant indices. Runtime indices and slices retain the
+conservative patch-and-selector rule; a prior Boolean classification cannot
+authorize an unreachable dynamic case inside fixed selection.
+
 | Operation | Derived dependency |
 |---|---|
 | Literal/time/ordinary parameter load | Empty with respect to solver seeds |

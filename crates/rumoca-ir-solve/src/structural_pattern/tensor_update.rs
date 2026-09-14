@@ -1,5 +1,24 @@
 use super::*;
 
+enum FixedSubscript {
+    Whole,
+    Index(u32),
+}
+
+fn fixed_subscripts(subscripts: &[crate::TensorUpdateSubscript]) -> Option<Vec<FixedSubscript>> {
+    subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            crate::TensorUpdateSubscript::Whole => Some(FixedSubscript::Whole),
+            crate::TensorUpdateSubscript::Index(crate::TensorIndex::Constant(index)) => {
+                Some(FixedSubscript::Index(*index))
+            }
+            crate::TensorUpdateSubscript::Index(crate::TensorIndex::Runtime(_))
+            | crate::TensorUpdateSubscript::Slice { .. } => None,
+        })
+        .collect()
+}
+
 impl DependencyWalk<'_> {
     pub(super) fn tensor_update(
         &mut self,
@@ -11,14 +30,7 @@ impl DependencyWalk<'_> {
         lanes: usize,
     ) -> Result<(), StructuralPatternError> {
         let count = saturating_tensor_extent(dimensions);
-        let dynamic = subscripts.iter().any(|subscript| {
-            matches!(
-                subscript,
-                crate::TensorUpdateSubscript::Index(crate::TensorIndex::Runtime(_))
-                    | crate::TensorUpdateSubscript::Slice { .. }
-            )
-        });
-        if dynamic {
+        let Some(fixed) = fixed_subscripts(subscripts) else {
             let (value_count, selector) =
                 self.tensor_update_patch(dimensions, subscripts, lanes)?;
             let patch = self.range(value_start, value_count)?.union(selector);
@@ -27,9 +39,9 @@ impl DependencyWalk<'_> {
                 self.set(dst_start + offset as Reg, dependencies);
             }
             return Ok(());
-        }
+        };
         for offset in 0..count.saturating_mul(lanes) {
-            let source = fixed_update_element(offset / lanes, dimensions, subscripts)
+            let source = fixed_update_element(offset / lanes, dimensions, &fixed)
                 .map_or(base_start + offset as Reg, |value| {
                     value_start + (value * lanes + offset % lanes) as Reg
                 });
@@ -73,7 +85,7 @@ impl DependencyWalk<'_> {
 fn fixed_update_element(
     mut element: usize,
     dimensions: &[u32],
-    subscripts: &[crate::TensorUpdateSubscript],
+    subscripts: &[FixedSubscript],
 ) -> Option<usize> {
     let mut value = 0;
     let mut stride = 1;
@@ -81,16 +93,15 @@ fn fixed_update_element(
         let coordinate = element % extent as usize;
         element /= extent as usize;
         match subscript {
-            crate::TensorUpdateSubscript::Whole => {
+            FixedSubscript::Whole => {
                 value += coordinate * stride;
                 stride *= extent as usize;
             }
-            crate::TensorUpdateSubscript::Index(crate::TensorIndex::Constant(index)) => {
+            FixedSubscript::Index(index) => {
                 if coordinate != *index as usize {
                     return None;
                 }
             }
-            _ => unreachable!("dynamic updates use conservative patch dependencies"),
         }
     }
     Some(value)

@@ -7,33 +7,37 @@ fn a_varying_linear_solve_preserves_its_second_derivative() {
     for theta0 in [0.2_f64, 2.0] {
         let model = inverse_motion(theta0);
         for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
-            let result = simulate_dae_with_diagnostics(
-                &model,
-                &SimOptions {
-                    t_end: 0.1,
-                    dt: Some(0.01),
-                    solver_mode,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            for (row, &time) in result.times.iter().enumerate() {
-                let theta = theta0 + time;
-                let inverse = 1.0 / (1.0 + theta);
-                for (name, expected) in [
-                    ("theta", theta),
-                    ("x", inverse - 1.0),
-                    ("v", -inverse * inverse),
-                    ("a", 2.0 * inverse * inverse * inverse),
-                ] {
-                    let column = result.names.iter().position(|value| value == name).unwrap();
-                    let actual = result.data[column][row];
-                    assert!(
-                        (actual - expected).abs() < 1e-6,
-                        "{solver_mode:?} {name}({time}): {actual} != {expected}"
-                    );
-                }
-            }
+            check_inverse_motion(&model, theta0, solver_mode);
+        }
+    }
+}
+
+fn check_inverse_motion(model: &dae::Dae, theta0: f64, solver_mode: SimSolverMode) {
+    let result = simulate_dae_with_diagnostics(
+        model,
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(0.01),
+            solver_mode,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for (row, &time) in result.times.iter().enumerate() {
+        let theta = theta0 + time;
+        let inverse = 1.0 / (1.0 + theta);
+        for (name, expected) in [
+            ("theta", theta),
+            ("x", inverse - 1.0),
+            ("v", -inverse * inverse),
+            ("a", 2.0 * inverse * inverse * inverse),
+        ] {
+            let column = result.names.iter().position(|value| value == name).unwrap();
+            let actual = result.data[column][row];
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "{solver_mode:?} {name}({time}): {actual} != {expected}"
+            );
         }
     }
 }
