@@ -312,9 +312,15 @@ fn structural_analysis(model: &dae::Dae) -> Result<PreparedStructuralAnalysis, S
 #[derive(Clone, Copy)]
 struct DirectStateConstraint {
     state: u32,
-    rhs: u32,
+    rhs: StateDefinition,
     rhs_sign: self::equalities::EqualitySign,
     owner: dae::DaeProvenance,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum StateDefinition {
+    Expression(u32),
+    Auxiliary(u32),
 }
 
 #[derive(Clone)]

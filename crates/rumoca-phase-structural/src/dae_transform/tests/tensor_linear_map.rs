@@ -16,8 +16,8 @@ fn tensor_linear_map_proof_does_not_enumerate_the_unknown_extent() {
             };
             assert!(block.contains_residual(family.bodies().get(0).unwrap().index()));
             assert_eq!(block.operands().count(), 2);
-            assert_eq!(block.coefficient_node_count(), 3);
             (
+                block.coefficient_node_count(),
                 view.expression_count(),
                 view.variable_count(),
                 view.continuous_owners().count(),

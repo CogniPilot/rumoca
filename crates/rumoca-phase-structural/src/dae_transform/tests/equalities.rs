@@ -1952,7 +1952,10 @@ fn projected_algebraic_definition_differentiates_through_its_proven_state_anchor
             .into_iter()
             .chain(candidates.conditional)
             .find(|candidate| {
-                let rhs = view.expression_id(candidate.rhs as usize).unwrap();
+                let super::super::StateDefinition::Expression(rhs) = candidate.rhs else {
+                    return false;
+                };
+                let rhs = view.expression_id(rhs as usize).unwrap();
                 candidate.state == x
                     && matches!(
                         singleton_real_projection(view, rhs),

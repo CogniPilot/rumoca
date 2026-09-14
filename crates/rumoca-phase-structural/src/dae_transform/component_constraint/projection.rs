@@ -2,12 +2,14 @@
 
 use std::collections::BTreeSet;
 
+use super::super::equalities::EqualitySign;
+use super::definitions::StateArrayDefinition;
 use super::{ComponentExpression, DifferentiationFacts, component_indices, dae};
 
 pub(super) struct ComponentProjection<'facts, 'dae> {
     view: dae::DaeView<'dae>,
     facts: &'facts DifferentiationFacts,
-    state_arrays: Option<&'facts [Option<u32>]>,
+    state_arrays: Option<&'facts [Option<StateArrayDefinition>]>,
     active: BTreeSet<(u32, usize)>,
 }
 
@@ -15,7 +17,7 @@ impl<'facts, 'dae> ComponentProjection<'facts, 'dae> {
     pub(super) fn new(
         view: dae::DaeView<'dae>,
         facts: &'facts DifferentiationFacts,
-        state_arrays: Option<&'facts [Option<u32>]>,
+        state_arrays: Option<&'facts [Option<StateArrayDefinition>]>,
     ) -> Self {
         Self {
             view,
@@ -53,6 +55,18 @@ impl<'facts, 'dae> ComponentProjection<'facts, 'dae> {
             });
         }
         match node.operation() {
+            dae::ExpressionOperation::Unary {
+                operator: dae::UnaryOperator::Plus,
+                operand,
+            } => return self.derive(operand, scalar),
+            dae::ExpressionOperation::Unary {
+                operator: dae::UnaryOperator::Negate,
+                operand,
+            } => {
+                return self
+                    .derive(operand, scalar)
+                    .map(|value| signed(value, EqualitySign::Opposite));
+            }
             dae::ExpressionOperation::Array(elements) => {
                 let stride = self
                     .view
@@ -73,16 +87,15 @@ impl<'facts, 'dae> ComponentProjection<'facts, 'dae> {
                     rhs: Box::new(self.derive(rhs, scalar)?),
                 });
             }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
-                if let Some(definition) = self.facts.algebraic_definition(self.view, algebraic) {
-                    return self.derive(definition, scalar);
+            dae::ExpressionOperation::Coordinate(coordinate) => {
+                if let Some((definition, sign)) = self.state_array_definition(expression) {
+                    let expression = self.view.expression_id(definition.expression as usize)?;
+                    return self
+                        .derive(expression, scalar)
+                        .map(|value| signed(signed(value, definition.sign), sign));
                 }
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) => {
-                if let Some(definition) = self
-                    .state_arrays
-                    .and_then(|definitions| definitions[state.index() as usize])
-                    .and_then(|definition| self.view.expression_id(definition as usize))
+                if let dae::CoordinateView::Algebraic(algebraic) = coordinate
+                    && let Some(definition) = self.facts.algebraic_definition(self.view, algebraic)
                 {
                     return self.derive(definition, scalar);
                 }
@@ -113,5 +126,28 @@ impl<'facts, 'dae> ComponentProjection<'facts, 'dae> {
             expression: expression.index(),
             indices,
         })
+    }
+    fn state_array_definition(
+        &self,
+        expression: dae::ExprId<'dae>,
+    ) -> Option<(StateArrayDefinition, EqualitySign)> {
+        let definitions = self.state_arrays?;
+        let (state, sign) = super::super::constraints::exact_state_anchor(
+            self.view,
+            &self.facts.equalities,
+            expression,
+        )?;
+        Some((definitions[state.index() as usize]?, sign))
+    }
+}
+
+fn signed(value: ComponentExpression, sign: EqualitySign) -> ComponentExpression {
+    match sign {
+        EqualitySign::Same => value,
+        EqualitySign::Opposite => ComponentExpression::Sum {
+            operator: dae::BinaryOperator::Subtract,
+            lhs: Box::new(ComponentExpression::Zero),
+            rhs: Box::new(value),
+        },
     }
 }

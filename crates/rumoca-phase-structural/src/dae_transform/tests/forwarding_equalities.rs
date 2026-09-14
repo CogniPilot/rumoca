@@ -233,9 +233,12 @@ fn forwarding_candidate(model: &dae::Dae) -> DirectStateConstraint {
             .admissible
             .into_iter()
             .find(|candidate| {
+                let super::super::StateDefinition::Expression(rhs) = candidate.rhs else {
+                    return false;
+                };
                 candidate.state == 0
                     && matches!(
-                        view.expression(view.expression_id(candidate.rhs as usize).unwrap())
+                        view.expression(view.expression_id(rhs as usize).unwrap())
                             .unwrap()
                             .operation(),
                         dae::ExpressionOperation::Call { .. }

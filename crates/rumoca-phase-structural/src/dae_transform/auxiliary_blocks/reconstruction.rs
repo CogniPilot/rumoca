@@ -251,8 +251,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .collect::<Result<Vec<_>, _>>()?;
                 self.target.at(provenance).array(values)?
             }
-            AuxiliarySystem::Map { rhs, .. } => self.auxiliary_operand(rhs, order, provenance)?,
-            AuxiliarySystem::Scalars { rhs, .. } => {
+            AuxiliarySystem::Map { rhs, .. }
+            | AuxiliarySystem::VectorRows { rhs, .. }
+            | AuxiliarySystem::Scalars { rhs, .. } => {
                 self.tensor_coefficient(rhs, order, provenance)?
             }
         };
@@ -273,7 +274,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .collect::<Result<Vec<_>, _>>()?;
                 self.target.at(provenance).array(values)
             }
-            AuxiliarySystem::Map { matrix, .. } | AuxiliarySystem::Scalars { matrix, .. } => {
+            AuxiliarySystem::Map { matrix, .. }
+            | AuxiliarySystem::VectorRows { matrix, .. }
+            | AuxiliarySystem::Scalars { matrix, .. } => {
                 self.tensor_coefficient(matrix, order, provenance)
             }
         }

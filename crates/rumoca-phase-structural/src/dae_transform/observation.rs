@@ -16,7 +16,7 @@
 
 use rumoca_core::Span;
 
-use super::{DirectStateConstraint, HolonomicConstraint};
+use super::{DirectStateConstraint, HolonomicConstraint, StateDefinition};
 use crate::StructuralError;
 
 /// Which fixed-point lane a reduction event belongs to.
@@ -38,7 +38,7 @@ pub(super) enum CandidateGroup {
 #[derive(Clone, Copy)]
 pub(super) struct DirectIdentity {
     pub(super) state_ordinal: u32,
-    pub(super) rhs_ordinal: u32,
+    pub(super) definition: StateDefinition,
     pub(super) provenance_span: Span,
 }
 
@@ -46,7 +46,7 @@ impl From<&DirectStateConstraint> for DirectIdentity {
     fn from(candidate: &DirectStateConstraint) -> Self {
         Self {
             state_ordinal: candidate.state,
-            rhs_ordinal: candidate.rhs,
+            definition: candidate.rhs,
             provenance_span: candidate.owner.span(),
         }
     }
@@ -258,6 +258,11 @@ pub enum ReductionIdentity {
         rhs_ordinal: u32,
         provenance_span: Span,
     },
+    AuxiliaryState {
+        state_ordinal: u32,
+        variable_ordinal: u32,
+        provenance_span: Span,
+    },
     Holonomic {
         owner_ordinal: usize,
         body_ordinal: Option<usize>,
@@ -273,11 +278,20 @@ impl From<Identity<'_>> for ReductionIdentity {
         match identity {
             Identity::Direct(DirectIdentity {
                 state_ordinal,
-                rhs_ordinal,
+                definition: StateDefinition::Expression(rhs_ordinal),
                 provenance_span,
             }) => Self::Direct {
                 state_ordinal,
                 rhs_ordinal,
+                provenance_span,
+            },
+            Identity::Direct(DirectIdentity {
+                state_ordinal,
+                definition: StateDefinition::Auxiliary(variable_ordinal),
+                provenance_span,
+            }) => Self::AuxiliaryState {
+                state_ordinal,
+                variable_ordinal,
                 provenance_span,
             },
             Identity::Holonomic(HolonomicIdentity {

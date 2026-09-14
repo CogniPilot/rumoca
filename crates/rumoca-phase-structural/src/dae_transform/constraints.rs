@@ -40,6 +40,7 @@ use super::initial_pins::represented_initial_values;
 use super::tensor_maps::has_invariant_subscripts;
 use super::{
     DirectStateConstraint, HolonomicConstraint, HolonomicDifferentiationProof, ManifoldConstraint,
+    StateDefinition,
 };
 use crate::StructuralError;
 
@@ -75,6 +76,10 @@ impl DifferentiationFacts {
         };
         facts.auxiliary_blocks = super::auxiliary_blocks::derive_blocks(view, &facts);
         facts.component_definitions = super::component_constraint::derive_definitions(view, &facts);
+        for block in super::auxiliary_blocks::derive_state_blocks(view, &facts) {
+            let variable = block.variable;
+            facts.auxiliary_blocks[variable as usize] = Some(block);
+        }
         facts
     }
 
@@ -313,6 +318,15 @@ pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> StateDemotionC
         })
         .collect::<Vec<_>>();
     constraints.extend(redundant_state_constraints(view, &facts.equalities));
+    let direct_states = constraints
+        .iter()
+        .map(|candidate| candidate.state)
+        .collect::<std::collections::BTreeSet<_>>();
+    constraints.extend(
+        auxiliary_state_constraints(view, &facts)
+            .into_iter()
+            .filter(|candidate| !direct_states.contains(&candidate.state)),
+    );
     constraints.sort_by_key(|candidate| {
         let selection = view
             .variable(
@@ -337,7 +351,7 @@ pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> StateDemotionC
     debug_assert!(
         constraints
             .iter()
-            .all(|candidate| carries_a_differentiable_definition(view, *candidate)),
+            .all(|candidate| carries_a_differentiable_definition(view, &facts, *candidate)),
         "a demotion candidate must satisfy the contract its RHS is consumed under"
     );
     // MLS 3.6 §8.6 turns every `fixed = true` start into an initialization
@@ -380,9 +394,15 @@ pub(super) fn demotion_preserves_manifold_values(
     if !needs_value {
         return true;
     }
-    DifferentiationFacts::collect(view)
-        .materialized_state_anchors(view, candidate.rhs)
-        .is_some_and(|states| !states.contains(&candidate.state))
+    let facts = DifferentiationFacts::collect(view);
+    match candidate.rhs {
+        StateDefinition::Expression(rhs) => facts
+            .materialized_state_anchors(view, rhs)
+            .is_some_and(|states| !states.contains(&candidate.state)),
+        StateDefinition::Auxiliary(variable) => facts.auxiliary_blocks[variable as usize]
+            .as_ref()
+            .is_some_and(|block| !block.state_anchors.contains(&candidate.state)),
+    }
 }
 
 /// The MLS 3.6 §8.6 initial equation `rebuilt` no longer states, out of the ones
@@ -457,27 +477,22 @@ fn renumbered(variable: u32) -> StructuralError {
 
 /// Whether `candidate` satisfies the one contract its RHS is consumed under.
 ///
-/// [`DirectStateConstraint::rhs`] is read at exactly one place —
-/// `ExpressionRebuilder::rebuild_coordinate`, where a `der(state)` coordinate is
-/// replaced by `differentiate(rhs)`. It is never substituted for the state's
-/// *value*: the demoted state stays an unknown of the rebuilt system and the
-/// residual that proves the equality stays in it to define that unknown. Two
-/// consequences are load-bearing:
-///
-///   * a time-invariant displacement between the state and `rhs` vanishes under
-///     `d/dt`, so only the *value* readers of [`SystemEqualities`] need the
-///     offset-free layer;
-///   * a sign does **not** vanish under `d/dt`, so the equality proof carries
-///     it on the candidate and reconstruction applies it to `differentiate(rhs)`.
-///
-/// What must hold at runtime is that differentiation can reach `rhs` and that
-/// the substitution does not re-enter itself: `rhs` is a whole-model expression
-/// that does not name the state being demoted.
+/// A source-expression definition must be scoped to the model and exclude the
+/// demoted coordinate. An auxiliary definition instead carries a source block
+/// whose coefficient and value anchors exclude that state. Both retain the
+/// original value equations; reconstruction replaces derivative coordinates
+/// and materializes the value only for surviving manifold obligations.
 fn carries_a_differentiable_definition(
     view: dae::DaeView<'_>,
+    facts: &DifferentiationFacts,
     candidate: DirectStateConstraint,
 ) -> bool {
-    let Some(rhs) = view.expression_id(candidate.rhs as usize) else {
+    let StateDefinition::Expression(rhs) = candidate.rhs else {
+        return facts.auxiliary_blocks[candidate.state as usize]
+            .as_ref()
+            .is_some_and(|block| !block.state_anchors.contains(&candidate.state));
+    };
+    let Some(rhs) = view.expression_id(rhs as usize) else {
         return false;
     };
     let Some(node) = view.expression(rhs) else {
@@ -505,6 +520,53 @@ fn state_demotion_priority(selection: StateSelect) -> u8 {
     }
 }
 
+fn auxiliary_state_constraints(
+    view: dae::DaeView<'_>,
+    facts: &DifferentiationFacts,
+) -> Vec<DirectStateConstraint> {
+    view.variables()
+        .filter_map(|(id, variable)| {
+            let dae::VariableIdentity::State(state) = variable.identity() else {
+                return None;
+            };
+            let block = facts.auxiliary_blocks[id.index() as usize].as_ref()?;
+            let mut visited = vec![Visit::Pending; view.expression_count()];
+            if variable.state_select() == StateSelect::Always
+                || !auxiliary_is_differentiable(view, facts, block, state, &mut visited)
+            {
+                return None;
+            }
+            let residual = view.expression_id(block.residual() as usize)?;
+            Some(DirectStateConstraint {
+                state: id.index(),
+                rhs: StateDefinition::Auxiliary(id.index()),
+                rhs_sign: EqualitySign::Same,
+                owner: view.expression(residual)?.provenance(),
+            })
+        })
+        .collect()
+}
+
+fn auxiliary_is_differentiable<'dae>(
+    view: dae::DaeView<'dae>,
+    facts: &DifferentiationFacts,
+    block: &super::auxiliary_blocks::AuxiliaryBlock,
+    demoted: dae::StateId<'dae>,
+    visited: &mut [Visit],
+) -> bool {
+    !block.state_anchors.contains(&demoted.index())
+        && block.operands().all(|operand| {
+            is_differentiable_in_context(
+                view,
+                facts,
+                view.expression_id(operand.expression as usize).unwrap(),
+                demoted,
+                visited,
+                &operand.context(view),
+            )
+        })
+}
+
 /// States an asserted coordinate equality proves redundant.
 ///
 /// The equality holds for all time, so the demoted state keeps the residual
@@ -525,7 +587,7 @@ fn redundant_state_constraints(
             }
             Some(DirectStateConstraint {
                 state,
-                rhs: equalities.anchor_expression(anchor)?,
+                rhs: StateDefinition::Expression(equalities.anchor_expression(anchor)?),
                 rhs_sign,
                 owner: equalities.witness(state)?,
             })
@@ -719,13 +781,13 @@ fn direct_state_definition<'dae>(
     }
     Some(DirectStateConstraint {
         state: state.index(),
-        rhs: rhs.index(),
+        rhs: StateDefinition::Expression(rhs.index()),
         rhs_sign,
         owner,
     })
 }
 
-fn exact_state_anchor<'dae>(
+pub(super) fn exact_state_anchor<'dae>(
     view: dae::DaeView<'dae>,
     equalities: &SystemEqualities,
     expression: dae::ExprId<'dae>,
@@ -1612,17 +1674,7 @@ fn is_differentiable_coordinate<'dae>(
         dae::CoordinateView::State(state) => state != demoted,
         dae::CoordinateView::Algebraic(algebraic) => {
             if let Some(block) = &facts.auxiliary_blocks[algebraic.index() as usize] {
-                return !block.state_anchors.contains(&demoted.index())
-                    && block.operands().all(|operand| {
-                        is_differentiable_in_context(
-                            view,
-                            facts,
-                            view.expression_id(operand.expression as usize).unwrap(),
-                            demoted,
-                            visited,
-                            &operand.context(view),
-                        )
-                    });
+                return auxiliary_is_differentiable(view, facts, block, demoted, visited);
             }
             if let Some(definition) = &facts.component_definitions[algebraic.index() as usize] {
                 return definition.leaves().into_iter().all(|leaf| {

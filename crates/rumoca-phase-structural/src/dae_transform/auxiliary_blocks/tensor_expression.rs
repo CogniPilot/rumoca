@@ -5,7 +5,7 @@ use rumoca_ir_dae as dae;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(in crate::dae_transform) struct SourceValue {
     pub(in crate::dae_transform) expression: u32,
     calls: Box<[u32]>,
@@ -57,8 +57,9 @@ pub(super) enum Product {
 pub(super) enum TensorExpression {
     Source(SourceValue),
     Shared {
-        source: u32,
+        source: SourceValue,
         variable: Option<u32>,
+        offset: bool,
         value: Arc<Self>,
     },
     One,
@@ -68,10 +69,27 @@ pub(super) enum TensorExpression {
     Sum(dae::BinaryOperator, Box<Self>, Box<Self>),
     Product(Product, Box<Self>, Box<Self>),
     Index(Box<Self>, SourceValue),
+    Projection(Box<Self>, u32),
+    Transpose(Box<Self>),
     Array(Box<[Self]>),
 }
 
 impl TensorExpression {
+    pub(super) fn is_zero(&self) -> bool {
+        match self {
+            Self::Zero(_) => true,
+            Self::Negate(value)
+            | Self::Projection(value, _)
+            | Self::Index(value, _)
+            | Self::Transpose(value) => value.is_zero(),
+            Self::Shared { value, .. } => value.is_zero(),
+            Self::Sum(_, a, b) => a.is_zero() && b.is_zero(),
+            Self::Product(_, a, b) => a.is_zero() || b.is_zero(),
+            Self::Array(values) => values.iter().all(Self::is_zero),
+            _ => false,
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn node_count(&self) -> usize {
         let mut count = 0;
@@ -92,16 +110,22 @@ impl TensorExpression {
         let mut shared = BTreeSet::new();
         while let Some(node) = pending.pop() {
             if let Self::Shared {
-                source, variable, ..
+                source,
+                variable,
+                offset,
+                ..
             } = node
-                && !shared.insert((*source, *variable))
+                && !shared.insert((source.clone(), *variable, *offset))
             {
                 continue;
             }
             visit(node);
             match node {
                 Self::Shared { value, .. } => pending.push(value),
-                Self::Negate(value) | Self::Index(value, _) => pending.push(value),
+                Self::Negate(value)
+                | Self::Index(value, _)
+                | Self::Projection(value, _)
+                | Self::Transpose(value) => pending.push(value),
                 Self::Sum(_, lhs, rhs) | Self::Product(_, lhs, rhs) => {
                     pending.extend([rhs.as_ref(), lhs.as_ref()]);
                 }

@@ -29,7 +29,82 @@ Receipt: `rolling-wheel/component-definition-full-delta.json`; worktree digest:
 OMC version is `a96aa1a-cmake`. RollingWheel remains slower than OMC; its
 velocity reconstruction and the combined quick/full gates remain open.
 
-## Latest focused work: inverse coordinates of tensor states
+## Latest focused work: reconstructing dependent velocity tensors
+
+`TensorNoSlipContact` reproduces the remaining RollingWheel velocity-state
+problem. Its contact geometry and two no-slip equations determine the velocity
+vector from independent position and angular coordinates. OMC selects three
+states (`theta`, `x`, `y`); Rumoca initially retains the three additional
+velocity coordinates. Independent analytical motion is `theta=0.2+t`,
+`x=0.2`, `y=0.3+sin(0.2)-sin(theta)`, and `z=cos(theta)`, with velocity and
+force given by their first and second derivatives. All 21 OMC channels agree
+with that solution to 1.079e-8 over twelve rows in
+`rolling-wheel/omc/no-slip-reconstruction-1/analytical-comparison.json`.
+
+The STRUCT-T03 auxiliary-state profile now combines independent source scalar
+constraints with independently materializable entries of authored literal-array
+equalities. Coefficients remain aggregate identity, projection, transpose,
+product, and outer-product expressions; there is no tensor-basis enumeration.
+The original equations, initialization obligations, and assertions remain
+owners. Self-dependent coefficients, incomplete systems, and causal projections
+that merely repeat their own definitions are refused. A direct source state
+definition takes precedence over a redundant auxiliary solve for that state.
+
+Tracing the real wheel immediately after its four direct state demotions found
+a further discrepancy: the equality proof knew that the joint velocity equaled
+the body's velocity state, but affine reconstruction required a unique causal
+assignment. The joint has multiple source defining equations, so that lookup
+returned none. The affine proof now consumes the existing signed, offset-free
+state-alias proof. It recognizes both no-slip rows and the independent vertical
+velocity row before holonomic differentiation. Position-array discovery and
+projection follow the same signed value aliases. Positive and negated velocity
+aliases have reduced analytical regressions; signed literal arrays retain their
+signs when contributing an independent row.
+
+The normal `target/msl/multibody-no-slip-alias-origin` gate succeeds with eight
+integrated coordinates (`x`, `y`, three angles, three angular rates), matching
+OMC's state set, and no retained manifold rows in the structural diagnostic.
+All 184 trajectory and initialization channels are high: one model compared,
+zero skipped, missing, excluded, or nonidentifiable traces. Sim is 0.801544
+seconds versus 1.068513 seconds in the preceding eleven-state focused run;
+Solve is 1.284566 seconds and backend build 1.165971 seconds. This remains much
+slower than OMC and establishes no new cohort coverage. The focused receipt is
+`rolling-wheel/no-slip-alias-origin-delta.json`, with worktree digest
+`f8e606b2f16621b50aaa0e2cb8107524c2b3f02d6e02447a2583e32e645199d0`.
+
+All 165 structural library tests, nineteen contact tests, formatting, and
+structural all-target/all-feature Clippy pass in `no-slip-focused-suite-6.log`.
+The additional negated-position case also passes within the complete 593-test
+core suite; all 99 compiler library tests and seventeen gates pass in
+`no-slip-core-suite-1.log`. Temporary source-DAE probes have been removed; their
+results remain in `no-slip-intermediate-{4,alias-5}.log` and
+`no-slip-real-model-alias-6.log`.
+
+The fixed `multibody-no-slip-canary-2` passes with all twenty phase, status,
+and band rows unchanged from `multibody-component-definition-canary`: nine
+models compared high, 175 initialization channels high, eleven unchanged
+refusals, and zero skipped, missing, excluded, nonidentifiable, or deviating
+comparisons. Receipt: `rolling-wheel/no-slip-canary-2-delta.json`; worktree
+digest: `3c24b570f8d3970f81bc080d6a5b74bc0e09134f2788ab626ab2cef6e90dfe35`.
+The first `multibody-no-slip-canary` was externally interrupted during library
+parsing and has no parity measurement; its log remains preserved. No solver
+failure was retried, and no budget or tolerance changed.
+
+The controlled actual-worker `no-slip-profile-1` measures Sim at 0.795771
+seconds (0.78 seconds user CPU, zero major faults during Sim). Every native
+sample address maps to a generated function. Projection Jacobians account for
+13.23% of sampled self time, assignment schedules 10.51%, and residual programs
+7.54%; there are no manifold Jacobian programs. Source-bound programs 212 and
+214 originate at `Parts/Body.mo`'s `a_0=der(v_0)` and `z_a=der(w_a)` equations.
+Their projection Jacobians alone account for 8.55% and 3.38%, respectively.
+Runtime interpretation, assignment certification, and allocation remain
+visible costs. The worker SHA-256 is
+`4ef449ffd30e161cf8030f8eaf130f568a3ebb1515fb7cda6ccdfa2fc5e7939f`.
+This is a performance diagnostic, not separate parity or cohort evidence.
+The next step is a complete cohort at this implementation, followed by tracing
+those acceleration kernels and prepared projection execution against OMC.
+
+## Previous focused work: inverse coordinates of tensor states
 
 `TensorStateContact` reproduces RollingWheel's source pattern: a position
 state array equals `{x,y,z}`, its derivative is a velocity array, and independent

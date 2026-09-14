@@ -28,7 +28,7 @@ pub(in crate::dae_transform) struct ScopedReconstructionCache<'source, 'target> 
     pub(in crate::dae_transform) instantiated:
         HashMap<ScopedReconstructionKey<'source>, dae::ExprId<'target>>,
     pub(in crate::dae_transform) coefficients:
-        HashMap<(ScopedReconstructionKey<'source>, Option<u32>), dae::ExprId<'target>>,
+        HashMap<(ScopedReconstructionKey<'source>, Option<u32>, bool), dae::ExprId<'target>>,
 }
 
 impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {

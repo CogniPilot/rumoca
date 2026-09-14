@@ -12,6 +12,7 @@ mod runtime_quotients;
 mod scalar_auxiliary_blocks;
 mod shared_differentiation;
 mod tensor_linear_map;
+mod tensor_state_blocks;
 
 pub(super) use reconstruction_failures::independent_constraint_model;
 

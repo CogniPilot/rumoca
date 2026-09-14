@@ -289,9 +289,8 @@ or `rumoca-phase-codegen` by SPEC_0029.
 
 ### Structural Lowering Scope
 
-Structural lowering between DAE and Solve is DAE-to-DAE: each pass consumes a
-finalized DAE and returns another through root-owned checked changes. Partial
-mutation, independently replayable proof receipts, and mutable partition
+Structural lowering transforms finalized DAEs through root-owned checked changes.
+Partial mutation, independently replayable proof receipts, and mutable partition
 callbacks are prohibited.
 
 **In scope:** exactly rows `STRUCT-T01`–`STRUCT-T09` in
@@ -309,16 +308,17 @@ STRUCT-T03's auxiliary and component reconstruction profile:
 | Rule | Owner | Why |
 |---|---|---|
 | Reconstruct a continuous Real vector only from a source-owned square linear system with state/invariant coefficients independent of that unknown | structural value and derivative proofs | Establishes the exact domain of the auxiliary solve |
+| Reconstruct dependent state vectors from affine scalar constraints and independent literal-array entries, including signed aliases; retain parent equations/projections and exclude the target from all anchors | structural state reconstruction | Close dependent kinematics without circular definitions |
+| Prefer an admitted direct source definition over an auxiliary solve for the same state | structural state selection | Avoid obscuring explicit kinematics with redundant implicit solves |
 | Follow exact function substitutions and array operations; retain original residual owners and assertions | structural coefficient proof | Reconstruction must preserve source behavior |
-| In continuous derivative equations for a proved auxiliary system `A*q=b`, retain the source primal coordinate `q` and ordinary algebraic coefficient reads in `A*der(q)=der(b)-der(A)*q`; state-only manifold reconstruction must still expand through its proved state/invariant anchors | structural reconstruction | The original equations already own the primal solve; differentiating must not recursively solve that same primal again. The derivative solve retains the same checked nonsingular-matrix domain |
+| For continuous derivatives of `A*q=b`, retain primal `q` and algebraic coefficient reads in `A*der(q)=der(b)-der(A)*q`; manifold reconstruction expands proved state/invariant anchors on the same nonsingular domain | structural reconstruction | Preserve the original primal solve instead of recursively recomputing it |
 | Keep identity, projection, matrix product, and outer product aggregate; never enumerate a tensor basis to obtain coefficients | structural reconstruction | Compiler representation must stay compact |
 | Reject singular runtime matrices through the checked aggregate solve | native evaluation | Structural shape cannot prove numerical nonsingularity |
 | Auxiliary reconstruction and repeated derivatives satisfy the [STRUCT-T03 reconstruction rows](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope) | structural reconstruction | Preserve subsequent reduction and aggregate execution |
 
 **Placement requirement:**
 
-DAE structural transformations live in `rumoca-phase-structural`, return a
-finalized DAE, and keep analysis products outside DAE. `rumoca-phase-solve`
+`rumoca-phase-structural` reconstructs finalized DAEs; analysis products stay outside DAE. `rumoca-phase-solve`
 only lowers finalized DAE. STRUCT-T09 permits exact aliases for implicit
 derivatives and mixed derivative/algebraic blocks; it does not choose scalar
 pivots or construct numerical coefficient matrices. Other dummy-derivative transformations,

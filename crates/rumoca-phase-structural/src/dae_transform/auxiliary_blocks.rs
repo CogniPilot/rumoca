@@ -13,6 +13,7 @@ use rumoca_ir_dae as dae;
 
 use super::constraints::DifferentiationFacts;
 
+pub(super) use linear_map::derive_state_blocks;
 pub(super) use reconstruction::{AuxiliaryExpression, AuxiliaryFunctions, create_functions};
 use tensor_expression::{SourceValue, TensorExpression};
 
@@ -31,7 +32,12 @@ enum AuxiliarySystem {
     Map {
         residual: u32,
         matrix: TensorExpression,
-        rhs: SourceValue,
+        rhs: TensorExpression,
+    },
+    VectorRows {
+        residuals: Box<[u32]>,
+        matrix: TensorExpression,
+        rhs: TensorExpression,
     },
     Scalars {
         variables: Box<[u32]>,
@@ -57,7 +63,10 @@ impl AuxiliaryBlock {
     pub(super) fn coefficient_node_count(&self) -> usize {
         match &self.system {
             AuxiliarySystem::DotRows(rows) => rows.len(),
-            AuxiliarySystem::Map { matrix, .. } => matrix.node_count(),
+            AuxiliarySystem::Map { matrix, rhs, .. }
+            | AuxiliarySystem::VectorRows { matrix, rhs, .. } => {
+                matrix.node_count() + rhs.node_count()
+            }
             AuxiliarySystem::Scalars { matrix, rhs, .. } => matrix.node_count() + rhs.node_count(),
         }
     }
@@ -68,7 +77,8 @@ impl AuxiliaryBlock {
             AuxiliarySystem::Map {
                 residual: owner, ..
             } => *owner == residual,
-            AuxiliarySystem::Scalars { residuals, .. } => residuals.contains(&residual),
+            AuxiliarySystem::Scalars { residuals, .. }
+            | AuxiliarySystem::VectorRows { residuals, .. } => residuals.contains(&residual),
         }
     }
 
@@ -76,7 +86,8 @@ impl AuxiliaryBlock {
         match &self.system {
             AuxiliarySystem::DotRows(rows) => rows[0].residual,
             AuxiliarySystem::Map { residual, .. } => *residual,
-            AuxiliarySystem::Scalars { residuals, .. } => residuals[0],
+            AuxiliarySystem::Scalars { residuals, .. }
+            | AuxiliarySystem::VectorRows { residuals, .. } => residuals[0],
         }
     }
 
@@ -88,11 +99,9 @@ impl AuxiliaryBlock {
                     operands.extend([&row.coefficient, &row.rhs]);
                 }
             }
-            AuxiliarySystem::Map { matrix, rhs, .. } => {
-                matrix.operands(&mut operands);
-                operands.push(rhs);
-            }
-            AuxiliarySystem::Scalars { matrix, rhs, .. } => {
+            AuxiliarySystem::Map { matrix, rhs, .. }
+            | AuxiliarySystem::VectorRows { matrix, rhs, .. }
+            | AuxiliarySystem::Scalars { matrix, rhs, .. } => {
                 matrix.operands(&mut operands);
                 rhs.operands(&mut operands);
             }

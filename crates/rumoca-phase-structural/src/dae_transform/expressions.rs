@@ -13,13 +13,13 @@ use rumoca_ir_dae as dae;
 
 use scoped_cache::ScopedReconstructionCache;
 
-use super::DirectStateConstraint;
 use super::constraints::DifferentiationFacts;
 use super::declarations::RebuiltDomain;
 use super::differentiation::Derivative;
 use super::functions::RebuiltFunction;
 use super::temporal::RebuiltClock;
 use super::variables::{ReservedVariable, TargetVariable};
+use super::{DirectStateConstraint, StateDefinition};
 use rumoca_eval_dae::FunctionCallContext;
 
 pub(super) fn shaped_zero<'target>(
@@ -682,12 +682,15 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             candidate.owner.span(),
         )?;
         let previous = std::mem::replace(&mut self.substitute_demoted_value, false);
-        let value = self.materialize_exact_value(
-            self.source
-                .expression_id(candidate.rhs as usize)
-                .expect("candidate RHS resolves"),
-            generated,
-        );
+        let value = match candidate.rhs {
+            StateDefinition::Expression(rhs) => self.materialize_exact_value(
+                self.source
+                    .expression_id(rhs as usize)
+                    .expect("candidate RHS resolves"),
+                generated,
+            ),
+            StateDefinition::Auxiliary(variable) => self.auxiliary_value(variable, 0, generated),
+        };
         self.substitute_demoted_value = previous;
         let value = value?;
         match candidate.rhs_sign {
@@ -707,12 +710,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             dae::DaeGeneration::IndexReduction,
             candidate.owner.span(),
         )?;
-        let derivative = self.differentiate(
-            self.source
-                .expression_id(candidate.rhs as usize)
-                .expect("candidate RHS resolves"),
-            generated,
-        )?;
+        let derivative = match candidate.rhs {
+            StateDefinition::Expression(rhs) => self.differentiate(
+                self.source
+                    .expression_id(rhs as usize)
+                    .expect("candidate RHS resolves"),
+                generated,
+            )?,
+            StateDefinition::Auxiliary(variable) => {
+                Derivative::Expression(self.auxiliary_value(variable, 1, generated)?)
+            }
+        };
         match (candidate.rhs_sign, derivative) {
             (_, Derivative::Zero) => self.zero_for_demoted_state(candidate.state, generated),
             (super::equalities::EqualitySign::Same, Derivative::Expression(expression)) => {

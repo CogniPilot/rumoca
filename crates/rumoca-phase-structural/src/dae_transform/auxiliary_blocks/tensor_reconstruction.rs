@@ -16,13 +16,21 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             TensorExpression::Shared {
                 source,
                 variable,
+                offset,
                 value,
             } => {
-                let source = self
+                let expression = self
                     .source
-                    .expression_id(*source as usize)
+                    .expression_id(source.expression as usize)
                     .expect("coefficient retains its source expression");
-                let key = (self.scoped_reconstruction_key(source, order, at), *variable);
+                let previous =
+                    std::mem::replace(&mut self.function_context, source.context(self.source));
+                let key = (
+                    self.scoped_reconstruction_key(expression, order, at),
+                    *variable,
+                    *offset,
+                );
+                self.function_context = previous;
                 if let Some(&value) = self.scoped_cache.coefficients.get(&key) {
                     return Ok(value);
                 }
@@ -67,6 +75,26 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                         provenance: at,
                     }],
                 )
+            }
+            TensorExpression::Projection(base, ordinal) => {
+                let base = self.tensor_coefficient(base, order, at)?;
+                let index = self
+                    .target
+                    .at(at)
+                    .literal(dae::DaeLiteral::Integer(i64::from(*ordinal) + 1))?;
+                self.target.at(at).index(
+                    base,
+                    [dae::Subscript::Index {
+                        expression: index,
+                        provenance: at,
+                    }],
+                )
+            }
+            TensorExpression::Transpose(base) => {
+                let base = self.tensor_coefficient(base, order, at)?;
+                self.target
+                    .at(at)
+                    .builtin(dae::PureBuiltin::Transpose, [base])
             }
             TensorExpression::Array(elements) => {
                 let elements = elements

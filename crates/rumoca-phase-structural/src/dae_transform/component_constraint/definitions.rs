@@ -5,17 +5,25 @@ use std::sync::Arc;
 
 use rumoca_core::StateSelect;
 
+use super::super::constraints::exact_state_anchor;
+use super::super::equalities::EqualitySign;
 use super::{
     ComponentConstraint, ComponentExpression, ComponentProjection, DifferentiationFacts,
     component_indices, dae,
 };
 use crate::residual_normalization::equation_sides;
 
+#[derive(Clone, Copy)]
+pub(super) struct StateArrayDefinition {
+    pub(super) expression: u32,
+    pub(super) sign: EqualitySign,
+}
+
 pub(in super::super) fn derive_definitions(
     view: dae::DaeView<'_>,
     facts: &DifferentiationFacts,
 ) -> Vec<Option<Arc<ComponentConstraint>>> {
-    let state_arrays = explicit_state_arrays(view);
+    let state_arrays = explicit_state_arrays(view, facts);
     let mut definitions = vec![None; view.variable_count()];
     let targets = inverse_state_coordinates(view, &state_arrays);
     if targets.is_empty() {
@@ -34,7 +42,7 @@ pub(in super::super) fn derive_definitions(
 fn residual_definitions<'dae>(
     view: dae::DaeView<'dae>,
     facts: &DifferentiationFacts,
-    state_arrays: &[Option<u32>],
+    state_arrays: &[Option<StateArrayDefinition>],
     targets: &BTreeSet<u32>,
     residual: dae::ExprId<'dae>,
 ) -> Vec<(u32, Arc<ComponentConstraint>)> {
@@ -81,7 +89,7 @@ fn residual_definitions<'dae>(
 fn independent_rhs(
     view: dae::DaeView<'_>,
     facts: &DifferentiationFacts,
-    state_arrays: &[Option<u32>],
+    state_arrays: &[Option<StateArrayDefinition>],
     rhs: &ComponentExpression,
 ) -> bool {
     let mut leaves = Vec::new();
@@ -97,12 +105,15 @@ fn independent_rhs(
     })
 }
 
-fn inverse_state_coordinates(view: dae::DaeView<'_>, arrays: &[Option<u32>]) -> BTreeSet<u32> {
+fn inverse_state_coordinates(
+    view: dae::DaeView<'_>,
+    arrays: &[Option<StateArrayDefinition>],
+) -> BTreeSet<u32> {
     let mut targets = BTreeSet::new();
     for expression in arrays.iter().flatten() {
         dae::for_each_expression(
             view,
-            view.expression_id(*expression as usize).unwrap(),
+            view.expression_id(expression.expression as usize).unwrap(),
             |_, node| {
                 if let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(id)) =
                     node.operation()
@@ -116,7 +127,10 @@ fn inverse_state_coordinates(view: dae::DaeView<'_>, arrays: &[Option<u32>]) -> 
     targets
 }
 
-fn explicit_state_arrays(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
+fn explicit_state_arrays(
+    view: dae::DaeView<'_>,
+    facts: &DifferentiationFacts,
+) -> Vec<Option<StateArrayDefinition>> {
     let mut definitions = vec![None; view.variable_count()];
     let mut duplicates = vec![false; view.variable_count()];
     for residual in candidate_residuals(view) {
@@ -124,15 +138,15 @@ fn explicit_state_arrays(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
             continue;
         };
         for (target, value) in [(lhs, rhs), (rhs, lhs)] {
-            let Some(dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state))) =
-                view.expression(target).map(|node| node.operation())
-            else {
+            let Some((state, sign)) = exact_state_anchor(view, &facts.equalities, target) else {
                 continue;
             };
             let variable = view
                 .variable(view.variable_id(state.index() as usize).unwrap())
                 .unwrap();
             if variable.state_select() == StateSelect::Always
+                || variable.value_type().dimensions()
+                    != view.expression(value).unwrap().value_type().dimensions()
                 || !matches!(
                     view.expression(value).unwrap().operation(),
                     dae::ExpressionOperation::Array(_)
@@ -141,7 +155,13 @@ fn explicit_state_arrays(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
                 continue;
             }
             let slot = &mut definitions[state.index() as usize];
-            if slot.replace(value.index()).is_some() {
+            if slot
+                .replace(StateArrayDefinition {
+                    expression: value.index(),
+                    sign,
+                })
+                .is_some()
+            {
                 duplicates[state.index() as usize] = true;
             }
         }

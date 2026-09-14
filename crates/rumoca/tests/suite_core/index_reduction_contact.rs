@@ -1,6 +1,7 @@
 //! Coupled tensor contact geometry and its explicitly solved diagnostic control.
 
 mod linear_solve;
+mod no_slip;
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae_with_diagnostics};

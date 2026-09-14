@@ -149,8 +149,9 @@ pub(super) fn zero() -> TensorExpression {
 impl AffineExpression {
     fn shared(self, source: u32) -> Self {
         let share = |variable, value| TensorExpression::Shared {
-            source,
+            source: SourceValue::model(source),
             variable,
+            offset: variable.is_none(),
             value: Arc::new(value),
         };
         Self {
