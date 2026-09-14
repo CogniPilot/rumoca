@@ -68,9 +68,10 @@ pub use runtime::solve_ops::{
 pub use runtime::solve_runtime::{
     AlgebraicLinearization, AlgebraicSettle, CompiledSolveAssignmentSchedule,
     CompiledSolveEventTransaction, CompiledSolveExpression, CompiledSolveJacobianExpression,
-    EventTransactionExecution, EventUpdateRowFilter, InitialEventObservation,
-    ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
-    ProjectedPostInitialEventInput, SolveExecutionBackend, SolveRuntime,
+    CompiledSolveProjectionJacobian, EventTransactionExecution, EventUpdateRowFilter,
+    InitialEventObservation, ProjectedEventUpdateInput, ProjectedInitialEventInput,
+    ProjectedInitialEventOutcome, ProjectedPostInitialEventInput, SolveExecutionBackend,
+    SolveRuntime,
 };
 #[cfg(not(kani))]
 pub use runtime::time::{

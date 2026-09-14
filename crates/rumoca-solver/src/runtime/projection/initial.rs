@@ -860,6 +860,18 @@ pub(super) fn algebraic_block_jacobian(
         )?;
     }
     let mut jacobian = DMatrix::<f64>::zeros(rows.len(), y_indices.len());
+    if let Some(structure) = structure
+        && model.eval_prepared_implicit_jacobian(
+            structure,
+            (rows, y_indices),
+            y,
+            p,
+            t,
+            jacobian.as_mut_slice(),
+        )?
+    {
+        return Ok(jacobian);
+    }
     let mut reverse_gradient = vec![0.0; y.len()];
     let mut needs_forward_jvp = vec![true; rows.len()];
     for (row, residual_idx) in rows.iter().copied().enumerate() {

@@ -271,6 +271,31 @@ their complete cardinality and ordering. Consumers iterate this issued pairing
 of source program, local output, and logical index without asserting a second
 independently advanced iterator's length. Wire replay checks the same pairing.
 
+A finalized scalar-program block may share its immutable backing allocation.
+Cloning shares the complete programs, provenance, output identities, and
+execution certificates together; wire replay constructs a fresh checked owner.
+Allocation identity may bind a derived execution view to this live source,
+but never replaces semantic identity in canonical data or serialization.
+
+A scalar view of one canonical scalar-program node retains that exact owner
+and its output identities. Canonical expressions remain authoritative: cached
+projection metadata cannot substitute an older source. Replacing that node
+without rederiving its metadata is a typed error. An optional prepared
+application requires the current scalar view to retain the issued source owner;
+materialized views without that relation decline preparation before execution.
+
+A complete projection-Jacobian application derives ordered colors, solver-Y
+seed indices, and column-major output placements from the checked block and
+pattern. It retains the exact scalar-program owner used during derivation;
+native preparation must consume that same owner. Runtime may select the
+complete forward application only when every selected primal program lacks
+reverse-gradient support, preserving mixed forward/reverse policy. An exclusive
+workspace may retain seed, program-output, and matrix storage. Each invocation
+uses fresh coordinates and the same ordered complete programs, checks native
+status, and publishes the matrix only after success. Failed calls cannot leave
+active seeds for the next call. This permits neither numerical result caching
+nor narrowing general initialization or parameter-sensitivity seed domains.
+
 An algebraic block's residual selection may group logical outputs of the same
 canonical program when construction proves unique, complete, repeatable source
 ownership. One residual evaluation executes each issued program once at the

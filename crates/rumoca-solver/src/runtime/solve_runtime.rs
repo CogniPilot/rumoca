@@ -128,6 +128,12 @@ pub trait CompiledSolveExpression {
 
 /// Backend-neutral callable for a checked forward-mode Solve-IR expression.
 pub trait CompiledSolveJacobianExpression {
+    fn prepare_projection(
+        &self,
+        _application: &solve::ProjectionJacobianApplication,
+    ) -> Result<Option<Rc<dyn CompiledSolveProjectionJacobian>>, String> {
+        Ok(None)
+    }
     /// Execute one already compiled program and return all of its local
     /// outputs. `false` declines this optional entry point before execution.
     fn call_program_outputs(
@@ -165,6 +171,18 @@ pub trait CompiledSolveJacobianExpression {
     ) -> Result<Option<f64>, String> {
         Ok(None)
     }
+}
+
+/// Complete application of an issued colored Jacobian at fresh coordinates.
+pub trait CompiledSolveProjectionJacobian {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), String>;
 }
 
 /// Backend-neutral callable for a causally ordered set of exact assignments.
@@ -325,6 +343,7 @@ pub struct SolveRuntime {
     initial_scalar_residual: PreparedScalarProgramBlock,
     compiled_implicit_rhs: Option<Rc<dyn CompiledSolveExpression>>,
     compiled_implicit_projection_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
+    compiled_algebraic_jacobians: Vec<Option<Rc<dyn CompiledSolveProjectionJacobian>>>,
     compiled_implicit_full_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
     compiled_initial_residual: Option<Rc<dyn CompiledSolveExpression>>,
     compiled_initial_residual_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
@@ -496,8 +515,10 @@ impl SolveRuntime {
                 backend.compile_selectable_expression(&implicit_scalar_programs),
             )
         });
-        let implicit_projection_scalar_jacobian =
-            to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)?;
+        let implicit_projection_scalar_jacobian = refresh_projection::projection_jacobian_source(
+            &model.artifacts.continuous.implicit_jacobian_v,
+            &continuous_structural,
+        )?;
         let compiled_implicit_projection_jacobian_v =
             execution_backend.as_ref().and_then(|backend| {
                 optional_compiled(
@@ -517,6 +538,12 @@ impl SolveRuntime {
             )
         });
         let implicit_scalar_rhs = PreparedScalarProgramBlock::new(implicit_scalar_programs)?;
+        let compiled_algebraic_jacobians = refresh_projection::prepare_projection_jacobians(
+            &continuous_structural,
+            &implicit_scalar_rhs,
+            &implicit_projection_scalar_jacobian,
+            compiled_implicit_projection_jacobian_v.as_deref(),
+        )?;
         let manifold = manifold_execution::PreparedManifoldProjection::new(
             model,
             execution_backend.as_deref(),
@@ -692,6 +719,7 @@ impl SolveRuntime {
             initial_scalar_residual: PreparedScalarProgramBlock::new(initial_scalar_residual)?,
             compiled_implicit_rhs,
             compiled_implicit_projection_jacobian_v,
+            compiled_algebraic_jacobians,
             compiled_implicit_full_jacobian_v,
             compiled_initial_residual,
             compiled_initial_residual_jacobian_v,

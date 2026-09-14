@@ -1,5 +1,8 @@
 mod grouped_jacobian;
 mod grouped_residual;
+mod prepared_jacobian;
+
+pub(super) use prepared_jacobian::{prepare_projection_jacobians, projection_jacobian_source};
 
 use crate::runtime::projection::{ScaledNewtonSystem, per_row_torn_block_sweep};
 use nalgebra::DVector;
@@ -334,6 +337,18 @@ impl<'a> ProjectionJacobian<'a> {
 }
 
 impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
+    fn eval_prepared_implicit_jacobian(
+        &self,
+        structure: &solve::JacobianStructure,
+        coordinates: (&[usize], &[usize]),
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        self.eval_prepared_jacobian(structure, coordinates, y, p, t, out)
+    }
+
     fn eval_implicit_residual_outputs(
         &self,
         selection: &solve::ProjectionOutputSelection,

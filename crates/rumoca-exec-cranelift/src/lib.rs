@@ -164,11 +164,26 @@ impl CompiledInputRequirements {
 }
 
 pub struct CompiledJacobianV {
-    jit: emit::CompiledJacobianRows,
+    jit: Rc<emit::CompiledJacobianRows>,
+    source: ScalarProgramBlock,
     output_placement: Option<OutputPlacement>,
 }
 
+pub use emit::projection_jacobian::CompiledProjectionJacobian;
+
 impl CompiledJacobianV {
+    /// Retain one exact colored application of this compiled source owner.
+    pub fn prepare_projection(
+        &self,
+        application: &rumoca_ir_solve::ProjectionJacobianApplication,
+    ) -> Result<CompiledProjectionJacobian, CompileError> {
+        if !self.source.shares_program_owner(application.source()) {
+            return Err(CompileError::Input(
+                "projection application belongs to a different scalar-program owner".into(),
+            ));
+        }
+        CompiledProjectionJacobian::new(self.jit.clone(), application.clone())
+    }
     /// Execute one existing program once, retaining all local outputs.
     pub fn call_program_outputs(
         &self,
@@ -388,7 +403,8 @@ pub fn compile_jacobian_scalar_program_block(
 ) -> Result<CompiledJacobianV, CompileError> {
     let jit = emit::compile_jacobian_rows(rows.programs())?;
     Ok(CompiledJacobianV {
-        jit,
+        jit: Rc::new(jit),
+        source: rows.clone(),
         output_placement: OutputPlacement::for_block(rows),
     })
 }
@@ -437,7 +453,8 @@ pub fn compile_jacobian_scalar_program_block_with_pure_calls(
 ) -> Result<CompiledJacobianV, CompileError> {
     let jit = emit::compile_jacobian_rows_with_pure_calls(rows.programs(), pure_calls.jit.clone())?;
     Ok(CompiledJacobianV {
-        jit,
+        jit: Rc::new(jit),
+        source: rows.clone(),
         output_placement: OutputPlacement::for_block(rows),
     })
 }
@@ -484,6 +501,7 @@ pub fn compile_exact_assignment_schedule_with_pure_calls(
 
 #[cfg(test)]
 mod tests {
+    mod projection_jacobian;
     mod selected_jvp;
     mod selected_residual;
 

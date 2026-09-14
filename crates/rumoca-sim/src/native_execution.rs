@@ -7,6 +7,8 @@ struct CraneliftExpression(rumoca_exec_cranelift::CompiledExpressionRows);
 
 struct CraneliftJacobianExpression(rumoca_exec_cranelift::CompiledJacobianV);
 
+struct CraneliftProjectionJacobian(rumoca_exec_cranelift::CompiledProjectionJacobian);
+
 struct CraneliftAssignmentSchedule(rumoca_exec_cranelift::CompiledAssignmentSchedule);
 
 struct CraneliftEventTransaction {
@@ -58,6 +60,15 @@ impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
 }
 
 impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpression {
+    fn prepare_projection(
+        &self,
+        application: &rumoca_ir_solve::ProjectionJacobianApplication,
+    ) -> Result<Option<Rc<dyn rumoca_solver::CompiledSolveProjectionJacobian>>, String> {
+        self.0
+            .prepare_projection(application)
+            .map(|compiled| Some(Rc::new(CraneliftProjectionJacobian(compiled)) as Rc<_>))
+            .map_err(|error| error.to_string())
+    }
     fn call_program_outputs(
         &self,
         program: usize,
@@ -97,6 +108,21 @@ impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpress
     ) -> Result<(), String> {
         self.0
             .call_with_external_tables(y, p, t, seed, external_tables, out)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl rumoca_solver::CompiledSolveProjectionJacobian for CraneliftProjectionJacobian {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), String> {
+        self.0
+            .call(y, p, t, external_tables, out)
             .map_err(|error| error.to_string())
     }
 }

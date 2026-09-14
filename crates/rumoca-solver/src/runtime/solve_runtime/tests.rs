@@ -1607,6 +1607,7 @@ fn direct_assignment_residual_row() -> Vec<solve::LinearOp> {
 mod grouped_projection_jvp;
 mod native_projection_assignments;
 mod native_projection_jvp;
+mod prepared_projection_jacobian;
 mod projection_output_mapping;
 mod projection_sensitivity;
 mod slot_updates;

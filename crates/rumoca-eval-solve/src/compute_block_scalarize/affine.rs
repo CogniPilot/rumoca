@@ -603,7 +603,7 @@ fn ordinal_delta(
     Ok((index_tuple[dimension] - base_tuple[dimension]) / step)
 }
 
-fn checked_tensor_output_count_optional(
+pub(super) fn checked_tensor_output_count_optional(
     indices: &[usize],
     fallback: usize,
     kind: &'static str,

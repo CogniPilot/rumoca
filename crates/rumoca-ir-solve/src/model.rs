@@ -105,6 +105,7 @@ pub struct JacobianStructure {
     coloring: ColumnColoring,
     output_evaluations: Box<[ProjectionJacobianOutputs]>,
     residual_output_evaluation: Option<ProjectionOutputSelection>,
+    jacobian_application: Option<ProjectionJacobianApplication>,
     linearization_repeatable: bool,
 }
 
@@ -116,6 +117,7 @@ impl JacobianStructure {
             coloring,
             output_evaluations: Box::default(),
             residual_output_evaluation: None,
+            jacobian_application: None,
             linearization_repeatable: false,
         }
     }
@@ -139,10 +141,15 @@ impl JacobianStructure {
     pub const fn linearization_is_repeatable(&self) -> bool {
         self.linearization_repeatable
     }
+
+    pub const fn jacobian_application(&self) -> Option<&ProjectionJacobianApplication> {
+        self.jacobian_application.as_ref()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct ContinuousStructuralArtifacts {
+    algebraic_jacobian_source: Option<ScalarProgramBlock>,
     implicit: Option<JacobianStructure>,
     algebraic_projection: Box<[JacobianStructure]>,
     algebraic_invalidates_earlier: Box<[bool]>,
@@ -161,6 +168,7 @@ impl ContinuousStructuralArtifacts {
         derivative: Option<StructuralPattern>,
     ) -> Self {
         Self {
+            algebraic_jacobian_source: None,
             implicit: implicit.map(JacobianStructure::derived),
             algebraic_projection: algebraic_projection
                 .into_iter()
@@ -178,6 +186,10 @@ impl ContinuousStructuralArtifacts {
 
     pub const fn implicit(&self) -> Option<&JacobianStructure> {
         self.implicit.as_ref()
+    }
+
+    pub const fn algebraic_jacobian_source(&self) -> Option<&ScalarProgramBlock> {
+        self.algebraic_jacobian_source.as_ref()
     }
 
     pub fn algebraic_projection(&self) -> &[JacobianStructure] {

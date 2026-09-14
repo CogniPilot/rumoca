@@ -1,6 +1,7 @@
 //! Construction-owned logical output projections of residual and JVP programs.
 
 mod program_effects;
+mod projection_application;
 
 #[cfg(test)]
 mod tests;
@@ -8,6 +9,8 @@ mod tests;
 use std::collections::BTreeMap;
 
 use super::*;
+
+pub use projection_application::{ProjectionJacobianApplication, ProjectionJacobianColor};
 
 /// One invocation of an existing tensor/scalar program and its selected outputs.
 #[derive(Clone, Debug)]
@@ -26,7 +29,7 @@ impl ProjectionProgramOutputs {
         self.output_count
     }
 
-    /// Pairs of program-local output offset and projection-local matrix row.
+    /// Pairs of program-local output offset and destination buffer offset.
     pub fn placements(&self) -> &[(usize, usize)] {
         &self.placements
     }
@@ -98,7 +101,13 @@ impl ContinuousStructuralArtifacts {
         let primal_outputs = ProgramOutputCatalog::new(primal);
         let y_outputs = ProgramOutputCatalog::new(solver_y);
         let full_outputs = ProgramOutputCatalog::new(full);
-        for (structure, block) in self.algebraic_projection.iter_mut().zip(&plan.blocks) {
+        self.algebraic_jacobian_source = Some(solver_y.clone());
+        for (index, (structure, block)) in self
+            .algebraic_projection
+            .iter_mut()
+            .zip(&plan.blocks)
+            .enumerate()
+        {
             structure.linearization_repeatable = structure.pattern.rows() as usize
                 == block.rows.len()
                 && structure.pattern.columns() as usize == block.y_indices.len()
@@ -116,6 +125,9 @@ impl ContinuousStructuralArtifacts {
                 primal_outputs.shared_selection(&residual_rows, block.rows.len());
             structure.output_evaluations =
                 color_output_evaluations(structure, block, &y_outputs, &full_outputs);
+            structure.jacobian_application = ProjectionJacobianApplication::derive(
+                index, structure, block, solver_y, &y_outputs,
+            );
         }
         self
     }

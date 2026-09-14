@@ -144,7 +144,7 @@ end SympyDecay;
     // the report template renders `dae.schema.version`, so every change to the
     // projected template shape bumps that constant and this literal with it.
     for expected in [
-        "checked-dae-report 5",
+        "checked-dae-report 6",
         "model SympyDecay",
         "parameter k real",
         "state x real",

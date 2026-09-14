@@ -129,7 +129,7 @@ fn coupled_program(derivative: bool) -> solve::ScalarProgramBlock {
     .unwrap()
 }
 
-fn coupled_model() -> solve::SolveModel {
+pub(super) fn coupled_model() -> solve::SolveModel {
     let mut model = mode_dependent_repivot_model();
     model.problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(coupled_program(false));

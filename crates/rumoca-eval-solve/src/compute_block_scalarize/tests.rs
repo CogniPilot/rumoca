@@ -8,6 +8,33 @@ fn fixture_span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
 }
 
+#[test]
+fn single_scalar_node_projection_retains_its_complete_checked_owner() {
+    for indices in [vec![0, 1], vec![7, 3]] {
+        let source = ScalarProgramBlock::with_output_indices(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 2.0 },
+                LinearOp::Const { dst: 1, value: 3.0 },
+                LinearOp::StoreOutputRange {
+                    start: 0,
+                    count: 2,
+                    stride: 1,
+                },
+            ]],
+            vec![fixture_span()],
+            indices.clone(),
+        )
+        .unwrap();
+        let block = ComputeBlock::from_scalar_program_block(source.clone());
+        let view = to_scalar_program_projection(&block).unwrap();
+        assert!(view.block().shares_program_owner(&source));
+        assert_eq!(view.block().output_indices(), indices);
+        assert_eq!(view.block().program_span(0), Some(fixture_span()));
+        assert_eq!(view.block().program_register_count(0), Some(2));
+        assert_eq!(view.sources(), [RefreshScalarProgramSource::checked(0, 0)]);
+    }
+}
+
 fn test_tensor_domain(count: usize) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {

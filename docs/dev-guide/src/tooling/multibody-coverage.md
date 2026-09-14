@@ -4,6 +4,82 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest focused work: prepare complete colored Jacobian applications
+
+The candidate binds each projection's colors and output placements to its
+immutable scalar-program owner. Scalar-program clones share their complete
+checked storage; canonical wire data and checked replay are unchanged. Native
+preparation retains code ownership and exclusive seed, output, and matrix
+scratch. Each call uses fresh coordinates, enters the external-table context
+once, preserves complete program order/status checks, and publishes only a
+successful matrix. Admission preserves mixed reverse/forward evaluation and
+the unrestricted initialization and parameter-sensitivity paths.
+
+`rolling-wheel/prepared-projection-profile-delta-1.json` records 111.058 ms for
+the candidate worker `f5c9fe7555cad3db316d2dca4061955091f9908401710e3ece3df4bfc0cc1ae7`
+and 126.144 ms for the immediately rechecked archived worker `0669bf79…`.
+That pair improves 11.96%; it is not a repeated-median estimate. Flat, DAE,
+structural DAE, Solve, and complete trace bytes match. RollingWheel remains
+slower than OMC; no speedup over OMC is claimed.
+
+The 897 focused tests and all-target/all-feature Clippy pass in
+`prepared-projection-focused-3.log`. Tests cover fresh coordinates, exact JVP
+placement, distinct source owners, retained native-code lifetime, external-table
+failure/recovery, mixed reverse admission, full parameter seed space, and atomic
+state preservation on failure. Earlier check logs retain a visibility error,
+a test dependency error, and a nesting lint; none counts as a passing run.
+
+`multibody-prepared-projection-canary` preserves every phase and band: nine
+high comparisons and 175 high initialization channels, with no skipped,
+missing, nonidentifiable, or deviating comparison. The five-model
+`multibody-prepared-projection-origin` likewise preserves four high comparisons
+and 2,960 high initialization channels; the existing ThermalGenerationOfFMUs
+EL005 refusal remains. Receipts are `prepared-projection-{canary,origin}-delta.json`.
+The precursor passes the complete `verify quick` suite in
+`verify-quick-prepared-projection-1.log`: lint, 243 architecture tests, 17 file-size
+checks, 7,674 workspace tests, doctests, and all 28 pinned corpus models. Its
+complete MSL sweep preserves 158/566 strict-high models (22/42 MultiBody), all
+20,379 initialization channels high, 18 tracked exclusions, zero missing or
+nonidentifiable traces, and zero deviations. Every phase and band matches the
+retained-workspace cohort (`prepared-projection-quick-full-delta.json`).
+
+Review then found a stale-source counterexample: replacing the canonical JVP
+while retaining projection metadata silently used the old expressions. The
+reduced negative control fails in `prepared-source-owner-red-1.log`. Scalar
+views now retain the exact canonical owner when borrowing one scalar node;
+runtime rejects stale metadata and declines optional preparation for materialized
+views without that identity. The existing output-extent overflow check remains
+mandatory. All 1,090 focused tests and affected-package all-target/all-feature
+Clippy pass in `prepared-source-owner-focused-2.log`.
+
+The final ordinary worker `21e0c64e50737cea054027ce6aee748fb02272e374f8cc13ab5087f603944885`
+runs in 113.944 ms against an immediate 134.107 ms archived-baseline recheck
+(15.03% for that pair). All five IR/trace artifacts remain byte-identical;
+`prepared-source-owner-profile-delta-1.json` records the comparison. The final
+`multibody-prepared-source-owner-canary` retains the same nine high comparisons,
+175 high initialization channels, and all twenty phase/band rows, with zero
+skipped, missing, nonidentifiable, or deviating comparisons.
+
+The final `multibody-prepared-source-owner-full-11` sweep passes with 158/566
+strict-high models (22/42 MultiBody), 158 comparisons, 18 tracked exclusions,
+zero missing/nonidentifiable traces, and zero deviations. All 20,379 initialization
+channels remain high. Every band matches the retained-workspace cohort; the
+existing GearConstraint failure changes from StructuralAnalysis EL005 to an
+attempt timeout, without producing a trace (`prepared-source-owner-full-delta.json`).
+The combined `verify full` attempt preserves every MSL phase and band, including
+GearConstraint's existing EL005 refusal
+(`prepared-source-owner-combined-full-msl-delta.json`). Lint, architecture,
+7,677 workspace tests, doctests, 28 pinned corpus models, examples, and binary
+builds pass. The template report test exposed a stale version-5 expectation
+against the canonical template schema version 6; the literal is corrected and
+all six report regressions pass (`template-schema-version-6-2.log`).
+Coverage increases from 77.27% to 78.34%, but the unchanged per-package
+uncovered-function ratchet fails. The failed gate report is retained beside
+`verify-full-prepared-source-owner-1.log`; no baseline is promoted. The attempt
+was stopped with exit 130 during documentation work after those failures to
+resume focused performance work. Remaining documentation/editor gates and a
+complete green release sweep are outstanding.
+
 ## Verification checkpoint: remove asserted projection preconditions
 
 `rolling-wheel/verify-quick-projection-milestone-1.log` preserves the failed

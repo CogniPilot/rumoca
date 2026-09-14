@@ -34,6 +34,7 @@ use rumoca_core::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 pub use certificate::{
     derive_root_reachable_runtime_rows, derive_root_relation_refresh_roles,
@@ -108,6 +109,11 @@ impl ExternalTables {
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct ScalarProgramBlock {
+    data: Arc<ScalarProgramData>,
+}
+
+#[derive(Debug, Default)]
+struct ScalarProgramData {
     programs: Vec<Vec<LinearOp>>,
     program_spans: Vec<Span>,
     output_indices: Vec<usize>,
@@ -139,9 +145,9 @@ impl Serialize for ScalarProgramBlock {
         S: serde::Serializer,
     {
         ScalarProgramBlockWireRef {
-            programs: &self.programs,
-            program_spans: &self.program_spans,
-            output_indices: &self.output_indices,
+            programs: &self.data.programs,
+            program_spans: &self.data.program_spans,
+            output_indices: &self.data.output_indices,
         }
         .serialize(serializer)
     }
@@ -159,6 +165,11 @@ impl<'de> Deserialize<'de> for ScalarProgramBlock {
 }
 
 impl ScalarProgramBlock {
+    /// Whether both handles retain the same complete immutable program owner.
+    pub fn shares_program_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.data, &other.data)
+    }
+
     /// Constructs programs whose stored outputs use dense local indices.
     ///
     /// Provenance is mandatory at the API boundary:
@@ -217,10 +228,12 @@ impl ScalarProgramBlock {
         program_register_counts: Box<[usize]>,
     ) -> Self {
         Self {
-            programs,
-            program_spans,
-            output_indices,
-            program_register_counts,
+            data: Arc::new(ScalarProgramData {
+                programs,
+                program_spans,
+                output_indices,
+                program_register_counts,
+            }),
         }
     }
 
@@ -252,32 +265,32 @@ impl ScalarProgramBlock {
     }
 
     pub fn program_span(&self, row: usize) -> Option<Span> {
-        self.program_spans.get(row).copied()
+        self.data.program_spans.get(row).copied()
     }
 
     pub fn programs(&self) -> &[Vec<LinearOp>] {
-        &self.programs
+        &self.data.programs
     }
 
     pub fn program(&self, index: usize) -> Option<&[LinearOp]> {
-        self.programs.get(index).map(Vec::as_slice)
+        self.data.programs.get(index).map(Vec::as_slice)
     }
 
     pub fn program_spans(&self) -> &[Span] {
-        &self.program_spans
+        &self.data.program_spans
     }
 
     /// Exact register capacity proved when this program entered the block.
     pub fn program_register_count(&self, index: usize) -> Option<usize> {
-        self.program_register_counts.get(index).copied()
+        self.data.program_register_counts.get(index).copied()
     }
 
     pub fn output_indices(&self) -> &[usize] {
-        &self.output_indices
+        &self.data.output_indices
     }
 
     pub fn first_source_span(&self) -> Option<Span> {
-        self.program_spans.first().copied()
+        self.data.program_spans.first().copied()
     }
 
     /// Number of `StoreOutput` ops in a single program.
@@ -298,14 +311,16 @@ impl ScalarProgramBlock {
 
     /// Total number of `StoreOutput` ops produced by this block.
     pub fn stored_output_count(&self) -> usize {
-        self.programs
+        self.data
+            .programs
             .iter()
             .map(|program| Self::program_output_count(program))
             .sum()
     }
 
     pub fn uses_linear_solve_component(&self) -> bool {
-        self.programs
+        self.data
+            .programs
             .iter()
             .any(|program| linear_ops_use_linear_solve_component(program))
     }
@@ -316,10 +331,11 @@ impl ScalarProgramBlock {
     /// its stored-output ordinal and then finds the owning program.
     pub fn program_index_for_output(&self, output: usize) -> Option<usize> {
         let mut remaining = self
+            .data
             .output_indices
             .iter()
             .position(|output_index| *output_index == output)?;
-        for (idx, program) in self.programs.iter().enumerate() {
+        for (idx, program) in self.data.programs.iter().enumerate() {
             let count = Self::program_output_count(program);
             if remaining < count {
                 return Some(idx);
@@ -343,11 +359,12 @@ impl ScalarProgramBlock {
     }
 
     pub fn row_count(&self) -> usize {
-        self.programs.len()
+        self.data.programs.len()
     }
 
     pub fn output_count(&self) -> usize {
-        self.output_indices
+        self.data
+            .output_indices
             .iter()
             .copied()
             .max()
@@ -355,7 +372,8 @@ impl ScalarProgramBlock {
     }
 
     pub fn uses_local_contiguous_output_indices(&self) -> bool {
-        self.output_indices
+        self.data
+            .output_indices
             .iter()
             .copied()
             .eq(0..self.stored_output_count())
@@ -375,7 +393,7 @@ impl ScalarProgramBlock {
                 })?;
             Ok((output_cursor..end).collect())
         } else {
-            Ok(self.output_indices.clone())
+            Ok(self.data.output_indices.clone())
         }
     }
 
@@ -399,7 +417,7 @@ impl ScalarProgramBlock {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.programs.is_empty()
+        self.data.programs.is_empty()
     }
 
     fn first_program_span(&self) -> Option<Span> {

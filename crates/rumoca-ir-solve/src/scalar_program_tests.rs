@@ -29,6 +29,8 @@ fn logical_output_bindings_preserve_mixed_program_order_on_wire_replay() {
     .unwrap();
     let wire = serde_json::to_value(&block).unwrap();
     let replay: ScalarProgramBlock = serde_json::from_value(wire.clone()).unwrap();
+    assert!(block.shares_program_owner(&block.clone()));
+    assert!(!block.shares_program_owner(&replay));
     for owner in [&block, &replay] {
         let bindings = owner
             .output_bindings()

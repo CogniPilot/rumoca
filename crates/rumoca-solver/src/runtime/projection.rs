@@ -56,6 +56,18 @@ pub(crate) struct AlgebraicProjectionArgs<'a> {
 }
 
 pub(crate) trait ImplicitProjectionModel {
+    fn eval_prepared_implicit_jacobian(
+        &self,
+        _structure: &solve::JacobianStructure,
+        _coordinates: (&[usize], &[usize]),
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        _out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        Ok(false)
+    }
+
     fn algebraic_seed_linearization(
         &self,
         block_index: usize,

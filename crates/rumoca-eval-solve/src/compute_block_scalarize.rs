@@ -6,11 +6,11 @@ use rumoca_ir_solve::{
 mod affine;
 mod dense;
 
-use affine::scalarize_affine_rows_with_span;
 pub use affine::{
     checked_tensor_output_count, scalar_program_output_count, scalar_program_output_indices,
     tensor_output_indices,
 };
+use affine::{checked_tensor_output_count_optional, scalarize_affine_rows_with_span};
 pub(crate) use affine::{tensor_output_count, validate_affine_stride_metadata};
 use dense::{MatMulScalarizeInput, scalarize_linsolve, scalarize_matmul};
 
@@ -53,6 +53,9 @@ pub fn to_scalar_program_projection(
     block
         .validate_shape_contract("scalarize compute block")
         .map_err(ScalarizeError::from)?;
+    if let [ComputeNode::ScalarPrograms(source)] = block.nodes.as_slice() {
+        return scalar_owner_projection(source);
+    }
     let mut collector = ScalarProgramCollector::default();
     collector.visit_compute_block(block)?;
     let block = ScalarProgramBlock::with_output_indices(
@@ -70,6 +73,33 @@ pub fn to_scalar_program_projection(
     Ok(ScalarProgramProjection {
         block,
         sources: collector.sources.into_boxed_slice(),
+    })
+}
+
+fn scalar_owner_projection(
+    source: &ScalarProgramBlock,
+) -> Result<ScalarProgramProjection, ScalarizeError> {
+    let span = source.first_source_span();
+    checked_tensor_output_count_optional(source.output_indices(), 0, "scalar programs", span)?;
+    let mut sources = Vec::new();
+    reserve_vec_additional_optional(
+        &mut sources,
+        source.programs().len(),
+        "scalar program sources",
+        span,
+    )?;
+    for program_index in 0..source.programs().len() {
+        let identity = RefreshScalarProgramSource::checked(0, program_index).ok_or_else(|| {
+            ScalarizeError::ShapeContract {
+                message: "scalar program source identity exceeds u32".to_string(),
+                span,
+            }
+        })?;
+        sources.push(Some(identity));
+    }
+    Ok(ScalarProgramProjection {
+        block: source.clone(),
+        sources: sources.into_boxed_slice(),
     })
 }
 
