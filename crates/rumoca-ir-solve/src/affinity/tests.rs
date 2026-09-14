@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn identity_matrices_preserve_affinity_without_expanding_their_extent() {
+    for size in [3, 4096] {
+        let entries = size * size;
+        let mut program = vec![
+            LinearOp::TensorIdentity {
+                dst_start: 0,
+                size,
+                lanes: 1,
+            },
+            LinearOp::StoreOutputRange {
+                start: 0,
+                count: entries,
+                stride: 1,
+            },
+        ];
+        let targets = BTreeSet::from([0]);
+        assert_eq!(
+            program_degree(&program, &targets, entries - 1),
+            Some(Degree::Independent)
+        );
+        program.pop();
+        program.extend([
+            LinearOp::TensorLoad {
+                dst_start: entries as u32,
+                input: TensorInputKind::Y,
+                input_start: 0,
+                count: size,
+                seed_start: None,
+                lanes: 1,
+            },
+            LinearOp::MatrixMultiply {
+                dst_start: (entries + size) as u32,
+                lhs_start: 0,
+                rhs_start: entries as u32,
+                rows: size,
+                inner: size,
+                columns: 1,
+                lanes: 1,
+            },
+            LinearOp::StoreOutputRange {
+                start: (entries + size) as u32,
+                count: size,
+                stride: 1,
+            },
+        ]);
+        assert_eq!(program_degree(&program, &targets, 0), Some(Degree::Affine));
+        assert_eq!(
+            program_degree(&program, &BTreeSet::new(), size - 1),
+            Some(Degree::Independent)
+        );
+    }
+}
+
+#[test]
 fn concatenation_keeps_affine_and_nonlinear_tensor_bounds() {
     let mut program = multiplied_values();
     program.pop();

@@ -204,7 +204,9 @@ fn operation_degree(
     let read = |register| registers.read(register, 1);
     Some(match *operation {
         LinearOp::Const { value, .. } if value.is_finite() => Degree::Independent,
-        LinearOp::LoadP { .. } | LinearOp::LoadTime { .. } => Degree::Independent,
+        LinearOp::LoadP { .. }
+        | LinearOp::LoadTime { .. }
+        | LinearOp::TensorIdentity { lanes: 1, .. } => Degree::Independent,
         LinearOp::LoadY { index, .. } => {
             if targets.contains(&index) {
                 Degree::Affine

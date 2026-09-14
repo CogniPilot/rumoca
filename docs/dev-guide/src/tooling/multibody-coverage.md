@@ -38,6 +38,64 @@ is `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`.
 The focused and core validation below passes. Combined quick/full validation
 remains open; this cohort result is not a baseline promotion or release gate.
 
+## Focused runtime repair: identity tensors retain their constant degree
+
+The current RollingWheel dynamics block has 24 unknowns and thirteen tear
+variables. Replaying its exact checked output dependencies with the existing
+candidate-aware tearing algorithm still produces thirteen tears, so changing
+the greedy candidate selection alone does not address the cost. Its issued
+affine certificate is false. OMC's corresponding generated C uses a
+six-variable linear system (`RollingWheel_03lsy.c`, system 731, symbolic
+Jacobian method), rather than an analogous nonlinear solve.
+
+The temporary affinity probe reads the captured checked Solve programs and
+locates the first divergence: 21 block rows prove affine, but rows 770–772,
+the three outputs of program 212, have no degree proof. Their source is
+`Body.mo`'s `a_0 = der(v_0)`. Program 212's second operation constructs an
+identity tensor; the degree checker lacks that constant operation and stops
+before reaching the remaining arithmetic. It has not proved a nonlinear
+equation. `shared-materialization-tearing-inspect-2.log` records the unchanged
+tearing counts, and `shared-materialization-affinity-probe-1.log` records the
+three missing proofs. Both diagnostics are read-only model replays.
+
+The generic degree checker now recognizes a primal `TensorIdentity` as
+independent of all solver unknowns. The reduced regression fails in
+`identity-affinity-red-1.log` and passes after the change. It checks constant
+identity outputs and their affine product with unknown vectors at extents 3
+and 4096, retaining compact ranges rather than enumerating matrix entries.
+The actual captured block then proves all 24 residuals affine
+(`identity-affinity-probe-green-1.log`). The temporary source probe is removed;
+all other unsupported operations, source evaluation, rank checks, and fresh
+affine-coordinate recovery remain unchanged under the existing
+SPEC_0036/0043 §6a degree-proof profile.
+
+`identity-affinity-focused-1.log` passes all 315 Solve IR tests, 111 projection
+tests, formatting, and Solve IR all-target/all-feature Clippy. The normal
+`target/msl/multibody-identity-affinity-origin` five-target gate retains all
+four high MultiBody models, all 2,960 initialization channels, and the thermal
+GenerationOfFMUs `EL005` refusal. No comparison is skipped, missing, excluded,
+nonidentifiable, or deviating. RollingWheel Sim falls from 0.782056 to
+0.286439 seconds, retaining all 184 trajectory and initialization channels
+high. Receipt: `rolling-wheel/identity-affinity-origin-delta.json`, at
+`3723c597` plus worktree digest
+`17513b4fed4c226a5f93f65bed222c2b6f23a788242c188d88a7e0f8c2806f81`.
+
+The controlled actual-worker `identity-affinity-rolling-profile-1` measures
+Sim 0.288191 seconds and 0.29 seconds user CPU, with zero major faults.
+The exact worker is archived for symbolization; 285 samples have zero reported
+loss. However, 49.47% of samples have unresolved shared-object identity and no
+JIT map was captured, so this profile does not yet attribute the remaining
+generated-code cost. It earns no separate coverage credit. The fixed twenty
+canary members retain their previous phases and bands: nine compared models
+and all 175 initialization channels high, eleven unchanged refusals, and no
+skipped, missing, excluded, nonidentifiable, or deviating comparison. Receipt:
+`rolling-wheel/identity-affinity-canary-delta.json`. RollingWheel remains
+slower than OMC; no closed-form trajectory or completed runtime optimization
+is claimed from this algebraic linearity proof. All 99 Rumoca library tests,
+595 core tests, and seventeen architecture/spec gates pass in
+`rolling-wheel/identity-affinity-core-suite-1.log`. The complete cohort and
+combined quick/full verification have not yet been rerun after this change.
+
 ## Previous complete cohort: fixed-anchor repair and remaining regressions
 
 The complete `target/msl/multibody-fixed-anchor-full` run at
