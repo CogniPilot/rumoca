@@ -4,6 +4,37 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Latest focused work: bound construction cost
+
+The `RollingWheelSetDriving` Solve timeout below was traced to repeated
+operation-prefix scans and repeated searches through causal candidates. A
+compact, source-bound destination-range index now supplies assignment producer
+lookups; a dependency queue preserves the exact earliest-ready causal order.
+Neither transformation expands tensor coordinates or changes numerical order.
+The normal `target/msl/multibody-causal-ready-origin` gate compares one model:
+all 892 trajectory and 892 initialization channels are high, with zero skipped,
+missing, nonidentifiable, or deviating results. Solve takes 8.149 seconds under
+the unchanged 10-second budget; Sim takes 1.206 seconds. This restores the
+originating focused case; a complete cohort confirmation remains pending.
+
+The fixed `target/msl/multibody-causal-ready-canary` has no phase, status, or
+band changes against `multibody-pure-input-reuse-canary`: nine models compared
+high, all 175 initialization channels high, zero skipped/missing/nonidentifiable
+or deviating results, and eleven unchanged refusals. The receipt is
+`rolling-wheel/causal-ready-canary-delta.json`, worktree digest
+`8681bf2a90c29ab9a8f0a860f95a5f9b783baef09a95fed4fc82a76ce6388ca2`.
+The 519 IR/Solve/native and 162 structural library tests pass. Formatting,
+all-target/all-feature Clippy for the five affected compiler/runtime crates,
+and `rumoca` library/core/gate suites pass. The first Clippy attempt rejected
+a nested test closure; extracting its linear reference lookup fixed that lint.
+
+The new controlled RollingWheel Sim profile measures 1.498 seconds and retains
+the identical trace. It collects 1,490 CPU samples with none lost. Native
+manifold Jacobian rows account for 14.37% of samples, algebraic projection rows
+12.44%, and the full implicit Jacobian 1.75%; typed-call helpers add further
+work. These are self costs, not inclusive estimates. The OMC speed target
+remains unmet.
+
 ## Latest focused work: reuse geometry without changing the trace
 
 On top of `0dc3858bd6f0a8864f354df4560157395634c192`, scalar Solve construction
@@ -27,11 +58,35 @@ nonidentifiable/deviating results, and eleven unchanged refusals. Worktree
 digest: `e333300748c075ba3708f0749572e75e452536c98726a4e6d610e4603c73b8dc`.
 The exact receipt is `rolling-wheel/pure-input-reuse-canary-delta.json`.
 
-The OMC performance gap remains open. The latest full-cohort count below is
-unchanged. Details and reduced RED/GREEN evidence are in the
+The OMC performance gap remains open. Details and reduced RED/GREEN evidence are in the
 [generated-kernel comparison](rolling-wheel-kernel-comparison.md).
 
 ## Latest complete measurement
+
+`target/msl/multibody-pure-input-reuse-full` passes the checked-in quality
+gate at commit `716bba8bef01f04259655e88dcb0e6112b66011a` in 185.80 seconds.
+The comparator measures **156/566 strict-high (27.56%)**: 156 models compared,
+eighteen reviewed exclusions skipped, zero missing/nonidentifiable traces,
+and zero deviating channels. All 18,520 initial-condition channels are high.
+MultiBody remains **20/42 high**, with a changed membership.
+
+Against `multibody-seed-linearization-full`, `Rectifier`,
+`CompareTransformers`, and `DoublePendulumInitTip` advance from refusal to
+strict-high. `RollingWheelSetDriving` loses its previous strict-high result:
+the worker exceeds the 10-second Solve construction budget before simulation.
+The aggregate gain does not excuse that regression. The focused repair above
+still requires complete cohort confirmation; no regression-free milestone or
+baseline promotion is claimed. Fourteen models change phase/status details in total. The exact
+receipt is `rolling-wheel/pure-input-reuse-full-delta.json`.
+
+The worktree digest is
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`;
+the comparator artifact SHA-256 is
+`dbc9374983f1918a29fb78850d05593a7a3becee194c72d0c000789727fe7b56`.
+The tracked source was committed; the preserved untracked communication file
+accounts for the dirty-worktree marker. Combined quick/full remain pending.
+
+## Previous complete measurement: shared seed linearization
 
 `target/msl/multibody-seed-linearization-full` passes at commit
 `5fbcc036d50f1124b99069797a64a41fcd500d00`, working-tree digest

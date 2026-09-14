@@ -94,12 +94,3 @@ impl<'a> ScalarProgramYDependency<'a> {
             .is_none_or(|dependencies| dependencies.contains(&target))
     }
 }
-
-pub(super) fn register_is_written_by(operation: &LinearOp, register: u32) -> bool {
-    operation.dst_register().is_some_and(|start| {
-        u32::try_from(operation.dst_register_count())
-            .ok()
-            .and_then(|count| start.checked_add(count))
-            .is_some_and(|end| register >= start && register < end)
-    })
-}

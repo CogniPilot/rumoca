@@ -52,7 +52,7 @@ SHA-256 is `0ce8e06306ddafc641727942e5dd79dd594304c910755fd32a53a02f6ecab541`.
 Both the profiled and counted traces are byte-identical to the preceding
 auxiliary-primal trace, SHA-256
 `f46cbcf4bf00620007139eb17416c2ece8c3ddf5665e577a3c4e22ef2dadc47c`.
-The profile collected only 42 samples, so it is insufficient to rank remaining
+That profile collected only 42 samples, so it is insufficient to rank remaining
 hotspots precisely. OMC's earlier Sim and total-process timers have different
 boundaries; the table does not claim a directly comparable OMC speed ratio.
 
@@ -73,8 +73,44 @@ missing, nonidentifiable, or deviating results, and eleven unchanged refusals.
 `e333300748c075ba3708f0749572e75e452536c98726a4e6d610e4603c73b8dc`.
 The 515 IR/Solve/native library tests, 99 `rumoca` library tests, and 582 core
 regressions pass. All-target/all-feature Clippy for the three changed crates
-plus `rumoca` also passes. Combined quick/full and the next complete cohort
-comparison remain pending.
+plus `rumoca` also passes. The subsequent complete comparison at
+`716bba8bef01f04259655e88dcb0e6112b66011a`,
+`target/msl/multibody-pure-input-reuse-full`, measures 156/566 strict-high:
+156 compared, eighteen reviewed exclusions skipped, zero missing,
+nonidentifiable, or deviating results. All 18,520 initialization channels are
+high. Three models gain high parity, but `RollingWheelSetDriving` loses its
+previous pass to a 10-second Solve construction timeout. That regression
+remains visible despite the aggregate gain; the exact per-model delta is
+`pure-input-reuse-full-delta.json`. Combined quick/full remain pending.
+
+The construction regression is now repaired in the focused
+`target/msl/multibody-causal-ready-origin` gate: one model compared high, all
+892 trajectory and initialization channels high, zero skipped/missing/
+nonidentifiable/deviating results. A compact destination-range producer index
+removes repeated prefix scans and per-register uniqueness expansion. A causal
+dependency queue replaces repeated whole-candidate searches while preserving
+the exact earliest-ready order, including cycles and external dependencies.
+Solve falls from a diagnostic 10.137 seconds to 8.226 seconds; the normal gate
+measures 8.149 seconds under its unchanged 10-second budget. The fixed canary
+has no phase/status/band delta, nine compared high and eleven unchanged
+refusals (`causal-ready-canary-delta.json`). Complete cohort confirmation is
+still pending. Four compact-range regressions and an exhaustive comparison of
+all 512 directed three-node graphs prove the construction-order obligations.
+
+A controlled actual-worker capture starts perf before compilation and enables
+sampling only for the declared Sim interval. It measures 1.498229 seconds,
+1.48 seconds user CPU, 1,490 samples at 997 Hz, no lost samples, and the same
+trace digest above. The exact worker SHA-256 is
+`7f0ffba1c34851331c8ab20bd1546c825cd4c48bc1b4875368bc51edfcbe8eaa`.
+All native instruction addresses resolve against that process's archived JIT
+map. Repeated row labels are distinguished by their address and the runtime's
+projection/full/manifold/initial construction order: manifold rows account for
+14.37% of samples, algebraic projection rows 12.44%, full implicit rows 1.75%,
+and initialization rows zero. Typed directional calls account for 15.91% and
+typed primal calls 9.32%, without reliable inclusive attribution to the caller.
+The six dependent states and repeated directional geometry remain concrete
+leads. Evidence is in `rolling-wheel-controlled-profile-1/`; this is a profile,
+not a new cohort or a comparable OMC speed claim.
 
 A temporary counter probe on the previous kernel ruled out callback count as
 the whole explanation: Rumoca made 3,267 RHS and 742 directional requests in

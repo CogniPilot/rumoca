@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use super::{ScalarProgramYDependency, producer_position};
+use super::{ProgramPrefix, ScalarProgramYDependency, producer_position};
 use crate::{LinearOp, Reg, TensorInputKind};
 use operation::{OperandRange, ProjectionOperation};
 
@@ -41,7 +41,7 @@ impl AffineTensorProjection {
 }
 
 pub(super) fn derive(
-    program: &[LinearOp],
+    program: ProgramPrefix<'_>,
     output: Reg,
     target: usize,
     dependencies: &ScalarProgramYDependency<'_>,
@@ -53,11 +53,11 @@ pub(super) fn derive(
         if steps.contains_key(&position) {
             continue;
         }
-        let operation = program.get(position)?;
+        let operation = program.operation(position)?;
         let start = operation.dst_register()?;
         let count = operation.dst_register_count();
         let rule = projection_rule(operation, target, dependencies)?;
-        reject_zero_scalar_factor(program.get(..position)?, operation, rule)?;
+        reject_zero_scalar_factor(program.before(position)?, operation, rule)?;
         match rule {
             ProjectionRule::Independent => {
                 independent_ranges.insert((start, count));
@@ -75,7 +75,7 @@ pub(super) fn derive(
                     .into_iter()
                     .flatten()
                 {
-                    require_producers(program.get(..position)?, operand, &mut pending)?;
+                    require_producers(program.before(position)?, operand, &mut pending)?;
                 }
             }
         }
@@ -95,7 +95,7 @@ pub(super) fn derive(
         output,
         steps: steps
             .into_iter()
-            .map(|(position, rule)| Some((program.get(position)?.dst_register()?, rule)))
+            .map(|(position, rule)| Some((program.operation(position)?.dst_register()?, rule)))
             .collect::<Option<Vec<_>>>()?
             .into(),
         independent_ranges: independent_ranges
@@ -106,7 +106,7 @@ pub(super) fn derive(
 }
 
 fn reject_zero_scalar_factor(
-    program: &[LinearOp],
+    program: ProgramPrefix<'_>,
     operation: &LinearOp,
     rule: ProjectionRule,
 ) -> Option<()> {
@@ -124,7 +124,7 @@ fn reject_zero_scalar_factor(
         ProjectionRule::RightProduct => *lhs,
         _ => return Some(()),
     };
-    match program.get(producer_position(program, factor)?)? {
+    match program.operation(producer_position(program, factor)?)? {
         LinearOp::Const { value, .. } if *value == 0.0 || !value.is_finite() => None,
         _ => Some(()),
     }
@@ -159,7 +159,7 @@ fn projection_rule(
 }
 
 fn require_producers(
-    program: &[LinearOp],
+    program: ProgramPrefix<'_>,
     range: OperandRange,
     pending: &mut BTreeSet<usize>,
 ) -> Option<()> {
@@ -167,7 +167,7 @@ fn require_producers(
     let end = range.end()?;
     while cursor < end {
         let position = producer_position(program, cursor)?;
-        let operation = &program[position];
+        let operation = program.operation(position)?;
         let operation_end = operation
             .dst_register()?
             .checked_add(u32::try_from(operation.dst_register_count()).ok()?)?;

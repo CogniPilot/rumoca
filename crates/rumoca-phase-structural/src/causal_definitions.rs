@@ -8,6 +8,7 @@
 
 #[cfg(test)]
 mod indexed_alias_tests;
+mod order;
 mod scalar_definitions;
 
 use std::collections::{HashMap, HashSet};
@@ -248,10 +249,6 @@ fn acyclic_target_order<'dae>(
     view: dae::DaeView<'dae>,
     candidates: &[DefinitionCandidate<'dae>],
 ) -> CausalOrder<'dae> {
-    let targets = candidates
-        .iter()
-        .map(|(_, target, _)| target.index())
-        .collect::<HashSet<_>>();
     let dependencies = candidates
         .iter()
         .map(|(_, target, value)| (target.index(), expression_dependencies(view, *value)))
@@ -260,17 +257,8 @@ fn acyclic_target_order<'dae>(
     let mut closed = HashSet::new();
     let mut event_held = HashSet::new();
     let mut order = Vec::with_capacity(candidates.len());
-    while order.len() < candidates.len() {
-        let Some((_, target, _)) = candidates.iter().find(|(_, target, _)| {
-            !emitted.contains(&target.index())
-                && dependencies[&target.index()]
-                    .algebraic
-                    .iter()
-                    .filter(|dependency| targets.contains(dependency))
-                    .all(|dependency| emitted.contains(dependency))
-        }) else {
-            break;
-        };
+    for position in order::candidate_order(candidates, &dependencies) {
+        let (_, target, _) = &candidates[position];
         let target_dependencies = &dependencies[&target.index()];
         // Topological emission permits externally solved algebraics. Only a
         // transitively closed definition can safely seed component coverage.

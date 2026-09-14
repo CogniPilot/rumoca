@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
-use super::{ScalarProgramYDependency, binary_operands, producer_position, target_load_index};
+use super::{
+    ProgramPrefix, ScalarProgramYDependency, binary_operands, producer_position, target_load_index,
+};
 use crate::{BinaryOp, LinearOp, Reg, TargetAssignmentShape, UnaryOp};
 
 pub(super) fn derive(
-    program: &[LinearOp],
+    program: ProgramPrefix<'_>,
     output: Reg,
     target: usize,
     dependencies: &ScalarProgramYDependency<'_>,
@@ -28,7 +30,7 @@ pub(super) fn derive(
             }
         } else {
             for (operand, scale) in additive_operands(program, register)?.into_iter().flatten() {
-                let producer = producer_position(program.get(..position)?, operand)?;
+                let producer = producer_position(program.before(position)?, operand)?;
                 accumulate(&mut pending, (producer, operand), weight * scale)?;
             }
         }
@@ -56,7 +58,7 @@ fn accumulate<K: Ord>(weights: &mut BTreeMap<K, f64>, key: K, weight: f64) -> Op
     value.is_finite().then_some(())
 }
 
-fn additive_operands(program: &[LinearOp], register: Reg) -> Option<[Option<(Reg, f64)>; 2]> {
+fn additive_operands(program: ProgramPrefix<'_>, register: Reg) -> Option<[Option<(Reg, f64)>; 2]> {
     if let Some((op @ (BinaryOp::Add | BinaryOp::Sub), lhs, rhs)) =
         binary_operands(program, register)
     {
@@ -65,7 +67,7 @@ fn additive_operands(program: &[LinearOp], register: Reg) -> Option<[Option<(Reg
             Some((rhs, if op == BinaryOp::Add { 1.0 } else { -1.0 })),
         ]);
     }
-    match program.get(producer_position(program, register)?)? {
+    match program.operation(producer_position(program, register)?)? {
         LinearOp::Move { src, .. } => Some([Some((*src, 1.0)), None]),
         LinearOp::Unary {
             op: UnaryOp::Neg,

@@ -1,8 +1,10 @@
 mod additive;
+mod producers;
 pub(super) mod tensor_affine;
 
-use super::dependency::{ScalarProgramYDependency, register_is_written_by, y_load_indices};
+use super::dependency::{ScalarProgramYDependency, y_load_indices};
 use crate::{BinaryOp, LinearOp, StridedOperand, TargetAssignmentShape, UnaryOp};
+use producers::{ProgramPrefix, UniqueProgram};
 
 pub(super) fn canonical_assignment_shape_for_output(
     program: &[LinearOp],
@@ -11,15 +13,13 @@ pub(super) fn canonical_assignment_shape_for_output(
 ) -> Option<TargetAssignmentShape> {
     let (output, store_position) = store_output_registers(program).nth(output_offset)?;
     let prefix = program.get(..store_position)?;
-    if !writes_unique_registers(prefix) {
-        return None;
-    }
+    let producers = UniqueProgram::new(prefix)?;
     let dependencies = ScalarProgramYDependency::new(prefix);
-    canonical_assignment_shape(prefix, output, target_y_index, &dependencies)
+    canonical_assignment_shape(producers.view(), output, target_y_index, &dependencies)
 }
 
 fn canonical_assignment_shape(
-    prefix: &[LinearOp],
+    prefix: ProgramPrefix<'_>,
     output: u32,
     target_y_index: usize,
     dependencies: &ScalarProgramYDependency<'_>,
@@ -59,7 +59,7 @@ fn canonical_assignment_shape(
 }
 
 fn zero_assignment_shape(
-    prefix: &[LinearOp],
+    prefix: ProgramPrefix<'_>,
     output: u32,
     target_y_index: usize,
 ) -> Option<TargetAssignmentShape> {
@@ -86,12 +86,13 @@ pub fn derive_target_assignment_shapes(
         let Some(prefix) = program.get(..store_position) else {
             continue;
         };
-        if !writes_unique_registers(prefix) {
+        let Some(producers) = UniqueProgram::new(prefix) else {
             continue;
-        }
+        };
         let dependencies = ScalarProgramYDependency::new(prefix);
         for target in y_load_indices(prefix) {
-            let Some(shape) = canonical_assignment_shape(prefix, output, target, &dependencies)
+            let Some(shape) =
+                canonical_assignment_shape(producers.view(), output, target, &dependencies)
             else {
                 continue;
             };
@@ -117,25 +118,8 @@ pub fn derive_target_assignment_shape_for_output(
     canonical_assignment_shape_for_output(program, output_offset, target_y_index)
 }
 
-fn writes_unique_registers(program: &[LinearOp]) -> bool {
-    let mut written = std::collections::BTreeSet::new();
-    program.iter().all(|operation| {
-        let Some(start) = operation.dst_register() else {
-            return true;
-        };
-        let Ok(count) = u32::try_from(operation.dst_register_count()) else {
-            return false;
-        };
-        (0..count).all(|offset| {
-            start
-                .checked_add(offset)
-                .is_some_and(|dst| written.insert(dst))
-        })
-    })
-}
-
 fn affine_assignment_shapes(
-    program: &[LinearOp],
+    program: ProgramPrefix<'_>,
     output: u32,
     dependencies: &ScalarProgramYDependency<'_>,
 ) -> Vec<TargetAssignmentShape> {
@@ -174,7 +158,7 @@ fn affine_assignment_shapes(
 
 fn push_affine_assignment_shape(
     shapes: &mut Vec<TargetAssignmentShape>,
-    program: &[LinearOp],
+    program: ProgramPrefix<'_>,
     target_term: (u32, Option<u32>, f64),
     offset: u32,
     offset_scale: f64,
@@ -215,7 +199,10 @@ fn push_affine_assignment_shape(
     }
 }
 
-fn affine_target_terms(program: &[LinearOp], register: u32) -> [Option<(u32, Option<u32>)>; 2] {
+fn affine_target_terms(
+    program: ProgramPrefix<'_>,
+    register: u32,
+) -> [Option<(u32, Option<u32>)>; 2] {
     if target_load_index(program, register).is_some() {
         return [Some((register, None)), None];
     }
@@ -239,7 +226,7 @@ fn affine_target_terms(program: &[LinearOp], register: u32) -> [Option<(u32, Opt
     }
 }
 
-fn strip_affine_output_wrappers(program: &[LinearOp], mut register: u32) -> (u32, f64) {
+fn strip_affine_output_wrappers(program: ProgramPrefix<'_>, mut register: u32) -> (u32, f64) {
     let mut scale = 1.0;
     loop {
         match producer(program, register) {
@@ -271,7 +258,7 @@ fn strip_affine_output_wrappers(program: &[LinearOp], mut register: u32) -> (u32
     }
 }
 
-fn is_zero_literal(program: &[LinearOp], register: u32) -> bool {
+fn is_zero_literal(program: ProgramPrefix<'_>, register: u32) -> bool {
     matches!(
         producer(program, register),
         Some(LinearOp::Const { value: 0.0, .. })
@@ -316,7 +303,7 @@ fn store_output_registers(program: &[LinearOp]) -> impl Iterator<Item = (u32, us
 }
 
 fn assignment_expression_registers(
-    program: &[LinearOp],
+    program: ProgramPrefix<'_>,
     output: u32,
 ) -> [Option<(u32, u32, f64)>; 2] {
     match producer(program, output) {
@@ -371,7 +358,7 @@ fn assignment_expression_registers(
     }
 }
 
-fn binary_operands(program: &[LinearOp], output: u32) -> Option<(BinaryOp, u32, u32)> {
+fn binary_operands(program: ProgramPrefix<'_>, output: u32) -> Option<(BinaryOp, u32, u32)> {
     match *producer(program, output)? {
         LinearOp::Binary { op, lhs, rhs, .. } => Some((op, lhs, rhs)),
         LinearOp::TensorBinary {
@@ -428,7 +415,7 @@ fn tensor_binary_operands(
 }
 
 fn subtraction_assignment_registers(
-    program: &[LinearOp],
+    program: ProgramPrefix<'_>,
     lhs: u32,
     rhs: u32,
     scale: f64,
@@ -439,7 +426,7 @@ fn subtraction_assignment_registers(
     ]
 }
 
-fn target_load_index(program: &[LinearOp], register: u32) -> Option<usize> {
+fn target_load_index(program: ProgramPrefix<'_>, register: u32) -> Option<usize> {
     target_load(program, register).map(|load| load.index)
 }
 
@@ -448,11 +435,11 @@ struct TargetLoad {
     required_eval_len: usize,
 }
 
-fn target_load(mut program: &[LinearOp], mut register: u32) -> Option<TargetLoad> {
+fn target_load(mut program: ProgramPrefix<'_>, mut register: u32) -> Option<TargetLoad> {
     let mut required_eval_len = 0;
     loop {
         let position = producer_position(program, register)?;
-        match &program[position] {
+        match program.operation(position)? {
             LinearOp::LoadY { index, .. } => {
                 return Some(TargetLoad {
                     index: *index,
@@ -485,7 +472,7 @@ fn target_load(mut program: &[LinearOp], mut register: u32) -> Option<TargetLoad
                 required_eval_len = required_eval_len.max(position.checked_add(1)?);
             }
         }
-        program = &program[..position];
+        program = program.before(position)?;
     }
 }
 
@@ -514,15 +501,10 @@ fn projected_input_register(operation: &LinearOp, register: u32) -> Option<u32> 
         .checked_add(u32::try_from(projection.1).ok()?)
 }
 
-fn producer(program: &[LinearOp], register: u32) -> Option<&LinearOp> {
-    program
-        .iter()
-        .rev()
-        .find(|operation| register_is_written_by(operation, register))
+fn producer(program: ProgramPrefix<'_>, register: u32) -> Option<&LinearOp> {
+    program.operation(program.producer_position(register)?)
 }
 
-fn producer_position(program: &[LinearOp], register: u32) -> Option<usize> {
-    program
-        .iter()
-        .rposition(|operation| register_is_written_by(operation, register))
+fn producer_position(program: ProgramPrefix<'_>, register: u32) -> Option<usize> {
+    program.producer_position(register)
 }
