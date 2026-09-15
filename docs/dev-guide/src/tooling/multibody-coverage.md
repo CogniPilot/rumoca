@@ -4,6 +4,34 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Alternative definitions gain two high models and expose a timeout
+
+The complete `multibody-alternative-definitions-full-11` sweep at
+`f0989e3f1e655485820d5aa267c8d1e76564dcd8` passes its MSL quality gate:
+162/566 strict-high models (28.62%), 162 compared, 20 reviewed exclusions,
+zero missing or nonidentifiable traces, and zero near or deviating comparisons.
+All 21,826 compared initialization channels are high.
+
+GearConstraint and `Modelica.Mechanics.Rotational.Examples.First` newly compare
+high. GearConstraint completes Solve in 3.266 seconds; First completes it in
+8.28 ms after previously refusing a 52/54 structural match. However,
+RollingWheelSetDriving loses its high band through a Solve timeout after
+11.103 seconds against the unchanged 10-second budget. Its previous full-run
+Solve time was 8.675 seconds. MultiBody therefore remains 22/42 high: 22
+compared, one reviewed exclusion, and zero missing comparisons. Fourbar_analytic's
+structural refusal also becomes a timeout, which establishes no resolution of
+its structural defect. The complete delta and artifact digests are retained in
+`rolling-wheel/alternative-definitions-full-delta.json`.
+
+RollingWheelSetDriving is the next regression to address. A subsequent
+diagnostic profile completes with 8.1105 seconds of Solve lowering and a
+0.3282-second simulation, but that output-enabled, unpinned diagnostic does not
+replace the bounded full-run failure or establish a performance change. Its
+artifacts and perf samples are in `rolling-wheel/wheel-set-definitions-candidate-1`.
+No reduced-Jacobian kernel or runtime tearing change was made in this patch.
+Combined verify quick/full remain pending, and complete MultiBody support and
+PR readiness remain unestablished.
+
 ## Retain alternative defining equations during structural substitution
 
 LineForceWithTwoMasses' timeout occurs in structural index reduction, before
