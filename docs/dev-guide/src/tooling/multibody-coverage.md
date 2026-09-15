@@ -4,6 +4,26 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Full cohort preserves all high bands after initialization repair
+
+`target/msl/multibody-initial-obligations-full` passes at
+`f4ec3b36241cafdca93c2d18af935c05df580400`: 167/566 strict-high (29.51%),
+167 compared, 20 reviewed exclusions, and zero missing or nonidentifiable
+traces. MultiBody remains 25/42 high, with 25 compared and one reviewed
+BevelGear1D exclusion. There are no changed model bands and no actionable
+counterexamples. All 24,773 initialization channels are high; trajectory
+channels total 24,727 high, 46 minor, and zero deviating or severe.
+`MovingCoilActuator.ArmatureStroke` has one minor channel instead of zero,
+while retaining its high model band. This is recorded rather than hidden by
+the unchanged model count.
+
+The sole phase/status delta is `DC_CompareCharacteristics`: its Solve timeout
+becomes an explicit structural refusal (EL005). It still does not simulate
+and gains no parity credit. The compiler tree is committed; the dirty marker
+includes the preserved untracked `comm_fastdyn.md`. The complete receipt is
+`rolling-wheel/initial-obligations-full-delta-1.json`. Combined quick/full
+release verification, baseline promotion, push, and PR remain pending.
+
 ## Fixed initialization equations survive algebraic demotion
 
 PrismaticConstraint exposed an obsolete structural preservation check. Its
