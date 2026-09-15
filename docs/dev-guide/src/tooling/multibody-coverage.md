@@ -4,6 +4,30 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Full sweep restores Driving without losing a high model
+
+The complete `multibody-round-facts-full-11` sweep at
+`720680e9ed3055308b2516271bbbb5d96a200cc1` passes its quality gate:
+163/566 strict-high models (28.80%), 163 compared, 20 reviewed exclusions,
+zero missing or nonidentifiable traces, and zero near/deviating comparisons.
+All 22,718 compared initialization channels are high.
+
+MultiBody reaches 23/42 high: 23 compared, one reviewed BevelGear1D exclusion,
+and zero missing comparisons. RollingWheelSetDriving returns to high with
+Solve completing in 6.1343 seconds under the unchanged 10-second budget.
+No previously high model loses its band. The only other phase/status change
+against `multibody-alternative-definitions-full-11` is
+`DC_CompareCharacteristics` moving from timeout to an explicit structural
+refusal; it gains no compilation or parity credit. LineForceWithTwoMasses
+still times out in Solve. The complete delta and artifact digests are in
+`rolling-wheel/round-facts-full-delta.json`.
+
+The Driving cohort regression is closed by this complete comparison. The next
+compiler frontier remains LineForceWithTwoMasses' unresolved displacement and
+derivative closure against the retained OMC equations. Combined verify quick/full
+remain outstanding; this successful MSL sweep does not establish those gates,
+complete MultiBody support, or PR readiness.
+
 ## Share differentiation facts within each immutable reduction round
 
 RollingWheelSetDriving's saved pre-change and current workers produce identical
