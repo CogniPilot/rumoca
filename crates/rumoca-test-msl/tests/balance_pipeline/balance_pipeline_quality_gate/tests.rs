@@ -147,6 +147,7 @@ fn baseline_quality_template() -> MslQualityBaseline {
             preservation_percent: None,
         },
         metric_schema_migration: None,
+        reference_boundary_migration: Some(reviewed_reference_boundary_migration()),
         partial_classification_migration: Some(reviewed_partial_classification_migration()),
         compiler_contract_migration: None,
     }
@@ -1614,16 +1615,42 @@ fn completed_compile_phase_follows_the_pipeline_order() {
 }
 
 #[test]
+fn oracle_boundary_migration_rejects_unreviewed_counts_digest_or_missing_evidence() {
+    for field in [
+        "strict_high_after",
+        "policy_excluded_after",
+        "exclusions_sha256",
+        "missing",
+    ] {
+        let mut baseline = baseline_quality_template();
+        let migration = baseline.reference_boundary_migration.as_mut().unwrap();
+        match field {
+            "strict_high_after" => migration.metric.strict_high_after += 1,
+            "policy_excluded_after" => migration.metric.policy_excluded_after += 1,
+            "exclusions_sha256" => migration.metric.exclusions_sha256 = "unreviewed".to_string(),
+            _ => baseline.reference_boundary_migration = None,
+        }
+        let reason =
+            msl_quality_context_mismatch_reason(gate_input_with_sim_rate(8, 10), &baseline, None)
+                .expect("unreviewed oracle boundaries must invalidate the baseline context");
+        assert!(
+            reason.contains("oracle policy migration"),
+            "{field}: {reason}"
+        );
+    }
+}
+
+#[test]
 fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi() {
     let baseline =
         load_msl_quality_baseline(&msl_quality_baseline_path()).expect("load checked baseline");
     assert_eq!(baseline.quality_gate_version, MSL_QUALITY_GATE_VERSION);
     assert_eq!(baseline.sim_timeout_seconds, SIM_TIMEOUT_SECS);
-    assert_eq!(baseline.flatten_models, 444);
+    assert_eq!(baseline.flatten_models, 487);
     assert_eq!(baseline.partial_models, 13);
     assert_eq!(baseline.partial_model_names, reviewed_partial_model_names());
     assert_eq!(baseline.tensor_preservation.report_errors, 0);
-    assert_eq!(baseline.certified_strict_high_models.len(), 113);
+    assert_eq!(baseline.certified_strict_high_models.len(), 129);
     assert!(baseline.certified_strict_high_models.contains(
         "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.\
          DiodeCenterTap2mPulse"
@@ -1651,6 +1678,20 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
         migration.exclusions_sha256,
         "e064ffb80771c1e231e849afcaa25cc2a08b8b7f9bf449bf8651905e5dcdc4d0"
     );
+
+    let reference = baseline
+        .reference_boundary_migration
+        .expect("reviewed v4-to-v5 boundary");
+    assert_eq!(reference, reviewed_reference_boundary_migration());
+    assert_eq!(
+        reference.metric.strict_high_before,
+        reference.metric.strict_high_after
+    );
+    assert_eq!(
+        reference.policy_excluded_before + 1,
+        reference.metric.policy_excluded_after
+    );
+    assert_eq!(reference.metric.excluded_strict_high_before, 0);
 
     let partial_migration = baseline
         .partial_classification_migration

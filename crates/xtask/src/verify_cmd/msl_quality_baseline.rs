@@ -1,3 +1,4 @@
+mod reference_boundary;
 #[cfg(test)]
 mod tests;
 
@@ -10,11 +11,13 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::VerifyMslParityArgs;
+use reference_boundary::{ReferenceBoundaryMigration, validate_reference_boundary_migration};
 
 const MSL_QUALITY_BASELINE_ASSET_URL: &str = "https://github.com/CogniPilot/rumoca/releases/download/msl-quality-baseline/msl_quality_baseline.json";
 const MSL_QUALITY_BASELINE_FALLBACK_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
-const MSL_QUALITY_GATE_VERSION: u64 = 4;
+const MSL_QUALITY_GATE_VERSION: u64 = 5;
+const PARTIAL_MIGRATION_TO_QUALITY_GATE_VERSION: u64 = 4;
 const PREVIOUS_MSL_QUALITY_GATE_VERSION: u64 = 3;
 const COMPARATOR_MIGRATION_FROM_QUALITY_GATE_VERSION: u64 = 2;
 const BRIDGED_PROMOTED_QUALITY_GATE_VERSION: u64 = 1;
@@ -61,6 +64,8 @@ struct MslQualityBaselineHeader {
     omc_context_migration: Option<OmcContextMigration>,
     #[serde(default)]
     metric_schema_migration: Option<MetricSchemaMigration>,
+    #[serde(default)]
+    reference_boundary_migration: Option<ReferenceBoundaryMigration>,
     #[serde(default)]
     partial_classification_migration: Option<PartialClassificationMigration>,
     #[serde(default)]
@@ -117,7 +122,7 @@ struct OmcContextMigration {
     sim_target_models: usize,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct MetricSchemaMigration {
     from_quality_gate_version: u64,
     to_quality_gate_version: u64,
@@ -299,9 +304,13 @@ fn choose_baseline(
 ) -> Result<BaselineChoice> {
     validate_context_migration(checked_in)?;
     validate_metric_schema_migration(checked_in)?;
+    validate_reference_boundary_migration(checked_in)?;
     validate_partial_classification_migration(checked_in)?;
     validate_promoted_baseline_bridge(checked_in)?;
     if promoted.quality_gate_version != checked_in.quality_gate_version {
+        if reference_boundary::migrate_reference_boundary(promoted, checked_in)? {
+            return Ok(BaselineChoice::CheckedInMigration);
+        }
         if bridge_matches_promoted(promoted, checked_in)? {
             return Ok(BaselineChoice::CheckedInMigration);
         }
@@ -314,7 +323,10 @@ fn choose_baseline(
         };
         ensure!(
             migration.from_quality_gate_version == promoted.quality_gate_version
-                && migration.to_quality_gate_version == checked_in.quality_gate_version,
+                && reference_boundary::schema_target_reaches_current(
+                    migration.to_quality_gate_version,
+                    checked_in,
+                ),
             "MSL quality schema migration differs from baseline contexts (declared={} -> {}, actual={} -> {})",
             migration.from_quality_gate_version,
             migration.to_quality_gate_version,
@@ -416,7 +428,7 @@ fn validate_promoted_baseline_bridge(baseline: &MslQualityBaselineHeader) -> Res
     };
     ensure!(
         bridge.from_quality_gate_version == BRIDGED_PROMOTED_QUALITY_GATE_VERSION
-            && bridge.to_quality_gate_version == MSL_QUALITY_GATE_VERSION,
+            && bridge.to_quality_gate_version == PARTIAL_MIGRATION_TO_QUALITY_GATE_VERSION,
         "MSL promoted baseline bridge must be the reviewed version-1 to version-4 lineage"
     );
     ensure!(
@@ -522,19 +534,21 @@ fn validate_metric_schema_migration(baseline: &MslQualityBaselineHeader) -> Resu
 fn validate_partial_classification_migration(baseline: &MslQualityBaselineHeader) -> Result<()> {
     let Some(migration) = baseline.partial_classification_migration.as_ref() else {
         ensure!(
-            baseline.quality_gate_version != MSL_QUALITY_GATE_VERSION,
+            baseline.quality_gate_version < PARTIAL_MIGRATION_TO_QUALITY_GATE_VERSION,
             "MSL baseline requires the reviewed partial-classification migration"
         );
         return Ok(());
     };
     ensure!(
         migration.from_quality_gate_version == PREVIOUS_MSL_QUALITY_GATE_VERSION
-            && migration.to_quality_gate_version == MSL_QUALITY_GATE_VERSION,
+            && migration.to_quality_gate_version == PARTIAL_MIGRATION_TO_QUALITY_GATE_VERSION,
         "MSL partial-classification migration must be the reviewed version-3 to version-4 correction"
     );
     ensure!(
-        migration.to_quality_gate_version == baseline.quality_gate_version
-            && migration.change == V4_MIGRATION_CHANGE
+        reference_boundary::schema_target_reaches_current(
+            migration.to_quality_gate_version,
+            baseline
+        ) && migration.change == V4_MIGRATION_CHANGE
             && migration.evidence_git_commit == V4_EVIDENCE_GIT_COMMIT,
         "MSL partial-classification migration identity differs from the reviewed correction"
     );
@@ -886,7 +900,9 @@ fn load_baseline_header_for_source(
         || (is_promoted_source
             && matches!(
                 baseline.quality_gate_version,
-                PREVIOUS_MSL_QUALITY_GATE_VERSION | BRIDGED_PROMOTED_QUALITY_GATE_VERSION
+                PREVIOUS_MSL_QUALITY_GATE_VERSION
+                    | PARTIAL_MIGRATION_TO_QUALITY_GATE_VERSION
+                    | BRIDGED_PROMOTED_QUALITY_GATE_VERSION
             ));
     ensure!(
         version_supported,
@@ -909,6 +925,8 @@ fn load_baseline_header_for_source(
         .with_context(|| format!("invalid OMC context migration in {}", path.display()))?;
     validate_metric_schema_migration(&baseline)
         .with_context(|| format!("invalid metric schema migration in {}", path.display()))?;
+    validate_reference_boundary_migration(&baseline)
+        .with_context(|| format!("invalid reference boundary migration in {}", path.display()))?;
     validate_partial_classification_migration(&baseline).with_context(|| {
         format!(
             "invalid partial-classification migration in {}",

@@ -73,11 +73,9 @@ pub(super) fn omc_sim_reference_timeout_secs() -> u64 {
 }
 /// Force low-impact OpenMP/BLAS threading in OMC child processes.
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
-/// Version 4 classifies the source-static partial cohort before compilation and
-/// pins its exact roster. Version 3's reviewed pointwise-oracle boundary remains
-/// recorded independently as historical migration evidence.
-pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 4;
-const PREVIOUS_MSL_QUALITY_GATE_VERSION: u32 = 3;
+/// Version 5 records a reference-convergence boundary without changing any
+/// baseline floor. Version 4's source-static partial roster remains pinned.
+pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 5;
 pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
 pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
@@ -218,7 +216,7 @@ pub(super) struct MslTensorPreservationBaseline {
     preservation_percent: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct MslMetricSchemaMigration {
     from_quality_gate_version: u32,
     to_quality_gate_version: u32,
@@ -230,6 +228,15 @@ pub(super) struct MslMetricSchemaMigration {
     excluded_non_high_before: usize,
     exclusions_file: String,
     exclusions_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct MslReferenceBoundaryMigration {
+    #[serde(flatten)]
+    metric: MslMetricSchemaMigration,
+    evidence_git_commit: String,
+    evidence_run: String,
+    policy_excluded_before: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -300,6 +307,8 @@ pub(super) struct MslQualityBaseline {
     tensor_preservation: MslTensorPreservationBaseline,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     metric_schema_migration: Option<MslMetricSchemaMigration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference_boundary_migration: Option<MslReferenceBoundaryMigration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     partial_classification_migration: Option<MslPartialClassificationMigration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1035,6 +1044,7 @@ pub(super) fn current_msl_quality_baseline(
             ),
         },
         metric_schema_migration: Some(quality_gate_v3_metric_schema_migration()),
+        reference_boundary_migration: Some(reviewed_reference_boundary_migration()),
         partial_classification_migration: Some(reviewed_partial_classification_migration()),
         compiler_contract_migration: Some(checked_dae_compiler_contract_migration()),
     }
@@ -1216,6 +1226,13 @@ pub(super) fn msl_quality_context_mismatch_reason(
     }
     if let Some(reason) = partial_classification_context_mismatch_reason(baseline) {
         return Some(reason);
+    }
+    if baseline.reference_boundary_migration.as_ref()
+        != Some(&reviewed_reference_boundary_migration())
+    {
+        return Some(
+            "oracle policy migration differs from the reviewed v4-to-v5 boundary".to_string(),
+        );
     }
     if baseline.run_scope != MSL_QUALITY_RUN_SCOPE_FULL {
         return Some(format!(

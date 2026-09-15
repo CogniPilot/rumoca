@@ -4,6 +4,42 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## IMS_Start has a reviewed reference-accuracy boundary
+
+The convergence evidence below now supports a tracked comparator exclusion for
+IMS_Start. The model remains visible, receives zero strict-high or certification
+credit, and remains in the next complete cohort. No compiler equation, solver
+or comparator tolerance, official OMC trace, or baseline floor changes.
+
+Quality-gate schema 5 records the policy migration against
+`multibody-guarded-affine-full-11`, with convergence evidence committed at
+`3d76411c1a41a1b27e6a0ecbf1cf3e204f0b47a4`: strict-high remains 160, reviewed
+boundaries increase from 19 to 20, and the newly excluded model was non-high.
+These are classification counts on the retained failed sweep, not a new run
+or baseline promotion. The exclusion artifact's SHA-256 is
+`30f7c38e58307d6af4f69b844512679ec860f367f88670481edad5318d7d29f8`.
+The checked baseline retains all its previous measurements and certified model
+identities; only its gate version and new reference-boundary metadata change. Historical
+comparator, partial-classification, and promoted-baseline lineage evidence remain
+unchanged. Both baseline readers reject missing or forged boundary evidence;
+the remote-baseline resolver preserves all unrelated ratchets across version 4
+to 5. The exclusion digest is checked against the exact tracked artifact.
+
+Validation passes: 97 quality-gate tests, 169 harness library tests, 21
+baseline-resolver tests, and affected all-target/all-feature Clippy. The final
+`multibody-reference-lineage-canary` retains every phase and band from
+`multibody-trace-json-canary`: nine compared high, zero skipped/missing/excluded
+or nonidentifiable traces, and all 175 initial-condition channels high. Evidence
+is `ims-start-boundary-{migration-1,canary-delta}.json` and
+`ims-start-boundary-lineage-tests-1.log`. Combined verify quick/full and the next
+complete cohort remain pending; this change does not establish release readiness.
+
+The decoder regression remains the focused test for the actual transport bug.
+The recorded default/reference-refinement comparisons establish the numerical
+oracle boundary; they do not certify untested conditions or turn the model
+into a high-parity result. GyroscopicEffects' compile-budget failure still
+requires a compiler fix, and the failed full sweep remains failed.
+
 ## Full guarded-tearing sweep exposes trace transport and remaining failures
 
 The complete `multibody-guarded-affine-full-11` sweep at `b0217592` fails its

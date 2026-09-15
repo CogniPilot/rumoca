@@ -34,6 +34,14 @@
       "reason": "Only four aliases of the two IdealDcDc power-balance residuals are non-high; 586/590 channels and every initial condition are high. These near-zero residuals drive integral controllers with Ti=1e-6 and are dominated by integration error: tightening OMC from 1e-6 to 1e-8 reduces their ranges from 8.18e-3/6.84e-3 W to 7.16e-4/1.92e-4 W, while tightened Rumoca gives comparable 7.83e-4/2.62e-4 W ranges. The default-tolerance OMC residual is not converged enough to identify pointwise parity, while the physical trajectory agrees."
     },
     {
+      "model_name": "Modelica.Electrical.Machines.Examples.InductionMachines.IMS_Start",
+      "reason": "Default OMC reference accuracy is insufficient for this model's near-zero summed currents and pre-closing leakage voltages. With lossless trace decoding, the unchanged Rumoca trace has 690 high, 18 near, and two deviating channels against OMC at the model's 1e-6 tolerance. The same xtask-generated OMC executable at 1e-10 and 1e-12 agrees with that unchanged Rumoca trace on all 710 shared channels; the two refined OMC traces agree on all 735 shared channels. Default OMC's summed star current reaches 9.24e-6 A while Rumoca remains near 1e-13 A, consistent with the SpacePhasor zero-sequence equations. This is a pointwise-reference limitation, not strict-high or certification credit. Source equations, immutable executable/input hashes, and convergence comparisons are recorded in docs/dev-guide/src/tooling/multibody-coverage.md at evidence commit 3d76411c; official tolerances and reference traces are unchanged."
+    },
+    {
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic",
+      "reason": "Only aliases of the period-integrated RootMeanSquare/Mean aggregate differ. At the annotation tolerance of 1e-6, OMC's endpoint RMS is 109.999434852 V; rerunning the same generated OMC model at 1e-10 moves it to 110.000018546 V, a 5.84e-4 V shift that accounts for Rumoca's 5.74e-4 V difference. The physical waveform and state channels agree, so the default-tolerance OMC trace is not converged enough to identify pointwise aggregate parity."
+    },
+    {
       "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse",
       "reason": "The differing channels are period Mean/RMS aggregates at integration-residue scale within the model's 1e-6 experiment tolerance; waveform channels agree and Rumoca's mean is closer to the analytic 3*sqrt(6)/pi*Vrms value."
     },
@@ -50,16 +58,12 @@
       "reason": "The 17 differing channels are all aliases of one degenerate node: the supply star point (sineVoltage.plug_n joined through MultiStarResistance, R=1e6, to ground), which carries zero net current in exact arithmetic so its exact voltage is 0 V; OMC's reference spread is below 8.9e-10 V. Rumoca's within-tolerance algebraic-loop residual current of order 1e-10 A is amplified by the 1e6 ohm grounding resistance into a broadband 8.4e-5 V mean signal that saturates the metric against the 1e-6 normalization floor. All 407 other channels are strict-high (inductor.i agrees within 2.3e-4 on a 9.56 A scale and voltagesensor.v within 1.7e-3 on 269 V) and the thyristor firing sequence is identical with every interior switching edge matching within 6.4e-7 s, ruling out a torn-solve root divergence; the near-zero reference makes pointwise comparison non-identifying for this node."
     },
     {
-      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic",
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic",
       "reason": "Only aliases of the period-integrated RootMeanSquare/Mean aggregate differ. At the annotation tolerance of 1e-6, OMC's endpoint RMS is 109.999434852 V; rerunning the same generated OMC model at 1e-10 moves it to 110.000018546 V, a 5.84e-4 V shift that accounts for Rumoca's 5.74e-4 V difference. The physical waveform and state channels agree, so the default-tolerance OMC trace is not converged enough to identify pointwise aggregate parity."
     },
     {
       "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV",
       "reason": "The differing channels are aliases of one period RMS aggregate at integration-residue scale within the model's 1e-6 experiment tolerance. OMC gives 17103.337997 at 1e-6 and 17103.266886 at 1e-10, while Rumoca gives 17103.258674 at 1e-6; the default-tolerance OMC trace is not converged enough to identify pointwise aggregate parity."
-    },
-    {
-      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic",
-      "reason": "Only aliases of the period-integrated RootMeanSquare/Mean aggregate differ. At the annotation tolerance of 1e-6, OMC's endpoint RMS is 109.999434852 V; rerunning the same generated OMC model at 1e-10 moves it to 110.000018546 V, a 5.84e-4 V shift that accounts for Rumoca's 5.74e-4 V difference. The physical waveform and state channels agree, so the default-tolerance OMC trace is not converged enough to identify pointwise aggregate parity."
     },
     {
       "model_name": "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL",

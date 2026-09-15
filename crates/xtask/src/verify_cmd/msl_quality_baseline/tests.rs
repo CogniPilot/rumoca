@@ -20,6 +20,7 @@ fn header(omc_version: &str) -> MslQualityBaselineHeader {
         sim_target_models: 566,
         omc_context_migration: None,
         metric_schema_migration: None,
+        reference_boundary_migration: None,
         partial_classification_migration: Some(partial_classification_migration()),
         compiler_contract_migration: None,
         promoted_baseline_bridge: None,
@@ -197,12 +198,13 @@ fn same_omc_context_keeps_promoted_baseline() {
 }
 
 #[test]
-fn checked_in_v4_baseline_loads_with_both_reviewed_migrations() {
+fn checked_in_v5_baseline_preserves_historical_migrations_and_reference_boundary() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json");
-    let baseline = load_baseline_header(&path).expect("checked v4 baseline must validate");
+    let baseline = load_baseline_header(&path).expect("checked v5 baseline must validate");
 
-    assert_eq!(baseline.quality_gate_version, 4);
+    assert_eq!(baseline.quality_gate_version, 5);
+    assert!(baseline.reference_boundary_migration.is_some());
     assert_eq!(baseline.partial_models, 13);
     assert_eq!(baseline.partial_model_names, reviewed_partial_model_names());
     let historical = baseline

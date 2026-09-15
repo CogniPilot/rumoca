@@ -1,5 +1,5 @@
 {
-  "quality_gate_version": 4,
+  "quality_gate_version": 5,
   "run_scope": "full",
   "git_commit": "d2e79a08f2076fac8d09e1bf67e86e5cc829df21",
   "msl_version": "v4.1.0",
@@ -787,5 +787,20 @@
       "6d57e9644b4da542a5498ee42510551e7e7ade70",
       "5394156facb1e5ff9f099f21c0e833c4870c506f"
     ]
+  },
+  "reference_boundary_migration": {
+    "from_quality_gate_version": 4,
+    "to_quality_gate_version": 5,
+    "change": "reviewed-reference-convergence-boundary-v1",
+    "evidence_git_commit": "3d76411c1a41a1b27e6a0ecbf1cf3e204f0b47a4",
+    "evidence_run": "multibody-guarded-affine-full-11",
+    "strict_high_before": 160,
+    "strict_high_after": 160,
+    "policy_excluded_before": 19,
+    "policy_excluded_after": 20,
+    "excluded_strict_high_before": 0,
+    "excluded_non_high_before": 1,
+    "exclusions_file": "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json",
+    "exclusions_sha256": "30f7c38e58307d6af4f69b844512679ec860f367f88670481edad5318d7d29f8"
   }
 }

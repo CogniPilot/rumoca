@@ -17,6 +17,29 @@ pub(super) fn quality_gate_v3_metric_schema_migration() -> MslMetricSchemaMigrat
     }
 }
 
+pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMigration {
+    MslReferenceBoundaryMigration {
+        metric: MslMetricSchemaMigration {
+            from_quality_gate_version: 4,
+            to_quality_gate_version: 5,
+            change: "reviewed-reference-convergence-boundary-v1".to_string(),
+            strict_high_before: 160,
+            strict_high_after: 160,
+            policy_excluded_after: 20,
+            excluded_strict_high_before: 0,
+            excluded_non_high_before: 1,
+            exclusions_file:
+                "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json"
+                    .to_string(),
+            exclusions_sha256: "30f7c38e58307d6af4f69b844512679ec860f367f88670481edad5318d7d29f8"
+                .to_string(),
+        },
+        evidence_git_commit: "3d76411c1a41a1b27e6a0ecbf1cf3e204f0b47a4".to_string(),
+        evidence_run: "multibody-guarded-affine-full-11".to_string(),
+        policy_excluded_before: 19,
+    }
+}
+
 pub(super) fn reviewed_partial_model_names() -> IndexSet<String> {
     [
         "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.PartialOpAmp",
@@ -40,8 +63,8 @@ pub(super) fn reviewed_partial_model_names() -> IndexSet<String> {
 
 pub(super) fn reviewed_partial_classification_migration() -> MslPartialClassificationMigration {
     MslPartialClassificationMigration {
-        from_quality_gate_version: PREVIOUS_MSL_QUALITY_GATE_VERSION,
-        to_quality_gate_version: MSL_QUALITY_GATE_VERSION,
+        from_quality_gate_version: 3,
+        to_quality_gate_version: 4,
         change: "source-static-partial-cohort-v1".to_string(),
         evidence_git_commit: "5394156facb1e5ff9f099f21c0e833c4870c506f".to_string(),
         sim_target_models: 566,
