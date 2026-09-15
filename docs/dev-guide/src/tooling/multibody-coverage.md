@@ -4,6 +4,26 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Complete cohort retains all prior results after equation-activity checks
+
+The full `multibody-demotion-owners-full-11` comparison at
+`dd3143d1ad006b9ae020a0dbcc3067e8b2d71f13` passes: 165/566 strict-high (29.15%),
+165 compared, 20 reviewed exclusions, zero missing/nonidentifiable traces, and
+zero near/deviating comparisons. All 22,976 initialization channels are high.
+Raw execution remains 185 models; the exclusions receive no strict-high credit.
+MultiBody remains 23/42 high, with one reviewed BevelGear1D exclusion. Every
+model retains its preceding band and phase/execution status, including the
+previously repaired counterexamples. The ordinary LineForceWithTwoMasses attempt
+still exceeds the unchanged 10-second Solve budget.
+
+The run uses 11 workers and fresh Rumoca execution; unchanged OMC references are
+reused by the comparator. Tracked source is clean, and `comm_fastdyn.md` remains
+foreign and untracked. Receipts
+`rolling-wheel/demotion-owners-full-{previous,baseline}-delta-1.json` bind the
+complete identical rosters and comparator artifacts. The aggregate gate exits
+zero. No baseline is promoted. Combined `verify quick` and `verify full` remain
+outstanding, and complete MultiBody support is not established.
+
 ## Structural candidate acceptance rejects reflexive coordinate equations
 
 The next capture isolates the remaining circular substitution at holonomic
