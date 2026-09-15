@@ -304,7 +304,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .expect("differentiability preflight proved this derivative defined");
                 let definition = self
                     .source
-                    .expression_id(definition as usize)
+                    .expression_id(definition.expression as usize)
                     .expect("explicit derivative definition resolves");
                 self.differentiate_order(definition, order, provenance)
             }
@@ -444,7 +444,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         if let Some(definition) = self.facts.derivative_definitions[source_state.index() as usize] {
             let definition = self
                 .source
-                .expression_id(definition as usize)
+                .expression_id(definition.expression as usize)
                 .expect("explicit derivative definition resolves");
             if order > 1 {
                 return self.differentiate_order(definition, order - 1, provenance);
@@ -513,23 +513,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .expression(source_id)
             .expect("materializable expression resolves");
         match source.operation() {
-            dae::ExpressionOperation::Literal(_)
-            | dae::ExpressionOperation::Coordinate(
-                dae::CoordinateView::Parameter(_)
-                | dae::CoordinateView::Time
-                | dae::CoordinateView::State(_),
-            ) => self.rebuild(source_id),
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
-                parameter,
-            )) => {
-                let argument = self
-                    .function_context
-                    .parameter_argument(parameter)
-                    .expect("holonomic value preflight resolves this function parameter");
-                self.materialize_exact_value(argument, provenance)
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
-                self.materialize_algebraic_value(algebraic, provenance)
+            dae::ExpressionOperation::Literal(_) => self.rebuild(source_id),
+            dae::ExpressionOperation::Coordinate(coordinate) => {
+                self.materialize_coordinate_value(source_id, coordinate, provenance)
             }
             dae::ExpressionOperation::Unary {
                 operator: operator @ (dae::UnaryOperator::Plus | dae::UnaryOperator::Negate),
@@ -582,6 +568,43 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 if is_materializable_builtin(builtin) =>
             {
                 self.materialize_builtin_value(builtin, arguments, provenance)
+            }
+            _ => Err(dae::DaeConstructionError::IncompleteDefinition {
+                kind: "state-only manifold substitution",
+                index: source_id.index(),
+                span: provenance.span(),
+            }),
+        }
+    }
+
+    fn materialize_coordinate_value(
+        &mut self,
+        source_id: dae::ExprId<'source>,
+        coordinate: dae::CoordinateView<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        match coordinate {
+            dae::CoordinateView::Parameter(_)
+            | dae::CoordinateView::Time
+            | dae::CoordinateView::State(_) => self.rebuild(source_id),
+            dae::CoordinateView::FunctionParameter(parameter) => {
+                let argument = self
+                    .function_context
+                    .parameter_argument(parameter)
+                    .expect("holonomic value preflight resolves this function parameter");
+                self.materialize_exact_value(argument, provenance)
+            }
+            dae::CoordinateView::Algebraic(algebraic) => {
+                self.materialize_algebraic_value(algebraic, provenance)
+            }
+            dae::CoordinateView::Derivative(state) => {
+                let definition = self.facts.derivative_definitions[state.index() as usize]
+                    .expect("holonomic value preflight proves an independent rate definition");
+                let expression = self
+                    .source
+                    .expression_id(definition.expression as usize)
+                    .expect("explicit derivative definition resolves");
+                self.materialize_exact_value(expression, provenance)
             }
             _ => Err(dae::DaeConstructionError::IncompleteDefinition {
                 kind: "state-only manifold substitution",

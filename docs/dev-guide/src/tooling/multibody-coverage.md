@@ -4,6 +4,57 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Independent explicit rates close structural reduction; force differences remain
+
+Structural value reconstruction now follows a unique explicit derivative
+definition when its right-hand side closes acyclically onto source states and
+invariants. Each definition carries its residual owner and expression together;
+holonomic preflight excludes the equation being replaced. The value proof and
+builder replay that same definition. This extends SPEC_0007's structural
+substitution profile and its STRUCT-T03 catalog under MLS Appendix B and
+section 8.3.1, while retaining whole tensor owners and original equations.
+
+The regression `der(x)=v; der(v)=-x; q=2*der(x)` now retains `q=2*v` in the
+value manifold, without derivative reads. Sizes 1, 3, and 4,096 have the same
+IR size. Controls refuse missing, cyclic, and duplicate rate definitions and
+prevent either dynamics equation from replacing itself. All 195 structural
+tests and structural Clippy pass. The duplicate-definition fixture was corrected
+to construct the detector's explicit subtraction form; Clippy required moving
+a nested test choice outside its enclosing conditional. OMC's backend XML
+independently produces `q[i]=2*v[i]` for all three fixture coordinates.
+
+LineForceWithTwoMasses now reaches a structurally prepared DAE with 22 retained
+manifold expressions, 697 continuous owners, and 26 state declarations. The
+artifact-enabled worker passes initialization and simulates through the complete
+three-second interval. Its four force-difference channels prevent a parity
+claim: the canonical comparator checks 879 channels, with 875 high and four
+severe (`body_f_diff[1:2]`, `rod_f_diff[1:2]`). All initialization channels compare
+high. The maximum observed force difference is about 1.015e-4, while OMC's
+original trajectories keep the same differences near roundoff. This is an
+active refinement counterexample, with no exception or coverage credit.
+
+The next comparison separates force calculation from trajectory error. At
+sample times 1.986 and 2.028, OMC is initialized with the four independent
+revolute states from Rumoca's saved trace, preserving the original numerical
+tolerance. OMC then reproduces Rumoca's accelerations within 2.1e-14 and forces
+within 3.1e-13. Rumoca's two equivalent plants have angle differences up to
+2.52e-6 and velocity differences up to 1.51e-5. Their retained position relations
+hold to roundoff and sampled velocity relations to about 1.8e-8. These checks
+point to integration or state projection rather than incorrect instantaneous
+force equations. Rumoca integrates 62 scalar states versus OMC's four; the next
+capture will distinguish native trajectory drift from corrections made during
+accepted-step and off-point projection.
+
+Tier 1 `multibody-rate-values-{frontier,origin,canary}` retains all prior bands
+and phase/execution statuses: four, six, and nine high comparisons, with one,
+two, and zero reviewed exclusions, and no missing or nonidentifiable traces.
+The ordinary LineForceWithTwoMasses attempt still exceeds the unchanged Solve
+budget, so the diagnostic completion is not cohort coverage. No new complete
+cohort claim is made. The active force counterexample blocks unrelated capability
+work and release; combined quick/full gates and the full MultiBody goal remain
+outstanding. Evidence lives under `rolling-wheel/rate-values-*`,
+`line-force-rate-values-comparison-1`, and `line-force-omc-same-state-1`.
+
 ## Complete comparison after source-equation exclusion repair
 
 The complete `multibody-lift-owners-full-11` run at

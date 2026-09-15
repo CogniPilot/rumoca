@@ -48,12 +48,18 @@ use super::{
 };
 use crate::StructuralError;
 
+#[derive(Clone, Copy)]
+pub(super) struct ExplicitDerivativeDefinition {
+    pub(super) residual: u32,
+    pub(super) expression: u32,
+}
+
 /// The exact indirections reconstruction is allowed to follow while
 /// differentiating, gathered once per source system.
 pub(super) struct DifferentiationFacts {
     pub(super) equalities: SystemEqualities,
     additive_values: lifted_values::AdditiveValueFacts,
-    pub(super) derivative_definitions: Vec<Option<u32>>,
+    pub(super) derivative_definitions: Vec<Option<ExplicitDerivativeDefinition>>,
     pub(super) algebraic_definitions: Vec<Option<u32>>,
     pub(super) component_definitions: Vec<Option<std::sync::Arc<ComponentConstraint>>>,
     pub(super) auxiliary_blocks:
@@ -864,7 +870,8 @@ fn reaches_demoted_derivative<'dae>(
                 dae::CoordinateView::State(state) | dae::CoordinateView::Derivative(state) => state,
                 _ => return,
             };
-            definitions.extend(facts.derivative_definitions[state.index() as usize]);
+            definitions
+                .extend(facts.derivative_definitions[state.index() as usize].map(|d| d.expression));
         });
         if found {
             return true;
@@ -1399,6 +1406,18 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
             dae::CoordinateView::State(state) => {
                 self.can_differentiate_state(state.index(), order, on_residual)
             }
+            dae::CoordinateView::Derivative(state) => self.facts.derivative_definitions
+                [state.index() as usize]
+                .is_some_and(|definition| {
+                    definition.residual != self.excluded_residual
+                        && self.can_differentiate_order(
+                            self.view
+                                .expression_id(definition.expression as usize)
+                                .unwrap(),
+                            order,
+                            on_residual,
+                        )
+                }),
             dae::CoordinateView::Algebraic(algebraic) => {
                 self.saw_algebraic |= on_residual;
                 if let Some(block) = self.facts.auxiliary_blocks[algebraic.index() as usize].clone()
@@ -1507,7 +1526,7 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
         order == 1
             || self.facts.derivative_definitions[state as usize].is_some_and(|definition| {
                 self.view
-                    .expression_id(definition as usize)
+                    .expression_id(definition.expression as usize)
                     .is_some_and(|definition| {
                         self.can_differentiate_order(definition, order - 1, false)
                     })
@@ -1766,7 +1785,7 @@ fn is_differentiable_coordinate<'dae>(
         dae::CoordinateView::Derivative(state) => {
             state != demoted
                 && facts.derivative_definitions[state.index() as usize].is_some_and(|definition| {
-                    view.expression_id(definition as usize)
+                    view.expression_id(definition.expression as usize)
                         .is_some_and(|definition| {
                             is_differentiable(view, facts, definition, demoted, visited)
                         })
@@ -1782,7 +1801,9 @@ fn is_differentiable_coordinate<'dae>(
 /// detector that reads only the first form loses `d/dt phi` on most mechanical
 /// components. Two residuals defining the same derivative leave it undefined
 /// here rather than picking one arbitrarily.
-pub(super) fn explicit_derivative_definitions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
+pub(super) fn explicit_derivative_definitions(
+    view: dae::DaeView<'_>,
+) -> Vec<Option<ExplicitDerivativeDefinition>> {
     let mut definitions = vec![None; view.variable_count()];
     let mut duplicate = vec![false; view.variable_count()];
     for owner in view.continuous_owners() {
@@ -1806,6 +1827,10 @@ pub(super) fn explicit_derivative_definitions(view: dae::DaeView<'_>) -> Vec<Opt
                 continue;
             };
             let index = state as usize;
+            let definition = ExplicitDerivativeDefinition {
+                residual: residual.index(),
+                expression: definition,
+            };
             if definitions[index].replace(definition).is_some() {
                 duplicate[index] = true;
             }

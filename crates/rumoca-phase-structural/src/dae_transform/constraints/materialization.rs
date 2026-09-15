@@ -96,6 +96,14 @@ fn materialize_operation<'dae>(
         dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
             materialize_algebraic(view, facts, algebraic, visited, context, states)
         }
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Derivative(state)) => facts
+            .derivative_definitions[state.index() as usize]
+            .and_then(|definition| view.expression_id(definition.expression as usize))
+            .is_some_and(|definition| {
+                can_materialize_holonomic_value_in_context(
+                    view, facts, definition, visited, context, states,
+                )
+            }),
         dae::ExpressionOperation::Unary {
             operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
             operand,

@@ -184,7 +184,7 @@ impl<'dae> StateDerivativeWalk<'_, 'dae> {
             Visit::Pending => self.state_visited[state as usize] = Visit::InProgress,
         }
         let materializable = self.facts.derivative_definitions[state as usize]
-            .and_then(|definition| self.view.expression_id(definition as usize))
+            .and_then(|definition| self.view.expression_id(definition.expression as usize))
             .is_some_and(|definition| {
                 can_materialize_holonomic_value(
                     self.view,

@@ -5,7 +5,7 @@ ACCEPTED
 
 ## Summary
 
-Stage contents and ownership.
+Stage ownership.
 
 [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md) catalogs stage contracts and
 structural transformations; linked rows are normative.
@@ -310,7 +310,7 @@ STRUCT-T03's auxiliary and component reconstruction profile:
 | Reconstruct a continuous Real vector only from a source-owned square linear system with state/invariant coefficients independent of that unknown | structural value and derivative proofs | Establishes the exact domain of the auxiliary solve |
 | Reconstruct dependent state vectors from affine scalar constraints and independent literal-array entries, including signed aliases; retain parent equations/projections and exclude the target from all anchors | structural state reconstruction | Close dependent kinematics without circular definitions |
 | Prefer an admitted direct source definition over an auxiliary solve for the same state | structural state selection | Avoid obscuring explicit kinematics with redundant implicit solves |
-| Follow exact function substitutions and array operations; retain original residual owners and assertions | structural coefficient proof | Reconstruction must preserve source behavior |
+| Follow exact function/array substitutions and independently defined derivatives; retain source residual owners and assertions | structural coefficient proof | Reconstruction must preserve source behavior |
 | Structural differentiation may select an exact whole-coordinate equality with proved state/invariant value anchors when executable causal-definition uniqueness is unavailable; selection must be acyclic and retain every source equation, including alternative definitions | structural substitution facts | Multiple equations constrain a coordinate without preventing exact substitution |
 | Differentiate `A*q=b` as `A*der(q)=der(b)-der(A)*q`, preserving exact zeros and only needed primal reads; manifold reconstruction uses proved state/invariant anchors on the same nonsingular domain | structural reconstruction | Preserve the original primal solve instead of recursively recomputing it |
 | Keep identity, projection, matrix product, and outer product aggregate; never enumerate a tensor basis to obtain coefficients | structural reconstruction | Compiler representation must stay compact |

@@ -1467,7 +1467,7 @@ fn derivative_definitions_are_read_in_either_orientation() {
         let phi_definition = definitions[phi].expect("`w = der(phi)` defines d/dt phi");
         let definition = view
             .expression(
-                view.expression_id(phi_definition as usize)
+                view.expression_id(phi_definition.expression as usize)
                     .expect("definition ordinal resolves"),
             )
             .expect("definition identity resolves");

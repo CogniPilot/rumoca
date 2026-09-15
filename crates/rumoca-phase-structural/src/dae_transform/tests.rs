@@ -13,6 +13,7 @@ mod invariant_balances;
 mod lift_owners;
 mod manifold_fields;
 mod reconstruction_failures;
+mod rate_values;
 mod reduction_observation;
 mod runtime_quotients;
 mod scalar_auxiliary_blocks;
