@@ -4,7 +4,91 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
-## Why affine projection currently bypasses tearing
+## Guard affine tearing and scale sensitivity checks by their direction
+
+Affine projection now consumes a checked elimination layout derived from the
+exact block's tearing and AD sparsity. RollingWheel's 24-coordinate block
+reduces to five tear coordinates. The runtime retains sparse coefficients,
+the recovery relation, and the reduced factorization; changed conditioned
+coefficients revoke the cached factor. It solves the complete original
+right-hand side and recovers every coordinate, including corrections during
+mandatory original-equation refinement. Weak pivots or failed reduction retain
+the full implicit solve from the same arithmetic origin and tolerance.
+The original full AD Jacobian is still evaluated; this is not yet a
+compiler-composed reduced derivative kernel.
+
+The AD pattern conservatively contains three future causal dependencies that
+structural tearing eliminated through invariant values. A replay at all 501
+recorded RollingWheel coordinates found their coefficients exactly zero
+(`inspect-affine-guards-result-1.json`). This sample is not an all-state proof:
+the checked layout issues explicit guards, and the runtime checks fresh,
+unconditioned coefficients before every solve. Nonzero and nonfinite guards
+decline reduction, including a nonzero coefficient that conditioning would
+underflow to zero. No model names or frozen parameter assumptions select this
+path. SPEC_0036, SPEC_0043, and SPEC_0038 record these obligations.
+
+The initial focused run exposed a BevelGear1D execution regression; it was
+retained as a failure despite that model's existing comparison exclusion.
+Capturing its first failed sensitivity block showed a finite direction as
+large as `3.25e11`, certified against scales from much smaller primal
+coordinates. Row 1191's original JVP residual was `-1.172149e-6`: its ratio to
+the unchanged `1e-10` tolerance was 8.07 with the primal scale, but 0.0535 with
+the direction scale (`bevel-sensitivity-scale-diagnosis-1.json`). This identifies
+a sensitivity acceptance defect, not an invalid tearing layout.
+
+A two-equation regression reproduces the defect independently of MSL:
+`17*a + 19*b = 23*s`, `31*a + 7*b = 37*s`, with analytic sensitivities
+`da/ds = 271/235`, `db/ds = 42/235`. Scaling the seed to `1e12` falsely failed
+the old check (`sensitivity-scaling-red-2.log`). The cached linearization now
+retains its original Jacobian and computes acceptance scales from each solved
+direction. The final original JVP and tolerance are unchanged. Positive and
+negative scaled directions pass; overflow and deliberately inconsistent JVPs
+still fail and restore incoming algebraic seeds. All temporary capture probes
+were removed before validation.
+
+The final implementation passes 322 Solve IR and 503 solver tests, plus
+all-target/all-feature Clippy (`sparse-tearing-sensitivity-build-1.log` and
+`sparse-tearing-sensitivity-origin-1.log`). The three-model origin run restores
+BevelGear1D to `sim_ok` with its existing reviewed exclusion, while RollingWheel
+and OvervoltageProtection compare high: two compared, one excluded, zero
+missing or deviating comparisons, and all 229 initial-condition channels high.
+The fixed 20-model canary has no phase or band changes: nine compared high,
+zero skipped, missing, excluded, or nonidentifiable comparisons, and all 175
+initial-condition channels high. Receipts are
+`sparse-tearing-sensitivity-origin-delta.json` and
+`sparse-tearing-sensitivity-canary-delta.json`, against the corresponding
+`multibody-register-constants` runs. These focused checks do not update the
+last complete cohort count or establish completion of combined verify quick/full.
+
+Three alternating ordinary-worker timing pairs retain every candidate trace
+byte-for-byte equal to the compared origin trace, with identical canonical IR
+between candidate and control. Sim times in milliseconds were:
+
+| Pair | Guarded tearing | Saved control |
+|---|---:|---:|
+| 1 | 73.600 | 74.706 |
+| 2 | 72.170 | 75.226 |
+| 3 | 75.007 | 74.726 |
+
+The medians are 73.600 and 74.726 ms, an observed 1.51% reduction with overlapping
+ranges. Three unpinned pairs on a shared host do not establish a reliable speed
+improvement. Preparation medians are 10.650 and 10.397 seconds, respectively;
+these are separate from Sim. The retained receipt is
+`guarded-tearing-timing-series-1.json`. The analysis helper initially expected
+IR files in the focused harness directory, which does not emit them; its
+bookkeeping repair reused the completed first sample without rerunning it.
+
+Exact-worker perf samples confirm the guarded solve is active in all three
+candidate runs. The control profiles retain faer's full sparse numeric
+factorization; the candidate profiles sample `TornNewtonCache::solve_scaled`
+and the existing full `rumoca_projection_871_application`. The sparse reduced
+factorization therefore fixes the blanket dispatch bypass, while removing the
+full derivative assembly remains a separate compiler task. Logs and symbol
+maps are retained in `guarded-tearing-final-*` and
+`guarded-tearing-perf-leaves-1.log`. RollingWheel is still slower than the pinned
+OMC measurements; this change makes no OMC speed or end-to-end performance claim.
+
+## Why affine projection previously bypassed tearing
 
 Commit `82630a4d` placed affine projection before tearing to repair stale
 switching coordinates: a residual below tolerance could still leave a voltage
@@ -28,11 +112,11 @@ validate a reduced solver. The evidence is
 under `.git/multibody-campaign/rolling-wheel/`.
 
 OMC's generated linear system 731 has six unknowns and an analytical Jacobian.
-The next implementation target is an AD-derived reduced affine system from
+The implementation target identified by this inspection was an AD-derived reduced affine system from
 the issued substitution schedule, preserving original-equation refinement and
 recovered-coordinate accuracy. An unusable reduced pivot must retain the
-original implicit solve. No dispatch change or new timing claim follows from
-this inspection; the latest complete MSL result remains the run below.
+original implicit solve. The inspection itself made no dispatch change or new
+timing claim; the latest complete MSL result remains the run below.
 
 ## Invalidate native constant facts on register writes
 

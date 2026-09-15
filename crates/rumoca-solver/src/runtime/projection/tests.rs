@@ -1,10 +1,12 @@
 mod affine_coordinates;
+mod affine_elimination;
 mod certification;
 mod colored_rows;
 mod manifold;
 mod order_robustness;
 mod saturation;
 mod scaled_systems;
+mod sensitivity_scaling;
 mod singular_isolation;
 mod torn_roundoff;
 

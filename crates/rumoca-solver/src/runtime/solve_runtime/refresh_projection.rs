@@ -656,6 +656,26 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         })
     }
 
+    fn solve_affine_torn_delta(
+        &self,
+        block_index: usize,
+        system: ScaledNewtonSystem<'_>,
+    ) -> Option<DVector<f64>> {
+        let block_index = self.block_indices.get(block_index).copied()?;
+        let layout = self
+            .runtime
+            .continuous_structural
+            .algebraic_projection()
+            .get(block_index)?
+            .affine_elimination()?;
+        let cache = self.runtime.algebraic_newton_caches.get(block_index)?;
+        crate::runtime::projection::scaled_newton_delta_with_tearing(
+            system,
+            &mut cache.borrow_mut(),
+            layout,
+        )
+    }
+
     fn solve_algebraic_newton_delta(
         &self,
         block_index: usize,

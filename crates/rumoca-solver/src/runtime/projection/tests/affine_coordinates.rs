@@ -13,11 +13,7 @@ impl ImplicitProjectionModel for OffsetPortVoltages {
         _t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        // Small junction voltage s, two equal absolute port potentials, diode current.
-        out[0] = y[0] - (y[1] + 50.0);
-        out[1] = 1e-5 * y[3] + (y[2] + 50.0);
-        out[2] = y[1] - y[2];
-        out[3] = (50.0 - y[1]) * 2e-5 + y[3] - 1e-5 * y[0] - (0.002 + 1e-12);
+        offset_port_residual(y, out);
         Ok(())
     }
 
@@ -59,6 +55,14 @@ impl ImplicitProjectionModel for OffsetPortVoltages {
             .push((system.row_scales.to_vec(), system.variable_scales.to_vec()));
         scaled_newton_delta(system)
     }
+}
+
+pub(super) fn offset_port_residual(y: &[f64], out: &mut [f64]) {
+    // Small junction voltage s, two equal absolute port potentials, diode current.
+    out[0] = y[0] - (y[1] + 50.0);
+    out[1] = 1e-5 * y[3] + (y[2] + 50.0);
+    out[2] = y[1] - y[2];
+    out[3] = (50.0 - y[1]) * 2e-5 + y[3] - 1e-5 * y[0] - (0.002 + 1e-12);
 }
 
 #[test]

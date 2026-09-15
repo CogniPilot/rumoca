@@ -4,7 +4,7 @@ use super::*;
 
 pub(crate) struct SeedBlockLinearization {
     factor: nalgebra::linalg::LU<f64, nalgebra::Dyn, nalgebra::Dyn>,
-    row_scales: Vec<f64>,
+    jacobian: DMatrix<f64>,
 }
 
 impl SeedBlockLinearization {
@@ -25,22 +25,28 @@ impl SeedBlockLinearization {
             &block.y_indices,
             structure,
         )?;
-        let row_scales = algebraic_block_scales(
-            model,
-            y,
-            block,
-            &jacobian,
-            structure.map(solve::JacobianStructure::pattern),
-        )
-        .0;
         Ok(Self {
-            factor: jacobian.lu(),
-            row_scales,
+            factor: jacobian.clone().lu(),
+            jacobian,
         })
     }
 
-    pub(super) fn row_scales(&self) -> &[f64] {
-        &self.row_scales
+    pub(super) fn row_scales(
+        &self,
+        model: &dyn ImplicitProjectionModel,
+        block_index: usize,
+        block: &solve::AlgebraicProjectionBlock,
+        seed: &[f64],
+    ) -> Vec<f64> {
+        let structure = model.algebraic_projection_block_structure(block_index);
+        algebraic_block_scales(
+            model,
+            seed,
+            block,
+            &self.jacobian,
+            structure.map(solve::JacobianStructure::pattern),
+        )
+        .0
     }
 
     pub(super) fn solve(&self, rhs: &DVector<f64>) -> Option<DVector<f64>> {

@@ -56,6 +56,12 @@ repeatable operations. The first execution remains ordered and complete;
 coordinate changes, failure, or a new call invalidate every retained result.
 Native constant facts belong to register versions: each complete source write
 invalidates prior destination facts after reading its input versions.
+An affine elimination layout derives complete row/coordinate permutations and
+triangular dependencies from the exact block's tearing and sparsity owners;
+later dependencies require issued exact-zero guards on fresh, unconditioned
+coefficients before every solve. It proves no numerical pivot usable;
+cached reduced factors retain the same
+bitwise coefficient validity and rejection discipline as full sparse factors.
 
 For target `x`, the first true `(a_k, v_k)` gives `x' = v_k`; otherwise
 `x' = x`. Activations are shared per iteration; inactive values are skipped.

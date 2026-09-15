@@ -1,10 +1,12 @@
 use super::*;
 use std::sync::Arc;
 
+mod affine_elimination;
 mod clock_partition;
 mod event_transaction;
 mod jacobian_outputs;
 
+pub use affine_elimination::AffineEliminationLayout;
 pub use event_transaction::*;
 pub use jacobian_outputs::*;
 
@@ -106,6 +108,7 @@ pub struct JacobianStructure {
     output_evaluations: Box<[ProjectionJacobianOutputs]>,
     residual_output_evaluation: Option<ProjectionOutputSelection>,
     jacobian_application: Option<ProjectionJacobianApplication>,
+    affine_elimination: Option<AffineEliminationLayout>,
     linearization_repeatable: bool,
 }
 
@@ -118,6 +121,7 @@ impl JacobianStructure {
             output_evaluations: Box::default(),
             residual_output_evaluation: None,
             jacobian_application: None,
+            affine_elimination: None,
             linearization_repeatable: false,
         }
     }
@@ -136,6 +140,10 @@ impl JacobianStructure {
 
     pub const fn residual_output_evaluation(&self) -> Option<&ProjectionOutputSelection> {
         self.residual_output_evaluation.as_ref()
+    }
+
+    pub const fn affine_elimination(&self) -> Option<&AffineEliminationLayout> {
+        self.affine_elimination.as_ref()
     }
 
     pub const fn linearization_is_repeatable(&self) -> bool {

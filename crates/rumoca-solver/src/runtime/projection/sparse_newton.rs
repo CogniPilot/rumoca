@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests;
+mod torn;
 
 use faer::{
     Conj, MatMut, Par,
@@ -17,9 +18,22 @@ use super::scaling::valid_variable_scale;
 #[derive(Clone, Default)]
 pub(crate) struct SparseNewtonCache {
     system: Option<PreparedSparseSystem>,
+    torn: torn::TornNewtonCache,
 }
 
 impl SparseNewtonCache {
+    pub(super) fn solve_torn_scaled(
+        &mut self,
+        source: &DMatrix<f64>,
+        rhs: &DVector<f64>,
+        row_scales: &[f64],
+        variable_scales: &[f64],
+        layout: &rumoca_ir_solve::AffineEliminationLayout,
+    ) -> Option<DVector<f64>> {
+        self.torn
+            .solve_scaled(source, rhs, row_scales, variable_scales, layout)
+    }
+
     pub(super) fn solve_scaled(
         &mut self,
         source: &DMatrix<f64>,

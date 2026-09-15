@@ -155,6 +155,8 @@ impl ContinuousStructuralArtifacts {
             structure.jacobian_application = ProjectionJacobianApplication::derive(
                 index, structure, block, solver_y, &y_outputs,
             );
+            structure.affine_elimination =
+                AffineEliminationLayout::derive(block, &structure.pattern);
         }
         self
     }

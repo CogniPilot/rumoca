@@ -22,6 +22,7 @@ use rumoca_ir_solve as solve;
 
 use super::solve_ops::RuntimeSolveError;
 use initial_diagnostics::initial_projection_error;
+pub(crate) use scaling::scaled_newton_delta_with_tearing;
 pub(crate) use scaling::{ScaledNewtonSystem, scaled_newton_delta, scaled_newton_delta_with_cache};
 use scaling::{
     algebraic_block_scales, algebraic_plan_row_scales, initial_block_fallback_scales,
@@ -224,6 +225,14 @@ pub(crate) trait ImplicitProjectionModel {
         system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
         scaled_newton_delta(system)
+    }
+
+    fn solve_affine_torn_delta(
+        &self,
+        _block_index: usize,
+        _system: ScaledNewtonSystem<'_>,
+    ) -> Option<DVector<f64>> {
+        None
     }
 
     fn eval_implicit_target_value(
@@ -433,7 +442,6 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
             "algebraic seed projection",
         )?;
         let linearization = model.algebraic_seed_linearization(block_index, block, y, args)?;
-        row_scales.extend_from_slice(linearization.row_scales());
         let rhs = DVector::from_iterator(
             block.rows.len(),
             block_residual.into_iter().map(|value| -value),
@@ -458,6 +466,7 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
             }
             seed[y_index] = value;
         }
+        row_scales.extend(linearization.row_scales(model, block_index, block, seed));
     }
     let rows = projection_rows(plan);
     let residual = implicit_selected_jacobian_v_rows(
@@ -1335,6 +1344,14 @@ impl<M: AlgebraicProjectionModel> ImplicitProjectionModel
     fn implicit_target_assignment_is_exact(&self, row_idx: usize, target_y_index: usize) -> bool {
         self.model
             .implicit_target_assignment_is_exact(row_idx, target_y_index)
+    }
+
+    fn solve_affine_torn_delta(
+        &self,
+        block_index: usize,
+        system: ScaledNewtonSystem<'_>,
+    ) -> Option<DVector<f64>> {
+        self.model.solve_affine_torn_delta(block_index, system)
     }
 }
 

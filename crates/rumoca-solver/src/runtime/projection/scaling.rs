@@ -298,6 +298,47 @@ pub(crate) fn scaled_newton_delta_with_cache(
     scaled_newton_delta_impl(system, Some(cache), true)
 }
 
+pub(crate) fn scaled_newton_delta_with_tearing(
+    system: ScaledNewtonSystem<'_>,
+    cache: &mut SparseNewtonCache,
+    layout: &solve::AffineEliminationLayout,
+) -> Option<DVector<f64>> {
+    if system.structure != Some(layout.pattern())
+        || system.jacobian.nrows() != system.residual.len()
+        || system.jacobian.nrows() != system.row_scales.len()
+        || system.jacobian.ncols() != system.variable_scales.len()
+        || !matches!(
+            select_linear_solve_kernel(system.jacobian.nrows(), layout.pattern()).ok(),
+            Some(LinearSolveKernel::SparseCandidate)
+        )
+        || !matches!(
+            select_linear_solve_kernel(layout.tears().len(), layout.reduced_pattern()).ok(),
+            Some(LinearSolveKernel::SmallDense)
+        )
+    {
+        return None;
+    }
+    let rhs = scaled_newton_rhs(system.residual, system.row_scales);
+    let delta = cache.solve_torn_scaled(
+        system.jacobian,
+        &rhs,
+        system.row_scales,
+        system.variable_scales,
+        layout,
+    )?;
+    Some(unscale_newton_delta(&delta, system.variable_scales))
+}
+
+fn scaled_newton_rhs(residual: &[f64], row_scales: &[f64]) -> DVector<f64> {
+    DVector::from_iterator(
+        residual.len(),
+        residual
+            .iter()
+            .zip(row_scales)
+            .map(|(&value, &scale)| -value / valid_variable_scale(scale)),
+    )
+}
+
 fn scaled_newton_delta_impl(
     system: ScaledNewtonSystem<'_>,
     cache: Option<&mut SparseNewtonCache>,
@@ -317,14 +358,7 @@ fn scaled_newton_delta_impl(
     {
         return None;
     }
-    let rhs = DVector::from_iterator(
-        residual.len(),
-        residual
-            .iter()
-            .copied()
-            .zip(row_scales.iter().copied())
-            .map(|(value, scale)| -value / valid_variable_scale(scale)),
-    );
+    let rhs = scaled_newton_rhs(residual, row_scales);
     let sparse = structure.and_then(|pattern| {
         matches!(
             select_linear_solve_kernel(jacobian.nrows(), pattern).ok(),

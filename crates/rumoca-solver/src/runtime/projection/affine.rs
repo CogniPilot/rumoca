@@ -36,7 +36,7 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         &jacobian,
         structure.map(solve::JacobianStructure::pattern),
     );
-    let system = AffineBlockSystem {
+    let mut system = AffineBlockSystem {
         model,
         parameters: p,
         time: t,
@@ -47,18 +47,18 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         variable_scales,
         structure,
         tolerance: tol,
+        prefer_torn: true,
+        used_torn: std::cell::Cell::new(false),
     };
-    let residual = system.residual(&candidate)?;
-    let Some(solution) = system.solve(&residual) else {
-        return Ok(ProjectionBlockUpdate {
-            changed: false,
-            settled: false,
-        });
-    };
-    for (&index, &value) in block.y_indices.iter().zip(solution.iter()) {
-        candidate[index] = value;
+    let mut settled = system.project(&mut candidate)?;
+    if !settled && system.used_torn.get() {
+        system.prefer_torn = false;
+        for &index in &block.y_indices {
+            candidate[index] = 0.0;
+        }
+        settled = system.project(&mut candidate)?;
     }
-    if !system.refine(&mut candidate)? {
+    if !settled {
         return Ok(ProjectionBlockUpdate {
             changed: false,
             settled: false,
@@ -86,9 +86,22 @@ struct AffineBlockSystem<'a, M> {
     variable_scales: Vec<f64>,
     structure: Option<&'a solve::JacobianStructure>,
     tolerance: f64,
+    prefer_torn: bool,
+    used_torn: std::cell::Cell<bool>,
 }
 
 impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
+    fn project(&self, y: &mut [f64]) -> Result<bool, RuntimeSolveError> {
+        let residual = self.residual(y)?;
+        let Some(solution) = self.solve(&residual) else {
+            return Ok(false);
+        };
+        for (&index, &value) in self.block.y_indices.iter().zip(solution.iter()) {
+            y[index] = value;
+        }
+        self.refine(y)
+    }
+
     fn residual(&self, y: &[f64]) -> Result<Vec<f64>, RuntimeSolveError> {
         if let Some(selection) = self
             .structure
@@ -128,19 +141,29 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
     fn solve(&self, residual: &[f64]) -> Option<DVector<f64>> {
         // Conditioning belongs to this fixed matrix. Candidate-dependent
         // scales still certify the fresh source residual in `refine`.
+        let system = ScaledNewtonSystem {
+            jacobian: &self.jacobian,
+            residual,
+            row_scales: &self.row_scales,
+            variable_scales: &self.variable_scales,
+            structure: self.structure.map(solve::JacobianStructure::pattern),
+            tolerance: self.tolerance,
+        };
+        let finite = |v: &DVector<f64>| {
+            v.len() == self.block.y_indices.len() && v.iter().all(|x| x.is_finite())
+        };
+        if self.prefer_torn
+            && let Some(delta) = self
+                .model
+                .solve_affine_torn_delta(self.block_index, system)
+                .filter(finite)
+        {
+            self.used_torn.set(true);
+            return Some(delta);
+        }
         self.model
-            .solve_algebraic_newton_delta(
-                self.block_index,
-                ScaledNewtonSystem {
-                    jacobian: &self.jacobian,
-                    residual,
-                    row_scales: &self.row_scales,
-                    variable_scales: &self.variable_scales,
-                    structure: self.structure.map(solve::JacobianStructure::pattern),
-                    tolerance: self.tolerance,
-                },
-            )
-            .filter(|v| v.len() == self.block.y_indices.len() && v.iter().all(|x| x.is_finite()))
+            .solve_algebraic_newton_delta(self.block_index, system)
+            .filter(finite)
     }
 
     fn refine(&self, y: &mut [f64]) -> Result<bool, RuntimeSolveError> {
