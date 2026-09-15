@@ -4,6 +4,102 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## GyroscopicEffects matching bound passes focused verification
+
+The first divergent search decision precedes the independent additive-lift fix:
+the necessary independent demotion-anchor repair expands first-round admission
+from 27 to 57. Earlier affine/value-identity inspections emit 364 records versus
+528 after that repair. The same-source prepared systems before/after the final
+additive-lift change remain identical. Artifact-disabled saved/current workers
+measure Solve at 5.165/6.952 seconds in one diagnostic pair; the saved worker is
+the affine-state-anchor build, not the profiling script's current Git HEAD.
+Hashes, selected records, and timings are retained in
+`rolling-wheel/gyro-demotion-search-localization-1.json`.
+
+Direct search already retains the first checked strictly reduced candidate.
+Later candidates can supersede it only by completing the matching. The candidate
+optimization bounds how many continuous scalar rows a demotion can change,
+counting whole compact owners and conservatively adding any restored lifted
+owner. Changing at most m rows can increase maximum matching cardinality by at
+most m: removing those rows from any new matching leaves a source matching.
+Direct demotion preserves equation/unknown counts, so residue cannot decrease
+by more than 2*m. Candidates with a larger source residue need no trial once a
+checked reduction exists. No candidates are removed from admission, no state
+priorities change, and every attempted/selected result retains its checks.
+
+The source-backed five-independent-constraint regression fails on the original
+search with 15 reconstructions and passes with the bound for scalar, singleton,
+and three-element tensor payloads. A separate mixed-width fixture proves that
+a later Sorted tensor candidate still supersedes a Reduced scalar candidate,
+producing the exact same prepared DAE as its exhaustive trial. All 184 structural
+tests and all-target/all-feature Clippy pass (`demotion-bounds-green-5.log`,
+`demotion-bounds-clippy-3.log`). Earlier fixture naming and nesting failures remain
+recorded. No debug probe, model branch, timeout change, or tolerance change is used.
+
+GyroscopicEffects retains byte-identical prepared DAE and manifold artifacts and
+all 24 selected reductions. Actual reconstruction attempts fall from 452 to 281;
+total observation records fall from 528 to 357. Its public structural diagnostic
+falls from 5.287 to 3.097 seconds. A sequential artifact-disabled actual-worker
+pair measures Solve at 6.865/5.043 seconds and integration at 0.407/0.405 seconds.
+Both execute and initialize successfully. These are single diagnostic pairs,
+not statistical benchmark claims. Perf capture completes with 5,062 candidate
+samples; its deliberate SIGINT exit is recorded separately from the worker's
+successful exit. Receipts are `gyro-demotion-bounds-{artifact-delta,ordinary-pair}-1.json`.
+
+At `a671ecb8`, digest `4bdbfb623dc4082fb3a43e9c4ef67810c2733a35b40b48ae97fa7014a578a2a1`,
+the ordinary `multibody-demotion-bounds-frontier` run has four high comparisons,
+one reviewed BevelGear1D exclusion, and zero missing/deviating results. It restores
+GyroscopicEffects execution relative to the latest full attempt and preserves
+every phase/band against the same six-model `multibody-round-facts-origin` roster.
+LineForce still times out in Solve. The eight-model origin run preserves all six
+high comparisons and both reviewed exclusions. The fixed canary preserves all
+twenty phase/band rows, nine high comparisons, zero exclusions/missing/deviation.
+Their deltas are `demotion-bounds-{frontier,origin,canary}-delta-1.json`.
+
+A fresh complete cohort is still required to restore coverage credit; the latest
+authoritative MultiBody count below remains 22/42. Combined quick/full verification
+also remains outstanding; this checkpoint is not release evidence.
+
+## Full comparison closes false traces but loses GyroscopicEffects execution
+
+The full `multibody-independent-lift-full-11` run at
+`a671ecb8ac35bfc10a3a9db02e0f81feb40f651c` compares 164/566 strict-high
+(28.98%): 164 compared, 20 reviewed exclusions, zero missing/nonidentifiable
+traces, and zero near/deviating comparisons. All 22,009 initialization channels
+are high. PreLoad and DCPM_Drive retain excluded execution; the four repaired
+counterexamples remain high. Both Cauer models gain high comparison against
+the preceding committed cohort. The run's worktree digest is
+`48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`;
+the only untracked workspace file is the preserved `comm_fastdyn.md`.
+
+GyroscopicEffects loses its high result to a Solve timeout: the worker exceeds
+the unchanged 10-second budget after 11.559 seconds. MultiBody consequently
+falls to 22/42 high: 22 compared, one reviewed BevelGear1D exclusion, and no
+missing comparisons. The aggregate gate exits successfully, but the loss of
+a previously high model blocks campaign acceptance and baseline promotion.
+The complete phase and band delta is
+`rolling-wheel/independent-lift-full-delta-1.json`. LineForce remains a Solve
+timeout and earns no new credit.
+
+The first GyroscopicEffects diagnostic rejects an enlarged structural system
+as the explanation for the independent-lift change. Public inspections of the
+identical source DAE produce byte-identical prepared DAEs and manifold ordinals
+before and after that change, with all 528 reduction records identical. Their
+diagnostic reduction durations are 5.324 and 5.287 seconds; this single pair is
+not a speed claim. The prepared DAE SHA-256 is
+`38126fc10c1eb1c89c6b0cad70feed5efb3c1d4ef33396dad93d8216ac3a6dad`.
+The receipt is `rolling-wheel/gyro-independent-lift-artifact-delta-1.json`.
+
+An artifact-enabled actual-worker run completes simulation and records
+7.545 seconds for Solve lowering. Its perf interval also includes artifact
+serialization, so that profile cannot be treated as ordinary cohort timing.
+The profile exposes existing variable-name equality and reservation costs,
+incidence projection, allocation, hashing, and output writes; it does not
+establish additive-proof search as the bottleneck. Artifact-disabled control
+and candidate worker profiles are the next comparison before choosing a
+performance change. The failed full attempt remains recorded; a diagnostic
+completion does not restore its coverage credit.
+
 ## Independent source equations restore PreLoad execution
 
 The new additive lift proof excludes the equation being replaced and the

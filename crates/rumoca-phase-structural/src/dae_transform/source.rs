@@ -1,11 +1,13 @@
 use rumoca_ir_dae as dae;
 
 use super::constraints::DifferentiationFacts;
+use super::demotion_bounds::DemotionRowBounds;
 
 /// One immutable candidate-round source and the facts collected from it.
 pub(super) struct ReductionSource<'model> {
     model: &'model dae::Dae,
     facts: DifferentiationFacts,
+    pub(super) demotion_rows: DemotionRowBounds,
 }
 
 impl<'model> ReductionSource<'model> {
@@ -13,6 +15,7 @@ impl<'model> ReductionSource<'model> {
         Self {
             model,
             facts: model.inspect(DifferentiationFacts::collect),
+            demotion_rows: model.inspect(DemotionRowBounds::collect),
         }
     }
 

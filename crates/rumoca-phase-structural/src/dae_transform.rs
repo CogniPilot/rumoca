@@ -12,6 +12,7 @@ mod component_constraint;
 mod component_projection;
 mod constraints;
 mod declarations;
+mod demotion_bounds;
 mod derivative_aliases;
 mod differentiation;
 mod equalities;
@@ -940,6 +941,13 @@ fn demotion_pass_with_observer(
     let mut held: Option<(DirectStateConstraint, usize, DemotionStep)> = None;
     let mut blocked = None;
     for candidate in candidates {
+        if reduced.is_some()
+            && source
+                .demotion_rows
+                .cannot_sort(candidate.state, residue, prior_manifold)
+        {
+            continue;
+        }
         match attempt_direct_candidate(
             source,
             residue,
