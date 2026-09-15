@@ -4,6 +4,52 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Retain alternative defining equations during structural substitution
+
+LineForceWithTwoMasses' timeout occurs in structural index reduction, before
+Jacobian construction. The actual-worker Solve profile ends after 15.3 seconds
+with 2,164/2,204 equations matched. Inspection records 107 rounds and reaches
+an intermediate residue of one equation/unknown pair before returning the
+original singularity. OMC's retained backend XML instead treats
+`jointUPS.axisLength` as a dummy state and supplies its first and second
+derivatives. Its source has both a geometric length definition and a
+displacement-plus-offset definition. Evidence is
+`rolling-wheel/line-force-structural-diagnosis-1.json` and the retained
+`line-force/omc-stages` captures.
+
+That investigation exposed a general distinction: executable causal elimination
+requires a unique definition, but structural substitution may use an exact
+state/invariant-anchored equality while retaining the other equations as
+constraints. Structural facts now complete missing definitions through a
+deterministic acyclic closure over checked whole-coordinate equations. Every
+source equation remains; executable causal-definition policy is unchanged.
+SPEC_0007's STRUCT-T03 profile records this source-preserving substitution.
+
+The reduced scalar/vector regression fails before the fix and passes afterward.
+A cycle without value anchors remains unmaterializable. Three older tests that
+assumed displaced definitions were unsupported now check the admitted source
+constraints; the constant and parameter-offset cases also evaluate both retained
+position and velocity residuals at multiple parameter values. All 172 structural
+tests and affected all-target/all-feature Clippy pass
+(`alternative-definitions-validation-build-7.log`). Earlier fixture, oracle,
+and lint failures remain in the numbered logs.
+
+The five-model `multibody-alternative-definitions-origin` retains high comparisons
+for RollingWheel, GyroscopicEffects, and OvervoltageProtection: three compared,
+one reviewed BevelGear1D exclusion, and zero missing or deviating comparisons.
+LineForceWithTwoMasses still exceeds the unchanged Solve budget. Replaying the
+same source DAE with the new reducer records 102 rounds and still ends one
+equation/unknown pair short; the alternative-definition gap is not the complete
+explanation. No compilation or parity credit is claimed for that model.
+Receipts are `alternative-definitions-origin-evidence-1.json` and
+`alternative-definitions-line-force-delta.json` under `rolling-wheel`.
+
+The fixed `multibody-alternative-definitions-canary` preserves every phase and
+band from `multibody-invariance-sharing-canary`: nine compared high, zero
+skipped/missing/excluded/nonidentifiable traces, and all 175 initialization
+channels high (`alternative-definitions-canary-delta.json`). The next complete
+cohort and combined verify quick/full remain pending.
+
 ## Full sweep confirms shared-proof construction
 
 The complete `multibody-invariance-sharing-full-11` sweep at

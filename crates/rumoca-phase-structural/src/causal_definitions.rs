@@ -348,7 +348,7 @@ fn coordinate_has_continuous_time<'dae>(
     }
 }
 
-fn exact_row_major_family_body<'dae>(
+pub(crate) fn exact_row_major_family_body<'dae>(
     view: dae::DaeView<'dae>,
     family: dae::StructuredFamilyView<'dae>,
 ) -> Option<dae::ExprId<'dae>> {
@@ -445,7 +445,7 @@ fn discrete_connection_definition<'dae>(
     }
 }
 
-fn direct_definition<'dae>(
+pub(crate) fn direct_definition<'dae>(
     view: dae::DaeView<'dae>,
     residual: dae::ExprId<'dae>,
 ) -> Option<(dae::AlgebraicId<'dae>, dae::ExprId<'dae>)> {

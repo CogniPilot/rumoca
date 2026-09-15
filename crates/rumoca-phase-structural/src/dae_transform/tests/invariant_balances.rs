@@ -710,7 +710,7 @@ fn literal_zero_support_exposes_an_exact_holonomic_edge() {
 }
 
 #[test]
-fn nonzero_offset_is_derivative_only_and_cannot_forge_a_manifold() {
+fn nonzero_offset_definition_retains_its_displaced_manifold() {
     let model = offset_model(OffsetKind::Half);
     model.inspect(|view| {
         let equalities = SystemEqualities::collect(view);
@@ -722,16 +722,14 @@ fn nonzero_offset_is_derivative_only_and_cannot_forge_a_manifold() {
             "the affine edge supplies a derivative anchor"
         );
         assert_eq!(equalities.value_anchor_of(shifted), None);
-        assert!(
-            holonomic_constraints(view).is_empty(),
-            "an unrepresented offset cannot enter a state-only manifold"
-        );
+        assert_eq!(holonomic_constraints(view).len(), 1);
     });
-    assert!(prepare_for_solve(&model).is_err());
+    assert_offset_manifold_values(&model, false);
+    prepare_for_solve(&model).expect("the exact displaced constraint reduces");
 }
 
 #[test]
-fn chained_parameter_support_is_derivative_only_until_its_value_is_retained() {
+fn chained_parameter_support_retains_its_value_in_the_manifold() {
     let model = parameter_chained_offset_model();
     model.inspect(|view| {
         let equalities = SystemEqualities::collect(view);
@@ -747,15 +745,10 @@ fn chained_parameter_support_is_derivative_only_until_its_value_is_retained() {
             None,
             "the parameter displacement is not an offset-free value alias"
         );
-        assert!(
-            holonomic_constraints(view).is_empty(),
-            "the current relation cannot materialize the retained parameter displacement"
-        );
+        assert_eq!(holonomic_constraints(view).len(), 1);
     });
-    assert!(
-        prepare_for_solve(&model).is_err(),
-        "the current reducer fails closed instead of dropping the parameter displacement"
-    );
+    assert_offset_manifold_values(&model, true);
+    prepare_for_solve(&model).expect("the exact parameter-displaced constraint reduces");
 }
 
 #[test]
@@ -766,8 +759,93 @@ fn varying_and_nonunit_operands_infer_no_edge() {
             let shifted = variable_index(view, "shifted");
             let equalities = SystemEqualities::collect(view);
             assert_eq!(equalities.anchor_of(shifted), None);
-            assert!(holonomic_constraints(view).is_empty());
+            assert_eq!(
+                holonomic_constraints(view).len(),
+                1,
+                "a full defining expression supplies a value without inventing an alias edge"
+            );
         });
+    }
+}
+
+fn assert_offset_manifold_values(model: &dae::Dae, parameter_offset: bool) {
+    let constraint = model.inspect(|view| holonomic_constraints(view).remove(0));
+    let (rebuilt, manifold) =
+        reconstruction::rebuild_holonomic_constraint(model, &constraint, &[]).unwrap();
+    assert_eq!(manifold.len(), 2);
+    rebuilt.inspect(|view| {
+        for entry in &manifold {
+            let expression = view.expression_id(entry.expression as usize).unwrap();
+            dae::for_each_expression(view, expression, |_, node| {
+                assert_state_only_operation(node.operation());
+            });
+        }
+        for phi0 in [0.5, 0.75] {
+            let values = [
+                ("x", 4.0),
+                ("y", 1.0),
+                ("w", 6.0),
+                ("v", 3.0),
+                ("phi0", phi0),
+            ];
+            let residuals = manifold
+                .iter()
+                .map(|entry| {
+                    let expression = view.expression_id(entry.expression as usize).unwrap();
+                    evaluate_offset_fixture(view, expression, &values)
+                })
+                .collect::<Vec<_>>();
+            let offset = if parameter_offset { phi0 } else { 0.5 };
+            assert_eq!(residuals, [4.0 - offset - 2.0, 0.0]);
+        }
+    });
+}
+
+// Independent arithmetic oracle for these scalar polynomial fixtures. Reject
+// every operation outside the stated position/velocity equations.
+fn evaluate_offset_fixture<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    values: &[(&str, f64)],
+) -> f64 {
+    match view.expression(expression).unwrap().operation() {
+        dae::ExpressionOperation::Literal(dae::DaeLiteral::Real(value)) => *value,
+        dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(value)) => *value as f64,
+        dae::ExpressionOperation::Coordinate(coordinate) => {
+            let variable: dae::VariableId<'_> = match coordinate {
+                dae::CoordinateView::State(id) => id.into(),
+                dae::CoordinateView::Parameter(id) => id.into(),
+                other => panic!("unexpected fixture coordinate: {other:?}"),
+            };
+            let name = view.variable(variable).unwrap().name();
+            values
+                .iter()
+                .find(|(key, _)| *key == name.as_str())
+                .unwrap()
+                .1
+        }
+        dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
+            let lhs = evaluate_offset_fixture(view, lhs, values);
+            let rhs = evaluate_offset_fixture(view, rhs, values);
+            match operator {
+                dae::BinaryOperator::Add => lhs + rhs,
+                dae::BinaryOperator::Subtract => lhs - rhs,
+                dae::BinaryOperator::Multiply => lhs * rhs,
+                other => panic!("unexpected fixture operator: {other:?}"),
+            }
+        }
+        dae::ExpressionOperation::Unary {
+            operator: dae::UnaryOperator::Negate,
+            operand,
+        } => -evaluate_offset_fixture(view, operand, values),
+        dae::ExpressionOperation::Unary {
+            operator: dae::UnaryOperator::Plus,
+            operand,
+        } => evaluate_offset_fixture(view, operand, values),
+        _ => panic!(
+            "unexpected fixture expression: {:?}",
+            view.expression(expression).unwrap().kind()
+        ),
     }
 }
 

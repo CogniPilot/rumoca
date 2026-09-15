@@ -1,3 +1,4 @@
+mod alternative_definitions;
 mod defining_equations;
 mod equalities;
 mod forwarding_equalities;

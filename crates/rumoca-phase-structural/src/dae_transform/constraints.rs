@@ -14,6 +14,7 @@
 //! definitions are read in either orientation, so the `w - der(phi)` form MSL
 //! components use supplies `d/dt phi` exactly as `der(phi) - w` would.
 
+mod alternative_definitions;
 mod materialization;
 mod state_derivative;
 
@@ -74,6 +75,7 @@ impl DifferentiationFacts {
             component_definitions: vec![None; view.variable_count()],
             auxiliary_blocks: vec![None; view.variable_count()],
         };
+        alternative_definitions::complete(view, &mut facts);
         facts.auxiliary_blocks = super::auxiliary_blocks::derive_blocks(view, &facts);
         facts.component_definitions = super::component_constraint::derive_definitions(view, &facts);
         for block in super::auxiliary_blocks::derive_state_blocks(view, &facts) {
