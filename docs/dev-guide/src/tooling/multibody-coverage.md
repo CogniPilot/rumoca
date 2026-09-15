@@ -4,6 +4,44 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Full sweep confirms 25 high-parity MultiBody examples
+
+`target/msl/multibody-early-tensor-rate-full` passes the complete 566-model
+gate at `e1aacdd07518f988be542e0b29480992206113dc`. There are 167 strict-high
+models (29.51%), with 167 compared, 20 reviewed exclusions, zero missing
+traces, and zero nonidentifiable traces. The tracked compiler tree is clean;
+the run's dirty marker includes the preserved untracked `comm_fastdyn.md`.
+Of 24,773 trajectory channels, 24,728 are high and 45 have minor differences;
+none are deviating or severe. All 24,773 initialization channels are high.
+Raw simulation completion is 187 and receives no additional parity credit.
+
+MultiBody has 25 of 42 strict-high examples, with 25 compared, one reviewed
+BevelGear1D exclusion, and no missing or nonidentifiable traces. Compared with
+`multibody-projected-initial-full` at `c74dd524`, RevoluteConstraint is the sole
+band change: absent to high. It completes its full experiment with all 918
+shared trajectory and initialization channels high. Solve preparation takes
+7.173 seconds, including 0.162 seconds in structural reduction; simulation
+takes 2.076 seconds. No previously high model regresses and no new actionable
+trace counterexample appears.
+
+The remaining sixteen MultiBody failures are seven Solve timeouts, two
+structural refusals, two Flatten timeouts, three record-input derivative
+specialization refusals, one function shape-proof refusal, and one unsupported
+array-valued `fixed` attribute. The seventeenth non-high model is the reviewed
+BevelGear1D exclusion. These outcomes receive no high-parity credit.
+
+One other phase outcome changes: `Inverse_sh_TX` again reports the missing
+`MixtureGasNasa.ThermodynamicState` constructor layout in Flatten (EF015)
+instead of the prior ToDae Array/Enumeration mismatch (ED019). This previously
+observed diagnostic variation remains unexplained; neither result simulates,
+and the intervening fixes do not modify Flatten or earlier phases.
+
+The full log and complete phase/band delta are
+`rolling-wheel/early-tensor-rate-full-{1.log,delta-1.json}`. The evidence receipt
+binds the implementation, normal workers, focused checks, and cohort artifacts.
+Combined quick/full release verification, baseline promotion, push, and PR
+remain pending. The 100% MultiBody goal is not complete.
+
 ## RevoluteConstraint completes with high OMC trace agreement
 
 The ordinary worker now compiles, initializes, and simulates
