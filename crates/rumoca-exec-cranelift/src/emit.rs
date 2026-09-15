@@ -32,6 +32,7 @@ mod interpreter;
 mod owned_jit_module;
 mod projection_batch;
 pub(crate) mod projection_jacobian;
+mod register_constants;
 mod register_storage;
 #[cfg(test)]
 mod register_storage_tests;
@@ -2269,13 +2270,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         clippy::excessive_nesting,
         reason = "one exhaustive native dispatcher makes unsupported LinearOp variants fail closed"
     )]
-    fn lower_op(
+    fn lower_op_native(
         &mut self,
         op: LinearOp,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
         match op {
             LinearOp::Const { dst, value } => {
-                self.known_constants.insert(dst, value);
                 let value = self.fb.ins().f64const(value);
                 self.insert(dst, value)
             }
@@ -2342,13 +2342,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     .ok_or_else(|| {
                         CompileError::Backend("invalid function-fold binder load".to_string())
                     })?;
-                if let Some(constant) = self
-                    .fold_index_constants
-                    .and_then(|values| values.get(dimension))
-                    .copied()
-                {
-                    self.known_constants.insert(dst, constant);
-                }
                 self.insert(dst, value)
             }
             LinearOp::LoadFoldCapture { dst, index } => {
@@ -2407,9 +2400,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             }
             LinearOp::Move { dst, src } => {
                 let value = self.lookup(src)?;
-                if let Some(constant) = self.known_constants.get(&src).copied() {
-                    self.known_constants.insert(dst, constant);
-                }
                 self.insert(dst, value)
             }
             LinearOp::LinearSolveComponent {
@@ -2565,24 +2555,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             LinearOp::Unary { dst, op, arg } => {
                 let x = self.lookup(arg)?;
                 let value = emit_unary_op(self.fb, self.module, self.math, op, x)?;
-                if let Some(constant) = self.known_constants.get(&arg).copied()
-                    && let Some(result) = fold_unary_constant(op, constant)
-                {
-                    self.known_constants.insert(dst, result);
-                }
                 self.insert(dst, value)
             }
             LinearOp::Binary { dst, op, lhs, rhs } => {
                 let l = self.lookup(lhs)?;
                 let r = self.lookup(rhs)?;
                 let value = emit_binary_op(self.fb, self.module, self.math, op, l, r)?;
-                if let (Some(lhs), Some(rhs)) = (
-                    self.known_constants.get(&lhs).copied(),
-                    self.known_constants.get(&rhs).copied(),
-                ) && let Some(result) = fold_binary_constant(op, lhs, rhs)
-                {
-                    self.known_constants.insert(dst, result);
-                }
                 self.insert(dst, value)
             }
             LinearOp::Compare { dst, op, lhs, rhs } => {

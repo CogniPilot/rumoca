@@ -513,6 +513,7 @@ pub fn compile_exact_assignment_schedule_with_pure_calls(
 #[cfg(test)]
 mod tests {
     mod projection_jacobian;
+    mod register_constants;
     mod selected_jvp;
     mod selected_residual;
 

@@ -54,6 +54,8 @@ Within one projection-Jacobian call, construction may certify reuse of complete
 operation results across colors from invariant input register versions and
 repeatable operations. The first execution remains ordered and complete;
 coordinate changes, failure, or a new call invalidate every retained result.
+Native constant facts belong to register versions: each complete source write
+invalidates prior destination facts after reading its input versions.
 
 For target `x`, the first true `(a_k, v_k)` gives `x' = v_k`; otherwise
 `x' = x`. Activations are shared per iteration; inactive values are skipped.

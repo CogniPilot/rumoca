@@ -333,6 +333,10 @@ tangent arithmetic. The first evaluation remains in order; operand evaluation,
 calls, assertions, lazy regions, and compact tensor owners remain unchanged.
 This local register relation neither identifies distinct function occurrences
 nor authorizes reuse between invocations, coordinates, or activation contexts.
+Final native constant tracking follows the same version boundary. A scalar or
+tensor destination write removes earlier facts over that complete range;
+in-place arithmetic derives any new fact from the input versions before the
+write. Runtime indices cannot be specialized using a prior register value.
 
 A checked pure-call owner may issue a closed-input coordinate: its entire
 readable environment consists of its typed inputs, constants, initialized

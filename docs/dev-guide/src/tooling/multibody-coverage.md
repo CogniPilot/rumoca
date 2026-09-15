@@ -4,6 +4,34 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Invalidate native constant facts on register writes
+
+A checked Solve program exposed a native indexing counterexample: it sets
+register 0 to index 1, overwrites that register from parameter input 2, then
+indexes `{10,20}`. Cranelift's constant-index shortcut retained the old fact
+and selected 10; the reference evaluator correctly returned 20. The actual
+red test records that exact native/reference mismatch in
+`register-constants-red-1.log`. The first divergence is native constant
+tracking, downstream of a valid register-flow certificate.
+
+Constant facts now belong to register versions. The emitter computes a new
+fact from an operation's input versions, emits the complete operation, removes
+old facts throughout its destination range, and installs the new fact if
+proven. Tensor invalidation visits existing facts without expanding tensor
+extents. The same rule covers dynamic writes and in-place arithmetic.
+SPEC_0036 and SPEC_0043 §6a record the lifetime; MLS §10.5 supplies the indexed
+array semantics. Tests cover scalar overwrite, both destinations of a tensor
+write, and in-place addition. All 100 Cranelift tests and affected Clippy pass.
+
+RollingWheel's complete IR and trace are byte-identical to the preceding
+projection-reuse build. Its one diagnostic run took 73.695 ms; that single
+sample is not a new performance claim (`register-constants-profile-evidence-1.json`).
+The origin check retains two high comparisons, the existing BevelGear1D
+reviewed exclusion, no missing traces, and 229 high initialization channels.
+The fixed canary retains nine comparisons, all high, no skipped or missing
+traces, and 175 high initialization channels. Every phase and band is unchanged
+(`register-constants-origin-delta.json`, `register-constants-canary-delta.json`).
+
 ## Reuse primal work across projection-Jacobian colors
 
 The complete projection application now issues seed-invariance facts using
