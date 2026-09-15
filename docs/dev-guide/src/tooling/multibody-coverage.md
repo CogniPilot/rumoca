@@ -4,6 +4,54 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## LineForce sensitivity failure is a circular structural equation
+
+The failure-only debug event identifies the exact singular block in
+LineForceWithTwoMasses. All 172 failure events share one Y/P/time point and one
+zero 3-by-3 matrix. The selected logical rows are 1634, 1632, 1633 and the
+unknowns are `body1.z_a[2]`, `body1.z_a[1]`, `body1.z_a[3]`. Replaying the saved
+Solve model identifies global block 886, with a full structural pattern.
+The local refresh block number is 186; those two inventories differ.
+
+The rows belong to the differentiated `w_a = Frames.angularVelocity2(frame_a.R)`
+equation, not the torque equation. The initial zero-inertia torque hypothesis is
+rejected by this exact row mapping. Source DAE owner 545 contains
+`body1.w_a - angularVelocity2(body1.frame_a.R)`. The same owner in the structural
+DAE contains:
+
+```text
+body1.z_a - (
+  Internal.resolve2_der(jointUPS.R_ia_a.T, jointUPS.R_ia_a.w,
+                       jointUPS.frame_a.R.w, zeros(3))
+  + linear_solve(identity(3), body1.z_a))
+```
+
+The acceleration cancels through the generated identity-matrix solve. At the
+captured point, independent unit-coordinate perturbations of the primal residual
+and the projection, full, and directly regenerated JVPs all return zero on these
+rows. This rules out missing sparse entries or an AD-only error as the cause of
+the observed zero matrix. The circular form already exists before Solve lowering;
+the next proof must isolate which source-constraint/auxiliary reconstruction
+introduces it and reproduce that transformation in a focused regression.
+
+The saved OMC backend instead retains
+`$DER.jointUPS.R_ia_a.w[i] = body1.z_a[i]` (equations 310–312) and the equivalent
+body2 derivative relation (320–322). Its four selected scalar states are the
+two revolute angles and their angular velocities. Different state counts alone
+do not establish the defect; the circular structural equation is the concrete
+frontier for the next comparison.
+
+`rolling-wheel/line-force-circular-sensitivity-evidence-1.json` binds the
+source/structural/Solve artifacts, OMC equations, numerical capture, and public
+replay. The source DAE is byte-identical to the preceding diagnostic. The new
+runtime event reports the existing failed matrix without changing evaluation,
+factorization, seeds, tolerances, or failure classification. All 24 seed-focused
+tests, all-target/all-feature solver Clippy, formatting, and whitespace checks
+pass. The worker build and diagnostic helpers complete; the first helper compile
+needed an external-table slice type correction. These are diagnostic results,
+not an execution or parity gain. The complete cohort below remains authoritative;
+combined `verify quick` and `verify full` are still outstanding.
+
 ## Full comparison restores GyroscopicEffects and retains every high model
 
 The complete `multibody-demotion-bounds-full-11` run at

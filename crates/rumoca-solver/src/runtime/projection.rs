@@ -447,6 +447,7 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
             block_residual.into_iter().map(|value| -value),
         );
         let Some(solution) = linearization.solve(&rhs) else {
+            linearization.trace_singular(model, block_index, block, y, args, &rhs);
             return Err(RuntimeSolveError::DirectionalDerivativeUnavailable {
                 reason: "algebraic projection sensitivity matrix is singular".to_string(),
             });
