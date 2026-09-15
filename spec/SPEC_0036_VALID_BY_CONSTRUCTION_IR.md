@@ -245,6 +245,7 @@ prohibited. The code constant is the single version authority.
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Current wire records are private and deny unknown fields | DAE serde | Wire is not IR |
+| Finite floating-point values retain their exact bits through current-wire serialization and decoding | IR numeric transport | Replay cannot change coefficients or literals |
 | Operands travel on the operation that consumes them, never in a positional side table | DAE serde | One reading order |
 | Facts a construction operation produces are absent and re-issued by replay | Private wire types | Results cannot be forged |
 | Required collections are explicit, including empty | Private wire types | Omission is not ambiguity |

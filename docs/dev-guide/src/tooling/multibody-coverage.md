@@ -4,6 +4,54 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Full guarded-tearing sweep exposes trace transport and remaining failures
+
+The complete `multibody-guarded-affine-full-11` sweep at `b0217592` fails its
+quality gate. It compares 161 models: 160 high, one near, 19 reviewed exclusions,
+and zero missing or nonidentifiable traces. IMC_DOL and IMC_Steinmetz newly
+compare high. IMS_Start newly simulates but has 690 high, 14 near, and six
+deviating channels out of 710. GyroscopicEffects loses its previous high result
+because Solve lowering exceeds its 10-second phase budget; its previous
+lowering time was 8.805 seconds. MultiBody therefore measures 21/42 high in
+this attempt, down from 22/42. The original failure remains recorded in
+`guarded-affine-full-delta.json`; no retry or partial snapshot replaces it.
+
+IMS_Start revealed a transport defect before any equations needed changing.
+The solver's JSON contains distinct left-limit and settled times
+`0.09999999999999999` and `0.1`. The default JSON decoder rounds both to `0.1`,
+although the voltage metadata correctly declares a continuous channel. The
+comparator then loses a side of the discontinuity and creates an interpolation
+ramp across the preceding output interval. The two reduced red tests prove
+both the changed timestamp bits and an artificial error integral of 3.50000000385
+instead of approximately `3.85e-9` (`trace-json-roundtrip-red-2.log`). This is a
+decoder defect, not a reason to merge event coordinates or loosen comparison.
+
+The workspace JSON dependency now enables `float_roundtrip`. The same shared
+transport preserves finite IR coefficients and literals as well as trace
+samples. SPEC_0033/0050 and SPEC_0036 record exact finite-value transport. Three
+regressions cover adjacent event times, the manufactured ramp, signed zero,
+subnormal values, and extreme finite values. All 187 DAE IR, 322 Solve IR, and
+131 simulation facade tests pass, with affected Clippy clean
+(`trace-json-roundtrip-green-1.log`, `trace-json-roundtrip-libraries-build-1.log`).
+
+Recomparing the unchanged IMS_Start files through the production loader and
+comparator removes four voltage-channel deviations, but does not close the
+counterexample: 690 channels remain high, 18 near, and two deviate. The remaining
+worst channels are aliases of a nearly zero summed current; OMC reaches about
+`9.24e-6 A` while Rumoca stays near `1e-13 A`. Their numerical and equation-level
+origin remains under investigation. No simulation tolerance, comparator
+threshold, or exclusion changed. The helper asserts the decoded adjacent
+timestamps remain distinct; its exact libraries and result are retained in
+`trace-json-helper-libraries-1.json` and `ims-start-roundtrip-comparison-1.json`.
+
+The fixed `multibody-trace-json-canary` retains every phase and band from
+`multibody-sparse-tearing-sensitivity-canary`: nine compared high, zero skipped,
+missing, excluded, nonidentifiable, or deviating comparisons, and all 175
+initial-condition channels high (`trace-json-canary-delta.json`). This completes
+focused validation of the shared decoder fix. IMS_Start's remaining numerical
+differences, the GyroscopicEffects timeout, and combined verify quick/full
+remain open; no cohort baseline is promoted.
+
 ## Guard affine tearing and scale sensitivity checks by their direction
 
 Affine projection now consumes a checked elimination layout derived from the

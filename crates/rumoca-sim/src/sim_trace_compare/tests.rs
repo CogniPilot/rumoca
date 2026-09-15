@@ -1,5 +1,7 @@
 //! Unit tests for trace comparison and reference-scale normalization.
 
+mod json_roundtrip;
+
 use super::normalization::{
     CONTINUOUS_ABSOLUTE_SCALE_FLOOR, DISCRETE_SCALE_FLOOR, MAGNITUDE_SCALE_FRACTION,
     reference_scale,

@@ -15,6 +15,7 @@ requirements.
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Produced traces MUST have finite nondecreasing time, unique channels, and rectangular data | trace producers | Interpolation needs a valid relation |
+| Trace serialization and decoding MUST preserve finite time and channel values bit-for-bit, including adjacent event coordinates and signed zero | trace transport | Rounding can erase an event side and manufacture interpolation error |
 | A time regression MUST fail unless the preceding row is settled and the shared predicate proves one semantic instant; retain that settled row unchanged | trace producers | Proximity alone cannot hide lateness |
 | At one coordinate, settled replaces initialization, event-left, or nominal; event-left never replaces settled; exact duplicate nominal suppresses without reevaluation | trace producers | Preserve superdense role order |
 | Published state events MUST use the common host application coordinate; localization and continuation coordinates stay private | ME host | Solvers cannot change trace semantics |

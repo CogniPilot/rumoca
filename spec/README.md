@@ -28,7 +28,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0033](SPEC_0033_DEVELOPMENT_PROCESS.md) | Development Process | process | ~175 | ACCEPTED |
 | [SPEC_0034](SPEC_0034_GALEC_EFMI_EXPORT.md) | eFMI/GALEC Algorithm Code Export | target/codegen | ~189 | DRAFT |
 | [SPEC_0035](SPEC_0035_COMPLEX_NUMERIC_TYPES.md) | Complex Numeric Types in Solve IR | IR | ~196 | DRAFT |
-| [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) | Valid-by-Construction Compiler IR | IR | ~337 | DRAFT |
+| [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) | Valid-by-Construction Compiler IR | IR | ~338 | DRAFT |
 | [SPEC_0037](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) | Verification Architecture for Checkers and Semantics | verification | ~215 | DRAFT |
 | [SPEC_0038](SPEC_0038_UNIFIED_FMI_EXECUTION.md) | Unified FMI Execution | target/runtime | ~249 | DRAFT |
 | [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md) | Proof-Carrying Structural Sparsity | IR | ~153 | DRAFT |
@@ -42,7 +42,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0047](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md) | Solve Vocabulary and Target Refinement Catalog | IR/target | ~552 | REFERENCE |
 | [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) | Target Refinement and Prepared Products | target/codegen | ~114 | DRAFT |
 | [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) | Solve Grammar and Effect Catalog | IR | ~214 | REFERENCE |
-| [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) | Trace Evidence Catalog | process/verification | ~26 | REFERENCE |
+| [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) | Trace Evidence Catalog | process/verification | ~27 | REFERENCE |
 | [SPEC_0051](SPEC_0051_JACOBIAN_SYNTHESIS.md) | Jacobian Synthesis by Forward-Mode Differentiation | phase/verification | ~212 | PROPOSED |
 | [SPEC_0052](SPEC_0052_RUMOCA_LEAN_CYBER_PHYSICAL_SYSTEMS.md) | Rumoca plus Lean: Roadmap for Formally Verified Cyber-Physical Systems | architecture/verification | ~100 | PROPOSED |
 

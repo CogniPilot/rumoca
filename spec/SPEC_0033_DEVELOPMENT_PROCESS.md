@@ -110,7 +110,7 @@ Failure classifications:
 | Tier 2 is the sole source of cohort parity claims | reports, PRs, specs | One cohort number, one origin |
 | A parity claim MUST come from the OMC trace comparator's agreement bands; `sim_ok` alone is completion, never parity | reports, PRs, specs | A trace nobody compared can be plausibly wrong |
 | Initialization parity MUST use each trace's last row at the exact common start time; nearby positive-time rows remain trajectory behavior | trace comparator | Separates initialization from later events |
-| Trace production, publication, and malformed-evidence rejection MUST satisfy [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) | trace producers/comparator | Detailed rows remain normative by reference |
+| Trace production, lossless finite-value transport, publication, and malformed-evidence rejection MUST satisfy [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) | trace producers/comparator | Detailed rows remain normative by reference |
 | The comparator's candidate set MUST be every `sim_ok` trace | `rumoca_model_is_trace_candidate` | Completion picks candidates; comparison decides parity |
 | Every candidate MUST be compared or recorded under `skipped`, `missing_trace`, or `trace_nonidentifiable` with a typed reason | `sim_trace_comparison.json` | An uncompared trace must name the exact proof boundary |
 | `trace_nonidentifiable` MUST be reported separately, excluded from the pointwise-comparison denominator, and MUST NOT count as strict-high, passing, supported, or certified | comparator and all consumers | Inapplicable pointwise evidence cannot become affirmative evidence |
