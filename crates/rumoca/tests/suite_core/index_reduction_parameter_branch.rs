@@ -56,6 +56,57 @@ fn parameter_guard_survives_function_argument_substitution() {
 }
 
 #[test]
+fn indexed_parameter_guard_survives_nested_function_substitution() {
+    let source = indexed_branch_source("directions", "2");
+    check_motion(&source, 0.4, 1.0);
+    check_motion(&source.replace("start=0.4", "start=-0.4"), -0.4, -1.0);
+}
+
+#[test]
+fn indexed_varying_guards_do_not_receive_a_parameter_proof() {
+    for (array, index) in [
+        ("{false, q > 0}", "2"),
+        ("directions", "if time < 0.05 then 1 else 2"),
+    ] {
+        let source = indexed_branch_source(array, index);
+        let compiled = Compiler::new()
+            .model("ParameterBranchKinematics")
+            .compile_str(&source, "varying_indexed_guard.mo")
+            .unwrap();
+        let error = rumoca_phase_structural::prepare_for_solve(&compiled.dae)
+            .err()
+            .expect("a varying array or index cannot prove a fixed branch");
+        assert!(
+            error.to_string().contains("structurally singular"),
+            "{error}"
+        );
+    }
+}
+
+fn indexed_branch_source(array: &str, index: &str) -> String {
+    format!(
+        "function selectPosition
+          input Boolean positive; input Real q; output Real x;
+          algorithm x := if positive then q else -q;
+        end selectPosition;
+        function indexedPosition
+          input Boolean directions[2]; input Integer selected; input Real q; output Real x;
+          algorithm x := selectPosition(directions[selected], q);
+        end indexedPosition;
+        {}",
+        SOURCE
+            .replace(
+                "  Real x;",
+                "  parameter Boolean directions[2] = {not positive, positive};\n  Real x;"
+            )
+            .replace(
+                "if positive then q else -q",
+                &format!("indexedPosition({array}, {index}, q)")
+            )
+    )
+}
+
+#[test]
 fn tensor_parameter_branches_preserve_values_and_shaped_zero_derivatives() {
     let source = SOURCE
         .replace("Real x;", "Real x[2];")

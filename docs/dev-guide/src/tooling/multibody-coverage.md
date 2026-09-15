@@ -4,6 +4,56 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Parameter-array guards retain their function call context
+
+RevoluteConstraint's stalled structural DAE discovers no further candidates.
+Tracing source owners 332 and 333 (`0=ex_a*R_rel.T*e` and
+`0=ey_a*R_rel.T*e`) proves that their first differentiability check fails before
+the state-anchor count check. The failing expression is `axisRotation`'s
+conditional guard: its axis argument selects an element of
+`initAngle.sequence_start` through `axesRotations`. The array is a parameter,
+but the invariant-guard proof did not handle indexing. OMC's retained generated
+`_03lsy.c` differentiates the same rotational constraints twice.
+
+The structural proof now follows both the array and its subscripts through the
+exact function call context. Both must be invariant. A reduced nested-function
+regression first reproduced a 4/5 singular system, then exposed an additional
+reconstruction error: the array argument was substituted while the subscript
+still referenced the callee's parameter. Instantiated value and derivative
+reconstruction now instantiate subscripts through the same context, sharing the
+existing subscript reconstruction implementation. Ordinary function-body replay
+retains its original owner. The governing contracts are MLS sections 3.6.5,
+3.8.3, 10.5, and 12.4, SPEC_0007 STRUCT-T03's exact function substitution, and
+SPEC_0036 / SPEC_0043's expression ownership requirements.
+
+Both branch choices pass analytical position, velocity, and acceleration checks
+on BDF and RkLike. Varying array contents and varying indices remain refused.
+The ordinary worker's two reduced traces each have all five shared OMC channels
+high, with no minor, deviating, or severe channels. The 954 tests pass
+(204 structural, 141 Solve, 609 core), as do both phase crates' all-target,
+all-feature Clippy, core-suite Clippy, and workspace format checks.
+`multibody-indexed-parameter-guard-{frontier,origin,canary}` records empty phase
+and agreement-band deltas against the corresponding
+`multibody-projected-initial-complete-*` targets: 5/6/9 compared high, 1/2/0
+reviewed exclusions, and zero missing or nonidentifiable traces. The fixed
+20-model canary still contains its eleven previously failing models. These are
+Tier 1 checks, not a new full-cohort measurement.
+
+The unchanged RevoluteConstraint source DAE is byte-identical before and after
+the fix. Replaying its closest stalled snapshot now discovers three initial
+lift candidates and reaches the two rotational constraints, retaining four
+manifold roots. It still matches only 2,206 of 2,208 equations. The normal model
+attempt also still refuses Solve with EL005 (2,181/2,208 in its final original-
+system report), so it receives no simulation or coverage credit. The retained
+rotational rows contain first derivatives; identifying the exact proof that
+prevents the next reduction, against OMC's second derivatives, remains open.
+
+Evidence is under `rolling-wheel/indexed-parameter-guard-*`,
+`rolling-wheel/revolute-preflight-probe-*`, and
+`rolling-wheel/revolute-indexed-guard-*`. Temporary probes were removed.
+No combined quick/full release gate, full-cohort rerun, baseline promotion,
+push, or PR was performed for this change.
+
 ## Full cohort after projected initial-value transfer
 
 `target/msl/multibody-projected-initial-full` passes the complete 566-model gate

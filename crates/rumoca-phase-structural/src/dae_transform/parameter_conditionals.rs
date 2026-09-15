@@ -47,6 +47,16 @@ fn invariant_guard<'dae>(
         dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
             invariant_guard(view, &context, lhs) && invariant_guard(view, &context, rhs)
         }
+        dae::ExpressionOperation::Index { base, subscripts } => {
+            invariant_guard(view, &context, base)
+                && subscripts.iter().all(|subscript| match subscript {
+                    dae::SubscriptView::Whole { .. } => true,
+                    dae::SubscriptView::Index { expression, .. }
+                    | dae::SubscriptView::Slice { expression, .. } => {
+                        invariant_guard(view, &context, expression)
+                    }
+                })
+        }
         dae::ExpressionOperation::Array(operands)
         | dae::ExpressionOperation::Builtin {
             arguments: operands,

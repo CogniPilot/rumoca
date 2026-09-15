@@ -341,7 +341,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             }
             dae::ExpressionOperation::Index { base, subscripts } => {
                 let base = self.rebuild_instantiated(base)?;
-                let subscripts = self.rebuild_subscripts(subscripts)?;
+                let subscripts = self.rebuild_instantiated_subscripts(subscripts)?;
                 self.target.at(provenance).index(base, subscripts)
             }
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
@@ -585,6 +585,24 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         &mut self,
         subscripts: dae::SubscriptsView<'source>,
     ) -> Result<Vec<dae::Subscript<'target>>, dae::DaeConstructionError> {
+        self.rebuild_subscripts_with(subscripts, Self::rebuild)
+    }
+
+    pub(super) fn rebuild_instantiated_subscripts(
+        &mut self,
+        subscripts: dae::SubscriptsView<'source>,
+    ) -> Result<Vec<dae::Subscript<'target>>, dae::DaeConstructionError> {
+        self.rebuild_subscripts_with(subscripts, Self::rebuild_instantiated)
+    }
+
+    fn rebuild_subscripts_with(
+        &mut self,
+        subscripts: dae::SubscriptsView<'source>,
+        rebuild: fn(
+            &mut Self,
+            dae::ExprId<'source>,
+        ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError>,
+    ) -> Result<Vec<dae::Subscript<'target>>, dae::DaeConstructionError> {
         subscripts
             .iter()
             .map(|subscript| match subscript {
@@ -592,7 +610,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     expression,
                     provenance,
                 } => Ok(dae::Subscript::Index {
-                    expression: self.rebuild(expression)?,
+                    expression: rebuild(self, expression)?,
                     provenance,
                 }),
                 dae::SubscriptView::Whole { provenance } => {
@@ -602,7 +620,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     expression,
                     provenance,
                 } => Ok(dae::Subscript::Slice {
-                    expression: self.rebuild(expression)?,
+                    expression: rebuild(self, expression)?,
                     provenance,
                 }),
             })

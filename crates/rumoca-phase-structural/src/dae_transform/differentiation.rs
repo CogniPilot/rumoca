@@ -364,7 +364,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         else {
             return Ok(Derivative::Zero);
         };
-        let subscripts = self.rebuild_subscripts(subscripts)?;
+        let subscripts = self.rebuild_instantiated_subscripts(subscripts)?;
         self.target
             .at(provenance)
             .index(derivative, subscripts)
@@ -568,7 +568,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             }
             dae::ExpressionOperation::Index { base, subscripts } => {
                 let base = self.materialize_exact_value(base, provenance)?;
-                let subscripts = self.rebuild_subscripts(subscripts)?;
+                let subscripts = self.rebuild_instantiated_subscripts(subscripts)?;
                 self.target.at(provenance).index(base, subscripts)
             }
             dae::ExpressionOperation::Builtin { builtin, arguments }
