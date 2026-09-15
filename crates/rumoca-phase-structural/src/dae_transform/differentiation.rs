@@ -655,19 +655,10 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         {
             return self.materialize_component_value(&definition, provenance);
         }
-        let Some((anchor, sign)) = self.facts.equalities.value_anchor_of(algebraic.index()) else {
-            let definition = self
-                .facts
-                .algebraic_definition(self.source, algebraic)
-                .expect("holonomic preflight proves a causal algebraic definition");
-            return self.materialize_exact_value(definition, provenance);
-        };
-        let anchor = self
+        let (anchor, sign) = self
             .facts
-            .equalities
-            .payload_anchor_expression(anchor)
-            .and_then(|anchor| self.source.expression_id(anchor as usize))
-            .expect("holonomic value preflight proves a materializable anchor");
+            .algebraic_value_definition(self.source, algebraic)
+            .expect("holonomic value preflight proves an exact algebraic value");
         let anchor = self.materialize_exact_value(anchor, provenance)?;
         let anchor = self.shape_equality_anchor(algebraic, anchor, provenance)?;
         match sign {

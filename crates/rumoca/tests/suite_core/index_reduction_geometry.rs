@@ -93,3 +93,49 @@ fn atan2_constraint_through_one_observed_state_tensor() {
     check_angular_motion(0.0, true);
     check_angular_motion(1.0, true);
 }
+
+#[test]
+fn invariant_observation_keeps_its_exact_causal_value() {
+    for sign in ["", "-"] {
+        let source = format!(
+            "model InvariantObservation
+             parameter Real p=2;
+             Real x(start=2,fixed=true);
+             Real velocity;
+             Real offset;
+             equation
+             offset={sign}(p+p);
+             der(x)=velocity;
+             x*x={sign}offset;
+             end InvariantObservation;"
+        );
+        let compiled = Compiler::new()
+            .model("InvariantObservation")
+            .compile_str(&source, "InvariantObservation.mo")
+            .unwrap();
+        for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+            let result = simulate_dae_with_diagnostics(
+                &compiled.dae,
+                &SimOptions {
+                    solver_mode,
+                    t_end: 0.1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for (name, value) in [
+                ("x", 2.0),
+                ("velocity", 0.0),
+                ("offset", if sign.is_empty() { 4.0 } else { -4.0 }),
+            ] {
+                let column = result.names.iter().position(|n| n == name).unwrap();
+                assert!(
+                    result.data[column]
+                        .iter()
+                        .all(|actual| (actual - value).abs() < 1e-9),
+                    "{name} must retain its exact invariant value"
+                );
+            }
+        }
+    }
+}

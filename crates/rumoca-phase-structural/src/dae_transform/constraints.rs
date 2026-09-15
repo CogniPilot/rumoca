@@ -129,6 +129,25 @@ impl DifferentiationFacts {
             .and_then(|definition| view.expression_id(definition as usize))
     }
 
+    /// Select the same exact value for materialization proof and reconstruction.
+    /// An invariant class can prove a zero derivative without naming its value.
+    pub(super) fn algebraic_value_definition<'dae>(
+        &self,
+        view: dae::DaeView<'dae>,
+        algebraic: dae::AlgebraicId<'dae>,
+    ) -> Option<(dae::ExprId<'dae>, EqualitySign)> {
+        self.equalities
+            .value_anchor_of(algebraic.index())
+            .and_then(|(anchor, sign)| {
+                let expression = self.equalities.payload_anchor_expression(anchor)?;
+                Some((view.expression_id(expression as usize)?, sign))
+            })
+            .or_else(|| {
+                self.algebraic_definition(view, algebraic)
+                    .map(|expression| (expression, EqualitySign::Same))
+            })
+    }
+
     pub(super) fn can_materialize_value(&self, view: dae::DaeView<'_>, expression: u32) -> bool {
         self.materialized_state_anchors(view, expression).is_some()
     }

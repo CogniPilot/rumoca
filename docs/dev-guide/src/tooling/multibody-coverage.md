@@ -4,6 +4,34 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Repair the invariant-value preflight/reconstruction disagreement
+
+The full sweep's ConstantActuator panic reproduced in a model with
+`offset=p+p; x*x=offset; der(x)=velocity`. The equality closure can prove that
+`offset` is invariant without assigning a single expression as its payload.
+Value preflight then used the exact causal definition, but reconstruction
+selected the payload-less equality and panicked. Both now select their exact
+expression and sign through one shared helper. This preserves the distinction
+between a known derivative and a known value required by STRUCT-T03.
+
+The reduced test failed with the same panic before this repair. Positive and
+negative invariant definitions now simulate correctly with both integrators,
+checking every output channel. ConstantActuator's ordinary worker now returns
+EL005 (77/82 matched), with no panic or simulation credit. Its structural stage
+took about 68 ms in the artifact-producing diagnostic attempt; the initially
+observed wall delay was outside that stage. This is not a new cohort claim.
+
+All 1,071 focused tests pass (99 library, 625 core, 141 Solve, 206 structural),
+along with phase/core Clippy and workspace formatting. Tier 1
+`multibody-invariant-value-{frontier,origin,canary}` has no phase or band changes
+against `multibody-single-anchor-*`: 5/6/9 compared high, 1/2/0 reviewed
+exclusions, zero missing/nonidentifiable traces. Evidence is in
+`rolling-wheel/invariant-value-*`.
+
+RevoluteConstraint's EX002 sensitivity refusal independently reproduces with
+the same row and residual. Repairing that lost high band remains the next
+priority; the earlier PrismaticConstraint investigation is paused.
+
 ## Full sweep finds UniversalConstraint progress and a Revolute regression
 
 `target/msl/multibody-single-anchor-full`, at
