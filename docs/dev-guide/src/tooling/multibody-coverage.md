@@ -4,6 +4,73 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint: cancellation reproduced independently of integration
+
+The EX002 regression remains open at compiler commit `c488115f`. The saved
+point at `t=7.639844286351321` has its middle initialization angle near
+`-pi/2`. A unit angular-velocity direction produces angle-rate sensitivities
+around 117,416. Recording the actual directional program exposes intermediate
+values around 66 billion. One contributing sum is
+`-563837.8893896533 + 563837.8893896535`; its surviving roundoff reaches the
+reported residual of `-1.164153216573989e-10`. The original LU residual is
+small; re-evaluating the expanded directional expression introduces the
+disagreement. Increasing an acceptance tolerance would conceal this evidence.
+
+Two attempted repairs were rejected and removed:
+
+- Bounded sensitivity refinement passed its focused tests, including rejection
+  of deliberately inconsistent JVPs, but still refused the real model. It is
+  archived in `rolling-wheel/abandoned-sensitivity-refinement-1`.
+- Preferring source observation lifts before second differentiation restored
+  the rotation-matrix state. Its ordinary worker completed the whole interval
+  with all 918 shared trajectory and initialization channels high, and 1,072
+  focused tests passed. Replaying the *same saved point*, however, still failed
+  one direction with the original EX002 residual. This is not a root-cause fix.
+  The proposal, test, and spec edit are archived in
+  `rolling-wheel/rejected-source-lift-order-1`; none remains in production.
+
+The latter experiment also disproves an expression-size explanation: the two
+orientation residual programs grew from 5,002 to 6,516 operations apiece.
+The changed trajectory's success cannot establish a general numerical repair.
+`revolute-point-replay-1.log` records both representations and both saved
+directions through the public interpreter runtime. OMC's saved `_04set.c`
+uses two dynamic state sets, each choosing one of three candidates, besides
+the joint's two states. This explains a substantial representation difference;
+it does not by itself prove the needed Rumoca transformation.
+
+The standalone source fixture
+`crates/rumoca/tests/fixtures/index_reduction/RateCancellation.mo` removes MSL
+and retains the essential computation: three Euler angles, an implicit angular
+rate map, two rotation constraints, and two unknown angular accelerations.
+At `q={0,-acos(epsilon),0}`, `w={0,-2.4010301622267085,0}`, the directional
+runtime probe in the `w[1]` direction produces:
+
+| epsilon | Result for the `der(w[3])` direction |
+|---|---|
+| `1e-3` | `-2.401030163321249` |
+| `8.516739322852923e-6` | Original EX002 refusal, residual `-1.164153e-10` |
+| `1e-7` | Accepts `-2.375000000000012` |
+| `1e-9` | Accepts `0` |
+
+Differentiating the two rotation constraints twice at `q[1]=q[3]=0` gives
+`der(w[1])=-w[2]*w[3]` and `der(w[3])=w[2]*w[1]` for the constructed RHS.
+Consequently its `w[1]` partial is `w[2]`, independent of the nonzero cosine.
+The zero result is an inaccurate accepted numerical derivative, not merely an
+overly strict residual check. This probe concerns the constructed RHS Jacobian,
+including directions normal to the retained manifold; it is not a new claim
+of a completed wrong MSL trajectory. A simpler linear two-coordinate rate map
+remained accurate and is preserved as a rejected reduced reproduction.
+
+Evidence lives in `rolling-wheel/revolute-jvp-registers-1.json`,
+`revolute-source-lift-structure-1.json`, `revolute-point-replay-1.log`, and
+`implicit-rate-cancellation-probe-{1,2,3}.{rs,log}`. The last probe removes the
+tiny off-axis angle offsets and retains the failure. Temporary test code has
+been removed. The next repair must preserve the coupled implicit rate equations
+or otherwise establish stable derivative evaluation; lifting the observation
+alone is insufficient. This remains a hypothesis to prove with the reduced
+fixture and saved real-model point before another full-cohort run. No baseline,
+exclusion, tolerance, canary list, or cohort parity claim changed.
+
 ## Repair the invariant-value preflight/reconstruction disagreement
 
 The full sweep's ConstantActuator panic reproduced in a model with
