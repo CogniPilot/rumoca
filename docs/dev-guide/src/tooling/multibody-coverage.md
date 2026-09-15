@@ -4,6 +4,39 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Full cohort after constant-offset state reduction
+
+`target/msl/multibody-scalar-state-offset-full` passes the complete 566-model
+gate at `2f3e8ee21157be462ed67e11dfa6cbd5ef44e492`. The compiler tree is committed;
+the run's dirty marker includes the preserved untracked `comm_fastdyn.md`.
+There are 166 strict-high models (29.33%), with 166 compared, 20 reviewed
+exclusions, zero missing traces, and zero nonidentifiable traces. Of 23,855
+trajectory channels, 23,810 are high and 45 have minor differences; none are
+deviating or severe. All 23,855 initialization channels are high. Raw simulation
+completion is 186 and receives no additional parity credit.
+
+MultiBody now has 24 of 42 strict-high examples. Its reviewed BevelGear1D
+exclusion remains outside that count. LineForceWithTwoMasses is the sole band
+change from `multibody-lift-owners-full-11` at `6da1462a`: absent to high under
+the normal budgets. Its previously recorded force counterexample is closed by
+both the diagnostic and ordinary full-cohort comparisons. No previously high
+model loses its band, and no new actionable trace counterexample appears.
+
+One other phase outcome changes and remains unresolved:
+`Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sh_TX` previously
+reached ToDae and rejected parameter `s_min` with an Array/Enumeration type
+mismatch (ED019). It now stops in Flatten because the exact constructor record
+layout for `MixtureGasNasa.ThermodynamicState` is missing (EF015). It produces
+no simulation in either run. The commits between these complete sweeps change
+DAE and structural code, but no Flatten or earlier-phase source; this observation
+does not establish the cause of the changed diagnostic. It remains an explicit
+triage item, not a claimed fix or a trace counterexample.
+
+`rolling-wheel/scalar-state-offset-full-{1.log,delta-1.json}` retains the full
+result and the complete phase/band delta. No baseline promotion, combined
+quick/full verification, or PR has been performed. The 100% MultiBody goal
+remains open.
+
 ## Constant offsets admit derivative-only state definitions
 
 The remaining `damper1.s_rel` in LineForceWithTwoMasses reduces to the source
