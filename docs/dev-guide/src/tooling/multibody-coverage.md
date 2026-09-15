@@ -4,6 +4,35 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Retain stalled equations for the LineForce comparison
+
+Structural inspection now retains one already-owned stalled DAE together with
+its manifold and exact failure at the point it would otherwise be discarded.
+The ordinary observer drops the same values without allocating, cloning IR,
+or repeating analysis. This diagnostic snapshot is never a prepared model;
+successful preparation returns no stalled snapshot.
+
+The LineForceWithTwoMasses capture reaches 2,203 matched equations out of
+2,204 equations and unknowns, with 26 retained manifold expressions. Its
+seven-equation overdetermined witness ends at `f_x[1475]`, the connection
+`jointUPS.axis.s = damper1.flange_b.s`; `jointUPS.f_bd_a[2]` remains unmatched.
+All 1,176 recorded reduction events are byte-identical to the prior public
+inspection, showing that observation preserved the actual decisions.
+The snapshot has SHA-256
+`f59b86731aa723b8db8523cc02f86012ebbf131c4a4ceccb754c9e5cc331be29`.
+Receipts are `rolling-wheel/line-force-stalled-capture-1.json` and
+`rolling-wheel/stalled-diagnostic-helper-receipt-1.json`; the captured DAE and
+manifold are under `rolling-wheel/line-force-stalled-inspection-1/`.
+
+All 174 structural tests and all-target/all-feature Clippy pass. The new
+regression compares observed and ordinary failures, preserves the source DAE,
+and checks the retained failure against a fresh analysis of that exact DAE.
+The first build found an existing recorder test needing the changed private
+signature; Clippy then required extracting the discard operation to keep the
+entry point within its function budget. Final evidence is
+`stalled-diagnostic-clippy-2.log` and `stalled-diagnostic-libraries-2.jsonl`.
+This is diagnostic progress, not a new model pass or a worker timing result.
+
 ## Quick comparison preserves the cohort; spec budget repaired
 
 The full MSL step of `verify quick`, written to `target/msl/results` at
@@ -22,8 +51,11 @@ catalog links preserved, bringing them to 2,498 and 2,495 words. The existing
 gate executable's exact `test_specs_respect_size_budgets` test now passes
 (`rolling-wheel/spec-budget-repair-focused-1.log`). This documentation repair
 was applied after the architecture step while the unchanged compiler was
-building workspace tests. That workspace job is still pending; the combined
-quick run remains failed and combined full remains outstanding.
+building workspace tests. The workspace step subsequently passed all 7,747
+tests with zero skipped, plus its documentation tests. A complete rerun of
+the repaired architecture command passed all 243 architecture tests and 17
+suite gates (`spec-budget-architecture-recheck-1.log`). The original combined
+quick run records its one failed step; combined full remains outstanding.
 
 ## Full sweep restores Driving without losing a high model
 

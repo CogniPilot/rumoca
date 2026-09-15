@@ -59,7 +59,7 @@ use crate::{
 pub use self::initial_pins::{InitialValuePin, InitialValueRole, PinTerm};
 pub use self::observation::{
     ReductionCandidateGroup, ReductionIdentity, ReductionLane, ReductionOutcome, ReductionRecord,
-    ReductionReport, ReductionStop, UnmatchedKind, UnmatchedName,
+    ReductionReport, ReductionSnapshot, ReductionStop, UnmatchedKind, UnmatchedName,
 };
 
 /// A finalized DAE ready for Solve lowering.
@@ -421,7 +421,8 @@ pub fn inspect_prepare_for_solve(
 ) -> (Result<PreparedDae<'_>, StructuralError>, ReductionReport) {
     let mut recorder = ReductionRecorder::default();
     let result = prepare_for_solve_with_observer(model, &mut recorder);
-    (result, recorder.finish())
+    let report = recorder.finish(result.is_err());
+    (result, report)
 }
 
 fn prepare_for_solve_with_observer<'source>(
@@ -520,6 +521,7 @@ fn reduce_for_solve_with_observer<'source>(
         Err(error) => return observed_failure(error, observer),
     };
     if holonomic.step.is_none() && demoted.is_some() {
+        discard_demoted_dae(demoted.take(), demoted_error.take(), observer);
         observer.observe(ReductionEvent::RetriedPristine {
             lane: Lane::Holonomic,
         });
@@ -560,6 +562,16 @@ fn reduce_for_solve_with_observer<'source>(
             });
             Err(singular)
         }
+    }
+}
+
+fn discard_demoted_dae(
+    model: Option<dae::Dae>,
+    error: Option<StructuralError>,
+    observer: &mut impl ReductionObserver,
+) {
+    if let (Some(model), Some(error)) = (model, error) {
+        observer.discard_stalled(model, Vec::new(), &error);
     }
 }
 
@@ -1073,6 +1085,16 @@ impl HolonomicReductionState {
         self.current_error = error;
     }
 
+    fn discard_stalled(&mut self, observer: &mut impl ReductionObserver) {
+        if let Some(model) = self.reduced.take() {
+            observer.discard_stalled(
+                model,
+                std::mem::take(&mut self.manifold),
+                &self.current_error,
+            );
+        }
+    }
+
     fn accept_held(
         &mut self,
         held: (HolonomicConstraint, usize, HolonomicStep),
@@ -1128,10 +1150,13 @@ impl HolonomicReductionState {
                     self.accept_held(held, observer);
                     Ok(None)
                 }
-                None => Ok(Some(HolonomicRound {
-                    step: None,
-                    blocked: self.blocked.take(),
-                })),
+                None => {
+                    self.discard_stalled(observer);
+                    Ok(Some(HolonomicRound {
+                        step: None,
+                        blocked: self.blocked.take(),
+                    }))
+                }
             },
         }
     }

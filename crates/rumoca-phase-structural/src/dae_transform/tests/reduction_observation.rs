@@ -273,7 +273,7 @@ fn rare_observation_outcomes_keep_their_exact_owned_labels() {
         outcome: StoppedOutcome::Failure { error: &error },
     });
     assert!(matches!(
-        recorder.finish().records.as_slice(),
+        recorder.finish(true).records.as_slice(),
         [
             ReductionRecord::RetriedPristine {
                 lane: ReductionLane::Holonomic
@@ -285,4 +285,37 @@ fn rare_observation_outcomes_keep_their_exact_owned_labels() {
             }
         ]
     ));
+}
+
+#[test]
+fn failed_inspection_retains_the_exact_stalled_dae_without_changing_failure() {
+    let source = independent_constraint_model(true);
+    let before = serde_json::to_vec(&source).expect("source serializes");
+    let plain = prepare_for_solve(&source)
+        .err()
+        .expect("spare unknown remains");
+    let (result, report) = inspect_prepare_for_solve(&source);
+    let traced = result
+        .err()
+        .expect("inspection cannot repair missing equations");
+    assert_eq!(format!("{plain:?}"), format!("{traced:?}"));
+    assert_eq!(
+        before,
+        serde_json::to_vec(&source).expect("source serializes")
+    );
+    let snapshot = report
+        .stalled
+        .as_ref()
+        .expect("accepted reductions stalled");
+    let actual = snapshot
+        .as_dae()
+        .inspect(|view| sort(view).err())
+        .expect("the retained DAE is still singular");
+    assert_eq!(format!("{actual:?}"), format!("{:?}", snapshot.error()));
+    assert!(unmatched_residue(&actual) < unmatched_residue(&plain));
+    assert!(snapshot.observed_records() <= report.records.len());
+    assert_ne!(
+        before,
+        serde_json::to_vec(snapshot.as_dae()).expect("snapshot serializes")
+    );
 }

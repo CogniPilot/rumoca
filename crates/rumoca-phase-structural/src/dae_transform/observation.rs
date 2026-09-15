@@ -10,14 +10,15 @@
 //! real work, turning each borrowed event into an owned [`ReductionRecord`]
 //! for [`crate::inspect_prepare_for_solve`], the sole crate-external surface.
 //! Everything else in this module — the trait, the borrowed event types, the
-//! recorder — stays private to [`super`], so no consumer can acquire the
-//! reduction protocol itself, only the data one recorder already extracted
-//! from it.
+//! recorder — stays private to [`super`]. A stalled intermediate may also
+//! transfer into the recorder when the reducer would otherwise discard it.
+//! Consumers receive only extracted data, never the reduction protocol.
 
 use rumoca_core::Span;
 
-use super::{DirectStateConstraint, HolonomicConstraint, StateDefinition};
+use super::{DirectStateConstraint, HolonomicConstraint, ManifoldConstraint, StateDefinition};
 use crate::StructuralError;
+use rumoca_ir_dae as dae;
 
 /// Which fixed-point lane a reduction event belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,6 +177,16 @@ pub(super) enum ReductionEvent<'a> {
 /// — the trait admits no channel back into the reduction it watches.
 pub(super) trait ReductionObserver {
     fn observe(&mut self, event: ReductionEvent<'_>);
+
+    /// Transfers a stalled intermediate only when reduction would discard it.
+    /// The production observer drops these already-owned values unchanged.
+    fn discard_stalled(
+        &mut self,
+        _model: dae::Dae,
+        _manifold: Vec<ManifoldConstraint>,
+        _error: &StructuralError,
+    ) {
+    }
 }
 
 impl ReductionObserver for () {
@@ -413,9 +424,44 @@ pub enum ReductionRecord {
 
 /// The owned report [`crate::inspect_prepare_for_solve`] returns: every event
 /// the traced call actually observed, in the order it observed them.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct ReductionReport {
     pub records: Vec<ReductionRecord>,
+    /// Closest stalled intermediate, retained only when preparation fails.
+    pub stalled: Option<ReductionSnapshot>,
+}
+
+/// A discarded, still-singular DAE and its exact structural failure.
+///
+/// This is diagnostic evidence, never a `PreparedDae`. The manifold ordinals
+/// belong only to this immutable DAE. Ownership moves at the discard point;
+/// inspection does not clone an IR or reconstruct a candidate a second time.
+#[derive(Debug)]
+pub struct ReductionSnapshot {
+    model: dae::Dae,
+    manifold: Vec<ManifoldConstraint>,
+    error: StructuralError,
+    observed_records: usize,
+}
+
+impl ReductionSnapshot {
+    pub fn as_dae(&self) -> &dae::Dae {
+        &self.model
+    }
+
+    pub fn error(&self) -> &StructuralError {
+        &self.error
+    }
+
+    /// Presentation ordinals in this snapshot's expression arena.
+    pub fn manifold_expression_ordinals(&self) -> impl Iterator<Item = u32> + '_ {
+        self.manifold.iter().map(|entry| entry.expression)
+    }
+
+    /// Number of report records observed when this intermediate was discarded.
+    pub fn observed_records(&self) -> usize {
+        self.observed_records
+    }
 }
 
 /// The one `ReductionObserver` outside `()` used in this crate: it clones
@@ -424,17 +470,41 @@ pub struct ReductionReport {
 #[derive(Default)]
 pub(super) struct ReductionRecorder {
     records: Vec<ReductionRecord>,
+    stalled: Option<ReductionSnapshot>,
 }
 
 impl ReductionRecorder {
-    pub(super) fn finish(self) -> ReductionReport {
+    pub(super) fn finish(self, failed: bool) -> ReductionReport {
         ReductionReport {
             records: self.records,
+            stalled: self.stalled.filter(|_| failed),
         }
     }
 }
 
 impl ReductionObserver for ReductionRecorder {
+    fn discard_stalled(
+        &mut self,
+        model: dae::Dae,
+        manifold: Vec<ManifoldConstraint>,
+        error: &StructuralError,
+    ) {
+        let Some(residue) = super::unmatched_residue(error) else {
+            return;
+        };
+        if self.stalled.as_ref().is_some_and(|prior| {
+            super::unmatched_residue(&prior.error).is_some_and(|prior| prior <= residue)
+        }) {
+            return;
+        }
+        self.stalled = Some(ReductionSnapshot {
+            model,
+            manifold,
+            error: error.clone(),
+            observed_records: self.records.len(),
+        });
+    }
+
     fn observe(&mut self, event: ReductionEvent<'_>) {
         let record = match event {
             ReductionEvent::Round { lane, round, error } => {

@@ -317,6 +317,8 @@ and `to_miette_with_source_map` render a diagnostic for terminal display.
 | `skip(...)` large context parameters in instrumented functions | Avoid heavy debug formatting |
 | Instrument phase entry/exit, eval failures, connection processing, for-range eval | These are the high-value debug points |
 | CLI debug/dump syntax is non-normative until `rum` implements it | No spec drift ahead of implementation |
+| Structural inspection may retain an already-owned stalled DAE with its manifold and exact failure only at discard; it cannot affect reduction choices or create a successful product | Failed intermediate equations remain inspectable |
+| The production observer MUST NOT allocate, clone IR, or repeat analysis for inspection | Diagnostics add no production work |
 
 ## Rationale
 
