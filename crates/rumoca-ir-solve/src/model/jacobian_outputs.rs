@@ -10,6 +10,7 @@ mod tests;
 use std::collections::BTreeMap;
 
 use super::*;
+use projection_application::ProjectionJacobianSource;
 
 pub use projection_application::{ProjectionJacobianApplication, ProjectionJacobianColor};
 pub use seed_domain::ProjectionJacobianSeedDomain;
@@ -129,6 +130,10 @@ impl ContinuousStructuralArtifacts {
         let y_outputs = ProgramOutputCatalog::new(solver_y);
         let full_outputs = ProgramOutputCatalog::new(full);
         self.algebraic_jacobian_source = Some(solver_y.clone());
+        let application_source = self
+            .algebraic_projection
+            .first()
+            .and_then(|_| ProjectionJacobianSource::derive(solver_y));
         for (index, (structure, block)) in self
             .algebraic_projection
             .iter_mut()
@@ -152,9 +157,9 @@ impl ContinuousStructuralArtifacts {
                 primal_outputs.shared_selection(&residual_rows, block.rows.len());
             structure.output_evaluations =
                 color_output_evaluations(structure, block, &y_outputs, &full_outputs);
-            structure.jacobian_application = ProjectionJacobianApplication::derive(
-                index, structure, block, solver_y, &y_outputs,
-            );
+            structure.jacobian_application = application_source.as_ref().and_then(|source| {
+                ProjectionJacobianApplication::derive(index, structure, block, source, &y_outputs)
+            });
             structure.affine_elimination =
                 AffineEliminationLayout::derive(block, &structure.pattern);
         }

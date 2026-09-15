@@ -1,4 +1,24 @@
 use super::*;
+use std::sync::Arc;
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static INVARIANCE_PROOF_OPERATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+pub(super) struct ProjectionJacobianSource<'source> {
+    source: &'source ScalarProgramBlock,
+    invariant_operations: Arc<[Box<[bool]>]>,
+}
+
+impl<'source> ProjectionJacobianSource<'source> {
+    pub(super) fn derive(source: &'source ScalarProgramBlock) -> Option<Self> {
+        Some(Self {
+            source,
+            invariant_operations: derive_invariant_operations(source)?.into(),
+        })
+    }
+}
 
 /// Complete colored forward application bound to one immutable source owner.
 #[derive(Clone, Debug)]
@@ -11,7 +31,7 @@ pub struct ProjectionJacobianApplication {
     canonical_source: ScalarProgramBlock,
     primal_source: Option<ScalarProgramBlock>,
     colors: Box<[ProjectionJacobianColor]>,
-    invariant_operations: Box<[Box<[bool]>]>,
+    invariant_operations: Arc<[Box<[bool]>]>,
 }
 
 #[derive(Clone, Debug)]
@@ -35,7 +55,7 @@ impl ProjectionJacobianApplication {
         block_index: usize,
         structure: &JacobianStructure,
         block: &AlgebraicProjectionBlock,
-        source: &ScalarProgramBlock,
+        source: &ProjectionJacobianSource<'_>,
         outputs: &ProgramOutputCatalog,
     ) -> Option<Self> {
         if structure.pattern.rows() as usize != block.rows.len()
@@ -65,11 +85,11 @@ impl ProjectionJacobianApplication {
             rows: block.rows.clone().into_boxed_slice(),
             y_indices: block.y_indices.clone().into_boxed_slice(),
             output_len,
-            source: source.clone(),
-            canonical_source: source.clone(),
+            source: source.source.clone(),
+            canonical_source: source.source.clone(),
             primal_source: None,
             colors,
-            invariant_operations: derive_invariant_operations(source)?,
+            invariant_operations: Arc::clone(&source.invariant_operations),
         })
     }
 
@@ -108,7 +128,7 @@ impl ProjectionJacobianApplication {
             })
             .collect::<Option<Box<[_]>>>()?;
         self.colors = colors;
-        self.invariant_operations = derive_invariant_operations(&source)?;
+        self.invariant_operations = derive_invariant_operations(&source)?.into();
         self.source = source;
         self.primal_source = Some(primal.clone());
         Some(self)
@@ -141,6 +161,10 @@ impl ProjectionJacobianApplication {
 }
 
 fn derive_invariant_operations(source: &ScalarProgramBlock) -> Option<Box<[Box<[bool]>]>> {
+    #[cfg(test)]
+    INVARIANCE_PROOF_OPERATIONS.with(|count| {
+        count.set(count.get() + source.programs().iter().map(Vec::len).sum::<usize>());
+    });
     source
         .programs()
         .iter()

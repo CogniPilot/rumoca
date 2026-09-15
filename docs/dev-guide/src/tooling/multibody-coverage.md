@@ -4,6 +4,61 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Share Jacobian invariance proofs across projection blocks
+
+GyroscopicEffects exposed repeated construction work: every algebraic block
+re-derived operation-invariance facts for the entire canonical Jacobian source.
+A 32-block regression with 128 source operations recorded 4,096 proof visits
+instead of 128 (`projection-invariance-sharing-red-2.log`). The first attempted
+fixture used an incorrect enum spelling and failed to compile; only the second
+run is behavioral red evidence.
+
+Structural-artifact construction now derives one immutable proof for the exact
+source and shares it across block applications. Replacement and specialization
+still derive fresh facts. The regression checks both linear work and different
+facts for a changed source, while retaining the original owner's facts. This
+changes compiler preparation, with no change to Modelica equations, AD rules,
+runtime value reuse, tolerances, or numerical acceptance. SPEC_0036 and
+SPEC_0043 §6a record the construction scope.
+
+All 323 Solve IR, 100 Cranelift, and 503 solver tests pass, as does affected
+all-target/all-feature Clippy (`projection-invariance-sharing-build-1.log`).
+The four-model `multibody-invariance-sharing-origin` compares GyroscopicEffects,
+RollingWheel, and OvervoltageProtection high: three compared, one existing
+BevelGear1D reviewed exclusion, zero missing/deviating comparisons, and all
+1,196 initialization channels high. The fixed `multibody-invariance-sharing-canary`
+retains every phase and band from `multibody-reference-lineage-canary`: nine
+compared high, no skips/missing/exclusions/nonidentifiability, and 175 high
+initialization channels. Receipts are `invariance-sharing-origin-evidence-1.json`
+and `invariance-sharing-canary-delta.json`.
+
+Three alternating pairs using the exact ordinary MSL worker build measure:
+
+| Pair | Shared-proof lowering (s) | Saved-control lowering (s) |
+|---|---:|---:|
+| 1 | 7.3694 | 8.4929 |
+| 2 | 7.3781 | 8.4287 |
+| 3 | 7.2600 | 8.2475 |
+
+Median lowering time drops from 8.4287 to 7.3694 seconds, a 12.57% reduction.
+All six complete traces are byte-identical. These are three unpinned pairs on
+a shared host, measuring lowering only. They establish no integration speedup
+or OMC performance win. `invariance-sharing-ordinary-timing-series-1.json`
+binds exact workers and traces. An earlier pilot omitted the harness's test
+target from the build, changing dependency feature unification; its timing
+series is retained but superseded by these ordinary-worker measurements.
+The emitted Flat, DAE, structural DAE, and canonical Solve artifacts also match
+byte-for-byte (`invariance-sharing-artifact-equality-1.json`).
+
+The initial diagnostic-output hypothesis was rejected: JSON-enabled profiling
+included roughly four seconds of requested artifact preparation/output after
+lowering, but the output-disabled control spent only 53 ms there. No worker
+shortcut or budget change was retained. The actual compiler fix addresses the
+repeated proof derivation. GyroscopicEffects passes the focused bounded attempt;
+its previous full-sweep timeout remains recorded until the next complete cohort
+establishes the result under full-run conditions. Combined verify quick/full
+remain pending.
+
 ## IMS_Start has a reviewed reference-accuracy boundary
 
 The convergence evidence below now supports a tracked comparator exclusion for

@@ -52,7 +52,9 @@ preserve source evaluation and checked wire replay under
 [SPEC_0043 §6a](SPEC_0043_CONSTRUCTION_CATALOG.md#6a-continuous-refresh-construction).
 Within one projection-Jacobian call, construction may certify reuse of complete
 operation results across colors from invariant input register versions and
-repeatable operations. The first execution remains ordered and complete;
+repeatable operations. Within one structural-artifact construction, these facts
+derive once per immutable source and are shared across block applications; specialization derives
+fresh facts bound to its new source. The first execution remains ordered and complete;
 coordinate changes, failure, or a new call invalidate every retained result.
 Native constant facts belong to register versions: each complete source write
 invalidates prior destination facts after reading its input versions.

@@ -1,5 +1,104 @@
 use super::*;
 
+#[test]
+fn projection_blocks_derive_shared_source_invariance_once() {
+    const BLOCKS: usize = 32;
+    let programs = (0..BLOCKS)
+        .map(|index| {
+            vec![
+                LinearOp::LoadP { dst: 0, index: 0 },
+                LinearOp::LoadSeed { dst: 1, index },
+                LinearOp::Binary {
+                    dst: 2,
+                    op: BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                LinearOp::StoreOutput { src: 2 },
+            ]
+        })
+        .collect();
+    let source = ScalarProgramBlock::with_output_indices(
+        programs,
+        vec![span(); BLOCKS],
+        (0..BLOCKS).collect(),
+    )
+    .unwrap();
+    let provenance =
+        PatternProvenance::derived(PatternDerivation::DependencyPropagation, span()).unwrap();
+    let pattern = StructuralPattern::from_row_dependencies(1, 1, &[vec![0]], provenance).unwrap();
+    let plan = AlgebraicProjectionPlan {
+        blocks: (0..BLOCKS)
+            .map(|index| AlgebraicProjectionBlock {
+                rows: vec![index],
+                y_indices: vec![index],
+                tearing: None,
+            })
+            .collect(),
+    };
+    projection_application::INVARIANCE_PROOF_OPERATIONS.with(|count| count.set(0));
+    let artifacts = ContinuousStructuralArtifacts::derived(
+        None,
+        vec![pattern.clone(); BLOCKS],
+        vec![false; BLOCKS],
+        None,
+        vec![],
+        None,
+    )
+    .with_algebraic_output_evaluations(&plan, &source, &source, &source);
+    for (index, structure) in artifacts.algebraic_projection().iter().enumerate() {
+        let application = structure.jacobian_application().unwrap();
+        assert_eq!(application.rows(), &[index]);
+        assert_eq!(
+            application.invariant_operations(index),
+            &[true, false, false, false]
+        );
+    }
+    projection_application::INVARIANCE_PROOF_OPERATIONS.with(|count| {
+        assert_eq!(
+            count.get(),
+            4 * BLOCKS,
+            "proof work must scale with source size, not source size times block count"
+        );
+    });
+    let mut programs = source.programs().to_vec();
+    for program in &mut programs {
+        program[1] = LinearOp::LoadP { dst: 1, index: 0 };
+    }
+    let replacement = ScalarProgramBlock::with_output_indices(
+        programs,
+        vec![span(); BLOCKS],
+        (0..BLOCKS).collect(),
+    )
+    .unwrap();
+    let changed = ContinuousStructuralArtifacts::derived(
+        None,
+        vec![pattern; BLOCKS],
+        vec![false; BLOCKS],
+        None,
+        vec![],
+        None,
+    )
+    .with_algebraic_output_evaluations(&plan, &replacement, &replacement, &replacement);
+    let before = artifacts.algebraic_projection()[0]
+        .jacobian_application()
+        .unwrap();
+    let after = changed.algebraic_projection()[0]
+        .jacobian_application()
+        .unwrap();
+    assert_eq!(before.invariant_operations(0), &[true, false, false, false]);
+    assert_eq!(after.invariant_operations(0), &[true, true, true, false]);
+    assert!(after.canonical_source().shares_program_owner(&replacement));
+    assert!(!after.canonical_source().shares_program_owner(&source));
+    projection_application::INVARIANCE_PROOF_OPERATIONS.with(|count| {
+        assert_eq!(
+            count.get(),
+            2 * 4 * BLOCKS,
+            "a changed source must derive fresh facts once"
+        );
+    });
+}
+
 fn span() -> Span {
     Span::from_offsets(SourceId::from_source_name("projection_outputs.mo"), 1, 2)
 }
