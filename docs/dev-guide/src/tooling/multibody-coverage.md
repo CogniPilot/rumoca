@@ -4,6 +4,27 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Quick comparison preserves the cohort; spec budget repaired
+
+The full MSL step of `verify quick`, written to `target/msl/results` at
+`648ec46e0806afcdbdbcc5ef7c7b81e2485d5f70`, preserves every comparison band:
+163/566 strict-high, 163 compared, 20 reviewed exclusions, zero missing or
+nonidentifiable traces, and zero near/deviating comparisons. All 22,718
+initialization channels are high. The only phase/status change from the
+preceding named full sweep is Fourbar_analytic moving from timeout to explicit
+structural EL005; it gains no parity credit. The receipt is
+`rolling-wheel/round-facts-quick-msl-delta.json`.
+
+Workspace lint, all 28 corpus-pin cases, and all 243 architecture tests pass.
+The adjacent spec gate fails because SPEC_0036 and SPEC_0038 exceed the
+2,500-word cap. Redundant prose is condensed with requirements and normative
+catalog links preserved, bringing them to 2,498 and 2,495 words. The existing
+gate executable's exact `test_specs_respect_size_budgets` test now passes
+(`rolling-wheel/spec-budget-repair-focused-1.log`). This documentation repair
+was applied after the architecture step while the unchanged compiler was
+building workspace tests. That workspace job is still pending; the combined
+quick run remains failed and combined full remains outstanding.
+
 ## Full sweep restores Driving without losing a high model
 
 The complete `multibody-round-facts-full-11` sweep at

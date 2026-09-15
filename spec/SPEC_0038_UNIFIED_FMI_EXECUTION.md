@@ -73,19 +73,16 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 
 ### Internal Solver Boundary
 
-`SolveProblem` remains compiler IR. It is projected once into an FMI 3 ME
-component kernel. Diffsol, RK methods, BDF implementations, and future
-integrators interact only through the FMI 3 ME lifecycle, state, derivative,
+`SolveProblem` is compiler IR, projected once into an FMI 3 ME component kernel.
+All numerical integrators use only FMI 3 ME lifecycle, state, derivative,
 event-indicator, time, continuous-state, and discrete-state operations. They
-MUST NOT inspect Solve rows, layouts, opcodes, events, or private runtime
-objects.
+MUST NOT inspect Solve rows, layouts, opcodes, events, or private runtime objects.
 
-The sole-host state machine, checked integrator aggregates, event-domain rule,
-cutover deletion inventory, and required differential evidence are cataloged in
-[SPEC_0044 §§6-8](SPEC_0044_FMI_EXECUTION_CATALOG.md#6-common-me-host-and-integrator-contract).
-Those rows are normative by reference. A concrete numerical solver implements
-only that one-step contract; it never owns an FMI lifecycle transition, output
-schedule, trace policy, or component-private Modelica state.
+[SPEC_0044 §§6-8](SPEC_0044_FMI_EXECUTION_CATALOG.md#6-common-me-host-and-integrator-contract)
+normatively defines the host, integrator, event-domain, deletion, and evidence
+requirements. Numerical solvers implement only its one-step contract; they
+never own FMI lifecycle transitions, output schedules, trace policies, or
+component-private Modelica state.
 
 The component-facing surface is an exact semantic projection of FMI 3.0.2 ME.
 Host conveniences derive only from standard calls and the checked
@@ -98,29 +95,27 @@ strict surface and removal disposition are cataloged in
 [SPEC_0044 §8](SPEC_0044_FMI_EXECUTION_CATALOG.md#8-strict-fmi-component-surface).
 
 Native static dispatch, borrowed slices, and batching MAY optimize this
-interface but MUST preserve its state machine and observable results. In-process
-execution is a deployment form, not another model or solver interface.
+interface but MUST preserve its state machine and observable results.
 
-Automatic integrator selection is importer numerical policy. Its exact
-capability decision and failure-preservation obligations are cataloged in
+Importer policy selects integrators under the capability and failure-preservation
+obligations in
 [SPEC_0044 §5](SPEC_0044_FMI_EXECUTION_CATALOG.md#5-automatic-integrator-selection).
 
 ### Bounded ME Verification Profile
 
-The linked FMI 3 ME component exposes a checked lifecycle aggregate and pure
-property functions shared by production code and verification drivers. Small
-finite domains are exhausted by ordinary tests; bounded Kani harnesses are
-reserved for symbolic floating-point and typed-state domains that cannot be
-practically enumerated. The normative transition table, obligations, evidence
-kind, exact bounded domains, and claim limits are cataloged in
+The linked FMI 3 ME component shares its checked lifecycle aggregate and pure
+properties between production and verification. Ordinary tests exhaust small
+finite domains; Kani is reserved for symbolic floating-point and typed-state domains
+that resist practical enumeration. Normative transitions, obligations, evidence
+kinds, bounded domains, and claim limits are in
 [SPEC_0044 §1](SPEC_0044_FMI_EXECUTION_CATALOG.md#1-bounded-me-verification-profile).
 That bounded evidence does not claim arbitrary-model trajectory correctness,
 floating-point accuracy, solver convergence, or end-to-end Modelica refinement.
 
 ### Phasing
 
-The cutover has four phases. Code movement MUST prove bit-identical traces
-against the pre-phase binary unless its row states otherwise.
+Code movement MUST prove bit-identical traces against each phase's prior binary,
+except where stated below.
 
 | Phase | Scope | Exit evidence |
 |---|---|---|
@@ -192,14 +187,13 @@ Modelica, DAE, or Solve lowering.
 | eFMI Algorithm Code | Integrator/toolchain | eFMU |
 | eFMI Production Code | Generated production runtime | eFMU, generated C |
 
-CLI profile names MUST select capabilities of one generator and MUST NOT own
-independent equation lowering, initialization, event, or state-machine code.
+CLI profiles select one generator's capabilities; independent equation lowering,
+initialization, event, and state-machine code are prohibited.
 A raw derivative-only C kernel may remain an internal fixture, but MUST NOT be
 a user-visible target once FMI 2/3 are exposed.
 
-Symbolic exports project computable checked Solve IR and MUST NOT repeat
-structural analysis. They are not FMI profiles; a symbolic engine's FMI ME
-host role is separate.
+Symbolic exports are not FMI profiles; a symbolic engine's FMI ME host role
+is separate.
 
 ### FMI-LS-DAE Layered Profile
 
@@ -219,12 +213,11 @@ optional product: a symbolic backend may consume compatible artifacts or derive
 them itself. Optionality is represented by the presence of the artifact product,
 not by silent empty or default derivatives inside a claimed artifact product.
 
-The OMC trace comparator owns model selection, time grids, output selection,
-tolerances, diagnostics, and result classification. Candidate runners only
-compile a model to a runnable artifact, enumerate outputs, execute the requested
-grid, and return a trace. Native FMI 3 and Wasm FMI-LS are separate runners of
-that same contract; neither the comparator nor its model inventory depends on
-Diffsol or a private in-memory Rumoca backend.
+The OMC comparator owns model selection, time grids, outputs, tolerances,
+diagnostics, and classification. Runners only compile executable artifacts,
+enumerate outputs, execute requested grids, and return traces. Native FMI 3
+and Wasm FMI-LS share this contract. The comparator and its inventory depend
+on neither Diffsol nor a private Rumoca backend.
 
 ### Evidence
 
