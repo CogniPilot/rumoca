@@ -26,6 +26,13 @@ all previous phase and band results: nine compared models, all high, no skips
 or missing traces, and 175 high initialization channels. Receipts are
 `derivative-tensor-origin-delta.json` and `derivative-tensor-canary-delta.json`.
 
+The complete 566-model sweep at `e880636bf2feef099de096d4d998b6190cf30632`
+passes in `target/msl/multibody-derivative-tensor-full-11`: 159 strict-high
+models (28.09%), 159 compared, 19 reviewed exclusions, no missing traces or
+deviations, and 20,964 high initialization channels. MultiBody remains 22/42
+strict-high. Every phase and comparison band matches the previous passing
+`multibody-invariant-binding-full-11` sweep (`derivative-tensor-full-delta.json`).
+
 This fix does not change RollingWheel's generated kernel. Its Flat, DAE,
 structural DAE, Solve, and complete trace remain byte-identical to the control
 (`derivative-tensor-sharing-profile-evidence-1.json`). The fresh single run is
@@ -34,6 +41,16 @@ samples do not establish a speed effect. Checked replay identifies the hot
 Jacobian program as Body's `a_0=der(v_0)`: its primal has 392 operations and its
 directional program 536, executed in six of the block's nine colors. The
 remaining expansion must be traced through structural differentiation.
+
+A diagnostic using the canonical seed/effect dependency authority finds 435
+of that program's 535 result-producing operations independent of seeds and
+free of recorded opaque effects, including 31 of 38 matrix products and 16 of
+20 cross products. The program executes for six colors at one numerical
+coordinate (`derivative-tensor-projection-seed-independence-1.json`). Reusing
+first-color calculations is therefore a concrete next investigation. These
+output-dependency counts are not an execution-reuse certificate: any retained
+implementation must also prove operation/version ownership, failure behavior,
+scratch lifetime, and unchanged coordinates before omitting evaluations.
 
 Three temporary cache experiments produced no retained optimization: bypassing
 all pure-call result caches, bypassing small arithmetic bodies, and inlining
