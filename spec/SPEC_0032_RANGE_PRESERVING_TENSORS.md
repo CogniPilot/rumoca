@@ -83,6 +83,7 @@ compacting a genuinely per-element array would produce a wrong model.
 | Scalar rows are generated views | `rumoca-eval-solve` / structural phases | Single structured owner |
 | View ordering is deterministic | Domain enumeration | Backend agreement |
 | Views carry provenance | Structured equation/tensor scalar views | Diagnostics and fallback |
+| Product incidence may omit a direct Real coordinate factor only when the other selected scalar is proven invariant zero through literal structure and non-tunable, fixed parameter bindings. Tunable parents, initialization unknowns, and unsupported binding operations cannot establish this proof. The original tensor expression and its numerical evaluation remain authoritative; arbitrary expressions with domain or validation effects are not removable coordinate factors. | DAE scalar dependency projection | MLS §7.2.6 and §10.6.4 permit exact zero coefficients without freezing parameter defaults or erasing evaluation obligations |
 | No scalar-row reassembly | Solve lowering | Prevents fragile recovery |
 | Structured B.1c views retain assignment identity | DAE/Solve scalar views | Preserve target and update policy |
 | Structured root rows are generated views | Event evaluator/backend boundary | Root location sees every domain point in canonical order |

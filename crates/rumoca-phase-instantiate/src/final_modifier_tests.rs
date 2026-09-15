@@ -11,6 +11,8 @@ model Declared
 end Declared;
 model Root
   parameter Real gain = 2;
+  parameter Real zeroParent = 0;
+  final parameter Real zeroDependent = zeroParent;
   Declared declared;
   Cell modified(final c = 0);
   Cell ordinary(c = 0);
@@ -69,6 +71,21 @@ fn final_modifier_retains_its_symbolic_parent_dependency() {
     let data = component(&overlay, "dependent.c");
     assert!(data.is_final);
     assert_eq!(data.binding_source.as_ref().unwrap().to_string(), "gain");
+}
+
+#[test]
+fn final_declaration_keeps_a_zero_valued_parent_binding_symbolic() {
+    let overlay = instantiate();
+    let data = component(&overlay, "zeroDependent");
+    assert_eq!(
+        data.binding_source
+            .as_ref()
+            .or(data.binding.as_ref())
+            .unwrap()
+            .to_string(),
+        "zeroParent"
+    );
+    assert!(!component(&overlay, "zeroParent").evaluate);
 }
 
 #[test]

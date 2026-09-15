@@ -600,12 +600,11 @@ pub struct InstanceData {
 
     /// Binding equation value (resolved).
     pub binding: Option<Expression>,
-    /// Optional symbolic binding source expression for modification-derived bindings.
+    /// Symbolic binding before evaluation for structural queries.
     ///
-    /// MLS §7.2.4: component modifications are written in an outer scope and may
-    /// intentionally reference outer parameters (e.g., `gain(g = k)`).
-    /// We retain this source form for flat-output rendering while keeping `binding`
-    /// available as a resolved value for semantic passes.
+    /// Declarations and modifications retain their binding equation here when
+    /// instantiation resolves a different value into `binding`. Flattening uses
+    /// this source to preserve dependencies on changeable parent parameters.
     pub binding_source: Option<Expression>,
     /// Lexical scope where a modification-derived binding was written.
     ///

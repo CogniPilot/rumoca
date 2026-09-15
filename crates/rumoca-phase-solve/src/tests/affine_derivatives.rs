@@ -582,12 +582,17 @@ fn affine_state_equation_preserves_its_runtime_parameter_coefficient() {
 #[test]
 fn zero_affine_derivative_coefficient_fails_before_runtime() {
     let source = TestSource::new("parameter Real p=0; Real x; p*der(x)-x=0;");
+    let state_span = source.at(20, 26).span();
     let model = scaled_state_model(source, 0.0);
 
     let error = lower_solve_problem(&model).unwrap_err();
-    assert!(matches!(
-        error,
-        LowerError::NonComputable { reason, .. }
-            if reason.contains("zero affine coefficient")
-    ));
+    assert!(
+        matches!(
+            &error,
+            LowerError::Structural { reason, span }
+                if reason == "structurally singular system: 0 matched out of 1 equations and 1 unknowns"
+                    && *span == Some(state_span)
+        ),
+        "a fixed zero coefficient cannot match the derivative: {error:?}"
+    );
 }

@@ -149,3 +149,5 @@ mod terminate_when_regression;
 mod tiered_models;
 mod time_event_when_activation;
 mod verification_surface_wiring;
+
+mod zero_coefficient_incidence;

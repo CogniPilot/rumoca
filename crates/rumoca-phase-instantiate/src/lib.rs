@@ -1589,6 +1589,9 @@ fn prepare_component_binding_info(
             effective_components,
             tree,
         )?;
+        if resolved_binding != *declaration_binding {
+            binding_source.get_or_insert_with(|| declaration_binding.clone());
+        }
         if start_from_declaration_binding {
             attrs.start = Some(resolved_binding.clone());
         }

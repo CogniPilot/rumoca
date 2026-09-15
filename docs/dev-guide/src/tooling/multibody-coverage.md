@@ -4,6 +4,59 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Invariant-zero tensor incidence and declaration binding repair
+
+The RollingWheel investigation reached a second producer defect: scalar
+dependency projection reports off-diagonal inertia dependencies even when the
+selected coefficient is a fixed, non-tunable literal zero. Under SPEC_0032 §2
+and MLS §10.6.4, the projection now proves such zeros through the original
+literal, parameter, array, concatenation, and signed-expression owners. It
+omits only the multiplied direct Real coordinate's incidence; the canonical
+tensor expression and numerical evaluation remain intact. Tunable parents,
+initialization unknowns, and arbitrary expressions with domain obligations do
+not qualify. The reduced matrix dependency test fails before the change while
+these negative controls already pass (`zero-coefficient-red-1.log`). All 46
+evaluation, 139 Solve, and 170 structural tests pass, with affected Clippy.
+
+The first ordinary RollingWheel diagnostic changes the normalized plan from
+seven tears to five and replaces the zero causal pivot with diagonal inertia
+coefficients. Flat, DAE, structural DAE, and the complete trace are byte-identical
+to the final-modifier control. Its 78.924 ms runtime is not a speedup: the
+affine executor still solves the full 24-coordinate system. The receipt is
+`zero-coefficient-profile-evidence-1.json`.
+
+A runtime parameter-override control then exposed an existing correctness
+counterexample. In `ParentCoefficientProbe`, `final parameter Real
+offDiagonal=parent` was frozen to zero during instantiation because `parent`
+defaults to zero. With `I=[2,offDiagonal;offDiagonal,2]` and `I*x={1,2}`, the
+legal override `parent=0.5` must produce `x={1/3.75,3.5/3.75}`. Rumoca instead
+kept `{0.5,1}`. The archived ordinary worker also emits the wrong literal Flat
+binding, ruling out the new incidence proof or the numerical solver as the
+first divergent owner (`zero-coefficient-baseline-flat-1/`).
+
+Instantiation now retains the original declaration binding when evaluating a
+different value for structural queries. Flattening consumes that retained
+symbolic source using the existing declaration scope. This preserves the
+binding equation and changeable-parent dependency under MLS §4.4.4 and §7.2.6.
+The direct instantiation regression fails before this repair
+(`zero-parent-phase-red-2.log`); all 224 instantiation, 631 flattening, and 601
+compiler-core tests now pass, including the actual runtime override and Flat
+binding regressions. Affected-package Clippy passes
+(`zero-parent-focused-1.log`, `zero-parent-broad-build-1.log`). Pinned OMC agrees
+with all four reduced default/override cases to within 5.6e-17
+(`zero-coefficient-omc-1/receipt.json`).
+
+The combined ordinary RollingWheel diagnostic retains the same complete trace
+and five-tear plan at 78.591 ms. Its sole Flat change preserves the declaration
+binding `world.groundLength_v=world.groundLength_u` instead of literal 4
+(`zero-parent-flat-delta-1.json`, `zero-parent-profile-evidence-1.json`). Tier 1
+originating comparison retains RollingWheel and OvervoltageProtection high:
+two compared models, 229 high initialization channels, one reviewed BevelGear
+exclusion, and no missing or deviating comparisons. The fixed twenty-model
+canary retains every phase and band: nine compared models, all nine high,
+175 high initialization channels, and zero skipped, missing, nonidentifiable,
+or deviating comparisons. Receipts are `zero-parent-{origin,canary}-delta.json`.
+
 ## Affine elimination experiment and final-modifier investigation
 
 The complete `multibody-tearing-choice-full-11` sweep at

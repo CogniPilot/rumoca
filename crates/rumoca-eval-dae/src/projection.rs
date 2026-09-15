@@ -1,6 +1,8 @@
 mod array_update;
+mod scalar_selection;
 #[cfg(test)]
 mod tests;
+mod zero_coefficients;
 
 use std::collections::{HashMap, HashSet};
 
@@ -126,6 +128,7 @@ pub fn for_each_scalar_coordinate<'dae>(
 #[derive(Default)]
 pub struct ScalarCoordinateProjectionCache<'dae> {
     function_results: HashMap<FunctionResultDependency, Vec<FunctionParameterDependency>>,
+    zero_coefficients: zero_coefficients::ZeroCoefficients<'dae>,
     marker: std::marker::PhantomData<&'dae ()>,
 }
 
@@ -958,8 +961,20 @@ where
         let rhs_dimensions = self.node(rhs).value_type().dimensions();
         let pairs = multiplication_scalar_pairs(lhs_dimensions, rhs_dimensions, scalar_index);
         for (lhs_index, rhs_index) in pairs {
-            self.expression(lhs, lhs_index)?;
-            self.expression(rhs, rhs_index)?;
+            if !self
+                .cache
+                .zero_coefficients
+                .omits_coordinate(self.view, lhs, rhs, rhs_index)
+            {
+                self.expression(lhs, lhs_index)?;
+            }
+            if !self
+                .cache
+                .zero_coefficients
+                .omits_coordinate(self.view, rhs, lhs, lhs_index)
+            {
+                self.expression(rhs, rhs_index)?;
+            }
         }
         Ok(())
     }
@@ -969,16 +984,8 @@ where
         elements: dae::ExpressionOperands<'dae>,
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
-        let first = elements.get(0).expect("checked array is nonempty");
-        let element_count = self.scalar_count(first);
-        let element_ordinal = scalar_index / element_count;
-        let element_index = scalar_index % element_count;
-        self.expression(
-            elements
-                .get(element_ordinal)
-                .expect("checked array scalar index selects an element"),
-            element_index,
-        )
+        let (element, scalar) = scalar_selection::array_scalar(self.view, elements, scalar_index);
+        self.expression(element, scalar)
     }
 
     fn comprehension(
@@ -1226,26 +1233,14 @@ where
         result_dimensions: &[u32],
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
-        let mut coordinates = row_major_coordinates(result_dimensions, scalar_index)
-            .expect("checked concatenation scalar belongs to its result shape");
-        let selected = coordinates[axis];
-        let mut offset = 0_u32;
-        for argument in arguments.iter() {
-            let dimensions = self.node(argument).value_type().dimensions();
-            let extent = dimensions.get(axis).copied().unwrap_or(1);
-            let end = offset
-                .checked_add(extent)
-                .expect("checked concatenation extent remains in the u32 domain");
-            if selected < end {
-                coordinates[axis] = selected - offset;
-                let operand_scalar =
-                    flatten_coordinates(dimensions, &coordinates[..dimensions.len()])
-                        .expect("checked promoted coordinate belongs to its operand shape");
-                return self.expression(argument, operand_scalar);
-            }
-            offset = end;
-        }
-        unreachable!("checked concatenation operands cover the result")
+        let (argument, scalar) = scalar_selection::concatenation_scalar(
+            self.view,
+            arguments,
+            axis,
+            result_dimensions,
+            scalar_index,
+        );
+        self.expression(argument, scalar)
     }
 
     fn scalar_arguments(
