@@ -4,6 +4,52 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Full comparison restores GyroscopicEffects and retains every high model
+
+The complete `multibody-demotion-bounds-full-11` run at
+`b008b1a794d951e17e1d9b2e9fc7ccc9a335e387` compares 165/566 strict-high
+(29.15%): 165 compared, 20 reviewed exclusions, zero missing/nonidentifiable
+traces, and zero near/deviating comparisons. All 22,976 initialization channels
+are high. Raw execution is 185 models; exclusions are not high-parity credit.
+The run uses 11 workers and the unchanged phase/solver budgets. Its worktree
+digest is `48672dfdec9c3416aac00ca9d56725958329a60236f921974bbf966a09020c35`;
+tracked source is clean and the foreign `comm_fastdyn.md` remains untracked.
+
+MultiBody returns to 23/42 high, with one reviewed BevelGear1D exclusion and no
+missing comparisons. GyroscopicEffects is restored from the preceding full
+run's Solve timeout to high parity. Every previously high model and reviewed
+excluded execution is retained. The four repaired counterexamples stay high;
+both Cauer examples retain their gains against the preceding committed baseline.
+RevoluteConstraint advances from a timeout to an explicit structural singularity,
+which is still a failed model. LineForce still times out in Solve.
+
+Receipts `rolling-wheel/demotion-bounds-full-{previous,baseline}-delta-1.json`
+compare identical 566-model rosters against the failed independent-lift attempt
+and the preceding `target/msl/results` baseline. The aggregate gate exits zero.
+No baseline is promoted. This closes the lost-model regression and permits
+returning to the LineForce frontier; 100% MultiBody and combined quick/full
+verification remain outstanding.
+
+The current LineForce diagnostic confirms two separate failures. Its exact saved
+source prepares in 10.348 seconds with 32 state declarations, 28 manifold rows,
+and 954 candidate reconstruction attempts. The artifact-disabled actual worker
+spends 12.870 seconds in Solve, then fails initialization with `EX002`:
+`algebraic projection sensitivity matrix is singular`. It produces no trace.
+The diagnostic's larger outer budget grants no coverage credit; the ordinary
+full run still fails the unchanged 10-second Solve budget.
+
+The producer artifacts, worker hash, and perf capture are bound by
+`rolling-wheel/line-force-demotion-bounds-evidence-1.json`. Perf attributes cost
+to repeated incidence projection, variable reservation/equality, allocation, and
+hashing; it does not establish that optimizing name lookup alone would meet the
+budget. The next correctness investigation must identify the singular projection
+block and its exact initialization point, then compare those equations with the
+saved OMC backend equations. OMC explicitly retains the line-length first/second
+derivative chain and damper force closure (`line-force-omc-damper-closure-1.json`).
+The current evidence does not yet prove which Rumoca equation or coordinate
+diverges from that closure. No further compiler/runtime change is made on this
+hypothesis alone.
+
 ## GyroscopicEffects matching bound passes focused verification
 
 The first divergent search decision precedes the independent additive-lift fix:
