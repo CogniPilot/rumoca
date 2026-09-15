@@ -10,6 +10,7 @@ mod identity_auxiliary;
 mod initial_pins;
 mod initial_values;
 mod invariant_balances;
+mod lift_owners;
 mod manifold_fields;
 mod reconstruction_failures;
 mod reduction_observation;

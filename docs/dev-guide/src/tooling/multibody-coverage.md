@@ -4,6 +4,50 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Algebraic lifts exclude their source equation from auxiliary reconstruction
+
+The exact pre-lift capture for LineForceWithTwoMasses identifies a source-owner
+mix-up in the structural proof walk. Owner 434 has residual expression 6022 and
+right-hand side 6021. Its auxiliary inverse for `jointUPS.R_ia_a.w` records
+6022, but algebraic-lift preflight excluded 6021. It could therefore reconstruct
+through the equation it was replacing, losing the independent angular-velocity
+relation. The differentiated expression and excluded equation now have separate
+roles: preflight excludes the source residual, while the derivative proof stays
+bound to the right-hand side. Ordinary holonomic constraints retain their
+existing exclusion. This implements SPEC_0007's structural-lowering ownership
+contract and STRUCT-T03 under MLS Appendix B and section 8.3.1.
+
+A small valid source model reproduces the defect with `u=der(x)`,
+`v=shift(u,zeros(n))`, `q=forward(v)`, `der(q)=a`, and `a=-q`, where the pure
+functions add the supplied offset and forward their argument. Its rejected lift
+would replace the relation between `der(x)` and `q` with a circular alias.
+The regression proves that its auxiliary block owns the source equation and
+must not supply that equation's lift. An independent `u=x`, `der(x)=ones(n)`
+control still lifts and retains the relation between `v` and `x`. Both tests
+pass for sizes 1, 3, and 4,096; the positive reconstruction has constant IR size.
+All 192 structural tests and all-target/all-feature structural Clippy pass.
+The initial Clippy pass required extracting a nested test traversal into a
+helper. OMC accepts both small models and preserves their expected differential
+equations; its backend XML is retained under `rolling-wheel/lift-owners-omc-1`.
+
+The rebuilt original model has byte-identical source DAE and retains owner
+434's undifferentiated `Frames.absoluteRotation` relation. It still fails Solve
+with EL005: the deepest snapshot matches 2,201/2,204 rows. The remaining rows
+2171–2173 now map to owner 688, `rod1.frame_b.R.w=jointUPS.frame_a.R.w`, with
+unmatched unknowns `jointUPS.f_bd_a[1:3]`. This is diagnostic evidence, not a
+simulation or coverage gain. Next, trace the independent `w_rel_ia1` definition
+through `der_rAxis_a_L` and the explicit derivative of `rAxis_0`, comparing each
+substitution against OMC's translational-velocity equations.
+
+Tier 1 `multibody-lift-owners-{frontier,origin,canary}` retains all prior bands
+and phase/execution statuses from the demotion-owner controls. The fixed target
+sets compare four, six, and nine high traces respectively, with one, two, and
+zero reviewed exclusions. There are no missing, nonidentifiable, near, or
+deviating comparisons. The ordinary LineForceWithTwoMasses attempt still exceeds
+the unchanged Solve budget. `rolling-wheel/lift-owners-evidence-1.json` binds the
+source captures, repair, tests, OMC equations, and gate deltas. Combined quick/full
+verification and the full MultiBody goal remain outstanding.
+
 ## Complete cohort retains all prior results after equation-activity checks
 
 The full `multibody-demotion-owners-full-11` comparison at

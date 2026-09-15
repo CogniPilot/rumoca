@@ -1034,7 +1034,7 @@ fn prove_holonomic_differentiation<'dae>(
     let mut walk = HolonomicProofWalk {
         view,
         facts,
-        residual: residual.index(),
+        excluded_residual: residual.index(),
         derivative_anchors: DerivativeAnchors::Affine,
         anchored_states: Vec::new(),
         saw_algebraic: false,
@@ -1146,7 +1146,7 @@ fn prove_algebraic_lift_differentiation<'dae>(
     let mut walk = HolonomicProofWalk {
         view,
         facts,
-        residual: definition.index(),
+        excluded_residual: lifted.0,
         derivative_anchors: DerivativeAnchors::Exact,
         anchored_states: Vec::new(),
         saw_algebraic: false,
@@ -1191,7 +1191,7 @@ fn prove_algebraic_lift_differentiation<'dae>(
 struct HolonomicProofWalk<'facts, 'dae> {
     view: dae::DaeView<'dae>,
     facts: &'facts DifferentiationFacts,
-    residual: u32,
+    excluded_residual: u32,
     derivative_anchors: DerivativeAnchors,
     anchored_states: Vec<u32>,
     saw_algebraic: bool,
@@ -1456,7 +1456,7 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
         order: u8,
         on_residual: bool,
     ) -> bool {
-        if block.contains_residual(self.residual) {
+        if block.contains_residual(self.excluded_residual) {
             return false;
         }
         if on_residual {
