@@ -4,6 +4,81 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Structural functions retained in symbolic bindings
+
+The full sweep at `617e315a2f3986dceddb1d3096b4ddc4738e9d29` exposed a
+regression missed by the fixed canary: six previously high electrical models
+and five previously excluded simulation completions fail Flatten. The run
+reports 153/566 strict-high, all 153 compared models high, 14 reviewed
+exclusions, and zero missing, nonidentifiable, or deviating comparisons; it
+fails the quality gate (`zero-parent-full-delta.json`). Thirty phase outcomes
+change, mostly from the same missing structural function. GearConstraint also
+changes from structural refusal to a Solve timeout; it remains unsupported.
+
+The electrical failures share `MultiDelta`/`MultiStar`'s declaration
+`mSystems=numberOfSymmetricBaseSystems(m)`. Function precollection scans only
+the evaluated instance binding, now a literal, while Flatten correctly retains
+the symbolic source call. The integer evaluator therefore lacks the function
+needed to resolve dimensions and connection-loop bounds. This is a missing
+dependency in Flatten preparation, not permission to freeze mutable Real
+parameter bindings again (SPEC_0007/0040; MLS §4.4.4, §8.3.3, §12.4).
+
+Precollection now consumes the same retained binding source as variable
+flattening, preserving the existing transitive callee discovery. A reduced
+imported-function regression with two differently modified instances fails
+before the change and passes afterward, retaining symbolic calls while
+producing three and five array coordinates and eight equations
+(`structural-binding-functions-{red,focused}-1.log`). Pinned OMC produces the
+same eight exact observable values in all six output rows
+(`structural-binding-functions-omc-1/receipt.json`). All 631 flattening tests,
+602 compiler-core tests, and affected Clippy pass
+(`structural-binding-functions-broad-build-1.log`).
+
+The eleven-model originating run still fails after that preparation repair:
+all eleven pass Flatten, but five now reject nonliteral array extents during
+DAE construction and six reject recursive functions in the executable
+pure-call graph. It compares zero traces and has parity unmeasured
+(`structural-binding-functions-origin-1.log`). Translation-time evaluations
+must remain available to structural consumers without freezing changeable
+parent bindings or requiring compile-time recursion to execute at runtime.
+Neither this originating run nor the earlier failed full sweep is passing
+evidence.
+
+A second reduced case reproduces the next boundary exactly: a recursive pure
+Integer function computes two instances' fixed array widths, three and five;
+`fill(1.0, width)` then fails DAE construction with a nonliteral extent
+(`invariant-binding-recursion-red-1.log`). Under SPEC_0007's FLAT-C01 contract,
+Flat finalization now specializes scalar bindings only after following exact
+instance/declaration references through every fixed, non-changeable parent.
+The shared constant interpreter owns function evaluation, including recursion,
+purity, assertions, and evaluation limits. It receives no unproven global
+parameter values. Failed or unsettled evaluations retain their bindings;
+array-valued bindings remain symbolic. Existing function pruning removes the
+now-unreachable compile-time helper.
+
+The recursive fixture now compiles and simulates both arrays and their
+integrals. Four focused tests pass, including a transitive final-alias chain
+whose legal parent override changes its output, and refusal to fold impure or
+`fixed=false` dependencies (`invariant-binding-controls-1.log`). Pinned OMC
+produces the same literal widths and all ten analytic observable values in six
+rows, with maximum absolute error 1.12e-16
+(`invariant-binding-recursion-omc-1/receipt.json`). All 631 flattening tests,
+605 compiler-core tests, and affected Clippy pass
+(`invariant-binding-broad-build-1.log`).
+
+The eleven-model originating run now passes: all eleven simulate; six compare
+high, including all 2,205 initialization channels, and five retain their
+previous reviewed exclusions. There are no missing or deviating comparisons.
+All eleven bands match their entries in the last passing full sweep at
+`59cee76f` (`invariant-binding-origin-delta.json`). The prior failed originating
+run had no measured bands; the receipt distinguishes its phase outcomes from
+that complete baseline's band evidence. The fixed 20-model canary also passes:
+all phases and bands remain unchanged, nine models compare high with 175 high
+initialization channels, and none are skipped, missing, or deviating
+(`invariant-binding-canary-delta.json`). New complete-cohort validation remains
+pending; this focused recovery is not a new cohort count or a RollingWheel
+speed improvement.
+
 ## Invariant-zero tensor incidence and declaration binding repair
 
 The RollingWheel investigation reached a second producer defect: scalar

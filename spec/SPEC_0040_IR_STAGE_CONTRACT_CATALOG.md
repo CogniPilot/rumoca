@@ -5,7 +5,7 @@ REFERENCE
 
 ## Summary
 
-Lookup catalog of the DAE, Solve, structural-lowering, and target-product
+Lookup catalog of the Flat, DAE, Solve, structural-lowering, and target-product
 contracts referenced by [SPEC_0007](SPEC_0007_IR_PIPELINE.md).
 
 ## How To Use This Catalog
@@ -18,6 +18,12 @@ find the exact obligation without loading the whole pipeline spec. Target
 product requirements use §4.
 
 ## Specification
+
+### 0. Flat Stage Contract Catalog (SPEC_0007 Stage 2)
+
+| ID | Rule | Where | Why |
+|---|---|---|---|
+| FLAT-C01 | Under MLS §4.4.4, §12.3, and §18.6, a scalar constant or evaluated-parameter binding may become a literal only after proving every referenced occurrence fixed and non-changeable, transitively, and evaluating it through the shared pure-function interpreter. References use exact instance and declaration identity. Cycles, unsettled initialization, unresolved occurrences, and evaluation failures retain the binding. Array-valued bindings remain symbolic. | Flatten finalization after reference/call canonicalization and before unreachable-function pruning | Preserves changeable parents while keeping proven translation-time calculations out of executable IR |
 
 ### 1. DAE Stage Contract Catalog (SPEC_0007 Stage 3)
 

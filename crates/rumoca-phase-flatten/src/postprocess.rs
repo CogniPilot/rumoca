@@ -14,6 +14,7 @@ mod field_access;
 mod function_shape_constants;
 mod index_collapse;
 mod indexed_dimension_recovery;
+mod invariant_bindings;
 mod occurrence_graph;
 mod record_alias;
 #[cfg(test)]
@@ -32,6 +33,7 @@ pub(super) use field_access::{
 };
 pub(crate) use index_collapse::{collapse_index_refs_to_known_varrefs, field_access_flat_path};
 pub(crate) use indexed_dimension_recovery::recover_indexed_lhs_dimensions;
+pub(crate) use invariant_bindings::fold_invariant_scalar_bindings;
 
 use constant_substituter::{
     substitute_known_constants_expr_with_options, substitute_known_constants_statement,

@@ -150,4 +150,5 @@ mod tiered_models;
 mod time_event_when_activation;
 mod verification_surface_wiring;
 
+mod structural_binding_functions;
 mod zero_coefficient_incidence;

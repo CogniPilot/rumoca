@@ -50,7 +50,11 @@ pub(crate) fn pre_collect_functions(
     }
 
     for (_def_id, instance_data) in &overlay.components {
-        if let Some(binding) = &instance_data.binding {
+        if let Some(binding) = instance_data
+            .binding_source
+            .as_ref()
+            .or(instance_data.binding.as_ref())
+        {
             collect_function_calls_from_expression(binding, &mut function_names, tree, class_index);
         }
         if let Some(start) = &instance_data.start {
