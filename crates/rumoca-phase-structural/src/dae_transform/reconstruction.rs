@@ -152,6 +152,7 @@ pub(super) fn rebuild_holonomic_constraint(
                         expression: expressions[entry.expression as usize].index(),
                         lifted: entry.lifted.map(|lifted| LiftedManifoldOwner {
                             residual: expressions[lifted.residual as usize].index(),
+                            value_residual: expressions[lifted.value_residual as usize].index(),
                             ..lifted
                         }),
                     }));
@@ -462,6 +463,7 @@ fn restore_prior_manifold<'source, 'target>(
                 expression: rebuilder.rebuild(source_expression)?.index(),
                 lifted: entry.lifted.map(|lifted| LiftedManifoldOwner {
                     residual: expressions[lifted.residual as usize].index(),
+                    value_residual: expressions[lifted.value_residual as usize].index(),
                     ..lifted
                 }),
             });
@@ -486,7 +488,7 @@ fn restored_equation_replacement<'target>(
             owner_ordinal: lifted.owner_ordinal,
             body_ordinal: lifted.body_ordinal,
             residual: lifted.residual,
-            replacement: expressions[restored.expression as usize],
+            replacement: expressions[lifted.value_residual as usize],
         })
 }
 
@@ -516,6 +518,7 @@ fn rebuild_holonomic_replacement<'target>(
             constraint.owner.span(),
         )?;
         if let Some(algebraic) = constraint.lifted_algebraic {
+            let value_residual = rebuilder.rebuild(source_residual)?.index();
             let value = rebuilder.materialize_lifted_algebraic_value(
                 algebraic,
                 &constraint.proof,
@@ -533,6 +536,7 @@ fn rebuild_holonomic_replacement<'target>(
                     owner_ordinal: constraint.owner_ordinal,
                     body_ordinal: constraint.body_ordinal,
                     residual: replacement.index(),
+                    value_residual,
                 }),
             });
             return Ok(replacement);

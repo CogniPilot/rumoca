@@ -15,8 +15,10 @@
 //! components use supplies `d/dt phi` exactly as `der(phi) - w` would.
 
 mod alternative_definitions;
+pub(super) mod lifted_values;
 mod materialization;
 mod state_derivative;
+mod value_identity;
 
 use state_derivative::has_state_only_first_derivative;
 
@@ -35,7 +37,8 @@ use super::builtin_profiles::{is_differentiable_binary, is_differentiable_builti
 use super::component_constraint::ComponentConstraint;
 use super::component_projection::projected_element;
 use super::equalities::{
-    EqualityAnchor, EqualitySign, SystemEqualities, forwarded_call_argument, is_time_invariant,
+    DerivativeAnchors, EqualityAnchor, EqualitySign, SystemEqualities, forwarded_call_argument,
+    is_time_invariant,
 };
 use super::initial_pins::represented_initial_values;
 use super::tensor_maps::has_invariant_subscripts;
@@ -49,6 +52,7 @@ use crate::StructuralError;
 /// differentiating, gathered once per source system.
 pub(super) struct DifferentiationFacts {
     pub(super) equalities: SystemEqualities,
+    additive_values: lifted_values::AdditiveValueFacts,
     pub(super) derivative_definitions: Vec<Option<u32>>,
     pub(super) algebraic_definitions: Vec<Option<u32>>,
     pub(super) component_definitions: Vec<Option<std::sync::Arc<ComponentConstraint>>>,
@@ -77,6 +81,7 @@ impl DifferentiationFacts {
             .collect();
         let mut facts = Self {
             equalities: SystemEqualities::collect(view),
+            additive_values: lifted_values::AdditiveValueFacts::collect(view),
             derivative_definitions: explicit_derivative_definitions(view),
             algebraic_definitions,
             component_definitions: vec![None; view.variable_count()],
@@ -934,6 +939,7 @@ pub(super) fn index_reduction_constraints(
                                 facts,
                                 &mut scratch,
                                 definition,
+                                (residual.index(), algebraic.index()),
                             );
                             proof.map(|proof| HolonomicConstraint {
                                 owner_ordinal,
@@ -994,6 +1000,9 @@ fn is_materialized_definition<'dae>(
     facts: &DifferentiationFacts,
     residual: dae::ExprId<'dae>,
 ) -> bool {
+    if value_identity::materializes_to_zero(view, facts, residual) {
+        return true;
+    }
     let Some((lhs, rhs)) = equation_sides(view, residual) else {
         return false;
     };
@@ -1026,6 +1035,7 @@ fn prove_holonomic_differentiation<'dae>(
         view,
         facts,
         residual: residual.index(),
+        derivative_anchors: DerivativeAnchors::Affine,
         anchored_states: Vec::new(),
         saw_algebraic: false,
         function_context: FunctionCallContext::default(),
@@ -1082,8 +1092,10 @@ fn prove_holonomic_differentiation<'dae>(
     Some(HolonomicDifferentiationProof {
         residual: residual.index(),
         maximum_order,
+        derivative_anchors: walk.derivative_anchors,
         anchored_states: walk.anchored_states.into_boxed_slice(),
         component,
+        lifted_value: None,
     })
 }
 
@@ -1119,22 +1131,46 @@ fn prove_algebraic_lift_differentiation<'dae>(
     facts: &DifferentiationFacts,
     scratch: &mut HolonomicProofScratch,
     definition: dae::ExprId<'dae>,
+    lifted: (u32, u32),
 ) -> Option<HolonomicDifferentiationProof> {
+    let value = if super::equalities::additive_operands(view, definition).is_some() {
+        Some(std::sync::Arc::new(
+            facts
+                .additive_values
+                .prove(view, lifted.0, lifted.1, definition)?,
+        ))
+    } else {
+        None
+    };
     scratch.begin_root();
     let mut walk = HolonomicProofWalk {
         view,
         facts,
         residual: definition.index(),
+        derivative_anchors: DerivativeAnchors::Exact,
         anchored_states: Vec::new(),
         saw_algebraic: false,
         function_context: FunctionCallContext::default(),
         scratch,
     };
-    if !walk.can_differentiate_order(definition, 1, true) {
+    let sources = value.as_ref().map_or_else(
+        || vec![definition.index()],
+        |value| value.sources().collect(),
+    );
+    if !sources.iter().all(|&source| {
+        walk.can_differentiate_order(view.expression_id(source as usize).unwrap(), 1, true)
+    }) {
         return None;
     }
     let mut value_visited = vec![Visit::Pending; view.expression_count()];
-    if !can_materialize_holonomic_value(view, facts, definition, &mut value_visited) {
+    if !sources.iter().all(|&source| {
+        can_materialize_holonomic_value(
+            view,
+            facts,
+            view.expression_id(source as usize).unwrap(),
+            &mut value_visited,
+        )
+    }) {
         return None;
     }
     walk.anchored_states.sort_unstable();
@@ -1145,8 +1181,10 @@ fn prove_algebraic_lift_differentiation<'dae>(
     Some(HolonomicDifferentiationProof {
         residual: definition.index(),
         maximum_order: 1,
+        derivative_anchors: walk.derivative_anchors,
         anchored_states: walk.anchored_states.into_boxed_slice(),
         component: None,
+        lifted_value: value,
     })
 }
 
@@ -1154,6 +1192,7 @@ struct HolonomicProofWalk<'facts, 'dae> {
     view: dae::DaeView<'dae>,
     facts: &'facts DifferentiationFacts,
     residual: u32,
+    derivative_anchors: DerivativeAnchors,
     anchored_states: Vec<u32>,
     saw_algebraic: bool,
     function_context: FunctionCallContext<'dae>,
@@ -1372,7 +1411,11 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
                         on_residual,
                     );
                 }
-                match self.facts.equalities.anchor_of(algebraic.index()) {
+                match self
+                    .facts
+                    .equalities
+                    .derivative_anchor(algebraic.index(), self.derivative_anchors)
+                {
                     Some((EqualityAnchor::Invariant { .. }, _)) => true,
                     Some((anchor @ EqualityAnchor::State(state), _)) => {
                         self.can_differentiate_equality_anchor(anchor, state, order, on_residual)
@@ -1700,7 +1743,10 @@ fn is_differentiable_coordinate<'dae>(
                     )
                 });
             }
-            match facts.equalities.anchor_of(algebraic.index()) {
+            match facts
+                .equalities
+                .anchor_for_demotion(algebraic.index(), demoted.index())
+            {
                 Some((EqualityAnchor::Invariant { .. }, _)) => true,
                 Some((anchor @ EqualityAnchor::State(_), _)) => facts
                     .equalities

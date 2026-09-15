@@ -13,6 +13,7 @@ pub(in crate::dae_transform) struct ScopedReconstructionKey<'source> {
     calls: Vec<dae::ExprId<'source>>,
     order: u8,
     state_only: bool,
+    derivative_anchors: super::super::equalities::DerivativeAnchors,
     substitute_demoted: bool,
     provenance: dae::DaeProvenance,
 }
@@ -43,6 +44,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             calls: self.function_context.call_path().collect(),
             order,
             state_only: self.state_only_derivative,
+            derivative_anchors: self.derivative_anchors,
             substitute_demoted: self.substitute_demoted_value,
             provenance,
         }

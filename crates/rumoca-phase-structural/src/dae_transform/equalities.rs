@@ -50,6 +50,14 @@ pub(super) enum EqualitySign {
     Opposite,
 }
 
+/// Equality layer consumed by a captured derivative reconstruction proof.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) enum DerivativeAnchors {
+    #[default]
+    Affine,
+    Exact,
+}
+
 /// One exact scalar projection of a Real variable whose whole payload has one
 /// scalar. The singleton extent is the load-bearing runtime proof: every
 /// bounds-valid execution selects that sole scalar. Static evaluation narrows
@@ -331,22 +339,46 @@ impl SystemEqualities {
     /// The class member whose derivative is known, and how `variable` signs
     /// against it, if the system proves the class has such a member.
     ///
-    /// The offset-free class is reported whenever it has an anchor, and the
-    /// displaced class otherwise. Both prove the same derivative, so preferring
-    /// the offset-free one keeps a derivative claim on the same witness a value
-    /// claim about the variable would use.
+    /// The affine class includes every offset-free edge and also reaches
+    /// independent state derivatives across constant displacements. A narrower
+    /// value anchor must not hide that derivative relation.
     pub(super) fn anchor_of(&self, variable: u32) -> Option<(EqualityAnchor, EqualitySign)> {
+        self.affine.anchor_of(variable)
+    }
+
+    pub(super) fn derivative_anchor(
+        &self,
+        variable: u32,
+        anchors: DerivativeAnchors,
+    ) -> Option<(EqualityAnchor, EqualitySign)> {
+        match anchors {
+            DerivativeAnchors::Affine => self.anchor_of(variable),
+            DerivativeAnchors::Exact => self.value_anchor_of(variable),
+        }
+    }
+
+    /// Differentiate a demotion's definition through an independent state.
+    /// Prefer its exact class; a displaced class may supply the derivative
+    /// when the exact anchor is the very state being demoted.
+    pub(super) fn anchor_for_demotion(
+        &self,
+        variable: u32,
+        demoted: u32,
+    ) -> Option<(EqualityAnchor, EqualitySign)> {
+        let independent = |(anchor, _): &(EqualityAnchor, EqualitySign)| {
+            *anchor != EqualityAnchor::State(demoted)
+        };
         self.exact
             .anchor_of(variable)
-            .or_else(|| self.affine.anchor_of(variable))
+            .filter(independent)
+            .or_else(|| self.affine.anchor_of(variable).filter(independent))
     }
 
     /// The class anchor of `variable` on the offset-free layer only.
     ///
-    /// [`Self::anchor_of`] answers derivative questions and may fall back on the
-    /// displaced layer, where members share a derivative but not a value. A
-    /// caller reasoning about a *value* — an initial condition, say — must not
-    /// see that fallback, so it reads this instead.
+    /// [`Self::anchor_of`] answers derivative questions on the displaced layer,
+    /// where members share a derivative but not necessarily a value. A caller
+    /// reasoning about a *value* — an initial condition, say — reads this instead.
     pub(super) fn value_anchor_of(&self, variable: u32) -> Option<(EqualityAnchor, EqualitySign)> {
         self.exact.value_anchor_of(variable)
     }
@@ -410,14 +442,13 @@ impl SystemEqualities {
     /// Close connector balances after construction-proved invariant operands
     /// have become available.
     ///
-    /// A balance with exactly two non-invariant algebraic coordinates proves
+    /// A balance with exactly two non-invariant continuous coordinates proves
     /// those two coordinates share a derivative up to sign: every eliminated
     /// coordinate and explicit invariant term has derivative zero. It proves
     /// their values equal only when every eliminated offset is an exact literal
-    /// zero. Limiting the derived edge to algebraics keeps this connector
-    /// closure from selecting or demoting a state through a multi-coordinate
-    /// component equation. Each accepted edge is retained in the union-find
-    /// relation; no source owner is removed or rewritten here.
+    /// zero. The relation changes neither variable roles nor source equations;
+    /// state selection and stated-initial-value preservation remain downstream.
+    /// Each accepted edge is retained in the union-find relation.
     fn close_invariant_balances(
         &mut self,
         view: dae::DaeView<'_>,
@@ -648,20 +679,27 @@ impl AdditiveOperands {
         let [(left, left_negated), (right, right_negated)] = *remaining.as_slice() else {
             return None;
         };
-        (left != right && is_algebraic_variable(view, left) && is_algebraic_variable(view, right))
-            .then_some(InferredEqualityEdge {
-                left,
-                right,
-                opposite: left_negated == right_negated,
-                displaced: !offset_free,
-            })
+        (left != right
+            && is_state_or_algebraic_variable(view, left)
+            && is_state_or_algebraic_variable(view, right))
+        .then_some(InferredEqualityEdge {
+            left,
+            right,
+            opposite: left_negated == right_negated,
+            displaced: !offset_free,
+        })
     }
 }
 
-fn is_algebraic_variable(view: dae::DaeView<'_>, variable: u32) -> bool {
+fn is_state_or_algebraic_variable(view: dae::DaeView<'_>, variable: u32) -> bool {
     view.variable_id(variable as usize)
         .and_then(|variable| view.variable(variable))
-        .is_some_and(|variable| variable.role() == dae::VariableRole::Algebraic)
+        .is_some_and(|variable| {
+            matches!(
+                variable.role(),
+                dae::VariableRole::State | dae::VariableRole::Algebraic
+            )
+        })
 }
 
 fn invariant_anchor_is_zero(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> bool {
@@ -683,7 +721,7 @@ fn invariant_anchor_is_zero(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> b
 /// body writes `flange_a.s = s - L/2`. A residual that reaches a leaf which is
 /// neither a shape-compatible Real coordinate nor a time-invariant expression proves
 /// nothing this closure may use, and is dropped whole.
-fn additive_operands<'dae>(
+pub(super) fn additive_operands<'dae>(
     view: dae::DaeView<'dae>,
     residual: dae::ExprId<'dae>,
 ) -> Option<AdditiveOperands> {
@@ -857,7 +895,10 @@ pub(super) fn forwarded_call_argument<'dae>(
         .or_else(|| arguments.get(parameter.ordinal() as usize))
 }
 
-fn is_zero_literal<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>) -> bool {
+pub(super) fn is_zero_literal<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> bool {
     view.expression(expression).is_some_and(|expression| {
         matches!(
             expression.operation(),

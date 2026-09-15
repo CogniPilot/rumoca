@@ -370,6 +370,7 @@ struct LiftedManifoldOwner {
     owner_ordinal: usize,
     body_ordinal: Option<usize>,
     residual: u32,
+    value_residual: u32,
 }
 
 /// Evidence collected from the finalized source DAE before a residual may be
@@ -378,8 +379,10 @@ struct LiftedManifoldOwner {
 struct HolonomicDifferentiationProof {
     residual: u32,
     maximum_order: u8,
+    derivative_anchors: equalities::DerivativeAnchors,
     anchored_states: Box<[u32]>,
     component: Option<component_constraint::ComponentConstraint>,
+    lifted_value: Option<std::sync::Arc<constraints::lifted_values::LiftedValueProof>>,
 }
 
 /// Prepare a finalized DAE for Solve without admitting a weaker intermediate.

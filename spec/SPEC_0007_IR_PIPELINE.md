@@ -5,10 +5,10 @@ ACCEPTED
 
 ## Summary
 
-Each Modelica stage — AST → Flat → DAE → Solve — defines contents and ownership.
+Stage contents and ownership.
 
 [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md) catalogs stage contracts and
-structural transformations; each linked row is normative.
+structural transformations; linked rows are normative.
 
 ## Specification
 
@@ -217,8 +217,6 @@ operators in solver equation partitions.
 **What it is:** Typed programs with DAE and Algorithm Code roots over
 shared scalar/tensor vocabulary.
 
-Canonical terminology:
-
 | Term | Current type/name | Meaning |
 |---|---|---|
 | `ScalarProgram` | `Vec<LinearOp>` | A flat register program that produces one scalar output |
@@ -228,8 +226,7 @@ Canonical terminology:
 | `ComputeBlock` | `ComputeBlock` | Ordered mix of scalar program blocks and tensor program nodes |
 | `SolveAlgorithmBlock` | (pending: 2026-08-08 plan, M3-4) | Checked Algorithm Code execution root |
 
-New Solve-IR APIs use `ScalarProgram` / `ScalarProgramBlock` terminology, not
-`RowBlock` / `ScalarRows`.
+New Solve APIs use `ScalarProgram`/`ScalarProgramBlock`, never `RowBlock`/`ScalarRows`.
 
 `ComputeNode::AffineStencil` is source-proven: it comes from preserved DAE
 structured-family domains plus affine operand proofs. It carries the compact
@@ -240,9 +237,9 @@ Structured B.1c definitions follow the same boundary: Solve preserves their
 authoritative DAE domain as a compact map plus a compact target map, and phase
 lowering creates no parallel scalar owner (SOLVE-C20).
 
-Each scalar and structured discrete update owns a typed integrator-history
-effect derived by Solve lowering, never recovered by a runtime from model
-names, row positions, or observed numerical behavior (SOLVE-C21).
+Solve lowering derives each scalar/structured discrete update's typed integrator-history
+effect; runtime model names, row positions, or observed behavior cannot supply it
+(SOLVE-C21).
 
 One clocked partition has one equation-shaped owner: producers proved total on
 that tick exchange same-tick values through construction-issued intermediates,
@@ -268,40 +265,43 @@ of `SolveProblem`; rows SOLVE-C32–C38 define its complete obligations.
 
 Solve substitutes initialization parameter definitions into that system's
 residuals and commits their values from the solved initial point. Start guesses
-and parameter-set values cannot discharge these definitions. A dependency
-cycle without a supported coupled owner must be rejected explicitly.
-Matched initialization rows are ordered by dependency; only strongly connected
-rows share a simultaneous projection block. Unmatched checks remain required.
+and parameter-set values cannot discharge these definitions. Dependency
+cycles lacking a supported coupled owner must be rejected.
+Order matched initialization rows by dependency; only strongly connected
+rows share simultaneous projection blocks. Unmatched checks remain required.
 
 Objectives, adjoints, sensitivities, and optimizer projections are derived
 products, not canonical root fields.
 
-**Do here:** construct either checked root and preserve typed programs,
-provenance, and its execution contract.
+**Do here:** construct checked roots preserving typed programs, provenance, and execution contracts.
 
 Sparsity follows [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md); compact
 affine patterns originate from SPEC_0032 owners, never scalar-row recovery.
 
-**Do not:** work assigned to DAE/structural phases, concrete execution crates,
-or `rumoca-phase-codegen` by SPEC_0029.
+**Do not:** perform DAE/structural, execution, or codegen work owned elsewhere under SPEC_0029.
 
 ---
 
 ### Structural Lowering Scope
 
-Structural lowering transforms finalized DAEs through root-owned checked changes.
-Partial mutation, independently replayable proof receipts, and mutable partition
-callbacks are prohibited.
+Structural lowering requires root-owned checked DAE transformations; partial mutation,
+replayable proof receipts, and mutable partition callbacks are prohibited.
 
 **In scope:** only `STRUCT-T01`–`STRUCT-T09` in
 [SPEC_0040 §3](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
-Other transformations require amending this spec.
+Other transformations require amendments.
 
 STRUCT-T03 preserves shared expression identity. Reuse requires identical
 source, call substitutions, derivative order, reconstruction mode, and provenance;
-unrelated call contexts or equation owners cannot merge. Candidate discovery,
+Unrelated calls or equation owners cannot merge. Discovery,
 preflight, and reconstruction share differentiation facts per immutable source
 round. Replacement DAEs require fresh facts; ordering and acceptance stay unchanged.
+
+Invariant elimination separates affine derivatives from exact values.
+Demotion prefers independent exact, then displaced anchors.
+Tangents and non-additive lifts replay exact anchors.
+Additive lifts share acyclic source-row value/derivative proofs excluding replaced owners and lifted coordinates.
+Holonomic replacement excludes value identities; undoing lifts restores original equations.
 
 STRUCT-T03's auxiliary and component reconstruction profile:
 

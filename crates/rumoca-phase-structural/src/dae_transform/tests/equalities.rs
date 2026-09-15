@@ -1527,14 +1527,30 @@ fn a_displaced_body_chain_supplies_the_derivative_a_demotion_needs() {
     );
     model.inspect(|view| {
         let equalities = SystemEqualities::collect(view);
-        let anchored = variable_index(view, "s");
+        let anchored = variable_index(view, "hold");
         for member in [variable_index(view, "port"), variable_index(view, "flange")] {
             assert_eq!(
                 equalities.anchor_of(member),
+                Some((
+                    EqualityAnchor::State(variable_index(view, "s")),
+                    EqualitySign::Same
+                )),
+                "the derivative class retains the independent body state across displacement"
+            );
+            assert_eq!(
+                equalities.value_anchor_of(member),
                 Some((EqualityAnchor::State(anchored), EqualitySign::Same)),
-                "the connector chain reaches the body state across the displacement"
+                "zero support proves the connector's exact held-position value"
             );
         }
+        assert_eq!(
+            equalities.value_anchor_of(variable_index(view, "s")),
+            Some((
+                EqualityAnchor::State(variable_index(view, "s")),
+                EqualitySign::Same
+            )),
+            "the displaced body position retains a separate value anchor"
+        );
         assert!(
             equalities.redundant_states().next().is_none(),
             "no state is proven equal in value to another one here"

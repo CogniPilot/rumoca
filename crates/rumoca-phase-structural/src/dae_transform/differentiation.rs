@@ -14,6 +14,7 @@
 mod algebra;
 mod conditionals;
 mod geometry;
+mod lifted_values;
 mod linear_solve;
 
 use rumoca_ir_dae as dae;
@@ -21,7 +22,7 @@ use rumoca_ir_dae as dae;
 use super::HolonomicDifferentiationProof;
 use super::builtin_profiles::{is_linear_tensor_map, is_materializable_builtin};
 use super::component_projection::projected_element;
-use super::equalities::{EqualityAnchor, EqualitySign, is_time_invariant};
+use super::equalities::{DerivativeAnchors, EqualityAnchor, EqualitySign, is_time_invariant};
 use super::expressions::ExpressionRebuilder;
 use super::variables::TargetVariable;
 
@@ -44,11 +45,20 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         // is itself the replacement equation must retain its algebraic
         // unknowns.
         self.state_only_derivative = order < proof.maximum_order;
+        let previous_anchors = std::mem::replace(
+            &mut self.derivative_anchors,
+            if self.state_only_derivative {
+                DerivativeAnchors::Exact
+            } else {
+                proof.derivative_anchors
+            },
+        );
         let differentiated = match &proof.component {
             Some(component) => self.differentiate_component(component, order, provenance),
             None => self.differentiate_order(source_id, order, provenance),
         };
         self.state_only_derivative = previous;
+        self.derivative_anchors = previous_anchors;
         differentiated
     }
 
@@ -97,8 +107,13 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .coordinate(dae::CoordinateInput::Derivative(target_state))?;
         assert_eq!(definition.index(), proof.residual);
         assert!(!proof.anchored_states.is_empty());
-        let rhs = self.differentiate_order(definition, 1, provenance)?;
-        match rhs {
+        let previous = std::mem::replace(&mut self.derivative_anchors, proof.derivative_anchors);
+        let rhs = match &proof.lifted_value {
+            Some(value) => self.reconstruct_lifted_value(value, true, provenance),
+            None => self.differentiate_order(definition, 1, provenance),
+        };
+        self.derivative_anchors = previous;
+        match rhs? {
             Derivative::Zero => Ok(derivative),
             Derivative::Expression(rhs) => {
                 self.target
@@ -127,7 +142,13 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .target
             .at(provenance)
             .coordinate(dae::CoordinateInput::State(target_state))?;
-        let value = self.materialize_exact_value(definition, provenance)?;
+        let value = match &proof.lifted_value {
+            Some(value) => {
+                let value = self.reconstruct_lifted_value(value, false, provenance)?;
+                self.materialize_derivative(value, definition, provenance)?
+            }
+            None => self.materialize_exact_value(definition, provenance)?,
+        };
         self.target
             .at(provenance)
             .binary(dae::BinaryOperator::Subtract, state, value)
@@ -364,7 +385,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         {
             return self.differentiate_component(&definition, order, provenance);
         }
-        let Some((anchor, sign)) = self.facts.equalities.anchor_of(algebraic.index()) else {
+        let anchor = match (self.derivative_anchors, self.candidate) {
+            (DerivativeAnchors::Affine, Some(candidate)) => self
+                .facts
+                .equalities
+                .anchor_for_demotion(algebraic.index(), candidate.state),
+            (anchors, _) => self
+                .facts
+                .equalities
+                .derivative_anchor(algebraic.index(), anchors),
+        };
+        let Some((anchor, sign)) = anchor else {
             let definition = self
                 .facts
                 .algebraic_definition(self.source, algebraic)

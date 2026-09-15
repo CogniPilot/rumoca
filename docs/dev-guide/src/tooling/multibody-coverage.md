@@ -4,6 +4,140 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Independent source equations restore PreLoad execution
+
+The new additive lift proof excludes the equation being replaced and the
+coordinate being lifted. It derives the value from other source equations,
+refuses cycles, and reconstructs the value and derivative from that same
+postordered derivation. Rows are collected once per immutable source round;
+payloads remain whole tensors. Non-additive lift profiles are unchanged.
+
+The source-backed regression demonstrates the previous semantic loss directly:
+`r+p=0; s=L-q; p*q=-1; r=q` admitted a lifted manifold at
+`p=2, q=-0.5, r=-2, s=1.5, L=1`, although the original `r=q` residual is -1.5.
+The repaired manifold rejects that point. Scalar, one-element, and three-element
+payloads, independent signed aliases, circular aliases without an independent
+definition, and restoration after demotion are covered. All 182 structural
+tests and all-target/all-feature Clippy pass. Earlier fixture, shape, and lint
+failures remain in the numbered logs; final evidence is
+`independent-lift-green-5.log` and `independent-lift-clippy-3.log`.
+
+The ordinary `multibody-independent-lift-origin` run at `78b2018f`, worktree
+digest `80994095174927ccb78e0af45be059e0e8645b32f083db56336ba46e1216e4d0`,
+restores PreLoad from EL005 to `sim_ok`/`ic_ok` under its existing reviewed
+comparison exclusion. DCPM_Drive retains its reviewed exclusion. All six
+compared traces remain high: Damper, ElastoGap, Oscillator, ArmatureStroke,
+CauerLowPassAnalog, and CauerLowPassOPV. There are zero missing,
+nonidentifiable, near, or deviating comparisons. This is focused evidence;
+the repaired counterexamples remain required in the next complete sweep.
+
+The exact saved PreLoad source now prepares with eight states and two manifold
+rows. The transformed velocity equation is `friction.v_rel - spool.v`, matching
+OMC's generated `spool.v = friction.v_rel`. No initial-value pins are added.
+The prepared DAE has SHA-256
+`dcf1430b5b2b91ab2650f4c8f7b0708922b4d6af85e1e003cb2cf0828d52ebfb`.
+The public inspector is bound to the ordinary worker's exact library artifacts;
+its timing is diagnostic only. Receipts are
+`preload-independent-lift-equations-1.json` and
+`independent-lift-inspector-receipt-1.json` under `rolling-wheel/`.
+
+The fixed `multibody-independent-lift-canary` preserves every phase and band
+against `multibody-lift-restoration-canary`: nine compared high, zero
+exclusions/missing/nonidentifiable results, and all 175 initialization channels
+high. The other eleven models remain unsuccessful. Origin and canary deltas
+are in `independent-lift-{origin,canary}-delta-1.json`. This closes the focused
+execution regression; full-cohort and combined quick/full verification remain
+outstanding, and no new MultiBody coverage or RollingWheel speed claim is made.
+
+## Focused counterexamples recover; PreLoad still blocks the candidate
+
+The latest `multibody-lift-restoration-origin` run at `78b2018f`, with worktree
+digest `dc6a6448d181197d9da861754ded24f6fa8e429ab85e4717dde6a4a96911cccb`,
+compares all six available traces high: Damper, ElastoGap, Oscillator,
+ArmatureStroke, CauerLowPassAnalog, and CauerLowPassOPV. DCPM_Drive executes
+under its existing reviewed comparison exclusion. There are zero missing,
+nonidentifiable, near, or deviating comparisons. PreLoad still fails structural
+reduction with EL005, reporting 111/116 matches. Its prior excluded execution
+must be restored before this candidate is complete. These focused results do
+not establish a new full-cohort result or close the required full-sweep check.
+
+The repairs separate exact value identities from displaced derivative
+identities and preserve the proof used by reconstruction. Direct demotion
+selects an independent derivative anchor. Retained first derivatives and lifted
+definitions replay their captured exact anchor policy, including in cache keys.
+Armature's two canceled velocity conditions now retain actuator/load velocity
+differences, matching the relationship in OMC's generated equations. Finally,
+undoing a lift restores the original source residual instead of a substituted
+manifold expression. PreLoad's source connection at owner 108 is now restored
+as `rod3.flange_b.s - rod4.flange_a.s`; it no longer duplicates owner 109,
+`rod4.flange_a.s - spool.flange_a.s`.
+
+All 180 structural tests and all-target/all-feature Clippy pass. The fixed
+`multibody-lift-restoration-canary` preserves every phase and band against
+`multibody-affine-state-anchor-canary`: nine compared high, zero exclusions,
+missing, or nonidentifiable results, and all 175 initial-condition channels
+high. Eleven other canary models remain unsuccessful; this is preservation,
+not complete canary model support. Receipts under `rolling-wheel/` are
+`lift-restoration-{origin,canary}-delta-1.json`,
+`lift-restoration-green-1.log`, `lift-restoration-clippy-build-1.log`,
+`lift-anchor-manifold-delta-1.json`, and
+`preload-lift-restoration-equation-delta-1.json`.
+
+The remaining PreLoad hypothesis is an earlier circular dependency: a lifted
+definition's exact value anchor may rely on the equation being replaced.
+Its derivative then duplicates the neighboring connection, and the next
+holonomic replacement correctly refuses a vacuous residual. Restoring the
+original equations fixes the subsequent ownership loss but does not establish
+an independent lifting proof. The next reproduction must distinguish a value
+definition supported by other equations from one supported by its own owner.
+No tolerance, model-specific branch, or runtime dispatch change was made.
+Changes remain uncommitted; a new full sweep and combined quick/full verification
+are outstanding while this execution regression is unresolved.
+
+## Uncommitted state-balance work exposes circular manifold reconstruction
+
+The state/invariant balance regression now passes: a fixed support contributes
+no derivative, while only a proved zero support may disappear from an exact
+value equality. LineForce's identical source DAE now reaches a prepared system
+instead of stopping at 2,203/2,204 matches. Its ordinary worker still exceeds
+the 10-second Solve budget. An unrestricted diagnostic worker on the first
+candidate reaches initialization and reports a singular algebraic sensitivity
+matrix; it produces no trace and earns no coverage credit.
+
+The first full candidate, `multibody-state-balance-full-11` at `78b2018f` with
+worktree digest `50b444de5b5b0062fbc72ac2279a70e0a521db2422ebf62c1978a0bae5e06f1f`,
+compares 165/566 high, with 19 reviewed exclusions and zero missing or deviating
+traces. CauerLowPassAnalog and CauerLowPassOPV gain high comparison, but PreLoad
+loses its previously executable, excluded result. This execution loss remains
+a regression despite the gate passing.
+
+Changing derivative lookup to the full affine class restores PreLoad's
+structural replay, but the next full gate **fails**. At the same HEAD with
+digest `842e1538ad40459344defcf99cf448f59f21d3851ccdb0d5912cac56e33594d9`,
+`multibody-affine-state-anchor-full-11` compares 165 traces: 161 high, one near,
+three deviating, 19 reviewed exclusions, and zero missing. Damper, ElastoGap,
+Oscillator, and ArmatureStroke are actionable counterexamples. DCPM_Drive also
+loses its previously executable, excluded result. Both focused six-model runs
+and the fixed canary had unchanged bands; all 175 structural tests and affected
+Clippy passed. The full evidence overrides those focused results.
+
+The exact Damper replay localizes the first loss: retained manifold expressions
+390, 400, and 410 become `massN.flange_b.s - massN.flange_b.s`. The other three
+manifold rows retain the body half-length offsets. At initialization the actual
+worker reports `mass1.flange_b.s=3.5` and `damper1.flange_a.s=4.5`, violating
+their source connection by one metre. A source equality used to materialize
+its own replacement has erased the independent position constraint. This
+requires a structural proof repair; numerical tolerances cannot repair it.
+The candidate remains uncommitted and further coverage work is stopped.
+
+Receipts under `rolling-wheel/` are `state-balance-full-delta.json`,
+`affine-state-anchor-full-delta.json`, `preload-{before,after}-inspection-1.log`,
+and `affine-state-anchor-inspector-receipt-1.json`. Damper's exact artifacts and
+prepared manifold are in `damper-affine-state-anchor-{artifacts,inspection}-1/`.
+No solver dispatch change was made. Affine value recovery already uses guarded
+tearing after full AD assembly; `SeedBlockLinearization` still factors the full
+matrix for sensitivities. A compiler-composed reduced value/JVP kernel is pending.
+
 ## Retain stalled equations for the LineForce comparison
 
 Structural inspection now retains one already-owned stalled DAE together with
