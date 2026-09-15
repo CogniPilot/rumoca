@@ -42,8 +42,16 @@ channels. The fixed canary `multibody-projection-reuse-canary` retains nine
 comparisons, all high, no skips or missing traces, and 175 high initialization
 channels. Every phase and band is unchanged from the corresponding derivative
 tensor runs (`projection-reuse-origin-delta.json` and
-`projection-reuse-canary-delta.json`). These focused checks do not update the
-full-cohort coverage claim below; the new full sweep is pending.
+`projection-reuse-canary-delta.json`).
+
+The full sweep at `5d1a8f06fd7658892f5aa4e4573c103b73885337` passes in
+`target/msl/multibody-projection-reuse-full-11`: 159/566 strict-high (28.09%),
+all 159 compared models high, 19 reviewed exclusions, no missing or
+non-identifiable traces, no deviations, and all 20,964 initialization channels
+high. MultiBody remains 22/42 high. Every phase and band is unchanged from
+`multibody-derivative-tensor-full-11` (`projection-reuse-full-delta.json`).
+Combined `verify quick`/`verify full` and the older coverage ratchet repair
+remain outstanding; this full MSL result alone does not establish PR readiness.
 
 ## Share derivative tensor definitions across component projections
 
