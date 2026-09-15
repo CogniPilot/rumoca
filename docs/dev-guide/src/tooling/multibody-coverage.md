@@ -4,6 +4,25 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Full cohort after projected initial-value transfer
+
+`target/msl/multibody-projected-initial-full` passes the complete 566-model gate
+at `c74dd524fb89a811ef6a8813fbb21f4759ef1f4f`. There are 166 strict-high models
+(29.33%), with 166 compared, 20 reviewed exclusions, zero missing traces, and
+zero nonidentifiable traces. The 23,855 trajectory channels comprise 23,810 high
+and 45 minor channels, with zero deviating or severe channels; all initialization
+channels are high. MultiBody remains 24/42 high, with its reviewed BevelGear1D
+exclusion receiving no high credit. No model changes its agreement band from
+`multibody-scalar-state-offset-full` at `2f3e8ee2`.
+
+The only phase change is `Inverse_sh_TX` returning from Flatten EF015 to its
+earlier ToDae ED019 Array/Enumeration rejection. It still does not simulate;
+the cause of this diagnostic variation remains unproven. RevoluteConstraint
+still fails structural analysis under the normal budget, after accepting the
+previously blocked projected-state demotion. Neither case is a coverage gain.
+The full gate and complete delta are `rolling-wheel/projected-initial-full-*`.
+No baseline promotion, combined quick/full release gate, or PR has been performed.
+
 ## Preserve fixed starts through tensor projections
 
 RevoluteConstraint reaches ToDae, then structural reduction refuses to demote
