@@ -1187,6 +1187,25 @@ pub struct ExpressionView<'dae> {
 }
 
 impl<'dae> ExpressionView<'dae> {
+    /// The source call and selected link that constructed a supplied derivative.
+    pub fn call_derivative(self) -> Option<(ExprId<'dae>, FunctionDerivativeId<'dae>)> {
+        let ExprNode::Call {
+            derivative: Some((source, ordinal)),
+            ..
+        } = self.node
+        else {
+            return None;
+        };
+        let ExprNode::Call { function, .. } = self.dae.storage.expressions.nodes[*source as usize]
+        else {
+            unreachable!("a differentiated call has a checked earlier source")
+        };
+        Some((
+            ExprId::from_raw(*source),
+            FunctionDerivativeId::from_raw(function, *ordinal),
+        ))
+    }
+
     view_getters! {
         const fn provenance -> DaeProvenance = |view| view.provenance;
         const fn value_type -> &'dae ValueType = |view| view.value_type;
@@ -1323,6 +1342,7 @@ impl<'dae> ExpressionView<'dae> {
                 function,
                 output,
                 operands,
+                ..
             } => ExpressionOperation::Call {
                 owner: ExprId::from_raw(*owner),
                 function: FunctionId::from_raw(*function),

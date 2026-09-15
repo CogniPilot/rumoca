@@ -95,6 +95,7 @@ fn raw_children_cover_every_variant_in_syntactic_order() {
                 function: 0,
                 output: 0,
                 operands,
+                derivative: None,
             },
             vec![20, 21],
         ),

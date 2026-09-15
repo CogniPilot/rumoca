@@ -318,7 +318,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         provenance: dae::DaeProvenance,
     ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
         let mut arguments = Vec::new();
-        for argument in selected.arguments {
+        for argument in &selected.arguments {
             let value = if argument.order > 0 {
                 let tangent =
                     self.differentiate_order(argument.source, argument.order, provenance)?;
@@ -330,11 +330,26 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             };
             arguments.push(value);
         }
-        let target = self.rebuilt_function(selected.link.target());
-        self.target
-            .at(provenance)
-            .call(target, selected.output, arguments)
-            .map(Derivative::Expression)
+        let dae::ExpressionOperation::Call {
+            arguments: source_arguments,
+            ..
+        } = self.source.expression(selected.source).unwrap().operation()
+        else {
+            unreachable!("a supplied derivative starts from a call")
+        };
+        let mut prefix = source_arguments.len();
+        let mut call =
+            self.rebuild_call_value(selected.source, &arguments[..prefix], provenance)?;
+        for link in selected.chain {
+            prefix += link.tangent_inputs().count();
+            let link = self.rebuilt_derivative(link.id());
+            call = self.target.at(provenance).differentiated_call(
+                call,
+                link.ordinal(),
+                arguments[..prefix].iter().copied(),
+            )?;
+        }
+        Ok(Derivative::Expression(call))
     }
 
     fn differentiate_index(
@@ -538,20 +553,12 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .collect::<Result<Vec<_>, _>>()?;
                 self.target.at(provenance).array(elements)
             }
-            dae::ExpressionOperation::Call {
-                function,
-                output,
-                arguments,
-                ..
-            } => {
+            dae::ExpressionOperation::Call { arguments, .. } => {
                 let arguments = arguments
                     .iter()
                     .map(|argument| self.materialize_exact_value(argument, provenance))
                     .collect::<Result<Vec<_>, _>>()?;
-                let function = self.rebuilt_function(function);
-                self.target
-                    .at(provenance)
-                    .call(function, output as usize, arguments)
+                self.rebuild_call_value(source_id, &arguments, provenance)
             }
             dae::ExpressionOperation::Conditional(operands) => {
                 self.materialize_parameter_conditional(operands, None, provenance)

@@ -88,12 +88,60 @@ pub(super) struct RebuiltIdentities<'borrow, 'target> {
 }
 
 impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
-    pub(super) fn rebuilt_function(
+    pub(super) fn rebuilt_derivative(
         &self,
-        function: dae::FunctionId<'source>,
-    ) -> dae::FunctionId<'target> {
-        self.functions[function.index() as usize].id
+        source: dae::FunctionDerivativeId<'source>,
+    ) -> dae::FunctionDerivativeId<'target> {
+        self.functions[source.function().index() as usize].derivatives[source.ordinal() as usize]
     }
+
+    pub(super) fn rebuild_call_value(
+        &mut self,
+        source_id: dae::ExprId<'source>,
+        arguments: &[dae::ExprId<'target>],
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let source = self.source.expression(source_id).expect("checked call");
+        let dae::ExpressionOperation::Call {
+            owner,
+            function,
+            output,
+            ..
+        } = source.operation()
+        else {
+            unreachable!("call reconstruction consumes a call")
+        };
+        if owner != source_id {
+            let owner = self.rebuild_call_value(owner, arguments, provenance)?;
+            return self.target.at(provenance).call_projection(
+                owner,
+                self.functions[function.index() as usize].id,
+                output as usize,
+                arguments.iter().copied(),
+            );
+        }
+        if let Some((primal, link)) = source.call_derivative() {
+            let dae::ExpressionOperation::Call {
+                arguments: prefix, ..
+            } = self.source.expression(primal).unwrap().operation()
+            else {
+                unreachable!("derivative origin is a checked call")
+            };
+            let primal = self.rebuild_call_value(primal, &arguments[..prefix.len()], provenance)?;
+            let link = self.rebuilt_derivative(link);
+            return self.target.at(provenance).differentiated_call(
+                primal,
+                link.ordinal(),
+                arguments.iter().copied(),
+            );
+        }
+        self.target.at(provenance).call(
+            self.functions[function.index() as usize].id,
+            output as usize,
+            arguments.iter().copied(),
+        )
+    }
+
     pub(super) fn new(
         source: dae::DaeView<'source>,
         target: &'borrow mut dae::Expressions<'storage, 'target>,
@@ -236,16 +284,20 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         {
             return self.rebuild_instantiated(branch);
         }
-        if let Some((result, nested)) = self.function_context.call_result(self.source, source_id) {
-            let previous = std::mem::replace(&mut self.function_context, nested);
-            let rebuilt = self.rebuild_instantiated(result);
-            self.function_context = previous;
-            return rebuilt;
-        }
         let source = self
             .source
             .expression(source_id)
-            .expect("instantiated function expression resolves");
+            .expect("instantiated expression resolves");
+        if let dae::ExpressionOperation::Call { arguments, .. } = source.operation() {
+            if source.function_scope().is_none() && source.binder_domain().is_none() {
+                return self.rebuild(source_id);
+            }
+            let arguments = arguments
+                .iter()
+                .map(|argument| self.rebuild_instantiated(argument))
+                .collect::<Result<Vec<_>, _>>()?;
+            return self.rebuild_call_value(source_id, &arguments, source.provenance());
+        }
         if source.function_scope().is_none() && source.binder_domain().is_none() {
             return self.rebuild(source_id);
         }
@@ -391,9 +443,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 let arguments = self.rebuild_operands(arguments)?;
                 let function = self.functions[function.index() as usize].id;
                 if owner == source_id {
-                    self.target
-                        .at(provenance)
-                        .call(function, output as usize, arguments)?
+                    self.rebuild_call_value(source_id, &arguments, provenance)?
                 } else {
                     let owner = self.rebuild(owner)?;
                     self.target.at(provenance).call_projection(

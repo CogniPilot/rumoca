@@ -235,7 +235,7 @@ change/receipt registries, generation tokens, and post-rewrite validation are pr
 
 Only the current wire identified by `rumoca_ir_dae::DAE_SCHEMA_VERSION` exists;
 older/pre-versioned payloads, adapters, migration readers, and dual writes are
-prohibited. The code constant is the single version authority.
+prohibited. The code constant is authoritative.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
@@ -295,8 +295,10 @@ differential, and refinement tests exercise each relation.
 
 ### Function Derivative Ownership Proposal
 
-The MLS §12.7.1 extension being implemented is specified in
+MLS §12.7.1 implementation follows
 [SPEC_0043 §10](SPEC_0043_CONSTRUCTION_CATALOG.md#10-function-derivative-ownership-proposal).
+Differentiated calls retain checked source-call and derivative-link ownership
+across reconstruction.
 
 ### Enforcement
 

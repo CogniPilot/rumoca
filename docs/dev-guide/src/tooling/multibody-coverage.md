@@ -4,6 +4,67 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Supplied derivative chains survive successive state demotions
+
+The reduced LineForceWithTwoMasses path exposed a lost MLS section 12.7.1
+predecessor. Structural differentiation emitted ordinary calls to
+`maxWithoutEvent_d`, discarding the fact that they came from differentiating
+`maxWithoutEvent`. A later reduction round consequently could not select its
+`derivative(order=2)` annotation. The functions and annotations were present;
+the call's differentiation history was missing.
+
+DAE calls now retain their source call and selected derivative link. Checked
+construction and current-wire replay prove the predecessor, unchanged argument
+prefix, and tangent signature. Schema 38 replaces schema 37 without a compatibility
+reader. Reconstruction maps derivative identities explicitly and replays links
+as their function components become available, including calls inside function
+bodies. Value reconstruction preserves the original call and shared result
+projections. Ordinary calls to a derivative function acquire no history. The
+owning contract is SPEC_0036's function-derivative proposal and SPEC_0043 section
+10, within SPEC_0007's structural reconstruction contract.
+
+A compact regression defines `q=f(s)*ones(n)`, `der(q)=w`, and `der(w)=a`, with
+independent states `s,v` and a conditional function supplied with first and
+second derivatives. Disabling only predecessor-aware selection retains both
+dependent state arrays; restoring it leaves `s,v`, with no manifold and constant
+IR size at array lengths 1, 3, and 4,096. A function-body wrapper preserves both
+links across reconstruction. DAE tests reject forged links, prefixes, and
+origins, and round-trip JSON/bincode with compact tensors and multiple result
+projections. All 190 DAE tests, 196 structural tests, and both crates' all-target,
+all-feature Clippy pass. OMC independently emits `q=f(s)`, `w=fd(s,v)`, and
+`a=fdd(s,v,der(v))` for the three-element fixture; its quarter-second simulation
+completes and agrees with the analytical oscillator solution within 2.40e-6.
+
+The actual intermediate LineForceWithTwoMasses DAE improves from eleven to five
+scalar states: both three-element `v_CM` state arrays are eliminated. Its
+unmatched equations and unknowns each decrease from seven to one. The remaining
+state declarations are the two revolute angles and velocities plus
+`damper1.s_rel`. The last unmatched position row is `f_x[2161]`, within owner
+686's `rod1.frame_b.r_0-jointUPS.frame_a.r_0`; the unmatched unknown is
+`jointUPS.f_bd_a[3]`. OMC backend equation 123 defines
+`damper1.s_rel=jointUPS.axisLength-jointUPS.s_offset`, and equation 84 computes
+axis length from the position norm. Rumoca retains both source relations, but
+the direct-state detector finds only aliases anchored on the same length state.
+Independent affine-offset reconstruction is the next hypothesis; it has not yet
+been isolated in a minimal regression or repaired.
+
+The reduced system still fails complete matching, so the final prepared model
+falls back to 62 scalar states. The artifact-enabled diagnostic initializes but
+hits the unchanged 12-second simulation limit. It earns no coverage or timing
+credit and does not close the earlier four-force-channel counterexample. All
+temporary probes are removed. Evidence is under `rolling-wheel/derivative-chain-*`,
+`line-force-derivative-chain-*`, and `line-force-last-*`.
+
+Tier 1 `multibody-derivative-chain-{frontier,origin}` and
+`multibody-derivative-chain-canary-2` retain all prior bands and phase/execution
+statuses on the unchanged six-, eight-, and twenty-model lists. Their four,
+six, and nine comparisons are all high, with one, two, and zero reviewed
+exclusions, and no missing or nonidentifiable traces. The original canary output
+name already existed, so the driver stopped before launching that gate; the
+fresh `canary-2` directory contains its sole new attempt. The ordinary
+LineForceWithTwoMasses attempt still exceeds the Solve budget. No new cohort
+claim, baseline promotion, complete quick/full verification, or PR is claimed.
+
 ## Accepted-step projection amplifies the LineForceWithTwoMasses counterexample
 
 A logging-only capture at `e4f8329d` records the 62 continuous states immediately

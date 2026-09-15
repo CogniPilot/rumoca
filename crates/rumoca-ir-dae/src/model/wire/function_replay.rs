@@ -86,33 +86,22 @@ fn function_output<'storage>(
     }
 }
 
-pub(super) fn reconstruct_derivatives<'dae>(
+fn reconstruct_available_derivatives<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
+    links: &mut [Vec<FunctionDerivativeId<'dae>>],
 ) -> Result<(), DaeConstructionError> {
-    let mut links = vec![Vec::new(); wire.functions.len()];
-    let mut pending = wire
-        .functions
-        .iter()
-        .map(|function| function.derivatives.len())
-        .sum::<usize>();
-    while pending > 0 {
-        let before = pending;
-        for (function, entries) in wire.functions.iter().enumerate() {
-            pending -= reconstruct_function_derivatives(
-                dae,
-                ids,
-                &mut links,
-                function,
-                &entries.derivatives,
-            )?;
+    loop {
+        let mut added = 0;
+        for (function, entries) in wire.functions.iter().take(ids.functions.len()).enumerate() {
+            added +=
+                reconstruct_function_derivatives(dae, ids, links, function, &entries.derivatives)?;
         }
-        if pending == before {
-            return Err(malformed("function derivative predecessor"));
+        if added == 0 {
+            return Ok(());
         }
     }
-    Ok(())
 }
 
 fn reconstruct_function_derivatives<'dae>(
@@ -139,6 +128,9 @@ fn reconstruct_derivative<'dae>(
     function: usize,
     entry: &FunctionDerivativeWire,
 ) -> Result<Option<FunctionDerivativeId<'dae>>, DaeConstructionError> {
+    if entry.target as usize >= ids.functions.len() {
+        return Ok(None);
+    }
     let target = mapped(
         &ids.functions,
         entry.target,
@@ -262,6 +254,7 @@ pub(super) fn reconstruct<'dae>(
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
+    let mut links = vec![Vec::new(); wire.functions.len()];
     for component in function_graph::function_components(wire)? {
         if component.recursive {
             reconstruct_recursive_component(
@@ -280,6 +273,14 @@ pub(super) fn reconstruct<'dae>(
                 component.expression_end,
             )?;
         }
+        reconstruct_available_derivatives(wire, dae, ids, &mut links)?;
+    }
+    if links
+        .iter()
+        .zip(&wire.functions)
+        .any(|(links, function)| links.len() != function.derivatives.len())
+    {
+        return Err(malformed("function derivative predecessor or target"));
     }
     while ids.next_wire_expression < wire.expressions.nodes.len() {
         let expression = wire_expression(wire, ids.next_wire_expression)?;

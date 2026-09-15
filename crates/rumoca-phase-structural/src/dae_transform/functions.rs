@@ -10,6 +10,7 @@ pub(super) struct RebuiltFunction<'dae> {
     pub(super) id: dae::FunctionId<'dae>,
     pub(super) parameters: Vec<dae::FunctionParameterId<'dae>>,
     pub(super) values: Vec<dae::FunctionValueId<'dae>>,
+    pub(super) derivatives: Vec<dae::FunctionDerivativeId<'dae>>,
 }
 
 fn function_signature<'target>(
@@ -147,64 +148,54 @@ pub(super) fn rebuild_functions<'source, 'target>(
         active_function: None,
     };
     rebuilder.rebuild_all(target)?;
-    rebuild_derivatives(source, target, &rebuilder.functions)?;
     Ok(rebuilder.functions)
 }
 
 fn rebuild_derivatives<'target>(
-    source: dae::DaeView<'_>,
+    entries: &[Vec<dae::FunctionDerivativeView<'_>>],
     target: &mut dae::DaeConstruction<'target>,
-    rebuilt: &[RebuiltFunction<'target>],
+    rebuilt: &mut [RebuiltFunction<'target>],
 ) -> Result<(), dae::DaeConstructionError> {
-    let entries = (0..source.function_count())
-        .map(|ordinal| {
-            source
-                .function(source.function_id(ordinal).expect("checked ordinal"))
-                .expect("checked function")
-                .derivatives()
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let mut links = vec![Vec::new(); entries.len()];
-    let mut pending = entries.iter().map(Vec::len).sum::<usize>();
-    while pending > 0 {
-        let before = pending;
-        for (function, entries) in entries.iter().enumerate() {
-            pending -=
-                rebuild_function_derivatives(target, rebuilt, &mut links, function, entries)?;
+    loop {
+        let mut added = 0;
+        for (function, entries) in entries.iter().take(rebuilt.len()).enumerate() {
+            added += rebuild_function_derivatives(target, rebuilt, function, entries)?;
         }
-        assert!(pending < before, "checked derivative chains are acyclic");
+        if added == 0 {
+            return Ok(());
+        }
     }
-    Ok(())
 }
 
 fn rebuild_function_derivatives<'target>(
     target: &mut dae::DaeConstruction<'target>,
-    functions: &[RebuiltFunction<'target>],
-    links: &mut [Vec<dae::FunctionDerivativeId<'target>>],
+    functions: &mut [RebuiltFunction<'target>],
     function: usize,
     entries: &[dae::FunctionDerivativeView<'_>],
 ) -> Result<usize, dae::DaeConstructionError> {
-    let before = links[function].len();
-    while let Some(entry) = entries.get(links[function].len()).copied() {
-        let Some(link) = rebuild_derivative(target, functions, links, entry)? else {
+    let before = functions[function].derivatives.len();
+    while let Some(entry) = entries.get(functions[function].derivatives.len()).copied() {
+        let Some(link) = rebuild_derivative(target, functions, entry)? else {
             break;
         };
-        links[function].push(link);
+        functions[function].derivatives.push(link);
     }
-    Ok(links[function].len() - before)
+    Ok(functions[function].derivatives.len() - before)
 }
 
 fn rebuild_derivative<'target>(
     target: &mut dae::DaeConstruction<'target>,
     functions: &[RebuiltFunction<'target>],
-    links: &[Vec<dae::FunctionDerivativeId<'target>>],
     entry: dae::FunctionDerivativeView<'_>,
 ) -> Result<Option<dae::FunctionDerivativeId<'target>>, dae::DaeConstructionError> {
+    let Some(derivative) = functions.get(entry.target().index() as usize) else {
+        return Ok(None);
+    };
     let previous = match entry.previous() {
         Some(previous) => {
-            let Some(mapped) =
-                links[previous.function().index() as usize].get(previous.ordinal() as usize)
+            let Some(mapped) = functions
+                .get(previous.function().index() as usize)
+                .and_then(|function| function.derivatives.get(previous.ordinal() as usize))
             else {
                 return Ok(None);
             };
@@ -213,7 +204,7 @@ fn rebuild_derivative<'target>(
         None => None,
     };
     let source = functions[entry.source().index() as usize].id;
-    let derivative = functions[entry.target().index() as usize].id;
+    let derivative = derivative.id;
     target
         .functions(|functions| match previous {
             Some(previous) => functions.next_derivative(
@@ -371,12 +362,26 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         &mut self,
         target: &mut dae::DaeConstruction<'target>,
     ) -> Result<(), dae::DaeConstructionError> {
+        let derivatives = (0..self.source.function_count())
+            .map(|index| {
+                self.source_function(index)
+                    .derivatives()
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         for component in function_components(self.source) {
             if component.recursive {
                 self.rebuild_recursive_component(target, &component.members)?;
             } else {
                 self.rebuild_acyclic_function(target, component.members[0])?;
             }
+            rebuild_derivatives(&derivatives, target, &mut self.functions)?;
+        }
+        for (index, function) in self.functions.iter().enumerate() {
+            assert_eq!(
+                function.derivatives.len(),
+                self.source_function(index).derivatives().count()
+            );
         }
         self.expect_all_definitions_mapped()?;
         self.expect_all_scoped_expressions_mapped()
@@ -444,6 +449,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             id: reservation.function(),
             parameters,
             values,
+            derivatives: Vec::new(),
         });
         Ok(())
     }

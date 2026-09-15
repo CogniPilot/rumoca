@@ -155,7 +155,8 @@ pub(crate) use construction_checks::{
 /// 35 binds higher-order derivatives to their checked predecessor link.
 /// 36 retains checked non-Real parameter definitions at initialization.
 /// 37 appends the checked aggregate auxiliary `LinearSolve` pure function.
-pub const DAE_SCHEMA_VERSION: u16 = 37;
+/// 38 preserves source-call ownership for supplied derivative invocations.
+pub const DAE_SCHEMA_VERSION: u16 = 38;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;

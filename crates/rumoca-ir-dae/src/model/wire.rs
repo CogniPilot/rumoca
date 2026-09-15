@@ -325,7 +325,6 @@ fn reconstruct<'dae>(
     reconstruct_clocks(wire, dae, &mut ids)?;
     reconstruct_temporal(wire, dae, &mut ids)?;
     function_replay::reconstruct(wire, dae, &mut ids)?;
-    function_replay::reconstruct_derivatives(wire, dae, &ids)?;
     reconstruct_relations(wire, dae, &mut ids)?;
     define_variables(wire, dae, &ids, variable_reservations)?;
     define_conditions(wire, dae, &mut ids)?;
@@ -1013,15 +1012,15 @@ fn rebuild_node<'dae>(
             *builtin,
             map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
-        ExprNodeWire::Call {
-            owner,
+        node @ ExprNodeWire::Call {
             function,
             output,
             operand_count,
+            ..
         } => {
             let function = mapped(&ids.functions, *function, "function", provenance)?;
             let arguments = map_expression_operands(wire, ids, *operand_count, provenance)?;
-            rebuild_call(ids, at, *owner, function, *output, arguments, provenance)
+            rebuild_call(ids, at, node, (function, *output), arguments, provenance)
         }
         node @ ExprNodeWire::StringConversion { .. } => {
             rebuild_string_conversion(ids, at, WireStringConversion::from_node(node), provenance)
@@ -1050,22 +1049,44 @@ fn rebuild_node<'dae>(
 fn rebuild_call<'dae>(
     ids: &WireIds<'dae>,
     at: ExpressionAt<'_, 'dae>,
-    owner: u32,
-    function: FunctionId<'dae>,
-    output: u32,
+    node: &ExprNodeWire,
+    target: (FunctionId<'dae>, u32),
     arguments: Vec<ExprId<'dae>>,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
-    if owner as usize == ids.expressions.len() {
-        return at.call(function, output as usize, arguments);
+    let ExprNodeWire::Call {
+        owner, derivative, ..
+    } = node
+    else {
+        unreachable!()
+    };
+    let derivative = derivative
+        .map(|(source, ordinal)| {
+            mapped(
+                &ids.expressions,
+                source,
+                "derivative source call",
+                provenance,
+            )
+            .map(|source| (source, ordinal))
+        })
+        .transpose()?;
+    if *owner as usize == ids.expressions.len() {
+        return match derivative {
+            Some((source, ordinal)) => {
+                at.replay_differentiated_call(source, ordinal, arguments, Some(target))
+            }
+            None => at.call(target.0, target.1 as usize, arguments),
+        };
     }
     if !arguments.is_empty() {
         return Err(malformed("expressions.nodes.call.operand_count"));
     }
     at.replay_call_projection(
-        mapped(&ids.expressions, owner, "function call owner", provenance)?,
-        function,
-        output as usize,
+        mapped(&ids.expressions, *owner, "function call owner", provenance)?,
+        target.0,
+        target.1 as usize,
+        derivative,
     )
 }
 

@@ -295,6 +295,7 @@ pub(crate) enum ExprNode {
         owner: u32,
         function: u32,
         output: u32,
+        derivative: Option<(u32, u32)>,
         #[serde(rename = "operand_count")]
         operands: OperandRange,
     },

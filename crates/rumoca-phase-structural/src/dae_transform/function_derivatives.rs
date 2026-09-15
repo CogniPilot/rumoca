@@ -10,14 +10,19 @@ pub(super) struct DerivativeArgument<'dae> {
 }
 
 pub(super) struct SelectedFunctionDerivative<'dae> {
-    pub(super) link: dae::FunctionDerivativeView<'dae>,
-    pub(super) output: usize,
+    pub(super) source: dae::ExprId<'dae>,
+    pub(super) chain: Vec<dae::FunctionDerivativeView<'dae>>,
     pub(super) arguments: Vec<DerivativeArgument<'dae>>,
 }
 
 impl SelectedFunctionDerivative<'_> {
     fn append_tangents(&mut self) {
-        for ordinal in self.link.tangent_inputs() {
+        for ordinal in self
+            .chain
+            .last()
+            .expect("selected nonempty chain")
+            .tangent_inputs()
+        {
             let previous = self.arguments[ordinal];
             self.arguments.push(DerivativeArgument {
                 source: previous.source,
@@ -47,10 +52,14 @@ pub(super) fn select_derivative<'dae>(
     else {
         return None;
     };
+    let previous = view
+        .expression(expression)?
+        .call_derivative()
+        .map(|(_, link)| link);
     let link = view
         .function(function)?
         .derivatives()
-        .filter(|link| link.previous().is_none())
+        .filter(|link| link.previous().is_none() || link.previous() == previous)
         .filter(|link| {
             link.inputs()
                 .iter()
@@ -62,19 +71,21 @@ pub(super) fn select_derivative<'dae>(
         })
         .min_by_key(|link| link.priority())?;
     let mut selected = SelectedFunctionDerivative {
-        link,
-        output: link.result(output as usize)?,
+        source: expression,
+        chain: vec![link],
         arguments: arguments
             .iter()
             .map(|source| DerivativeArgument { source, order: 0 })
             .collect(),
     };
+    let mut output = link.result(output as usize)?;
     selected.append_tangents();
     for _ in 1..order {
+        let last = selected.chain.last()?;
         let next = view
-            .function(selected.link.target())?
+            .function(last.target())?
             .derivatives()
-            .filter(|link| link.previous() == Some(selected.link.id()))
+            .filter(|link| link.previous() == Some(last.id()))
             .filter(|link| {
                 link.inputs()
                     .iter()
@@ -85,8 +96,8 @@ pub(super) fn select_derivative<'dae>(
                     })
             })
             .min_by_key(|link| link.priority())?;
-        selected.output = next.result(selected.output)?;
-        selected.link = next;
+        output = next.result(output)?;
+        selected.chain.push(next);
         selected.append_tangents();
     }
     Some(selected)

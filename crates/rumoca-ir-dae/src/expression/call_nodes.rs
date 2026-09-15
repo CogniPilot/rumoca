@@ -69,10 +69,20 @@ impl<'dae> ExpressionAt<'_, 'dae> {
     /// projection shares both that identity and the one packed argument range.
     /// No later phase has to rediscover that the projections name one call.
     pub fn call_results(
+        self,
+        function: FunctionId<'dae>,
+        outputs: impl IntoIterator<Item = usize>,
+        arguments: impl IntoIterator<Item = ExprId<'dae>>,
+    ) -> Result<Vec<ExprId<'dae>>, DaeConstructionError> {
+        self.insert_call_results(function, outputs, arguments, None)
+    }
+
+    pub(super) fn insert_call_results(
         mut self,
         function: FunctionId<'dae>,
         outputs: impl IntoIterator<Item = usize>,
         arguments: impl IntoIterator<Item = ExprId<'dae>>,
+        derivative: Option<(u32, u32)>,
     ) -> Result<Vec<ExprId<'dae>>, DaeConstructionError> {
         let outputs = outputs.into_iter().collect::<Vec<_>>();
         if outputs.is_empty() {
@@ -128,6 +138,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
                         owner,
                         function: function.index(),
                         output,
+                        derivative,
                         operands,
                     },
                     ValueTypeId::from_raw(ty),
@@ -185,7 +196,16 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         owner: ExprId<'dae>,
         function: FunctionId<'dae>,
         output: usize,
+        derivative: Option<(ExprId<'dae>, u32)>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        if !matches!(self.storage.expressions.nodes.get(owner.index() as usize),
+            Some(ExprNode::Call { derivative: expected, .. })
+            if *expected == derivative.map(|(source, ordinal)| (source.index(),ordinal)))
+        {
+            return Err(DaeConstructionError::InvalidCallProjectionOwner {
+                span: self.provenance.span(),
+            });
+        }
         self.insert_call_projection(owner, function, output)
     }
 
@@ -196,13 +216,16 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         output: usize,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         let owner_index = owner.index() as usize;
-        let operands = match self.storage.expressions.nodes.get(owner_index) {
+        let (operands, derivative) = match self.storage.expressions.nodes.get(owner_index) {
             Some(ExprNode::Call {
                 owner: root,
                 function: owner_function,
                 operands,
+                derivative,
                 ..
-            }) if *root == owner.index() && *owner_function == function.index() => *operands,
+            }) if *root == owner.index() && *owner_function == function.index() => {
+                (*operands, *derivative)
+            }
             _ => {
                 return Err(DaeConstructionError::InvalidCallProjectionOwner {
                     span: self.provenance.span(),
@@ -239,6 +262,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
                 owner: owner.index(),
                 function: function.index(),
                 output,
+                derivative,
                 operands,
             },
             ValueTypeId::from_raw(ty),

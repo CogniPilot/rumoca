@@ -84,6 +84,31 @@ impl<'dae> FunctionDerivativeView<'dae> {
     }
 }
 
+impl Storage {
+    pub(crate) fn function_derivative(
+        &self,
+        id: FunctionDerivativeId<'_>,
+        provenance: DaeProvenance,
+    ) -> Result<FunctionDerivativeView<'_>, DaeConstructionError> {
+        let source = self
+            .functions
+            .get(id.function().index() as usize)
+            .ok_or_else(|| unknown("derivative source", id.function().index(), provenance))?;
+        let entry = source
+            .derivatives
+            .get(id.ordinal() as usize)
+            .ok_or_else(|| unknown("derivative link", id.ordinal(), provenance))?;
+        Ok(FunctionDerivativeView {
+            source: FunctionId::from_raw(id.function().index()),
+            ordinal: id.ordinal(),
+            types: &self.value_types,
+            parameters: &source.parameters,
+            results: &source.results,
+            entry,
+        })
+    }
+}
+
 impl<'dae> Functions<'_, 'dae> {
     /// Append an MLS §12.7.1 first derivative in source priority order.
     ///

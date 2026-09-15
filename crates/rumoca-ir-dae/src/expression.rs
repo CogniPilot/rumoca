@@ -2,6 +2,7 @@ mod arena;
 mod array_nodes;
 mod call_nodes;
 mod clock_nodes;
+mod derivative_calls;
 mod derived_facts;
 mod function_facts;
 mod function_nodes;

@@ -287,6 +287,7 @@ impl Serialize for ExpressionNodeOutput<'_> {
                 function,
                 output,
                 operands,
+                derivative,
             } => {
                 let operand_count = if *owner as usize == self.index {
                     operands.len
@@ -294,11 +295,12 @@ impl Serialize for ExpressionNodeOutput<'_> {
                     0
                 };
                 let mut state =
-                    serializer.serialize_struct_variant("ExprNode", CALL_VARIANT, "call", 4)?;
+                    serializer.serialize_struct_variant("ExprNode", CALL_VARIANT, "call", 5)?;
                 state.serialize_field("owner", owner)?;
                 state.serialize_field("function", function)?;
                 state.serialize_field("output", output)?;
                 state.serialize_field("operand_count", &operand_count)?;
+                state.serialize_field("derivative", derivative)?;
                 state.end()
             }
             ExprNode::FunctionFoldParameter { function, .. } => {
@@ -385,6 +387,8 @@ pub(super) enum ExprNodeWire {
         function: u32,
         output: u32,
         operand_count: u32,
+        #[serde(deserialize_with = "deserialize_required_option")]
+        derivative: Option<(u32, u32)>,
     },
     StringConversion {
         declaration: rumoca_core::DefId,
@@ -443,11 +447,12 @@ pub(super) enum QuotientOwnerKindWire {
     },
 }
 
-fn deserialize_required_option<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
 {
-    Option::<u32>::deserialize(deserializer)
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Deserialize)]

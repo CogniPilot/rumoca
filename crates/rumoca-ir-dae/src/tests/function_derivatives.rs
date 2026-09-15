@@ -51,6 +51,187 @@ fn identity_function<'dae>(
     .map(|(function, ())| function)
 }
 
+fn derivative_call_fixture(extent: u32) -> (Dae, [usize; 5]) {
+    let source = TestSource::new("f(x); df(x, dx); ddf(x, dx, ddx);");
+    let at = source.source("f(x)", 0);
+    let mut calls = [0; 5];
+    let model = Dae::construct(source.map, |model| {
+        let ty = model.types(|t| t.derived(ValueType::array(ScalarType::Real, [extent]), at))?;
+        let f = identity_function(model, "f", &[ty], &[0, 0], at)?;
+        let df = identity_function(model, "df", &[ty, ty], &[1, 1], at)?;
+        let ddf = identity_function(model, "ddf", &[ty, ty, ty], &[2, 2], at)?;
+        model.functions(|functions| {
+            let link = functions.first_derivative(f, df, [Differentiate], 0, at)?;
+            functions.next_derivative(df, link, ddf, [Differentiate; 2], 0, at)
+        })?;
+        let vars = model.variables(|v| {
+            ["x", "dx", "ddx"]
+                .into_iter()
+                .map(|name| v.parameter(VarName::new(name), ty, at, Default::default()))
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        model.expressions(|e| {
+            let args = vars
+                .into_iter()
+                .map(|v| e.at(at).coordinate(CoordinateInput::Parameter(v)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let primal = e.at(at).call(f, 0, [args[0]])?;
+            let ordinary = e.at(at).call(df, 0, args[..2].iter().copied())?;
+            assert!(
+                e.at(at)
+                    .differentiated_call(ordinary, 0, args.iter().copied())
+                    .is_err()
+            );
+            assert!(
+                e.at(at)
+                    .differentiated_call(primal, 0, [args[1], args[0]])
+                    .is_err()
+            );
+            assert!(e.at(at).differentiated_call(primal, 0, [args[0]]).is_err());
+            assert!(
+                e.at(at)
+                    .differentiated_call(primal, 99, args[..2].iter().copied())
+                    .is_err()
+            );
+            let first = e
+                .at(at)
+                .differentiated_call(primal, 0, args[..2].iter().copied())?;
+            let second = e
+                .at(at)
+                .differentiated_call(first, 0, args.iter().copied())?;
+            let projection = e.at(at).call_projection(second, ddf, 1, args)?;
+            calls = [primal, ordinary, first, second, projection].map(|id| id.index() as usize);
+            Ok(())
+        })
+    })
+    .unwrap();
+    (model, calls)
+}
+
+#[test]
+fn differentiated_calls_in_function_bodies_roundtrip() {
+    let source = TestSource::new("function wrapper input Real x, dx; output Real y; end wrapper;");
+    let at = source.source("wrapper", 0);
+    let model = Dae::construct(source.map, |model| {
+        let ty = model.types(|t| t.derived(ValueType::array(ScalarType::Real, [3]), at))?;
+        let f = identity_function(model, "f", &[ty], &[0], at)?;
+        let df = identity_function(model, "df", &[ty, ty], &[1], at)?;
+        model.functions(|functions| functions.first_derivative(f, df, [Differentiate], 0, at))?;
+        let signature = FunctionSignature::new(VarName::new("wrapper"), [ty; 2], [ty], at);
+        model.function(signature, |model, reservation| {
+            let args = wrapper_arguments(model, &reservation, at)?;
+            let out = model.functions(|f| f.output(&reservation, VarName::new("y"), 0, at))?;
+            let value = model.expressions(|e| {
+                let primal = e.at(at).call(f, 0, [args[0]])?;
+                e.at(at).differentiated_call(primal, 0, args)
+            })?;
+            let mut body = model.functions(|f| f.begin(reservation, at))?;
+            model.functions(|f| f.assign(&mut body, out, value, at))?;
+            model.functions(|f| f.define(body, at))
+        })?;
+        Ok(())
+    })
+    .unwrap();
+    let json = serde_json::to_string(&model).unwrap();
+    let decoded: Dae = serde_json::from_str(&json).unwrap();
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), json);
+    let binary = bincode::serialize(&model).unwrap();
+    let decoded: Dae = bincode::deserialize(&binary).unwrap();
+    assert_eq!(bincode::serialize(&decoded).unwrap(), binary);
+}
+
+fn wrapper_arguments<'dae>(
+    model: &mut DaeConstruction<'dae>,
+    reservation: &FunctionReservation<'_, 'dae>,
+    at: DaeProvenance,
+) -> Result<Vec<ExprId<'dae>>, DaeConstructionError> {
+    ["x", "dx"]
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, name)| {
+            let p =
+                model.functions(|f| f.parameter(reservation, VarName::new(name), ordinal, at))?;
+            model.expressions(|e| e.at(at).function_parameter(p))
+        })
+        .collect()
+}
+
+#[test]
+fn differentiated_calls_preserve_chain_prefix_and_compact_wire() {
+    let counts = [1, 3, 4096].map(|extent| {
+        let (model, calls) = derivative_call_fixture(extent);
+        let json = serde_json::to_string(&model).unwrap();
+        let decoded: Dae = serde_json::from_str(&json).unwrap();
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), json);
+        let binary = bincode::serialize(&model).unwrap();
+        let decoded: Dae = bincode::deserialize(&binary).unwrap();
+        assert_eq!(bincode::serialize(&decoded).unwrap(), binary);
+        decoded.inspect(|view| {
+            let histories = calls.map(|i| {
+                view.expression(view.expression_id(i).unwrap())
+                    .unwrap()
+                    .call_derivative()
+                    .map(call_history)
+            });
+            assert_eq!(
+                histories,
+                [
+                    None,
+                    None,
+                    Some((calls[0], 0, 0)),
+                    Some((calls[2], 1, 0)),
+                    Some((calls[2], 1, 0))
+                ]
+            );
+            view.expression_count()
+        })
+    });
+    assert!(counts.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+fn call_history((source, link): (ExprId<'_>, FunctionDerivativeId<'_>)) -> (usize, u32, u32) {
+    (
+        source.index() as usize,
+        link.function().index(),
+        link.ordinal(),
+    )
+}
+
+#[test]
+fn differentiated_call_wire_rejects_forged_origin_and_prefix() {
+    let (model, calls) = derivative_call_fixture(3);
+    let wire = serde_json::to_value(model).unwrap();
+    for source in [calls[1], calls[3], 9999] {
+        let mut bad = wire.clone();
+        bad["storage"]["expressions"]["nodes"][calls[3]]["call"]["derivative"][0] = source.into();
+        assert!(serde_json::from_value::<Dae>(bad).is_err());
+    }
+    let mut bad = wire.clone();
+    bad["storage"]["expressions"]["nodes"][calls[2]]["call"]["function"] = 0.into();
+    assert!(serde_json::from_value::<Dae>(bad).is_err());
+    let mut bad = wire.clone();
+    bad["storage"]["expressions"]["nodes"][calls[4]]["call"]["derivative"] =
+        serde_json::Value::Null;
+    assert!(serde_json::from_value::<Dae>(bad).is_err());
+    let mut bad = wire.clone();
+    bad["storage"]["expressions"]["nodes"][calls[2]]["call"]
+        .as_object_mut()
+        .unwrap()
+        .remove("derivative");
+    assert!(serde_json::from_value::<Dae>(bad).is_err());
+    let mut bad = wire;
+    let prefix: usize = bad["storage"]["expressions"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .take(calls[2])
+        .filter_map(|node| node.get("call"))
+        .map(|call| call["operand_count"].as_u64().unwrap() as usize)
+        .sum();
+    bad["storage"]["expressions"]["operands"][prefix] = 1.into();
+    assert!(serde_json::from_value::<Dae>(bad).is_err());
+}
+
 fn derivative_fixture() -> Dae {
     let source = TestSource::new("function f derivative(noDerivative=arg2)=df;");
     let at = source.source("derivative(noDerivative=arg2)=df", 0);
