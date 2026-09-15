@@ -3,6 +3,9 @@
 //! Converts an N-equation algebraic loop into K iteration (tear) variables
 //! plus (N-K) causally ordered steps, reducing the nonlinear solve dimension.
 
+#[cfg(test)]
+mod cost_tests;
+
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Result of tearing an algebraic loop.
@@ -137,6 +140,9 @@ pub fn tear_algebraic_loop(n: usize, eq_unknowns: &[HashSet<usize>]) -> Option<T
 ///
 /// `causal_candidates[e]` contains the variables that equation `e` can solve
 /// exactly. Genuinely implicit equations therefore remain tear residuals.
+/// Compare the complete plans from immediate causal progress and variable
+/// degree priorities; local connector progress can increase the final tear set.
+/// Equal-sized candidates retain the immediate-progress plan.
 pub fn tear_algebraic_loop_with_causal_candidates(
     n: usize,
     eq_unknowns: &[HashSet<usize>],
@@ -149,6 +155,62 @@ pub fn tear_algebraic_loop_with_causal_candidates(
         return None;
     }
 
+    let primary = tear_with_priority(
+        n,
+        eq_unknowns,
+        causal_candidates,
+        TearPriority::CausalUnlocks,
+    );
+    if primary
+        .as_ref()
+        .is_some_and(|plan| plan.tear_var_local_indices.len() == 1)
+    {
+        return primary;
+    }
+    let alternative = tear_with_priority(
+        n,
+        eq_unknowns,
+        causal_candidates,
+        TearPriority::VariableDegree,
+    );
+    match (primary, alternative) {
+        (Some(primary), Some(alternative))
+            if alternative.tear_var_local_indices.len() < primary.tear_var_local_indices.len() =>
+        {
+            Some(alternative)
+        }
+        (Some(primary), _) => Some(primary),
+        (None, alternative) => alternative,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TearPriority {
+    CausalUnlocks,
+    VariableDegree,
+}
+
+impl TearPriority {
+    fn score(
+        self,
+        unlocked: usize,
+        degree: usize,
+        variable: usize,
+    ) -> (usize, usize, std::cmp::Reverse<usize>) {
+        let (first, second) = match self {
+            Self::CausalUnlocks => (unlocked, degree),
+            Self::VariableDegree => (degree, unlocked),
+        };
+        (first, second, std::cmp::Reverse(variable))
+    }
+}
+
+fn tear_with_priority(
+    n: usize,
+    eq_unknowns: &[HashSet<usize>],
+    causal_candidates: &[HashSet<usize>],
+    priority: TearPriority,
+) -> Option<TearingResult> {
     let mut remaining_eqs: BTreeSet<usize> = (0..n).collect();
     let mut remaining_unknowns: BTreeSet<usize> = (0..n).collect();
     let mut causal_sequence: Vec<(usize, usize)> = Vec::new();
@@ -177,7 +239,7 @@ pub fn tear_algebraic_loop_with_causal_candidates(
         let &tear_var = var_count
             .iter()
             .max_by_key(|&(v, count)| {
-                (
+                priority.score(
                     causal_steps_unlocked_by_tearing(
                         *v,
                         &remaining_eqs,
@@ -186,7 +248,7 @@ pub fn tear_algebraic_loop_with_causal_candidates(
                         causal_candidates,
                     ),
                     *count,
-                    std::cmp::Reverse(*v),
+                    *v,
                 )
             })
             .map(|(v, _)| v)

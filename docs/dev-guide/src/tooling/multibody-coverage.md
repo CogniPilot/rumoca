@@ -4,6 +4,51 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Current compiler work: compare complete tearing candidates
+
+RollingWheel's 24-coordinate force/torque/acceleration block exposes a structural
+cost defect: prioritizing immediate causal unlocks chooses twelve tears, then
+exact-assignment normalization promotes one more. A degree-first candidate
+needs seven. The source incidence graph is retained in the regression test and
+`rolling-wheel/tearing-graph-heuristic-diagnostic-1.json`. The probes preserve
+all compiler artifacts and trace bytes. Normalization is not the main cause;
+transitive-unlock lookahead also produces twelve tears. OMC's generated linear
+system 731 has six unknowns, though its coordinates differ from Rumoca's.
+
+Under SPEC_0007/0040 STRUCT-T06 and MLS §8.3.1, the structural producer now
+compares two complete deterministic candidates and selects fewer tears,
+retaining the original on ties. Both preserve the exact causal restrictions
+and complete equation/unknown partitions. No source equation, tensor owner,
+runtime tolerance, or model-specific rule changes. The graph regression fails
+before the change (`tearing-choice-red-1.log`); partition, restricted-candidate,
+and input-order controls pass with the structural suite and Clippy
+(`tearing-choice-focused-1.log`, `tearing-choice-focused-build-2.log`).
+
+The actual normalized Solve block changes from thirteen tears to seven while
+Flat, DAE, structural DAE, and the complete trace remain byte-identical
+(`tearing-choice-profile-evidence-1.json`). The ordinary msl-fast diagnostic
+takes 78.080 ms. This is a compiler plan improvement, not a demonstrated runtime
+speedup: the affine executor still solves the full 24-coordinate matrix.
+
+Tier 1 `multibody-tearing-choice-origin` retains RollingWheel and
+OvervoltageProtection high: two compared models, 229 high initialization
+channels, one reviewed BevelGear exclusion, and zero missing or deviating
+comparisons. `multibody-tearing-choice-canary` retains every phase and band of
+the fixed twenty-model list: nine compared models, 175 high initialization
+channels, and zero skipped, missing, nonidentifiable, or deviating comparisons.
+The receipts are `tearing-choice-{origin,canary}-delta.json`.
+
+A third candidate prioritizing branded derivative coordinates passed 171 tests,
+Clippy, the originating list, and the canary, but did not reduce this actual
+normalized block further: derivative aliases are algebraic coordinates at this
+stage. Its 77.516 ms diagnostic still has seven tears and an identical complete
+trace. The speculative extra candidate was removed; its patch, tests, and
+measurements remain in `tearing-derivative-preference-experiment-1.patch`,
+`tearing-derivative-choice-focused-build-2.log`, and
+`tearing-derivative-choice-profile-evidence-1.json`. No five-coordinate runtime
+claim follows from its isolated graph result. The final two-candidate source
+is restored exactly; the complete cohort sweep is next.
+
 ## Current cohort and RollingWheel measurement
 
 The complete `multibody-bdf-step-budget-full-11` sweep at commit
