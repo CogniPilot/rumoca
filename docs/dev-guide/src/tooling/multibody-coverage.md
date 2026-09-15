@@ -4,6 +4,38 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Full sweep confirms shared-proof construction
+
+The complete `multibody-invariance-sharing-full-11` sweep at
+`f821fcce94d964671e7dcc12e23c2da87cddc4f8` passes its MSL quality gate.
+It measures 161/566 strict-high models (28.45%): 161 compared, 20 reviewed
+exclusions, zero missing or nonidentifiable traces, and zero near or deviating
+comparisons. All 21,865 compared initialization channels are high. The run
+reports a dirty worktree because the foreign untracked `comm_fastdyn.md` is
+present; authored source changes were committed before the run.
+
+GyroscopicEffects returns to high with all 967 channels high; Solve takes
+8.771 seconds, including 8.712 seconds of lowering, within the unchanged
+10-second phase budget. MultiBody is 22/42 high, with 22 models compared,
+one reviewed BevelGear1D exclusion, and zero missing comparisons. Its raw
+simulation completion count is 23/42. IMS_Start remains a reviewed reference
+boundary with no high-parity credit. No previously high model loses its band.
+
+GearConstraint remains unsuccessful: the prior structural failure becomes a
+Solve timeout after 11.623 seconds against the 10-second budget. That change
+does not establish that its structural failure is fixed. The retained
+`invariance-sharing-full-delta.json` records both phase changes and the
+comparison-artifact digests against `multibody-guarded-affine-full-11`.
+The earlier failed sweep remains recorded below.
+
+This result establishes neither complete MultiBody support nor a RollingWheel
+speed win. The affine path uses the checked tearing layout for its reduced
+linear solve but still evaluates the full block Jacobian first. Its coordinate
+recovery and original-residual refinement are necessary for the electrical
+regressions; full-block differentiation is an implementation limitation, not
+a mathematical requirement of those checks. Combined verify quick/full remain
+pending; only the full MSL parity gate was run in this sweep.
+
 ## Share Jacobian invariance proofs across projection blocks
 
 GyroscopicEffects exposed repeated construction work: every algebraic block
