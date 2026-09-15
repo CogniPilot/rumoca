@@ -75,9 +75,48 @@ run had no measured bands; the receipt distinguishes its phase outcomes from
 that complete baseline's band evidence. The fixed 20-model canary also passes:
 all phases and bands remain unchanged, nine models compare high with 175 high
 initialization channels, and none are skipped, missing, or deviating
-(`invariant-binding-canary-delta.json`). New complete-cohort validation remains
-pending; this focused recovery is not a new cohort count or a RollingWheel
-speed improvement.
+(`invariant-binding-canary-delta.json`).
+
+The complete `multibody-invariant-binding-full-11` sweep at
+`cb9920bcd84b57287f545a0110364d2af242ba0f` passes: 159/566 strict-high (28.09%),
+all 159 compared models high, 19 reviewed exclusions, zero missing,
+nonidentifiable, or deviating comparisons, and all 20,964 initialization
+channels high. MultiBody remains 22/42 high. Every simulation band matches
+the last passing full sweep at `59cee76f`; the only phase-field difference is
+an error-code change from ED020 to ED019 for the already unsupported
+PolyphaseRectifier (`invariant-binding-full-delta.json`). The comparison to the
+failed `617e315a` sweep separately records restoration of its regressions
+(`invariant-binding-full-regression-repair-delta.json`). This restores cohort
+coverage; it establishes no RollingWheel speed improvement.
+
+## RollingWheel kernel measurements after coverage recovery
+
+The ordinary worker at `cb9920bc` runs RollingWheel in 79.894 ms under the
+development benchmark profile. Its Flat, DAE, structural DAE, Solve, and full
+trace are byte-identical to the previous control
+(`invariant-binding-profile-evidence-1.json`). The 74-sample `perf` capture
+still includes sparse factorization, triangular solves, and Jacobian execution;
+it is a hotspot diagnostic, not a precise cost breakdown.
+
+A controlled kernel comparison does not support replacing the current sparse
+solve with dense LU. The initial experiment used the 74-entry numerical union
+of three captured matrices. Checked replay of the saved Solve model reconstructs
+the actual 96-entry projection pattern; repeating with that exact pattern gives
+median costs of 3.195 microseconds for the current sparse path and 3.420 for
+dense LU, about 7.1% slower. Each median covers seven alternating rounds of
+3,000 changing-matrix solves after a warmup round
+(`dense-crossover-issued-measurement-1.json`,
+`dense-crossover-pattern-audit-1.json`). This measures those kernels, not a
+whole-simulation speed ratio. The selection policy is unchanged and the
+temporary measurement code has been removed.
+
+The previous elimination experiment did handle its zero pivot by retaining it
+in an eight-variable simultaneous system; it did not merely fall back to the
+full solve. Mapping the same captured matrices to the current five-tear plan
+finds no zero causal pivots or nonzero future causal dependencies at any of the
+three captured coordinates (`affine-elimination-pivot-recheck-1.json`). This
+does not prove nonzero pivots throughout a trajectory or establish a faster
+implementation. The production affine executor still solves all 24 coordinates.
 
 ## Invariant-zero tensor incidence and declaration binding repair
 
