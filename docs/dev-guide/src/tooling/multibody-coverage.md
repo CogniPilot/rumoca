@@ -74,8 +74,35 @@ BevelGear exclusion and zero missing/nonidentifiable/deviating comparisons.
 The fixed twenty-model canary retains every phase and band: nine high compared
 models, 175 high initialization channels, and no skipped, missing,
 nonidentifiable, or deviating comparisons. Receipts are
-`final-modifier-{origin,canary}-delta.json`. A complete sweep at the new commit
-is still pending; these focused results are not cohort evidence.
+`final-modifier-{origin,canary}-delta.json`. The full `multibody-final-modifier-full-11` sweep at
+`59cee76f19ec6fc0f97121e45b506d7fa6086d8b` then retained all phases and bands:
+159/566 strict-high, all 159 compared models high, 19 reviewed exclusions,
+zero missing/nonidentifiable/deviating comparisons, and 20,964 high
+initialization channels. MultiBody remains 22/42 high. Its receipt is
+`final-modifier-full-delta.json`; tracked source was clean at launch.
+
+## Rejected native colored-application experiment
+
+A native batch consumed each issued projection color and complete source program
+in order, sharing immutable Y/P loads and scattering the checked output
+placements in one native call. Eleven focused numerical/ownership/failure tests
+and Clippy passed. The ordinary RollingWheel run took 78.378 ms versus an
+immediate archived control at 78.045 ms. Every compiler artifact and complete
+trace remained byte-identical (`projection-batch-profile-delta-1.json`). The
+hot batch occupied 126,064 native bytes and remained a leading perf leaf;
+removing Rust dispatch did not demonstrate a speedup. The implementation was
+removed and archived in `projection-batch-rejected-1.patch` and
+`projection-batch-rejected-source-1.rs`. No MSL gate or parity credit is claimed
+for this experiment.
+
+Its first standalone package test exposed an existing fixture wiring defect:
+Cranelift tests use `StructuralPattern::from_row_dependencies`, but only another
+package's development dependency enabled `pattern-fixtures`. The adapter now
+explicitly requests that feature in its own development dependencies. Production
+dependencies and the checked pattern authority remain unchanged. The original
+failure is `projection-batch-focused-1.log`. All 94 standalone Cranelift
+library tests and Clippy pass after the fixture fix, and the ordinary worker
+has been rebuilt without the rejected batch (`cranelift-fixture-final-1.log`).
 
 ## Current compiler work: compare complete tearing candidates
 

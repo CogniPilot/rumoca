@@ -16,6 +16,9 @@ cranelift-frontend = "0.125"
 cranelift-jit = "0.125"
 cranelift-module = "0.125"
 
+[dev-dependencies]
+rumoca-ir-solve = { workspace = true, features = ["pattern-fixtures"] }
+
 # Path A for the Cranelift execution adapter crosses a native JIT function-pointer ABI.
 # Keep the unsafe allowance local to this crate; workspace crates remain
 # covered by the default unsafe_code deny rule.
