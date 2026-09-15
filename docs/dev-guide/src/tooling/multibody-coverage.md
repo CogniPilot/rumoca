@@ -4,6 +4,35 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Full sweep finds UniversalConstraint progress and a Revolute regression
+
+`target/msl/multibody-single-anchor-full`, at
+`2da150a3f870d756ecc5f1242fbc36f09adc17b7`, completes the 566-model gate.
+It has 167 strict-high models, 167 compared, 20 reviewed exclusions, and zero
+missing or nonidentifiable traces. MultiBody remains 25/42 high, with 25
+compared and the existing BevelGear1D exclusion. These unchanged totals hide
+an important exchange: UniversalConstraint becomes high, while previously
+high RevoluteConstraint now refuses during runtime sensitivity validation.
+The repository baseline gate passes, but this branch-to-branch regression
+must be repaired before further breadth work or a PR.
+
+UniversalConstraint has 1,079 high and one minor trajectory channel, with no
+deviating or severe channels. RevoluteConstraint initializes, then reports
+EX002: algebraic projection sensitivity residual 1037, targeting
+`bodyOfConstraint.body.z_a[3]`, has magnitude 1.164153e-10 against its unchanged
+1e-10 threshold. This is a runtime refusal, not a completed wrong trace; its
+former high band is nevertheless lost. All 24,935 compared initialization
+channels are high, and no completed model has a deviation channel.
+
+The sweep also exposes a constructor/preflight panic in ConstantActuator
+(`holonomic value preflight proves a materializable anchor`) where there was
+previously an explicit structural refusal. Engine1b now initializes but still
+times out. Inverse_sh_TX reaches DAE construction instead of failing Flatten.
+These changes and all artifacts are recorded in
+`rolling-wheel/single-anchor-full-delta-1.json`. The tracked tree was clean;
+the run's dirty marker includes the preserved `comm_fastdyn.md`. Baseline
+promotion, combined quick/full release verification, push, and PR remain pending.
+
 ## Independent constraints need no minimum state-declaration count
 
 The exact PrismaticConstraint orientation residual passed first-derivative
