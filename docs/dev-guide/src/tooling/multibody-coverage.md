@@ -54,6 +54,27 @@ Evidence is under `rolling-wheel/indexed-parameter-guard-*`,
 No combined quick/full release gate, full-cohort rerun, baseline promotion,
 push, or PR was performed for this change.
 
+### Remaining angular-rate definition
+
+At implementation `3355ea28`, a second diagnostic proves both rotational
+constraints now pass first differentiation and value materialization, but fail
+second differentiation and retained-tangent materialization. The first rejected
+second-order leaf is state 996, `freeMotionScalarInit.initAngle.angle`; its
+explicit derivative-definition entry is absent. The other retained states have
+explicit derivative owners. Thus the parameter guard is repaired, while the
+angle-rate relation needed for another derivative remains unavailable.
+
+A diagnostic application of the existing whole-tensor derivative alias adds
+`der(angle)=alias` and preserves all source equations. This alone still fails:
+2,209 of 2,211 equations match, retaining the same two-equation deficit. It is
+not a production change or a coverage gain. The next investigation must trace
+the exact `axesRotations` angular-velocity equation and its independent value
+anchors, rather than assume that moving normalization earlier suffices.
+`revolute-derivative-order-probe-*` and
+`revolute-derivative-alias-inspection-1` retain this evidence. Both temporary
+diagnostic tests completed and were removed; the 954-test verification belongs
+to the committed production repair, not those probes.
+
 ## Full cohort after projected initial-value transfer
 
 `target/msl/multibody-projected-initial-full` passes the complete 566-model gate
