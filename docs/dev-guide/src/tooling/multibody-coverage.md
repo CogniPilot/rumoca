@@ -32,6 +32,13 @@ The fixed canary retains nine comparisons, all high, no skipped or missing
 traces, and 175 high initialization channels. Every phase and band is unchanged
 (`register-constants-origin-delta.json`, `register-constants-canary-delta.json`).
 
+The complete sweep at `0c22de12` passes in
+`target/msl/multibody-register-constants-full-11`: 159/566 strict-high (28.09%),
+159 compared, 19 reviewed exclusions, no missing or non-identifiable traces,
+no deviation channels, and all 20,964 initialization channels high. All phase
+and band results match the previous projection-reuse sweep, leaving MultiBody
+at 22/42 high (`register-constants-full-delta.json`).
+
 ## Reuse primal work across projection-Jacobian colors
 
 The complete projection application now issues seed-invariance facts using
