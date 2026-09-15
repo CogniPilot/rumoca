@@ -4,6 +4,36 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Complete comparison after source-equation exclusion repair
+
+The complete `multibody-lift-owners-full-11` run at
+`6da1462ae77aa9d281bd2e384822d94a69644f15` passes with 165/566 strict-high models
+(29.15%), 165 compared, 20 reviewed exclusions, and zero missing,
+nonidentifiable, near, or deviating comparisons. All 22,976 initialization
+channels are high. Raw execution remains 185; MultiBody remains 23/42 high with
+one reviewed BevelGear1D exclusion. Every previous comparison band and completed
+execution is retained. One already-failing Media model changes its reported
+failure phase from Flatten to ToDae; this earlier-phase diagnostic change earns
+no execution or coverage credit and is not attributed to the structural repair.
+
+The run uses 11 workers, fresh Rumoca executions, and cached unchanged OMC
+references. Tracked source is clean at the measured commit; the dirty flag comes
+from the foreign untracked `comm_fastdyn.md`. The full previous/baseline receipts
+are `rolling-wheel/lift-owners-full-{previous,baseline}-delta-1.json`. No baseline
+is promoted. Combined `verify quick` and `verify full` remain outstanding.
+
+A subsequent saved-source probe narrows the next LineForceWithTwoMasses gap.
+`der(jointUPS.rAxis_0)` has a unique explicit definition,
+`body2.v_0-body1.v_0`, whose value proof succeeds with those two state anchors.
+The value proof nevertheless rejects the derivative coordinate itself. That
+blocks the independent `der_rAxis_a_L` and angular-velocity definitions, leaving
+the circular auxiliary reconstruction that the committed repair now excludes.
+OMC's corresponding equations use the translational velocity directly.
+`rolling-wheel/line-force-lift-owners-rate-facts-1.json` records the exact source
+identities. The temporary diagnostic test passed and was removed. The next
+repair must replay independent explicit rate definitions while retaining their
+source owners and rejecting use of a dynamics equation to replace itself.
+
 ## Algebraic lifts exclude their source equation from auxiliary reconstruction
 
 The exact pre-lift capture for LineForceWithTwoMasses identifies a source-owner
