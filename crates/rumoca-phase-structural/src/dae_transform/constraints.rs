@@ -40,7 +40,7 @@ use super::equalities::{
     DerivativeAnchors, EqualityAnchor, EqualitySign, SystemEqualities, forwarded_call_argument,
     is_time_invariant,
 };
-use super::initial_pins::represented_initial_values;
+use super::initial_pins::stated_initial_variables;
 use super::tensor_maps::has_invariant_subscripts;
 use super::{
     DirectStateConstraint, HolonomicConstraint, HolonomicDifferentiationProof, ManifoldConstraint,
@@ -453,23 +453,13 @@ pub(super) fn demotion_preserves_manifold_values(
     }
 }
 
-/// The MLS 3.6 §8.6 initial equation `rebuilt` no longer states, out of the ones
-/// `stated` records about the system it was built from.
+/// Check that reconstruction retains every source-fixed declaration.
 ///
-/// This is the postcondition a state demotion is accepted under. The source
-/// system's own reading decides *which* obligations have to survive, and the
-/// rebuilt system decides whether they did: a demotion that turns a pinned
-/// state into an algebraic is legal when the equalities carry the stated value
-/// onto a coordinate the runtime still answers, and is a dropped initial
-/// condition when they do not. Checking it on the rebuilt system is what makes
-/// the answer a proof rather than a prediction — the roles, the classes and the
-/// substituted derivatives are all the reduction's own output.
-///
-/// Both reduction routes are checked against this. A state demotion changes a
-/// coordinate's role outright; a holonomic reduction *replaces* the residual it
-/// differentiates (`reconstruction::rebuild_holonomic_constraint`), which can
-/// take an equality that carried a stated value onto another coordinate out of
-/// the system. Neither is trusted to preserve what it does not name.
+/// Variable attributes carry the complete initial equation through checked
+/// reconstruction. Solve inventories those attributes independently of state
+/// roles, so demoting a coordinate or replacing a continuous residual does not
+/// discard its initial equation. This check detects removal from that inventory;
+/// equality-class transfer is only an equivalent way to lower the same row.
 pub(super) fn discarded_stated_initial_value(
     source: dae::DaeView<'_>,
     rebuilt: dae::DaeView<'_>,
@@ -478,7 +468,7 @@ pub(super) fn discarded_stated_initial_value(
     if stated.is_empty() {
         return Ok(None);
     }
-    let kept = represented_initial_values(rebuilt);
+    let kept = stated_initial_variables(rebuilt);
     let mut discarded = None;
     for variable in stated.iter().copied() {
         // The two systems are compared by variable ordinal, which reconstruction

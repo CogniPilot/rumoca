@@ -2,6 +2,88 @@ use rumoca::Compiler;
 use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae_with_diagnostics};
 
 #[test]
+fn a_demoted_observation_retains_its_fixed_initial_equation() {
+    let source = include_str!("../fixtures/index_reduction/ProjectedInitialCoordinate.mo");
+    check_trace(
+        source,
+        "ProjectedInitialCoordinate",
+        &[
+            ("x[1]", -3.0),
+            ("x[2]", 2.0),
+            ("u", 1.0),
+            ("pin", 1.0),
+            ("second", 2.0),
+            ("rate", -1.0),
+        ],
+    );
+    let compiled = Compiler::new()
+        .model("ProjectedInitialCoordinate")
+        .compile_str(source, "ProjectedInitialCoordinate.mo")
+        .unwrap();
+    let prepared = rumoca_phase_structural::prepare_for_solve(&compiled.dae).unwrap();
+    prepared.as_dae().inspect(|view| {
+        let states = view
+            .variables()
+            .filter(|(_, variable)| variable.role() == rumoca_ir_dae::VariableRole::State);
+        assert_eq!(
+            states
+                .map(|(_, variable)| variable.scalar_count())
+                .sum::<usize>(),
+            2,
+            "the fixed observation must constrain x without adding a redundant integrated state"
+        );
+    });
+}
+
+#[test]
+fn a_demoted_observation_cannot_hide_conflicting_fixed_states() {
+    let source = include_str!("../fixtures/index_reduction/ProjectedInitialCoordinate.mo")
+        .replace("each start=0", "each start=0, each fixed=true");
+    let compiled = Compiler::new()
+        .model("ProjectedInitialCoordinate")
+        .compile_str(&source, "ProjectedInitialCoordinate.mo")
+        .unwrap();
+    for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+        let error = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                solver_mode,
+                t_end: 0.05,
+                ..Default::default()
+            },
+        )
+        .expect_err("x=0 cannot satisfy pin=1 and second=2 at initialization");
+        assert!(error.to_string().contains("initial"), "{error}");
+    }
+}
+
+#[test]
+fn a_direct_reduction_cannot_discard_a_conflicting_initial_equation() {
+    for value in ["time", "5"] {
+        let source = format!(
+            "model ConflictingInitial Real x(start=1,fixed=true); Real v;
+             equation x={value}; der(x)=v; end ConflictingInitial;"
+        );
+        let compiled = Compiler::new()
+            .model("ConflictingInitial")
+            .compile_str(&source, "conflicting_initial.mo")
+            .unwrap();
+        for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+            let error = simulate_dae_with_diagnostics(
+                &compiled.dae,
+                &SimOptions {
+                    solver_mode,
+                    t_end: 0.05,
+                    ..Default::default()
+                },
+            )
+            .expect_err("the continuous value contradicts x(0)=1");
+            assert!(error.to_string().contains("initial"), "{error}");
+        }
+    }
+}
+
+#[test]
 fn partial_array_pin_transfer_retains_unprojected_initial_equations() {
     for (selected, values) in [(1, "x,0,0"), (2, "0,2*x,0"), (3, "0,0,3*x")] {
         reject_partial_array_pin(&partial_array_pin_source(values, selected));

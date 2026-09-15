@@ -43,7 +43,7 @@ use self::constraints::{
     DiscardedInitialValue, direct_state_constraints, discarded_stated_initial_value,
     index_reduction_constraints,
 };
-use self::initial_pins::{represented_initial_values, transferred_initial_values};
+use self::initial_pins::{stated_initial_variables, transferred_initial_values};
 use self::observation::{
     AttemptOutcome, CandidateGroup, DirectIdentity, HolonomicIdentity, Identity, Lane,
     ReductionEvent, ReductionObserver, ReductionRecorder, StoppedOutcome,
@@ -716,7 +716,7 @@ fn demote_direct_state_with_observer(
 ) -> Result<DemotionRound, StructuralError> {
     let source = ReductionSource::new(model);
     let candidates = source.inspect(direct_state_constraints);
-    let stated = model.inspect(represented_initial_values);
+    let stated = model.inspect(stated_initial_variables);
     let unconditional = demotion_pass_with_observer(
         &source,
         residue,
@@ -1719,7 +1719,7 @@ fn holonomic_pass_with_observer(
     observer: &mut impl ReductionObserver,
 ) -> Result<HolonomicPass, StructuralError> {
     let source = ReductionSource::new(model);
-    let stated = model.inspect(represented_initial_values);
+    let stated = model.inspect(stated_initial_variables);
     let (mut candidates, incident) = source.inspect(|view, facts| {
         let candidates = index_reduction_constraints(view, facts);
         let incident = crate::overdetermined_block_variables(view)?;

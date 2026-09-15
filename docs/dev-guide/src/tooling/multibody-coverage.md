@@ -4,6 +4,66 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Fixed initialization equations survive algebraic demotion
+
+PrismaticConstraint exposed an obsolete structural preservation check. Its
+`FreeMotionScalarInit` component fixes two position and two velocity outputs.
+The position outputs alias the scalar derivative-block inputs. Directly
+reconstructing those inputs from the body's position tensor was refused because
+the equality class would no longer contain a retained state. OMC's generated
+initialization code preserves those starts explicitly. Rumoca's Solve phase
+also already emits every fixed continuous Real equation, independently of its
+state or algebraic role, through transferred rows and its remaining-coordinate
+inventory. The structural check was still using the older state-seeding model.
+
+Preservation now inventories the source-fixed declarations themselves.
+The existing checked reconstruction carries their exact `fixed` attributes and
+mapped start expressions; Solve retains every scalar equation, including
+default starts and coordinates not covered by a transfer. Equality-class
+transfer remains an equivalent representation, not permission to omit other
+initial equations. This follows MLS section 8.6 and the initial-equation
+construction contract in SPEC_0043. No solver tolerances, source equations,
+state preferences, or model-name conditions changed.
+
+The reduced `ProjectedInitialCoordinate` model has a two-component state
+`x`, observation `u=x[1]+2*x[2]`, `der(u)=rate`, and fixed scalar observations
+`pin=u=1` and `second=x[2]=2` at initialization. Before the repair its trajectory
+was correct but it retained three scalar states; the state-count regression
+failed. It now retains only `x` and both solvers reproduce the exact exponential
+solution. The ordinary worker and OMC agree highly on all six shared channels
+over the complete 0–1 interval, with analytical errors below 1e-6. The first
+diagnostic driver mistakenly requested OMC only through 0.1 and stopped before
+comparison; the corrected OMC interval reuses the successful full Rumoca trace.
+Conflicting fixed states, time constraints, and constant constraints still
+fail initialization. Structural tests check the retained original continuous
+equation and fixed initial equation after direct demotion.
+
+All 1,065 focused tests pass: 99 library, 620 core, 141 Solve, and 205
+structural. Phase all-target/all-feature Clippy, core-suite Clippy, and workspace
+formatting pass. `multibody-initial-obligations-{frontier,origin,canary}` has
+empty phase and band deltas against `multibody-early-tensor-rate-*`: 5/6/9
+compared high, 1/2/0 reviewed exclusions, and no missing or nonidentifiable
+traces. The fixed canary's eleven existing failures remain visible.
+
+PrismaticConstraint is still a structural refusal and gains no parity credit.
+Its source DAE is identical before and after the change
+(`558eab4e8f4d9219263cd690753b909507b2956e0a5cf620ff0086e75c7db8e9`).
+The current ordinary worker reports 2,287/2,313 matched at the final refusal;
+the public inspector's last accepted intermediate instead has 2,314/2,317
+matched, the same three unmatched rows as before. That distinction prevents
+the final error from being mistaken for the intermediate being investigated.
+Rows 2,289–2,291 are the last three components of the exact connection equality
+`world.frame_b.R.T = fixedRotation.frame_a.R.T`. The intermediate retains
+the constrained body's quaternion and several orientation matrices as states.
+This localizes the next comparison; it does not yet prove why those rows cannot
+be matched or establish that their source equation is wrong.
+
+Evidence is in `rolling-wheel/prismatic-initial-*`,
+`rolling-wheel/prismatic-preserved-initial-*`,
+`rolling-wheel/prismatic-stalled-rows-2.log`, and
+`rolling-wheel/initial-obligations-*`. The complete cohort sweep follows this
+milestone; no new cohort total or release readiness is claimed here.
+
 ## Full sweep confirms 25 high-parity MultiBody examples
 
 `target/msl/multibody-early-tensor-rate-full` passes the complete 566-model

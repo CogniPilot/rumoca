@@ -571,10 +571,9 @@ fn a_pinned_state_is_demoted_when_the_class_carries_its_value_to_the_survivor() 
     reduced.inspect(|view| assert!(sort(view).is_ok(), "replacement DAE matches perfectly"));
 }
 
-/// A differentiated time constraint retains both the original state pin and
-/// the position constraint for the joint initialization solve.
+/// Direct reduction retains the original time constraint and fixed start.
 #[test]
-fn a_pinned_time_constraint_retains_its_initial_equation_and_manifold() {
+fn a_pinned_time_constraint_retains_its_initial_equation() {
     assert_retained_initial_constraint(AssertedValue::Time);
 }
 
@@ -598,29 +597,30 @@ fn an_invariant_class_that_asserts_the_stated_value_admits_the_demotion() {
     reduced.inspect(|view| assert!(sort(view).is_ok(), "replacement DAE matches perfectly"));
 }
 
-/// A conflicting invariant may be differentiated only while retaining the
-/// contradiction as a complete initialization residual.
+/// The continuous invariant and fixed start retain their contradiction.
 #[test]
-fn a_conflicting_invariant_remains_in_the_initial_manifold() {
+fn a_conflicting_invariant_retains_its_initial_equation() {
     assert_retained_initial_constraint(AssertedValue::Invariant(5.0));
 }
 
 fn assert_retained_initial_constraint(asserted: AssertedValue) {
     let model = asserted_value_model(StatedInitialValue::pinned(1.0), asserted);
     let prepared =
-        prepare_for_solve(&model).expect("the manifold retains the fixed initial equation");
+        prepare_for_solve(&model).expect("the demoted declaration retains its initial equation");
     prepared.inspect(|system| {
         let view = system.view;
         let (id, x) = view.variables().find(|(_, v)| v.name().as_str() == "x").unwrap();
-        assert_eq!(x.role(), dae::VariableRole::State);
+        assert_eq!(x.role(), dae::VariableRole::Algebraic);
         assert_eq!(x.fixed(), Some(true));
         assert_eq!(rumoca_eval_dae::NumericEvaluator::new(view).expression(x.start().unwrap()).unwrap(), [1.0]);
         assert!(!x.declaration().span().is_dummy());
-        let retained = view.expression(system.manifold[0]).unwrap();
+        assert!(system.manifold.is_empty(), "direct reduction retains the continuous owner");
+        assert!(system.pins.iter().any(|pin| pin.source == id.index() && pin.coordinate == id.index()));
+        let retained = view.expression(view.continuous_equation(0).unwrap().residual()).unwrap();
         let dae::ExpressionOperation::Binary { operator: dae::BinaryOperator::Subtract, lhs, rhs } = retained.operation() else {
             panic!("the exact original position residual must survive");
         };
-        assert!(matches!(view.expression(lhs).unwrap().operation(), dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) if state.index() == id.index()));
+        assert!(matches!(view.expression(lhs).unwrap().operation(), dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(coordinate)) if coordinate.index() == id.index()));
         match asserted {
             AssertedValue::Time => assert!(matches!(view.expression(rhs).unwrap().operation(), dae::ExpressionOperation::Coordinate(dae::CoordinateView::Time))),
             AssertedValue::Invariant(value) => assert_eq!(rumoca_eval_dae::NumericEvaluator::new(view).expression(rhs).unwrap(), [value]),
