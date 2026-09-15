@@ -10,6 +10,7 @@ mod causal_discrete;
 mod dae_transform;
 pub mod diagnostic_codes;
 mod diagnostics;
+mod differential_structure;
 pub mod incidence;
 mod matching;
 pub mod report;
@@ -34,6 +35,9 @@ pub use dae_transform::{
 };
 pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};
+pub use differential_structure::{
+    DifferentialCoordinate, DifferentialStructure, analyze_differential_structure,
+};
 pub use incidence::{Incidence, solver_incidence};
 pub use report::{BlockReport, StructuralReport, TearingReport};
 pub use runtime_defined::{

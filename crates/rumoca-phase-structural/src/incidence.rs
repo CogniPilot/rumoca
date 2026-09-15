@@ -1,5 +1,6 @@
 //! Exact scalar incidence derived from checked DAE expression views.
 
+pub(crate) mod projection;
 pub mod rows;
 
 use std::collections::{HashMap, HashSet};
@@ -98,13 +99,12 @@ pub(crate) fn build_incidence<'dae>(
     for owner in view.continuous_owners() {
         #[cfg(feature = "tracing")]
         let owner_start = std::time::Instant::now();
-        match owner {
-            dae::ContinuousOwnerView::Residual { equation, .. } => {
-                builder.push_expression(equation.residual(), 0, None, equation.provenance())?;
-            }
-            dae::ContinuousOwnerView::Structured { family, .. } => {
-                builder.push_family(family)?;
-            }
+        let first_row = builder.rows.row_count();
+        projection::visit_owner_rows(view, owner, |row| {
+            builder.push_expression(row.expression, row.scalar, row.domain_point, row.provenance)
+        })?;
+        if let dae::ContinuousOwnerView::Structured { family, .. } = owner {
+            builder.record_family(family, first_row);
         }
         #[cfg(feature = "tracing")]
         tracing::debug!(
@@ -254,10 +254,7 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
                 }
             },
         )
-        .map_err(|source| StructuralError::Projection {
-            reason: source.to_string(),
-            span: projection_span(&source),
-        })?;
+        .map_err(projection::projection_error)?;
         self.rows.push_occurrences(&occurrences);
         self.equation_refs
             .push(EquationRef(self.equation_refs.len()));
@@ -265,36 +262,12 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
         Ok(())
     }
 
-    fn push_family(
-        &mut self,
-        family: dae::StructuredFamilyView<'dae>,
-    ) -> Result<(), StructuralError> {
-        let first_row = self.rows.row_count();
+    fn record_family(&mut self, family: dae::StructuredFamilyView<'dae>, first_row: usize) {
         let domain = self
             .view
             .domain(family.domain())
             .expect("checked structured family domain resolves");
-        let point_count = domain.scalar_count() as usize;
         let equations_per_point = family.bodies().len();
-        for point in 0..point_count {
-            let values = domain
-                .structured()
-                .index_tuple_at(point)
-                .expect("checked structured domain stays valid")
-                .expect("point ordinal is inside checked domain");
-            for body in family.bodies().iter() {
-                let scalar = family
-                    .scalar_view()
-                    .body_scalar(point, domain.extents())
-                    .expect("checked family view projects its domain point");
-                self.push_expression(
-                    body,
-                    scalar,
-                    Some((family.domain(), &values)),
-                    family.provenance(),
-                )?;
-            }
-        }
         if let Some(descriptor) = derive_structured_matching(
             &self.rows,
             first_row,
@@ -304,7 +277,6 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
         ) {
             self.structured_matching.push(descriptor);
         }
-        Ok(())
     }
 }
 
@@ -426,18 +398,6 @@ fn checked_scalar_ordinal(scalar: usize, span: rumoca_core::Span) -> Result<u32,
         reason: "variable scalar ordinal exceeds u32 capacity".to_string(),
         span,
     })
-}
-
-fn projection_span(error: &rumoca_eval_dae::ProjectionError) -> rumoca_core::Span {
-    match error {
-        rumoca_eval_dae::ProjectionError::ScalarOutOfBounds { span, .. }
-        | rumoca_eval_dae::ProjectionError::DynamicSubscript { span }
-        | rumoca_eval_dae::ProjectionError::IndexOutOfBounds { span, .. }
-        | rumoca_eval_dae::ProjectionError::IntegerOverflow { span }
-        | rumoca_eval_dae::ProjectionError::FunctionRecursion { span }
-        | rumoca_eval_dae::ProjectionError::UnsupportedRecordOperation { span, .. }
-        | rumoca_eval_dae::ProjectionError::ExternalFunction { span, .. } => *span,
-    }
 }
 
 pub(crate) fn build_dependency_graph(

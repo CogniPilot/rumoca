@@ -16,7 +16,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0000](SPEC_0000_SPEC_GUIDELINES.md) | Specification Writing Guidelines | process | ~258 | ACCEPTED |
 | [SPEC_0001](SPEC_0001_DEFID.md) | DefId for Stable References | IR | ~128 | ACCEPTED |
 | [SPEC_0002](SPEC_0002_SCOPE_TREE.md) | Scope Tree for Name Lookup | IR | ~119 | ACCEPTED |
-| [SPEC_0007](SPEC_0007_IR_PIPELINE.md) | Compiler Pipeline and IR Contracts | architecture | ~333 | ACCEPTED |
+| [SPEC_0007](SPEC_0007_IR_PIPELINE.md) | Compiler Pipeline and IR Contracts | architecture | ~326 | ACCEPTED |
 | [SPEC_0008](SPEC_0008_PHASE_ERRORS.md) | Diagnostics, Traceability, and Phase-Local Errors | error | ~328 | ACCEPTED |
 | [SPEC_0018](SPEC_0018_TOOL_CONFIG.md) | Tool Configuration Loading | tooling | ~329 | ACCEPTED |
 | [SPEC_0021](SPEC_0021_CODE_COMPLEXITY.md) | Maintainability and Determinism Guidelines | convention | ~248 | ACCEPTED |
@@ -32,7 +32,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0037](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) | Verification Architecture for Checkers and Semantics | verification | ~215 | DRAFT |
 | [SPEC_0038](SPEC_0038_UNIFIED_FMI_EXECUTION.md) | Unified FMI Execution | target/runtime | ~249 | DRAFT |
 | [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md) | Proof-Carrying Structural Sparsity | IR | ~153 | DRAFT |
-| [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md) | IR Stage Contract Catalog | architecture | ~167 | REFERENCE |
+| [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md) | IR Stage Contract Catalog | architecture | ~186 | REFERENCE |
 | [SPEC_0041](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md) | Crate Ownership Catalog | architecture | ~142 | REFERENCE |
 | [SPEC_0042](SPEC_0042_GALEC_LANGUAGE_CATALOG.md) | GALEC Language and Decision Catalog | target/codegen | ~67 | REFERENCE |
 | [SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md) | Valid-by-Construction Catalog | IR | ~474 | REFERENCE |
@@ -45,7 +45,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) | Trace Evidence Catalog | process/verification | ~27 | REFERENCE |
 | [SPEC_0051](SPEC_0051_JACOBIAN_SYNTHESIS.md) | Jacobian Synthesis by Forward-Mode Differentiation | phase/verification | ~212 | PROPOSED |
 | [SPEC_0052](SPEC_0052_RUMOCA_LEAN_CYBER_PHYSICAL_SYSTEMS.md) | Rumoca plus Lean: Roadmap for Formally Verified Cyber-Physical Systems | architecture/verification | ~100 | PROPOSED |
-| [SPEC_0053](SPEC_0053_CONSTRAINED_STATE_SELECTION.md) | Constrained State Selection | compiler/runtime | ~82 | PROPOSED |
+| [SPEC_0053](SPEC_0053_CONSTRAINED_STATE_SELECTION.md) | Constrained State Selection | compiler/runtime | ~94 | PROPOSED |
 
 ### Reference annexes
 

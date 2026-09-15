@@ -4,6 +4,82 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint: checked source differential structure
+
+The structural phase now derives a source-bound differential signature and
+certifies its maximum-weight assignment and least nonnegative equation/variable
+offsets. It shares the existing tensor/function scalar projection and canonical
+continuous-owner ordering. Source declarations, equation families, and initial
+conditions remain unchanged. The implemented contract is SPEC_0007 / STRUCT-T07;
+SPEC_0053 still proposes the unimplemented independent-state execution system.
+
+The final public-API replay over the retained source artifacts establishes:
+
+| Input | Scalar equation/variable views | Formal dimension |
+|---|---:|---:|
+| Original `RateCancellation.mo` | 47 / 47 | 2 |
+| Original RevoluteConstraint DAE | 2208 / 2208 | 4 |
+| Existing transformed RevoluteConstraint differential DAE | 2211 / 2211 | 8 |
+
+The first two dimensions agree with OMC's generated state inventories. The
+last row does not mean the four constraints were discarded: their lower-order
+forms are retained separately in the prepared system's manifold. It identifies
+the redundant differential system that independent state construction must
+replace. The reduced source signature requires differentiating the rotation
+constraints twice and the rate definitions once. No numerical inverse or
+simulation outcome supplies those orders. Evidence is
+`rolling-wheel/differential-structure-real-2.{jsonl,log}` and its retained public
+probe/driver; OMC inventories remain in `rate-cancellation-omc-1` and
+`revolute-initial-omc-1/omc_sim_work`.
+
+All 213 structural tests pass, including exhaustive comparison of all 19,683
+three-by-three signatures against an independent enumeration oracle. Negative
+certificate, overflow, singular-graph, and hidden pendulum-constraint controls
+pass. All 633 compiler-core tests pass; the eight source-analysis tests also
+pass after the final helper extraction. These cover unchanged tensor ownership,
+loop domains, function permutations, inputs/outputs, tunable versus invariant
+zeros, and the distinction between structural and numerical regularity.
+Structural all-target/all-feature Clippy, compiler-core Clippy, and all six
+specification gates pass. Logs use the `differential-structure-` prefix under
+`rolling-wheel`.
+
+The fixed `target/msl/multibody-differential-structure-canary` has no phase,
+simulation, or band changes from `multibody-invariant-value-canary`: all nine
+compared models remain high, all 175 trajectory/initialization channels are
+high, and there are no skipped, missing, excluded, or nonidentifiable traces.
+The other eleven canary members retain their existing failures. The run records
+HEAD `928b1e30e306db21e2e98267cc0e5ba6067a31ec` and working-tree digest
+`305703ae6953295248506ecbc2b8221c98e1da3020b25bc52641d6af86c207bd`;
+`differential-structure-canary-delta-1.json` binds the comparison artifacts.
+
+This is analysis groundwork, not a RevoluteConstraint fix or new cohort result.
+The analysis is not yet used to construct the numerical kernel. Differentiability,
+numerical regularity, coupled reconstruction, initialization, and FMI coordinate
+mapping remain required before it can authorize independent integration states.
+Combined quick/full and a new complete Tier 2 sweep were not run at this
+checkpoint: executable state selection remains unfinished and the known Revolute
+regression remains open. No baseline promotion or PR is claimed.
+
+The architecture scan exposed existing branch cleanup as well as an unexercised
+matching accessor. The source permutation regression now checks the returned
+matching coordinate. The retained diagnostic API
+`ReductionSnapshot::manifold_expression_ordinals` has concrete out-of-corpus
+consumers: `inspect-revolute-initial-1.rs`, `inspect-revolute-candidates-1.rs`,
+and `inspect-line-force-reduction-3.rs` under `rolling-wheel`. It remains an
+explicitly documented public diagnostic contract so these inspections can bind
+retained constraints to the same stalled DAE, without mutating reduction.
+Coordinate-definition tests move into their own module to satisfy the existing
+file-size gate. Wire call replay now receives already-destructured call fields
+from its exhaustive enum match, eliminating a repeated-match `unreachable!`
+without changing wire validation or format. All 190 DAE tests, 213 structural
+tests, eight source-analysis regressions, and 243 architecture checks pass.
+The DAE totality count is back to its existing ceiling of 60; no ceiling or
+file-size exemption changed. Final all-target/all-feature Clippy for both
+libraries, workspace formatting, and whitespace checks pass. Cleanup logs use
+`differential-structure-cleanup-` and `differential-structure-final-` prefixes.
+The canary above precedes this behavior-preserving wire/test cleanup; it is
+not a new full-cohort measurement.
+
 ## RevoluteConstraint: independent coordinates and reconstruction limits
 
 The value/Jacobian callback mismatch hypothesis is disproved. Both production

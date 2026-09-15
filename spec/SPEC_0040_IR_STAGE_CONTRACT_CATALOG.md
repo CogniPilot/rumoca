@@ -130,6 +130,22 @@ lowering. Anything absent from this catalog requires a SPEC_0007 update.
 | STRUCT-T08 | Equation normalization | `rumoca-phase-structural::residual_normalization` | Structural equation recognition shares one source-bound normal form over checked DAE expressions. Its initial profile removes only unary signs and literal-zero additive wrappers at a residual root and exposes existing equality operands. This is a borrowed zero-set proof, not a value-expression rewrite: original residual owners, provenance, tensor domains, calls, assertions, and numerical residual evaluation remain intact. It must be idempotent, retain tensor operands without coordinate enumeration, and leave unsupported forms unchanged. Division, cancellation, reassociation, and removal of nonliteral operands require separate domain/effect proofs. |
 | STRUCT-T09 | Implicit derivative aliases | `rumoca-phase-structural` | **Initial profile under validation.** A prepared BLT block containing both derivative and algebraic unknowns retains their joint equation system. Implicit derivative coordinates consumed through tensor expressions may also be aliased. For a singular system, prepare these tensor aliases before holonomic reduction; partial matching establishes existing derivative-owner coverage but is never returned as a completed structural analysis. Scalar-only derivative equations retain their existing affine construction and rejection checks. Existing explicit scalar/tensor/domain derivative definitions retain their native Solve owners; matching proves complete coordinate coverage before a whole declaration is preserved. In a completely prepared system, blocks composed entirely of derivatives also retain their native owners. Partial matching cannot certify those executable blocks for index reduction. For each admitted state declaration, one checked DAE reconstruction may introduce an algebraic alias of its complete derivative tensor, substitute that alias for every read of the same typed derivative coordinate, and append the whole-tensor equality `der(state) = alias`. Source residuals, functions, assertions, events, initialization constraints, state roles, and retained manifold obligations survive reconstruction; alias identity derives from the branded state declaration, never its generated display name. The added equality makes the extension bijective on source solutions. Aliases carry unfixed zero guesses, add no independent initial condition, and require no derivative pivot or coefficient estimate. Reanalysis must prove complete matching before the transformed DAE escapes. Numeric kernels consume the resulting joint algebraic block through the existing Solve construction, preserving tensor owners and runtime convergence/rank checks. |
 
+STRUCT-T07 differential analysis rows, bound by SPEC_0007's signature contract.
+`rumoca-phase-structural/src/differential_structure.rs` exposes
+`analyze_differential_structure(DaeView) -> Result<DifferentialStructure, StructuralError>`.
+Each finite signature entry `sigma[i,j]` records the highest derivative order
+of source variable coordinate `j` in residual view `i`. Offsets `c`, `d` satisfy
+`d[j]-c[i] >= sigma[i,j]`, with equality at matched edges. Their difference of
+sums is the formal dimension, conditional on a regular differentiated Jacobian.
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Share checked scalar-coordinate projection and canonical source-owner row ordering; source tensors and equation families remain authoritative | structural differential analysis | Scalar views cannot become parallel owners |
+| Keep coordinates, signature rows, matching, and offsets branded, nonserializable, and privately constructed | `DifferentialStructure` | Results belong to the issuing immutable DAE |
+| Independently check the perfect matching, every dual inequality, matched equality, and primal/dual objective before issuing a result | differential certificate checker | Assignment output is evidence, not authority |
+| Derive least nonnegative offsets by monotone iteration from zero, with checked arithmetic and a graph-derived termination bound | offset analysis | No guessed differentiation depth or unbounded search |
+| Preserve differentiability, numerical rank, initialization, and reconstruction as outstanding obligations | state selection | A graph certificate cannot authorize an executable reduced system |
+
 STRUCT-T03 reconstruction rows, bound by SPEC_0007’s auxiliary profile:
 
 | Rule | Owner | Why |

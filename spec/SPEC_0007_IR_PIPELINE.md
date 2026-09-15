@@ -5,8 +5,6 @@ ACCEPTED
 
 ## Summary
 
-Stage ownership.
-
 [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md) catalogs stage contracts and
 structural transformations; linked rows are normative.
 
@@ -37,7 +35,7 @@ Modelica source (.mo)
   └──────────┘                           MLIR/LLVM, CUDA C and WGSL kernels
 ```
 
-**Codegen targets the lowest proven-valid IR it needs — no lower.**
+**Codegen targets the lowest proven-valid IR it needs.**
 
 | Backend | IR level | Why |
 |---|---|---|
@@ -56,12 +54,6 @@ Code-generation inputs MUST satisfy stage invariants by construction. Target
 manifests select the exact canonical or checked export IR; MiniJinja receives
 its typed, read-only semantic view. Rendering MUST NOT resolve names, infer
 types/shapes, lower IRs, mutate inputs, or repair invalid artifacts.
-
-Code-generation architecture:
-
-```text
-proven-valid IR -> typed semantic template view -> target.toml + MiniJinja -> artifacts
-```
 
 This boundary covers syntax, Flat, DAE, Solve, and checked export IRs. Existing
 IRs need only a target directory; new IRs require a target-neutral semantic view
@@ -290,6 +282,9 @@ replayable proof receipts, and mutable partition callbacks are prohibited.
 **In scope:** only `STRUCT-T01`–`STRUCT-T09` in
 [SPEC_0040 §3](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
 Other transformations require amendments.
+
+State selection derives source-bound differential signatures and checked assignment
+offsets (STRUCT-T07); formal dimension remains conditional on numerical regularity.
 
 STRUCT-T03 preserves shared expression identity. Reuse requires identical
 source, call substitutions, derivative order, reconstruction mode, and provenance;

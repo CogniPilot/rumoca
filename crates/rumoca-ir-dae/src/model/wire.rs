@@ -942,12 +942,8 @@ fn rebuild_node<'dae>(
             at.enumeration_literal(*ordinal)
         }
         ExprNodeWire::Literal(value) => at.literal(value.as_literal()),
-        ExprNodeWire::Coordinate(CoordinateWire::Binder { domain, ordinal }) => {
-            let domain = mapped(&ids.domains, *domain, "domain", provenance)?;
-            at.binder(DomainBinderId::from_raw(domain.index(), *ordinal))
-        }
         ExprNodeWire::Coordinate(coordinate) => {
-            at.coordinate(rebuild_coordinate(ids, coordinate, provenance)?)
+            rebuild_coordinate_expression(ids, at, coordinate, provenance)
         }
         ExprNodeWire::Unary { operator, operand } => at.unary(
             *operator,
@@ -1012,15 +1008,17 @@ fn rebuild_node<'dae>(
             *builtin,
             map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
-        node @ ExprNodeWire::Call {
+        ExprNodeWire::Call {
+            owner,
             function,
             output,
             operand_count,
-            ..
+            derivative,
         } => {
             let function = mapped(&ids.functions, *function, "function", provenance)?;
             let arguments = map_expression_operands(wire, ids, *operand_count, provenance)?;
-            rebuild_call(ids, at, node, (function, *output), arguments, provenance)
+            let links = (*owner, *derivative);
+            rebuild_call(ids, at, links, (function, *output), arguments, provenance)
         }
         node @ ExprNodeWire::StringConversion { .. } => {
             rebuild_string_conversion(ids, at, WireStringConversion::from_node(node), provenance)
@@ -1040,6 +1038,20 @@ fn rebuild_node<'dae>(
     }
 }
 
+fn rebuild_coordinate_expression<'dae>(
+    ids: &WireIds<'dae>,
+    at: ExpressionAt<'_, 'dae>,
+    coordinate: &CoordinateWire,
+    provenance: DaeProvenance,
+) -> Result<ExprId<'dae>, DaeConstructionError> {
+    if let CoordinateWire::Binder { domain, ordinal } = coordinate {
+        let domain = mapped(&ids.domains, *domain, "domain", provenance)?;
+        at.binder(DomainBinderId::from_raw(domain.index(), *ordinal))
+    } else {
+        at.coordinate(rebuild_coordinate(ids, coordinate, provenance)?)
+    }
+}
+
 /// Rebuild one call node from its already-mapped function and arguments.
 ///
 /// A node that owns its own call replays those arguments; any other owner is a
@@ -1049,17 +1061,11 @@ fn rebuild_node<'dae>(
 fn rebuild_call<'dae>(
     ids: &WireIds<'dae>,
     at: ExpressionAt<'_, 'dae>,
-    node: &ExprNodeWire,
+    (owner, derivative): (u32, Option<(u32, u32)>),
     target: (FunctionId<'dae>, u32),
     arguments: Vec<ExprId<'dae>>,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
-    let ExprNodeWire::Call {
-        owner, derivative, ..
-    } = node
-    else {
-        unreachable!()
-    };
     let derivative = derivative
         .map(|(source, ordinal)| {
             mapped(
@@ -1071,7 +1077,7 @@ fn rebuild_call<'dae>(
             .map(|source| (source, ordinal))
         })
         .transpose()?;
-    if *owner as usize == ids.expressions.len() {
+    if owner as usize == ids.expressions.len() {
         return match derivative {
             Some((source, ordinal)) => {
                 at.replay_differentiated_call(source, ordinal, arguments, Some(target))
@@ -1083,7 +1089,7 @@ fn rebuild_call<'dae>(
         return Err(malformed("expressions.nodes.call.operand_count"));
     }
     at.replay_call_projection(
-        mapped(&ids.expressions, *owner, "function call owner", provenance)?,
+        mapped(&ids.expressions, owner, "function call owner", provenance)?,
         target.0,
         target.1 as usize,
         derivative,

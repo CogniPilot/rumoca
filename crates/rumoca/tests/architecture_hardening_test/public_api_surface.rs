@@ -159,6 +159,11 @@ const REMOVED_DECLARATION_ONLY_SURFACES: &[(&str, &str)] = &[
 /// name the item: the exemption dies with the row that grants it.
 const DOCUMENTED_CONTRACT_SURFACES: &[(&str, &str, &str)] = &[
     (
+        "crates/rumoca-phase-structural/src/dae_transform/observation.rs",
+        "manifold_expression_ordinals",
+        "docs/dev-guide/src/tooling/multibody-coverage.md",
+    ),
+    (
         "crates/rumoca-core/src/lib.rs",
         "source_temporal_function_short_name",
         "spec/SPEC_0041_CRATE_OWNERSHIP_CATALOG.md",

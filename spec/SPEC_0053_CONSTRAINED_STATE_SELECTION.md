@@ -9,8 +9,9 @@ construct their value, derivative, and FMI mappings together.
 
 ## Specification
 
-This proposal extends SPEC_0007 / STRUCT-T07. It is not implemented, and does
-not change the current acceptance profile. The existing implementation retains
+This proposal extends SPEC_0007 / STRUCT-T07. The source signature analysis in
+§1a is implemented; executable independent state selection remains pending.
+It does not change the current acceptance profile. The existing implementation retains
 lower-order constraints in `ContinuousSolveSystem::manifold_residual` and
 `manifold_projection_plan` (`rumoca-ir-solve/src/model.rs`), while
 `SolveRuntime` evaluates derivatives of every retained state coordinate.
@@ -25,6 +26,15 @@ lower-order constraints in `ContinuousSolveSystem::manifold_residual` and
 | Honor `StateSelect` and `reinit` requirements by typed coordinate identity; an inconsistent requested basis fails explicitly | structural reduction | Preserve MLS state-selection semantics |
 | Preserve every source equation, assertion, initialization condition, and visible variable when changing differential roles | structural reconstruction | Coordinate choice cannot change the source solution set |
 | Prove dependency closure for the selected derivative outputs; dependent derivatives execute only when needed by that closure or an observation | Solve planning | Removing outputs must not discard needed equations or compute avoidable derivatives |
+
+### 1a. Differential structure analysis
+
+`analyze_differential_structure(DaeView)` in
+`rumoca-phase-structural/src/differential_structure.rs` returns a checked
+`DifferentialStructure` with source coordinates, matching, equation and variable
+orders, and formal dimension. Its implemented contract lives in
+[SPEC_0007 / STRUCT-T07](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
+The remaining construction and runtime obligations below are still proposed.
 
 ### 2. Value and derivative agreement
 
@@ -79,4 +89,6 @@ The compiler must construct and validate the reduced differential system itself.
 - [SPEC_0032](SPEC_0032_RANGE_PRESERVING_TENSORS.md), [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md), [SPEC_0038](SPEC_0038_UNIFIED_FMI_EXECUTION.md)
 - [MLS StateSelect](https://specification.modelica.org/maint/3.6/class-predefined-types-and-declarations.html#stateselect)
 - [FMI 3.0.2](https://fmi-standard.org/docs/3.0.2/) — ModelStructure and Model Exchange completed-step/Event Mode rules
+- [Tang et al., structural offsets by fixed-point iteration](https://arxiv.org/pdf/1406.4473), §2
+- [McKenzie and Pryce, structural analysis and dummy derivatives](https://orca.cardiff.ac.uk/id/eprint/100978/), 2017
 - [MultiBody evidence ledger](../docs/dev-guide/src/tooling/multibody-coverage.md)
