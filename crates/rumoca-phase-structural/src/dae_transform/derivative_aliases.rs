@@ -10,7 +10,7 @@ use rumoca_ir_dae as dae;
 
 use super::variables::{ReservedVariable, TargetVariable};
 use super::{PreparedDae, PreparedSystem, structural_analysis, transformed};
-use crate::{BltBlock, SortedDae, StructuralError, UnknownId};
+use crate::{BltBlock, EquationRef, StructuralError, UnknownId};
 
 pub(super) fn normalize(prepared: PreparedDae<'_>) -> Result<PreparedDae<'_>, StructuralError> {
     let selected = prepared.inspect(implicit_states);
@@ -34,18 +34,10 @@ fn implicit_states(system: PreparedSystem<'_, '_>) -> Vec<u32> {
     let Some(sorted) = system.structural else {
         return Vec::new();
     };
-    let definitions = existing_derivative_owners(system.view, &sorted);
+    let definitions =
+        existing_derivative_owners(system.view, &sorted.blocks, sorted.matching.iter().copied());
     let tensor_derivatives = tensor_derivative_states(system.view);
-    let mut selected = system
-        .view
-        .variables()
-        .filter_map(|(id, variable)| {
-            (variable.role() == dae::VariableRole::State
-                && tensor_derivatives.contains(&id.index())
-                && definitions.get(&id.index()).copied().unwrap_or(0) != variable.scalar_count())
-            .then_some(id.index())
-        })
-        .collect::<BTreeSet<_>>();
+    let mut selected = uncovered_tensor_states(system.view, &definitions, &tensor_derivatives);
     for block in &sorted.blocks {
         let BltBlock::AlgebraicLoop { unknowns, .. } = block else {
             continue;
@@ -62,6 +54,50 @@ fn implicit_states(system: PreparedSystem<'_, '_>) -> Vec<u32> {
         }));
     }
     selected.into_iter().collect()
+}
+
+/// Extend a singular system before higher differentiation consumes its rates.
+/// The partial matching proves only explicit derivative-owner coverage;
+/// coupled native blocks require the completed analysis consumed by `normalize`.
+pub(super) fn normalize_tensors(model: &dae::Dae) -> Result<Option<dae::Dae>, StructuralError> {
+    let selected = model.inspect(|view| {
+        let tensor_derivatives = tensor_derivative_states(view);
+        if tensor_derivatives.is_empty() {
+            return Ok(Vec::new());
+        }
+        let incidence = crate::incidence::build_incidence(view)?;
+        let preferences = crate::explicit_derivative_preferences(view, &incidence);
+        let (match_eq, _) = crate::maximum_matching(&incidence, &preferences);
+        let matching = match_eq.iter().enumerate().filter_map(|(row, unknown)| {
+            unknown.map(|id| (incidence.equation_refs[row], incidence.unknowns[id]))
+        });
+        let definitions = existing_derivative_owners(view, &[], matching);
+        Ok::<_, StructuralError>(
+            uncovered_tensor_states(view, &definitions, &tensor_derivatives)
+                .into_iter()
+                .collect::<Vec<_>>(),
+        )
+    })?;
+    if selected.is_empty() {
+        return Ok(None);
+    }
+    super::reconstruction::rebuild_derivative_aliases(model, &selected, &[])
+        .map(|(model, _)| Some(model))
+}
+
+fn uncovered_tensor_states(
+    view: dae::DaeView<'_>,
+    definitions: &BTreeMap<u32, usize>,
+    tensor_derivatives: &BTreeSet<u32>,
+) -> BTreeSet<u32> {
+    view.variables()
+        .filter_map(|(id, variable)| {
+            (variable.role() == dae::VariableRole::State
+                && tensor_derivatives.contains(&id.index())
+                && definitions.get(&id.index()).copied().unwrap_or(0) != variable.scalar_count())
+            .then_some(id.index())
+        })
+        .collect()
 }
 
 fn tensor_derivative_states(view: dae::DaeView<'_>) -> BTreeSet<u32> {
@@ -120,12 +156,13 @@ struct ExplicitDerivativeOwner {
 
 fn existing_derivative_owners<'dae>(
     view: dae::DaeView<'dae>,
-    sorted: &SortedDae<'dae>,
+    blocks: &[BltBlock<'dae>],
+    matching: impl Iterator<Item = (EquationRef, UnknownId<'dae>)>,
 ) -> BTreeMap<u32, usize> {
-    let block_rows = derivative_block_rows(&sorted.blocks);
+    let block_rows = derivative_block_rows(blocks);
     let owners = explicit_derivative_owners(view);
     let mut covered = BTreeMap::new();
-    for (row, unknown) in &sorted.matching {
+    for (row, unknown) in matching {
         let UnknownId::Derivative { state, .. } = unknown else {
             continue;
         };

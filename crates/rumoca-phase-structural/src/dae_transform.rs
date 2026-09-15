@@ -1142,12 +1142,12 @@ impl HolonomicReductionState {
         self.accept_reduced(step);
     }
 
-    fn direct_or_held(
+    fn direct_step(
         &mut self,
         original: &dae::Dae,
-        held: Option<(HolonomicConstraint, usize, HolonomicStep)>,
+        allow_held: bool,
         observer: &mut impl ReductionObserver,
-    ) -> Result<Option<HolonomicRound>, StructuralError> {
+    ) -> Result<Option<DemotionStep>, StructuralError> {
         self.direct_round_number += 1;
         observer.observe(ReductionEvent::Round {
             lane: Lane::Direct,
@@ -1158,11 +1158,38 @@ impl HolonomicReductionState {
             self.current(original),
             self.residue,
             &self.manifold,
-            held.is_none(),
+            allow_held,
             observer,
         )?;
         self.blocked = self.blocked.take().or(round.blocked);
-        match round.step {
+        Ok(round.step)
+    }
+
+    fn exhaust_direct(
+        &mut self,
+        original: &dae::Dae,
+        observer: &mut impl ReductionObserver,
+    ) -> Result<Option<HolonomicRound>, StructuralError> {
+        while let Some(step) = self.direct_step(original, true, observer)? {
+            match step {
+                DemotionStep::Sorted {
+                    dae,
+                    manifold,
+                    structural,
+                } => return sorted_holonomic_round(dae, manifold, structural).map(Some),
+                step @ DemotionStep::Reduced { .. } => self.accept_reduced(step.into()),
+            }
+        }
+        Ok(None)
+    }
+
+    fn direct_or_held(
+        &mut self,
+        original: &dae::Dae,
+        held: Option<(HolonomicConstraint, usize, HolonomicStep)>,
+        observer: &mut impl ReductionObserver,
+    ) -> Result<Option<HolonomicRound>, StructuralError> {
+        match self.direct_step(original, held.is_none(), observer)? {
             Some(DemotionStep::Sorted {
                 dae,
                 manifold,
@@ -1263,9 +1290,20 @@ fn reduce_holonomic_constraint_with_observer(
     mut perturb_enumeration: impl FnMut(&mut Vec<HolonomicConstraint>),
     observer: &mut impl ReductionObserver,
 ) -> Result<HolonomicRound, StructuralError> {
-    let outcome = structural_analysis(model);
+    let mut outcome = structural_analysis(model);
+    let normalized = if matches!(outcome, Err(StructuralError::Singular { .. })) {
+        derivative_aliases::normalize_tensors(model)?
+    } else {
+        None
+    };
+    if let Some(normalized) = &normalized {
+        outcome = structural_analysis(normalized);
+    }
     let (residue, current_error) = match outcome {
-        Ok(_) => {
+        Ok(structural) => {
+            if let Some(normalized) = normalized {
+                return sorted_holonomic_round(normalized, Vec::new(), structural);
+            }
             return Ok(HolonomicRound {
                 step: None,
                 blocked: None,
@@ -1282,6 +1320,12 @@ fn reduce_holonomic_constraint_with_observer(
         },
     };
     let mut state = HolonomicReductionState::new(residue, current_error);
+    state.reduced = normalized;
+    if state.reduced.is_some()
+        && let Some(round) = state.exhaust_direct(model, observer)?
+    {
+        return Ok(round);
+    }
     loop {
         state.round_number += 1;
         observer.observe(ReductionEvent::Round {

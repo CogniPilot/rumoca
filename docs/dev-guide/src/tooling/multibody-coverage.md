@@ -4,6 +4,68 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint completes with high OMC trace agreement
+
+The ordinary worker now compiles, initializes, and simulates
+`Modelica.Mechanics.MultiBody.Examples.Constraints.RevoluteConstraint` over its
+complete 0–10 second interval. All 918 shared OMC trajectory channels and all
+918 initialization channels are high agreement, with zero minor, deviating,
+or severe channels. This is a focused model result; the next full-cohort run
+must establish the new MultiBody count and detect any other changes.
+
+The original DAE is byte-identical before and after the repair
+(`16554864b9cc638195b8f7f9c0ff66a1199ff0c220c694bcfd4f75c3f057e45d`).
+The first divergence was structural preparation: `initAngle.angle` has an
+implicit coupled angular-rate equation, but its derivative alias was introduced
+only after complete structural matching. Index reduction needed that rate
+representation to differentiate the rotational constraints a second time.
+The source-owned angular-rate relation is the same one used by OMC's generated
+equations; no model-specific equations or state choices were introduced.
+
+Structural preparation now exposes implicit tensor rates before holonomic
+reduction through the existing checked whole-tensor alias reconstruction.
+Actual partial matching proves complete coordinate coverage of explicit
+derivative owners. It cannot substitute for complete structural analysis or
+certify a coupled native derivative block for this earlier phase. Complete
+prepared systems retain their native derivative blocks. The real-model probe
+showed three native-block matches but no explicit derivative definition for
+the angle tensor; after reduction even those native-block matches disappeared.
+That distinction explains why moving the previous selection unchanged was
+insufficient. STRUCT-T09 records the sequencing and owner-coverage contract;
+MLS Appendix B and the exact equality `der(state)=alias` establish equivalence.
+
+The new representation can expose direct state reductions, so those are
+exhausted before differentiating a constraint. The reduced implicit-rate
+example consequently retains the same four scalar states as its explicit-rate
+form instead of integrating a redundant velocity state. Scalar, tensor, and
+domain derivative owners keep their existing checks; aliases retain complete
+shapes and introduce no independent initial conditions. No incomplete matching
+escapes as a prepared proof, no tensor basis is enumerated, and no tolerances,
+attempt limits, or model-name branches changed.
+
+The regressions cover diagonal and coupled tensor rates, an independent
+constraint requiring a second derivative, explicit domain owners, and an
+already complete coupled ODE that must retain its native derivative block.
+Both integrators match analytical trajectories. A split scalar-projection
+variant still has a separate reconstruction limitation: its test checks that
+partial explicit coverage receives the required whole-tensor alias, not that
+the model simulates. It remains a visible structural refusal.
+
+All 1,062 tests pass: 99 library, 617 core, 141 Solve, and 205 structural.
+Phase all-target/all-feature Clippy, core-suite Clippy, and workspace formatting
+pass. The two ordinary-worker reduced models each compare 7/7 shared OMC
+channels high and satisfy analytical checks. The fixed Tier 1 targets
+`multibody-early-tensor-rate-{frontier,origin,canary}` have empty phase and band
+deltas against `multibody-affine-map-complete-*`: 5/6/9 compared high, 1/2/0
+reviewed exclusions, and zero missing or nonidentifiable traces. The canary's
+eleven failing models remain visible.
+
+Evidence is in `rolling-wheel/early-tensor-rate-*`,
+`rolling-wheel/revolute-early-tensor-rate-worker-2`, and
+`rolling-wheel/revolute-early-tensor-rate-comparison-2.json`. The source-selection
+probe was removed. The full-cohort sweep is next; combined quick/full release
+verification, baseline promotion, push, and PR remain pending.
+
 ## Affine tensor reconstruction retains component proofs
 
 The saved RevoluteConstraint angular-rate equations expose two missing proof
