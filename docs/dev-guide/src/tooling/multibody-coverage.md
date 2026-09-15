@@ -52,6 +52,34 @@ focused validation of the shared decoder fix. IMS_Start's remaining numerical
 differences, the GyroscopicEffects timeout, and combined verify quick/full
 remain open; no cohort baseline is promoted.
 
+The same xtask-generated IMS_Start OMC executable was then evaluated at two
+higher numerical accuracies, changing only the copied initialization XML's
+experiment tolerance. Executable, XML, sparsity inputs, CSV, and trace digests
+are recorded in `ims-start-omc-refinement-{2,3}/receipt.json`. The initial
+diagnostic bundle omitted OMC's sparsity files and failed before initialization;
+the corrected bundles include those exact inputs. Both numerical runs finish
+successfully. Using the production comparator with the repaired decoder:
+
+| Comparison | Shared channels | High | Near | Deviation |
+|---|---:|---:|---:|---:|
+| Original Rumoca vs OMC at `1e-6` | 710 | 690 | 18 | 2 |
+| Same Rumoca trace vs OMC at `1e-10` | 710 | 710 | 0 | 0 |
+| Same Rumoca trace vs OMC at `1e-12` | 710 | 710 | 0 | 0 |
+| OMC `1e-10` vs OMC `1e-12` | 735 | 735 | 0 | 0 |
+
+Rumoca's worst bounded channel error against the two refined references is
+approximately 0.00256. The reference-to-reference comparison's worst channel
+is `der(aims.i_0_r)` at 0.03731; all 735 channels meet the existing high threshold.
+MSL's SpacePhasor component defines `-m*zero.i = sum(i)`, and generated OMC
+equations 381/449 evolve the two zero-sequence currents from their inductor
+voltages. Together with the original summed-current traces, the convergence
+results identify an accuracy limitation of the default OMC reference. They
+provide no reason to make Rumoca reproduce its small spurious currents.
+This diagnostic does not replace the official reference or promote a cohort
+count. Reference-quality handling remains open, alongside the GyroscopicEffects
+compile-budget regression. Results are `ims-start-refined-comparison-{2,3}.json`
+and `ims-start-omc-self-comparison-3.json`.
+
 ## Guard affine tearing and scale sensitivity checks by their direction
 
 Affine projection now consumes a checked elimination layout derived from the
