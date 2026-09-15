@@ -411,7 +411,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.enter_context(ScalarContextFrame::Derivative {
             parent: self.context_id,
             state: state.index(),
-            scalar,
+            definition: definition.expression,
+            domain_point: definition
+                .domain_point
+                .clone()
+                .filter(|_| self.node(definition.expression).binder_domain().is_some()),
         });
         self.active_derivatives.push(key);
         let pushed_point = definition.domain_point.clone();

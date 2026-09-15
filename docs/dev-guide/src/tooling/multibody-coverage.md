@@ -4,6 +4,43 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Share derivative tensor definitions across component projections
+
+The reduced case `der(x)=A*x; z=sum(der(x))` exposed duplicate tensor
+computation in Solve lowering. Both derivative components used the same matched
+definition, but their scalar-view domain points created different expression
+contexts. The regression initially emitted two complete matrix products. The
+definition's construction-issued binder metadata now distinguishes a real
+binding dependency from an output projection, reducing that case to one product.
+A binder-dependent control retains separate products and correct values for
+both tested parameter/state tuples. SPEC_0032 §2 records the boundary.
+
+All 141 Solve tests and 605 core tests pass, together with affected Clippy and
+formatting checks. OMC agrees exactly with all four initial-equation values
+used by the reduced controls (`derivative-tensor-sharing-omc-1/receipt.json`);
+this is an equation check, not a trajectory comparison. The focused originating
+run `multibody-derivative-tensor-origin` retains two high comparisons, one
+existing reviewed exclusion, no missing traces, and 229 high initialization
+channels. The fixed 20-model canary `multibody-derivative-tensor-canary` retains
+all previous phase and band results: nine compared models, all high, no skips
+or missing traces, and 175 high initialization channels. Receipts are
+`derivative-tensor-origin-delta.json` and `derivative-tensor-canary-delta.json`.
+
+This fix does not change RollingWheel's generated kernel. Its Flat, DAE,
+structural DAE, Solve, and complete trace remain byte-identical to the control
+(`derivative-tensor-sharing-profile-evidence-1.json`). The fresh single run is
+86.469 ms versus 79.726 ms for the control; unchanged executable IR and single
+samples do not establish a speed effect. Checked replay identifies the hot
+Jacobian program as Body's `a_0=der(v_0)`: its primal has 392 operations and its
+directional program 536, executed in six of the block's nine colors. The
+remaining expansion must be traced through structural differentiation.
+
+Three temporary cache experiments produced no retained optimization: bypassing
+all pure-call result caches, bypassing small arithmetic bodies, and inlining
+small cache copies. Their receipts explicitly retain the single-sample and
+build-configuration limitations; they do not establish an optimal cache policy.
+All probes were removed and the ordinary worker rebuilt before validation.
+
 ## Structural functions retained in symbolic bindings
 
 The full sweep at `617e315a2f3986dceddb1d3096b4ddc4738e9d29` exposed a

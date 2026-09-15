@@ -4,6 +4,7 @@
 //! the static quotient builtins, and a checked function call inlined into the
 //! row that uses it.
 
+mod derivative_tensor_sharing;
 mod function_calls;
 mod unary_reuse;
 

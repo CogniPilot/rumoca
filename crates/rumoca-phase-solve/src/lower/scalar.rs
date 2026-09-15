@@ -163,7 +163,8 @@ enum ScalarContextFrame<'dae> {
     Derivative {
         parent: u64,
         state: u32,
-        scalar: usize,
+        definition: dae::ExprId<'dae>,
+        domain_point: Option<(dae::DomainId<'dae>, Vec<i64>)>,
     },
     DerivativeSeed {
         parent: u64,
