@@ -4,6 +4,42 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Second derivatives of angular constraints
+
+OMC differentiates PrismaticConstraint's `Orientation.equalityConstraint`
+twice: its generated equations 1328–1330 retain the source Prismatic joint's
+line 55 and second derivatives of the rotation matrices. Rumoca's structural
+builtin profile admitted `atan2` only at first order. Under STRUCT-T03 and
+the MLS function-differentiation contract, it now constructs the second
+derivative with `D=x*x+y*y`, `N=x*y'-y*x'`, and
+`theta''=(x*y''-y*x''-2*theta'*(x*x'+y*y'))/D`. The original constraint and
+denominator remain; no domain cancellation or scalar tensor expansion occurs.
+
+The reduced `Atan2Constraint` fixture was structurally singular (4/5 matched)
+before this change. Both integrators now reproduce all five analytical
+channels for constant and changing first arguments. A zero-radius initial
+orientation remains rejected. The normal worker and OMC agree highly on all
+five trajectory and initialization channels over the full 0–0.1 fixture
+interval. The initial OMC probe with nonzero radial velocity instead violated
+its requested initial velocity; that oracle defect is preserved separately in
+`prismatic-atan2-omc-initial-gap-1.json`. The nonzero-velocity case remains an
+analytical regression, and no comparator exclusion was added.
+
+All 1,068 focused tests pass (99 library, 623 core, 141 Solve, 205 structural),
+along with phase and core Clippy and workspace formatting. Tier 1
+`multibody-atan2-constraints-{frontier,origin,canary}` has no phase or band
+changes against `multibody-initial-obligations-*`: 5/6/9 compared high,
+1/2/0 reviewed exclusions, and zero missing or nonidentifiable traces.
+The canary's eleven existing failures remain visible. Evidence is in
+`rolling-wheel/prismatic-atan2-*` and `rolling-wheel/atan2-constraints-*`.
+
+This fixes a demonstrated prerequisite, but the real PrismaticConstraint
+still refuses structural preparation. Its inspected intermediate remains
+2,314/2,317 matched, and the orientation residual (owner 450) never becomes
+a candidate. The next investigation checks the distinct derivative and
+retained-value prerequisites for that exact source equation. No new MultiBody
+coverage or release-readiness claim follows from the reduced-model result.
+
 ## Full cohort preserves all high bands after initialization repair
 
 `target/msl/multibody-initial-obligations-full` passes at

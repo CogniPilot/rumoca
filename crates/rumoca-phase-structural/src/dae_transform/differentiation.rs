@@ -794,7 +794,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             Builtin::Sin | Builtin::Cos | Builtin::Sqrt => {
                 self.differentiate_unary_geometry(builtin, arguments, order, provenance)
             }
-            Builtin::Atan2 => self.differentiate_atan2_builtin(arguments, provenance),
+            Builtin::Atan2 => self.differentiate_atan2_builtin(arguments, order, provenance),
             Builtin::LinearSolve => self.differentiate_linear_solve(arguments, order, provenance),
             _ => unreachable!("differentiability preflight rejects this builtin"),
         }
@@ -803,8 +803,10 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     fn differentiate_atan2_builtin(
         &mut self,
         arguments: dae::ExpressionOperands<'source>,
+        order: u8,
         provenance: dae::DaeProvenance,
     ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        assert!((1..=2).contains(&order));
         let mut arguments = arguments.iter();
         let y = arguments.next().expect("checked atan2 y argument");
         let x = arguments.next().expect("checked atan2 x argument");
@@ -833,6 +835,38 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             self.target
                 .at(provenance)
                 .binary(dae::BinaryOperator::Add, x_squared, y_squared)?;
+        let first = self.target.at(provenance).binary(
+            dae::BinaryOperator::Divide,
+            numerator,
+            denominator,
+        )?;
+        if order == 1 {
+            return Ok(Derivative::Expression(first));
+        }
+
+        // With D=x*x+y*y and N=x*y'-y*x', theta''=(N'-theta'*D')/D.
+        // The mixed terms in N' cancel exactly. Retain D and the original
+        // source constraint; no denominator cancellation changes the domain.
+        let y_second = self.differentiate_order(y, 2, provenance)?;
+        let x_second = self.differentiate_order(x, 2, provenance)?;
+        let x_ddy = self.multiply(y_second, Derivative::Expression(x_value), provenance)?;
+        let y_ddx = self.multiply(x_second, Derivative::Expression(y_value), provenance)?;
+        let numerator_second =
+            self.combine_sum(dae::BinaryOperator::Subtract, x_ddy, y_ddx, provenance)?;
+        let x_dx = self.multiply(x_derivative, Derivative::Expression(x_value), provenance)?;
+        let y_dy = self.multiply(y_derivative, Derivative::Expression(y_value), provenance)?;
+        let radius_rate = self.combine_sum(dae::BinaryOperator::Add, x_dx, y_dy, provenance)?;
+        let correction = self.multiply(Derivative::Expression(first), radius_rate, provenance)?;
+        let correction = self.twice(correction, provenance)?;
+        let numerator = self.combine_sum(
+            dae::BinaryOperator::Subtract,
+            numerator_second,
+            correction,
+            provenance,
+        )?;
+        let Derivative::Expression(numerator) = numerator else {
+            return Ok(Derivative::Zero);
+        };
         self.target
             .at(provenance)
             .binary(dae::BinaryOperator::Divide, numerator, denominator)

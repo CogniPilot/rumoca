@@ -51,7 +51,5 @@ pub(super) fn is_differentiable_binary(operator: dae::BinaryOperator) -> bool {
 
 /// The structural preflight and reconstruction share this closed derivative profile.
 pub(super) fn is_differentiable_builtin(builtin: dae::PureBuiltin, order: u8) -> bool {
-    (1..=2).contains(&order)
-        && (is_materializable_builtin(builtin)
-            && (builtin != dae::PureBuiltin::Atan2 || order == 1))
+    (1..=2).contains(&order) && is_materializable_builtin(builtin)
 }
