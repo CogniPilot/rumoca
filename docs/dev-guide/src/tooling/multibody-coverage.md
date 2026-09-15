@@ -4,6 +4,36 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Why affine projection currently bypasses tearing
+
+Commit `82630a4d` placed affine projection before tearing to repair stale
+switching coordinates: a residual below tolerance could still leave a voltage
+on the wrong side of zero. The affine path computes `A*x = -F(0)` and refines
+against original residuals. Later commits `c4789fce` and `3a7c0b12` preserve
+small coordinates beside large offsets. These guarantees do not inherently
+require the full block, but the existing reduced Newton path uses finite
+differences and different acceptance rules; reordering dispatch alone does
+not establish equivalent behavior.
+
+The current RollingWheel block has 24 unknowns, five tears, and 19 exact
+back-substitution steps. A private checked-IR replay restored all 916 solver
+coordinates through the trace's exact `LoadY` output projections at all 501
+recorded times. Every substitution sweep completed, both from recorded tears
+and from zero tears. At recorded tears, the maximum absolute recovered-value
+change was `4.55e-13` and the maximum reduced residual was `2.16e-13`.
+This rejects an unusable isolator at those sampled points as the reason for
+the bypass; it does not prove usable pivots at every integrator stage or
+validate a reduced solver. The evidence is
+`torn-sweep-trajectory-result-1.json`, with its helper and input mapping retained
+under `.git/multibody-campaign/rolling-wheel/`.
+
+OMC's generated linear system 731 has six unknowns and an analytical Jacobian.
+The next implementation target is an AD-derived reduced affine system from
+the issued substitution schedule, preserving original-equation refinement and
+recovered-coordinate accuracy. An unusable reduced pivot must retain the
+original implicit solve. No dispatch change or new timing claim follows from
+this inspection; the latest complete MSL result remains the run below.
+
 ## Invalidate native constant facts on register writes
 
 A checked Solve program exposed a native indexing counterexample: it sets
