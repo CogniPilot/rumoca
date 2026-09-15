@@ -39,6 +39,21 @@ no deviation channels, and all 20,964 initialization channels high. All phase
 and band results match the previous projection-reuse sweep, leaving MultiBody
 at 22/42 high (`register-constants-full-delta.json`).
 
+A subsequent allocation experiment reused the solved Newton vector while
+unscaling it. All 75 projection tests and Clippy passed, but three alternating
+ordinary worker pairs measured 73.900 ms versus 74.261 ms median with overlapping
+samples and identical complete traces. The 0.49% difference did not establish
+a clear speed improvement, so the experiment was removed and the ordinary
+worker rebuilt (`owned-delta-timing-summary-1.json`).
+
+The exact worker dependency chain enables faer's Rayon feature, but replay of
+the issued 24-by-24, 96-entry pattern selects simplicial LU. That implementation's
+numeric factorization and triangular solves run serially; forcing sequential
+configuration cannot remove threaded work from this block
+(`faer-issued-parallelism-evidence-1.json`). The larger unresolved issue remains
+the full coupled system and its repeated evaluations, compared with OMC's
+six-unknown generated linear system.
+
 ## Reuse primal work across projection-Jacobian colors
 
 The complete projection application now issues seed-invariance facts using
