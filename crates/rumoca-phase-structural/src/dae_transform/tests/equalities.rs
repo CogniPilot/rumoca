@@ -2002,7 +2002,16 @@ fn an_opposed_pin_proves_constancy_without_naming_the_pinned_value() {
             "`q + I = 0` pins the class to a time-invariant value"
         );
         assert_eq!(
-            equalities.anchor_expression(anchor),
+            equalities.anchor_expression(
+                view,
+                anchor,
+                view.variable(
+                    view.variable_id(variable_index(view, "q") as usize)
+                        .unwrap()
+                )
+                .unwrap()
+                .value_type()
+            ),
             None,
             "the class sits at `-I`, which no source expression names"
         );

@@ -188,7 +188,7 @@ fn materialize_algebraic<'dae>(
     facts
         .equalities
         .value_anchor_of(algebraic.index())
-        .and_then(|(anchor, _)| facts.equalities.anchor_expression(anchor))
+        .and_then(|(anchor, _)| facts.equalities.payload_anchor_expression(anchor))
         .and_then(|anchor| view.expression_id(anchor as usize))
         .or_else(|| facts.algebraic_definition(view, algebraic))
         .is_some_and(|definition| {

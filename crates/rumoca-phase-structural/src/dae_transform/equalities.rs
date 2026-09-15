@@ -236,8 +236,8 @@ pub(super) struct SystemEqualities {
     affine: SignedClasses,
     /// Whether each variable ordinal is declared a continuous state.
     state: Vec<bool>,
-    /// Lowest whole-model coordinate expression ordinal naming each variable.
-    coordinate: Vec<Option<u32>>,
+    /// Whole-model coordinate views naming each state payload.
+    coordinate: Vec<StateCoordinates>,
     /// One asserted equality incident to each variable, for candidate owners.
     witness: Vec<Option<dae::DaeProvenance>>,
 }
@@ -384,10 +384,29 @@ impl SystemEqualities {
     }
 
     /// The source expression a demotion onto `anchor` differentiates.
-    pub(super) fn anchor_expression(&self, anchor: EqualityAnchor) -> Option<u32> {
+    pub(super) fn anchor_expression(
+        &self,
+        view: dae::DaeView<'_>,
+        anchor: EqualityAnchor,
+        expected: &dae::ValueType,
+    ) -> Option<u32> {
         match anchor {
             EqualityAnchor::Invariant { value, .. } => value,
-            EqualityAnchor::State(state) => self.coordinate[state as usize],
+            EqualityAnchor::State(state) => {
+                self.coordinate[state as usize].matching(view, expected)
+            }
+        }
+    }
+
+    /// Source payload for a consumer that reconstructs the receiving shape
+    /// with `shape_equality_anchor`; singleton equality can cross ranks.
+    pub(super) fn payload_anchor_expression(&self, anchor: EqualityAnchor) -> Option<u32> {
+        match anchor {
+            EqualityAnchor::Invariant { value, .. } => value,
+            EqualityAnchor::State(state) => {
+                let coordinate = self.coordinate[state as usize];
+                coordinate.whole.or(coordinate.scalar)
+            }
         }
     }
 
@@ -424,7 +443,7 @@ impl SystemEqualities {
             let index = id.index();
             if variable.role() != dae::VariableRole::State
                 || !is_real_payload(variable)
-                || self.coordinate[index as usize].is_none()
+                || self.coordinate[index as usize].is_empty()
             {
                 continue;
             }
@@ -520,8 +539,7 @@ fn anchor_rank(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> (u8, u8, u8) {
                 StateSelect::Prefer => 3,
                 StateSelect::Always => 4,
             };
-            // Reconstruction demotes only scalar state declarations. When a
-            // scalar and an exact singleton projection have the same explicit
+            // When a scalar and an exact singleton projection have the same explicit
             // state preference and initial-value strength, keep the singleton
             // aggregate and demote the scalar member. This is a construction
             // capability tie-break, never a name or equation-order heuristic.
@@ -1028,8 +1046,31 @@ fn is_static_one_subscript<'dae>(
 /// A demotion hands one of these ordinals to reconstruction as the definition
 /// it differentiates, so a scoped expression must never be indexed here: its
 /// identity is only meaningful inside its function or comprehension.
-fn coordinate_expressions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
-    let mut coordinates = vec![None; view.variable_count()];
+#[derive(Clone, Copy, Default)]
+struct StateCoordinates {
+    whole: Option<u32>,
+    scalar: Option<u32>,
+}
+
+impl StateCoordinates {
+    fn is_empty(self) -> bool {
+        self.whole.is_none() && self.scalar.is_none()
+    }
+
+    fn matching(self, view: dae::DaeView<'_>, expected: &dae::ValueType) -> Option<u32> {
+        [self.whole, self.scalar]
+            .into_iter()
+            .flatten()
+            .find(|&index| {
+                view.expression_id(index as usize)
+                    .and_then(|id| view.expression(id))
+                    .is_some_and(|expression| expression.value_type() == expected)
+            })
+    }
+}
+
+fn coordinate_expressions(view: dae::DaeView<'_>) -> Vec<StateCoordinates> {
+    let mut coordinates = vec![StateCoordinates::default(); view.variable_count()];
     for index in 0..view.expression_count() {
         let Some(expression_id) = view.expression_id(index) else {
             continue;
@@ -1045,18 +1086,19 @@ fn coordinate_expressions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
                 let Some(variable) = view.variable(variable_id) else {
                     continue;
                 };
-                if is_real_payload(variable)
-                    && (variable.value_type().is_scalar()
-                        || variable.value_type().scalar_count() != Some(1))
-                {
-                    coordinates[state.index() as usize].get_or_insert(index as u32);
+                if is_real_payload(variable) {
+                    coordinates[state.index() as usize]
+                        .whole
+                        .get_or_insert(index as u32);
                 }
             }
             dae::ExpressionOperation::Index { .. } => {
                 if let Some(SingletonRealProjection::State(state)) =
                     singleton_real_projection(view, expression_id)
                 {
-                    coordinates[state as usize].get_or_insert(index as u32);
+                    coordinates[state as usize]
+                        .scalar
+                        .get_or_insert(index as u32);
                 }
             }
             _ => {}

@@ -18,6 +18,7 @@ mod reconstruction_failures;
 mod reduction_observation;
 mod runtime_quotients;
 mod scalar_auxiliary_blocks;
+mod scalar_state_offsets;
 mod shared_differentiation;
 mod state_invariant_balances;
 mod tensor_linear_map;

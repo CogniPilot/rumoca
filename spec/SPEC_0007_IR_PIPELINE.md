@@ -295,10 +295,10 @@ STRUCT-T03 preserves shared expression identity. Reuse requires identical
 source, call substitutions, derivative order, reconstruction mode, and provenance;
 Unrelated calls or equation owners cannot merge. Discovery,
 preflight, and reconstruction share differentiation facts per immutable source
-round. Replacement DAEs require fresh facts; ordering and acceptance stay unchanged.
+round. Replacement DAEs refresh facts, preserving ordering and acceptance.
 
-Invariant elimination separates affine derivatives from exact values.
-Demotion prefers independent exact, then displaced anchors.
+Demotion distinguishes exact values from affine derivatives; displaced definitions
+preserve source value equations and cannot substitute manifold values.
 Tangents and non-additive lifts replay exact anchors.
 Additive lifts share acyclic source-row value/derivative proofs excluding replaced owners and lifted coordinates.
 Holonomic replacement excludes value identities; undoing lifts restores original equations.

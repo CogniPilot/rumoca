@@ -188,7 +188,7 @@ impl DifferentiationFacts {
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => self
                 .equalities
                 .value_anchor_of(algebraic.index())
-                .and_then(|(anchor, _)| self.equalities.anchor_expression(anchor))
+                .and_then(|(anchor, _)| self.equalities.payload_anchor_expression(anchor))
                 .and_then(|anchor| view.expression_id(anchor as usize))
                 .or_else(|| self.algebraic_definition(view, algebraic))
                 .is_some_and(|definition| self.expression_is_zero(view, definition, context)),
@@ -418,6 +418,7 @@ pub(super) fn demotion_preserves_manifold_values(
         return true;
     }
     match candidate.rhs {
+        StateDefinition::DerivativeExpression(_) => false,
         StateDefinition::Expression(rhs) => facts
             .materialized_state_anchors(view, rhs)
             .is_some_and(|states| !states.contains(&candidate.state)),
@@ -509,7 +510,9 @@ fn carries_a_differentiable_definition(
     facts: &DifferentiationFacts,
     candidate: DirectStateConstraint,
 ) -> bool {
-    let StateDefinition::Expression(rhs) = candidate.rhs else {
+    let (StateDefinition::Expression(rhs) | StateDefinition::DerivativeExpression(rhs)) =
+        candidate.rhs
+    else {
         return facts.auxiliary_blocks[candidate.state as usize]
             .as_ref()
             .is_some_and(|block| !block.state_anchors.contains(&candidate.state));
@@ -609,7 +612,11 @@ fn redundant_state_constraints(
             }
             Some(DirectStateConstraint {
                 state,
-                rhs: StateDefinition::Expression(equalities.anchor_expression(anchor)?),
+                rhs: StateDefinition::Expression(equalities.anchor_expression(
+                    view,
+                    anchor,
+                    variable.value_type(),
+                )?),
                 rhs_sign,
                 owner: equalities.witness(state)?,
             })
@@ -774,8 +781,12 @@ fn direct_state_constraint<'dae>(
     owner: dae::DaeProvenance,
 ) -> Option<DirectStateConstraint> {
     let (lhs, rhs) = equation_sides(view, residual_id)?;
-    direct_state_definition(view, facts, lhs, rhs, owner)
-        .or_else(|| direct_state_definition(view, facts, rhs, lhs, owner))
+    [DerivativeAnchors::Exact, DerivativeAnchors::Affine]
+        .into_iter()
+        .find_map(|anchors| {
+            direct_state_definition(view, facts, lhs, rhs, owner, anchors)
+                .or_else(|| direct_state_definition(view, facts, rhs, lhs, owner, anchors))
+        })
 }
 
 fn direct_state_definition<'dae>(
@@ -784,11 +795,13 @@ fn direct_state_definition<'dae>(
     lhs: dae::ExprId<'dae>,
     rhs: dae::ExprId<'dae>,
     owner: dae::DaeProvenance,
+    anchors: DerivativeAnchors,
 ) -> Option<DirectStateConstraint> {
-    let (state, rhs_sign) = exact_state_anchor(view, &facts.equalities, lhs)?;
+    let (state, rhs_sign) = state_anchor(view, &facts.equalities, lhs, anchors)?;
     let variable = view.variable(view.variable_id(state.index() as usize)?)?;
     if variable.state_select() == StateSelect::Always
         || variable.value_type().scalar_type() != dae::ScalarType::Real
+        || variable.value_type().dimensions() != view.expression(rhs)?.value_type().dimensions()
         || dae::expr_contains_var(view, rhs, variable.id())
         || reaches_demoted_derivative(view, facts, rhs, state)
         || !is_differentiable(
@@ -803,7 +816,10 @@ fn direct_state_definition<'dae>(
     }
     Some(DirectStateConstraint {
         state: state.index(),
-        rhs: StateDefinition::Expression(rhs.index()),
+        rhs: match anchors {
+            DerivativeAnchors::Exact => StateDefinition::Expression(rhs.index()),
+            DerivativeAnchors::Affine => StateDefinition::DerivativeExpression(rhs.index()),
+        },
         rhs_sign,
         owner,
     })
@@ -814,13 +830,22 @@ pub(super) fn exact_state_anchor<'dae>(
     equalities: &SystemEqualities,
     expression: dae::ExprId<'dae>,
 ) -> Option<(dae::StateId<'dae>, EqualitySign)> {
+    state_anchor(view, equalities, expression, DerivativeAnchors::Exact)
+}
+
+fn state_anchor<'dae>(
+    view: dae::DaeView<'dae>,
+    equalities: &SystemEqualities,
+    expression: dae::ExprId<'dae>,
+    anchors: DerivativeAnchors,
+) -> Option<(dae::StateId<'dae>, EqualitySign)> {
     match view.expression(expression)?.operation() {
         dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) => {
             Some((state, EqualitySign::Same))
         }
         dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
             let (EqualityAnchor::State(state), sign) =
-                equalities.value_anchor_of(algebraic.index())?
+                equalities.derivative_anchor(algebraic.index(), anchors)?
             else {
                 return None;
             };
@@ -829,8 +854,6 @@ pub(super) fn exact_state_anchor<'dae>(
             else {
                 return None;
             };
-            // lhs = sign*state and lhs = rhs imply der(state) = sign*der(rhs).
-            // Both source equalities remain owners in the reconstructed DAE.
             Some((state, sign))
         }
         _ => None,
@@ -1506,7 +1529,14 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
         let Some(expression) = self
             .facts
             .equalities
-            .anchor_expression(anchor)
+            .anchor_expression(
+                self.view,
+                anchor,
+                self.view
+                    .variable(self.view.variable_id(state as usize).unwrap())
+                    .unwrap()
+                    .value_type(),
+            )
             .and_then(|expression| self.view.expression_id(expression as usize))
             .and_then(|expression| self.view.expression(expression))
         else {
@@ -1772,7 +1802,7 @@ fn is_differentiable_coordinate<'dae>(
                 Some((EqualityAnchor::Invariant { .. }, _)) => true,
                 Some((anchor @ EqualityAnchor::State(_), _)) => facts
                     .equalities
-                    .anchor_expression(anchor)
+                    .payload_anchor_expression(anchor)
                     .and_then(|anchor| view.expression_id(anchor as usize))
                     .is_some_and(|anchor| is_differentiable(view, facts, anchor, demoted, visited)),
                 None => facts

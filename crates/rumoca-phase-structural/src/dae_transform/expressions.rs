@@ -735,6 +735,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         )?;
         let previous = std::mem::replace(&mut self.substitute_demoted_value, false);
         let value = match candidate.rhs {
+            StateDefinition::DerivativeExpression(_) => {
+                unreachable!("manifold preflight requires an exact value definition")
+            }
             StateDefinition::Expression(rhs) => self.materialize_exact_value(
                 self.source
                     .expression_id(rhs as usize)
@@ -763,7 +766,8 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             candidate.owner.span(),
         )?;
         let derivative = match candidate.rhs {
-            StateDefinition::Expression(rhs) => self.differentiate(
+            StateDefinition::Expression(rhs) | StateDefinition::DerivativeExpression(rhs) => self
+                .differentiate(
                 self.source
                     .expression_id(rhs as usize)
                     .expect("candidate RHS resolves"),

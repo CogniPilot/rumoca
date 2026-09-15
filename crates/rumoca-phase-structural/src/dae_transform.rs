@@ -324,6 +324,7 @@ struct DirectStateConstraint {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum StateDefinition {
     Expression(u32),
+    DerivativeExpression(u32),
     Auxiliary(u32),
 }
 

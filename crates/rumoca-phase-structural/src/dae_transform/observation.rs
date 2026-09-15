@@ -269,6 +269,11 @@ pub enum ReductionIdentity {
         rhs_ordinal: u32,
         provenance_span: Span,
     },
+    DerivativeDefinition {
+        state_ordinal: u32,
+        rhs_ordinal: u32,
+        provenance_span: Span,
+    },
     AuxiliaryState {
         state_ordinal: u32,
         variable_ordinal: u32,
@@ -287,6 +292,15 @@ pub enum ReductionIdentity {
 impl From<Identity<'_>> for ReductionIdentity {
     fn from(identity: Identity<'_>) -> Self {
         match identity {
+            Identity::Direct(DirectIdentity {
+                state_ordinal,
+                definition: StateDefinition::DerivativeExpression(rhs_ordinal),
+                provenance_span,
+            }) => Self::DerivativeDefinition {
+                state_ordinal,
+                rhs_ordinal,
+                provenance_span,
+            },
             Identity::Direct(DirectIdentity {
                 state_ordinal,
                 definition: StateDefinition::Expression(rhs_ordinal),

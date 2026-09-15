@@ -4,6 +4,80 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Constant offsets admit derivative-only state definitions
+
+The remaining `damper1.s_rel` in LineForceWithTwoMasses reduces to the source
+relations `length=q+offset`, `length=sqrt(x*x+1)`, `der(x)=-x`, and `der(q)=rate`.
+With a constant parameter offset, Rumoca initially retains both `x` and `q`.
+Writing the equivalent equation `q=sqrt(x*x+1)-offset` already leaves only `x`.
+This rejects nonlinear differentiation as the explanation: the first divergence
+is structural discovery ignoring its existing proof that `der(length)=der(q)`.
+OMC backend output for both exact scalar sources retains only `x` and computes
+`q=length-offset` and `rate=x*der(x)/length`. Both OMC simulations complete.
+The contract is MLS section 8.3.1 and Appendix B, within SPEC_0007 structural
+lowering and SPEC_0040 STRUCT-T03.
+
+Discovery now tries exact value anchors before signed constant-displacement
+anchors. A distinct derivative-only definition permits replacing `der(q)` while
+preserving every original value equation and initialization obligation. It
+cannot substitute `q` into a retained manifold: equal derivatives do not prove
+equal values. The regression covers both offset signs, scalar, singleton,
+three-element and 4,096-element vectors, and a matrix. Dependent declarations
+are eliminated without scalarizing them; vector expression count stays constant.
+A time-varying offset supplies no derivative equality, and a manifold requiring
+the displaced state's value rejects the derivative-only definition.
+
+The singleton case also exposed a stale anchor index that kept only scalar
+projections of singleton state arrays. Whole coordinates and existing projected
+views are now indexed separately. Direct substitution requires the matching
+shape; algebraic payload substitution retains its checked singleton reshape.
+An existing scalar-to-array projection regression caught an overly restrictive
+first candidate, and passes after that distinction. All 200 structural tests
+and all-target, all-feature structural Clippy pass. Evidence is under
+`rolling-wheel/scalar-state-offset-*`.
+
+The artifact-enabled LineForceWithTwoMasses diagnostic now retains exactly
+`revolute1.phi`, `revolute1.w`, `revolute2.phi`, and `revolute2.w`: four scalar
+states, matching OMC, instead of the previous 62-state fallback. Initialization
+passes and the full three-second trajectory completes in 501 samples. The
+canonical comparator, linked to the current worker's libraries, reports all
+879 trajectory channels and all 879 initialization channels high, with zero
+minor, deviating, or severe channels. The maximum force-difference magnitude
+falls from approximately 1.015e-4 to 1.42e-13. This closes the four-channel
+refinement counterexample with a general structural repair and focused
+regressions, without changing solver settings or comparator tolerances.
+
+The diagnostic records 0.189 seconds for integration, but structural preparation
+and Solve lowering together take 10.434 seconds. This artifact-enabled run earns
+no ordinary-budget coverage or performance credit. Its optional Modelica debug
+render also reports unsupported `linear_solve`; the DAE and Solve JSON artifacts
+and complete simulation trace are retained. The unchanged originating model
+remains in the ordinary focused gate and the next full cohort comparison.
+
+Both exact scalar fixture sources also run through Rumoca's complete compiler
+and simulator with one state. Their `x`, `length`, `q`, and `rate` traces agree
+with the analytical solution, and the canonical comparator compares every
+available shared OMC channel high over their common quarter-second interval.
+The initial fixture request compiled only because it omitted the explicit
+non-MSL simulation-target flag; the second request supplies that flag and is
+the first simulation attempt. The first diagnostic driver similarly failed
+before launching Python, and the absolute interpreter launched the sole model
+attempt. Receipts include `scalar-state-offset-{numeric,comparator,diagnostic}-*`.
+
+Tier 1 is complete. The unchanged six-model frontier list now admits
+LineForceWithTwoMasses under the ordinary budgets and compares its complete
+trace high. The five compared models are high, with one reviewed exclusion and
+no missing or nonidentifiable traces. The ordinary LineForceWithTwoMasses row
+records 6.735 seconds for structural preparation plus Solve lowering and
+0.0985 seconds for integration. The unchanged eight-model origin list retains
+all six high comparisons and its two reviewed exclusions. The fixed twenty-model
+canary retains its nine high comparisons and all prior phase outcomes, with no
+exclusions. Every band or execution change is the originating model's improvement;
+all other deltas are empty. Receipts are `scalar-state-offset-*-delta-1.json`.
+Workspace formatting and whitespace checks pass. A new full cohort comparison
+at the committed checkpoint is next; no cohort gain, baseline promotion,
+complete quick/full gate, or PR is claimed from these Tier 1 results.
+
 ## Supplied derivative chains survive successive state demotions
 
 The reduced LineForceWithTwoMasses path exposed a lost MLS section 12.7.1

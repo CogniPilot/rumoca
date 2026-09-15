@@ -430,9 +430,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         let anchor = self
             .facts
             .equalities
-            .anchor_expression(anchor)
+            .payload_anchor_expression(anchor)
             .and_then(|anchor| self.source.expression_id(anchor as usize))
-            .expect("a state equality anchor has a checked scalar expression");
+            .expect("a state equality anchor has a checked payload expression");
         let derivative = match self.differentiate_order(anchor, order, provenance)? {
             Derivative::Zero => Derivative::Zero,
             Derivative::Expression(value) => {
@@ -665,7 +665,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         let anchor = self
             .facts
             .equalities
-            .anchor_expression(anchor)
+            .payload_anchor_expression(anchor)
             .and_then(|anchor| self.source.expression_id(anchor as usize))
             .expect("holonomic value preflight proves a materializable anchor");
         let anchor = self.materialize_exact_value(anchor, provenance)?;
