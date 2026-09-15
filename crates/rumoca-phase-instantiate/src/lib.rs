@@ -46,6 +46,8 @@ mod dims;
 mod entry;
 mod errors;
 mod evaluate_annotation;
+#[cfg(test)]
+mod final_modifier_tests;
 mod inheritance;
 mod inner_outer;
 mod instance_sections;
@@ -237,6 +239,7 @@ struct ScopeFrame {
     /// annotation(Evaluate = true), so everything instantiated beneath it is
     /// evaluated during translation, record members included.
     evaluate: bool,
+    is_final: bool,
     causality: Option<rumoca_core::Causality>,
     flow: bool,
     stream: bool,
@@ -248,6 +251,7 @@ struct ScopeFrame {
 struct ScopeFrameInput<'a> {
     variability: &'a rumoca_core::Variability,
     evaluate: bool,
+    is_final: bool,
     causality: &'a rumoca_core::Causality,
     flow: bool,
     stream: bool,
@@ -278,6 +282,7 @@ impl ScopeFrame {
         Self {
             variability,
             evaluate: input.evaluate,
+            is_final: input.is_final,
             causality,
             flow: input.flow,
             stream: input.stream,
@@ -608,6 +613,10 @@ impl InstantiateContext {
     /// evaluates the whole component, so its members inherit the mark.
     fn inherited_evaluate(&self) -> bool {
         self.scope_frames.iter().any(|frame| frame.evaluate)
+    }
+
+    fn inherited_final(&self) -> bool {
+        self.scope_frames.iter().any(|frame| frame.is_final)
     }
 
     /// Push inherited scope metadata for nested class instantiation.
@@ -1138,6 +1147,7 @@ struct InstanceDataBuild<'a> {
     is_primitive: bool,
     is_discrete_type: bool,
     evaluate: bool,
+    is_final: bool,
     source_map: &'a rumoca_core::SourceMap,
     ctx: &'a InstantiateContext,
     comp: &'a ast::Component,
@@ -1215,7 +1225,7 @@ fn build_instance_data(
         is_discrete_type: args.is_discrete_type,
         from_expandable_connector: args.ctx.is_in_expandable_connector(),
         evaluate: args.evaluate,
-        is_final: args.comp.is_final,
+        is_final: args.is_final,
         is_overconstrained: args.ctx.is_in_overconstrained(),
         is_protected: args.comp.is_protected || args.ctx.is_in_protected(),
         is_connector_type: args
@@ -1384,7 +1394,13 @@ fn instantiate_component(
         binding_source_scope.as_ref(),
     );
     let causality = resolve_component_causality(comp, class_def, ctx.inherited_causality());
-    let evaluate = has_evaluate_annotation(comp) || ctx.inherited_evaluate();
+    let is_final = comp.is_final
+        || ctx.inherited_final()
+        || ctx
+            .mod_env()
+            .get(&ast::QualifiedName::from_ident(&comp.name))
+            .is_some_and(|modifier| modifier.final_);
+    let evaluate = is_final || has_evaluate_annotation(comp) || ctx.inherited_evaluate();
     let effective_variability = resolve_effective_variability(comp, ctx.inherited_variability());
     let (class_overrides, has_forwarding_class_redeclare, nested_type_overrides) =
         resolve_component_nested_type_overrides(
@@ -1424,6 +1440,7 @@ fn instantiate_component(
             is_primitive,
             is_discrete_type,
             evaluate,
+            is_final,
             source_map: &tree.source_map,
             ctx,
             comp,
@@ -1447,6 +1464,8 @@ fn instantiate_component(
             comp,
             class_def,
             is_primitive,
+            is_final,
+            evaluate,
             effective_variability: &effective_variability,
             causality: &causality,
             flow,
@@ -1601,6 +1620,8 @@ struct NestedComponentRequest<'a> {
     comp: &'a ast::Component,
     class_def: Option<&'a ast::ClassDef>,
     is_primitive: bool,
+    is_final: bool,
+    evaluate: bool,
     effective_variability: &'a rumoca_core::Variability,
     causality: &'a rumoca_core::Causality,
     flow: bool,
@@ -1636,6 +1657,8 @@ fn instantiate_nested_component_if_needed(
             instance_id: request.instance_id,
             nested_class,
             comp: request.comp,
+            is_final: request.is_final,
+            evaluate: request.evaluate,
             effective_variability: request.effective_variability,
             causality: request.causality,
             flow: request.flow,
@@ -1679,6 +1702,8 @@ struct NestedInstantiationInput<'a> {
     instance_id: rumoca_core::InstanceId,
     nested_class: &'a ast::ClassDef,
     comp: &'a ast::Component,
+    is_final: bool,
+    evaluate: bool,
     effective_variability: &'a rumoca_core::Variability,
     causality: &'a rumoca_core::Causality,
     flow: bool,
@@ -1703,6 +1728,8 @@ fn instantiate_nested_class(
         instance_id,
         nested_class,
         comp,
+        is_final,
+        evaluate,
         effective_variability,
         causality,
         flow,
@@ -1786,7 +1813,8 @@ fn instantiate_nested_class(
 
     ctx.push_scope_frame(ScopeFrameInput {
         variability: effective_variability,
-        evaluate: has_evaluate_annotation(comp) || ctx.inherited_evaluate(),
+        evaluate,
+        is_final,
         causality,
         flow,
         stream,

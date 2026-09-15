@@ -4,6 +4,79 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Affine elimination experiment and final-modifier investigation
+
+The complete `multibody-tearing-choice-full-11` sweep at
+`2892128a7e9337989b455fe2911e7c6f52bffe51` passes with every phase and band
+unchanged: 159/566 strict-high, 159 compared models, 19 reviewed exclusions,
+zero missing/nonidentifiable/deviating comparisons, and 20,964 high initialization
+channels. MultiBody remains 22/42 high. The receipt is
+`rolling-wheel/tearing-choice-full-delta.json`.
+
+Three captured RollingWheel matrices at t=0, 0.5005823461, and 2.0053747285
+expose one zero causal pivot in the seven-tear plan: residual 782, solver
+coordinate 43 (`body.z_a[2]`). Its canonical tensor program is the first
+component of Body.mo line 261,
+`frame_a.t = I*z_a + cross(w_a, I*w_a) + cross(r_CM, frame_a.f)`. The coefficient
+is `I_21`, set to zero with a final modifier in RollingWheel.mo. The other causal
+diagonals are plus or minus one, with no upper causal coefficients. The capture
+preserves every IR and complete trace byte; all probes were removed
+(`affine-matrices-1.json`, `affine-matrix-capture-receipt-1.json`).
+
+A checked Schur-elimination experiment retained unsuitable pivots in the
+simultaneous system, recovering all original coordinates under unchanged
+conditioning, residual checks, and mandatory refinement. Two 24-coordinate
+cycle regressions failed before it; the all-unsuitable-pivots control already
+passed. All three subsequently passed, along with four construction controls
+and all 1,006 affected library tests. Clippy passed after removing two redundant
+test-only copies. Logs are `affine-elimination-red-1.log`,
+`affine-elimination-libraries-1.log`, and `affine-elimination-clippy-build-1.log`.
+
+Its ordinary run took 82.948 ms against an immediate archived control at
+77.444 ms, 7.11% slower (`affine-elimination-profile-delta-1.json`). Perf identified
+factor construction as a major cost. Skipping zero-coefficient products and
+retaining the existing small-matrix policy passed all 78 projection tests and
+Clippy, but still took 80.323 ms. The originating comparison retained both
+RollingWheel and OvervoltageProtection high: two compared models, 229 high
+initialization channels, one reviewed BevelGear exclusion, and no missing or
+deviating comparisons (`affine-elimination-origin-delta.json`). Compiler IR bytes
+were unchanged; trace bits changed. Neither candidate demonstrated a speedup.
+Both implementations, their tests, and proposed contract extensions were removed
+and preserved in `affine-elimination-first-candidate-1.patch`,
+`affine-elimination-rejected-2.patch`, and the associated new-file archives.
+No canary or cohort claim is made for this rejected runtime experiment.
+
+The earlier divergent compiler layer is now under investigation. OMC retains
+`body.I_21` as a non-changeable calculated parameter, but Rumoca's Flat flags
+contain only the declaration-final `body.I`, omitting modification-final `I_21`,
+`I_31`, `I_32`, and `r_CM`. Instantiation records declaration finality while
+ignoring the accepted modifier's final prefix. Three reduced tests fail for a
+literal modifier, an each-final component array, and a symbolic parent binding;
+the declaration-final and ordinary-sibling controls behave as expected
+(`final-modifier-red-1.log`). Final modifiers must retain their source bindings,
+including dependencies on changeable parent parameters, under
+[MLS §7.2.6](https://specification.modelica.org/maint/3.6/inheritance-modification-and-redeclaration.html#final-element-modification-prevention).
+The candidate now carries effective finality through instance construction and
+nested scopes. All 223 instantiation and 598 compiler-core tests pass, as does affected-package
+Clippy. Pinned OMC agrees on the exact reduced model and on a tensor regression
+with source modifications and a legal runtime parent override to gain=4; all
+three trajectories match their analytic solutions within 2.3e-16 in OMC.
+The artifacts are `final-modifier-omc-1/` and `final-tensor-omc-1/receipt.json`;
+logs are `final-modifier-focused-1.log`, `final-modifier-core-2.log`, and
+`final-modifier-core-build-1.log`.
+
+The ordinary RollingWheel diagnostic now records the effective final flags in
+Flat and non-tunable attributes in DAE, but Solve and the complete trace remain
+byte-identical. Its 78.849 ms runtime is not a speedup
+(`final-modifier-profile-evidence-1.json`). Tier 1 originating comparison retains
+two high models and 229 high initialization channels, with one reviewed
+BevelGear exclusion and zero missing/nonidentifiable/deviating comparisons.
+The fixed twenty-model canary retains every phase and band: nine high compared
+models, 175 high initialization channels, and no skipped, missing,
+nonidentifiable, or deviating comparisons. Receipts are
+`final-modifier-{origin,canary}-delta.json`. A complete sweep at the new commit
+is still pending; these focused results are not cohort evidence.
+
 ## Current compiler work: compare complete tearing candidates
 
 RollingWheel's 24-coordinate force/torque/acceleration block exposes a structural
@@ -47,7 +120,7 @@ measurements remain in `tearing-derivative-preference-experiment-1.patch`,
 `tearing-derivative-choice-focused-build-2.log`, and
 `tearing-derivative-choice-profile-evidence-1.json`. No five-coordinate runtime
 claim follows from its isolated graph result. The final two-candidate source
-is restored exactly; the complete cohort sweep is next.
+is restored exactly; its completed cohort evidence is recorded above.
 
 ## Current cohort and RollingWheel measurement
 

@@ -54,6 +54,7 @@ mod event_commutation;
 mod event_inductive_commutation;
 mod event_latch_cascade;
 mod event_relation_cascade;
+mod final_parameter_modifiers;
 mod fmi_me_host_divergence;
 mod for_eq_array_test;
 mod for_loop_element_derivative_alias;
