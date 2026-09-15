@@ -4,6 +4,76 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint: independent coordinates and reconstruction limits
+
+The value/Jacobian callback mismatch hypothesis is disproved. Both production
+FMI callbacks set the same time and continuous states, then evaluate the same
+unprojected state vector with algebraic refresh. Manifold correction belongs to
+the accepted-point path. There is no missing derivative of a state projection
+inside these callbacks to repair.
+
+The earlier coupled-rate experiment also fails as a complete repair. Keeping
+`rate` as three additional states removes the original refusal at the captured
+angle but still gives `-2.4375` instead of `-2.4010301622267085` at cosine
+`1e-7`, and zero at `1e-9`. Its diagnostic source and output are
+`rolling-wheel/implicit-rate-cancellation-probe-4.{rs,log}`. No production
+change from that experiment remains.
+
+OMC now has an independent build and simulation of the exact tracked
+`RateCancellation.mo` fixture. Its generated `_04set.c` selects one coordinate
+from each of two three-candidate sets: angular rates and angles. It integrates
+two independent states where Rumoca retains six. The OMC run completes the
+0–1 second interval in 29 steps, with no convergence or error-test failures.
+All 47 source channels across 102 output rows agree with the analytical motion
+`q={0,-2.4*time,0}`, `w=rate={0,-2.4,0}`, `ax=az=0`, and the corresponding
+rotation matrices; the largest absolute error is `7.993606e-15`. This is reduced
+fixture evidence, not a cohort or speed claim. Build, generated C, CSV, and the
+digest-bound analytical receipt are in `rolling-wheel/rate-cancellation-omc-1`.
+
+Public evaluator probes then extract the actual retained-manifold Jacobian.
+The reduced fixture has four independent constraint rows over six coordinates;
+the saved real model has four over eight. A diagnostic enumeration of square
+minors identifies these local coordinate sets without using model names:
+
+| System | Independent coordinates | Scaled dependent-minor condition number |
+|---|---|---|
+| Reduced fixture, all four cosine values | `q[2]`, `w[2]` | about 2.618 |
+| Saved RevoluteConstraint point | `joint.phi`, `joint.w`, `bodyOfConstraint.body.w_a[2]`, middle initialization angle | about 7.493 |
+
+Solving the constraint tangent equations makes all twelve directions pass the
+unchanged runtime JVP check: eight reduced-fixture directions and four real-model
+directions. The reduced results exactly match `der(q[2])=w[2]` and
+`der(w[2])=0`. These are admissible constrained directions, not replacements
+for the original failing ambient partials. The enumeration is diagnostic only;
+it is not a proposed production search algorithm. Evidence is
+`constrained-tangent-{matrices,basis,directions,results}-1` under `rolling-wheel`.
+
+The stronger reconstruction experiment starts dependent coordinates `1e-4`
+away from the saved point and solves with independent coordinates fixed.
+At the existing `1e-10` tolerance, the real model's four reduced AD columns
+agree with centered differences at three step sizes; the largest absolute
+difference is `5.655291e-9`. However, at cosine `1e-9`, the reduced fixture can
+retain a velocity-constraint residual of `6.295741e-11` and then refuse its
+`q[2]` tangent because the *dependent* acceleration JVP residual is
+`-9.313226e-10`. A stricter experimental `1e-12` projection previously stopped
+on the real model's floating-point residual floor. Both outcomes remain in the
+logs; no production tolerance was changed. `chart-reconstruction-5.log` records
+every direction, including the refusal, and is not a passing regression test.
+
+Consequently a runtime tangent-projection wrapper is insufficient. The next
+implementation must construct independent differential coordinates and their
+reconstruction/derivative equations together, upstream of the expanded ambient
+RHS. [SPEC_0053](../../../../spec/SPEC_0053_CONSTRAINED_STATE_SELECTION.md)
+records that proposed compiler/FMI contract, including tensor ownership,
+initialization, basis changes, and the stronger reconstruction tests. It is
+explicitly unimplemented. Compiler behavior remains `c488115f`, the Revolute
+regression remains open, and no new full-cohort result or PR is claimed.
+
+All six specification inventory, citation, and size gates pass in
+`constrained-state-spec-gates-1.log`. This checkpoint changes documentation and
+the proposed contract only; combined quick/full and a new MSL sweep were not
+run because executable compiler behavior is unchanged.
+
 ## RevoluteConstraint: cancellation reproduced independently of integration
 
 The EX002 regression remains open at compiler commit `c488115f`. The saved
