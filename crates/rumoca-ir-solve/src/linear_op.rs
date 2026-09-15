@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use crate::{SolvePureCallDirectionalSite, SolvePureCallSite, SolveValueType};
 
+mod seed_invariance;
+
 /// Register index in a lowered op sequence.
 pub type Reg = u32;
 

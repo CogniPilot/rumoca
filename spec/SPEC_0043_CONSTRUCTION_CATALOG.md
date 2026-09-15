@@ -293,8 +293,15 @@ reverse-gradient support, preserving mixed forward/reverse policy. An exclusive
 workspace may retain seed, program-output, and matrix storage. Each invocation
 uses fresh coordinates and the same ordered complete programs, checks native
 status, and publishes the matrix only after success. Failed calls cannot leave
-active seeds for the next call. This permits neither numerical result caching
-nor narrowing general initialization or parameter-sensitivity seed domains.
+active seeds for the next call. Projection reuse retains no value across
+invocations; independently certified closed-input pure-call reuse retains its
+own contract. Initialization and parameter-sensitivity seed domains are unchanged.
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| An application may issue one reuse decision per complete source operation, bound to its immutable program owner. The existing register-source checker must prove every read uses a seed-invariant register version; seed loads and any operation with non-repeatable effects cannot establish reuse. Every write replaces the destination version's evidence. | Projection-Jacobian construction | Output independence alone does not preserve failure or discarded-input behavior |
+| Native preparation may retain certified result ranges after their first complete, ordered execution and reuse those exact values in subsequent colors. Mixed primal/tangent tensor operations remain complete operations; no scalar graph is reconstructed. | Prepared projection application | Preserves tensor ownership and arithmetic order |
+| Reuse is confined to one non-reentrant call at identical Y, P, time, external tables, and execution mode. The first failure aborts publication; later calls execute their first occurrence afresh. | Native projection workspace | Preserves validation, coordinate freshness, and failure semantics |
 
 A separate block-Jacobian kernel may restrict numerical AD to the unknown
 coordinates issued by that projection block. Its construction retains the

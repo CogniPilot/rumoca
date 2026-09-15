@@ -30,6 +30,7 @@ mod host_runtime;
 mod input_validation;
 mod interpreter;
 mod owned_jit_module;
+mod projection_batch;
 pub(crate) mod projection_jacobian;
 mod register_storage;
 #[cfg(test)]

@@ -121,7 +121,7 @@ fn prepared_projection_matches_selected_jvp_at_fresh_points_and_keeps_code_alive
         let mut out = [99.0; 4];
         prepared.call(&y, &[p], t, &[], &mut out).unwrap();
         assert_eq!(out.map(f64::to_bits), expected.map(f64::to_bits));
-        assert_eq!(compiled.jit.program_call_count() - before, 2);
+        assert_eq!(compiled.jit.program_call_count() - before, 3);
     }
     drop(compiled);
     drop(source);

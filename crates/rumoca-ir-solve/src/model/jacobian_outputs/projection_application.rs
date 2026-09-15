@@ -11,6 +11,7 @@ pub struct ProjectionJacobianApplication {
     canonical_source: ScalarProgramBlock,
     primal_source: Option<ScalarProgramBlock>,
     colors: Box<[ProjectionJacobianColor]>,
+    invariant_operations: Box<[Box<[bool]>]>,
 }
 
 #[derive(Clone, Debug)]
@@ -68,6 +69,7 @@ impl ProjectionJacobianApplication {
             canonical_source: source.clone(),
             primal_source: None,
             colors,
+            invariant_operations: derive_invariant_operations(source)?,
         })
     }
 
@@ -106,6 +108,7 @@ impl ProjectionJacobianApplication {
             })
             .collect::<Option<Box<[_]>>>()?;
         self.colors = colors;
+        self.invariant_operations = derive_invariant_operations(&source)?;
         self.source = source;
         self.primal_source = Some(primal.clone());
         Some(self)
@@ -129,6 +132,26 @@ impl ProjectionJacobianApplication {
     pub fn colors(&self) -> &[ProjectionJacobianColor] {
         &self.colors
     }
+
+    /// Complete source operations whose inputs and effects are invariant across
+    /// this application's colors within one call at fixed coordinates.
+    pub fn invariant_operations(&self, program: usize) -> &[bool] {
+        &self.invariant_operations[program]
+    }
+}
+
+fn derive_invariant_operations(source: &ScalarProgramBlock) -> Option<Box<[Box<[bool]>]>> {
+    source
+        .programs()
+        .iter()
+        .map(|program| {
+            if program_effects::program_is_repeatable(program) {
+                crate::ScalarProgramRegisterFlow::seed_invariant_operations(program)
+            } else {
+                Some(vec![false; program.len()].into_boxed_slice())
+            }
+        })
+        .collect()
 }
 
 fn color_placements(

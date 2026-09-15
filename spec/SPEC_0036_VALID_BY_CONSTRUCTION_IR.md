@@ -50,6 +50,10 @@ rules are
 Continuous refresh optimizations MUST consume constructor-issued facts and
 preserve source evaluation and checked wire replay under
 [SPEC_0043 §6a](SPEC_0043_CONSTRUCTION_CATALOG.md#6a-continuous-refresh-construction).
+Within one projection-Jacobian call, construction may certify reuse of complete
+operation results across colors from invariant input register versions and
+repeatable operations. The first execution remains ordered and complete;
+coordinate changes, failure, or a new call invalidate every retained result.
 
 For target `x`, the first true `(a_k, v_k)` gives `x' = v_k`; otherwise
 `x' = x`. Activations are shared per iteration; inactive values are skipped.

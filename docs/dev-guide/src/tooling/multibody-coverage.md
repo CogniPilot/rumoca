@@ -4,6 +4,47 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Reuse primal work across projection-Jacobian colors
+
+The complete projection application now issues seed-invariance facts using
+the existing register-source checker and whole-program repeatability proof.
+Every write replaces its destination version's evidence. Cranelift retains
+certified results as native SSA values after their first ordered execution
+and reuses them across subsequent colors in that call. Tensor operations stay
+complete; mixed seed loads remain live. Source replacement rederives the facts,
+each call uses fresh coordinates, and native failure prevents matrix publication.
+SPEC_0036 and SPEC_0043 §6a define this boundary.
+
+The work-count regression first failed because a seed-independent sine ran
+twice for two colors. It now runs once per call and recomputes for changed
+Y/P/time. Controls cover overwritten registers, mixed tensor tangent lanes,
+owner identity, output placements, table validation, and a singular typed
+tensor solve followed by successful calls at fresh parameters. All 318 Solve
+IR tests and 96 initial Cranelift tests pass, as does the added native-failure
+test (415 distinct tests total). Affected all-target/all-feature Clippy passes.
+
+For RollingWheel, the issued proof certifies 378 of the hottest program's
+536 operations, including 26 matrix products, 12 cross products, and four pure
+calls. This is stronger evidence than the earlier output-dependency census;
+unproven operations still execute in every selected color. Three alternating
+ordinary `msl-fast` worker pairs measure 75.426 ms median simulation time versus
+81.620 ms for the preserved control, a 7.59% reduction. All Flat, DAE, structural
+DAE, Solve, and complete trace artifacts are byte-identical across the six runs.
+Preparation increases from 9.899 s to 10.945 s median. These unpinned samples
+show a simulation improvement, not an end-to-end speedup or a win over OMC.
+Receipts are `projection-reuse-alternating-evidence-1.json`,
+`projection-reuse-timing-summary-1.json`, and `projection-reuse-issued-counts-1.json`;
+the exact workers and native perf maps are retained with the profiles.
+
+`multibody-projection-reuse-origin` retains two high comparisons, one existing
+BevelGear1D reviewed exclusion, no missing traces, and 229 high initialization
+channels. The fixed canary `multibody-projection-reuse-canary` retains nine
+comparisons, all high, no skips or missing traces, and 175 high initialization
+channels. Every phase and band is unchanged from the corresponding derivative
+tensor runs (`projection-reuse-origin-delta.json` and
+`projection-reuse-canary-delta.json`). These focused checks do not update the
+full-cohort coverage claim below; the new full sweep is pending.
+
 ## Share derivative tensor definitions across component projections
 
 The reduced case `der(x)=A*x; z=sum(der(x))` exposed duplicate tensor
