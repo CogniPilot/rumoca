@@ -66,13 +66,19 @@ fn derive_equation_map<'dae>(
             let Some(affine) = walk.expression(map, &FunctionCallContext::default()) else {
                 continue;
             };
-            if !affine.offset.is_zero() {
-                continue;
-            }
             let Some(matrix) = affine.coefficient else {
                 continue;
             };
             let rhs = TensorExpression::Source(SourceValue::model(value.index()));
+            let rhs = if affine.offset.is_zero() {
+                rhs
+            } else {
+                TensorExpression::Sum(
+                    dae::BinaryOperator::Subtract,
+                    Box::new(rhs),
+                    Box::new(affine.offset),
+                )
+            };
             let mut leaves = Vec::new();
             matrix.operands(&mut leaves);
             rhs.operands(&mut leaves);

@@ -94,13 +94,27 @@ impl DifferentiationFacts {
             auxiliary_blocks: vec![None; view.variable_count()],
         };
         alternative_definitions::complete(view, &mut facts);
-        facts.auxiliary_blocks = super::auxiliary_blocks::derive_blocks(view, &facts);
-        facts.component_definitions = super::component_constraint::derive_definitions(view, &facts);
+        facts.complete_reconstruction_facts(view);
         for block in super::auxiliary_blocks::derive_state_blocks(view, &facts) {
             let variable = block.variable;
             facts.auxiliary_blocks[variable as usize] = Some(block);
         }
         facts
+    }
+
+    /// Preserve each admitted witness while extending both aggregate and
+    /// component proofs. A later whole-vector solve cannot hide an already
+    /// proved independent component of its original source definition.
+    fn complete_reconstruction_facts(&mut self, view: dae::DaeView<'_>) {
+        loop {
+            let blocks = super::auxiliary_blocks::derive_blocks(view, self);
+            let added_blocks = extend_proofs(&mut self.auxiliary_blocks, blocks);
+            let components = super::component_constraint::derive_definitions(view, self);
+            let added_components = extend_proofs(&mut self.component_definitions, components);
+            if !added_blocks && !added_components {
+                return;
+            }
+        }
     }
 
     pub(super) fn algebraic_definition<'dae>(
@@ -212,6 +226,17 @@ impl DifferentiationFacts {
             _ => false,
         }
     }
+}
+
+fn extend_proofs<T>(current: &mut [Option<T>], proposed: Vec<Option<T>>) -> bool {
+    let mut added = false;
+    for (current, proposed) in current.iter_mut().zip(proposed) {
+        if current.is_none() && proposed.is_some() {
+            *current = proposed;
+            added = true;
+        }
+    }
+    added
 }
 
 /// Where one expression stands in a differentiability walk.

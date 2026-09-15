@@ -31,6 +31,44 @@ fn coupled_tensor_auxiliary_preserves_linear_motion_with_rk() {
 }
 
 #[test]
+fn affine_tensor_map_retains_its_offset_and_both_derivatives() {
+    let source = SOURCE
+        .replace(
+            "q*{1.0,1.0} = theta;",
+            "{{1,1},{1,-1}}*q + {theta*theta,-theta} = {theta+theta*theta,2*theta};",
+        )
+        .replace("  q*{1.0,-1.0} = 3*theta;\n", "");
+    for solver in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+        check_motion(&source, solver);
+    }
+}
+
+#[test]
+fn nested_affine_tensor_maps_reconstruct_transitive_rate_dependencies() {
+    let source = SOURCE
+        .replace("  Real q[2];", "  Real q[2];\n  Real r[2];")
+        .replace(
+            "q*{1.0,1.0} = theta;",
+            "{{1,1},{1,-1}}*q + {theta*theta,-theta} = r;",
+        )
+        .replace(
+            "q*{1.0,-1.0} = 3*theta;",
+            "2*r = {2*(theta+theta*theta),4*theta};",
+        );
+    let deeper = source
+        .replace("Real r[2];", "Real r[2];\n  Real s[2];\n  Real u[2];")
+        .replace(
+            "2*r = {2*(theta+theta*theta),4*theta};",
+            "4*u = {24*(theta+theta*theta),48*theta};\n  3*s = u;\n  2*r = s;",
+        );
+    for source in [&source, &deeper] {
+        for solver in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+            check_motion(source, solver);
+        }
+    }
+}
+
+#[test]
 fn signed_zero_equations_share_derivative_and_auxiliary_normalization() {
     let source = SOURCE
         .replace("der(theta) = 1;", "0 = -(der(theta)-1);")

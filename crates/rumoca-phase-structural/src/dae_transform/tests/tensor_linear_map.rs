@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn tensor_linear_map_proof_does_not_enumerate_the_unknown_extent() {
     let counts = [3, 4096].map(|extent| {
-        let model = linear_map_model(extent, false);
+        let model = linear_map_model(extent, false, false);
         model.inspect(|view| {
             let facts = constraints::DifferentiationFacts::collect(view);
             let block = facts.auxiliary_blocks[2].as_ref().expect("linear rate map");
@@ -29,24 +29,52 @@ fn tensor_linear_map_proof_does_not_enumerate_the_unknown_extent() {
 
 #[test]
 fn tensor_linear_map_refuses_unknown_dependent_coefficients() {
-    let model = linear_map_model(3, true);
-    model.inspect(|view| {
-        let facts = constraints::DifferentiationFacts::collect(view);
-        assert!(facts.auxiliary_blocks.iter().all(Option::is_none));
-    });
+    for offset in [false, true] {
+        let model = linear_map_model(3, true, offset);
+        model.inspect(|view| {
+            let facts = constraints::DifferentiationFacts::collect(view);
+            assert!(facts.auxiliary_blocks.iter().all(Option::is_none));
+        });
+    }
 }
 
-fn linear_map_model(extent: u32, nonlinear: bool) -> dae::Dae {
+#[test]
+fn tensor_affine_map_retains_offset_dependencies_without_expanding_its_extent() {
+    let counts = [3, 4096].map(|extent| {
+        linear_map_model(extent, false, true).inspect(|view| {
+            let facts = constraints::DifferentiationFacts::collect(view);
+            let block = facts.auxiliary_blocks[2].as_ref().expect("affine rate map");
+            assert_eq!(block.extent, extent);
+            assert_eq!(&*block.state_anchors, &[0, 1, 3]);
+            assert_eq!(block.operands().count(), 3);
+            (block.coefficient_node_count(), view.expression_count())
+        })
+    });
+    assert_eq!(counts[0], counts[1]);
+}
+
+fn linear_map_model(extent: u32, nonlinear: bool, offset: bool) -> dae::Dae {
     let equation = if nonlinear {
         "omega = rate[1] * rate;"
     } else {
         "omega = theta * rate;"
     };
-    let text =
-        format!("Real omega[{extent}]; Real theta; Real rate[{extent}]; equation {equation}");
+    let equation = if offset {
+        equation.replace("rate;", "rate + bias;")
+    } else {
+        equation.to_owned()
+    };
+    let declaration = if offset {
+        format!("Real bias[{extent}];")
+    } else {
+        String::new()
+    };
+    let text = format!(
+        "Real omega[{extent}]; Real theta; Real rate[{extent}]; {declaration} equation {equation}"
+    );
     let mut sources = SourceMap::new();
     let source = sources.add("linear_map.mo", &text);
-    let at = source_provenance(source, &text, equation);
+    let at = source_provenance(source, &text, &equation);
     dae::Dae::construct(sources, |model| {
         let (scalar, vector) = model.types(|types| {
             Ok((
@@ -60,6 +88,14 @@ fn linear_map_model(extent: u32, nonlinear: bool) -> dae::Dae {
             model.variables(|v| v.state(VarName::new("theta"), scalar, at, Default::default()))?;
         let rate = model
             .variables(|v| v.algebraic(VarName::new("rate"), vector, at, Default::default()))?;
+        let bias = if offset {
+            Some(
+                model
+                    .variables(|v| v.state(VarName::new("bias"), vector, at, Default::default()))?,
+            )
+        } else {
+            None
+        };
         let residual = model.expressions(|expressions| {
             let omega = expressions
                 .at(at)
@@ -86,6 +122,16 @@ fn linear_map_model(extent: u32, nonlinear: bool) -> dae::Dae {
                 expressions
                     .at(at)
                     .binary(dae::BinaryOperator::Multiply, theta, rate)?
+            };
+            let map = if let Some(bias) = bias {
+                let bias = expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::State(bias))?;
+                expressions
+                    .at(at)
+                    .binary(dae::BinaryOperator::Add, map, bias)?
+            } else {
+                map
             };
             expressions
                 .at(at)

@@ -4,6 +4,65 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Affine tensor reconstruction retains component proofs
+
+The saved RevoluteConstraint angular-rate equations expose two missing proof
+steps. `Frames.absoluteRotation` combines a transformed angular velocity with
+an additive relative velocity, so its source map is `A*q+c=b`. The existing
+tensor reconstruction rejected any nonzero `c`. The reconstruction now retains
+`b-c` as its right-hand side and includes the offset's state dependencies.
+The coefficient and offset must still be independent of the reconstructed
+unknown; nonlinear coefficients remain refused, and numerical singularity
+remains the checked aggregate solve's responsibility. Governing contracts are
+MLS sections 8.3.1 and 10.6, Appendix B, SPEC_0007 STRUCT-T03's square linear
+reconstruction and source-projection requirements, and SPEC_0032's compact
+tensor ownership.
+
+The next source map depends on a vector proved by an earlier map. Reconstruction
+facts now extend to a fixed point, admitting each aggregate and component proof
+once. Both kinds must advance together. An aggregate-only iteration initially
+regressed six existing contact tests: after `delta` was independently proved,
+`road=delta+r` gained an auxiliary owner that hid the literal-array projection
+needed to prove `z`. The diagnostic observed that component proof after the
+first layer and its absence after the second. Retaining the component proof
+before extending the next aggregate layer restores all six tests. Existing
+proofs are never replaced; termination follows from the finite variable
+catalog. Source equations, state roles, assertions, and dependency checks are
+preserved, without a depth cutoff or new scalar tensor owner.
+
+The focused regressions check offset dependencies, nonlinear refusal, equal
+proof size at vector extents 3 and 4096, and two- and four-stage reconstruction
+chains, including reverse source order. Both BDF and RkLike preserve the
+analytical position, velocity, acceleration, and auxiliary values. The two
+ordinary-worker fixtures compare all 6 and 8 shared OMC channels high, with
+zero minor, deviating, or severe channels. Both compilers also satisfy the
+analytical checks. All 957 tests pass: 205 structural, 141 Solve, and 611 core.
+Both phase crates' all-target/all-feature Clippy, core-suite Clippy, and
+workspace formatting pass.
+
+`multibody-affine-map-complete-{frontier,origin,canary}` records empty phase and
+agreement-band deltas against the corresponding
+`multibody-indexed-parameter-guard-*` runs: 5/6/9 compared high, 1/2/0 reviewed
+exclusions, and zero missing or nonidentifiable traces. The fixed canary retains
+its eleven failing models. These are Tier 1 regression checks, not a new
+full-cohort measurement or MultiBody coverage gain.
+
+The diagnostic RevoluteConstraint DAE with the previously selected derivative
+alias now reaches complete structural matching: its two rotational constraints
+reduce the deficit from four to two to zero. This is not an ordinary simulation
+pass. The normal worker still refuses Solve with EL005, reporting 2,181/2,208
+matching and no trace. The next task is to make the needed implicit derivative
+representation available to index reduction through the normal compiler path.
+A reduced model with `2*der(q)+q=omega`, `der(omega)={0,0}`, `z=q[1]`,
+`der(z)=v`, and `der(v)=force` reproduces a 6/7 structural refusal; OMC simulates
+it and matches all seven analytical observables within 1e-8.
+
+Evidence is under `rolling-wheel/affine-map-*`,
+`rolling-wheel/revolute-affine-map-complete-*`, and
+`rolling-wheel/implicit-rate-frontier-1`. Temporary probes were removed. No
+full-cohort sweep, combined quick/full release gate, baseline promotion, push,
+or PR was performed for this change; 100% MultiBody remains unproved.
+
 ## Parameter-array guards retain their function call context
 
 RevoluteConstraint's stalled structural DAE discovers no further candidates.
