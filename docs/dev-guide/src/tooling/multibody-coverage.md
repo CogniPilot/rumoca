@@ -57,6 +57,15 @@ A reduced model with `2*der(q)+q=omega`, `der(omega)={0,0}`, `z=q[1]`,
 `der(z)=v`, and `der(v)=force` reproduces a 6/7 structural refusal; OMC simulates
 it and matches all seven analytical observables within 1e-8.
 
+Making the equivalent derivative alias explicit in that Modelica source
+(`Real rate[2]; der(q)=rate; 2*rate+q=omega`) lets the ordinary Rumoca worker
+simulate the same constrained motion. All nine shared OMC channels are high,
+and both compilers match all nine analytical observables within 1e-6. OMC's
+generated C supplies `der(q)=0.5*(omega-q)`, `v=der(q[1])`, and
+`force=0.5*(der(omega[1])-der(q[1]))`. This isolates the missing implicit-rate
+representation needed by the second derivative; it is not evidence that
+ordinary implicit-rate compilation or RevoluteConstraint is repaired.
+
 Evidence is under `rolling-wheel/affine-map-*`,
 `rolling-wheel/revolute-affine-map-complete-*`, and
 `rolling-wheel/implicit-rate-frontier-1`. Temporary probes were removed. No
