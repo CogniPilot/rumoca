@@ -27,25 +27,31 @@ fn retained_manifold_substitutes_the_second_matrix_field_through_nested_calls() 
 fn check_manifold_field(field: usize) {
     let (model, _, residual) = field_model(field);
     let candidate = model.inspect(|view| {
-        constraints::direct_state_constraints(view)
-            .admissible
-            .into_iter()
-            .find(|candidate| {
-                view.variable(view.variable_id(candidate.state as usize).unwrap())
-                    .unwrap()
-                    .name()
-                    .as_str()
-                    == "x"
-            })
-            .expect("the record field defines the demotable state")
+        constraints::direct_state_constraints(
+            view,
+            &constraints::DifferentiationFacts::collect(view),
+        )
+        .admissible
+        .into_iter()
+        .find(|candidate| {
+            view.variable(view.variable_id(candidate.state as usize).unwrap())
+                .unwrap()
+                .name()
+                .as_str()
+                == "x"
+        })
+        .expect("the record field defines the demotable state")
     });
     let retained = ManifoldConstraint {
         expression: residual,
         lifted: None,
     };
-    let (rebuilt, manifold) =
-        reconstruction::rebuild_with_state_demotion_and_manifold(&model, candidate, &[retained])
-            .expect("record field values survive retained-manifold substitution");
+    let (rebuilt, manifold) = reconstruction::rebuild_with_state_demotion_and_manifold(
+        &ReductionSource::new(&model),
+        candidate,
+        &[retained],
+    )
+    .expect("record field values survive retained-manifold substitution");
     assert_eq!(manifold.len(), 1);
     assert!(manifold_is_state_only(&rebuilt, &manifold));
     rebuilt.inspect(|view| {

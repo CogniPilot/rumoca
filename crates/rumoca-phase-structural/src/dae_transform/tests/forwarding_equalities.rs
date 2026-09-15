@@ -229,22 +229,25 @@ fn retained_forwarding_model(define_rotation: bool) -> (dae::Dae, u32) {
 
 fn forwarding_candidate(model: &dae::Dae) -> DirectStateConstraint {
     model.inspect(|view| {
-        constraints::direct_state_constraints(view)
-            .admissible
-            .into_iter()
-            .find(|candidate| {
-                let super::super::StateDefinition::Expression(rhs) = candidate.rhs else {
-                    return false;
-                };
-                candidate.state == 0
-                    && matches!(
-                        view.expression(view.expression_id(rhs as usize).unwrap())
-                            .unwrap()
-                            .operation(),
-                        dae::ExpressionOperation::Call { .. }
-                    )
-            })
-            .expect("the forwarded function has a proved derivative")
+        constraints::direct_state_constraints(
+            view,
+            &constraints::DifferentiationFacts::collect(view),
+        )
+        .admissible
+        .into_iter()
+        .find(|candidate| {
+            let super::super::StateDefinition::Expression(rhs) = candidate.rhs else {
+                return false;
+            };
+            candidate.state == 0
+                && matches!(
+                    view.expression(view.expression_id(rhs as usize).unwrap())
+                        .unwrap()
+                        .operation(),
+                    dae::ExpressionOperation::Call { .. }
+                )
+        })
+        .expect("the forwarded function has a proved derivative")
     })
 }
 
@@ -259,9 +262,15 @@ fn a_derivative_proof_does_not_authorize_an_unavailable_manifold_value() {
     assert!(manifold_is_state_only(&model, &[retained]));
     reconstruction::rebuild_with_state_demotion(&model, candidate)
         .expect("without a retained constraint only the derivative is needed");
-    let attempt =
-        attempt_direct_candidate(&model, usize::MAX, &[], &candidate, &[retained], &mut ())
-            .expect("an unavailable value rejects this candidate without aborting reduction");
+    let attempt = attempt_direct_candidate(
+        &ReductionSource::new(&model),
+        usize::MAX,
+        &[],
+        &candidate,
+        &[retained],
+        &mut (),
+    )
+    .expect("an unavailable value rejects this candidate without aborting reduction");
     assert!(matches!(attempt, DirectAttempt::Rejected));
 }
 
@@ -273,8 +282,11 @@ fn a_materializable_whole_call_survives_manifold_state_demotion() {
         expression: residual,
         lifted: None,
     };
-    let (rebuilt, manifold) =
-        reconstruction::rebuild_with_state_demotion_and_manifold(&model, candidate, &[retained])
-            .expect("the supplied matrix value permits exact call reconstruction");
+    let (rebuilt, manifold) = reconstruction::rebuild_with_state_demotion_and_manifold(
+        &ReductionSource::new(&model),
+        candidate,
+        &[retained],
+    )
+    .expect("the supplied matrix value permits exact call reconstruction");
     assert!(manifold_is_state_only(&rebuilt, &manifold));
 }

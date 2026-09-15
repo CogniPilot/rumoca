@@ -1703,8 +1703,9 @@ fn independent_holonomic_constraints_accumulate_before_the_dae_escapes() {
         "candidate order is the continuous-owner order"
     );
     for candidate in &candidates {
-        let (single, manifold) = rebuild_holonomic_constraint(&model, candidate, &[])
-            .expect("each proved constraint reconstructs independently");
+        let (single, manifold) =
+            rebuild_holonomic_constraint(&ReductionSource::new(&model), candidate, &[])
+                .expect("each proved constraint reconstructs independently");
         assert_eq!(manifold.len(), 2);
         let error = single
             .inspect(|view| sort(view).map(|_| ()))
@@ -1946,7 +1947,8 @@ fn projected_algebraic_definition_differentiates_through_its_proven_state_anchor
     let model = projected_algebraic_definition_model();
     let candidate = model.inspect(|view| {
         let x = variable_index(view, "x");
-        let candidates = direct_state_constraints(view);
+        let candidates =
+            direct_state_constraints(view, &constraints::DifferentiationFacts::collect(view));
         candidates
             .admissible
             .into_iter()

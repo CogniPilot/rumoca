@@ -87,7 +87,7 @@ The complete product and evidence requirements are normative in
 
 ### Stage 1 — AST (`rumoca-ir-ast`)
 
-**What it is:** Parser output: concrete syntax, comments, and spans.
+**Contents:** syntax, comments, spans.
 
 **Contract:**
 - Represents source text structure, not language semantics.
@@ -104,7 +104,7 @@ manipulation.
 
 ### Stage 2 — Flat (`rumoca-ir-flat`)
 
-**What it is:** The instantiated class hierarchy with fully-qualified names.
+**Contents:** instantiated classes with fully-qualified names.
 
 **Contract:**
 - No unresolved class references.
@@ -254,11 +254,10 @@ SPEC_0046).
 Serialized Solve roots carry a mandatory schema version; unsupported and
 pre-versioned payloads are rejected.
 
-`SolveProblem` is the numerical DAE root. Backend products that are expensive
-or outside the canonical MLS DAE (mass-matrix form, Jacobian-vector
-scalar-program blocks) live in `SolveArtifacts`, materialized by
-`rumoca-phase-solve` only when a backend/template/runtime boundary asks.
-`lower_solve_problem` must not eagerly populate them.
+`SolveProblem` owns the numerical DAE. Expensive or noncanonical products
+(mass-matrix form, Jacobian-vector programs) belong in `SolveArtifacts`.
+`rumoca-phase-solve` materializes them only on backend/template/runtime demand;
+`lower_solve_problem` must not populate them eagerly.
 
 `SolveAlgorithmBlock` is constructed only from checked Algorithm Code under an
 explicit arithmetic profile (pending: 2026-08-08 plan, M3-4). It is not a mode
@@ -294,15 +293,15 @@ Structural lowering transforms finalized DAEs through root-owned checked changes
 Partial mutation, independently replayable proof receipts, and mutable partition
 callbacks are prohibited.
 
-**In scope:** exactly rows `STRUCT-T01`–`STRUCT-T09` in
+**In scope:** only `STRUCT-T01`–`STRUCT-T09` in
 [SPEC_0040 §3](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
-A transformation absent from that catalog is out of scope until this spec is
-amended.
+Other transformations require amending this spec.
 
-STRUCT-T03 reconstruction preserves shared expression identity during value
-substitution and differentiation. Reuse requires the same source, exact call
-substitutions, derivative order, reconstruction mode, and provenance; it cannot
-merge unrelated call contexts or equation owners.
+STRUCT-T03 preserves shared expression identity. Reuse requires identical
+source, call substitutions, derivative order, reconstruction mode, and provenance;
+unrelated call contexts or equation owners cannot merge. Candidate discovery,
+preflight, and reconstruction share differentiation facts per immutable source
+round. Replacement DAEs require fresh facts; ordering and acceptance stay unchanged.
 
 STRUCT-T03's auxiliary and component reconstruction profile:
 
@@ -316,16 +315,14 @@ STRUCT-T03's auxiliary and component reconstruction profile:
 | Differentiate `A*q=b` as `A*der(q)=der(b)-der(A)*q`, preserving exact zeros and only needed primal reads; manifold reconstruction uses proved state/invariant anchors on the same nonsingular domain | structural reconstruction | Preserve the original primal solve instead of recursively recomputing it |
 | Keep identity, projection, matrix product, and outer product aggregate; never enumerate a tensor basis to obtain coefficients | structural reconstruction | Compiler representation must stay compact |
 | Reject singular runtime matrices through the checked aggregate solve | native evaluation | Structural shape cannot prove numerical nonsingularity |
-| Auxiliary reconstruction and repeated derivatives satisfy the [STRUCT-T03 reconstruction rows](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope) | structural reconstruction | Preserve subsequent reduction and aggregate execution |
 
 **Placement requirement:**
 
-`rumoca-phase-structural` reconstructs finalized DAEs; analysis products stay outside DAE. `rumoca-phase-solve`
-only lowers finalized DAE. STRUCT-T09 permits exact aliases for implicit
-derivatives and mixed derivative/algebraic blocks; it does not choose scalar
-pivots or construct numerical coefficient matrices. Other dummy-derivative transformations,
-unrelated symbolic simplification, and control-design linearization require a
-spec update.
+`rumoca-phase-structural` reconstructs finalized DAEs; analysis stays outside DAE.
+`rumoca-phase-solve` lowers finalized DAE only. STRUCT-T09 permits exact implicit-derivative
+and mixed derivative/algebraic aliases, never scalar pivot selection or numerical
+coefficient matrices. Other dummy-derivative transformations, unrelated symbolic
+simplification, and control-design linearization require a spec update.
 
 ## References
 

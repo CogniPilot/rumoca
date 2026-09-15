@@ -4,6 +4,63 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Share differentiation facts within each immutable reduction round
+
+RollingWheelSetDriving's saved pre-change and current workers produce identical
+Flat, DAE, structural DAE, Solve IR, and complete trace bytes. The timeout did
+not arise from a larger generated system. A public reduction inspection spends
+6.546 seconds selecting 24 transformations from 418 attempts. Actual-worker
+`perf` samples locate repeated source analysis inside preparation. These records
+are in `rolling-wheel/wheel-set-round-facts-diagnosis-1.json`.
+
+Each reconstruction previously collected the same source differentiation facts
+again. A private `ReductionSource` now binds one immutable DAE to its facts;
+candidate discovery, manifold preflight, and all attempted reconstructions in
+that round consume that pair. The next transformed source constructs fresh
+facts. Candidate order, matching, retained equations, initialization checks,
+and numerical execution are unchanged. SPEC_0007 records the ownership rule;
+its wording was also condensed to satisfy the 2,500-word spec budget without
+removing the governing STRUCT-T03 catalog requirements.
+
+The two-independent-constraints regression records three collections instead
+of one before the fix, then one per round and a fresh collection after the
+source changes. All 173 structural tests and all-target/all-feature Clippy pass
+(`round-facts-red-1.log`, `round-facts-green-2.log`, and
+`round-facts-validation-build-2.log`). Earlier signature and lint failures
+remain in the numbered logs. The ordinary worker build includes `msl_tests`.
+
+One alternating ordinary-worker pair with artifact output disabled measures
+Solve program preparation at 8.4275 seconds for the saved parent worker and
+5.7507 seconds for the candidate. This observed 31.76% reduction is one
+unpinned pair, not a repeated benchmark claim. Simulation remains about
+0.333 seconds for both. The artifact-enabled candidate also retains all five
+complete artifacts byte-for-byte, including the trace with SHA-256
+`268a5d61f8adf56e17db4a2661b93593249b4cb3a112a25c0990af7d6826955d`.
+Receipts are `round-facts-driving-timing-1.json` and
+`round-facts-driving-artifact-delta-1.json`.
+
+The timing field named `ir_solve_structural_dae_seconds` currently receives
+`runtime_value_seconds`; it does not measure structural index reduction.
+`ir_solve_lower_seconds` includes `prepare_for_solve` plus program/artifact
+lowering. The approximately 47 ms field in earlier diagnostics must not be
+interpreted as the cost of index reduction.
+
+The six-model `multibody-round-facts-origin` gate compares RollingWheelSetDriving,
+RollingWheel, GyroscopicEffects, and OvervoltageProtection high: four compared,
+one existing BevelGear1D exclusion, zero missing/nonidentifiable/deviating
+comparisons, and all 2,088 initialization channels high. Driving completes
+Solve in 6.0957 seconds under the unchanged 10-second budget.
+LineForceWithTwoMasses still times out in Solve and receives no credit.
+`round-facts-origin-evidence-1.json` binds these results.
+
+The fixed `multibody-round-facts-canary` has no phase or band changes against
+`multibody-alternative-definitions-canary`: nine compared high, zero skips,
+missing, exclusions or nonidentifiable results, and all 175 initialization
+channels high (`round-facts-canary-delta.json`). This is focused recovery;
+the next complete sweep must confirm the cohort regression is closed. Combined
+verify quick/full and complete MultiBody support remain outstanding. This patch
+does not implement the reduced AD kernel or establish an OMC runtime speed win.
+
 ## Alternative definitions gain two high models and expose a timeout
 
 The complete `multibody-alternative-definitions-full-11` sweep at

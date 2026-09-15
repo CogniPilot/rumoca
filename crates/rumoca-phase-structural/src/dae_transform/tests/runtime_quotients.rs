@@ -268,7 +268,9 @@ fn direct_demotion_replays_model_and_function_owners_at_exact_stream_positions()
     let source = model.inspect(owner_snapshot);
     assert_owner_snapshot(&source);
     let candidate = model
-        .inspect(direct_state_constraints)
+        .inspect(|view| {
+            direct_state_constraints(view, &constraints::DifferentiationFacts::collect(view))
+        })
         .admissible
         .into_iter()
         .next()
@@ -276,7 +278,9 @@ fn direct_demotion_replays_model_and_function_owners_at_exact_stream_positions()
     let first = rebuild_with_state_demotion(&model, candidate)
         .expect("owned quotient replays through direct demotion");
     let second_candidate = first
-        .inspect(direct_state_constraints)
+        .inspect(|view| {
+            direct_state_constraints(view, &constraints::DifferentiationFacts::collect(view))
+        })
         .admissible
         .into_iter()
         .next()
@@ -365,8 +369,9 @@ fn holonomic_reconstruction_retains_one_complete_model_surface() {
         .into_iter()
         .next()
         .expect("fixture has a holonomic constraint");
-    let (rebuilt, manifold) = rebuild_holonomic_constraint(&model, &constraint, &[])
-        .expect("owned quotient replays through holonomic reconstruction");
+    let (rebuilt, manifold) =
+        rebuild_holonomic_constraint(&ReductionSource::new(&model), &constraint, &[])
+            .expect("owned quotient replays through holonomic reconstruction");
     assert_eq!(manifold.len(), 2);
     assert_eq!(rebuilt.inspect(owner_snapshot), source);
     assert_owner_snapshot(&source);

@@ -434,7 +434,10 @@ fn the_residual_path_cannot_shadow_the_guarded_closure_candidate() {
         StatedInitialValue::guess(2.0),
     );
     model.inspect(|view| {
-        let candidates = crate::dae_transform::constraints::direct_state_constraints(view);
+        let candidates = crate::dae_transform::constraints::direct_state_constraints(
+            view,
+            &constraints::DifferentiationFacts::collect(view),
+        );
         let demoted = |state: u32| {
             view.variable(
                 view.variable_id(state as usize)

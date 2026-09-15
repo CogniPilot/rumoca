@@ -25,6 +25,7 @@ mod parameter_conditionals;
 mod reconstruction;
 mod runtime_quotients;
 mod semantic_owners;
+mod source;
 mod temporal;
 mod tensor_maps;
 #[cfg(test)]
@@ -50,6 +51,7 @@ use self::reconstruction::rebuild_with_state_demotion;
 use self::reconstruction::{
     rebuild_holonomic_constraint, rebuild_with_state_demotion_and_manifold,
 };
+use self::source::ReductionSource;
 use crate::{
     BltBlock, EquationRef, SortedDae, StructuralError, StructuredScalarBlock, UnknownId, sort,
 };
@@ -694,10 +696,11 @@ fn demote_direct_state_with_observer(
     allow_held: bool,
     observer: &mut impl ReductionObserver,
 ) -> Result<DemotionRound, StructuralError> {
-    let candidates = model.inspect(direct_state_constraints);
+    let source = ReductionSource::new(model);
+    let candidates = source.inspect(direct_state_constraints);
     let stated = model.inspect(represented_initial_values);
     let unconditional = demotion_pass_with_observer(
-        model,
+        &source,
         residue,
         &stated,
         &candidates.admissible,
@@ -712,7 +715,7 @@ fn demote_direct_state_with_observer(
         return Ok(unconditional);
     }
     let carried = demotion_pass_with_observer(
-        model,
+        &source,
         residue,
         &stated,
         &candidates.conditional,
@@ -778,7 +781,7 @@ fn discarded_initial_after_attempt(
 /// Try one candidate whose derivative and retained-value obligations hold,
 /// observing its identity and outcome without changing the decision.
 fn attempt_direct_candidate(
-    model: &dae::Dae,
+    source: &ReductionSource<'_>,
     residue: usize,
     stated: &[u32],
     candidate: &DirectStateConstraint,
@@ -786,8 +789,8 @@ fn attempt_direct_candidate(
     observer: &mut impl ReductionObserver,
 ) -> Result<DirectAttempt, StructuralError> {
     let identity = Identity::Direct(DirectIdentity::from(candidate));
-    if !model.inspect(|view| {
-        constraints::demotion_preserves_manifold_values(view, candidate, prior_manifold)
+    if !source.inspect(|view, facts| {
+        constraints::demotion_preserves_manifold_values(view, facts, candidate, prior_manifold)
     }) {
         observer.observe(ReductionEvent::Attempt {
             lane: Lane::Direct,
@@ -796,20 +799,21 @@ fn attempt_direct_candidate(
         });
         return Ok(DirectAttempt::Rejected);
     }
-    reconstruct_direct_candidate(model, residue, stated, candidate, prior_manifold, observer)
+    reconstruct_direct_candidate(source, residue, stated, candidate, prior_manifold, observer)
 }
 
 fn reconstruct_direct_candidate(
-    model: &dae::Dae,
+    source: &ReductionSource<'_>,
     residue: usize,
     stated: &[u32],
     candidate: &DirectStateConstraint,
     prior_manifold: &[ManifoldConstraint],
     observer: &mut impl ReductionObserver,
 ) -> Result<DirectAttempt, StructuralError> {
+    let model = source.model();
     let identity = Identity::Direct(DirectIdentity::from(candidate));
     let (rebuilt, manifold) =
-        match rebuild_with_state_demotion_and_manifold(model, *candidate, prior_manifold) {
+        match rebuild_with_state_demotion_and_manifold(source, *candidate, prior_manifold) {
             Ok(rebuilt) => rebuilt,
             Err(error) => {
                 observer.observe(ReductionEvent::Attempt {
@@ -904,7 +908,7 @@ fn reconstruct_direct_candidate(
 
 /// Try one list of demotion candidates against `model`.
 fn demotion_pass_with_observer(
-    model: &dae::Dae,
+    source: &ReductionSource<'_>,
     residue: usize,
     stated: &[u32],
     candidates: &[DirectStateConstraint],
@@ -921,8 +925,14 @@ fn demotion_pass_with_observer(
     let mut held: Option<(DirectStateConstraint, usize, DemotionStep)> = None;
     let mut blocked = None;
     for candidate in candidates {
-        match attempt_direct_candidate(model, residue, stated, candidate, prior_manifold, observer)?
-        {
+        match attempt_direct_candidate(
+            source,
+            residue,
+            stated,
+            candidate,
+            prior_manifold,
+            observer,
+        )? {
             DirectAttempt::Sorted {
                 rebuilt,
                 manifold,
@@ -1498,26 +1508,27 @@ fn observe_discarded_holonomic_initial(
 }
 
 fn attempt_holonomic_candidate(
-    model: &dae::Dae,
+    source: &ReductionSource<'_>,
     residue: usize,
     prior_manifold: &[ManifoldConstraint],
     stated: &[u32],
     constraint: HolonomicConstraint,
     observer: &mut impl ReductionObserver,
 ) -> Result<HolonomicAttempt, StructuralError> {
+    let model = source.model();
     let identity = Identity::Holonomic(HolonomicIdentity::from(&constraint));
-    let (rebuilt, manifold) = match rebuild_holonomic_constraint(model, &constraint, prior_manifold)
-    {
-        Ok(pair) => pair,
-        Err(error) => {
-            observer.observe(ReductionEvent::Attempt {
-                lane: Lane::Holonomic,
-                identity,
-                outcome: AttemptOutcome::NonSingularFailure { error: &error },
-            });
-            return Err(error);
-        }
-    };
+    let (rebuilt, manifold) =
+        match rebuild_holonomic_constraint(source, &constraint, prior_manifold) {
+            Ok(pair) => pair,
+            Err(error) => {
+                observer.observe(ReductionEvent::Attempt {
+                    lane: Lane::Holonomic,
+                    identity,
+                    outcome: AttemptOutcome::NonSingularFailure { error: &error },
+                });
+                return Err(error);
+            }
+        };
     if !holonomic_replacement_is_structurally_active(&rebuilt, &constraint) {
         observer.observe(ReductionEvent::Attempt {
             lane: Lane::Holonomic,
@@ -1609,9 +1620,10 @@ fn holonomic_pass_with_observer(
     perturb_enumeration: &mut impl FnMut(&mut Vec<HolonomicConstraint>),
     observer: &mut impl ReductionObserver,
 ) -> Result<HolonomicPass, StructuralError> {
+    let source = ReductionSource::new(model);
     let stated = model.inspect(represented_initial_values);
-    let (mut candidates, incident) = model.inspect(|view| {
-        let candidates = index_reduction_constraints(view);
+    let (mut candidates, incident) = source.inspect(|view, facts| {
+        let candidates = index_reduction_constraints(view, facts);
         let incident = crate::overdetermined_block_variables(view)?;
         Ok::<_, StructuralError>((candidates, incident))
     })?;
@@ -1644,7 +1656,7 @@ fn holonomic_pass_with_observer(
     let mut blocked = None;
     for constraint in candidates {
         let attempt = attempt_holonomic_candidate(
-            model,
+            &source,
             residue,
             prior_manifold,
             &stated,

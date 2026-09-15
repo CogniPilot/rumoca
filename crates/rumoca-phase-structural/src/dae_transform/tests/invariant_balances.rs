@@ -770,8 +770,12 @@ fn varying_and_nonunit_operands_infer_no_edge() {
 
 fn assert_offset_manifold_values(model: &dae::Dae, parameter_offset: bool) {
     let constraint = model.inspect(|view| holonomic_constraints(view).remove(0));
-    let (rebuilt, manifold) =
-        reconstruction::rebuild_holonomic_constraint(model, &constraint, &[]).unwrap();
+    let (rebuilt, manifold) = reconstruction::rebuild_holonomic_constraint(
+        &ReductionSource::new(model),
+        &constraint,
+        &[],
+    )
+    .unwrap();
     assert_eq!(manifold.len(), 2);
     rebuilt.inspect(|view| {
         for entry in &manifold {

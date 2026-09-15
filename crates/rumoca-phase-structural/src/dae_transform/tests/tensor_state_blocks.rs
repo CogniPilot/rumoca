@@ -9,7 +9,10 @@ fn independent_literal_entries_complete_a_tensor_state_block() {
             .expect("independent velocity block");
         assert_eq!(block.extent, 3);
         assert_eq!(&*block.state_anchors, &[3]);
-        let candidates = constraints::direct_state_constraints(view);
+        let candidates = constraints::direct_state_constraints(
+            view,
+            &constraints::DifferentiationFacts::collect(view),
+        );
         assert!(
             candidates
                 .admissible

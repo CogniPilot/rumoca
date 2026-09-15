@@ -17,6 +17,7 @@ use super::expressions::{ExpressionRebuilder, RebuiltBaseIdentities, RebuiltIden
 use super::functions::rebuild_functions;
 use super::runtime_quotients::{QuotientExpressionContext, RuntimeQuotientReplayPlan};
 use super::semantic_owners::{RebuiltOwnerIdentities, rebuild_semantic_owners};
+use super::source::ReductionSource;
 use super::temporal::{rebuild_clocks, rebuild_delay_coordinates, rebuild_temporal_coordinates};
 use super::variables::{
     ReservedVariable, define_static_variables_at, define_variables, reserve_variables,
@@ -32,7 +33,8 @@ pub(super) fn rebuild_derivative_aliases(
     let mut manifold = Vec::with_capacity(prior_manifold.len());
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
-            prepare_rebuild(source, target, None, &[], selected, |prepared| {
+            let facts = DifferentiationFacts::collect(source);
+            prepare_rebuild(source, target, &facts, None, &[], selected, |prepared| {
                 let PreparedRebuild {
                     context,
                     target,
@@ -90,7 +92,8 @@ pub(super) fn rebuild_requested_states(
                 return Ok(None);
             }
             dae::Dae::construct(model.source_map().clone(), |target| {
-                prepare_rebuild(source, target, None, &requested, &[], |prepared| {
+                let facts = DifferentiationFacts::collect(source);
+                prepare_rebuild(source, target, &facts, None, &requested, &[], |prepared| {
                     let PreparedRebuild {
                         context,
                         target,
@@ -121,16 +124,18 @@ pub(super) fn rebuild_requested_states(
 }
 
 pub(super) fn rebuild_holonomic_constraint(
-    model: &dae::Dae,
+    analysis: &ReductionSource<'_>,
     constraint: &HolonomicConstraint,
     prior_manifold: &[ManifoldConstraint],
 ) -> Result<(dae::Dae, Vec<ManifoldConstraint>), StructuralError> {
+    let model = analysis.model();
     let mut manifold = Vec::with_capacity(prior_manifold.len() + 2);
-    let rebuilt = model.inspect(|source| {
+    let rebuilt = analysis.inspect(|source, facts| {
         dae::Dae::construct(model.source_map().clone(), |target| {
             prepare_rebuild(
                 source,
                 target,
+                facts,
                 None,
                 constraint.lifted_algebraic.as_slice(),
                 &[],
@@ -222,52 +227,62 @@ pub(super) fn rebuild_with_state_demotion(
     model: &dae::Dae,
     candidate: DirectStateConstraint,
 ) -> Result<dae::Dae, StructuralError> {
-    rebuild_with_state_demotion_and_manifold(model, candidate, &[]).map(|(dae, _)| dae)
+    rebuild_with_state_demotion_and_manifold(&ReductionSource::new(model), candidate, &[])
+        .map(|(dae, _)| dae)
 }
 
 pub(super) fn rebuild_with_state_demotion_and_manifold(
-    model: &dae::Dae,
+    analysis: &ReductionSource<'_>,
     candidate: DirectStateConstraint,
     prior_manifold: &[ManifoldConstraint],
 ) -> Result<(dae::Dae, Vec<ManifoldConstraint>), StructuralError> {
+    let model = analysis.model();
     let mut manifold = Vec::with_capacity(prior_manifold.len());
-    let rebuilt = model.inspect(|source| {
+    let rebuilt = analysis.inspect(|source, facts| {
         dae::Dae::construct(model.source_map().clone(), |target| {
-            prepare_rebuild(source, target, Some(candidate), &[], &[], |prepared| {
-                let PreparedRebuild {
-                    context,
-                    target,
-                    variables,
-                    expressions,
-                    quotients,
-                    ..
-                } = prepared;
-                restore_prior_manifold(
-                    context,
-                    target,
-                    variables,
-                    &expressions,
-                    candidate,
-                    prior_manifold,
-                    &mut manifold,
-                )?;
-                let replacement =
-                    restored_equation_replacement(prior_manifold, candidate, &expressions);
-                define_variables(source, target, &expressions, variables)?;
-                rebuild_semantic_owners(
-                    source,
-                    target,
-                    &expressions,
-                    RebuiltOwnerIdentities {
+            prepare_rebuild(
+                source,
+                target,
+                facts,
+                Some(candidate),
+                &[],
+                &[],
+                |prepared| {
+                    let PreparedRebuild {
+                        context,
+                        target,
                         variables,
-                        domains: context.domains,
-                        conditions: context.conditions,
-                        clocks: context.clocks,
-                    },
-                    replacement,
-                    quotients,
-                )
-            })
+                        expressions,
+                        quotients,
+                        ..
+                    } = prepared;
+                    restore_prior_manifold(
+                        context,
+                        target,
+                        variables,
+                        &expressions,
+                        candidate,
+                        prior_manifold,
+                        &mut manifold,
+                    )?;
+                    let replacement =
+                        restored_equation_replacement(prior_manifold, candidate, &expressions);
+                    define_variables(source, target, &expressions, variables)?;
+                    rebuild_semantic_owners(
+                        source,
+                        target,
+                        &expressions,
+                        RebuiltOwnerIdentities {
+                            variables,
+                            domains: context.domains,
+                            conditions: context.conditions,
+                            clocks: context.clocks,
+                        },
+                        replacement,
+                        quotients,
+                    )
+                },
+            )
         })
     });
     rebuilt
@@ -323,6 +338,7 @@ struct PreparedRebuild<'source, 'borrow, 'target> {
 fn prepare_rebuild<'source, 'target>(
     source: dae::DaeView<'source>,
     target: &mut dae::DaeConstruction<'target>,
+    facts: &DifferentiationFacts,
     candidate: Option<DirectStateConstraint>,
     promoted: &[u32],
     derivative_aliases: &[u32],
@@ -348,8 +364,7 @@ fn prepare_rebuild<'source, 'target>(
     let conditions = reserve_conditions(source, target)?;
     let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
     let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
-    let facts = DifferentiationFacts::collect(source);
-    let auxiliary_functions = super::auxiliary_blocks::create_functions(source, target, &facts)?;
+    let auxiliary_functions = super::auxiliary_blocks::create_functions(source, target, facts)?;
     let mut rebuilt_state = vec![None; source.expression_count()];
     let base = RebuiltBaseIdentities {
         auxiliary_functions: &auxiliary_functions,
@@ -365,7 +380,7 @@ fn prepare_rebuild<'source, 'target>(
         source,
         target,
         base,
-        &facts,
+        facts,
         candidate,
         &mut rebuilt_state,
         &mut quotients,
@@ -377,7 +392,7 @@ fn prepare_rebuild<'source, 'target>(
             base,
             functions: &functions,
         },
-        &facts,
+        facts,
         candidate,
         &mut rebuilt_state,
         &mut quotients,
@@ -392,7 +407,7 @@ fn prepare_rebuild<'source, 'target>(
         clocks: &clocks,
         previous: &temporal.previous,
         terminals: &temporal.terminals,
-        facts: &facts,
+        facts,
         candidate,
     };
     let expressions = rebuild_expressions_and_static_variables(

@@ -56,8 +56,15 @@ pub(super) struct DifferentiationFacts {
         Vec<Option<std::sync::Arc<super::auxiliary_blocks::AuxiliaryBlock>>>,
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static FACT_COLLECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl DifferentiationFacts {
     pub(super) fn collect(view: dae::DaeView<'_>) -> Self {
+        #[cfg(test)]
+        FACT_COLLECTIONS.with(|count| count.set(count.get() + 1));
         let causal = CausalDefinitions::derive(view);
         let algebraic_definitions = view
             .variables()
@@ -294,13 +301,15 @@ pub(super) struct DiscardedInitialValue {
     pub(super) span: Span,
 }
 
-pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> StateDemotionCandidates {
-    let facts = DifferentiationFacts::collect(view);
+pub(super) fn direct_state_constraints(
+    view: dae::DaeView<'_>,
+    facts: &DifferentiationFacts,
+) -> StateDemotionCandidates {
     let mut constraints = view
         .continuous_owners()
         .flat_map(|owner| match owner {
             dae::ContinuousOwnerView::Residual { equation, .. } => {
-                direct_state_constraint(view, &facts, equation.residual(), equation.provenance())
+                direct_state_constraint(view, facts, equation.residual(), equation.provenance())
                     .into_iter()
                     .collect::<Vec<_>>()
             }
@@ -312,7 +321,7 @@ pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> StateDemotionC
                     .bodies()
                     .iter()
                     .filter_map(|body| {
-                        direct_state_constraint(view, &facts, body, family.provenance())
+                        direct_state_constraint(view, facts, body, family.provenance())
                     })
                     .collect()
             }
@@ -325,7 +334,7 @@ pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> StateDemotionC
         .map(|candidate| candidate.state)
         .collect::<std::collections::BTreeSet<_>>();
     constraints.extend(
-        auxiliary_state_constraints(view, &facts)
+        auxiliary_state_constraints(view, facts)
             .into_iter()
             .filter(|candidate| !direct_states.contains(&candidate.state)),
     );
@@ -353,7 +362,7 @@ pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> StateDemotionC
     debug_assert!(
         constraints
             .iter()
-            .all(|candidate| carries_a_differentiable_definition(view, &facts, *candidate)),
+            .all(|candidate| carries_a_differentiable_definition(view, facts, *candidate)),
         "a demotion candidate must satisfy the contract its RHS is consumed under"
     );
     // MLS 3.6 §8.6 turns every `fixed = true` start into an initialization
@@ -375,6 +384,7 @@ pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> StateDemotionC
 /// Require the exact RHS value only when a surviving manifold uses this state.
 pub(super) fn demotion_preserves_manifold_values(
     view: dae::DaeView<'_>,
+    facts: &DifferentiationFacts,
     candidate: &DirectStateConstraint,
     manifold: &[ManifoldConstraint],
 ) -> bool {
@@ -396,7 +406,6 @@ pub(super) fn demotion_preserves_manifold_values(
     if !needs_value {
         return true;
     }
-    let facts = DifferentiationFacts::collect(view);
     match candidate.rhs {
         StateDefinition::Expression(rhs) => facts
             .materialized_state_anchors(view, rhs)
@@ -866,14 +875,16 @@ fn reaches_demoted_derivative<'dae>(
 
 #[cfg(test)]
 pub(super) fn holonomic_constraints(view: dae::DaeView<'_>) -> Vec<HolonomicConstraint> {
-    index_reduction_constraints(view)
+    index_reduction_constraints(view, &DifferentiationFacts::collect(view))
         .into_iter()
         .filter(|constraint| constraint.lifted_algebraic.is_none())
         .collect()
 }
 
-pub(super) fn index_reduction_constraints(view: dae::DaeView<'_>) -> Vec<HolonomicConstraint> {
-    let facts = DifferentiationFacts::collect(view);
+pub(super) fn index_reduction_constraints(
+    view: dae::DaeView<'_>,
+    facts: &DifferentiationFacts,
+) -> Vec<HolonomicConstraint> {
     let causal = CausalDefinitions::derive(view);
     let mut scratch = HolonomicProofScratch::new(view.expression_count());
     view.continuous_owners()
@@ -906,7 +917,7 @@ pub(super) fn index_reduction_constraints(view: dae::DaeView<'_>) -> Vec<Holonom
             residuals
                 .flat_map(|(body_ordinal, residual)| {
                     let ordinary =
-                        holonomic_differentiation_proofs(view, &facts, &mut scratch, residual)
+                        holonomic_differentiation_proofs(view, facts, &mut scratch, residual)
                             .into_iter()
                             .map(move |proof| HolonomicConstraint {
                                 owner_ordinal,
@@ -920,7 +931,7 @@ pub(super) fn index_reduction_constraints(view: dae::DaeView<'_>) -> Vec<Holonom
                         |(algebraic, definition)| {
                             let proof = prove_algebraic_lift_differentiation(
                                 view,
-                                &facts,
+                                facts,
                                 &mut scratch,
                                 definition,
                             );

@@ -117,8 +117,9 @@ fn holonomic_reconstruction_preserves_checked_function_owners() {
         .next()
         .expect("fixture exposes a twice-differentiable state constraint");
     let expected_inventory = model.inspect(function_expression_inventory);
-    let (rebuilt, manifold) = rebuild_holonomic_constraint(&model, &constraint, &[])
-        .expect("holonomic replacement reconstructs checked function owners");
+    let (rebuilt, manifold) =
+        rebuild_holonomic_constraint(&ReductionSource::new(&model), &constraint, &[])
+            .expect("holonomic replacement reconstructs checked function owners");
     assert_eq!(manifold.len(), 2);
     rebuilt.inspect(|view| {
         assert_eq!(view.function_count(), 2);
@@ -153,7 +154,9 @@ fn function_reconstruction_is_stack_bounded_and_deterministic() {
         },
     );
     let candidate = model
-        .inspect(direct_state_constraints)
+        .inspect(|view| {
+            direct_state_constraints(view, &constraints::DifferentiationFacts::collect(view))
+        })
         .admissible
         .into_iter()
         .next()
