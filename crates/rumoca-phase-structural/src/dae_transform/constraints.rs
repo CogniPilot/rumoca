@@ -1009,11 +1009,10 @@ pub(super) fn index_reduction_constraints(
 ///
 /// Algebraic coordinates are admitted only through the signed equality class
 /// already asserted by the source system. A pinned class differentiates to
-/// zero; a state-anchored class differentiates as that state. Requiring two
-/// distinct state anchors whenever an algebraic is involved excludes ordinary
-/// component aliases such as `state - connector = 0`: differentiating those
-/// would only replace a defining equation with a tautology. The older direct
-/// state-only form remains admissible with one state.
+/// zero; a state-anchored class differentiates as that state. Source value
+/// identities and self-materialized definitions are excluded before this walk.
+/// An independent constraint can depend on one scalar or tensor state through
+/// an algebraic observation; declaration counts do not establish independence.
 fn holonomic_differentiation_proofs<'dae>(
     view: dae::DaeView<'dae>,
     facts: &DifferentiationFacts,
@@ -1082,7 +1081,6 @@ fn prove_holonomic_differentiation<'dae>(
         excluded_residual: residual.index(),
         derivative_anchors: DerivativeAnchors::Affine,
         anchored_states: Vec::new(),
-        saw_algebraic: false,
         function_context: FunctionCallContext::default(),
         scratch,
     };
@@ -1131,7 +1129,7 @@ fn prove_holonomic_differentiation<'dae>(
     };
     walk.anchored_states.sort_unstable();
     walk.anchored_states.dedup();
-    if walk.anchored_states.is_empty() || (walk.saw_algebraic && walk.anchored_states.len() < 2) {
+    if walk.anchored_states.is_empty() {
         return None;
     }
     Some(HolonomicDifferentiationProof {
@@ -1194,7 +1192,6 @@ fn prove_algebraic_lift_differentiation<'dae>(
         excluded_residual: lifted.0,
         derivative_anchors: DerivativeAnchors::Exact,
         anchored_states: Vec::new(),
-        saw_algebraic: false,
         function_context: FunctionCallContext::default(),
         scratch,
     };
@@ -1239,7 +1236,6 @@ struct HolonomicProofWalk<'facts, 'dae> {
     excluded_residual: u32,
     derivative_anchors: DerivativeAnchors,
     anchored_states: Vec<u32>,
-    saw_algebraic: bool,
     function_context: FunctionCallContext<'dae>,
     scratch: &'facts mut HolonomicProofScratch,
 }
@@ -1457,7 +1453,6 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
                         )
                 }),
             dae::CoordinateView::Algebraic(algebraic) => {
-                self.saw_algebraic |= on_residual;
                 if let Some(block) = self.facts.auxiliary_blocks[algebraic.index() as usize].clone()
                 {
                     return self.can_differentiate_auxiliary(&block, order, on_residual);

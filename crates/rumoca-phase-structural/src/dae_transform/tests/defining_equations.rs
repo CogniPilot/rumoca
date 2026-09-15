@@ -5,25 +5,37 @@ use super::*;
 #[test]
 fn a_materialized_definition_is_not_a_holonomic_constraint() {
     for dimensions in [vec![], vec![3]] {
-        let model = defining_equation_model(dimensions, false);
-        model.inspect(|view| {
-            assert!(
-                constraints::holonomic_constraints(view).is_empty(),
-                "substituting observed = x+y makes the defining residual identically zero"
-            );
-        });
+        for second_state in [false, true] {
+            let model = defining_equation_model(dimensions.clone(), false, second_state);
+            model.inspect(|view| {
+                assert!(
+                    constraints::holonomic_constraints(view).is_empty(),
+                    "substituting the observation makes its defining residual identically zero"
+                );
+            });
+        }
     }
 }
 
-fn defining_equation_model(dimensions: Vec<u32>, independent_constraint: bool) -> dae::Dae {
+fn defining_equation_model(
+    dimensions: Vec<u32>,
+    independent_constraint: bool,
+    second_state: bool,
+) -> dae::Dae {
     let shape = if dimensions.is_empty() { "" } else { "[3]" };
     let constraint = if independent_constraint {
         " observed*observed = 1;"
     } else {
         ""
     };
+    let declaration = if second_state {
+        format!("Real y{shape};")
+    } else {
+        String::new()
+    };
+    let other = if second_state { "y" } else { "x" };
     let text = format!(
-        "Real x{shape}; Real y{shape}; Real observed{shape}; equation observed = x + y;{constraint}"
+        "Real x{shape}; {declaration} Real observed{shape}; equation observed = x + {other};{constraint}"
     );
     let mut sources = SourceMap::new();
     let source = sources.add("defining_equation.mo", &text);
@@ -35,9 +47,13 @@ fn defining_equation_model(dimensions: Vec<u32>, independent_constraint: bool) -
         let x = model.variables(|variables| {
             variables.state(VarName::new("x"), value_type, at, Default::default())
         })?;
-        let y = model.variables(|variables| {
-            variables.state(VarName::new("y"), value_type, at, Default::default())
-        })?;
+        let y = if second_state {
+            model.variables(|variables| {
+                variables.state(VarName::new("y"), value_type, at, Default::default())
+            })?
+        } else {
+            x
+        };
         let observed = model.variables(|variables| {
             variables.algebraic(VarName::new("observed"), value_type, at, Default::default())
         })?;
@@ -80,7 +96,7 @@ fn defining_equation_model(dimensions: Vec<u32>, independent_constraint: bool) -
 #[test]
 fn a_constraint_through_a_definition_retains_its_source_state_anchors() {
     for dimensions in [vec![], vec![3]] {
-        let model = defining_equation_model(dimensions, true);
+        let model = defining_equation_model(dimensions, true, true);
         model.inspect(|view| {
             let constraints = constraints::holonomic_constraints(view);
             assert_eq!(constraints.len(), 1, "observed*observed=1 constrains x+y");
@@ -88,6 +104,26 @@ fn a_constraint_through_a_definition_retains_its_source_state_anchors() {
             assert_eq!(
                 constraints[0].owner_ordinal, 1,
                 "the defining equation must remain owned"
+            );
+        });
+    }
+}
+
+#[test]
+fn an_independent_constraint_can_have_one_source_state_declaration() {
+    for dimensions in [vec![], vec![3]] {
+        let model = defining_equation_model(dimensions, true, false);
+        model.inspect(|view| {
+            let constraints = constraints::holonomic_constraints(view);
+            assert_eq!(
+                constraints.len(),
+                1,
+                "observed*observed=1 independently constrains 2*x"
+            );
+            assert_eq!(&*constraints[0].proof.anchored_states, &[0]);
+            assert_eq!(
+                constraints[0].owner_ordinal, 1,
+                "the observation definition must remain owned"
             );
         });
     }

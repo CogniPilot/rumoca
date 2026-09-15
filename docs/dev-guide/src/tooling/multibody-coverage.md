@@ -4,6 +4,45 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Independent constraints need no minimum state-declaration count
+
+The exact PrismaticConstraint orientation residual passed first-derivative
+and retained-value preflight. A temporary probe ruled out missing function
+argument values: both matrices and angular velocities were reconstructible.
+It instead found one state anchor and an algebraic read, which an old guard
+rejected for having fewer than two distinct state declarations. One rotation
+matrix is a tensor declaration; its declaration count says nothing about
+whether the orientation constraint is independent.
+
+STRUCT-T03 admission now relies on the existing source-value identity and
+self-definition exclusions, exact derivative/value preflight, and nonempty
+state dependencies. The declaration-count heuristic and its bookkeeping are
+removed. This does not loosen matching or initialization checks. A reduced
+structural test for `observed=x+x; observed*observed=1` failed before the change
+and now admits only the independent constraint, for both scalar and vector
+states. The companion test continues to reject the observation's defining
+equation. An end-to-end angular-observation test already passed through another
+reduction route before this repair; it remains a regression, not the red proof.
+Both integrators reproduce all seven analytical channels, and the ordinary
+worker agrees highly with OMC on all seven shared trajectory and initial
+channels. A diagnostic receipt script stopped on a Python name typo after
+comparison; its continuation validated the saved traces without rerunning them.
+
+All 1,070 focused tests pass (99 library, 624 core, 141 Solve, 206 structural),
+as do phase/core Clippy and workspace formatting. Tier 1
+`multibody-single-anchor-{frontier,origin,canary}` has no phase or band changes
+against `multibody-atan2-constraints-*`: 5/6/9 compared high, 1/2/0 reviewed
+exclusions, and zero missing or nonidentifiable traces. No temporary production
+probe remains. Evidence is in `rolling-wheel/single-anchor-*` and
+`rolling-wheel/prismatic-orientation-preflight-*`.
+
+PrismaticConstraint's orientation owner 450 now appears in the ordinary
+reduction candidates and is selected. The real model still refuses preparation;
+the last accepted intermediate remains 2,314/2,317 matched, with the same three
+unmatched matrix-equality rows. The quaternion-rate reconstruction and the
+order of the retained constraints are the next investigation, not an established
+root cause. No additional MultiBody parity credit is claimed.
+
 ## Second derivatives of angular constraints
 
 OMC differentiates PrismaticConstraint's `Orientation.equalityConstraint`
