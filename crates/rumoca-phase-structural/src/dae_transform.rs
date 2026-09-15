@@ -16,6 +16,7 @@ mod demotion_bounds;
 mod derivative_aliases;
 mod differentiation;
 mod equalities;
+mod equation_activity;
 mod event_owners;
 mod expressions;
 mod function_derivatives;
@@ -840,11 +841,11 @@ fn reconstruct_direct_candidate(
                 return Err(error);
             }
         };
-    if !manifold.is_empty() && !manifold_is_state_only(&rebuilt, &manifold) {
+    if let Some(outcome) = direct_reconstruction_rejection(model, &rebuilt, &manifold) {
         observer.observe(ReductionEvent::Attempt {
             lane: Lane::Direct,
             identity,
-            outcome: AttemptOutcome::WouldInvalidateManifold,
+            outcome,
         });
         return Ok(DirectAttempt::Rejected);
     }
@@ -920,6 +921,20 @@ fn reconstruct_direct_candidate(
             error: retained_error.expect("reduced/held candidate retains its proving error"),
         },
     })
+}
+
+fn direct_reconstruction_rejection(
+    source: &dae::Dae,
+    rebuilt: &dae::Dae,
+    manifold: &[ManifoldConstraint],
+) -> Option<AttemptOutcome<'static>> {
+    if !equation_activity::preserves_equations(source, rebuilt) {
+        Some(AttemptOutcome::WouldCreateVacuousResidual)
+    } else if !manifold.is_empty() && !manifold_is_state_only(rebuilt, manifold) {
+        Some(AttemptOutcome::WouldInvalidateManifold)
+    } else {
+        None
+    }
 }
 
 /// Try one list of demotion candidates against `model`.
@@ -1565,7 +1580,9 @@ fn attempt_holonomic_candidate(
                 return Err(error);
             }
         };
-    if !holonomic_replacement_is_structurally_active(&rebuilt, &constraint) {
+    if !equation_activity::preserves_equations(source.model(), &rebuilt)
+        || !holonomic_replacement_is_structurally_active(&rebuilt, &constraint)
+    {
         observer.observe(ReductionEvent::Attempt {
             lane: Lane::Holonomic,
             identity,

@@ -4,6 +4,51 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Structural candidate acceptance rejects reflexive coordinate equations
+
+The next capture isolates the remaining circular substitution at holonomic
+round 20, residue 24. Demoting `body1.w_a` to `jointUPS.frame_ia.R.w` differentiates
+the latter through its existing definition `body1.z_a`. Both states already
+have that same derivative definition, so the original `z_a=der(w_a)` equation
+becomes reflexive. The source derivative-cycle walk need not re-enter the
+demoted coordinate: its algebraic chain reaches body2's derivative instead.
+
+A small source model, `x=y; der(x)=a; der(y)=a`, reproduces the false structural
+success. OMC rejects it as structurally singular at `a[i]=a[i]`; a companion
+model with independent derivative coordinates and `a=-y` compiles to the
+expected first-order motion equation. Rumoca's direct and holonomic candidates
+now share an acceptance check that refuses newly reflexive equalities of Real
+coordinates. It compares branded coordinate identity, including distinct source
+expression occurrences, and retains source equations and tensor domains. This
+does not rewrite numerical residuals, eliminate function calls, or sample rank.
+
+Both regression models pass for scalar, singleton, three-element, and
+4,096-element payloads. All 190 structural tests and all-target/all-feature
+structural Clippy pass. The first Clippy run identified a function two lines
+over the size limit; the direct reconstruction checks were factored into a
+helper, then tests and Clippy reran successfully. Temporary capture tests were
+removed and archived outside production source.
+
+LineForceWithTwoMasses now refuses Solve construction with EL005 instead of
+entering initialization with the known tautology. Its deepest saved reduction
+matches 2,201/2,204 equations; the three unmatched rows are owner 545's original
+angular-velocity relation. The unmatched unknowns are `jointUPS.f_c_a[3]` and
+`jointUPS.f_bd_a[2:3]`. The returned error still describes the initial 2,164/2,204
+matching; the diagnostic snapshot preserves the later obstruction. The next
+comparison follows JointUPS's explicit `w_rel_ia1` construction from its
+translational kinematics to identify the missing independent reconstruction.
+No simulation or parity gain is claimed.
+
+Tier 1 `multibody-demotion-owners-{frontier,origin,canary}` retains every band
+and execution status from the corresponding function-zero controls. The six
+frontier targets compare four high traces with one reviewed exclusion; the eight
+origin targets compare six with two reviewed exclusions; the fixed 20-model
+canary compares nine with none. Every comparison is high, with zero missing,
+nonidentifiable, or deviating traces. These partial runs are regression evidence.
+`rolling-wheel/demotion-owners-evidence-1.json` binds the captures, OMC probe,
+source repair, tests, inspector, and gate deltas. The complete cohort below
+remains authoritative; combined quick/full verification is still outstanding.
+
 ## Exact identity and zero derivatives expose the next LineForce failure
 
 Two structural producer repairs now preserve exact identities through tensor
