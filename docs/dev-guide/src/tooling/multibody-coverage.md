@@ -4,6 +4,48 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Accepted-step projection amplifies the LineForceWithTwoMasses counterexample
+
+A logging-only capture at `e4f8329d` records the 62 continuous states immediately
+before and after accepted-step and off-point manifold projection. The complete
+three-second output trace is byte-identical to the earlier diagnostic trace
+(`c64dc8502b20f6d0d263e1e7ab614ebd63895b3bc7c61887d5616dd62a83eedb`).
+The instrumented solver budget was 30 seconds to accommodate logging; numerical
+tolerances were unchanged. This supplies neither ordinary timeout nor coverage
+or performance credit. All temporary production logging has been removed.
+
+Of 3,137 accepted-step projection calls, 622 retain a state correction. The
+first retained correction, at time 0.15539131879412615, increases the difference
+between the two plants' angular velocities from 2.40e-8 to 2.40e-7. At time
+1.2223001460204923, that difference increases from 1.40e-6 to 5.25e-6 in one
+projection. The rectangular projection blocks include the independent revolute
+angles and velocities as movable coordinates: 23 constraints act on 25 states
+in one plant and 29 constraints on 31 states in the other. The runtime's
+minimum-norm correction therefore moves those independent coordinates
+differently for the two representations.
+
+Off-point observation projection alone does not explain the force counterexample.
+At time 1.986, the angular-velocity disagreement is already -8.863e-6 before
+observation projection and becomes -8.865e-6 afterward. Combined with the
+same-state OMC force agreement recorded below, this establishes accepted-step
+projection as a contributor to the trajectory error. It does not yet establish
+that projection is the sole contributor, or certify a repair.
+
+All 26 remaining state declarations were states in the original DAE; none is
+a surviving algebraic promotion. A small experiment established that final
+state selection can miss a retained value definition for an artificial lifted
+rate, but that narrower case does not explain this model's remaining states.
+Its failing/passing regression and trial patch are archived, and the trial
+production change was removed. The next investigation must follow original
+state constraints through differentiation and final state selection, preserving
+their equations and initialization obligations. Changing observation sampling
+alone or adjusting tolerances cannot close the four force-channel deviations.
+
+Evidence is under `rolling-wheel/line-force-rate-projection-*`,
+`rate-projection-*`, and `retained-state-selection-*`. No new cohort claim,
+baseline promotion, or counterexample closure is made. Combined quick/full
+verification and complete MultiBody support remain outstanding.
+
 ## Independent explicit rates close structural reduction; force differences remain
 
 Structural value reconstruction now follows a unique explicit derivative
