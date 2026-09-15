@@ -2,6 +2,63 @@ use rumoca::Compiler;
 use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae_with_diagnostics};
 
 #[test]
+fn partial_array_pin_transfer_retains_unprojected_initial_equations() {
+    for (selected, values) in [(1, "x,0,0"), (2, "0,2*x,0"), (3, "0,0,3*x")] {
+        reject_partial_array_pin(&partial_array_pin_source(values, selected));
+    }
+}
+
+fn reject_partial_array_pin(source: &str) {
+    let compiled = Compiler::new()
+        .model("PartialPin")
+        .compile_str(source, "partial_pin.mo")
+        .unwrap();
+    for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+        let error = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 0.05,
+                solver_mode,
+                ..Default::default()
+            },
+        )
+        .expect_err(
+            "unprojected elements contradict their fixed starts even when the selected element agrees",
+        );
+        assert!(
+            error.to_string().contains("initial variable projection"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn partial_array_pin_transfer_preserves_consistent_initialization() {
+    for selected in 1..=3 {
+        check_trace(
+            &partial_array_pin_source("x,2*x,3*x", selected),
+            "PartialPin",
+            &[
+                ("x", 1.0),
+                ("q", f64::from(selected)),
+                ("a[1]", 1.0),
+                ("a[2]", 2.0),
+                ("a[3]", 3.0),
+            ],
+        );
+    }
+}
+
+fn partial_array_pin_source(values: &str, selected: u32) -> String {
+    format!(
+        "model PartialPin Real x(start=1,fixed=true);
+        Real a[3](start={{1,2,3}},each fixed=true); Real q,rate;
+        equation der(x)=-x; a={{{values}}}; q=a[{selected}]; der(q)=rate;
+        end PartialPin;"
+    )
+}
+
+#[test]
 fn computed_fixed_array_attributes_constrain_algebraic_initialization() {
     let source = r#"
 model FixedAlgebraicArray

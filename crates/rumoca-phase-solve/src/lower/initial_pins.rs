@@ -137,7 +137,6 @@ fn lower_unrepresented_fixed_continuous_reals<'dae>(
                 variable.role(),
                 dae::VariableRole::State | dae::VariableRole::Algebraic | dae::VariableRole::Output
             )
-            || pins.iter().any(|pin| pin.source == id.index())
         {
             continue;
         }
@@ -165,6 +164,12 @@ fn lower_unrepresented_fixed_continuous_reals<'dae>(
             ));
         }
         for scalar in 0..variable.scalar_count() {
+            if pins
+                .iter()
+                .any(|pin| pin.source == id.index() && pin.source_scalar as usize == scalar)
+            {
+                continue;
+            }
             let slot = variable_scalar_slot(layout, id.index(), scalar, span)?;
             let solve::ScalarSlot::Y { index, .. } = slot else {
                 return Err(LowerError::contract(

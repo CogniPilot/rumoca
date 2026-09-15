@@ -53,12 +53,16 @@
 //! completeness audit, which fails closed with source provenance rather than
 //! returning a successful model missing an initialization equation.
 
+mod coordinates;
+
 use rumoca_ir_dae as dae;
+
+use coordinates::Coordinates;
 
 use super::constraints::{numeric_literal, states_the_same_expression};
 use super::equalities::{
-    AdditiveOperands, EqualityAnchor, EqualitySign, SystemEqualities, flatten_additive,
-    is_scalar_real, is_time_invariant,
+    AdditiveOperands, EqualityAnchor, EqualitySign, SystemEqualities,
+    flatten_additive_with_projection, is_scalar_real, is_time_invariant,
 };
 use crate::StructuralError;
 
@@ -103,6 +107,8 @@ pub struct InitialValuePin {
     pub role: InitialValueRole,
     /// The variable whose `fixed = true` start the value was read from.
     pub source: u32,
+    /// Component of that declaration's initial equation, before transfer.
+    pub source_scalar: u32,
     /// That variable's declaration.
     pub provenance: dae::DaeProvenance,
 }
@@ -154,7 +160,7 @@ pub(super) fn transferred_initial_values(
 /// keep it bounded. A system that states no initial value at all skips the
 /// comparison outright ([`super::constraints::discarded_stated_initial_value`]
 /// returns on an empty set), and a candidate that does not reduce is dropped
-/// before the closure is built at all. Note that [`flatten_additive`] reads
+/// before the closure is built at all. Note that [`flatten_additive_with_projection`] reads
 /// every residual to its leaves with no early bail on arity — that is what makes
 /// a four-terminal balance readable however it is spelled, and it makes one
 /// closure linear in the whole system rather than in its two-term residuals.
@@ -186,7 +192,8 @@ enum Reading {
 /// Coordinate classes closed over the exact equalities a system asserts, with
 /// the time-invariant displacement between each member and its class root.
 struct ValueClosure {
-    /// Union-find parent per variable ordinal.
+    coordinates: Coordinates,
+    /// Union-find parent per whole variable or authored component identity.
     parent: Vec<u32>,
     /// Whether each variable is the negation of its parent's value.
     parity: Vec<bool>,
@@ -201,9 +208,11 @@ struct ValueClosure {
 
 impl ValueClosure {
     fn collect(view: dae::DaeView<'_>) -> Self {
-        let count = view.variable_count();
+        let coordinates = Coordinates::collect(view);
+        let count = coordinates.len();
         let mut closure = Self {
-            parent: (0..count as u32).collect(),
+            coordinates,
+            parent: (0..count).map(|key| key as u32).collect(),
             parity: vec![false; count],
             offset: vec![Vec::new(); count],
             invariant: vec![None; count],
@@ -252,7 +261,9 @@ impl ValueClosure {
             return Reading::Unusable;
         };
         let mut operands = AdditiveOperands::default();
-        if !flatten_additive(view, expression, false, &mut operands) {
+        if !flatten_additive_with_projection(view, expression, false, &mut operands, &|e| {
+            self.coordinates.projection(e)
+        }) {
             return Reading::Unusable;
         }
         let mut constants = invariant_terms(&operands);
@@ -419,7 +430,9 @@ fn reduced(terms: Vec<PinTerm>) -> Vec<PinTerm> {
     let mut kept: Vec<PinTerm> = Vec::with_capacity(terms.len());
     for term in terms {
         match kept.iter().position(|candidate| {
-            candidate.expression == term.expression && candidate.negated != term.negated
+            candidate.expression == term.expression
+                && candidate.scalar == term.scalar
+                && candidate.negated != term.negated
         }) {
             Some(index) => {
                 kept.remove(index);
@@ -489,6 +502,7 @@ fn cancel_symbolic_terms(view: dae::DaeView<'_>, terms: &[PinTerm]) -> bool {
     for term in terms.iter().copied() {
         let matched = open.iter().position(|candidate| {
             candidate.negated != term.negated
+                && candidate.scalar == term.scalar
                 && same_expression(view, candidate.expression, term.expression)
         });
         match matched {
@@ -521,6 +535,7 @@ fn same_expression(view: dae::DaeView<'_>, left: u32, right: u32) -> bool {
 
 /// One `fixed = true` declaration, resolved against its class root.
 struct PinnedMember {
+    /// Closure identity, including a component when the source is projected.
     variable: u32,
     /// The value the pin states for the class root.
     at_root: Vec<PinTerm>,
@@ -583,6 +598,7 @@ fn aggregate_pins(view: dae::DaeView<'_>) -> Vec<InitialValuePin> {
                 value,
                 role,
                 source: id.index(),
+                source_scalar: scalar as u32,
                 provenance: variable.declaration(),
             });
         }
@@ -619,7 +635,11 @@ impl ValueClosure {
             self.reject_contradicted_pins(view, &members)?;
             match class_states(&states, root) {
                 [state] => {
-                    represented_sources.extend(members.iter().map(|member| member.variable));
+                    represented_sources.extend(
+                        members
+                            .iter()
+                            .map(|member| self.coordinates.get(member.variable).variable),
+                    );
                     pins.extend(self.class_pins(view, *state, &members));
                 }
                 _ => self.append_direct_class_pins(
@@ -657,6 +677,7 @@ impl ValueClosure {
                 }],
                 role: InitialValueRole::Check,
                 source: id.index(),
+                source_scalar: 0,
                 provenance: variable.declaration(),
             });
         }
@@ -671,8 +692,9 @@ impl ValueClosure {
         represented_sources: &mut Vec<u32>,
     ) {
         for member in members {
+            let source = self.coordinates.get(member.variable);
             let Some(variable) = view
-                .variable_id(member.variable as usize)
+                .variable_id(source.variable as usize)
                 .and_then(|id| view.variable(id))
             else {
                 continue;
@@ -680,19 +702,22 @@ impl ValueClosure {
             if variable.role() != dae::VariableRole::State {
                 pins.push(self.direct_pin(view, member));
             }
-            represented_sources.push(member.variable);
+            represented_sources.push(source.variable);
         }
     }
 
     /// Retain one non-state declaration as its literal §8.6 equation.
     fn direct_pin(&self, view: dae::DaeView<'_>, member: &PinnedMember) -> InitialValuePin {
+        let source = self.coordinates.get(member.variable);
         InitialValuePin {
-            coordinate: member.variable,
-            scalar: 0,
-            value: stated_value(view, member.variable)
+            coordinate: source.variable,
+            scalar: source.scalar,
+            value: self
+                .stated_value(view, member.variable)
                 .expect("a pinned closure member has a named invariant start"),
             role: InitialValueRole::Check,
-            source: member.variable,
+            source: source.variable,
+            source_scalar: source.scalar,
             provenance: member.provenance,
         }
     }
@@ -744,12 +769,14 @@ impl ValueClosure {
     /// What one pinned declaration states about `state`.
     fn pin(&self, state: u32, member: &PinnedMember, role: InitialValueRole) -> InitialValuePin {
         let resolved = self.find(state);
+        let target = self.coordinates.get(state);
         InitialValuePin {
-            coordinate: state,
-            scalar: 0,
+            coordinate: target.variable,
+            scalar: target.scalar,
             value: reduced([signed(&member.at_root, resolved.negated), resolved.offset].concat()),
             role,
-            source: member.variable,
+            source: self.coordinates.get(member.variable).variable,
+            source_scalar: self.coordinates.get(member.variable).scalar,
             provenance: member.provenance,
         }
     }
@@ -822,7 +849,7 @@ impl ValueClosure {
         match class_states(states, *root) {
             [_] => true,
             [] => self.value_of(variable).is_some_and(|proved| {
-                stated_value(view, variable).is_some_and(|stated| {
+                self.stated_value(view, variable).is_some_and(|stated| {
                     stated_agreement(view, &proved, &stated) != StatedAgreement::Contradicted
                 })
             }),
@@ -836,7 +863,7 @@ impl ValueClosure {
             _ => members.iter().any(|(other_root, other)| {
                 other_root == root
                     && other.variable != variable
-                    && is_seeded_state(view, other.variable)
+                    && is_seeded_state(view, self.coordinates.get(other.variable).variable)
                     && stated_agreement(view, &member.at_root, &other.at_root)
                         != StatedAgreement::Contradicted
             }),
@@ -846,40 +873,34 @@ impl ValueClosure {
     /// Every `fixed = true` scalar Real coordinate, keyed by its class root.
     fn pinned_members(&self, view: dae::DaeView<'_>) -> Vec<(u32, PinnedMember)> {
         let mut members = Vec::new();
-        for (id, variable) in view.variables() {
-            if !carries_a_stated_initial_value(variable) || !is_scalar_real(variable) {
+        for (key, coordinate) in self.coordinates.iter() {
+            let variable = view
+                .variable(view.variable_id(coordinate.variable as usize).unwrap())
+                .unwrap();
+            if !carries_a_stated_initial_value(variable)
+                || (!coordinate.projected && !is_scalar_real(variable))
+            {
                 continue;
             }
             // A start that is not time-invariant is not a value this phase can
             // hand a runtime as a definition, so its class is left alone.
-            let Some(start) = variable
-                .start()
-                .filter(|start| is_time_invariant(view, *start))
-            else {
+            let Some(value) = self.stated_value(view, key) else {
                 continue;
             };
-            let resolved = self.find(id.index());
+            let resolved = self.find(key);
             if self.contradicted[resolved.root as usize] {
                 continue;
             }
             // value(variable) = negated·value(root) + offset, and the pin
             // states value(variable) = start.
             let at_root = reduced(signed(
-                &[
-                    vec![PinTerm {
-                        expression: start.index(),
-                        scalar: 0,
-                        negated: false,
-                    }],
-                    signed(&resolved.offset, true),
-                ]
-                .concat(),
+                &[value, signed(&resolved.offset, true)].concat(),
                 resolved.negated,
             ));
             members.push((
                 resolved.root,
                 PinnedMember {
-                    variable: id.index(),
+                    variable: key,
                     at_root,
                     provenance: variable.declaration(),
                 },
@@ -891,14 +912,17 @@ impl ValueClosure {
     /// The state coordinates of every class that has one, keyed by class root.
     fn states_by_root(&self, view: dae::DaeView<'_>) -> Vec<(u32, Vec<u32>)> {
         let mut classes: Vec<(u32, Vec<u32>)> = Vec::new();
-        for (id, variable) in view.variables() {
+        for (key, coordinate) in self.coordinates.iter() {
+            let variable = view
+                .variable(view.variable_id(coordinate.variable as usize).unwrap())
+                .unwrap();
             if variable.role() != dae::VariableRole::State {
                 continue;
             }
-            let root = self.find(id.index()).root;
+            let root = self.find(key).root;
             match classes.iter_mut().find(|(candidate, _)| *candidate == root) {
-                Some((_, states)) => states.push(id.index()),
-                None => classes.push((root, vec![id.index()])),
+                Some((_, states)) => states.push(key),
+                None => classes.push((root, vec![key])),
             }
         }
         classes
@@ -930,8 +954,8 @@ impl ValueClosure {
         match contradiction {
             None => Ok(()),
             Some((member, other)) => Err(StructuralError::ConflictingStatedInitialValues {
-                variable: variable_name(view, member.variable),
-                other: variable_name(view, other.variable),
+                variable: variable_name(view, self.coordinates.get(member.variable).variable),
+                other: variable_name(view, self.coordinates.get(other.variable).variable),
                 span: member.provenance.span(),
                 other_span: other.provenance.span(),
             }),
@@ -942,10 +966,9 @@ impl ValueClosure {
 /// Whether MLS 3.6 §8.6 turns this declaration into an initialization equation
 /// this phase is responsible for.
 ///
-/// This inventory includes Real aggregates even though the equality closure
-/// currently transfers only scalar coordinates. That distinction is
-/// deliberate: the state-preservation postcondition must reject a reduction
-/// that demotes an aggregate whose initial equations it cannot yet transfer.
+/// This inventory includes entire Real aggregates. A proof about an authored
+/// component alone cannot justify demoting the whole fixed declaration: every
+/// initial equation must remain represented.
 /// A discrete coordinate is initialized by its own §8.6 owner, and a parameter
 /// with `fixed = false` is an unknown of the initialization system rather than
 /// a stated value.
@@ -963,17 +986,23 @@ fn carries_a_stated_initial_value(variable: dae::VariableView<'_>) -> bool {
 /// Only a start this closure can name is reported: an absent one is the MLS 3.6
 /// §4.8 default, which no expression of the system spells, and a start that
 /// varies states nothing about the initialization instant on its own.
-fn stated_value(view: dae::DaeView<'_>, variable: u32) -> Option<Vec<PinTerm>> {
-    let start = view
-        .variable_id(variable as usize)
-        .and_then(|id| view.variable(id))
-        .and_then(|variable| variable.start())
-        .filter(|start| is_time_invariant(view, *start))?;
-    Some(vec![PinTerm {
-        expression: start.index(),
-        scalar: 0,
-        negated: false,
-    }])
+impl ValueClosure {
+    fn stated_value(&self, view: dae::DaeView<'_>, key: u32) -> Option<Vec<PinTerm>> {
+        let coordinate = self.coordinates.get(key);
+        let start = view
+            .variable_id(coordinate.variable as usize)
+            .and_then(|id| view.variable(id))
+            .and_then(|variable| variable.start())
+            .filter(|start| is_time_invariant(view, *start))?;
+        Some(vec![PinTerm {
+            expression: start.index(),
+            scalar: aggregate_start_scalar(
+                view.expression(start)?.value_type().scalar_count(),
+                coordinate.scalar as usize,
+            ),
+            negated: false,
+        }])
+    }
 }
 
 /// Whether the runtime seeds `variable` from its own declaration.

@@ -765,6 +765,17 @@ pub(super) fn flatten_additive<'dae>(
     negated: bool,
     operands: &mut AdditiveOperands,
 ) -> bool {
+    flatten_additive_with_projection(view, expression, negated, operands, &|_| None)
+}
+
+/// Read the same additive grammar with additional source-proved component identities.
+pub(super) fn flatten_additive_with_projection<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    negated: bool,
+    operands: &mut AdditiveOperands,
+    projection: &impl Fn(dae::ExprId<'dae>) -> Option<u32>,
+) -> bool {
     let Some(node) = whole_model_expression(view, expression) else {
         return false;
     };
@@ -772,26 +783,26 @@ pub(super) fn flatten_additive<'dae>(
         dae::ExpressionOperation::Unary {
             operator: dae::UnaryOperator::Plus,
             operand,
-        } => flatten_additive(view, operand, negated, operands),
+        } => flatten_additive_with_projection(view, operand, negated, operands, projection),
         dae::ExpressionOperation::Unary {
             operator: dae::UnaryOperator::Negate,
             operand,
-        } => flatten_additive(view, operand, !negated, operands),
+        } => flatten_additive_with_projection(view, operand, !negated, operands, projection),
         dae::ExpressionOperation::Binary {
             operator: dae::BinaryOperator::Add,
             lhs,
             rhs,
         } => {
-            flatten_additive(view, lhs, negated, operands)
-                && flatten_additive(view, rhs, negated, operands)
+            flatten_additive_with_projection(view, lhs, negated, operands, projection)
+                && flatten_additive_with_projection(view, rhs, negated, operands, projection)
         }
         dae::ExpressionOperation::Binary {
             operator: dae::BinaryOperator::Subtract,
             lhs,
             rhs,
         } => {
-            flatten_additive(view, lhs, negated, operands)
-                && flatten_additive(view, rhs, !negated, operands)
+            flatten_additive_with_projection(view, lhs, negated, operands, projection)
+                && flatten_additive_with_projection(view, rhs, !negated, operands, projection)
         }
         dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) => {
             push_variable(view, state.index(), negated, operands)
@@ -800,19 +811,26 @@ pub(super) fn flatten_additive<'dae>(
             push_variable(view, algebraic.index(), negated, operands)
         }
         dae::ExpressionOperation::Index { .. } => {
-            let variable = match singleton_real_projection(view, expression) {
-                Some(
-                    SingletonRealProjection::State(variable)
-                    | SingletonRealProjection::Algebraic(variable),
-                ) => variable,
-                _ => return false,
+            let variable = projection(expression).or_else(|| {
+                match singleton_real_projection(view, expression) {
+                    Some(
+                        SingletonRealProjection::State(variable)
+                        | SingletonRealProjection::Algebraic(variable),
+                    ) => Some(variable),
+                    _ => None,
+                }
+            });
+            let Some(variable) = variable else {
+                return false;
             };
             operands.variables.push((variable, negated));
             true
         }
         _ => {
             if let Some(argument) = forwarded_call_argument(view, expression) {
-                return flatten_additive(view, argument, negated, operands);
+                return flatten_additive_with_projection(
+                    view, argument, negated, operands, projection,
+                );
             }
             if !is_time_invariant(view, expression) {
                 return false;

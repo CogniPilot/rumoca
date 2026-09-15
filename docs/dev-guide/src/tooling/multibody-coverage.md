@@ -4,6 +4,73 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Preserve fixed starts through tensor projections
+
+RevoluteConstraint reaches ToDae, then structural reduction refuses to demote
+`freeMotionScalarInit.derd[2].u` because it would discard the fixed start on
+`freeMotionScalarInit.angle_2`. The output aliases that scalar state, which
+aliases element two of the retained `initAngle.angle` vector. The first executed
+`ProjectedPin` regression reproduces `WouldDiscardInitial` for output `q` and
+retains both states. The equality closure previously recognized whole variables
+and singleton projections, but not components of larger arrays.
+
+Structural initial-value transfer now gives authored literal projections sparse
+component identities in its existing signed equality closure. The same facts
+supply demotion preservation and transferred initialization rows. Dynamic indices
+and nonlinear dependencies cannot establish a value alias. Array declarations,
+source equations, and provenance remain intact; no tensor basis is enumerated.
+The governing contracts are MLS sections 8.6 and 10, SPEC_0007 structural lowering /
+STRUCT-T03, SPEC_0036 Expressions and Equations, and SPEC_0043 section 4.
+
+The existing OMC reference tool completes the unchanged RevoluteConstraint to
+ten seconds. Generated initialization equation 970 preserves the second angle's
+fixed start while the adjacent nonlinear initial system solves the other angles.
+The projection candidate accepts state 999's formerly blocked demotion and emits
+no `WouldDiscardInitial` records. The model still cannot simulate: the closest
+retained snapshot matches 2,206 of 2,208 equations, leaving `f_x[2200]`,
+`f_x[2201]`, `constraint.P`, and `fixedRotation.frame_b.t[1]` unmatched. Its final
+failure reports the original singular system. This is no coverage gain and
+RevoluteConstraint parity remains unmeasured. `revolute-projected-initial-*`
+retains the diagnostic and public structural inspection. Diagnostic worker 1 was
+stale and is marked invalid; worker 2 contains the projection change.
+
+Review also exposed and closed a counterexample in the uncommitted candidate.
+`PartialPin` declares `a[3](start={1,2,3},each fixed=true)`, defines `a={x,0,0}`,
+and separately references only `a[1]`. The candidate incorrectly completed with
+initial `a={1,0,0}`: Solve treated one transferred component as covering the
+entire source declaration. Each transferred pin now carries its exact source
+scalar, and Solve retains every uncovered component equation. The saved Solve
+artifacts show one initial residual becoming all three required residuals. The
+normal worker now refuses initialization with residual -3; OMC independently
+rejects the same source for `$START.a[3]-a[3] = 3`. This closes the counterexample
+by rejecting an inconsistent model. Regression variants select each of the three
+components and test both inconsistent and consistent systems on BDF and RkLike.
+Evidence is in `projected-initial-partial-source-1`, including the original wrong
+trace, source, binary hashes, initial-row delta, and closure receipt.
+
+Both valid projection fixtures retain one three-component state declaration and
+simulate the full one-second interval. Each compares all six shared OMC channels
+high, with no minor, deviating, or severe channels. Both implementations agree
+with the analytical exponential solution within 1e-5. Structural tests cover
+signed aliases, offsets, vectors through 4,096 elements, matrices, distinct
+indices, fixed targets, and refusal to infer identity from dynamic/nonlinear
+reads. All 204 structural tests, 141 Solve tests, and 607 core integration tests
+pass; both phase crates pass all-target, all-feature Clippy.
+
+The final Tier 1 runs are `multibody-projected-initial-complete-{frontier,origin,canary}`.
+They retain five, six, and nine high comparisons respectively, with one, two,
+and zero reviewed exclusions and no missing traces. Every phase and band delta
+against the prior fixed target sets is empty. Receipts are
+`projected-initial-complete-*-delta-1.json`; the complete worker build manifest
+binds both the normal executables and MSL test binary. These focused results do
+not establish a new cohort number. No baseline promotion or PR is claimed.
+
+A separate Flat inspection establishes that RollingWheelSetPulling's reported
+"record input" derivative failure actually names the external-object table handle
+passed to `getTimeTableValueNoDer2`. Record decomposition already ran; that path
+needs a checked external-object lifecycle. `wheelset-derivative-inputs-*` retains
+the evidence. No change or coverage gain is claimed for that finding.
+
 ## Full cohort after constant-offset state reduction
 
 `target/msl/multibody-scalar-state-offset-full` passes the complete 566-model
