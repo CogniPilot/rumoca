@@ -200,6 +200,12 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             source_id,
             order,
         ) {
+            if self
+                .facts
+                .expression_is_zero(self.source, source_id, &self.function_context)
+            {
+                return Ok(Derivative::Zero);
+            }
             return self.differentiate_supplied_function(selected, provenance);
         }
         if let Some((result, nested)) = self.function_context.call_result(self.source, source_id) {

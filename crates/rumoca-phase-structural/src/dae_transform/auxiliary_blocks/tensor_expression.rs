@@ -75,6 +75,14 @@ pub(super) enum TensorExpression {
 }
 
 impl TensorExpression {
+    pub(super) fn is_identity(&self, extent: u32) -> bool {
+        match self {
+            Self::Identity(size) => *size == extent,
+            Self::Shared { value, .. } => value.is_identity(extent),
+            _ => false,
+        }
+    }
+
     pub(super) fn is_zero(&self) -> bool {
         match self {
             Self::Zero(_) => true,

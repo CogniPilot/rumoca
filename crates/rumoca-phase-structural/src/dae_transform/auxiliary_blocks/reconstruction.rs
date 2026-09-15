@@ -34,7 +34,12 @@ pub(in crate::dae_transform) fn create_functions<'target>(
         by_variable: vec![None; facts.auxiliary_blocks.len()],
         by_extent: std::collections::BTreeMap::new(),
     };
-    for block in facts.auxiliary_blocks.iter().flatten() {
+    for block in facts
+        .auxiliary_blocks
+        .iter()
+        .flatten()
+        .filter(|block| !block.has_identity_coefficient())
+    {
         let source_row = source.expression_id(block.residual() as usize).unwrap();
         let at = source.expression(source_row).unwrap().provenance();
         let function = insert_function(target, &mut functions, block.extent, at)?;
@@ -186,14 +191,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .expect("auxiliary source proof exists")
             .clone();
         let rhs = self.auxiliary_rhs(&block, order, provenance)?;
-        let solve_matrix = self.auxiliary_matrix(&block, 0, provenance)?;
-        let rhs = self.auxiliary_derivative_rhs(&block, order, rhs, provenance)?;
-        let function = self.auxiliary_functions.by_variable[variable as usize]
-            .expect("proved block function reserved");
-        let value = self
-            .target
-            .at(provenance)
-            .call(function, 0, [solve_matrix, rhs])?;
+        let value = if block.has_identity_coefficient() {
+            rhs
+        } else {
+            let solve_matrix = self.auxiliary_matrix(&block, 0, provenance)?;
+            let rhs = self.auxiliary_derivative_rhs(&block, order, rhs, provenance)?;
+            let function = self.auxiliary_functions.by_variable[variable as usize]
+                .expect("proved block function reserved");
+            self.target
+                .at(provenance)
+                .call(function, 0, [solve_matrix, rhs])?
+        };
         let expression = AuxiliaryExpression { value };
         self.auxiliary_expressions.insert(key, expression);
         Ok(expression)

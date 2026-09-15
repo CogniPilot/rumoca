@@ -1257,7 +1257,10 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
             expression,
             order,
         ) {
-            return self.can_apply_derivative(selected, on_residual);
+            return self
+                .facts
+                .expression_is_zero(self.view, expression, &self.function_context)
+                || self.can_apply_derivative(selected, on_residual);
         }
         if self.function_context.is_empty() {
             match self.scratch.state(index, order as usize, context) {

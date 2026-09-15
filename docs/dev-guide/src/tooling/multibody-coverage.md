@@ -4,6 +4,55 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Exact identity and zero derivatives expose the next LineForce failure
+
+Two structural producer repairs now preserve exact identities through tensor
+reconstruction. A construction-proved identity coefficient in `A*q=b` emits
+the RHS directly at each admitted derivative order. Other coefficients retain
+the checked aggregate solve, including tunable parameters whose default is one.
+Supplied function derivatives now respect the existing checked zero-expression
+proof in both admission and construction. A zero-default parameter remains a
+parameter; its numeric default does not establish an identically zero function.
+
+The source-backed regressions fail before the respective repairs and pass after
+them for vector extents 1, 3, and 4096, with constant IR size. All 188 structural
+tests, all-target/all-feature structural Clippy, formatting, and whitespace
+checks pass. The ordinary workers rebuild successfully. The OMC ZeroRotation
+probe, using MSL `Frames.resolve2(R, zeros(3))`, retains `q[i]=y[i]` and
+`der(y[i])=-y[i]`, with no spurious rotation derivative in those equations.
+
+The actual LineForceWithTwoMasses source DAE remains byte-identical to the
+original capture. The identity-only repair removes its synthetic identity solve
+but leaves the circular angular-velocity derivative. With the exact-zero repair,
+prepared owner 434 becomes `der(jointUPS.frame_ia.R.w)-body1.z_a`, matching the
+previously captured OMC relation. Owner 545 retains the original angular-velocity
+value equation and demotes `body1.w_a`; it is no longer replaced with the circular
+acceleration residual. The diagnostic has 31 state declarations and 27 manifold
+rows. These counts are not OMC's scalar-state count.
+
+The model still fails initialization with EX002 and produces no trace. The next
+capture identifies local block 60, logical row 1635, and `body1.z_a[1]` (Y 1399).
+All 166 failure events share one numerical point and a zero 1-by-1 matrix.
+Source owner 546 is `body1.z_a-der(body1.w_a)`; its prepared residual is exactly
+`body1.z_a-body1.z_a`. Solve program 522 loads the vector once and subtracts the
+same registers from themselves, producing logical rows 1635–1637. This is a
+remaining circular substitution in state demotion, already present before Solve;
+it is not evidence of an AD-only defect. The next proof must trace the derivative
+anchor that permits this self-substitution. Solve still takes 12.623 seconds in
+the artifact-enabled diagnostic, exceeding the ordinary 10-second budget.
+
+Tier 1 runs `multibody-function-zero-{frontier,origin,canary}` retain every band
+and execution status from the corresponding demotion-bounds controls. The six
+frontier targets compare four high traces with one reviewed exclusion; the eight
+origin targets compare six high traces with two reviewed exclusions. The fixed
+20-model canary compares nine high traces, with no exclusions. All three have
+zero missing/nonidentifiable/near/deviating comparisons. These partial runs are
+regression checks, not new cohort coverage. Receipts
+`rolling-wheel/function-zero-{evidence,next-failure}-1.json` bind the source,
+generated equations, OMC probe, tests, worker captures, and comparator deltas.
+The full cohort below remains authoritative: 23/42 MultiBody high. Combined
+`verify quick` and `verify full` remain outstanding, and no PR is opened.
+
 ## LineForce sensitivity failure is a circular structural equation
 
 The failure-only debug event identifies the exact singular block in

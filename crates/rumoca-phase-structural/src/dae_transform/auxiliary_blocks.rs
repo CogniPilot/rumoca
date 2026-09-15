@@ -59,6 +59,10 @@ pub(super) struct AuxiliaryBlock {
 }
 
 impl AuxiliaryBlock {
+    fn has_identity_coefficient(&self) -> bool {
+        matches!(&self.system, AuxiliarySystem::Map { matrix, .. } if matrix.is_identity(self.extent))
+    }
+
     #[cfg(test)]
     pub(super) fn coefficient_node_count(&self) -> usize {
         match &self.system {
