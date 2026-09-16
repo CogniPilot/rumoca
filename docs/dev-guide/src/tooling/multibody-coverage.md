@@ -4,6 +4,173 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Automatic-selection full sweep regresses; electrical triage remains open
+
+The complete 566-model run `multibody-automatic-basis-full` at
+`5ed8581991cc31418d24f41856f916b5d4c1005d` fails the soundness gate. It has 187
+raw simulation completions, 167 compared models, 166 strict-high models,
+one near model, 20 reviewed exclusions, zero missing traces, and zero typed
+non-identifiable traces. All 22,192 compared initial values are high. Four
+trajectory channels deviate, all in
+`Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Braking`.
+The near model earns no passing credit. The run uses eleven workers and the
+ordinary phase budgets; no baseline is promoted.
+
+MultiBody is **20/42 strict-high**, down from 25/42 in
+`multibody-single-anchor-full`. RevoluteConstraint is restored, but six
+previously high models are lost:
+
+| Model suffix | First recorded failure |
+|---|---|
+| `Constraints.UniversalConstraint` | Solve exceeds its 10-second phase budget |
+| `Constraints.SphericalConstraint` | Solve exceeds its 10-second phase budget |
+| `Elementary.RollingWheelSetDriving` | Stage -1 dependent Jacobian is numerically singular under the selected basis |
+| `Elementary.HeatLosses` | Non-finite algebraic projection, row 1559, `damper1.e_rel_0[3]` |
+| `Rotational3DEffects.GyroscopicEffects` | Algebraic projection does not converge, row 1136, `bodyCylinder1.body.Q[4]` |
+| `Elementary.PointGravity` | Non-finite algebraic projection, row 835, `body2.g_0[3]` |
+
+Five newly high models elsewhere do not discharge these regressions. The
+per-model delta is `automatic-basis-full-delta-1.json` under
+`.git/multibody-campaign/rolling-wheel/` (the evidence directory below).
+
+### The electrical discrepancy follows an ill-conditioned observable
+
+SMPM_Braking has 584 high channels and four deviating channels, with all 588
+initial values high. Three deviations are aliases of `smpm.lszero.v`; the
+fourth is `voltageQuasiRMSSensor.ToSpacePhasor1.zero`. MSL's SpacePhasor
+equations, the model's 1 MOhm grounding resistor, and OMC generated equations
+623–635 give, with `i0 = smpm.i_0_s`:
+
+```text
+grounding.i = -3*i0
+grounding.v = -3*Rg*i0
+vzero = mean(vAC) + 3*Rg*i0 - mean(rs.v)
+Lzero*der(i0) = -vzero
+```
+
+The winding resistances are equal, so `mean(rs.v) = -Rs*i0`. Thus an error
+in the small zero-sequence current is amplified by `3*Rg + Rs` in the
+observed voltage. Evaluating the displayed voltage identity on the two
+original traces gives maximum absolute residuals of 5.23e-8 V (Rumoca) and
+6.61e-8 V (OMC). Rumoca's zero-sequence voltage spans approximately
+[-0.00984, 0.01111] V; the original OMC trace spans [-3.0084, 3.1138] V.
+This locates a numerical accuracy concern without proving either entire
+trajectory correct.
+
+The existing xtask-generated OMC executable was inspected directly and reused
+for bounded diagnostics. Original source, executable, official reference,
+Rumoca trace, comparison thresholds, and gate tolerances remain unchanged.
+Only copied diagnostic initialization files request other tolerances:
+
+| Diagnostic comparison | Shared channels | High | Near | Deviating |
+|---|---:|---:|---:|---:|
+| Original Rumoca vs original OMC (`1e-6`) | 588 | 584 | 0 | 4 |
+| Same Rumoca vs diagnostic OMC (`1e-9`) | 588 | 584 | 4 | 0 |
+| Same Rumoca vs diagnostic OMC (`1e-10`) | 588 | 584 | 4 | 0 |
+| Diagnostic OMC `1e-9` vs `1e-10` | 608 | 603 | 0 | 5 |
+
+The five OMC self-comparison deviations are the same four voltage observations
+and `der(smpm.i_0_s)`. Consequently these two diagnostic traces **do not establish
+convergence of those observables**. At `1e-12`, OMC reports diode chattering near
+0.523893568 s and times out after 60 seconds. That failed attempt is retained;
+its partial CSV is not a complete reference. At the original tolerance,
+`-noEquidistantTimeGrid` still produces voltage excursions exceeding 2 V,
+rejecting an explanation based only on output interpolation. This flag emits
+accepted integration steps according to the
+[OMC runtime documentation](https://openmodelica.org/doc/OpenModelicaUsersGuide/v1.26.0/simulationflags.html#noequidistanttimegrid).
+
+### An analytic reduction exposes the same risk in both solvers
+
+The independent, non-switching reproduction `StiffVoltage.mo` is:
+
+```modelica
+model StiffVoltage
+  parameter Real R = 3e6;
+  parameter Real L = 0.1/(100*3.141592653589793);
+  parameter Real omega = 100*3.141592653589793;
+  Real i(start=0, fixed=true);
+  Real v;
+equation
+  L*der(i) = v;
+  v = 100*sin(omega*time) - R*i;
+end StiffVoltage;
+```
+
+For `A=100`, `w=omega`, and `D=R^2+(w*L)^2`, its exact voltage is
+`A*w*L*(R*cos(w*t)+w*L*sin(w*t)-R*exp(-R*t/L))/D`. The steady voltage amplitude
+is approximately 3.33e-6 V. Over 0–0.02 s with both requested tolerances at
+1e-6 and output interval 1e-5 s:
+
+| Solver | Maximum current error (A) | Maximum voltage error (V) | Mean voltage error (V) |
+|---|---:|---:|---:|
+| OMC DASSL | 1.6847e-7 | 0.5054 | 0.1935 |
+| Rumoca ordinary simulation | 3.8363e-7 | 1.1509 | 0.1318 |
+
+OMC's accepted-step output still has maximum voltage error 0.4878 V. Its
+algebraic voltage equation is satisfied to roundoff. The reduction therefore
+rejects both “OMC is necessarily the accurate oracle” and “Rumoca's smaller
+MSL voltage excursions alone prove correctness.” State error control does not
+by itself bound this amplified observable. The reproduction remains a
+numerical accuracy frontier, not a passing golden model.
+
+Evidence includes `smpm-source-1/ir-{flat,dae}.json`,
+`smpm-reference-diagnostic-1.py`, `smpm-reference-intermediate-1.py`, the
+`smpm-omc-refinement-*` receipts/comparisons, `smpm-omc-output-1`, and
+`stiff-voltage-1/analytic-comparison.json`. `smpm-triage-evidence-1.json`
+binds the source, executable, traces, diagnostics, failed attempt, and full
+cohort artifacts by SHA-256.
+
+**Closure remains open.** No new exclusion or tolerance policy is introduced,
+and no diagnostic earns cohort credit. The next obligation is to establish
+an accuracy bound for the amplified observable and distinguish nonlinear
+solve error from integration error using the analytic reproduction. The six
+MultiBody regressions remain behind this electrical investigation. Combined
+verify quick/full, baseline promotion, push, and PR publication have not run.
+
+### Restore the BDF refresh policy when shortening a step
+
+Driving the exact same scalar ODE directly through Diffsol's sparse BDF and
+backtracking Newton solver reproduces Rumoca's dense-output error, without
+Modelica lowering, algebraic projection, FMI, or the trace sampler. Of 47
+accepted steps, the large voltage error is isolated to the shortened final
+step: -0.4399047825 V at 0.02 s instead of the analytic 3.333333333e-6 V.
+Other accepted endpoints have maximum voltage error 5.68e-7 V. Intermediate
+continuous-extension samples can still have much larger error.
+
+`Bdf::handle_tstop` updates the step coefficient and difference history but
+omits the ordinary coefficient-dependent Jacobian refresh policy. Newton
+therefore uses a factorization for the preceding step coefficient. The fix
+invokes that existing policy after clipping, retaining the existing thresholds,
+convergence checks, and RHS-Jacobian reuse. No Modelica model or observable
+names enter production code. SPEC_0038 / ME-INT-004 records the numerical
+method obligation.
+
+The direct regression
+`shortened_bdf_step_preserves_the_stiff_voltage_solution` fails before the fix
+with the above -0.4399 V result and passes afterward at unchanged 1e-6
+integration tolerances. The separate diagnostic now gives 3.245663075e-6 V at
+the final endpoint, an 8.77e-8 V error, with the same 47 accepted steps.
+Across all accepted endpoints the maximum voltage error falls from 0.4399 V
+to 5.68e-7 V. The 2,000 intermediate dense-output samples still reach 1.1509 V
+error; the hard-stop repair does not establish their accuracy.
+
+Validation passes: 11 Diffsol-wrapper tests, 674 core tests, six spec-budget
+tests, wrapper Clippy, and workspace formatting. The fixed 20-model canary
+`smpm-hard-stop-canary-1` has the same nine compared/high models, 175 high
+initial channels, eleven existing failures, zero skips/missing traces, and
+zero phase or band changes against `multibody-automatic-basis-canary-2`.
+The ordinary focused run `smpm-hard-stop-focused-1` retains SMPM_Braking's
+four deviating channels; its Rumoca trace is byte-identical to the original
+full-run trace. The partial harness exits zero, but the comparator remains
+near, so this is explicitly **not counterexample closure**.
+
+Before/after native probes and metrics are `stiff-voltage-native-{1,2}`;
+verification logs use the `smpm-hard-stop-` prefix. The next numerical frontier
+is the discrepancy between accurate accepted steps and the amplified
+observables computed from their continuous extension. The default OMC
+reference has its own accuracy limitation, so reproducing its voltage noise
+is not an acceptable target.
+
 ## Automatic independent-state selection reaches the original trace
 
 The ordinary DAE-to-Solve entry now constructs a source-bound independent

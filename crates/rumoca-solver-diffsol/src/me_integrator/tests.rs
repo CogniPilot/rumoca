@@ -111,3 +111,62 @@ fn native_bdf_endpoint_matches_its_continuous_extension() {
         }
     }
 }
+
+#[test]
+fn shortened_bdf_step_preserves_the_stiff_voltage_solution() {
+    use diffsol::{
+        BacktrackingLineSearch, Bdf, BdfState, FaerSparseLU, FaerSparseMat, NewtonNonlinearSolver,
+        OdeSolverState,
+    };
+
+    // SPEC_0038 / ME-INT-004: a hard stop changes the numerical step's
+    // coefficient just as ordinary step-size adaptation does.
+    const RESISTANCE: f64 = 3e6;
+    const FREQUENCY: f64 = 100.0 * std::f64::consts::PI;
+    const INDUCTANCE: f64 = 0.1 / FREQUENCY;
+    let problem = OdeBuilder::<FaerSparseMat<f64>>::new()
+        .h0(1e-3)
+        .rtol(1e-6)
+        .atol([1e-6])
+        .rhs_implicit(
+            |x, _p, t, out| {
+                out[0] = (100.0 * (FREQUENCY * t).sin() - RESISTANCE * x[0]) / INDUCTANCE;
+            },
+            |_x, _p, _t, seed, out| {
+                out[0] = -RESISTANCE / INDUCTANCE * seed[0];
+            },
+        )
+        .init(|_p, _t, out| out[0] = 0.0, 1)
+        .build()
+        .unwrap();
+    let mut state = BdfState::new_without_initialise(&problem).unwrap();
+    state.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
+    let mut method = Bdf::<_, _, FaerMat<f64>>::new(
+        &problem,
+        state,
+        NewtonNonlinearSolver::new(
+            FaerSparseLU::<f64>::default(),
+            BacktrackingLineSearch::default(),
+        ),
+    )
+    .unwrap();
+    let stop_time = 0.02;
+    method.set_stop_time(stop_time).unwrap();
+    while method.state().t < stop_time {
+        method.step().unwrap();
+    }
+    let state = method.state();
+    assert_eq!(state.t, stop_time);
+    let voltage = 100.0 * (FREQUENCY * state.t).sin() - RESISTANCE * state.y.as_slice()[0];
+    let exact = 100.0
+        * FREQUENCY
+        * INDUCTANCE
+        * (RESISTANCE * (FREQUENCY * stop_time).cos()
+            + FREQUENCY * INDUCTANCE * (FREQUENCY * stop_time).sin()
+            - RESISTANCE * (-RESISTANCE * stop_time / INDUCTANCE).exp())
+        / (RESISTANCE.powi(2) + (FREQUENCY * INDUCTANCE).powi(2));
+    assert!(
+        (voltage - exact).abs() < 1e-5,
+        "shortened step voltage {voltage} differs from the analytic value {exact}"
+    );
+}

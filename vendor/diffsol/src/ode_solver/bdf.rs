@@ -713,6 +713,10 @@ where
             let factor = (tstop - state.t) / state.h;
             // update step size ignoring the possible "step size too small" error
             let _ = self._update_step_size(factor);
+            self._jacobian_updates(
+                self.state.h * self.alpha[self.state.order],
+                SolverState::StepSuccess,
+            );
         }
         Ok(None)
     }

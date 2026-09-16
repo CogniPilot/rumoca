@@ -80,9 +80,10 @@ MUST NOT inspect Solve rows, layouts, opcodes, events, or private runtime object
 
 [SPEC_0044 §§6-8](SPEC_0044_FMI_EXECUTION_CATALOG.md#6-common-me-host-and-integrator-contract)
 normatively defines the host, integrator, event-domain, deletion, and evidence
-requirements. Numerical solvers implement only its one-step contract; they
-never own FMI lifecycle transitions, output schedules, trace policies, or
-component-private Modelica state.
+requirements. Plugins own numerical steps, never FMI lifecycle transitions,
+output schedules, traces, or component-private Modelica state. Step clipping
+preserves coefficient-dependent Jacobian refresh and convergence-estimate
+policies (ME-INT-004).
 
 The component-facing surface is an exact semantic projection of FMI 3.0.2 ME.
 Host conveniences derive only from standard calls and the checked
