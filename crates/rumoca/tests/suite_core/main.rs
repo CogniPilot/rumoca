@@ -144,6 +144,7 @@ mod record_array_member_slice_test;
 mod record_connector_equation_test;
 mod record_output_dependencies;
 mod reverse_vjp_test;
+mod runtime_index_derivative;
 mod scoped_import_flatten;
 mod solve_model_round_trip;
 mod state_demotion_through_alias;

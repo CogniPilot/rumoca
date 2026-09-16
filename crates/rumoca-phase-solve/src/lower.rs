@@ -1777,6 +1777,9 @@ fn is_target_derivative<'dae>(
     state: dae::StateId<'dae>,
     state_scalar: usize,
 ) -> Result<bool, LowerError> {
+    if !expression_contains_derivative(selector.view(), expression) {
+        return Ok(false);
+    }
     Ok(matches!(
         selector.coordinate(expression, scalar)?,
         Some((dae::CoordinateView::Derivative(found), found_scalar))

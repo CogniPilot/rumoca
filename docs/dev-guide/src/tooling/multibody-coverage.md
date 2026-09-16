@@ -4,6 +4,48 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Runtime indexing prerequisites for variable coordinate projections
+
+The coordinate-switching investigation found two general classification bugs
+before a variable projection could execute. For `der(x) = values[k]`, Solve's
+direct-derivative query attempted to resolve the value-side index at compile
+time. The existing runtime gather was therefore unreachable. The query now
+first proves that its expression contains a derivative. With the equation
+reversed, DAE partitioning mistook the Integer index for a discrete assignment
+target. Assignment-side classification now follows the selected value through
+references, indices, unary wrappers, arrays, and tuples, excluding the index
+expressions. Discrete targets and malformed discrete solved forms retain their
+checks. These fixes follow MLS §10.5 / ARR-005, ARR-024 and the Appendix B
+partition contract; they add no Modelica exception, IR vocabulary, or public API.
+
+`runtime_index_derivative` reproduces the original lowering failure and verifies
+both orientations of a tensor derivative equation whose index changes at an
+event. Its analytical integrals pass; an out-of-bounds runtime index still
+fails during execution instead of producing a successful trace. The ordinary
+worker/OMC comparison in `variable-projection-prototype-1` reports seven
+compared channels, all high. All 271 DAE library tests, 144 Solve library tests,
+and 677 core tests pass, along with affected-phase Clippy, core-test Clippy,
+and workspace formatting. A test-only nesting warning was corrected and the
+focused tests and Clippy rerun.
+
+Tier 1 `runtime-index-msl-focused-1` retains three compared/high models;
+`runtime-index-canary-1` retains nine compared/high and eleven existing
+failures. Both have zero phase/band changes and zero skipped/missing traces
+against their `gyro-matrix-refinement` predecessors. No new Tier 2 claim or
+baseline promotion is made. `runtime-index-derivative-evidence-1.json` binds
+the exact test, worker, OMC, and comparator evidence under
+`.git/multibody-campaign/rolling-wheel`.
+
+The local `SelectedCircle` diagnostic now executes the variable-index
+projection before the turning point, with all four physical position/velocity
+errors below 8.0e-9 against the analytical solution. This is not automatic
+coordinate switching. The authored `SwitchedCircle` probe still fails during
+event projection; OMC cannot build either projection probe because its backend
+overflows its stack. Neither probe earns OMC parity or coverage credit. The
+original `CircleChart` wrong-branch counterexample and `GyroscopicEffects`
+failure remain open. The remaining compiler/runtime work is a construction-issued
+coordinate family and an atomic physical-state-preserving FMI transition.
+
 ## Static coordinate folds expose a circular-motion counterexample
 
 After the sensitivity correction in `14500e1264754060dffe3099b7e9aaf88b57deff`,

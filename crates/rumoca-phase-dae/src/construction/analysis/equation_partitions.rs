@@ -753,6 +753,15 @@ fn assignment_side_mentions_discrete_value(
     roles: &HashMap<VarName, PlannedRole>,
 ) -> bool {
     match expression {
+        Expression::VarRef { name, .. } => {
+            matches!(roles.get(name.var_name()), Some(PlannedRole::DiscreteValue))
+        }
+        Expression::Index { base, .. } | Expression::Unary { rhs: base, .. } => {
+            assignment_side_mentions_discrete_value(base, roles)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => elements
+            .iter()
+            .any(|value| assignment_side_mentions_discrete_value(value, roles)),
         Expression::If {
             branches,
             else_branch,
