@@ -118,6 +118,13 @@ pub(super) fn reserve_derivatives<'target>(
         )?;
         for order in 1..=orders[id.index() as usize] {
             let name = available_name(variable.name(), order, &mut names);
+            let start = target.expressions(|expressions| {
+                super::expressions::shaped_zero(
+                    expressions,
+                    variable.value_type().dimensions(),
+                    provenance,
+                )
+            })?;
             let derivative = target.variables(|target| {
                 let (id, reservation) = target.reserve_algebraic(
                     name,
@@ -127,6 +134,7 @@ pub(super) fn reserve_derivatives<'target>(
                 target.define(
                     reservation,
                     dae::VariableAttributes {
+                        start: Some(start),
                         fixed: Some(false),
                         origin: dae::VariableOrigin::Generated,
                         ..Default::default()

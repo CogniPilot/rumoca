@@ -85,12 +85,16 @@ fn append_projection<'target>(
     let extent = u32::try_from(selected.len()).map_err(|_| invalid_projection(at))?;
     let value_type = target
         .types(|types| types.derived(dae::ValueType::array(dae::ScalarType::Real, [extent]), at))?;
+    let start = target.expressions(|expressions| {
+        super::super::expressions::shaped_zero(expressions, &[extent], at)
+    })?;
     let state = target.variables(|variables| {
         variables.state(
             state_name(source),
             value_type,
             at,
             dae::VariableAttributes {
+                start: Some(start),
                 fixed: Some(false),
                 origin: dae::VariableOrigin::Generated,
                 ..Default::default()

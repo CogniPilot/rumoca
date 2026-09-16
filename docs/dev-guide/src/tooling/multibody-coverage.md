@@ -4,6 +4,74 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint: original equations and a supplied independent basis
+
+The original formal system now has numerical evidence against OMC, beyond the
+reduced rotation fixture. OMC's generated initialization XML supplies exact
+alias records, including `initAngle.angle[2] = derd[2].u`; those records map its
+CSV values to source coordinates in a diagnostic. Rumoca's source-bound kernels
+reconstruct eliminated intermediate variables while holding every mapped OMC
+value fixed. At times 0 and 7.64, all 2,640 formal residuals are below 3.9e-13.
+No model-name or OMC-dependent selection logic was added to production.
+
+Numerical selection on the typed AD matrices, with the source's
+`StateSelect.always` requirements enforced, chooses the same four coordinates
+as OMC: `joint.phi`, `joint.w`, `initAngle.angle[2]`, and its first derivative.
+The dependent stage matrices have full numerical rank at both sampled points.
+The highest-stage condition estimate reaches 8.02e7 at 7.64; lower-stage
+estimates stay below 4.9e4. These are sampled diagnostics, not a global
+regularity certificate. Evidence: `rolling-wheel/original-basis-selection-1.json`.
+
+The first end-to-end experiment failed before integration: generated formal
+derivatives had no start attribute, and strict runtime preparation refused
+`$formal_derivative.1.joint.frame_a.r_0`. The proposed aggregate state also
+lacked a seed. The constructors now use the existing compact `shaped_zero`
+helper and explicitly retain `fixed=false`. This follows SPEC_0007 / STRUCT-T07
+and [MLS §8.6](https://specification.modelica.org/maint/3.6/equations.html#initialization-initial-equation-and-initial-algorithm):
+unfixed starts are iteration guesses. Source attributes and initial equations
+remain authoritative. Two strengthened regressions fail with `MissingValue`
+before the fix and verify numerical seeds, tensor shape, and unchanged source
+initialization after it.
+
+A temporary test-only export let the existing simulator execute the original
+model's constructed four-state candidate. The export probe was removed; no
+production admission API was opened. The simulation uses original source
+initialization and fresh zero guesses for generated variables, with no OMC
+value overrides. BDF completes 501 samples over 0–10 seconds with unchanged
+1e-6 relative/absolute tolerances and a 12-second solver budget; total preparation
+plus simulation time was 11.45 seconds.
+
+The repository trace comparator reports high agreement for all 918 shared
+channels, with zero minor, deviating, or severe channels. All 918 initial-condition
+checks are high. Maximum channel bounded normalized L1 error is 2.75e-5.
+This is one explicitly supplied-basis experiment, not a normal-path MSL pass
+or a cohort metric. Evidence: `original-candidate-simulation-2.jsonl`,
+`original-candidate-comparison-1.json`, and the hashed traces and export probe
+in `formal-guesses-evidence-1.json`.
+
+During numerical reconstruction, two angle-sensor Jacobian rows were non-finite
+at the deliberately zero matrix guess. The diagnostic first solved the other
+constraints; the final complete Jacobian is finite, full rank, and all residuals
+and assertions pass. Those intermediate rows were not omitted from final
+validation or from the simulation. This is a starting-guess issue, not evidence
+that a singular or non-finite basis may be admitted.
+
+Validation passes: all 29 focused formal-construction tests, 669 compiler-core
+tests, 217 structural tests, 243 architecture checks, six specification gates,
+structural/core Clippy, formatting, and whitespace checks. The fixed
+`target/msl/multibody-formal-guesses-canary` has no phase or band delta from
+`multibody-formal-kernels-canary`: nine compared models and all 175 initial
+condition channels remain high; eleven existing failures remain visible.
+Skipped, missing, excluded, and nonidentifiable counts are zero. The receipt
+`formal-guesses-canary-delta-1.json` binds base commit
+`1baf8e68e581d8e4d56c26f6cfed50b64dd23abe` and working-tree digest
+`64bbb7d1fbf727fea3879286a42a2e5d36478e09080513e9c5e5e8aebe91d6a0`.
+
+The remaining production work is automatic numerical basis selection, admission,
+initialization/reconstruction ownership, and FMI state mapping. The normal-path
+RevoluteConstraint EX002 regression remains open. No new Tier 2 coverage claim,
+release quick/full run, baseline promotion, push, or PR is made here.
+
 ## RevoluteConstraint: shared tensor kernels for stage Jacobians
 
 `lower_formal_derivative_stages` now lowers source-bound formal stages through

@@ -46,7 +46,16 @@ fn rotation_candidate_preserves_source_owners_and_binds_formal_successors() {
             assert_eq!(state.role(), dae::VariableRole::State);
             assert_eq!(state.value_type().dimensions(), [2]);
             assert_eq!(state.fixed(), Some(false));
-            assert!(state.start().is_none());
+            let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(system.view);
+            assert_eq!(evaluator.initial_value(state.id()).unwrap(), [0.0; 2]);
+            assert_eq!(
+                system
+                    .view
+                    .expression(state.start().unwrap())
+                    .unwrap()
+                    .value_type(),
+                state.value_type()
+            );
             assert_eq!(
                 system.view.function_count(),
                 system.formal.view.function_count()

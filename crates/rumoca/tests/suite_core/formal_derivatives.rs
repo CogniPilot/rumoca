@@ -53,6 +53,19 @@ fn formal_rotation_equations_preserve_tensors_and_initialization() {
                 assert_eq!(derivative.value_type(), variable.value_type());
                 assert_eq!(derivative.fixed(), Some(false));
                 assert_eq!(derivative.role(), dae::VariableRole::Algebraic);
+                let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(system.view);
+                assert_eq!(
+                    evaluator.initial_value(derivative.id()).unwrap(),
+                    vec![0.0; derivative.scalar_count()]
+                );
+                assert_eq!(
+                    system
+                        .view
+                        .expression(derivative.start().unwrap())
+                        .unwrap()
+                        .value_type(),
+                    derivative.value_type()
+                );
             }
         }
     });
