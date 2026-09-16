@@ -22,6 +22,10 @@ pub use ad::{
 };
 pub use error::LowerError;
 pub use layout::build_var_layout;
+pub use lower::typed_functions::formal_stages::{
+    FormalDerivativePrograms, FormalResidualAssertion, FormalResidualProgram, FormalStageProgram,
+    lower_formal_derivative_stages,
+};
 pub use model_values::{
     LoweredSolveModel, SolveModelLoweringError, SolveModelLoweringStage, lower_solve_model,
 };

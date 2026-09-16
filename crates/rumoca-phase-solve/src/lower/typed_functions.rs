@@ -3,14 +3,17 @@
 mod assertions;
 mod captures;
 mod folds;
+pub(crate) mod formal_stages;
 mod indexed_slices;
+mod model_calls;
+mod model_coordinates;
 pub(in crate::lower) mod model_events;
 mod regions;
 mod registration;
 mod tensor;
 
 use assertions::{assertion_conditions, assertion_is_map_independent, nested_calls};
-use model_events::ModelCoordinateKey;
+use model_coordinates::ModelCoordinateKey;
 pub(super) use model_events::lower_model_event_transactions;
 use regions::{
     EnvironmentLayout, RegionAssignmentChain, RegionConditional, RegionContext, RegionValues,
@@ -656,15 +659,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             move |builder, captures, binders, output| {
                 let mut lowerer =
                     load_region_lowerer(builder, captures, &environment, &context, provenance)?;
-                for (ordinal, binder) in binders.iter().enumerate() {
-                    let register = lowerer.builder.load(*binder, provenance)?;
-                    let ordinal = u32::try_from(ordinal).map_err(|_| {
-                        solve::SolveProgramConstructionError::IdentityOverflow { provenance }
-                    })?;
-                    lowerer
-                        .binders
-                        .insert((domain_id.index(), ordinal), register);
-                }
+                lowerer.load_domain_binders(domain_id, binders, provenance)?;
                 let predicate =
                     lowerer.map_assertion_predicate(condition, &remaining, provenance)?;
                 lowerer.builder.store(output, predicate, provenance)
@@ -777,6 +772,10 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .view
             .value_type(target)
             .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+        if source_type == target_type {
+            value.value_type = target;
+            return Ok(value);
+        }
         if !source_type.is_record()
             && !target_type.is_record()
             && source_type.dimensions() == target_type.dimensions()
@@ -1118,8 +1117,8 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             dae::ExpressionOperation::Field { base, field } => {
                 self.field(node.value_type_id(), base, field, at)?
             }
-            dae::ExpressionOperation::Comprehension { body, .. } => {
-                self.comprehension(node.value_type_id(), body, at)?
+            dae::ExpressionOperation::Comprehension { domain, body } => {
+                self.comprehension(node.value_type_id(), domain, body, at)?
             }
             dae::ExpressionOperation::ArrayUpdate {
                 base,
@@ -1287,11 +1286,10 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         Ok(LoweredValue { value_type, leaves })
     }
 
-    // SPEC_0021: Exception - exhaustive checked tensor-comprehension lowering.
-    #[allow(clippy::excessive_nesting)]
     fn comprehension(
         &mut self,
         value_type: dae::ValueTypeId<'dae>,
+        domain_id: dae::DomainId<'dae>,
         body: dae::ExprId<'dae>,
         at: rumoca_core::Span,
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
@@ -1299,61 +1297,32 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .view
             .expression(body)
             .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-        if let Some(domain_id) = body_node.binder_domain() {
-            if !self.pending_predicates([body]).is_empty() {
-                return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
-                    provenance: at,
-                });
-            }
-            let domain = self
-                .view
-                .domain(domain_id)
-                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
-                .structured()
-                .clone();
-            let body_types = lower_value_type_leaves(
-                self.view,
-                body_node.value_type_id(),
-                arithmetic_profile(),
-            )?;
-            let [body_type] = body_types.as_slice() else {
-                return Err(solve::SolveProgramConstructionError::InvalidMap { provenance: at });
-            };
-            let (captures, environment) = self.capture_environment_for([body])?;
-            let context = RegionContext {
-                view: self.view,
-                callees: self.callees.clone(),
-                predicate_ranges: self.predicate_ranges.clone(),
-                conditional_groups: self.conditional_groups.clone(),
-                predicate_count: self.predicate_values.len(),
-                direct_assertion_count: self.direct_assertion_count,
-            };
+        let domain = self
+            .view
+            .domain(domain_id)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+            .structured()
+            .clone();
+        if body_node.binder_domain().is_some() {
+            let result = self.mapped_expression(body, domain_id, domain, at)?;
+            return Ok(LoweredValue::scalar(value_type, result));
+        }
+        let value = self.expression(body)?.only_register(at)?;
+        if !body_node.value_type().dimensions().is_empty() {
+            let body_type =
+                lower_primitive_type(self.view, body_node.value_type_id(), arithmetic_profile())?;
             let result = self.builder.map(
                 domain,
-                &captures,
-                body_type.clone(),
+                &[value],
+                body_type,
                 at,
-                move |builder, captures, binders, output| {
-                    let mut lowerer =
-                        load_region_lowerer(builder, captures, &environment, &context, at)?;
-                    for (ordinal, binder) in binders.iter().enumerate() {
-                        let register = lowerer.builder.load(*binder, at)?;
-                        let ordinal = u32::try_from(ordinal).map_err(|_| {
-                            solve::SolveProgramConstructionError::IdentityOverflow {
-                                provenance: at,
-                            }
-                        })?;
-                        lowerer
-                            .binders
-                            .insert((domain_id.index(), ordinal), register);
-                    }
-                    let value = lowerer.expression(body)?.only_register(at)?;
-                    lowerer.builder.store(output, value, at)
+                |builder, captures, _, output| {
+                    let value = builder.load(captures[0], at)?;
+                    builder.store(output, value, at)
                 },
             )?;
             return Ok(LoweredValue::scalar(value_type, result));
         }
-        let value = self.expression(body)?.only_register(at)?;
         let dimensions = self
             .view
             .value_type(value_type)
@@ -1362,6 +1331,70 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .to_vec();
         let result = self.builder.fill(value, dimensions, at)?;
         Ok(LoweredValue::scalar(value_type, result))
+    }
+
+    fn load_domain_binders(
+        &mut self,
+        domain: dae::DomainId<'dae>,
+        binders: &[solve::ProgramSlot<'program>],
+        at: rumoca_core::Span,
+    ) -> Result<(), solve::SolveProgramConstructionError> {
+        for (ordinal, &binder) in binders.iter().enumerate() {
+            let register = self.builder.load(binder, at)?;
+            let ordinal = u32::try_from(ordinal).map_err(|_| {
+                solve::SolveProgramConstructionError::IdentityOverflow { provenance: at }
+            })?;
+            self.binders.insert((domain.index(), ordinal), register);
+        }
+        Ok(())
+    }
+
+    fn mapped_expression(
+        &mut self,
+        body: dae::ExprId<'dae>,
+        domain_id: dae::DomainId<'dae>,
+        domain: rumoca_core::StructuredIndexDomain,
+        at: rumoca_core::Span,
+    ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
+        if !self.pending_predicates([body]).is_empty() {
+            return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
+                provenance: at,
+            });
+        }
+        let body_types = lower_value_type_leaves(
+            self.view,
+            self.view
+                .expression(body)
+                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+                .value_type_id(),
+            arithmetic_profile(),
+        )?;
+        let [body_type] = body_types.as_slice() else {
+            return Err(solve::SolveProgramConstructionError::InvalidMap { provenance: at });
+        };
+        let (captures, environment) = self.capture_environment_for([body])?;
+        let context = RegionContext {
+            view: self.view,
+            callees: self.callees.clone(),
+            predicate_ranges: self.predicate_ranges.clone(),
+            conditional_groups: self.conditional_groups.clone(),
+            predicate_count: self.predicate_values.len(),
+            direct_assertion_count: self.direct_assertion_count,
+        };
+        let result = self.builder.map(
+            domain,
+            &captures,
+            body_type.clone(),
+            at,
+            move |builder, captures, binders, output| {
+                let mut lowerer =
+                    load_region_lowerer(builder, captures, &environment, &context, at)?;
+                lowerer.load_domain_binders(domain_id, binders, at)?;
+                let value = lowerer.expression(body)?.only_register(at)?;
+                lowerer.builder.store(output, value, at)
+            },
+        )?;
+        Ok(result)
     }
 
     fn array_update(

@@ -53,6 +53,12 @@ These borrowed stages partition the formal system and retain compact tensor
 domains. Their dimensions are structural freedoms, not numerical rank results;
 numerical selection must still certify the relevant stage Jacobians.
 
+`lower_formal_derivative_stages` in `rumoca-phase-solve` now compiles these
+owners through shared typed expression lowering and directional AD. The borrowed
+analysis product retains the formal root, complete tensor captures, equation
+body ordering, compact domains, and call assertions. It evaluates residuals at
+supplied points; it does not issue a regular basis or an executable prepared model.
+
 ### 2. Value and derivative agreement
 
 Here `z` denotes independent coordinates and `d` dependent coordinates. A local

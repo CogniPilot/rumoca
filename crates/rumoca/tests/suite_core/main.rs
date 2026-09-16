@@ -61,6 +61,7 @@ mod for_eq_array_test;
 mod for_loop_element_derivative_alias;
 mod formal_derivative_stages;
 mod formal_derivatives;
+mod formal_stage_kernels;
 mod formal_state_candidates;
 mod forward_param_jacobian_test;
 mod forwarding_function_constraint;

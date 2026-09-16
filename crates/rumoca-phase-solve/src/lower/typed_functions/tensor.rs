@@ -125,6 +125,48 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         Ok(LoweredValue::scalar(value_type, register))
     }
 
+    fn vector_conversion(
+        &mut self,
+        value_type: dae::ValueTypeId<'dae>,
+        argument: dae::ExprId<'dae>,
+        at: rumoca_core::Span,
+    ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
+        let node = self
+            .view
+            .expression(argument)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+        let dimensions = node.value_type().dimensions();
+        let value = self.expression(argument)?.only_register(at)?;
+        if dimensions.is_empty() {
+            let result = self.builder.construct_aggregate(&[value], vec![1], at)?;
+            return Ok(LoweredValue::scalar(value_type, result));
+        }
+        if dimensions.len() == 1 {
+            return Ok(LoweredValue::scalar(value_type, value));
+        }
+        let axis = dimensions
+            .iter()
+            .position(|&extent| extent != 1)
+            .unwrap_or(0);
+        let one = solve::SolveValue::integer(arithmetic_profile(), 1).map_err(|_| {
+            solve::SolveProgramConstructionError::ProfileMismatch { provenance: at }
+        })?;
+        let one = self.builder.constant(one, at)?;
+        let axes = dimensions
+            .iter()
+            .enumerate()
+            .map(|(index, &extent)| {
+                if index == axis {
+                    solve::ProgramTensorViewAxis::Span { origin: 0, extent }
+                } else {
+                    solve::ProgramTensorViewAxis::Index(one)
+                }
+            })
+            .collect::<Vec<_>>();
+        let result = self.builder.project_view(value, &axes, at)?;
+        Ok(LoweredValue::scalar(value_type, result))
+    }
+
     // SPEC_0021: Exception - exhaustive pure-builtin lowering dispatch.
     #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
     pub(super) fn builtin(
@@ -149,6 +191,12 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
             )?;
             return self.expression(value);
+        }
+        if builtin == dae::PureBuiltin::Vector {
+            let argument = arguments.get(0).ok_or(
+                solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
+            )?;
+            return self.vector_conversion(value_type, argument, at);
         }
         if builtin == dae::PureBuiltin::Size {
             let aggregate = arguments.get(0).ok_or(

@@ -4,6 +4,8 @@ use rumoca_core::{SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain,
 
 use super::*;
 
+mod comprehensions;
+mod equal_value_types;
 mod fixtures;
 mod linear_solve;
 mod shared_nested_calls;

@@ -4,6 +4,75 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint: shared tensor kernels for stage Jacobians
+
+`lower_formal_derivative_stages` now lowers source-bound formal stages through
+Rumoca's shared typed expression lowerer and its directional AD. The borrowed
+analysis product retains complete tensor captures, equation owners and body
+ordering, compact domains, source provenance, and reached function assertion
+predicates. Original initialization and assertions remain attached through the
+formal root. It grants no numerical regularity, prepared-model, integration,
+or FMI authority. SPEC_0007 / STRUCT-T07 and SPEC_0029 own this boundary.
+
+The original RevoluteConstraint now constructs kernels for all 2,640 formal
+residuals: stages -2/-1/0 contain 176/256/2,208 rows in 36/68/663 equation owners.
+Every owner has a checked directional program. This is construction evidence,
+not a successful simulation or numerical rank certificate.
+
+This exposed three general defects in the shared typed lowerer:
+
+- `Frames.relativeRotation` passes `Real[3]` under a different declaration-owned
+  type ID from its parameter. DAE already proves complete value-type equality;
+  Solve incorrectly rejected unequal IDs. The fix preserves the target identity
+  while accepting equal complete value types. A checked-DAE regression fails
+  before the fix and verifies scalar/vector/matrix values and AD afterward.
+- `Visualizers.Internal.Lines` repeats orientation matrices for component arrays.
+  The old binder-independent comprehension path fed a tensor to scalar-only
+  `fill`. A compact map now repeats the whole tensor. Comprehensions also use
+  their own declared domain when a nested body reads only an enclosing binder.
+  Checked-DAE tests verify both axes and AD; source fixtures that simplified away
+  the failing construct were not accepted as regressions.
+- `vector([lines[i,1,:];0])` already has a checked DAE owner, but typed Solve
+  lowering was missing. It now uses compact singleton-axis projection, or a
+  one-element aggregate for scalar input, preserving element order and AD.
+
+These fixes follow MLS [type-compatible expressions (§6.7)](https://specification.modelica.org/maint/3.6/interface-or-type-relationships.html#type-compatible-expressions),
+[dimensionality conversion (§10.3.2)](https://specification.modelica.org/maint/3.6/arrays.html#dimensionality-conversion-functions), and
+[array constructors (§10.4.1)](https://specification.modelica.org/maint/3.6/arrays.html#constructor-with-iterators).
+No model-name branches or tolerance changes were introduced. Nested-call and
+model-coordinate capture logic is shared with existing event lowering.
+
+For the reduced rotation model, the new evaluator's 129 residuals and full
+129-by-131 AD Jacobian agree with an independent complex-step evaluation of the
+canonical equations at cosine 1, 1e-3, 8.516739322852923e-6, 1e-7, and 1e-9.
+Maximum residual and Jacobian differences are below 9e-16. This includes the
+saved failure neighborhood. A diagnostic selector using the actual typed AD
+matrices chooses `q[2], w[2]` at all five points; this does not certify a trajectory
+or implement production state selection.
+Evidence: `rolling-wheel/formal-kernels-comparison-2.json` and the final probe
+artifacts listed in `formal-kernels-evidence-1.json`.
+
+Validation passes: all 144 Solve unit tests, 669 compiler-core tests, 243
+architecture checks, six specification gates, Solve/core Clippy, and workspace
+formatting. The new regressions cover tensor and loop residual values and AD,
+source coordinates and explicit time, call assertion preservation and explicit
+refusal of unsupported map-scoped assertions, equal complete value types,
+nested comprehension domains, and vector conversion. Logs use
+`rolling-wheel/formal-kernels-*`.
+
+The fixed `target/msl/multibody-formal-kernels-canary` has no phase or band delta
+from `multibody-formal-stages-canary`: nine compared models and all 175 initial
+condition channels remain high; eleven existing failures remain visible.
+Skipped, missing, excluded, and nonidentifiable counts are zero. The receipt
+`formal-kernels-canary-delta-1.json` binds base commit
+`94dee5f9c8af43abff9789e129492bbd7d3ade4e` and working-tree digest
+`8cd650ce731ecec4fcb17641f7a3cb7ef9c8191e01df6b5a833e8a881f849f79`.
+
+The next obligation is numerical selection on these stage kernels, followed by
+initialization, reconstruction, and runtime/FMI state mapping. The original
+RevoluteConstraint EX002 regression remains open. No full-cohort claim, release
+quick/full, Tier 2 sweep, baseline promotion, push, or PR is made here.
+
 ## RevoluteConstraint: derivative stages for numerical state selection
 
 `FormalDerivativeView::stages` now exposes source-bound equation and coordinate

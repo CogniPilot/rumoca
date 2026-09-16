@@ -1,16 +1,15 @@
 //! Checked model-event transaction construction over the shared typed lowerer.
 
-use std::{
-    collections::{HashMap, HashSet},
-    ops::Range,
-};
+use std::collections::HashMap;
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::{
-    ExpressionLowerer, LoweredValue, PureCallRegistry, RegisteredAssertion, RegisteredCall,
-    arithmetic_profile, lower_primitive_type, lower_value_type_leaves,
+    ExpressionLowerer, LoweredValue, PureCallRegistry, RegisteredAssertion, arithmetic_profile,
+    lower_primitive_type, lower_value_type_leaves,
+    model_calls::RegisteredExpressionAssertion,
+    model_coordinates::{ModelCoordinateKey, collect_model_coordinate_types},
     regions::{RegionContext, RegionOutput, RegionValues, lower_region_values},
 };
 use crate::LowerError;
@@ -136,19 +135,6 @@ impl<'dae> PendingEventTransaction<'dae> {
     }
 }
 
-#[derive(Clone)]
-struct RegisteredTransactionAssertion<'dae> {
-    assertion: RegisteredAssertion<'dae>,
-    projection: CallAssertionProjection,
-    clock: dae::ClockId<'dae>,
-}
-
-type RegisteredExpressionCalls<'dae> = (
-    HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
-    HashMap<dae::ExprId<'dae>, Range<usize>>,
-    Vec<RegisteredTransactionAssertion<'dae>>,
-);
-
 #[derive(Clone, Copy)]
 struct EligibleEventDefinition<'dae> {
     target: dae::ModelEventTarget<'dae>,
@@ -163,82 +149,6 @@ struct EligibleEventTransaction<'dae> {
     statement_count: usize,
 }
 
-/// One semantic model-storage coordinate captured by a typed owner.
-///
-/// This key deliberately retains the aggregate coordinate identity. A tensor
-/// coordinate therefore owns one typed register regardless of its element
-/// count; only the final execution/emission adapter materializes storage
-/// elements.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum ModelCoordinateKey<'dae> {
-    Parameter(dae::ParameterId<'dae>),
-    Input(dae::InputId<'dae>),
-    State(dae::StateId<'dae>),
-    Derivative(dae::StateId<'dae>),
-    Algebraic(dae::AlgebraicId<'dae>),
-    DiscreteReal(dae::DiscreteRealId<'dae>),
-    DiscreteValue(dae::DiscreteValueId<'dae>),
-    PreDiscreteReal(dae::DiscreteRealId<'dae>),
-    PreDiscreteValue(dae::DiscreteValueId<'dae>),
-    PreState(dae::StateId<'dae>),
-    PreAlgebraic(dae::AlgebraicId<'dae>),
-    Time,
-    ClockInterval(dae::PeriodicClockId<'dae>),
-    Condition(dae::ConditionId<'dae>),
-    Delay(dae::DelayId<'dae>),
-    Previous(dae::PreviousId<'dae>),
-    Terminal(dae::TerminalId<'dae>),
-}
-
-impl<'dae> ModelCoordinateKey<'dae> {
-    pub(super) fn from_view(coordinate: dae::CoordinateView<'dae>) -> Option<Self> {
-        Some(match coordinate {
-            dae::CoordinateView::Parameter(id) => Self::Parameter(id),
-            dae::CoordinateView::Input(id) => Self::Input(id),
-            dae::CoordinateView::State(id) => Self::State(id),
-            dae::CoordinateView::Derivative(id) => Self::Derivative(id),
-            dae::CoordinateView::Algebraic(id) => Self::Algebraic(id),
-            dae::CoordinateView::DiscreteReal(id) => Self::DiscreteReal(id),
-            dae::CoordinateView::DiscreteValue(id) => Self::DiscreteValue(id),
-            dae::CoordinateView::PreDiscreteReal(id) => Self::PreDiscreteReal(id),
-            dae::CoordinateView::PreDiscreteValue(id) => Self::PreDiscreteValue(id),
-            dae::CoordinateView::PreState(id) => Self::PreState(id),
-            dae::CoordinateView::PreAlgebraic(id) => Self::PreAlgebraic(id),
-            dae::CoordinateView::Time => Self::Time,
-            dae::CoordinateView::ClockInterval(id) => Self::ClockInterval(id),
-            dae::CoordinateView::Condition(id) => Self::Condition(id),
-            dae::CoordinateView::Delay(id) => Self::Delay(id),
-            dae::CoordinateView::Previous(id) => Self::Previous(id),
-            dae::CoordinateView::Terminal(id) => Self::Terminal(id),
-            dae::CoordinateView::Binder(_) | dae::CoordinateView::FunctionParameter(_) => {
-                return None;
-            }
-        })
-    }
-
-    pub(super) const fn stable_key(self) -> (u8, u32) {
-        match self {
-            Self::Parameter(id) => (0, id.index()),
-            Self::Input(id) => (1, id.index()),
-            Self::State(id) => (2, id.index()),
-            Self::Derivative(id) => (3, id.index()),
-            Self::Algebraic(id) => (4, id.index()),
-            Self::DiscreteReal(id) => (5, id.index()),
-            Self::DiscreteValue(id) => (6, id.index()),
-            Self::PreDiscreteReal(id) => (7, id.index()),
-            Self::PreDiscreteValue(id) => (8, id.index()),
-            Self::PreState(id) => (9, id.index()),
-            Self::PreAlgebraic(id) => (10, id.index()),
-            Self::Time => (11, 0),
-            Self::ClockInterval(id) => (12, id.index()),
-            Self::Condition(id) => (13, id.index()),
-            Self::Delay(id) => (14, id.index()),
-            Self::Previous(id) => (15, id.index()),
-            Self::Terminal(id) => (16, id.index()),
-        }
-    }
-}
-
 impl<'dae> PureCallRegistry<'dae> {
     fn add_event_transaction_owner(
         &mut self,
@@ -249,7 +159,7 @@ impl<'dae> PureCallRegistry<'dae> {
     ) -> Result<
         (
             solve::SolvePureCallSite,
-            Vec<RegisteredTransactionAssertion<'dae>>,
+            Vec<RegisteredExpressionAssertion<'dae, dae::ClockId<'dae>>>,
         ),
         solve::SolveProgramConstructionError,
     > {
@@ -343,80 +253,6 @@ impl<'dae> PureCallRegistry<'dae> {
             .call_site(owner)
             .ok_or(solve::SolveProgramConstructionError::UnknownCallOwner { provenance })?;
         Ok((site, assertions))
-    }
-
-    // SPEC_0021: Exception - exhaustive expression-tree walk for nested call ownership.
-    #[allow(clippy::excessive_nesting)]
-    fn register_expression_calls(
-        &mut self,
-        view: dae::DaeView<'dae>,
-        expressions: impl IntoIterator<Item = (dae::ExprId<'dae>, dae::ClockId<'dae>)>,
-    ) -> Result<RegisteredExpressionCalls<'dae>, solve::SolveProgramConstructionError> {
-        let mut roots = Vec::new();
-        let mut seen = HashMap::new();
-        let mut conflicts = HashSet::new();
-        for (expression, clock) in expressions {
-            dae::for_each_expression(view, expression, |projection, node| {
-                let dae::ExpressionOperation::Call { owner, .. } = node.operation() else {
-                    return;
-                };
-                match seen.insert(owner, clock) {
-                    None => roots.push((owner, projection, clock)),
-                    Some(previous) if previous != clock => {
-                        conflicts.insert(owner);
-                    }
-                    Some(_) => {}
-                }
-            });
-        }
-        for (_, expression, clock) in &roots {
-            let dae::ExpressionOperation::Call { owner, .. } = view
-                .expression(*expression)
-                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
-                .operation()
-            else {
-                return Err(solve::SolveProgramConstructionError::WireMismatch);
-            };
-            if conflicts.contains(&owner) || seen.get(&owner) != Some(clock) {
-                return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
-                    provenance: view
-                        .expression(*expression)
-                        .expect("checked call projection resolves")
-                        .provenance()
-                        .span(),
-                });
-            }
-        }
-        let mut callees = HashMap::new();
-        let mut predicate_ranges = HashMap::new();
-        let mut predicate_count = 0usize;
-        let mut assertions = Vec::new();
-        for (owner, projection, clock) in roots {
-            let registered = self.register_root(view, projection)?;
-            let end = predicate_count
-                .checked_add(registered.assertion_count)
-                .ok_or(solve::SolveProgramConstructionError::IdentityOverflow {
-                    provenance: view
-                        .expression(projection)
-                        .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
-                        .provenance()
-                        .span(),
-                })?;
-            predicate_ranges.insert(owner, predicate_count..end);
-            predicate_count = end;
-            assertions.extend(registered.assertions.iter().cloned().enumerate().map(
-                |(output_offset, assertion)| RegisteredTransactionAssertion {
-                    assertion,
-                    projection: CallAssertionProjection {
-                        owner: registered.owner,
-                        output_offset,
-                    },
-                    clock,
-                },
-            ));
-            callees.insert(owner, registered);
-        }
-        Ok((callees, predicate_ranges, assertions))
     }
 }
 
@@ -674,7 +510,7 @@ pub(in crate::lower) fn lower_model_event_transactions<'dae>(
         let assertions = assertions
             .into_iter()
             .map(|registered| {
-                let clock = clocks.clock(registered.clock)?;
+                let clock = clocks.clock(registered.scope)?;
                 event_transaction_assertion(view, registered.assertion, clock, provenance)
                     .map(|action| (action, registered.projection))
             })
@@ -867,35 +703,26 @@ fn collect_model_coordinates<'dae>(
     transaction: &EligibleEventTransaction<'dae>,
     provenance: rumoca_core::Span,
 ) -> Result<Vec<(ModelCoordinateKey<'dae>, dae::ValueTypeId<'dae>)>, LowerError> {
-    let mut coordinates = HashMap::new();
-    let mut mismatch = false;
-    for definition in &transaction.definitions {
-        coordinates.insert(
-            model_event_target_key(definition.target),
-            definition.value_type,
-        );
-        dae::for_each_expression(view, definition.value, |_, node| {
-            let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
-                return;
-            };
-            let Some(key) = ModelCoordinateKey::from_view(coordinate) else {
-                return;
-            };
-            match coordinates.insert(key, node.value_type_id()) {
-                Some(previous) if previous != node.value_type_id() => mismatch = true,
-                _ => {}
-            }
-        });
-    }
-    if mismatch {
-        return Err(LowerError::contract(
+    collect_model_coordinate_types(
+        view,
+        transaction
+            .definitions
+            .iter()
+            .map(|definition| definition.value),
+        transaction.definitions.iter().map(|definition| {
+            (
+                model_event_target_key(definition.target),
+                definition.value_type,
+            )
+        }),
+        provenance,
+    )
+    .map_err(|_| {
+        LowerError::contract(
             "one event-transaction coordinate has incompatible aggregate types",
             provenance,
-        ));
-    }
-    let mut coordinates = coordinates.into_iter().collect::<Vec<_>>();
-    coordinates.sort_by_key(|(key, _)| key.stable_key());
-    Ok(coordinates)
+        )
+    })
 }
 
 fn model_coordinate_source<'dae>(
