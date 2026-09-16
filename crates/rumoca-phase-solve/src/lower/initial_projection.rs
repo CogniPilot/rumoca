@@ -53,25 +53,13 @@
 //! [`solve::InitializationRowRole`] carries the difference to the runtime so a
 //! failure names the right defect instead of the friendliest one.
 //!
-//! **Algebraic and output reads fail closed until the reduced solve owns them.**
-//! The runtime reconstructs those coordinates before evaluating the complete
-//! initialization residual, so declaration seeds cannot certify a wrong initial
-//! state. The projection still cannot move an algebraic or account for its total
-//! derivative through the continuous system, so a row that needs that coupled
-//! capability remains typed as unowned rather than being admitted unsoundly.
-//! The two historical failure modes were:
-//!
-//! * `a = 2*time + 5; der(x) = a - x;` with `initial equation der(x) = 0`
-//!   *silently simulates* `x(0) = 0` where OpenModelica gives `5`: the seeds
-//!   cancel, so the check passes and the stated initial condition vanishes.
-//! * the consistent `initial equation x = 5; x = a;` on the same model is
-//!   *refused* on the stale seed (`EX001`) where OpenModelica initializes.
-//!
-//! The evaluation-local refresh closes the false-certificate hole without
-//! claiming the larger capability. The owner that makes the shape fully solvable
-//! remains algebraic refresh joining the initialization solve — folded into the
-//! projection loop, or the algebraics carried as unknowns over their own
-//! continuous rows with a checked total derivative.
+//! **Algebraic and output reads follow the continuous matching.** Each read
+//! expands its matched source row, including the exact tensor component and
+//! structured domain point. A visited-coordinate set closes algebraic cycles;
+//! their external state and parameter dependencies determine the reduced
+//! projection incidence. The runtime reconstructs algebraics at each residual
+//! evaluation and differentiates that complete map. Stored algebraic seeds
+//! cannot certify initialization, and a missing defining row remains unowned.
 //!
 //! **Discrete reads: the check is honest, and the refusal is an over-refusal.** A
 //! discrete coordinate *is* at its §8.6 value when the residual runs — the runtime
@@ -114,7 +102,7 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::initial_parameters::InitializationParameterOwnership;
-use super::{DerivativeRowIndex, ScalarRowSource, scalar_count, variable_scalar_slot};
+use super::{ContinuousRowIndex, ScalarRowSource, scalar_count, variable_scalar_slot};
 use crate::LowerError;
 use crate::layout::LoweredLayout;
 
@@ -151,7 +139,7 @@ impl InitialUnknown {
 pub(super) struct InitializationUnknownSpace<'a, 'dae> {
     view: dae::DaeView<'dae>,
     ownership: &'a InitializationParameterOwnership<'dae>,
-    derivatives: &'a DerivativeRowIndex<'dae>,
+    derivatives: &'a ContinuousRowIndex<'dae>,
     states: HashMap<(u32, usize), usize>,
     given_state_indices: BTreeSet<usize>,
 }
@@ -161,7 +149,7 @@ pub(super) struct InitializationUnknownInputs<'a, 'dae> {
     pub(super) view: dae::DaeView<'dae>,
     pub(super) layout: &'a LoweredLayout<'dae>,
     pub(super) ownership: &'a InitializationParameterOwnership<'dae>,
-    pub(super) derivatives: &'a DerivativeRowIndex<'dae>,
+    pub(super) derivatives: &'a ContinuousRowIndex<'dae>,
     pub(super) given_state_indices: &'a [usize],
 }
 
@@ -286,15 +274,21 @@ pub(super) fn plan_initialization_projection<'dae>(
     // and is downgraded or promoted below by what the walk and the matching find.
     let mut row_roles = vec![solve::InitializationRowRole::SurplusCheck; rows.len()];
     let mut incidence: Vec<(usize, BTreeSet<InitialUnknown>)> = Vec::new();
+    let mut algebraic_rows = BTreeSet::new();
     let mut projection_cache = rumoca_eval_dae::ScalarCoordinateProjectionCache::default();
     for (row, source) in rows.iter().enumerate() {
         match row_unknowns(space, source, &mut projection_cache) {
-            RowIncidence::Owned(unknowns) if !unknowns.is_empty() => {
-                incidence.push((row, unknowns));
+            RowIncidence::Owned {
+                unknowns,
+                algebraic_reads,
+            } => {
+                if algebraic_reads {
+                    algebraic_rows.insert(row);
+                }
+                if !unknowns.is_empty() {
+                    incidence.push((row, unknowns));
+                }
             }
-            // Nothing this row reads is an unknown: it is exactly the §8.6
-            // consistency check the default role already names.
-            RowIncidence::Owned(_) => {}
             RowIncidence::Unowned(kind) => {
                 row_roles[row] = solve::InitializationRowRole::UnownedCoordinate(kind);
             }
@@ -309,16 +303,20 @@ pub(super) fn plan_initialization_projection<'dae>(
         }
         blocks.extend(ordered_projection_blocks(&component, &matched)?);
     }
-    for (row, source) in rows.iter().enumerate() {
-        if !matches!(source, InitialRowIncidence::ImplicitAlgebraic) {
-            continue;
-        }
+    for row in algebraic_rows {
         row_roles[row] = match row_roles[row] {
             solve::InitializationRowRole::Solved => {
                 solve::InitializationRowRole::SolvedThroughAlgebraicRefresh
             }
             solve::InitializationRowRole::SurplusCheck => {
                 solve::InitializationRowRole::SurplusAlgebraicCheck
+            }
+            // Even an unmatched row must observe reconstructed values. Do not
+            // turn its unsolved algebraic dependency into a declaration seed.
+            solve::InitializationRowRole::UnownedCoordinate(_) => {
+                solve::InitializationRowRole::UnownedCoordinate(
+                    solve::InitializationCoordinateKind::Algebraic,
+                )
             }
             role => role,
         };
@@ -436,7 +434,10 @@ fn row_unknowns<'dae>(
             })
             .collect(),
         InitialRowIncidence::ImplicitAlgebraic => {
-            return RowIncidence::Owned(space.all_projection_unknowns());
+            return RowIncidence::Owned {
+                unknowns: space.all_projection_unknowns(),
+                algebraic_reads: true,
+            };
         }
     };
     let mut incidence = InitialIncidence {
@@ -451,6 +452,7 @@ fn row_unknowns<'dae>(
         excluded: None,
         substituted: BTreeSet::new(),
         expanded: BTreeSet::new(),
+        algebraics: BTreeSet::new(),
         pending,
     };
     // One coordinate the projection cannot own already disqualifies the row, but
@@ -477,8 +479,15 @@ fn row_unknowns<'dae>(
         }
     }
     match incidence.excluded {
-        None => RowIncidence::Owned(incidence.unknowns),
-        Some(kind) => RowIncidence::Unowned(kind),
+        None => RowIncidence::Owned {
+            unknowns: incidence.unknowns,
+            algebraic_reads: !incidence.algebraics.is_empty(),
+        },
+        Some(kind) => RowIncidence::Unowned(if incidence.algebraics.is_empty() {
+            kind
+        } else {
+            solve::InitializationCoordinateKind::Algebraic
+        }),
     }
 }
 
@@ -486,17 +495,19 @@ fn row_unknowns<'dae>(
 enum RowIncidence {
     /// The projection coordinates the row reads. May be empty: the row is then a
     /// check over coordinates the initialization instant has already determined.
-    Owned(BTreeSet<InitialUnknown>),
+    Owned {
+        unknowns: BTreeSet<InitialUnknown>,
+        algebraic_reads: bool,
+    },
     /// The row reads a coordinate outside the planned unknown space, of this kind.
     Unowned(solve::InitializationCoordinateKind),
 }
 
 /// How loudly one exclusion kind deserves to be reported, largest first.
 ///
-/// An algebraic read outranks the rest because it is the only kind whose residual
-/// says nothing either way — the others leave a row the runtime still checks
-/// against a determined value. Ranking also keeps the reported kind deterministic
-/// when a row reaches several, since the expression walk order is.
+/// An unavailable algebraic dependency still requires reconstruction before
+/// checking the residual, even if another read is also unowned. Keep that
+/// requirement visible independently of expression traversal order.
 const fn exclusion_rank(kind: solve::InitializationCoordinateKind) -> u8 {
     match kind {
         solve::InitializationCoordinateKind::Algebraic => 4,
@@ -516,6 +527,8 @@ struct InitialIncidence<'dae> {
     /// State derivatives already followed, so a derivative that reads itself
     /// through its own defining row terminates.
     expanded: BTreeSet<(u32, usize)>,
+    /// Algebraic coordinates already expanded, including coupled-loop members.
+    algebraics: BTreeSet<(u32, usize)>,
     pending: Vec<ScalarRowSource<'dae>>,
 }
 
@@ -535,12 +548,8 @@ impl<'dae> InitialIncidence<'dae> {
             // an explicit host value for every scalar before initialization.
             // They are coefficients of this solve, never projection unknowns.
             dae::CoordinateView::Input(_) => {}
-            // The runtime reconstructs an algebraic before it certifies the
-            // complete residual (module header), but this planner cannot yet
-            // differentiate through or solve the simultaneous continuous
-            // system, so the row remains outside the admitted reduced solve.
-            dae::CoordinateView::Algebraic(_) => {
-                self.exclude(solve::InitializationCoordinateKind::Algebraic);
+            dae::CoordinateView::Algebraic(variable) => {
+                self.visit_algebraic(space, variable, scalar);
             }
             dae::CoordinateView::DiscreteReal(_)
             | dae::CoordinateView::DiscreteValue(_)
@@ -562,6 +571,21 @@ impl<'dae> InitialIncidence<'dae> {
             | dae::CoordinateView::ClockInterval(_)
             | dae::CoordinateView::Binder(_) => {}
             _ => self.exclude(solve::InitializationCoordinateKind::Other),
+        }
+    }
+
+    fn visit_algebraic(
+        &mut self,
+        space: &InitializationUnknownSpace<'_, 'dae>,
+        variable: dae::AlgebraicId<'dae>,
+        scalar: usize,
+    ) {
+        if !self.algebraics.insert((variable.index(), scalar)) {
+            return;
+        }
+        match space.derivatives.algebraic_definition(variable, scalar) {
+            Some(definition) => self.pending.push(definition.clone()),
+            None => self.exclude(solve::InitializationCoordinateKind::Algebraic),
         }
     }
 

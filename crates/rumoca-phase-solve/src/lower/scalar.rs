@@ -411,7 +411,7 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     fold_guard_base: usize,
     active_clock: Option<dae::ClockId<'dae>>,
     sampled_source: bool,
-    derivative_definitions: Option<&'layout DerivativeRowIndex<'dae>>,
+    derivative_definitions: Option<&'layout ContinuousRowIndex<'dae>>,
     affine_derivative_systems: Option<&'layout AffineDerivativeSystems<'dae>>,
     active_derivatives: Vec<(u32, usize)>,
     derivative_seeds: Option<HashMap<(u32, usize), f64>>,
@@ -686,7 +686,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     /// row the structural proof matched to that derivative.
     pub(super) const fn with_derivative_definitions(
         mut self,
-        definitions: &'layout DerivativeRowIndex<'dae>,
+        definitions: &'layout ContinuousRowIndex<'dae>,
     ) -> Self {
         self.derivative_definitions = Some(definitions);
         self

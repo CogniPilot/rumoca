@@ -1329,21 +1329,14 @@ fn an_unowned_initialization_row_is_not_reported_as_a_surplus_check() {
         ),
         "UnownedAlgebraic",
     );
-    let error = simulate_dae(&algebraic_read, &SimOptions::default())
-        .expect_err("the reduced initialization solve does not own the algebraic dependency")
-        .to_string();
-    assert!(
-        error.contains("algebraic/output") && error.contains("total derivative"),
-        "an unowned algebraic read names the missing reduced-solve capability, got: {error}"
-    );
+    let result = simulate_dae(&algebraic_read, &SimOptions::default())
+        .expect("the continuous matching owns the algebraic dependency");
+    assert!((column(&result, "x")[0] - 12.0).abs() <= 1.0e-9);
+    assert!((column(&result, "a")[0] - 5.0).abs() <= 1.0e-9);
 }
 
-/// Initialization residual certification observes settled algebraic/output
-/// values, never their declaration seeds. This does not pretend that an
-/// algebraic-reading row is already part of the reduced projection unknown
-/// space: the unsupported steady-state shape fails closed with its typed owner,
-/// while a system the existing projection can solve is certified against the
-/// freshly reconstructed algebraic value.
+/// Initialization must solve through reconstructed algebraic values, including
+/// initial derivative conditions, without certifying declaration seeds.
 #[test]
 fn an_algebraic_reading_initialization_row_cannot_certify_against_a_stale_seed() {
     const SOURCE: &str = concat!(
@@ -1365,13 +1358,10 @@ fn an_algebraic_reading_initialization_row_cannot_certify_against_a_stale_seed()
         dt: Some(1.0),
         ..SimOptions::default()
     };
-    let error = simulate_dae(&steady, &options)
-        .expect_err("the stale zero seeds must not certify x(0) = 0")
-        .to_string();
-    assert!(
-        error.contains("algebraic/output") && error.contains("planned initialization unknown"),
-        "the unsupported coupled shape must fail with its typed capability owner, got: {error}"
-    );
+    let result = simulate_dae(&steady, &options)
+        .expect("der(x)=a-x=0 determines x(0)=5 through the algebraic definition");
+    assert!((column(&result, "x")[0] - 5.0).abs() <= 1.0e-9);
+    assert!((column(&result, "a")[0] - 5.0).abs() <= 1.0e-9);
 
     let consistent = compile(
         &format!("{SOURCE}  x = 5;\n  x = a;\nend AlgebraicSeed;\n"),

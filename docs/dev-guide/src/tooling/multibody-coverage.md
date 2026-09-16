@@ -4,6 +4,65 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint prototype: preserve source initialization through algebraics
+
+The manually constructed two-state coupled rotation equations passed all eight
+value evaluations and sixteen JVP directions, including perturbed algebraic
+guesses at cos(angle) = 1e-9, but both integrators refused the original initial
+equations `q[2]=0; w[2]=-2.4`. The first divergence was Solve initialization:
+those algebraic reads were classified as unowned, leaving no projection blocks.
+The small `InitArrayAlias.mo` fixture reproduces it without rotation equations.
+OMC initializes that source to `z={0,-2.4}`. A diagnostic control stating the
+equivalent conditions directly on `z` also initializes in Rumoca; changing the
+source initial conditions is not the fix.
+
+Solve now indexes both algebraic and derivative matched continuous row views in
+one `ContinuousRowIndex`. Initialization follows those source rows transitively
+with exact tensor components and structured domain points. Visited coordinates
+close coupled algebraic loops, exposing their external state/parameter reads.
+Admitted rows use the existing reconstructed-residual total derivative; missing
+or unsupported ownership still retains reconstruction before residual checking.
+Fixed states and all surplus equations remain binding. The governing contract
+is MLS §8.6 and SPEC_0007's initialization paragraph. No source declarations,
+equations, or initialization values are rewritten by this change.
+
+The prototype now completes 0–1 s on both BDF and RK. Across 101 samples and all
+47 common source channels, its maximum absolute difference from the original
+reduced model's OMC trajectory is 2.6423307986078726e-13. Evidence:
+`rolling-wheel/coupled-rotation-{4,5}.log`,
+`coupled-rotation-omc-comparison-1.json`, and the retained probes/drivers.
+This is a manually assembled representation test, not automatic independent-state
+construction or a new MultiBody cohort pass. The initialization runtime's existing
+finite-difference total sensitivity is unchanged; replacing that implementation
+with shared AD remains separate work.
+
+The small alias, coupled array loop, indexed equation family, and parameter-binding
+controls agree with OMC's initial values. Their sources, generated code, traces,
+and analytical error measurements are retained in `init-array-alias-omc-1` and
+`init-algebraic-controls-omc-1`. Regression tests cover both integrators, conflicting
+fixed states, and an unsupported discrete dependency whose stale zero algebraic
+seed must not certify initialization.
+
+Validation: 638 compiler-core tests, 17 final tensor-initialization tests, 46
+simulation-lowering tests, 141 Solve-phase tests, and 243 architecture checks pass.
+Solve all-target/all-feature Clippy, compiler-core Clippy, all six spec gates,
+workspace formatting, and whitespace checks pass. Logs use `init-algebraic-*`.
+
+The fixed `target/msl/multibody-init-algebraic-canary` has no phase, simulation,
+or band delta from `multibody-differential-structure-canary`. All nine compared
+models remain high; there are zero skipped, missing, excluded, or nonidentifiable
+traces, and all 175 initial-condition channels are high. The other eleven
+members retain their existing failures. The receipt is
+`rolling-wheel/init-algebraic-canary-delta-1.json`; the run binds HEAD
+`17be389de883177f214b2a741eefe963fd0882f8` and working-tree digest
+`6f0c4970dc07677d24404bd8f3a742e64db031dcb0d6710956101495c155cb47`. This Tier 1
+check is not a new cohort coverage number.
+
+The original RevoluteConstraint regression remains open. Automatic construction
+of the coupled differential system, original-model replay, and the complete
+cohort preserving prior high models are still required. No release quick/full,
+new Tier 2 claim, baseline promotion, push, or PR is recorded here.
+
 ## RevoluteConstraint: checked source differential structure
 
 The structural phase now derives a source-bound differential signature and

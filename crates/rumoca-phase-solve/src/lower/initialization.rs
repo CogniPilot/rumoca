@@ -1,6 +1,6 @@
 //! Lower the complete MLS §8.6 system in one initialization context.
 
-use super::{DerivativeRowIndex, ScalarCompiler, ScalarRowSource, ScalarRows, scalar_count};
+use super::{ContinuousRowIndex, ScalarCompiler, ScalarRowSource, ScalarRows, scalar_count};
 use super::{initial_discrete, initial_parameters, initial_pins, initial_projection};
 use crate::{LowerError, layout::LoweredLayout};
 use rumoca_ir_dae as dae;
@@ -11,7 +11,7 @@ use std::collections::HashMap;
 pub(super) fn lower_initialization<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
-    derivatives: &DerivativeRowIndex<'dae>,
+    derivatives: &ContinuousRowIndex<'dae>,
     pins: &[structural::InitialValuePin],
     manifold: &[dae::ExprId<'dae>],
     overrides: &HashMap<String, f64>,
@@ -76,7 +76,7 @@ pub(super) fn lower_initialization<'dae>(
 struct InitializationRowContext<'a, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'a LoweredLayout<'dae>,
-    derivatives: &'a DerivativeRowIndex<'dae>,
+    derivatives: &'a ContinuousRowIndex<'dae>,
     ownership: &'a initial_parameters::InitializationParameterOwnership<'dae>,
 }
 

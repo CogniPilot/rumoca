@@ -13,7 +13,9 @@ use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 pub(crate) mod call_scoped_actions;
 pub(crate) mod clock_ownership;
 mod clocks;
+mod continuous_rows;
 mod continuous_tensor;
+use continuous_rows::{ContinuousRowIndex, index_continuous_rows};
 mod events;
 mod implicit_derivative;
 mod initial_discrete;
@@ -54,7 +56,7 @@ pub(crate) fn lower_solve_problem(
     let structural = structural_matching(view, structural.as_ref())?;
     clocks::reject_clocked_continuous_feedback(view, &clocks, &structural)?;
     clocks::reject_cross_clock_coincident_cycle(view, &clocks, &structural)?;
-    let derivatives = index_derivative_rows(view, &structural.rows)?;
+    let derivatives = index_continuous_rows(view, &structural.rows)?;
     let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
     let initialization = initialization::lower_initialization(
         view,
@@ -282,134 +284,13 @@ pub(super) struct ScalarRowSource<'dae> {
     pub(super) domain_point: Option<(dae::DomainId<'dae>, Vec<i64>)>,
 }
 
-/// The continuous row the structural proof matched to each state derivative.
-///
-/// A model may define one state derivative in one equation and still read that
-/// derivative in another — `HeatCapacitor` writes both `der_T = der(T)` and
-/// `C*der(T) = port.Q_flow`. Only one of the two can be the row that defines
-/// `der(T)`; the other is an algebraic row that reads it. This index lets the
-/// reading row recover the derivative's own defining equation instead of
-/// meeting a coordinate with no Solve storage.
-#[derive(Default)]
-pub(super) struct DerivativeRowIndex<'dae> {
-    rows: HashMap<(u32, u32), ScalarRowSource<'dae>>,
-}
-
-impl<'dae> DerivativeRowIndex<'dae> {
-    pub(super) fn definition(
-        &self,
-        state: dae::StateId<'dae>,
-        scalar: usize,
-    ) -> Option<&ScalarRowSource<'dae>> {
-        let scalar = u32::try_from(scalar).ok()?;
-        self.rows.get(&(state.index(), scalar))
-    }
-}
-
-fn index_derivative_rows<'dae>(
-    view: dae::DaeView<'dae>,
-    matching: &HashMap<usize, UnknownId<'dae>>,
-) -> Result<DerivativeRowIndex<'dae>, LowerError> {
-    let mut rows = HashMap::new();
-    let mut row = 0usize;
-    for owner in view.continuous_owners() {
-        let span = owner_provenance(owner).span();
-        match owner {
-            dae::ContinuousOwnerView::Residual { equation, .. } => {
-                for scalar in 0..scalar_count(view, equation.residual()) {
-                    insert_derivative_row(
-                        matching,
-                        row,
-                        ScalarRowSource {
-                            expression: equation.residual(),
-                            scalar,
-                            domain_point: None,
-                        },
-                        &mut rows,
-                        span,
-                    )?;
-                    row += 1;
-                }
-            }
-            dae::ContinuousOwnerView::Structured { family, .. } => {
-                row = index_family_derivative_rows(view, matching, row, family, &mut rows, span)?;
-            }
-        }
-    }
-    if row != continuous_scalar_row_count(view)? {
-        return Err(LowerError::contract(
-            "continuous row enumeration disagrees with the checked row count",
-            first_model_span(view),
-        ));
-    }
-    Ok(DerivativeRowIndex { rows })
-}
-
-fn index_family_derivative_rows<'dae>(
-    view: dae::DaeView<'dae>,
-    matching: &HashMap<usize, UnknownId<'dae>>,
-    mut row: usize,
-    family: dae::StructuredFamilyView<'dae>,
-    rows: &mut HashMap<(u32, u32), ScalarRowSource<'dae>>,
-    span: Span,
-) -> Result<usize, LowerError> {
-    let domain = view
-        .domain(family.domain())
-        .expect("checked family domain resolves");
-    for point in 0..domain.scalar_count() as usize {
-        let values = domain
-            .structured()
-            .index_tuple_at(point)
-            .expect("checked domain remains valid")
-            .expect("checked point ordinal is in range");
-        for body in family.bodies().iter() {
-            let scalar = family
-                .scalar_view()
-                .body_scalar(point, domain.extents())
-                .expect("checked family view projects its domain point");
-            insert_derivative_row(
-                matching,
-                row,
-                ScalarRowSource {
-                    expression: body,
-                    scalar,
-                    domain_point: Some((family.domain(), values.clone())),
-                },
-                rows,
-                span,
-            )?;
-            row += 1;
-        }
-    }
-    Ok(row)
-}
-
-fn insert_derivative_row<'dae>(
-    matching: &HashMap<usize, UnknownId<'dae>>,
-    row: usize,
-    source: ScalarRowSource<'dae>,
-    rows: &mut HashMap<(u32, u32), ScalarRowSource<'dae>>,
-    span: Span,
-) -> Result<(), LowerError> {
-    let Some(UnknownId::Derivative { state, scalar }) = matching.get(&row).copied() else {
-        return Ok(());
-    };
-    if rows.insert((state.index(), scalar), source).is_some() {
-        return Err(LowerError::contract(
-            "two continuous rows matched the same state derivative",
-            span,
-        ));
-    }
-    Ok(())
-}
-
 /// Everything a continuous row needs that does not vary from row to row.
 #[derive(Clone, Copy)]
 struct ContinuousContext<'borrow, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'borrow LoweredLayout<'dae>,
     matching: &'borrow HashMap<usize, UnknownId<'dae>>,
-    derivatives: &'borrow DerivativeRowIndex<'dae>,
+    derivatives: &'borrow ContinuousRowIndex<'dae>,
     affine_derivatives: Option<&'borrow AffineDerivativeSystems<'dae>>,
     function_conditional_owners: &'borrow RefCell<FunctionConditionalOwnerRegistry<'dae>>,
 }
@@ -524,7 +405,7 @@ fn lower_continuous<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     structural: &StructuralMatching<'dae>,
-    derivatives: &DerivativeRowIndex<'dae>,
+    derivatives: &ContinuousRowIndex<'dae>,
     manifold: &[dae::ExprId<'dae>],
 ) -> Result<solve::ContinuousSolveSystem, LowerError> {
     let function_conditional_owners = RefCell::new(FunctionConditionalOwnerRegistry::default());

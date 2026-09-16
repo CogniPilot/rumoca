@@ -224,7 +224,7 @@ fn derivative_unknown<'dae>(
 
 fn block_span<'dae>(
     view: dae::DaeView<'dae>,
-    derivatives: &DerivativeRowIndex<'dae>,
+    derivatives: &ContinuousRowIndex<'dae>,
     block: &[(usize, UnknownId<'dae>)],
 ) -> Result<Span, LowerError> {
     let (_, unknown) = block.first().copied().ok_or_else(|| {

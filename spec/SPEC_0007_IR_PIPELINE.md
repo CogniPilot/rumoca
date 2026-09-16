@@ -255,12 +255,13 @@ of `SolveProblem`; rows SOLVE-C32–C38 define its complete obligations.
 **Contract:** rows `SOLVE-C01`–`SOLVE-C57` in
 [SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4).
 
-Solve substitutes initialization parameter definitions into that system's
-residuals and commits their values from the solved initial point. Start guesses
-and parameter-set values cannot discharge these definitions. Dependency
-cycles lacking a supported coupled owner must be rejected.
-Order matched initialization rows by dependency; only strongly connected
-rows share simultaneous projection blocks. Unmatched checks remain required.
+Initialization planning follows matched rows through algebraic and derivative
+reads, preserving tensor-coordinate dependencies. Parameter definitions are
+substituted into residuals and committed from the solved point; seeds cannot
+discharge them. Unsupported cycles are rejected. Order matched unknowns by
+dependency; only strongly connected rows share projection blocks.
+Algebraic-dependent rows require total derivatives of the reconstructed residual.
+Unmatched checks remain required.
 
 Objectives, adjoints, sensitivities, and optimizer projections are derived
 products, not canonical root fields.

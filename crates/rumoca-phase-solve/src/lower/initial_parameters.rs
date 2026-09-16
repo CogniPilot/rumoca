@@ -64,7 +64,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
-use super::{DerivativeRowIndex, ScalarRows, variable_scalar_slot};
+use super::{ContinuousRowIndex, ScalarRows, variable_scalar_slot};
 use crate::LowerError;
 use crate::layout::LoweredLayout;
 use crate::lower::scalar::{ParameterBindingSubstitutions, ScalarCompiler};
@@ -122,7 +122,7 @@ impl<'dae> InitializationParameterOwnership<'dae> {
         &self,
         view: dae::DaeView<'dae>,
         layout: &LoweredLayout<'dae>,
-        derivatives: &DerivativeRowIndex<'dae>,
+        derivatives: &ContinuousRowIndex<'dae>,
     ) -> Result<InitialParameterUpdates, LowerError> {
         let mut updates = InitialParameterUpdates {
             rows: ScalarRows::default(),
@@ -150,7 +150,7 @@ impl<'dae> InitializationParameterOwnership<'dae> {
 fn push_dependent_binding_rows<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
-    derivatives: &DerivativeRowIndex<'dae>,
+    derivatives: &ContinuousRowIndex<'dae>,
     index: u32,
     parameter: &BoundParameter<'dae>,
     overridden_scalars: &BTreeSet<(u32, usize)>,
