@@ -81,6 +81,33 @@ fn every_three_by_three_signature_agrees_with_enumeration() {
 }
 
 #[test]
+fn independent_derivative_pairs_require_no_shortest_path_searches() {
+    const COUNT: usize = 4096;
+    let rows = (0..COUNT)
+        .map(|column| vec![SignatureEntry { column, order: 1 }])
+        .collect::<Vec<_>>();
+    super::assignment::SEARCHES.with(|count| count.set(0));
+    let matching = maximum_weight_matching(&rows, COUNT).unwrap();
+    assert_eq!(matching, (0..COUNT).map(Some).collect::<Vec<_>>());
+    super::assignment::SEARCHES.with(|count| assert_eq!(count.get(), 0));
+    let matching = matching.into_iter().map(Option::unwrap).collect::<Vec<_>>();
+    let (c, d) = offsets::least_offsets(&rows, &matching).unwrap();
+    assert_eq!(offsets::certify(&rows, &matching, &c, &d), Some(COUNT));
+}
+
+#[test]
+fn weighted_augmentations_can_reassign_directly_matched_columns() {
+    // Taking row 0's zero-cost column first must not strand row 1 or discard
+    // the maximum-weight objective when an alternating path is required.
+    let rows = signature(&[&[2, 1, -1], &[2, -1, -1], &[-1, 2, 0]]);
+    let matching = maximum_weight_matching(&rows, 3).unwrap();
+    assert_eq!(matching, [Some(1), Some(0), Some(2)]);
+    let matching = matching.into_iter().map(Option::unwrap).collect::<Vec<_>>();
+    let (c, d) = offsets::least_offsets(&rows, &matching).unwrap();
+    assert_eq!(offsets::certify(&rows, &matching, &c, &d), Some(3));
+}
+
+#[test]
 fn pendulum_offsets_account_for_hidden_velocity_constraint() {
     // x'=u, y'=v, u'=-lambda*x, v'=-lambda*y-g, x^2+y^2=L^2.
     let rows = signature(&[

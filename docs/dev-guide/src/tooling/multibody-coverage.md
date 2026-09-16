@@ -4,6 +4,53 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Match zero-cost assignment paths before searching
+
+The proposed source-dimension shortcut is rejected. It bypassed ordinary
+reduction facts needed by derivative aliases, selected tensor components, and
+assertions. The first broad core run had thirteen failures; a direct-state
+candidate filter still left nine. Neither implementation nor its proposed spec
+changes remain. `source-formal-profile-rejected-1.patch` and the two failed core
+logs preserve the experiment below `.git/multibody-campaign/rolling-wheel`.
+
+The retained change addresses the measured assignment cost without bypassing
+preparation. Differential-signature matching previously ran a heap-based
+shortest-path search for every matched pair. An available source/row/column/sink
+path whose three reduced costs are zero is already shortest under feasible
+potentials. Reversing those zero-cost edges preserves the potentials; matching
+all such direct paths can precede the existing weighted augmenting searches.
+Alternating paths still reassign earlier pairs, and the independent perfect
+matching, dual-inequality, matched-equality, and objective checks required by
+SPEC_0007 / STRUCT-T07 remain unchanged. This changes no Modelica semantics,
+tensor owners, initialization requirements, or numerical tolerances.
+
+The actual-worker `zero-cost-assignment-revolute-solve-profile-1` records heap
+pop plus weighted-matching self samples falling from 6.41% to 0.84% against
+`refresh-source-index-revolute-solve-profile-1`. Solve lowering measures 8.001
+to 6.880 seconds. These are single observations under variable host load, not
+a timing guarantee. Flat, DAE, structural DAE, Solve IR, and the complete
+simulation trace are byte-identical. The native probe measures formal
+construction falling from 0.622 to 0.099 seconds; ordinary preparation remains
+about 3.93 seconds. `zero-cost-assignment-profile-delta-1.json` retains hashes,
+timings, and exact worker identities. Neither diagnostic earns coverage credit.
+
+All 219 structural library tests and 675 core tests pass, as do affected-crate
+Clippy with all targets/features and workspace formatting. Matching agrees
+with independent exhaustive enumeration for every 3-by-3 signature. New tests
+exercise reassignment of an early direct match and certify 4,096 independent
+derivative pairs with no heap searches.
+
+The unchanged seven-model target list in `zero-cost-assignment-msl-focused-1`
+recovers `RevoluteConstraint` and `SphericalConstraint` from Solve timeouts to
+high parity. `HeatLosses` remains high: three compared, all 2,633 trajectory
+channels and initial values high, zero skipped/missing. `GyroscopicEffects`
+now reaches its projection-sensitivity rejection after compilation; it still
+fails. `UniversalConstraint` still times out, while `PointGravity` and
+`RollingWheelSetDriving` retain their numerical/selection failures. The fixed
+`zero-cost-assignment-canary-1` remains nine compared/high, eleven existing
+failures, no skipped/missing traces, and zero phase/band delta. These focused
+results do not update the full-cohort count. No baseline was promoted.
+
 ## Remove repeated refresh-output scans; compilation timeouts remain open
 
 An actual-worker `perf` recording of `RevoluteConstraint` locates repeated

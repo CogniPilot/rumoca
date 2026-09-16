@@ -5,6 +5,11 @@ use std::collections::BinaryHeap;
 
 use super::SignatureEntry;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static SEARCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone, Copy)]
 struct Edge {
     target: usize,
@@ -58,10 +63,14 @@ pub(super) fn maximum_weight_matching(
     for column in 0..columns {
         graph.add_edge(rows.len() + column, sink, 0);
     }
-    for _ in 0..rows.len().min(columns) {
-        if !graph.augment()? {
+    let limit = rows.len().min(columns);
+    let mut matched = 0;
+    while matched < limit {
+        matched += graph.augment_direct()?;
+        if matched == limit || !graph.augment()? {
             break;
         }
+        matched += 1;
     }
     Ok((0..rows.len())
         .map(|row| {
@@ -91,7 +100,62 @@ impl Assignment {
         });
     }
 
+    /// Zero reduced-cost source/row/column/sink paths are already shortest.
+    /// Reversing only zero-cost edges preserves feasible potentials, so these
+    /// independent augmentations need neither a heap search nor a dual update.
+    fn augment_direct(&mut self) -> Result<usize, &'static str> {
+        let mut matched = 0;
+        for source_edge in 0..self.edges[self.source].len() {
+            let edge = self.edges[self.source][source_edge];
+            if !edge.available || self.reduced_cost(self.source, edge)? != 0 {
+                continue;
+            }
+            let row = edge.target;
+            let Some((row_edge, column_edge)) = self.direct_column(row)? else {
+                continue;
+            };
+            let column = self.edges[row][row_edge].target;
+            self.reverse_edge(self.source, source_edge);
+            self.reverse_edge(row, row_edge);
+            self.reverse_edge(column, column_edge);
+            matched += 1;
+        }
+        Ok(matched)
+    }
+
+    fn direct_column(&self, row: usize) -> Result<Option<(usize, usize)>, &'static str> {
+        for (index, &edge) in self.edges[row].iter().enumerate() {
+            if !edge.available || edge.target == self.source || self.reduced_cost(row, edge)? != 0 {
+                continue;
+            }
+            // Column-to-sink edges are appended after all row-to-column edges.
+            let column_edge = self.edges[edge.target].len() - 1;
+            let terminal = self.edges[edge.target][column_edge];
+            if terminal.available && self.reduced_cost(edge.target, terminal)? == 0 {
+                return Ok(Some((index, column_edge)));
+            }
+        }
+        Ok(None)
+    }
+
+    fn reverse_edge(&mut self, node: usize, index: usize) {
+        let edge = &mut self.edges[node][index];
+        edge.available = false;
+        let (target, reverse) = (edge.target, edge.reverse);
+        self.edges[target][reverse].available = true;
+    }
+
+    fn reduced_cost(&self, node: usize, edge: Edge) -> Result<i64, &'static str> {
+        edge.cost
+            .checked_add(self.potentials[node])
+            .and_then(|value| value.checked_sub(self.potentials[edge.target]))
+            .filter(|value| *value >= 0)
+            .ok_or("invalid reduced assignment cost")
+    }
+
     fn augment(&mut self) -> Result<bool, &'static str> {
+        #[cfg(test)]
+        SEARCHES.with(|count| count.set(count.get() + 1));
         let mut distance = vec![i64::MAX; self.edges.len()];
         let mut previous = vec![None; self.edges.len()];
         let mut queue = BinaryHeap::new();
@@ -116,10 +180,7 @@ impl Assignment {
         let mut node = self.sink;
         while node != self.source {
             let (parent, index) = previous[node].ok_or("broken assignment augmenting path")?;
-            let edge = &mut self.edges[parent][index];
-            edge.available = false;
-            let reverse = edge.reverse;
-            self.edges[node][reverse].available = true;
+            self.reverse_edge(parent, index);
             node = parent;
         }
         Ok(true)
@@ -138,12 +199,7 @@ impl Assignment {
             .enumerate()
             .filter(|(_, e)| e.available)
         {
-            let reduced = edge
-                .cost
-                .checked_add(self.potentials[node])
-                .and_then(|value| value.checked_sub(self.potentials[edge.target]))
-                .filter(|value| *value >= 0)
-                .ok_or("invalid reduced assignment cost")?;
+            let reduced = self.reduced_cost(node, *edge)?;
             let candidate = cost
                 .checked_add(reduced)
                 .ok_or("assignment distance overflow")?;
