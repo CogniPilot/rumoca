@@ -504,3 +504,62 @@ fn static_preferences_do_not_create_integration_coordinates() {
         Some(StructuralError::EmptySystem)
     ));
 }
+
+#[test]
+fn independent_state_basis_respects_fixed_initial_geometry() {
+    // MLS §8.6: q's fixed values constrain the initial geometry even though
+    // p and the redundant radius s have different, unfixed start guesses.
+    let source = compile(
+        r#"model InitialRadius
+  Real p[2](start={2,0});
+  Real q[2](start={0,1},each fixed=true,each stateSelect=StateSelect.avoid);
+  Real v[2](each fixed=true);
+  Real s(start=3);
+  Real speed;
+  Real n[2](start={1,0});
+  Real u[2];
+  Real lambda;
+initial equation
+  n[2]=0;
+  u[2]=1;
+equation
+  der(n)=u;
+  der(u)=-n+lambda*n;
+  n*n=1;
+  q=p;
+  der(p)=v;
+  der(v)=-q;
+  s=sqrt(p*p);
+  speed=der(s);
+end InitialRadius;
+"#,
+        "InitialRadius",
+    );
+    let result = rumoca_sim::simulate_dae(
+        &source,
+        &rumoca_sim::SimOptions {
+            t_end: 0.1,
+            ..Default::default()
+        },
+    )
+    .expect("coordinate selection must be regular at the prescribed initial geometry");
+    assert!(result.times.len() > 1);
+    assert_eq!(result.times.last().copied(), Some(0.1));
+    for (name, cosine, sine) in [
+        ("p[1]", 0.0, 0.0),
+        ("p[2]", 1.0, 0.0),
+        ("s", 1.0, 0.0),
+        ("speed", 0.0, -1.0),
+        ("n[1]", 1.0, 0.0),
+        ("n[2]", 0.0, 1.0),
+    ] {
+        let index = result.names.iter().position(|n| n == name).unwrap();
+        for (&actual, &time) in result.data[index].iter().zip(&result.times) {
+            let expected = cosine * time.cos() + sine * time.sin();
+            assert!(
+                (actual - expected).abs() < 5e-6,
+                "{name} at {time}: {actual}, expected {expected}"
+            );
+        }
+    }
+}

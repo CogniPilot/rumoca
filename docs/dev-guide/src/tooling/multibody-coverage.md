@@ -4,6 +4,76 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Preserve stated initial geometry when selecting independent states
+
+`HeatLosses` now passes the focused comparison on all **798 shared trajectory
+channels and initial values**, with zero deviation channels. This is focused
+evidence, not a new cohort count. The last complete run,
+`multibody-reference-boundary-full` at
+`eacdb83d900a56576b49ecaf2c46f0a06df617c6`, passes the current gate with 188 raw
+completions, 167 compared/high models, 21 exclusions, no missing traces, and
+21/42 MultiBody high. `SphericalConstraint` completed that run after timing out
+previously; no compiler fix is credited for that timing variation.
+
+The `HeatLosses` source fixes `body1.r_0` to `{0.3,-0.2,0}`. Its frame-position
+alias has an unfixed zero start; the damper length also has an unfixed zero
+start. Automatic selection previously ignored the exact initial-value transfer
+when constructing its trial point and treated both source-state guesses with
+the same priority. It selected `damper1.s` in place of the Cartesian
+`body1.frame_a.r_0[1]`. At the actual initial geometry the damper is vertical:
+its length has zero first derivative with respect to that Cartesian coordinate.
+The length therefore cannot locally replace that coordinate. Initialization
+then reached a non-finite damper-direction projection.
+
+The before/after checked DAE maps both contain 37 independent coordinates.
+Their only coordinate-set difference is `damper1.s` →
+`body1.frame_a.r_0[1]`, matching OMC's Cartesian state choice. Source Flat and
+DAE are unchanged. The root fix carries the structural owner's exact,
+source-bound initial-value transfers into formal analysis, uses them as trial
+guesses, and prefers stated initial coordinates within each existing
+`StateSelect`/declared-state preference class. Required and forbidden states,
+full-rank checks, tensor owners, original initial equations, and subsequent
+numerical reconstruction remain authoritative. Trial values never become
+runtime seeds or a claim that initialization has been solved.
+
+The independent `InitialRadius` reproduction combines a Cartesian oscillator,
+a redundant radius, and a separately constrained rotating vector. Without the
+constraint, ordinary reduction succeeds; with it, automatic selection fails
+before the fix. The regression
+`independent_state_basis_respects_fixed_initial_geometry` now checks all six
+observables against their sine/cosine solutions. OMC's same-source C simulation
+agrees with those solutions within 2.17e-6 at unchanged 1e-6 tolerance.
+The generated OMC initialization assigns `p[1]` and `p[2]` as Cartesian states.
+
+Holding stated trial values fixed was tested and rejected: it prevented a
+parameter-dependent fixed start from participating in simultaneous
+initialization and moved four rejection cases into the wrong failure path.
+Those failed logs remain evidence. The final implementation has no fixed-column
+correction or new numerical linear-algebra API. All **675 core tests**,
+**144 Solve and 217 structural library tests**, six spec checks, affected-crate
+Clippy, and workspace formatting pass.
+
+The identical seven-model control/candidate target list is
+`initial-geometry-targets-1.json`. The archived control workers reproduce
+`HeatLosses`' original NaN failure; all seven controls fail, including four
+Solve timeouts, so control parity is **unmeasured**, not zero. The candidate
+compares `HeatLosses` and `SphericalConstraint`, both high (798/917 channels);
+`UniversalConstraint`, `RevoluteConstraint`, and `GyroscopicEffects` time out,
+while `PointGravity` and `RollingWheelSetDriving` retain their original failures.
+A generic band-delta script correctly rejects the missing control band table;
+`initial-geometry-focused-1-phase-delta.json` records the phase evidence without
+inventing old bands. The fixed canary `initial-geometry-canary-1` remains nine
+compared/high, 175 high initial channels, eleven existing failed models, no
+skipped/missing traces, and zero phase/band delta.
+
+Before/after IR is in `heatlosses-{automatic,initial-geometry}-source-1`;
+`heatlosses-initial-geometry-state-map-1.json` records the state maps.
+`initial-radius-*`, `initial-geometry-*`, and `verify-initial-geometry-*.py`
+retain the analytic reproduction, OMC C, red/green checks, abandoned corrections,
+control binary hashes, requests, and comparator evidence. All paths in this
+section are below `.git/multibody-campaign/rolling-wheel` unless prefixed
+`target/msl`. A complete cohort rerun at the fix commit remains required.
+
 ## SMPM comparison boundary: no passing credit
 
 `SMPM_Braking` is recorded as a reference-accuracy limitation under SPEC_0033

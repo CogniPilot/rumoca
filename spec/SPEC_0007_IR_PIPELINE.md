@@ -150,10 +150,10 @@ Modelica-specific operators: pure functions over
 | B.1d | `fc(relation(v))` | Event conditions            |
 
 **DAE representation rule:** DAE is the canonical MLS Appendix B model, not a
-solver cache. One canonical variable catalog owns stable variable identity;
+solver cache. One catalog owns stable variable identity;
 typed views classify `p`, `x`, `y`, `z`, and `m`, while input/output causality
-is orthogonal metadata. Dedicated continuous, initialization, discrete,
-condition, event, and clock systems own their respective behavior. The current
+is orthogonal metadata. Continuous, initialization, discrete,
+condition, event, and clock systems own behavior. The current
 `DAE_SCHEMA_VERSION` wire schema is the only supported version; every other
 version is rejected without superseded readers or adapters.
 
@@ -277,7 +277,7 @@ affine patterns originate from SPEC_0032 owners, never scalar-row recovery.
 
 ### Structural Lowering Scope
 
-Structural lowering requires root-owned checked DAE transformations; partial mutation,
+Transformations require checked, root-owned DAEs; partial mutation,
 replayable proof receipts, and mutable partition callbacks are prohibited.
 
 **In scope:** only `STRUCT-T01`–`STRUCT-T09` in
@@ -285,13 +285,14 @@ replayable proof receipts, and mutable partition callbacks are prohibited.
 Other transformations require amendments.
 
 State selection certifies signatures, tensor-uniform offsets, formal derivatives,
-candidate maps and numerical proposals (STRUCT-T07); integration requires a regular basis.
+and candidate maps (STRUCT-T07). Proposals seed and prioritize from exact initial-value transfers within source preference classes.
+Trials never replace initialization; integration requires regularity.
 
-STRUCT-T03 preserves shared expression identity. Reuse requires identical
-source, call substitutions, derivative order, reconstruction mode, and provenance;
-Unrelated calls or equation owners cannot merge. Discovery,
-preflight, and reconstruction share differentiation facts per immutable source
-round. Replacement DAEs refresh facts, preserving ordering and acceptance.
+STRUCT-T03 reuses expressions only for identical source, call substitutions,
+derivative order, reconstruction mode, and provenance. Distinct calls and
+equation owners never merge. Discovery, preflight, and reconstruction share
+differentiation facts per immutable source round; replacement DAEs refresh facts
+without changing ordering or acceptance.
 
 Demotion distinguishes exact values from affine derivatives; displaced definitions
 preserve source value equations and cannot substitute manifold values.
@@ -299,7 +300,7 @@ Tangents and non-additive lifts replay exact anchors.
 Additive lifts share acyclic source-row value/derivative proofs excluding replaced owners and lifted coordinates.
 Holonomic replacement excludes value identities; undoing lifts restores original equations.
 
-STRUCT-T03's auxiliary and component reconstruction profile:
+STRUCT-T03 reconstruction:
 
 | Rule | Owner | Why |
 |---|---|---|

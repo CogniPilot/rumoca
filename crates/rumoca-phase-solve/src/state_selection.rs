@@ -82,7 +82,13 @@ fn select<'formal>(
         let matrix = point.settle(&programs, stage, &coordinates)?;
         let choices = coordinates
             .iter()
-            .map(|&(coordinate, _)| choice(formal, coordinate))
+            .map(|&(coordinate, scalar)| {
+                choice(
+                    formal,
+                    coordinate,
+                    point.has_stated_initial_value(coordinate, scalar),
+                )
+            })
             .collect::<Vec<_>>();
         let selected = matrix
             .independent_columns(&choices)
@@ -111,6 +117,7 @@ fn select<'formal>(
 fn choice<'source, 'formal>(
     formal: FormalDerivativeView<'_, 'source, 'formal>,
     coordinate: FormalStageCoordinate<'source, 'formal>,
+    stated_initial_value: bool,
 ) -> ColumnChoice {
     let source = coordinate.source_variable();
     if coordinate.order() == 0 {
@@ -127,12 +134,12 @@ fn choice<'source, 'formal>(
         return ColumnChoice::Dependent;
     }
     let priority = match source.state_select() {
-        StateSelect::Prefer => 3,
+        StateSelect::Prefer => 6,
         StateSelect::Avoid => 0,
-        _ if source.role() == dae::VariableRole::State => 2,
-        _ => 1,
+        _ if source.role() == dae::VariableRole::State => 4,
+        _ => 2,
     };
-    ColumnChoice::Eligible(priority)
+    ColumnChoice::Eligible(priority + u8::from(stated_initial_value))
 }
 
 fn failure(error: impl std::fmt::Display) -> StructuralError {

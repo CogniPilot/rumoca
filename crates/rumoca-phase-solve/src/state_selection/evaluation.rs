@@ -9,9 +9,17 @@ use rumoca_ir_solve as solve;
 pub(super) struct TrialPoint {
     values: Vec<Option<Vec<f64>>>,
     retained_guesses: Vec<bool>,
+    stated_initial_values: Vec<Vec<bool>>,
 }
 
 impl TrialPoint {
+    pub(super) fn has_stated_initial_value(
+        &self,
+        coordinate: FormalStageCoordinate<'_, '_>,
+        scalar: usize,
+    ) -> bool {
+        self.stated_initial_values[coordinate.value().index() as usize][scalar]
+    }
     pub(super) fn seed_definitions(
         &mut self,
         programs: &FormalDerivativePrograms<'_, '_, '_>,
@@ -46,6 +54,7 @@ impl TrialPoint {
         });
         let mut values = vec![None; formal.view.variables().count()];
         let mut retained_guesses = vec![false; values.len()];
+        let mut stated_initial_values = vec![Vec::new(); values.len()];
         for (source, variable) in formal.source.variables() {
             if variable.value_type().scalar_type() == dae::ScalarType::String {
                 continue;
@@ -55,6 +64,8 @@ impl TrialPoint {
                 .coordinate(source, 0)
                 .ok_or_else(|| failure("trial source coordinate has no formal value"))?;
             values[target.index() as usize] = Some(value);
+            stated_initial_values[target.index() as usize] =
+                vec![variable.fixed() == Some(true); variable.scalar_count()];
             retained_guesses[target.index() as usize] = variable.role() == dae::VariableRole::State
                 || variable.fixed() == Some(true)
                 || matches!(
@@ -69,13 +80,20 @@ impl TrialPoint {
             let mut order = 1;
             while let Some(target) = formal.coordinate(source, order) {
                 values[target.index() as usize] = Some(vec![0.; variable.scalar_count()]);
+                stated_initial_values[target.index() as usize] =
+                    vec![false; variable.scalar_count()];
                 order += 1;
             }
         }
-        Ok(Self {
+        let mut point = Self {
             values,
             retained_guesses,
-        })
+            stated_initial_values,
+        };
+        seed_initial_pins(&mut point, formal, |expression| {
+            evaluator.expression(expression).map_err(failure)
+        })?;
+        Ok(point)
     }
 
     pub(super) fn settle(
@@ -148,6 +166,38 @@ impl TrialPoint {
             .ok_or_else(|| failure("missing trial coordinate value"))?;
         typed(kind, values)
     }
+}
+
+fn seed_initial_pins<'source>(
+    point: &mut TrialPoint,
+    formal: FormalDerivativeView<'_, 'source, '_>,
+    mut evaluate: impl FnMut(dae::ExprId<'source>) -> Result<Vec<f64>, StructuralError>,
+) -> Result<(), StructuralError> {
+    for pin in formal.source_pins {
+        if pin.role != rumoca_phase_structural::InitialValueRole::Definition {
+            continue;
+        }
+        let source = formal.source.variable_id(pin.coordinate as usize).unwrap();
+        let target = formal.coordinate(source, 0).unwrap().index() as usize;
+        let mut value = 0.;
+        for term in &pin.value {
+            let expression = formal
+                .source
+                .expression_id(term.expression as usize)
+                .unwrap();
+            let values = evaluate(expression)?;
+            let term_value = values[term.scalar as usize];
+            value += if term.negated {
+                -term_value
+            } else {
+                term_value
+            };
+        }
+        point.values[target].as_mut().unwrap()[pin.scalar as usize] = value;
+        point.stated_initial_values[target][pin.scalar as usize] = true;
+        point.retained_guesses[target] = true;
+    }
+    Ok(())
 }
 
 fn equation_jacobian(

@@ -64,7 +64,12 @@ supplied points; it does not issue a regular basis or an executable prepared mod
 The static implementation first seeds needed acyclic definitions through the
 shared typed lowerer, including assignment coercions. Source states, fixed
 values, `always`/`prefer` guesses, and explicit overrides retain their guesses.
-It then settles lower differential stages with bounded least-squares Newton steps. Those trial points
+Exact source-bound initial-value transfers also seed aliased state coordinates.
+These transfers remain trial guesses, including when their expressions depend
+on an initialization unknown. Corrections retain the full residual and Jacobian.
+Within each source preference class, coordinates with stated initial values
+precede unfixed guesses. It then settles lower differential stages with bounded
+least-squares Newton steps. Those trial points
 select coordinates only: they are not initialization results or overrides.
 Mandatory states are excluded from dependent-column pivoting; declared states
 and their formal derivatives precede newly introduced algebraic candidates.

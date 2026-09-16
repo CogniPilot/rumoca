@@ -21,6 +21,7 @@ pub struct FormalDerivativeSystem<'source> {
     coordinates: Vec<Vec<u32>>,
     equations: Vec<EquationProlongation>,
     dimension: usize,
+    source_pins: Vec<super::InitialValuePin>,
 }
 
 /// Both source and constructed coordinate identities stay bound to their roots.
@@ -28,6 +29,8 @@ pub struct FormalDerivativeSystem<'source> {
 pub struct FormalDerivativeView<'map, 'source, 'target> {
     pub source: dae::DaeView<'source>,
     pub view: dae::DaeView<'target>,
+    /// Exact initial-value transfers, indexed only in `source`.
+    pub source_pins: &'map [super::InitialValuePin],
     coordinates: &'map [Vec<u32>],
     equations: &'map [EquationProlongation],
     dimension: usize,
@@ -43,6 +46,7 @@ impl FormalDerivativeSystem<'_> {
                 inspect(FormalDerivativeView {
                     source,
                     view,
+                    source_pins: &self.source_pins,
                     coordinates: &self.coordinates,
                     equations: &self.equations,
                     dimension: self.dimension,
@@ -99,6 +103,7 @@ pub fn construct_formal_derivatives(
             coordinates,
             equations,
             dimension: analysis.formal_dimension(),
+            source_pins: super::transferred_initial_values(source)?,
         })
     })
 }
