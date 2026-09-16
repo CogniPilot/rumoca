@@ -18,6 +18,23 @@ pub(super) fn quality_gate_v3_metric_schema_migration() -> MslMetricSchemaMigrat
 }
 
 pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMigration {
+    let mut migration = previous_reference_boundary_migration();
+    migration.previous = Some(Box::new(migration.clone()));
+    migration.metric.from_quality_gate_version = 5;
+    migration.metric.to_quality_gate_version = 6;
+    migration.metric.change = "reviewed-conditioned-observable-reference-boundary-v1".to_string();
+    migration.metric.strict_high_before = 166;
+    migration.metric.strict_high_after = 166;
+    migration.metric.policy_excluded_after = 21;
+    migration.metric.exclusions_sha256 =
+        "1da770784678228aff3c0d574bb48adce7138c5c54d252ce79883dd456d135b9".to_string();
+    migration.evidence_git_commit = "0de3f29c0ae9440061bef21c7eb9eb4650407015".to_string();
+    migration.evidence_run = "multibody-automatic-basis-full".to_string();
+    migration.policy_excluded_before = 20;
+    migration
+}
+
+pub(super) fn previous_reference_boundary_migration() -> MslReferenceBoundaryMigration {
     MslReferenceBoundaryMigration {
         metric: MslMetricSchemaMigration {
             from_quality_gate_version: 4,
@@ -37,6 +54,7 @@ pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMig
         evidence_git_commit: "3d76411c1a41a1b27e6a0ecbf1cf3e204f0b47a4".to_string(),
         evidence_run: "multibody-guarded-affine-full-11".to_string(),
         policy_excluded_before: 19,
+        previous: None,
     }
 }
 

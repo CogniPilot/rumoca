@@ -75,7 +75,7 @@ pub(super) fn omc_sim_reference_timeout_secs() -> u64 {
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
 /// Version 5 records a reference-convergence boundary without changing any
 /// baseline floor. Version 4's source-static partial roster remains pinned.
-pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 5;
+pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 6;
 pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
 pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
@@ -237,6 +237,8 @@ pub(super) struct MslReferenceBoundaryMigration {
     evidence_git_commit: String,
     evidence_run: String,
     policy_excluded_before: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous: Option<Box<MslReferenceBoundaryMigration>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

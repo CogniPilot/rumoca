@@ -1,5 +1,5 @@
 {
-  "quality_gate_version": 5,
+  "quality_gate_version": 6,
   "run_scope": "full",
   "git_commit": "d2e79a08f2076fac8d09e1bf67e86e5cc829df21",
   "msl_version": "v4.1.0",
@@ -789,18 +789,33 @@
     ]
   },
   "reference_boundary_migration": {
-    "from_quality_gate_version": 4,
-    "to_quality_gate_version": 5,
-    "change": "reviewed-reference-convergence-boundary-v1",
-    "evidence_git_commit": "3d76411c1a41a1b27e6a0ecbf1cf3e204f0b47a4",
-    "evidence_run": "multibody-guarded-affine-full-11",
-    "strict_high_before": 160,
-    "strict_high_after": 160,
-    "policy_excluded_before": 19,
-    "policy_excluded_after": 20,
+    "from_quality_gate_version": 5,
+    "to_quality_gate_version": 6,
+    "change": "reviewed-conditioned-observable-reference-boundary-v1",
+    "evidence_git_commit": "0de3f29c0ae9440061bef21c7eb9eb4650407015",
+    "evidence_run": "multibody-automatic-basis-full",
+    "strict_high_before": 166,
+    "strict_high_after": 166,
+    "policy_excluded_before": 20,
+    "policy_excluded_after": 21,
     "excluded_strict_high_before": 0,
     "excluded_non_high_before": 1,
     "exclusions_file": "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json",
-    "exclusions_sha256": "30f7c38e58307d6af4f69b844512679ec860f367f88670481edad5318d7d29f8"
+    "exclusions_sha256": "1da770784678228aff3c0d574bb48adce7138c5c54d252ce79883dd456d135b9",
+    "previous": {
+      "from_quality_gate_version": 4,
+      "to_quality_gate_version": 5,
+      "change": "reviewed-reference-convergence-boundary-v1",
+      "evidence_git_commit": "3d76411c1a41a1b27e6a0ecbf1cf3e204f0b47a4",
+      "evidence_run": "multibody-guarded-affine-full-11",
+      "strict_high_before": 160,
+      "strict_high_after": 160,
+      "policy_excluded_before": 19,
+      "policy_excluded_after": 20,
+      "excluded_strict_high_before": 0,
+      "excluded_non_high_before": 1,
+      "exclusions_file": "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json",
+      "exclusions_sha256": "30f7c38e58307d6af4f69b844512679ec860f367f88670481edad5318d7d29f8"
+    }
   }
 }

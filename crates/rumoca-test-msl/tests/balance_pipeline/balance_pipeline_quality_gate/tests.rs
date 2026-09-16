@@ -1620,6 +1620,7 @@ fn oracle_boundary_migration_rejects_unreviewed_counts_digest_or_missing_evidenc
         "strict_high_after",
         "policy_excluded_after",
         "exclusions_sha256",
+        "history",
         "missing",
     ] {
         let mut baseline = baseline_quality_template();
@@ -1628,6 +1629,14 @@ fn oracle_boundary_migration_rejects_unreviewed_counts_digest_or_missing_evidenc
             "strict_high_after" => migration.metric.strict_high_after += 1,
             "policy_excluded_after" => migration.metric.policy_excluded_after += 1,
             "exclusions_sha256" => migration.metric.exclusions_sha256 = "unreviewed".to_string(),
+            "history" => {
+                migration
+                    .previous
+                    .as_mut()
+                    .unwrap()
+                    .metric
+                    .strict_high_after += 1
+            }
             _ => baseline.reference_boundary_migration = None,
         }
         let reason =
@@ -1681,7 +1690,7 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
 
     let reference = baseline
         .reference_boundary_migration
-        .expect("reviewed v4-to-v5 boundary");
+        .expect("reviewed v4-to-v5-to-v6 boundaries");
     assert_eq!(reference, reviewed_reference_boundary_migration());
     assert_eq!(
         reference.metric.strict_high_before,

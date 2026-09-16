@@ -198,12 +198,12 @@ fn same_omc_context_keeps_promoted_baseline() {
 }
 
 #[test]
-fn checked_in_v5_baseline_preserves_historical_migrations_and_reference_boundary() {
+fn checked_in_v6_baseline_preserves_historical_migrations_and_reference_boundary() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json");
-    let baseline = load_baseline_header(&path).expect("checked v5 baseline must validate");
+    let baseline = load_baseline_header(&path).expect("checked v6 baseline must validate");
 
-    assert_eq!(baseline.quality_gate_version, 5);
+    assert_eq!(baseline.quality_gate_version, 6);
     assert!(baseline.reference_boundary_migration.is_some());
     assert_eq!(baseline.partial_models, 13);
     assert_eq!(baseline.partial_model_names, reviewed_partial_model_names());

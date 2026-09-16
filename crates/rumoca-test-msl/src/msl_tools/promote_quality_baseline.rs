@@ -8,7 +8,7 @@ use super::common::MslPaths;
 const DEFAULT_BASELINE_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
 const DEFAULT_CURRENT_REL: &str = "msl_quality_current.json";
-const EXPECTED_QUALITY_GATE_VERSION: u64 = 4;
+const EXPECTED_QUALITY_GATE_VERSION: u64 = 6;
 const RUN_SCOPE_FULL: &str = "full";
 const RUN_SCOPE_PARTIAL: &str = "partial";
 
@@ -117,13 +117,13 @@ fn ensure_promotable_quality_snapshot(snapshot: &serde_json::Value, source: &Pat
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_promotable_quality_snapshot;
+    use super::{EXPECTED_QUALITY_GATE_VERSION, ensure_promotable_quality_snapshot};
     use serde_json::json;
     use std::path::PathBuf;
 
     fn full_snapshot() -> serde_json::Value {
         json!({
-            "quality_gate_version": 4,
+            "quality_gate_version": EXPECTED_QUALITY_GATE_VERSION,
             "run_scope": "full",
             "omc_version": "OpenModelica 1.26.1",
             "sim_ok": 120
@@ -146,7 +146,7 @@ mod tests {
         let source = PathBuf::from("msl_quality_current.json");
         let err = ensure_promotable_quality_snapshot(
             &json!({
-                "quality_gate_version": 4,
+                "quality_gate_version": EXPECTED_QUALITY_GATE_VERSION,
                 "run_scope": "partial"
             }),
             &source,
@@ -181,9 +181,11 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        let err =
-            ensure_promotable_quality_snapshot(&json!({ "quality_gate_version": 4 }), &source)
-                .expect_err("run_scope is required");
+        let err = ensure_promotable_quality_snapshot(
+            &json!({ "quality_gate_version": EXPECTED_QUALITY_GATE_VERSION }),
+            &source,
+        )
+        .expect_err("run_scope is required");
         assert!(
             err.to_string().contains("run_scope"),
             "unexpected error: {err}"
@@ -195,7 +197,7 @@ mod tests {
         let source = PathBuf::from("msl_quality_current.json");
         let err = ensure_promotable_quality_snapshot(
             &json!({
-                "quality_gate_version": 4,
+                "quality_gate_version": EXPECTED_QUALITY_GATE_VERSION,
                 "run_scope": "full"
             }),
             &source,

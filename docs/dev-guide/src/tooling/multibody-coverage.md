@@ -4,6 +4,53 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## SMPM comparison boundary: no passing credit
+
+`SMPM_Braking` is recorded as a reference-accuracy limitation under SPEC_0033
+§6a. This closes its classification as an actionable compiler refinement
+counterexample, **not** its numerical accuracy obligation. Neither solver's
+voltage trace has been proved accurate. The full model stays in the next
+566-model run and earns no strict-high or certification credit.
+
+The source identity, independent analytic reproduction, unchanged original
+trace, OMC refinement disagreement, and failed 1e-12 diagnostic below are the
+basis for this disposition. They reject using the default OMC voltage as an
+accuracy oracle. In particular, the two refined OMC traces still have five
+deviating channels; they are not convergence evidence.
+
+The additional native BDF probe `stiff-voltage-native-3` measures 47 accepted
+steps and 2,000 output samples at the same 1e-6 tolerances. After the hard-stop
+fix, the maximum accepted-point voltage error is 5.68e-7 V. At intermediate
+points, reconstructing voltage from the approximate current still gives
+1.1509 V maximum error, whereas `L * interpolate_dy(t)` has maximum error
+3.00e-7 V. The maximum derivative defect is 3615.62 A/s. This localizes an
+outstanding numerical issue to amplified observation of the continuous
+extension; replacing voltage by the polynomial derivative without satisfying
+the original circuit equations would not be a valid compiler fix.
+
+Gate schema 6 records the reviewed 5→6 boundary, its evidence commit
+`0de3f29c0ae9440061bef21c7eb9eb4650407015`, the original full run
+`multibody-automatic-basis-full`, 166 strict-high before/after, and 20→21
+excluded models. The exact exclusions-file digest is pinned. The previous
+4→5 migration remains part of the checked history. Every existing baseline
+floor and certified-model roster is unchanged; this is not a baseline
+promotion. Tests reject missing/forged history and lowered unrelated ratchets.
+
+Validation: 22 xtask baseline tests, 97 quality-gate tests, five promotion
+metadata tests, Clippy for both affected crates/all targets, and workspace
+format checks pass. The fixed canary `smpm-reference-boundary-canary-1` has
+nine compared/high models, 175 high initial channels, eleven existing failed
+models, no skipped/missing traces, and zero phase or band changes against
+`smpm-hard-stop-canary-1`. `smpm-reference-boundary-canary-delta-1.json` records
+the delta. All prior artifact hashes were verified and retained in
+`smpm-triage-evidence-2.json`, with the native derivative probe added (204
+artifacts). No compiler or numerical method changes are part of this boundary.
+
+The remaining obligations are a justified error bound for amplified outputs
+and an independently converged full-model reference. MultiBody regression
+work resumes with this limitation explicitly recorded. The previous full-run
+counts below remain historical evidence until the next named complete run.
+
 ## Automatic-selection full sweep regresses; electrical triage remains open
 
 The complete 566-model run `multibody-automatic-basis-full` at
@@ -120,11 +167,10 @@ Evidence includes `smpm-source-1/ir-{flat,dae}.json`,
 binds the source, executable, traces, diagnostics, failed attempt, and full
 cohort artifacts by SHA-256.
 
-**Closure remains open.** No new exclusion or tolerance policy is introduced,
+**Disposition at the original investigation:** no exclusion or tolerance policy was introduced,
 and no diagnostic earns cohort credit. The next obligation is to establish
 an accuracy bound for the amplified observable and distinguish nonlinear
-solve error from integration error using the analytic reproduction. The six
-MultiBody regressions remain behind this electrical investigation. Combined
+solve error from integration error using the analytic reproduction. The subsequent comparison-boundary disposition is recorded above. Combined
 verify quick/full, baseline promotion, push, and PR publication have not run.
 
 ### Restore the BDF refresh policy when shortening a step
