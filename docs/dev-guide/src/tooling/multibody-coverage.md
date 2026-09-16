@@ -4,6 +4,46 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Full sweep recovers three MultiBody models without losing high results
+
+The complete `multibody-zero-cost-assignment-full` run at
+`9adb545e952bd46431367b9e75b83444bcf71e1d` passes the current MSL quality gate:
+**169/566 high (29.86%), 169 compared, 21 exclusions, no missing traces**, and
+190 raw completions. MultiBody improves from **20/42 to 23/42 high**.
+`RevoluteConstraint`, `SphericalConstraint`, and `Fourbar1` recover from Solve
+timeouts. No previously high model is lost; these are the only band changes.
+`DC_CompareCharacteristics` returns from timeout to its structural refusal and
+earns no passing credit. Stage counts are 566 parsed, 490 flattened, 288 DAE
+compiled, and 264 Solve compiled. The run uses eleven workers and unchanged
+budgets, tolerances, target scope, and reviewed exclusions.
+
+The channel tally needs a distinction from the model-level band: all 24,173
+compared initial values are high. Trajectories have 24,127 high channels,
+46 minor channels, and zero deviating/severe channels. The same 46 minor
+channels occur in the preceding full run, across seven electrical/magnetic
+models. Earlier ledger wording conflated the initial-value count with the
+trajectory count; the two recent entries below now state that distinction.
+All compared MultiBody trajectory channels are high. Excluded models remain
+unproved and receive no passing credit.
+
+`zero-cost-assignment-full-delta-1.json` retains the complete model/phase delta;
+`zero-cost-assignment-full-audit-1.log` and `zero-cost-assignment-evidence-2.json`
+bind the full-run artifacts and the preceding focused/perf evidence below
+`.git/multibody-campaign/rolling-wheel`. The tracked tree was clean at launch;
+the foreign coordination file accounts for the dirty-worktree marker. No
+baseline was promoted. This is a full MSL sweep, not combined `verify full`;
+release gates and a PR remain pending complete MultiBody coverage.
+
+The next concrete numerical failure is `GyroscopicEffects`: its focused run
+compiles in 6.251 seconds and initializes, then rejects sensitivity residual
+1479 (`bodyCylinder2.body.z_a[3]`) at -1.029643e-10 against the unchanged 1e-10
+tolerance. The full run reproduces that refusal. Inspection finds one LU solve
+per sensitivity block followed by a global AD residual check, without residual
+correction. That suggests investigating linear-solve error versus cancellation
+in the differentiated equations; it does not justify relaxing the check or
+claim that refinement will fix the model. The failing matrix, source equations,
+and OMC reconstruction still need a direct comparison.
+
 ## Match zero-cost assignment paths before searching
 
 The proposed source-dimension shortcut is rejected. It bypassed ordinary
@@ -89,8 +129,9 @@ eleven existing failures, no skipped/missing traces, and zero phase/band delta.
 The subsequent complete run `multibody-refresh-source-index-full` at
 `955d33e905b1bc9e699936b3f648f0b2810131f4` passes the current quality gate:
 **166/566 high (29.33%), 166 compared, 21 exclusions, no missing traces**, 187
-raw completions, and **20/42 MultiBody high**. All 21,484 compared channels
-and initial values are high. `SphericalConstraint`'s Solve timeout is the only
+raw completions, and **20/42 MultiBody high**. All 21,484 initial values are
+high; trajectories have 21,438 high and 46 minor channels, with zero deviations.
+`SphericalConstraint`'s Solve timeout is the only
 band loss against `multibody-initial-geometry-full`; its failure remains open.
 `DC_CompareCharacteristics` changes from structural rejection to timeout, and
 `Inverse_sh_TX` returns to Flatten rejection; neither was previously high.
@@ -116,8 +157,9 @@ profiles, diagnostics, full-run artifacts, and worker hashes.
 The complete run `multibody-initial-geometry-full` at
 `9708e306d9b8c6e4bb248155f701ea80a7ddd5d8` passes the MSL quality gate with
 188 raw completions, **167/566 compared/high models (29.51%)**, 21 exclusions,
-no missing traces, and **21/42 MultiBody high**. All 22,401 compared channels
-and initial values are high. The tracked worktree was clean at launch; the
+no missing traces, and **21/42 MultiBody high**. All 22,401 initial values are
+high; trajectories have 22,355 high and 46 minor channels, with zero deviations.
+The tracked worktree was clean at launch; the
 untracked coordination file accounts for the comparator's dirty-worktree flag.
 
 `HeatLosses` gains high parity on all **798 shared trajectory channels and
