@@ -97,6 +97,27 @@ identity establishes the local chain rule, not numerical accuracy by itself.
 | Treat rank loss, inconsistent constraints, and failed reconstruction as typed failures; changing basis cannot change the model's integration dimension | runtime | A singular model is not a license to discard equations |
 | Solve the original initialization problem before mapping its result to independent coordinates; add no new fixed initial values | initialization | MLS initial obligations survive state selection |
 
+### 2a. Changing coordinate bases (proposed, not yet implemented)
+
+The `CircleChart.mo` fixture has `der(q)=v`, `der(v)=lambda*q`, and
+`q*q=1`. Its initialized solution is a full circular rotation. The current
+static `q[2], der(q[2])` coordinates fold at a quarter turn: both signs of
+`q[1]` reconstruct the same selected state. A completed three-second run
+selects the wrong branch even though every algebraic residual is small.
+`GyroscopicEffects` exhibits the same geometric limitation through two
+selected position components. This is an open correctness counterexample,
+not evidence that a different fixed coordinate preference is sufficient.
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Retain construction-issued candidate identities, per-stage dimensions, source constraints, and value/derivative maps in an executable selection product before supporting basis changes | structural and Solve construction | Runtime cannot recreate semantic ownership from names or transient analysis kernels |
+| Keep basis choice fixed during each continuous integration segment; test its regularity with the same reconstructed point and constraint Jacobian | FMI component | Changing coordinate meaning during a numerical stage invalidates the integrator state |
+| Request a coordinate-change event while the current basis is still regular; failed trial reconstruction must not become an accepted step or a branch change | FMI component and numerical host | Detecting failure after a fold cannot preserve physical continuation |
+| Choose a regular alternative with bounded numerical work over the issued candidates, honoring required and forbidden states | numerical selection | Neither subset enumeration nor model-specific coordinate lists are general algorithms |
+| Transfer new state values from the last consistent full physical coordinate; re-establish all original constraints and tangent reconstruction at unchanged tolerances | FMI component | A chart change preserves the physical solution, not merely its residual norm |
+| Bind selection state, coordinate maps, numerical caches, and rollback snapshots atomically to one active basis | FMI component | Mixed old/new maps can produce plausible but incorrect derivatives |
+| Preserve initialization, observables, integration dimension, and standard FMI event/reset behavior through every transition | compiler and FMI component | Coordinate selection is a representation change |
+
 ### 3. FMI ownership
 
 | Rule | Owner/Where | Brief Justification |
@@ -115,6 +136,7 @@ identity establishes the local chain rule, not numerical accuracy by itself.
 | Exercise singular and changing bases, time/parameter dependence, `StateSelect`, and `reinit` | compiler and FMI suites | The reduced rotation fixture is not the general contract |
 | Compare value and AD callbacks after perturbed reconstruction guesses, not only at exact constrained points | numerical tests | Constraint roundoff can reintroduce cancellation |
 | Retain the analytical `RateCancellation.mo` cases and the saved RevoluteConstraint failure; require a normal-budget original-model OMC comparison | focused validation | A successful alternate trajectory cannot dismiss the original failure |
+| Close the `CircleChart.mo` three-second branch counterexample and complete a full revolution against its analytical solution and OMC; preserve the captured GyroscopicEffects reconstruction failure | compiler and FMI suites | Short successful runs can hide incorrect branch continuation |
 | Require Tier 1 and a complete Tier 2 sweep preserving previously high models before breadth resumes | SPEC_0033 verification | Local derivative evidence is not cohort coverage |
 
 ## Rationale

@@ -4,6 +4,55 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Static coordinate folds expose a circular-motion counterexample
+
+After the sensitivity correction in `14500e1264754060dffe3099b7e9aaf88b57deff`,
+`GyroscopicEffects` reaches a different failure at `t=0.25309309043358214`.
+The failed primal block has 60 coordinates and a four-quaternion tearing plan;
+this failure does not bypass tearing. Its condition number grows from about
+3.8e9 to 1.4e10 across the three captured attempts. The selected position
+components of `bodyCylinder4` cannot be reconstructed: the source-bound
+parameters give fixed radius squared 0.037144660940672626, while the trial
+`r_0[2], r_0[3]` require `r_0[1]^2 = -5.846693632395117e-7` in the first
+attempt. All three attempts are geometrically infeasible. Increasing Newton
+iterations or relaxing residual tolerances cannot recover a real solution.
+OMC's original trace crosses `r_0[1]=0` between 0.25 and 0.26 seconds using
+dynamic quaternion state sets. `gyro-primal-geometry-proof-1.json` retains
+the parameter-derived calculation and the matrices/coordinates it diagnoses.
+
+The reduced `crates/rumoca/tests/fixtures/index_reduction/CircleChart.mo`
+isolates the problem: `der(q)=v`, `der(v)=lambda*q`, `q*q=1`, initialized
+at `q={1,0}`, `v={0,1}`. The structural DAE selects the aggregate
+`{q[2], $formal_derivative.1.q[2]}`. Its physical solution is
+`q={cos(time),sin(time)}`, `v={-sin(time),cos(time)}`, `lambda=-1`.
+OMC generates independent dynamic position and velocity state sets and
+completes a full revolution; maximum absolute analytical error is 1.26e-6.
+Rumoca fails the full revolution at `t=4.712251253211418`, with the selected
+position outside the unit circle.
+
+More seriously, the identical equations with stop time 3 produce `sim_ok`
+but reflect onto the wrong branch after the first quarter turn. The ordinary
+trace comparator reports **five compared channels: three high, two deviating,
+zero minor/severe**. Maximum absolute errors are 1.98 in `q[1]` and 2.00 in
+`v[1]`; the initial states agree. The focused analytical Rust regression fails
+at `t=1.58`, where `q[1]=+0.00920313296` instead of `-0.00920354327`.
+This is an **open actionable refinement counterexample**, outside the fixed MSL
+cohort. The latest cohort counts remain historical evidence; they do not close
+this defect. Unrelated capability work, merges, and releases remain blocked by
+SPEC_0033 until it is resolved.
+
+`circle-chart-1` retains the worker requests, all IR stages, complete traces,
+OMC-generated C/state sets, analytical comparisons, and standard comparator
+output. `circle-chart-regression-red-1.patch` and its test log retain the red
+regression for activation with the fix; no ignored or knowingly failing test
+is added to the passing suite. All temporary capture instrumentation is removed.
+`gyro-primal-coordinate-evidence-1.json` binds these artifacts below
+`.git/multibody-campaign/rolling-wheel`. SPEC_0053 §2a records the required
+dynamic-coordinate contract. It remains unimplemented: basis changes must use
+compiler-issued candidates, preserve the full physical point and its tangent,
+and reset the integrator through FMI Event Mode before the current chart folds.
+No new model or coverage credit is claimed.
+
 ## Refine algebraic sensitivity solves without weakening certification
 
 `GyroscopicEffects` fails at `t=0.25041127485935627` in a 258-coordinate
