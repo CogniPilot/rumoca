@@ -4,6 +4,73 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint: construct coupled formal derivative equations
+
+`construct_formal_derivatives` now builds an inspectable system from the original
+source and certified tensor-uniform offsets. One checked root replay retains
+source values, attributes, initialization, assertions, functions, and compact
+equation domains. It reserves complete derivative tensors and appends the
+required differentiated equations, using the existing tensor differentiation
+rules with a separate formal-coordinate map. Source-solution zero anchors and
+causal algebraic definitions cannot erase or replace those derivative unknowns.
+No auxiliary inverse is introduced unless a linear solve already occurs in the
+source. The governing contract is SPEC_0007 / STRUCT-T07.
+
+The final construction replay over the original source artifacts produces:
+
+| Input | Constructed coordinates / equations | Matched equations | Formal dimension |
+|---|---:|---:|---:|
+| Original `RateCancellation.mo` | 131 / 129 | 129 | 2 |
+| Original RevoluteConstraint DAE | 2644 / 2640 | 2640 | 4 |
+
+These equations are now emitted, unlike the offset-only counts below. Function
+counts remain 0 and 36 respectively, equal to the source counts. Both reduced
+initial equations remain; the original model's declaration-based initial
+attributes also survive. Evidence:
+`rolling-wheel/formal-construction-source-3.{jsonl,log}` and its retained probe.
+
+An independent NumPy evaluation of the emitted reduced expression graph checks
+all 129 equations at four cosine values down to 1e-9. The maximum residual is
+8.881784197001252e-16. Perturbing each of the 131 coordinates changes the
+residuals. All 47 source values reconstructed at the 102 saved OMC trace rows
+agree within 4.996003610813204e-16, and the generated equations hold there.
+`formal-equations-comparison-2.json` binds this diagnostic. This evaluates a known
+solution and its formal derivatives; it is not a new integration or JVP result.
+
+A separate complex-step Jacobian and pivoted-QR diagnostic exposes the next
+obligation. The full unscaled reconstruction Jacobian is severely ill-conditioned
+near the Euler-angle singularity: at cosine 1e-3, both the QR-selected basis and
+the diagnostic `q[2], w[2]` basis have condition numbers around 8.35e11.
+At smaller cosines the smallest singular direction is below reliable double
+precision resolution. The resolved near-singular direction at 1e-3 is dominated
+by second angle derivatives, first rate derivatives, and associated rotation
+derivatives, with smaller visible-rate components. Changing a pair of states
+alone does not settle this issue. Evidence is `formal-basis-1.json` and
+`formal-conditioning-2.json`. Dependency closure, structured coupled solving,
+and accuracy of the required outputs need investigation before execution.
+
+All 647 compiler-core tests, 217 structural tests, 243 architecture checks, and
+six specification gates pass. The six new construction tests cover source and
+tensor preservation, pinned-value derivative obligations, compact loop binders,
+function substitution, fixed starts, state preferences, assertions, and typed
+refusal of incompatible orders, nonsmooth differentiation, and unsupported
+reinitialization mappings. Structural and core Clippy, workspace formatting,
+and whitespace checks pass. Logs use `rolling-wheel/formal-construction-*`.
+
+The fixed `target/msl/multibody-formal-construction-canary` has no phase,
+simulation, or band delta from `multibody-tensor-offsets-canary`. Nine models
+remain high, all 175 initial-condition channels remain high, and eleven existing
+failures remain visible. There are no skipped, missing, excluded, or
+nonidentifiable traces. `formal-construction-canary-delta-1.json` binds HEAD
+`2e2adf2f161eeb24a73571f8920b1802638387f4` and working-tree digest
+`f38cf07fafecbe85bcf8be017977ded6b25b3c022b1ec6148806325ef24e3dc4`.
+
+The construction product is not a prepared numerical DAE and is not selected by
+the simulation pipeline. Independent-state execution and the original
+RevoluteConstraint regression remain unresolved. Release quick/full and a new
+Tier 2 sweep were not run while these obligations remain open; no new cohort
+pass, promotion, push, or PR is claimed.
+
 ## RevoluteConstraint: differential orders for complete source tensors
 
 The source differential analysis now checks whether its scalar derivative orders

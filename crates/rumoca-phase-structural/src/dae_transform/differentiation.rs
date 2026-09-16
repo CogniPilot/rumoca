@@ -13,6 +13,7 @@
 
 mod algebra;
 mod conditionals;
+mod formal;
 mod geometry;
 mod lifted_values;
 mod linear_solve;
@@ -191,7 +192,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         {
             return self.differentiate_order(branch, order, provenance);
         }
-        if let Some(element) = projected_element(self.source, self.facts, source_id) {
+        if !self.formal_derivatives
+            && let Some(element) = projected_element(self.source, self.facts, source_id)
+        {
             return self.differentiate_order(element, order, provenance);
         }
         if let Some(selected) = super::function_derivatives::select_derivative(
@@ -200,9 +203,10 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             source_id,
             order,
         ) {
-            if self
-                .facts
-                .expression_is_zero(self.source, source_id, &self.function_context)
+            if !self.formal_derivatives
+                && self
+                    .facts
+                    .expression_is_zero(self.source, source_id, &self.function_context)
             {
                 return Ok(Derivative::Zero);
             }
@@ -214,9 +218,10 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             self.function_context = previous;
             return differentiated;
         }
-        if self
-            .facts
-            .expression_is_zero(self.source, source_id, &self.function_context)
+        if !self.formal_derivatives
+            && self
+                .facts
+                .expression_is_zero(self.source, source_id, &self.function_context)
         {
             return Ok(Derivative::Zero);
         }
@@ -226,6 +231,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .expect("differentiable expression identity resolves");
         if self.function_context.is_empty() && is_time_invariant(self.source, source_id) {
             return Ok(Derivative::Zero);
+        }
+        if self.formal_derivatives {
+            self.check_formal_operation(source_id, order, provenance)?;
         }
         match source.operation() {
             dae::ExpressionOperation::Literal(_) => Ok(Derivative::Zero),
@@ -280,6 +288,11 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         order: u8,
         provenance: dae::DaeProvenance,
     ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        if self.formal_derivatives
+            && let Some(derivative) = self.formal_coordinate(coordinate, order, provenance)?
+        {
+            return Ok(derivative);
+        }
         match coordinate {
             dae::CoordinateView::Parameter(_) => Ok(Derivative::Zero),
             dae::CoordinateView::Time if order == 1 => self

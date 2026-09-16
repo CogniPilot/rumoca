@@ -26,9 +26,23 @@ impl Clone for TargetVariable<'_> {
     }
 }
 
+impl<'dae> TargetVariable<'dae> {
+    pub(super) fn variable(self) -> dae::VariableId<'dae> {
+        match self {
+            Self::Parameter(id) => id.into(),
+            Self::Input(id) => id.into(),
+            Self::State(id) => id.into(),
+            Self::Algebraic(id) => id.into(),
+            Self::DiscreteReal(id) => id.into(),
+            Self::DiscreteValue(id) => id.into(),
+        }
+    }
+}
+
 pub(super) struct ReservedVariable<'dae> {
     pub(super) identity: TargetVariable<'dae>,
     pub(super) derivative_alias: Option<dae::AlgebraicId<'dae>>,
+    pub(super) formal_derivatives: Vec<dae::AlgebraicId<'dae>>,
     reservation: Option<dae::VariableReservation<'dae>>,
 }
 
@@ -36,7 +50,7 @@ pub(super) fn reserve_variables<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     types: &[dae::ValueTypeId<'target>],
-    demoted: Option<u32>,
+    demoted: &[u32],
     promoted: &[u32],
 ) -> Result<Vec<ReservedVariable<'target>>, dae::DaeConstructionError> {
     target.variables(|variables| {
@@ -59,7 +73,7 @@ fn reserve_variable<'target>(
     variables: &mut dae::Variables<'_, 'target>,
     variable: dae::VariableView<'_>,
     value_type: dae::ValueTypeId<'target>,
-    demoted: Option<u32>,
+    demoted: &[u32],
     promoted: &[u32],
 ) -> Result<ReservedVariable<'target>, dae::DaeConstructionError> {
     let name = variable.name().clone();
@@ -79,7 +93,7 @@ fn reserve_variable<'target>(
                 variables.reserve_input(name, value_type, variability, declaration)?;
             (TargetVariable::Input(id), reservation)
         }
-        dae::VariableRole::State if Some(variable.id().index()) == demoted => {
+        dae::VariableRole::State if demoted.contains(&variable.id().index()) => {
             let (id, reservation) = variables.reserve_algebraic(name, value_type, declaration)?;
             (TargetVariable::Algebraic(id), reservation)
         }
@@ -115,6 +129,7 @@ fn reserve_variable<'target>(
     Ok(ReservedVariable {
         identity,
         derivative_alias: None,
+        formal_derivatives: Vec::new(),
         reservation: Some(reservation),
     })
 }

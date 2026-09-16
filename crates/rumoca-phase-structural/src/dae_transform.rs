@@ -19,6 +19,7 @@ mod equalities;
 mod equation_activity;
 mod event_owners;
 mod expressions;
+mod formal_derivatives;
 mod function_derivatives;
 mod functions;
 mod initial_pins;
@@ -58,6 +59,9 @@ use crate::{
     BltBlock, EquationRef, SortedDae, StructuralError, StructuredScalarBlock, UnknownId, sort,
 };
 
+pub use self::formal_derivatives::{
+    FormalDerivativeSystem, FormalDerivativeView, construct_formal_derivatives,
+};
 pub use self::initial_pins::{InitialValuePin, InitialValueRole, PinTerm};
 pub use self::observation::{
     ReductionCandidateGroup, ReductionIdentity, ReductionLane, ReductionOutcome, ReductionRecord,

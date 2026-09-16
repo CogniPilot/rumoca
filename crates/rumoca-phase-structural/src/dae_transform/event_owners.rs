@@ -219,7 +219,11 @@ fn rebuild_event_action<'target>(
         ),
         dae::EventActionOperation::Reinitialize { state, value } => {
             let TargetVariable::State(state) = variables[state.index() as usize].identity else {
-                unreachable!("event reinitialization target retains its state role")
+                return Err(dae::DaeConstructionError::IncompleteDefinition {
+                    kind: "state mapping for event reinitialization",
+                    index: state.index(),
+                    span: action.provenance().span(),
+                });
             };
             events.reinitialize(
                 trigger,

@@ -59,6 +59,7 @@ mod final_parameter_modifiers;
 mod fmi_me_host_divergence;
 mod for_eq_array_test;
 mod for_loop_element_derivative_alias;
+mod formal_derivatives;
 mod forward_param_jacobian_test;
 mod forwarding_function_constraint;
 mod function_assertion_message_projection;

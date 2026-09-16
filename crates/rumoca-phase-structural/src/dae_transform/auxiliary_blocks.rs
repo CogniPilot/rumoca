@@ -14,7 +14,9 @@ use rumoca_ir_dae as dae;
 use super::constraints::DifferentiationFacts;
 
 pub(super) use linear_map::derive_state_blocks;
-pub(super) use reconstruction::{AuxiliaryExpression, AuxiliaryFunctions, create_functions};
+pub(super) use reconstruction::{
+    AuxiliaryExpression, AuxiliaryFunctions, create_functions, create_source_functions,
+};
 use tensor_expression::{SourceValue, TensorExpression};
 
 /// One source-authored scalar dot equation, `unknown * coefficient = rhs`.

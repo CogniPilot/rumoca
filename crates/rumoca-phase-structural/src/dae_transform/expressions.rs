@@ -63,6 +63,7 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     pub(super) candidate: Option<DirectStateConstraint>,
     substitute_demoted_value: bool,
     pub(super) state_only_derivative: bool,
+    pub(super) formal_derivatives: bool,
     pub(super) derivative_anchors: super::equalities::DerivativeAnchors,
     pub(super) function_context: FunctionCallContext<'source>,
     pub(super) scoped_cache: ScopedReconstructionCache<'source, 'target>,
@@ -167,6 +168,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             candidate,
             substitute_demoted_value: false,
             state_only_derivative: false,
+            formal_derivatives: false,
             derivative_anchors: Default::default(),
             function_context: FunctionCallContext::default(),
             scoped_cache: ScopedReconstructionCache::default(),
@@ -180,6 +182,12 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     pub(super) fn substituting_demoted_value(mut self) -> Self {
         assert!(self.candidate.is_some());
         self.substitute_demoted_value = true;
+        self
+    }
+
+    pub(super) fn with_formal_derivatives(mut self) -> Self {
+        assert!(self.candidate.is_none());
+        self.formal_derivatives = true;
         self
     }
 
@@ -304,6 +312,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         let provenance = source.provenance();
         match source.operation() {
             dae::ExpressionOperation::Literal(literal) => self.rebuild_literal(literal, provenance),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(_)) => {
+                self.rebuild(source_id)
+            }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
                 parameter,
             )) => {

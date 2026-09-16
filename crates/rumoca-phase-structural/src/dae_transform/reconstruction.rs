@@ -9,6 +9,9 @@
 //! holonomic reduction replaces a residual with its second derivative and
 //! reports the manifold expressions it displaced.
 
+mod formal;
+pub(super) use formal::rebuild_formal;
+
 use rumoca_ir_dae as dae;
 
 use super::constraints::DifferentiationFacts;
@@ -34,36 +37,45 @@ pub(super) fn rebuild_derivative_aliases(
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
             let facts = DifferentiationFacts::collect(source);
-            prepare_rebuild(source, target, &facts, None, &[], selected, |prepared| {
-                let PreparedRebuild {
-                    context,
-                    target,
-                    variables,
-                    expressions,
-                    quotients,
-                    ..
-                } = prepared;
-                manifold.extend(
-                    prior_manifold
-                        .iter()
-                        .map(|&id| expressions[id as usize].index()),
-                );
-                define_variables(source, target, &expressions, variables)?;
-                rebuild_semantic_owners(
-                    source,
-                    target,
-                    &expressions,
-                    RebuiltOwnerIdentities {
+            prepare_rebuild(
+                source,
+                target,
+                &facts,
+                RebuildRequest {
+                    derivative_aliases: selected,
+                    ..Default::default()
+                },
+                |prepared| {
+                    let PreparedRebuild {
+                        context,
+                        target,
                         variables,
-                        domains: context.domains,
-                        conditions: context.conditions,
-                        clocks: context.clocks,
-                    },
-                    None,
-                    quotients,
-                )?;
-                super::derivative_aliases::append_definitions(source, target, variables)
-            })
+                        expressions,
+                        quotients,
+                        ..
+                    } = prepared;
+                    manifold.extend(
+                        prior_manifold
+                            .iter()
+                            .map(|&id| expressions[id as usize].index()),
+                    );
+                    define_variables(source, target, &expressions, variables)?;
+                    rebuild_semantic_owners(
+                        source,
+                        target,
+                        &expressions,
+                        RebuiltOwnerIdentities {
+                            variables,
+                            domains: context.domains,
+                            conditions: context.conditions,
+                            clocks: context.clocks,
+                        },
+                        None,
+                        quotients,
+                    )?;
+                    super::derivative_aliases::append_definitions(source, target, variables)
+                },
+            )
         })
     });
     rebuilt
@@ -93,30 +105,39 @@ pub(super) fn rebuild_requested_states(
             }
             dae::Dae::construct(model.source_map().clone(), |target| {
                 let facts = DifferentiationFacts::collect(source);
-                prepare_rebuild(source, target, &facts, None, &requested, &[], |prepared| {
-                    let PreparedRebuild {
-                        context,
-                        target,
-                        variables,
-                        expressions,
-                        quotients,
-                        ..
-                    } = prepared;
-                    define_variables(source, target, &expressions, variables)?;
-                    rebuild_semantic_owners(
-                        source,
-                        target,
-                        &expressions,
-                        RebuiltOwnerIdentities {
+                prepare_rebuild(
+                    source,
+                    target,
+                    &facts,
+                    RebuildRequest {
+                        promoted: &requested,
+                        ..Default::default()
+                    },
+                    |prepared| {
+                        let PreparedRebuild {
+                            context,
+                            target,
                             variables,
-                            domains: context.domains,
-                            conditions: context.conditions,
-                            clocks: context.clocks,
-                        },
-                        None,
-                        quotients,
-                    )
-                })
+                            expressions,
+                            quotients,
+                            ..
+                        } = prepared;
+                        define_variables(source, target, &expressions, variables)?;
+                        rebuild_semantic_owners(
+                            source,
+                            target,
+                            &expressions,
+                            RebuiltOwnerIdentities {
+                                variables,
+                                domains: context.domains,
+                                conditions: context.conditions,
+                                clocks: context.clocks,
+                            },
+                            None,
+                            quotients,
+                        )
+                    },
+                )
             })
             .map(Some)
         })
@@ -136,9 +157,10 @@ pub(super) fn rebuild_holonomic_constraint(
                 source,
                 target,
                 facts,
-                None,
-                constraint.lifted_algebraic.as_slice(),
-                &[],
+                RebuildRequest {
+                    promoted: constraint.lifted_algebraic.as_slice(),
+                    ..Default::default()
+                },
                 |prepared| {
                     let PreparedRebuild {
                         context,
@@ -245,9 +267,10 @@ pub(super) fn rebuild_with_state_demotion_and_manifold(
                 source,
                 target,
                 facts,
-                Some(candidate),
-                &[],
-                &[],
+                RebuildRequest {
+                    candidate: Some(candidate),
+                    ..Default::default()
+                },
                 |prepared| {
                     let PreparedRebuild {
                         context,
@@ -336,36 +359,75 @@ struct PreparedRebuild<'source, 'borrow, 'target> {
     expressions: Vec<dae::ExprId<'target>>,
 }
 
+#[derive(Default)]
+struct RebuildRequest<'a> {
+    candidate: Option<DirectStateConstraint>,
+    promoted: &'a [u32],
+    derivative_aliases: &'a [u32],
+    formal_orders: Option<&'a [u32]>,
+}
+
+impl RebuildRequest<'_> {
+    fn reserve<'target>(
+        &self,
+        source: dae::DaeView<'_>,
+        target: &mut dae::DaeConstruction<'target>,
+        types: &[dae::ValueTypeId<'target>],
+    ) -> Result<Vec<ReservedVariable<'target>>, dae::DaeConstructionError> {
+        let demoted = if self.formal_orders.is_some() {
+            source
+                .variables()
+                .filter_map(|(id, variable)| {
+                    (variable.role() == dae::VariableRole::State).then_some(id.index())
+                })
+                .collect::<Vec<_>>()
+        } else {
+            self.candidate
+                .map(|candidate| candidate.state)
+                .into_iter()
+                .collect()
+        };
+        let mut variables = reserve_variables(source, target, types, &demoted, self.promoted)?;
+        super::derivative_aliases::reserve_aliases(
+            source,
+            target,
+            types,
+            &mut variables,
+            self.derivative_aliases,
+        )?;
+        if let Some(orders) = self.formal_orders {
+            super::formal_derivatives::reserve_derivatives(
+                source,
+                target,
+                types,
+                &mut variables,
+                orders,
+            )?;
+        }
+        Ok(variables)
+    }
+}
+
 fn prepare_rebuild<'source, 'target>(
     source: dae::DaeView<'source>,
     target: &mut dae::DaeConstruction<'target>,
     facts: &DifferentiationFacts,
-    candidate: Option<DirectStateConstraint>,
-    promoted: &[u32],
-    derivative_aliases: &[u32],
+    request: RebuildRequest<'_>,
     finish: impl FnOnce(PreparedRebuild<'source, '_, 'target>) -> Result<(), dae::DaeConstructionError>,
 ) -> Result<(), dae::DaeConstructionError> {
+    let candidate = request.candidate;
     let mut quotients = begin_reconstruction(source, target)?;
     let types = rebuild_types(source, target)?;
     let domains = rebuild_domains(source, target)?;
-    let mut variables = reserve_variables(
-        source,
-        target,
-        &types,
-        candidate.map(|candidate| candidate.state),
-        promoted,
-    )?;
-    super::derivative_aliases::reserve_aliases(
-        source,
-        target,
-        &types,
-        &mut variables,
-        derivative_aliases,
-    )?;
+    let mut variables = request.reserve(source, target, &types)?;
     let conditions = reserve_conditions(source, target)?;
     let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
     let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
-    let auxiliary_functions = super::auxiliary_blocks::create_functions(source, target, facts)?;
+    let auxiliary_functions = if request.formal_orders.is_some() {
+        super::auxiliary_blocks::create_source_functions(source, target)?
+    } else {
+        super::auxiliary_blocks::create_functions(source, target, facts)?
+    };
     let mut rebuilt_state = vec![None; source.expression_count()];
     let base = RebuiltBaseIdentities {
         auxiliary_functions: &auxiliary_functions,

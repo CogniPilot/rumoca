@@ -28,10 +28,11 @@ use rumoca_ir_dae as dae;
 pub use causal_definitions::CausalDefinitions;
 pub use causal_discrete::{CausalDiscreteError, CausalDiscretePlan, DiscreteRealDefinition};
 pub use dae_transform::{
-    InitialValuePin, InitialValueRole, PinTerm, PreparedDae, PreparedStructuralAnalysis,
-    PreparedSystem, ReductionCandidateGroup, ReductionIdentity, ReductionLane, ReductionOutcome,
-    ReductionRecord, ReductionReport, ReductionSnapshot, ReductionStop, UnmatchedKind,
-    UnmatchedName, inspect_prepare_for_solve, prepare_for_solve,
+    FormalDerivativeSystem, FormalDerivativeView, InitialValuePin, InitialValueRole, PinTerm,
+    PreparedDae, PreparedStructuralAnalysis, PreparedSystem, ReductionCandidateGroup,
+    ReductionIdentity, ReductionLane, ReductionOutcome, ReductionRecord, ReductionReport,
+    ReductionSnapshot, ReductionStop, UnmatchedKind, UnmatchedName, construct_formal_derivatives,
+    inspect_prepare_for_solve, prepare_for_solve,
 };
 pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};

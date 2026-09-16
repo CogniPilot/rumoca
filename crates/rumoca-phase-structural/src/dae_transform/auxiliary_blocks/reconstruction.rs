@@ -14,6 +14,7 @@ pub(in crate::dae_transform) struct AuxiliaryExpression<'dae> {
     pub(super) value: dae::ExprId<'dae>,
 }
 
+#[derive(Default)]
 pub(in crate::dae_transform) struct AuxiliaryFunctions<'dae> {
     by_variable: Vec<Option<dae::FunctionId<'dae>>>,
     by_extent: std::collections::BTreeMap<u32, dae::FunctionId<'dae>>,
@@ -45,6 +46,24 @@ pub(in crate::dae_transform) fn create_functions<'target>(
         let function = insert_function(target, &mut functions, block.extent, at)?;
         functions.by_variable[block.variable as usize] = Some(function);
     }
+    insert_source_functions(source, target, &mut functions)?;
+    Ok(functions)
+}
+
+pub(in crate::dae_transform) fn create_source_functions<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+) -> Result<AuxiliaryFunctions<'target>, dae::DaeConstructionError> {
+    let mut functions = AuxiliaryFunctions::default();
+    insert_source_functions(source, target, &mut functions)?;
+    Ok(functions)
+}
+
+fn insert_source_functions<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    functions: &mut AuxiliaryFunctions<'target>,
+) -> Result<(), dae::DaeConstructionError> {
     for index in 0..source.expression_count() {
         let node = source
             .expression(source.expression_id(index).unwrap())
@@ -58,13 +77,13 @@ pub(in crate::dae_transform) fn create_functions<'target>(
         ) {
             insert_function(
                 target,
-                &mut functions,
+                functions,
                 node.value_type().dimensions()[0],
                 node.provenance(),
             )?;
         }
     }
-    Ok(functions)
+    Ok(())
 }
 
 fn insert_function<'target>(

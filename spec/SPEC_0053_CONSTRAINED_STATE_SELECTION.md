@@ -9,8 +9,9 @@ construct their value, derivative, and FMI mappings together.
 
 ## Specification
 
-This proposal extends SPEC_0007 / STRUCT-T07. The source signature analysis in
-§1a is implemented; executable independent state selection remains pending.
+This proposal extends SPEC_0007 / STRUCT-T07. Source signature analysis and
+coupled formal derivative construction are implemented; executable independent
+state selection remains pending.
 It does not change the current acceptance profile. The existing implementation retains
 lower-order constraints in `ContinuousSolveSystem::manifold_residual` and
 `manifold_projection_plan` (`rumoca-ir-solve/src/model.rs`), while
@@ -34,7 +35,12 @@ lower-order constraints in `ContinuousSolveSystem::manifold_residual` and
 `DifferentialStructure` with source coordinates, matching, equation and variable
 orders, and formal dimension. Its implemented contract lives in
 [SPEC_0007 / STRUCT-T07](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
-The remaining construction and runtime obligations below are still proposed.
+`construct_formal_derivatives(&Dae)` returns an inspectable `FormalDerivativeSystem`
+with source-bound value/derivative coordinates and complete differentiated
+equation owners. It retains original initialization and attributes, introduces
+no independent state basis, and is not a prepared numerical DAE. Its contract
+also lives in STRUCT-T07. The remaining state-basis and runtime obligations below
+are still proposed.
 
 ### 2. Value and derivative agreement
 

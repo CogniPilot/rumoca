@@ -147,6 +147,15 @@ sums is the formal dimension, conditional on a regular differentiated Jacobian.
 | Whole-tensor offset refinement may raise orders only while preserving every signature inequality, matched equality, and the original formal dimension. All views of one source declaration and one continuous owner share their respective order. A graph-bounded monotone closure either issues this separately checked analysis product or reports that component-specific orders are required; this is not a singularity verdict or executable-state authority. Source tensors and equations remain unchanged. | tensor differential analysis | Uniform derivative tensors require compatible whole-owner orders without changing the source solution dimension |
 | Preserve differentiability, numerical rank, initialization, and reconstruction as outstanding obligations | state selection | A graph certificate cannot authorize an executable reduced system |
 
+STRUCT-T07 formal construction rows, bound by SPEC_0007's state-selection contract:
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Construct formal derivatives through certified whole-owner orders in one checked DAE reconstruction, retaining complete source tensors and compact equation domains. Keep original value equations and all required differentiated equations; derivative coordinates remain coupled algebraic unknowns. | structural formal construction | Avoid introducing ill-conditioned causal inverses |
+| Replay original variable attributes, initialization obligations, assertions, and semantic owners. Added derivative tensors have unfixed guesses and introduce no fixed initial values. Unsupported derivative orders, operations, or role changes produce typed refusal. | structural formal construction | Differentiation cannot discard source behavior |
+| Reuse the shared tensor differentiation rules with a distinct formal-coordinate map and cache context. Source-solution equality anchors cannot erase formal derivative obligations or replace independent derivative unknowns. | structural differentiation | A constrained value still requires its derivative equation |
+| Return an inspectable, nonserializable construction product binding source and derivative coordinates to their issuing roots. It is not a prepared numerical DAE; regular basis selection, initialization, reconstruction, and FMI mapping remain required before execution. | formal derivative system | Algebraic prolongation alone does not construct an integrator |
+
 STRUCT-T03 reconstruction rows, bound by SPEC_0007’s auxiliary profile:
 
 | Rule | Owner | Why |
