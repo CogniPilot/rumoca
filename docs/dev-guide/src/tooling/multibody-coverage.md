@@ -4,16 +4,60 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Remove repeated refresh-output scans; compilation timeouts remain open
+
+An actual-worker `perf` recording of `RevoluteConstraint` locates repeated
+whole-program output scans in refresh-owner validation. Each row previously
+rescanned preceding programs and materialized the complete output-index vector
+to resolve one canonical output. The checker now builds one borrowed lookup
+per immutable source block, preserving dense local relocation, sparse logical
+indices, program output bounds, tensor output cursors, and every assignment
+certificate check. It adds no serialized metadata or numerical shortcut. This
+is a read-only construction query under SPEC_0029 §3 and SPEC_0036 / SPEC_0043
+§6a; source equations and MLS semantics do not change.
+
+In matched single-worker diagnostics, the output-index routine drops from
+4.15% to 0.01% of Solve CPU samples. Measured lowering decreases from 8.281 to
+8.001 seconds; this is one observation under variable host load, not a timing
+guarantee. Flat, DAE, structural DAE, Solve wire, and complete simulation trace
+are all byte-identical. The exact before/after executable hashes, perf records,
+requests, phase timings, and artifact hashes are retained in
+`initial-geometry-revolute-solve-profile-1`,
+`refresh-source-index-revolute-solve-profile-1`, and
+`refresh-source-index-profile-delta-1.json` below the evidence directory.
+
+All 325 Solve IR tests and 675 core tests pass, as do affected-crate Clippy and
+workspace formatting. New lookup tests exercise a million-element compact
+tensor domain, dense/sparse outputs, multi-output programs, empty blocks,
+out-of-range identities, and output-range overflow. Existing forged-owner and
+wire-replay tests remain unchanged and green.
+
+The same seven-model focused run `refresh-source-index-focused-1` retains
+`HeatLosses` high on 798 channels. Four models time out in Solve, including
+`SphericalConstraint`, which completed the previous focused run. `PointGravity`
+and `RollingWheelSetDriving` retain their numerical/selection failures. The
+optimization therefore does **not** close the compilation-timeout regression.
+The fixed canary `refresh-source-index-canary-1` remains nine compared/high,
+eleven existing failures, no skipped/missing traces, and zero phase/band delta.
+These are focused checks, not a new cohort measurement; the named complete
+run below remains the current cohort evidence. No baseline was promoted.
+
 ## Preserve stated initial geometry when selecting independent states
 
-`HeatLosses` now passes the focused comparison on all **798 shared trajectory
-channels and initial values**, with zero deviation channels. This is focused
-evidence, not a new cohort count. The last complete run,
-`multibody-reference-boundary-full` at
-`eacdb83d900a56576b49ecaf2c46f0a06df617c6`, passes the current gate with 188 raw
-completions, 167 compared/high models, 21 exclusions, no missing traces, and
-21/42 MultiBody high. `SphericalConstraint` completed that run after timing out
-previously; no compiler fix is credited for that timing variation.
+The complete run `multibody-initial-geometry-full` at
+`9708e306d9b8c6e4bb248155f701ea80a7ddd5d8` passes the MSL quality gate with
+188 raw completions, **167/566 compared/high models (29.51%)**, 21 exclusions,
+no missing traces, and **21/42 MultiBody high**. All 22,401 compared channels
+and initial values are high. The tracked worktree was clean at launch; the
+untracked coordination file accounts for the comparator's dirty-worktree flag.
+
+`HeatLosses` gains high parity on all **798 shared trajectory channels and
+initial values**, but `RevoluteConstraint` loses its prior high result to the
+ordinary ten-second Solve compilation budget. These are the only band changes
+from `multibody-reference-boundary-full` at
+`eacdb83d900a56576b49ecaf2c46f0a06df617c6`; the total is unchanged. The phase
+delta also moves `Media.Examples.SolveOneNonlinearEquation.Inverse_sh_TX` from
+Flatten rejection to DAE rejection; it earns no passing credit.
 
 The `HeatLosses` source fixes `body1.r_0` to `{0.3,-0.2,0}`. Its frame-position
 alias has an unfixed zero start; the damper length also has an unfixed zero
@@ -72,7 +116,8 @@ Before/after IR is in `heatlosses-{automatic,initial-geometry}-source-1`;
 retain the analytic reproduction, OMC C, red/green checks, abandoned corrections,
 control binary hashes, requests, and comparator evidence. All paths in this
 section are below `.git/multibody-campaign/rolling-wheel` unless prefixed
-`target/msl`. A complete cohort rerun at the fix commit remains required.
+`target/msl`. `initial-geometry-full-delta-1.json` records the completed cohort
+delta and artifact hashes. No baseline was promoted.
 
 ## SMPM comparison boundary: no passing credit
 

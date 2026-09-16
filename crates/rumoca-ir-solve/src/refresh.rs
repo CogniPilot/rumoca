@@ -8,6 +8,7 @@ mod assignment_shape;
 mod dependency;
 mod materialization;
 mod projection;
+mod source_outputs;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -648,16 +649,22 @@ impl ContinuousRefreshOwners {
         &self,
         implicit_rhs: &ComputeBlock,
     ) -> Result<(), ContinuousRefreshConstructionError> {
+        let outputs = source_outputs::SourceOutputs::new(implicit_rhs)?;
         for (label, plan) in [
             ("algebraic", &self.algebraic),
             ("derivative", &self.derivative),
             ("root", &self.root),
             ("event", &self.event),
         ] {
-            validate_refresh_sources(label, plan, implicit_rhs)?;
+            validate_refresh_sources(label, plan, implicit_rhs, &outputs)?;
         }
         for (clock, plan) in self.clock_events.iter().enumerate() {
-            validate_refresh_sources(&format!("clock event {clock}"), plan, implicit_rhs)?;
+            validate_refresh_sources(
+                &format!("clock event {clock}"),
+                plan,
+                implicit_rhs,
+                &outputs,
+            )?;
         }
         Ok(())
     }
@@ -891,11 +898,10 @@ fn validate_refresh_sources(
     label: &str,
     plan: &RefreshPlan,
     implicit_rhs: &ComputeBlock,
+    outputs: &source_outputs::SourceOutputs<'_>,
 ) -> Result<(), ContinuousRefreshConstructionError> {
     for row in &plan.rows {
-        let Some(equation) =
-            scalar_source_output_index(implicit_rhs, row.source, row.output_offset)?
-        else {
+        let Some(equation) = outputs.get(row.source, row.output_offset) else {
             return refresh_error(format!(
                 "{label} refresh row refers to a missing canonical scalar-program output"
             ));
@@ -939,53 +945,6 @@ fn validate_refresh_assignment_certificate(
         ));
     }
     Ok(())
-}
-
-fn scalar_source_output_index(
-    block: &ComputeBlock,
-    source: RefreshScalarProgramSource,
-    output_offset: usize,
-) -> Result<Option<usize>, ContinuousRefreshConstructionError> {
-    let source_node = usize::try_from(source.node).map_err(|_| refresh_source_overflow("node"))?;
-    let source_program =
-        usize::try_from(source.program).map_err(|_| refresh_source_overflow("program"))?;
-    let mut output_cursor = 0usize;
-    for (node_index, node) in block.nodes.iter().enumerate() {
-        if node_index == source_node {
-            let ComputeNode::ScalarPrograms(programs) = node else {
-                return Ok(None);
-            };
-            let Some(program) = programs.programs().get(source_program) else {
-                return Ok(None);
-            };
-            if output_offset >= crate::ScalarProgramBlock::program_output_count(program) {
-                return Ok(None);
-            }
-            let preceding_outputs = programs
-                .programs()
-                .iter()
-                .take(source_program)
-                .try_fold(0usize, |count, program| {
-                    count.checked_add(crate::ScalarProgramBlock::program_output_count(program))
-                })
-                .ok_or_else(|| refresh_source_overflow("output ordinal"))?;
-            let ordinal = preceding_outputs
-                .checked_add(output_offset)
-                .ok_or_else(|| refresh_source_overflow("output ordinal"))?;
-            let outputs = programs
-                .compute_block_output_indices(
-                    "continuous.refresh_owners",
-                    node_index,
-                    output_cursor,
-                )
-                .map_err(|error| ContinuousRefreshConstructionError {
-                    reason: error.to_string(),
-                })?;
-            return Ok(outputs.get(ordinal).copied());
-        }
-        output_cursor = advance_output_cursor(node, node_index, output_cursor)?;
-    }
-    Ok(None)
 }
 
 fn construct_exact_assignment_program(
