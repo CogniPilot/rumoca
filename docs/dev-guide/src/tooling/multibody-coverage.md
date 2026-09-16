@@ -4,6 +4,47 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Refine algebraic sensitivity solves without weakening certification
+
+`GyroscopicEffects` fails at `t=0.25041127485935627` in a 258-coordinate
+algebraic sensitivity block. The captured matrix and original directional AD
+agree on residual row 1479: -1.0296428887592066e-10 against tolerance 1e-10.
+Although the diagnostic's matched target is `z_a[3]`, this row actually relates
+axial torque to `0.015118914645400883 * z_a[1]`. Zero torque requires zero axial
+acceleration; the single LU solve instead introduces 6.810296326875687e-9 into
+that acceleration direction. The matrix condition number is about 10,110.
+OMC's generated six-variable acceleration solve and its near-zero axial trace
+agree with the source equation. This evidence identifies numerical solve error,
+not a missing source equation or justification to relax tolerances.
+
+The sensitivity projection now applies at most two matrix-residual correction
+sweeps when the original global JVP check fails. Each block reuses its same-point
+matrix/factorization, and downstream right-hand sides see corrected predecessor
+directions. Acceptance still requires a fresh original JVP and scales from the
+corrected direction at the original tolerance (SPEC_0038 numerical projection).
+The correction never fits an inconsistent combined JVP; failure still restores
+all unknown seeds. Already passing directions take the unchanged fast path.
+
+An analytical free-rotor/load regression fails before the change and passes
+afterward, including both direction signs and a downstream dependency. Replay
+of the exact captured original-model point also changes from rejection to
+success. All 504 solver tests and 675 core tests pass, as do affected-crate
+Clippy and workspace formatting. Existing inconsistent-JVP and overflow rollback
+tests remain green. No compiler IR or public API changes.
+
+Tier 1 `gyro-matrix-refinement-msl-focused-1` keeps three compared/high models
+and all 2,633 channels high; `gyro-matrix-refinement-canary-1` keeps nine
+compared/high and eleven existing failures. Both have zero phase/band changes
+and zero skipped/missing traces against the preceding zero-cost-assignment
+runs. `GyroscopicEffects` still fails, now in primal coordinate convergence
+with residual -1.381412e-6 on the row matched to `bodyCylinder3.body.Q[4]`.
+Its current static basis uses position/orientation entries, while OMC uses
+two dynamic three-of-four quaternion state sets. Whether that difference causes
+this remaining failure requires a new captured-point analysis. No model gains
+passing credit from this fix; no new Tier 2 claim or baseline promotion is made.
+`gyro-matrix-refinement-evidence-1.json` binds the capture, replay, OMC artifacts,
+test logs, and Tier 1 deltas below `.git/multibody-campaign/rolling-wheel`.
+
 ## Full sweep recovers three MultiBody models without losing high results
 
 The complete `multibody-zero-cost-assignment-full` run at

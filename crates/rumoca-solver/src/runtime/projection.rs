@@ -469,27 +469,7 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
         }
         row_scales.extend(linearization.row_scales(model, block_index, block, seed));
     }
-    let rows = projection_rows(plan);
-    let residual = implicit_selected_jacobian_v_rows(
-        model,
-        y,
-        args.parameters,
-        args.time,
-        seed,
-        &rows,
-        "algebraic projection sensitivity",
-    )?;
-    if scaled_residual_converged(&residual, &row_scales, args.tolerance) {
-        return Ok(());
-    }
-    Err(projection_error_for_rows(
-        model,
-        "algebraic projection sensitivity did not satisfy the selected residual system",
-        &rows,
-        &residual,
-        &row_scales,
-        args.tolerance,
-    ))
+    seed_linearization::certify_with_refinement(model, plan, y, args, seed, row_scales)
 }
 
 pub(crate) fn project_algebraics_with_plan<M: ImplicitProjectionModel>(

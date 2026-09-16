@@ -6,6 +6,7 @@ mod manifold;
 mod order_robustness;
 mod saturation;
 mod scaled_systems;
+mod sensitivity_roundoff;
 mod sensitivity_scaling;
 mod singular_isolation;
 mod torn_roundoff;
