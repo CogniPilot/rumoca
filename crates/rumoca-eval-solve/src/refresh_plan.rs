@@ -1052,6 +1052,7 @@ fn collect_dependency_closure<A: RefreshProgramAccess + ?Sized>(
     state_count: usize,
 ) -> Result<(IndexSet<usize>, IndexSet<usize>), EvalSolveError> {
     let span = implicit_block.first_span();
+    let exact_rows = issued_exact_assignment_rows(plan);
     let mut stack = initial_deps
         .into_seed_stack(target_to_row.keys().chain(block_by_target.keys()).copied())
         .map_err(|error| compact_dependency_error(error, span))?;
@@ -1068,22 +1069,78 @@ fn collect_dependency_closure<A: RefreshProgramAccess + ?Sized>(
         if index < state_count || !insert_dependency(&mut needed, index, span)? {
             continue;
         }
-        if let Some(block_index) = block_by_target.get(&index).copied() {
-            if insert_projection_block(&mut needed_blocks, block_index, span)? {
-                enqueue_projection_block_dependencies(
-                    plan,
-                    implicit_block,
-                    output_positions,
-                    block_index,
-                    state_count,
-                    &mut stack,
-                )?;
+        let Some(block_index) = block_by_target.get(&index).copied() else {
+            if let Some(source) = target_to_row.get(&index).copied() {
+                enqueue_source_dependencies(implicit_block, source, state_count, &mut stack, span)?;
             }
-        } else if let Some(source) = target_to_row.get(&index).copied() {
-            enqueue_source_dependencies(implicit_block, source, state_count, &mut stack, span)?;
+            continue;
+        };
+        if !insert_projection_block(&mut needed_blocks, block_index, span)? {
+            continue;
+        }
+        if let Some(row) = exact_rows.get(&index) {
+            enqueue_exact_assignment_dependencies(
+                implicit_block,
+                row,
+                state_count,
+                &mut stack,
+                span,
+            )?;
+        } else {
+            enqueue_projection_block_dependencies(
+                plan,
+                implicit_block,
+                output_positions,
+                block_index,
+                state_count,
+                &mut stack,
+            )?;
         }
     }
     Ok((needed, needed_blocks))
+}
+
+fn issued_exact_assignment_rows(plan: &RefreshPlan) -> BTreeMap<usize, &AlgebraicRefreshRow> {
+    plan.value_stages
+        .iter()
+        .filter_map(|stage| match stage {
+            RefreshStage::ExactAssignments {
+                static_rows,
+                dynamic_rows,
+                ..
+            } => Some((static_rows, dynamic_rows)),
+            _ => None,
+        })
+        .flat_map(|(static_rows, dynamic_rows)| {
+            plan.selected_rows(static_rows)
+                .iter()
+                .chain(plan.selected_rows(dynamic_rows).iter())
+        })
+        .map(|row| (row.target_index(), row))
+        .collect()
+}
+
+fn enqueue_exact_assignment_dependencies<A: RefreshProgramAccess + ?Sized>(
+    block: &A,
+    row: &AlgebraicRefreshRow,
+    state_count: usize,
+    stack: &mut Vec<usize>,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    let (Some(program), Some(shape)) = (block.source_program(row.source()), row.assignment_shape())
+    else {
+        return Err(EvalSolveError::InvalidRow {
+            message: "issued exact assignment lacks its source or shape".to_string(),
+            span,
+        });
+    };
+    for dependency in row_y_input_ranges(program).into_iter().flatten() {
+        if dependency >= state_count && assignment_shape_reads_y_index(program, shape, dependency) {
+            reserve_refresh_vec_capacity(stack, 1, "exact assignment dependency stack", span)?;
+            stack.push(dependency);
+        }
+    }
+    Ok(())
 }
 
 fn insert_dependency(

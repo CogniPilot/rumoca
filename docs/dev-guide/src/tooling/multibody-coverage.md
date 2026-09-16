@@ -4,6 +4,64 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint: coupled execution and exact refresh dependencies
+
+A diagnostic source exporter now preserves the formal construction's 23 tensor
+and scalar equation owners and both initial equations, adding the explicit
+two-coordinate basis `q[2], w[2]` used by the earlier handwritten prototype.
+Normal compilation and runtime execution of these automatically differentiated
+equations pass eight value checks and sixteen state JVP checks, including guesses
+with every algebraic coordinate perturbed by 1e-4. The four tested cosine values
+range from 1e-3 to 1e-9. After observation refresh, all 131 formal coordinates
+agree with the analytical values within 8.881784197001252e-16. Both BDF and RK
+produce 101 samples whose 47 source channels agree with the saved OMC trace
+within 2.6423307986078726e-13. Evidence is
+`rolling-wheel/coupled-generated-comparison-3.json` and its retained probes.
+This is a diagnostic with a supplied basis, not automatic state selection or a
+new MSL coverage result. OMC's generated `_04set.c` also retains two states, but
+selects them dynamically from separate angle and rate candidate sets.
+
+The comparison exposed a general refresh-planning defect. An exact assignment
+to one tensor component traversed every read in its shared residual program,
+pulling unrelated sibling equations into the derivative kernel. The minimal
+case `der(x)=a[2]; a={y,-x,0}; y*y*y=x` therefore solved for `y` on every RHS
+request even though the required assignment is just `a[2]=-x`.
+
+`collect_dependency_closure` now follows the same checked assignment shape as
+an exact assignment already admitted by the full plan. Coupled or uncertified
+projection stages retain their existing dependencies. The source tensors,
+equations, algebraic observation plan, and tolerances remain authoritative.
+This implements SPEC_0007 / SOLVE-C56 using the shared dependency query owned by
+SPEC_0029 / SPEC_0041. The focused regression proves the unnecessary solve is
+deferred, state values and AD remain correct, requested observations are solved,
+and genuine value/coefficient/coupled dependencies remain required.
+
+For the generated rotation diagnostic, the derivative plan shrinks from 103 to
+69 projection blocks and omits the 13-variable second-derivative coupled solve.
+The complete observation plan retains all 103 blocks, including that solve.
+The final replay retains the value, JVP, and source-channel accuracy above.
+The earlier dense full-Jacobian condition estimate therefore does not by itself
+predict failure of this structured reconstruction on the tested state directions.
+
+Validation passes: 649 compiler-core tests, 191 evaluator tests, 503 solver
+tests, 243 architecture checks, evaluator/core Clippy, formatting, and whitespace.
+Logs use `rolling-wheel/tensor-refresh-*`; the first focused run reproduces the
+bug. The fixed `target/msl/multibody-tensor-refresh-canary` has no phase or band
+delta from `multibody-formal-construction-canary`: nine compared models remain
+high, all 175 initial-condition channels remain high, and eleven existing
+failures remain visible. Skipped, missing, excluded, and nonidentifiable counts
+are zero. `tensor-refresh-canary-delta-1.json` binds base commit
+`319d0d99e067e8d9f01cca87f6ded40fc52f0fa7` and working-tree digest
+`d009613b065f8b26e7cb97e8552557c38870316fad8deb9baf2d612c87c04b08`.
+
+The fresh normal-budget original-model run in
+`target/msl/multibody-tensor-refresh-revolute` still fails with `EX002` on
+`bodyOfConstraint.body.z_a[3]`: sensitivity residual -1.164153e-10 against the
+unchanged 1e-10 tolerance. It produces no comparable trace, so its gate correctly
+reports parity unmeasured. Automatic independent-state construction and that
+regression remain open. No new Tier 2 cohort result, release quick/full run,
+baseline promotion, push, or PR is claimed.
+
 ## RevoluteConstraint: construct coupled formal derivative equations
 
 `construct_formal_derivatives` now builds an inspectable system from the original

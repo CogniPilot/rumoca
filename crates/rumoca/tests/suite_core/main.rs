@@ -131,6 +131,7 @@ mod sampled_timer_accuracy;
 mod semi_linear_zero_flow;
 mod switched_integral_accuracy;
 mod tensor_affine_moment;
+mod tensor_refresh_dependencies;
 // quadrotor_se23_regression_test.rs lives in `suite_heavy_solve`
 // (required-features = ["heavy-solve-tests"]): until the compact Solve
 // function-fold owner lands, its guards grind through ~139 MB of
