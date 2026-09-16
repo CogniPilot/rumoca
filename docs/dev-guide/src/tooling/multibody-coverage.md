@@ -4,6 +4,50 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint: checked state-coordinate candidates
+
+The formal derivative system now constructs an inspectable state-coordinate
+candidate. Each selected source scalar is bound to its formal derivative
+successor. Construction checks the formal dimension, distinctness, tensor bounds,
+required and forbidden source state preferences, and complete structural matching.
+One unfixed aggregate state and two tensor projection equations represent a
+nonempty selection; zero-dimensional systems add neither states nor initial
+conditions. Original tensors, functions, assertions, attributes, and initialization
+obligations survive the same checked root replay. SPEC_0007 / STRUCT-T07 was
+amended before implementation.
+
+The reduced rotation source accepts both the supplied `q[2], w[2]` basis and a
+`q[2], der(q[2])` proposal, with 133 matched equations. A source-artifact probe
+also constructs the original RevoluteConstraint's four-coordinate proposal:
+`joint.phi`, `joint.w`, `freeMotionScalarInit.initAngle.angle[2]`, and
+`bodyOfConstraint.body.w_a[2]`. All 2,648 equations match; all 36 source functions
+and four fixed source declarations remain. The original source is unchanged.
+Names select coordinates only in this diagnostic, not in production code.
+Evidence is `rolling-wheel/state-candidate-source-1.jsonl` and its retained probe.
+
+This product cannot be passed to numerical execution. Structural matching does
+not establish a regular basis, and automatic selection, initialization admission,
+basis changes, and FMI mapping remain pending. The original RevoluteConstraint
+simulation failure is still open; the earlier normal-budget replay below remains
+the latest execution evidence. This construction adds no MSL coverage result.
+
+Validation passes: eight new focused tests, all 657 compiler-core tests, 217
+structural tests, 243 architecture checks, six specification gates, structural
+and core Clippy, and workspace formatting. Tests check the actual matrix value
+and derivative projection expressions, source preservation, invalid selections,
+hard state preferences, and a structurally singular angle-only proposal. Logs
+use `rolling-wheel/state-candidate-*`.
+
+The fixed `target/msl/multibody-state-candidate-canary` has no phase or band delta
+from `multibody-tensor-refresh-canary`: nine compared models and all 175 initial
+condition channels remain high; eleven existing failures remain visible.
+Skipped, missing, excluded, and nonidentifiable counts are zero. The receipt
+`state-candidate-canary-delta-1.json` binds base commit
+`80ed1fdd42b1a074f1e50b2258d4be2f068a8476` and working-tree digest
+`51af999509e577769190a88ee744234a3366c97f990593d09437d08543b96ca1`.
+Release quick/full and a new Tier 2 sweep were not run while independent-state
+execution remains unfinished. No promotion, push, or PR is claimed.
+
 ## RevoluteConstraint: coupled execution and exact refresh dependencies
 
 A diagnostic source exporter now preserves the formal construction's 23 tensor

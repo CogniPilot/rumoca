@@ -11,6 +11,8 @@
 
 mod formal;
 pub(super) use formal::rebuild_formal;
+mod state_candidates;
+pub(super) use state_candidates::rebuild_state_candidate;
 
 use rumoca_ir_dae as dae;
 
@@ -365,6 +367,7 @@ struct RebuildRequest<'a> {
     promoted: &'a [u32],
     derivative_aliases: &'a [u32],
     formal_orders: Option<&'a [u32]>,
+    source_functions_only: bool,
 }
 
 impl RebuildRequest<'_> {
@@ -423,7 +426,7 @@ fn prepare_rebuild<'source, 'target>(
     let conditions = reserve_conditions(source, target)?;
     let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
     let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
-    let auxiliary_functions = if request.formal_orders.is_some() {
+    let auxiliary_functions = if request.formal_orders.is_some() || request.source_functions_only {
         super::auxiliary_blocks::create_source_functions(source, target)?
     } else {
         super::auxiliary_blocks::create_functions(source, target, facts)?

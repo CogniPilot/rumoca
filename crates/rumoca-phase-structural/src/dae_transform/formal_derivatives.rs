@@ -7,6 +7,10 @@ use rumoca_ir_dae as dae;
 use super::variables::ReservedVariable;
 use crate::{StructuralError, analyze_differential_structure};
 
+mod state_candidates;
+pub(super) use state_candidates::SelectedCoordinate;
+pub use state_candidates::{FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate};
+
 /// An inspectable prolongation of one source DAE, not an executable state basis.
 pub struct FormalDerivativeSystem<'source> {
     source: &'source dae::Dae,

@@ -10,7 +10,7 @@ construct their value, derivative, and FMI mappings together.
 ## Specification
 
 This proposal extends SPEC_0007 / STRUCT-T07. Source signature analysis and
-coupled formal derivative construction are implemented; executable independent
+coupled formal derivatives and candidate coordinate maps are implemented; executable independent
 state selection remains pending.
 It does not change the current acceptance profile. The existing implementation retains
 lower-order constraints in `ContinuousSolveSystem::manifold_residual` and
@@ -39,8 +39,13 @@ orders, and formal dimension. Its implemented contract lives in
 with source-bound value/derivative coordinates and complete differentiated
 equation owners. It retains original initialization and attributes, introduces
 no independent state basis, and is not a prepared numerical DAE. Its contract
-also lives in STRUCT-T07. The remaining state-basis and runtime obligations below
-are still proposed.
+also lives in STRUCT-T07. Its `construct_state_candidate` method accepts source-branded
+coordinate proposals and returns an inspectable `FormalStateCandidate`, preserving
+source owners and appending aggregate value/derivative maps. It checks formal
+dimension, distinctness, bounds, required/forbidden source states, and complete
+structural matching. It does not issue a numerical regularity certificate or an
+executable state basis. The remaining basis-selection and runtime obligations
+below are still proposed.
 
 ### 2. Value and derivative agreement
 

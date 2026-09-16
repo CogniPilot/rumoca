@@ -284,8 +284,8 @@ replayable proof receipts, and mutable partition callbacks are prohibited.
 [SPEC_0040 §3](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
 Other transformations require amendments.
 
-State selection certifies signatures, tensor-uniform offsets, and coupled formal
-derivative construction (STRUCT-T07); execution requires a regular independent basis.
+State selection certifies signatures, tensor-uniform offsets, formal derivatives,
+and candidate coordinate maps (STRUCT-T07); execution requires a regular independent basis.
 
 STRUCT-T03 preserves shared expression identity. Reuse requires identical
 source, call substitutions, derivative order, reconstruction mode, and provenance;

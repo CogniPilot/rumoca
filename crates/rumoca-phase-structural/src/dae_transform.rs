@@ -60,7 +60,8 @@ use crate::{
 };
 
 pub use self::formal_derivatives::{
-    FormalDerivativeSystem, FormalDerivativeView, construct_formal_derivatives,
+    FormalDerivativeSystem, FormalDerivativeView, FormalStateCandidate, FormalStateCandidateView,
+    FormalStateCoordinate, construct_formal_derivatives,
 };
 pub use self::initial_pins::{InitialValuePin, InitialValueRole, PinTerm};
 pub use self::observation::{

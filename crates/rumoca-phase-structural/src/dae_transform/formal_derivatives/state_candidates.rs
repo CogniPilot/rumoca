@@ -1,0 +1,213 @@
+//! Checked coordinate proposals; numerical basis admission remains separate.
+
+use super::*;
+use rumoca_core::StateSelect;
+
+/// A selected scalar view and its successor from one formal derivative root.
+#[derive(Clone, Copy)]
+pub struct FormalStateCoordinate<'formal> {
+    value: dae::VariableId<'formal>,
+    successor: dae::VariableId<'formal>,
+    scalar: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::dae_transform) struct SelectedCoordinate {
+    pub value: u32,
+    pub successor: u32,
+    pub scalar: u32,
+}
+
+/// A structurally checked proposal, without permission to execute a state basis.
+pub struct FormalStateCandidate<'system, 'source> {
+    formal: &'system FormalDerivativeSystem<'source>,
+    model: dae::Dae,
+    variables: Vec<u32>,
+    state: Option<u32>,
+    selection: Vec<SelectedCoordinate>,
+}
+
+pub struct FormalStateCandidateView<'map, 'source, 'formal, 'target> {
+    pub formal: FormalDerivativeView<'map, 'source, 'formal>,
+    pub view: dae::DaeView<'target>,
+    variables: &'map [u32],
+    state: Option<u32>,
+    selection: &'map [SelectedCoordinate],
+}
+
+impl<'source, 'formal> FormalDerivativeView<'_, 'source, 'formal> {
+    /// Select a source scalar at a formal order with an existing successor.
+    pub fn state_coordinate(
+        &self,
+        variable: dae::VariableId<'source>,
+        order: usize,
+        scalar: u32,
+    ) -> Result<FormalStateCoordinate<'formal>, StructuralError> {
+        let source = self
+            .source
+            .variable(variable)
+            .expect("branded source coordinate");
+        if source.value_type().is_record()
+            || source.value_type().scalar_type() != dae::ScalarType::Real
+            || scalar as usize >= source.scalar_count()
+        {
+            return Err(candidate_error(
+                "state coordinate requires an in-bounds Real tensor scalar",
+            ));
+        }
+        if order == 0 && source.state_select() == StateSelect::Never {
+            return Err(candidate_error(
+                "state coordinate conflicts with StateSelect.never",
+            ));
+        }
+        let next = order
+            .checked_add(1)
+            .ok_or_else(|| candidate_error("state derivative order overflows"))?;
+        let (Some(value), Some(successor)) = (
+            self.coordinate(variable, order),
+            self.coordinate(variable, next),
+        ) else {
+            return Err(candidate_error(
+                "state coordinate has no formal derivative successor",
+            ));
+        };
+        Ok(FormalStateCoordinate {
+            value,
+            successor,
+            scalar,
+        })
+    }
+}
+
+impl<'source> FormalDerivativeSystem<'source> {
+    pub fn construct_state_candidate(
+        &self,
+        select: impl for<'s, 'f> FnOnce(
+            FormalDerivativeView<'_, 's, 'f>,
+        )
+            -> Result<Vec<FormalStateCoordinate<'f>>, StructuralError>,
+    ) -> Result<FormalStateCandidate<'_, 'source>, StructuralError> {
+        let selection = self.inspect(|view| {
+            let chosen = select(FormalDerivativeView {
+                source: view.source,
+                view: view.view,
+                coordinates: view.coordinates,
+                dimension: view.dimension,
+            })?;
+            check_selection(&view, &chosen)?;
+            Ok(chosen
+                .into_iter()
+                .map(|coordinate| SelectedCoordinate {
+                    value: coordinate.value.index(),
+                    successor: coordinate.successor.index(),
+                    scalar: coordinate.scalar,
+                })
+                .collect::<Vec<_>>())
+        })?;
+        let (model, variables, state) =
+            super::super::reconstruction::rebuild_state_candidate(&self.model, &selection)?;
+        model.inspect(|view| crate::sort(view).map(|_| ()))?;
+        Ok(FormalStateCandidate {
+            formal: self,
+            model,
+            variables,
+            state,
+            selection,
+        })
+    }
+}
+
+fn check_selection<'formal>(
+    view: &FormalDerivativeView<'_, '_, 'formal>,
+    chosen: &[FormalStateCoordinate<'formal>],
+) -> Result<(), StructuralError> {
+    if chosen.len() != view.formal_dimension() {
+        return Err(candidate_error(
+            "state coordinate count differs from the formal dimension",
+        ));
+    }
+    let mut selected = BTreeSet::new();
+    for coordinate in chosen {
+        if !selected.insert((coordinate.value.index(), coordinate.scalar)) {
+            return Err(candidate_error(
+                "state coordinate selection repeats a scalar",
+            ));
+        }
+    }
+    for (id, source) in view.source.variables() {
+        if source.state_select() != StateSelect::Always
+            || source.variability() != dae::ExpressionVariability::Continuous
+            || !matches!(
+                source.role(),
+                dae::VariableRole::State | dae::VariableRole::Algebraic | dae::VariableRole::Output
+            )
+        {
+            continue;
+        }
+        let value = view.coordinate(id, 0).expect("source value is retained");
+        if (0..source.scalar_count())
+            .any(|scalar| !selected.contains(&(value.index(), scalar as u32)))
+        {
+            return Err(candidate_error(
+                "state coordinate selection omits StateSelect.always",
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl FormalStateCandidate<'_, '_> {
+    pub fn inspect<R>(
+        &self,
+        inspect: impl for<'s, 'f, 't> FnOnce(FormalStateCandidateView<'_, 's, 'f, 't>) -> R,
+    ) -> R {
+        self.formal.inspect(|formal| {
+            self.model.inspect(|view| {
+                inspect(FormalStateCandidateView {
+                    formal,
+                    view,
+                    variables: &self.variables,
+                    state: self.state,
+                    selection: &self.selection,
+                })
+            })
+        })
+    }
+}
+
+impl<'source, 'target> FormalStateCandidateView<'_, 'source, '_, 'target> {
+    pub fn coordinate(
+        &self,
+        source: dae::VariableId<'source>,
+        order: usize,
+    ) -> Option<dae::VariableId<'target>> {
+        let formal = self.formal.coordinate(source, order)?;
+        self.view
+            .variable_id(self.variables[formal.index() as usize] as usize)
+    }
+
+    pub fn state(&self) -> Option<dae::VariableId<'target>> {
+        self.state.and_then(|id| self.view.variable_id(id as usize))
+    }
+
+    /// Value, successor, and row-major scalar offset for one integration slot.
+    pub fn projection(
+        &self,
+        slot: usize,
+    ) -> Option<(dae::VariableId<'target>, dae::VariableId<'target>, u32)> {
+        let selected = self.selection.get(slot)?;
+        Some((
+            self.view
+                .variable_id(self.variables[selected.value as usize] as usize)?,
+            self.view
+                .variable_id(self.variables[selected.successor as usize] as usize)?,
+            selected.scalar,
+        ))
+    }
+}
+
+fn candidate_error(reason: &str) -> StructuralError {
+    StructuralError::UnspannedContractViolation {
+        reason: reason.into(),
+    }
+}
