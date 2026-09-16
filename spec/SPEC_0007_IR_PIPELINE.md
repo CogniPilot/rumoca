@@ -284,8 +284,8 @@ replayable proof receipts, and mutable partition callbacks are prohibited.
 [SPEC_0040 §3](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
 Other transformations require amendments.
 
-State selection derives source-bound differential signatures and checked assignment
-offsets (STRUCT-T07); formal dimension remains conditional on numerical regularity.
+State selection certifies differential signatures and offsets, including tensor-uniform
+refinements (STRUCT-T07); formal dimension requires numerical regularity.
 
 STRUCT-T03 preserves shared expression identity. Reuse requires identical
 source, call substitutions, derivative order, reconstruction mode, and provenance;

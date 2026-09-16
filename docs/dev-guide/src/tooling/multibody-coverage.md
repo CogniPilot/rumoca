@@ -4,6 +4,55 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint: differential orders for complete source tensors
+
+The source differential analysis now checks whether its scalar derivative orders
+can be raised to one order per complete variable declaration and continuous
+equation owner. The bounded closure preserves every signature inequality,
+matched equality, and formal dimension; an independent certificate checks the
+result. Canonical tensors and source equations remain unchanged. An incompatible
+uniform refinement returns no tensor result while retaining the valid scalar
+analysis, rather than declaring the source singular. The governing contract is
+SPEC_0007 / STRUCT-T07.
+
+The production analysis replay yields these planned differentiated-system counts:
+
+| Input | Formal value coordinates / equations | Formal dimension |
+|---|---:|---:|
+| Original `RateCancellation.mo` | 131 / 129 | 2 |
+| Original RevoluteConstraint DAE | 2644 / 2640 | 4 |
+| Existing transformed RevoluteConstraint differential DAE | 2219 / 2211 | 8 |
+
+These are counts implied by certified orders, not equations emitted or executed
+by a new compiler transformation. The first two dimensions agree with OMC's
+state inventories. Numerical regularity, coupled construction, initialization,
+and independent-state selection remain outstanding; the original
+RevoluteConstraint regression is still open. The transformed input's separate
+retained manifold remains as described below. Evidence is
+`rolling-wheel/tensor-offsets-source-2.jsonl`, its retained probe and driver,
+and the independent diagnostic `tensor-offsets-uniform-1.json`.
+
+All 641 compiler-core tests and 217 structural tests pass, including exhaustive
+two-by-two signature/owner-partition comparison against an enumeration oracle.
+The final 11 differential-analysis tests pass after the oracle cleanup. Controls
+cover empty owners, incompatible component orders, unchanged source tensors,
+invalid partitions, and checked overflow. The 243 architecture checks, six spec
+gates, structural all-target/all-feature Clippy, compiler-core Clippy, and
+workspace formatting pass. Logs use `rolling-wheel/tensor-offsets-*`.
+
+The fixed `target/msl/multibody-tensor-offsets-canary` has no phase, simulation,
+or band changes from `multibody-init-algebraic-canary`: all nine compared models
+remain high, all 175 initial-condition channels are high, and there are no
+skipped, missing, excluded, or nonidentifiable traces. Eleven existing failures
+remain visible. The receipt `rolling-wheel/tensor-offsets-canary-delta-1.json`
+binds HEAD `50382b187a4827c371932f9d4e32341eaed9ce2f` and working-tree digest
+`db1d2d5c9cda34f6d6d49408c6a8d54919f7d454321945cdc46ebe05522297db`.
+
+This analysis is not yet used by the numerical kernel and adds no cohort pass.
+Release quick/full and a new Tier 2 sweep were not run at this checkpoint:
+automatic coupled-state construction is unfinished. No baseline promotion,
+push, or PR is recorded here.
+
 ## RevoluteConstraint prototype: preserve source initialization through algebraics
 
 The manually constructed two-state coupled rotation equations passed all eight

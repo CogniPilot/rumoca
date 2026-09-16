@@ -6,6 +6,8 @@
 
 mod assignment;
 mod offsets;
+mod tensor_offsets;
+pub use tensor_offsets::TensorDifferentialOffsets;
 #[cfg(test)]
 mod tests;
 
@@ -57,6 +59,16 @@ pub struct DifferentialStructure<'dae> {
 }
 
 impl<'dae> DifferentialStructure<'dae> {
+    /// Refine offsets to one order per complete source tensor and equation owner.
+    /// `None` means those uniformity constraints need component-specific orders;
+    /// it does not mean the original source system is singular.
+    pub fn tensor_offsets(
+        &self,
+        view: dae::DaeView<'dae>,
+    ) -> Result<Option<TensorDifferentialOffsets<'_, 'dae>>, StructuralError> {
+        tensor_offsets::analyze(self, view)
+    }
+
     /// Source coordinates in canonical variable order, then tensor scalar order.
     pub fn variables(&self) -> &[DifferentialCoordinate<'dae>] {
         &self.variables

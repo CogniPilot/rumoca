@@ -219,3 +219,66 @@ fn incomplete_matching_remains_a_typed_structural_failure() {
         });
     }
 }
+
+#[test]
+fn rotation_offsets_extend_to_whole_tensors_without_changing_formal_dimension() {
+    let dae = compile(
+        include_str!("../fixtures/index_reduction/RateCancellation.mo"),
+        "RateCancellation",
+    );
+    let before = serde_json::to_vec(dae.as_ref()).unwrap();
+    dae.inspect(|view| {
+        let source = analyze_differential_structure(view).unwrap();
+        let refined = source
+            .tensor_offsets(view)
+            .unwrap()
+            .expect("rotation has a whole-tensor derivative representation");
+        assert!(std::ptr::eq(refined.source(), &source));
+        assert_eq!(refined.source().formal_dimension(), 2);
+        assert_eq!(
+            refined
+                .variable_orders()
+                .iter()
+                .map(|v| *v as usize + 1)
+                .sum::<usize>(),
+            131
+        );
+        assert_eq!(
+            refined
+                .equation_orders()
+                .iter()
+                .map(|v| *v as usize + 1)
+                .sum::<usize>(),
+            129
+        );
+        for (coordinate, &order) in source.variables().iter().zip(refined.variable_orders()) {
+            let name = view
+                .variable(coordinate.variable())
+                .unwrap()
+                .name()
+                .as_str();
+            let expected = match name {
+                "q" | "Rx" | "Ry" | "Rz" | "R" => 2,
+                "w" | "rate" => 1,
+                "ax" | "az" => 0,
+                _ => panic!("unexpected source variable {name}"),
+            };
+            assert_eq!(order, expected, "{name}[{}]", coordinate.scalar());
+        }
+    });
+    assert_eq!(serde_json::to_vec(dae.as_ref()).unwrap(), before);
+}
+
+#[test]
+fn a_tensor_with_incompatible_component_orders_keeps_its_scalar_analysis() {
+    let dae = compile(
+        "model MixedOrders Real x[2]; equation {der(x[1]),x[2]}={x[2],0}; end MixedOrders;",
+        "MixedOrders",
+    );
+    dae.inspect(|view| {
+        let source = analyze_differential_structure(view).unwrap();
+        assert_eq!(source.formal_dimension(), 1);
+        assert!(source.tensor_offsets(view).unwrap().is_none());
+        assert_eq!(source.variable_orders(), [1, 0]);
+    });
+}
