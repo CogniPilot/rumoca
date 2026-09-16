@@ -39,8 +39,30 @@ and `RollingWheelSetDriving` retain their numerical/selection failures. The
 optimization therefore does **not** close the compilation-timeout regression.
 The fixed canary `refresh-source-index-canary-1` remains nine compared/high,
 eleven existing failures, no skipped/missing traces, and zero phase/band delta.
-These are focused checks, not a new cohort measurement; the named complete
-run below remains the current cohort evidence. No baseline was promoted.
+The subsequent complete run `multibody-refresh-source-index-full` at
+`955d33e905b1bc9e699936b3f648f0b2810131f4` passes the current quality gate:
+**166/566 high (29.33%), 166 compared, 21 exclusions, no missing traces**, 187
+raw completions, and **20/42 MultiBody high**. All 21,484 compared channels
+and initial values are high. `SphericalConstraint`'s Solve timeout is the only
+band loss against `multibody-initial-geometry-full`; its failure remains open.
+`DC_CompareCharacteristics` changes from structural rejection to timeout, and
+`Inverse_sh_TX` returns to Flatten rejection; neither was previously high.
+`refresh-source-index-full-delta-1.json` retains the per-model comparison.
+No baseline was promoted, and this MSL run is not a combined `verify full`.
+
+The public-API diagnostic `revolute-structural-cost-1` separates the next cost.
+Ordinary preparation takes 3.946 seconds, traverses a 16-round direct pass plus
+holonomic reduction, and returns eight state scalars and four manifold roots.
+Source formal construction takes 0.622 seconds and proves formal dimension
+four. Complete lowering takes 7.773 seconds and produces four state scalars.
+`state_selection::prepare` discards the ordinary prepared system and constructs
+that final candidate from the original source. These are diagnostic timings,
+not coverage evidence. Avoiding the discarded work requires a source-bound
+applicability decision that preserves initialization, state preferences,
+structural matching, and numerical checks; bypassing those obligations is not
+an optimization. The diagnostic source, executable, and log are retained below
+the evidence directory. `refresh-source-index-evidence-1.json` binds the checks,
+profiles, diagnostics, full-run artifacts, and worker hashes.
 
 ## Preserve stated initial geometry when selecting independent states
 
