@@ -7,7 +7,10 @@ use rumoca_ir_dae as dae;
 use super::variables::ReservedVariable;
 use crate::{StructuralError, analyze_differential_structure};
 
+mod stages;
 mod state_candidates;
+pub(super) use stages::EquationProlongation;
+pub use stages::{FormalDerivativeStage, FormalStageCoordinate, FormalStageEquation};
 pub(super) use state_candidates::SelectedCoordinate;
 pub use state_candidates::{FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate};
 
@@ -16,14 +19,17 @@ pub struct FormalDerivativeSystem<'source> {
     source: &'source dae::Dae,
     model: dae::Dae,
     coordinates: Vec<Vec<u32>>,
+    equations: Vec<EquationProlongation>,
     dimension: usize,
 }
 
 /// Both source and constructed coordinate identities stay bound to their roots.
+#[derive(Clone, Copy)]
 pub struct FormalDerivativeView<'map, 'source, 'target> {
     pub source: dae::DaeView<'source>,
     pub view: dae::DaeView<'target>,
     coordinates: &'map [Vec<u32>],
+    equations: &'map [EquationProlongation],
     dimension: usize,
 }
 
@@ -38,6 +44,7 @@ impl FormalDerivativeSystem<'_> {
                     source,
                     view,
                     coordinates: &self.coordinates,
+                    equations: &self.equations,
                     dimension: self.dimension,
                 })
             })
@@ -80,7 +87,7 @@ pub fn construct_formal_derivatives(
         for (coordinate, &order) in analysis.variables().iter().zip(offsets.variable_orders()) {
             orders[coordinate.variable().index() as usize] = order;
         }
-        let (rebuilt, coordinates) = super::reconstruction::rebuild_formal(
+        let (rebuilt, coordinates, equations) = super::reconstruction::rebuild_formal(
             model,
             source,
             &orders,
@@ -90,6 +97,7 @@ pub fn construct_formal_derivatives(
             source: model,
             model: rebuilt,
             coordinates,
+            equations,
             dimension: analysis.formal_dimension(),
         })
     })

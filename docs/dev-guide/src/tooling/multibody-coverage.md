@@ -4,6 +4,59 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## RevoluteConstraint: derivative stages for numerical state selection
+
+`FormalDerivativeView::stages` now exposes source-bound equation and coordinate
+owners grouped by derivative order minus certified tensor offset. Construction
+retains a compact equation-owner map alongside the existing tensor-coordinate
+map. These borrowed views partition the formal system, retain domains and
+provenance, and expose structural freedoms without adding scalar owners or
+authorizing numerical execution. The contract is SPEC_0007 / STRUCT-T07.
+
+The production views give these equation/coordinate counts, from lowest to
+highest derivative stage:
+
+| Source | Stage -2 | Stage -1 | Stage 0 | Total freedom |
+|---|---:|---:|---:|---:|
+| Reduced rotation | 38 / 39 | 44 / 45 | 47 / 47 | 2 |
+| Original RevoluteConstraint | 176 / 177 | 256 / 259 | 2208 / 2208 | 4 |
+
+A numerical diagnostic consumes the actual issued reduced stages and eliminates
+noncandidate columns before pivoted QR selects among original source states.
+It automatically chooses `q[2], w[2]` at five tested points from cosine 1 down
+to 1e-9. At the saved failure's cosine, the stage condition estimates are at
+most 1.75e6, whereas the earlier complete reconstruction matrix was around
+1e17. This explains why its dense condition estimate alone is an unsuitable
+admission test. At angle -pi/2, a negative control detects rank loss in every
+stage and admits no basis. These are local numerical diagnostics, not runtime
+state selection or new trace results. Evidence: `rolling-wheel/staged-basis-2.json`
+and `staged-rank-boundary-1.json`.
+
+A fresh OMC replay of the original model covers 502 rows over 0–10 seconds.
+Its selection matrices retain `freeMotionScalarInit.derd[2].u` and
+`freeMotionScalarInit.angle_d_2` throughout, alongside the two fixed joint states.
+Rumoca constructs that corresponding angle/angle-derivative proposal with all
+2,648 equations matched, all 36 source functions, and all four fixed declarations
+preserved. Evidence: `omc-revolute-state-selection-1.{log,json}` and
+`formal-stages-omc-basis-1.jsonl`. Numerical admission, initialization, runtime,
+and FMI mapping are still required; the original Rumoca regression remains open.
+
+All 662 compiler-core tests, 217 structural tests, 243 architecture checks,
+six specification gates, structural/core Clippy, and formatting pass. The five
+new tests check exact partition coverage, source ownership, no later-stage
+dependencies, loop and matrix domains, empty tensors, explicit time and function
+dependencies, and unconstrained or zero-dimensional systems.
+
+The fixed `target/msl/multibody-formal-stages-canary` has no phase or band delta
+from `multibody-state-candidate-canary`: nine compared models and all 175 initial
+condition channels remain high; eleven existing failures remain visible.
+Skipped, missing, excluded, and nonidentifiable counts are zero. The receipt
+`formal-stages-canary-delta-1.json` binds base commit
+`69410b809acd65126e1ef7382e869d8ee1a8c2c0` and working-tree digest
+`ee2c4169e3f27c3b5ef6998ef902c0a68916c5ad15ee82031445bfeba1aba831`.
+No new cohort coverage is claimed. Release quick/full and Tier 2 were not rerun
+while execution remains unfinished; there is no promotion, push, or PR.
+
 ## RevoluteConstraint: checked state-coordinate candidates
 
 The formal derivative system now constructs an inspectable state-coordinate

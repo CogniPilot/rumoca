@@ -1,8 +1,9 @@
 //! Reuse the root replay for coupled formal derivatives of original equations.
 
+use super::super::formal_derivatives::EquationProlongation;
 use super::*;
 
-type RebuiltFormal = (dae::Dae, Vec<Vec<u32>>);
+type RebuiltFormal = (dae::Dae, Vec<Vec<u32>>, Vec<EquationProlongation>);
 
 pub(in crate::dae_transform) fn rebuild_formal(
     model: &dae::Dae,
@@ -12,6 +13,7 @@ pub(in crate::dae_transform) fn rebuild_formal(
 ) -> Result<RebuiltFormal, StructuralError> {
     let facts = DifferentiationFacts::collect(source);
     let mut coordinates = Vec::new();
+    let mut equations = Vec::new();
     let rebuilt = dae::Dae::construct(model.source_map().clone(), |target| {
         prepare_rebuild(
             source,
@@ -52,12 +54,14 @@ pub(in crate::dae_transform) fn rebuild_formal(
                     None,
                     quotients,
                 )?;
-                append_derivatives(context, target, variables, rebuilt_state, equation_orders)
+                equations =
+                    append_derivatives(context, target, variables, rebuilt_state, equation_orders)?;
+                Ok(())
             },
         )
     })
     .map_err(construction_failure)?;
-    Ok((rebuilt, coordinates))
+    Ok((rebuilt, coordinates, equations))
 }
 
 fn append_derivatives<'source, 'target>(
@@ -66,9 +70,11 @@ fn append_derivatives<'source, 'target>(
     variables: &[ReservedVariable<'target>],
     rebuilt_state: &mut [Option<dae::ExprId<'target>>],
     equation_orders: &[u32],
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<Vec<EquationProlongation>, dae::DaeConstructionError> {
     let mut row = 0;
-    for owner in context.source.continuous_owners() {
+    let mut next = context.source.continuous_owner_count();
+    let mut equations = Vec::with_capacity(next);
+    for (original, owner) in context.source.continuous_owners().enumerate() {
         let start = row;
         crate::incidence::projection::visit_owner_rows(context.source, owner, |_| {
             row += 1;
@@ -101,8 +107,20 @@ fn append_derivatives<'source, 'target>(
                 level as u8,
             )?;
         }
+        let end = next.checked_add(order as usize).ok_or(
+            dae::DaeConstructionError::IncompleteDefinition {
+                kind: "formal equation owner count overflow",
+                index: order,
+                span: owner_provenance(owner).span(),
+            },
+        )?;
+        equations.push(EquationProlongation {
+            original,
+            derivatives: next..end,
+        });
+        next = end;
     }
-    Ok(())
+    Ok(equations)
 }
 
 fn owner_provenance(owner: dae::ContinuousOwnerView<'_>) -> dae::DaeProvenance {

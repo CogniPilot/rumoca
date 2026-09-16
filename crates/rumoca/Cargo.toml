@@ -177,6 +177,7 @@ name = "suite_galec_fmu"
 path = "tests/suite_galec_fmu/main.rs"
 
 [dev-dependencies]
+rumoca-eval-dae = { workspace = true }
 crossterm = { workspace = true }
 tungstenite = { workspace = true }
 mimalloc = { workspace = true }

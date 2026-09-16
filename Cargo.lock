@@ -4221,6 +4221,7 @@ dependencies = [
  "quick-xml",
  "rumoca-compile",
  "rumoca-core",
+ "rumoca-eval-dae",
  "rumoca-eval-galec",
  "rumoca-eval-solve",
  "rumoca-exec-cranelift",

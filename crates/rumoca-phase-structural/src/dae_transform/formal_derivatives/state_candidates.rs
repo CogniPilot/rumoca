@@ -88,12 +88,7 @@ impl<'source> FormalDerivativeSystem<'source> {
             -> Result<Vec<FormalStateCoordinate<'f>>, StructuralError>,
     ) -> Result<FormalStateCandidate<'_, 'source>, StructuralError> {
         let selection = self.inspect(|view| {
-            let chosen = select(FormalDerivativeView {
-                source: view.source,
-                view: view.view,
-                coordinates: view.coordinates,
-                dimension: view.dimension,
-            })?;
+            let chosen = select(view)?;
             check_selection(&view, &chosen)?;
             Ok(chosen
                 .into_iter()

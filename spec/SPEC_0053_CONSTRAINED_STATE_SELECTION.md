@@ -47,6 +47,12 @@ structural matching. It does not issue a numerical regularity certificate or an
 executable state basis. The remaining basis-selection and runtime obligations
 below are still proposed.
 
+`FormalDerivativeView::stages` now exposes complete source-bound equation and
+coordinate owners at each derivative order minus certified tensor offset.
+These borrowed stages partition the formal system and retain compact tensor
+domains. Their dimensions are structural freedoms, not numerical rank results;
+numerical selection must still certify the relevant stage Jacobians.
+
 ### 2. Value and derivative agreement
 
 Here `z` denotes independent coordinates and `d` dependent coordinates. A local
