@@ -4,6 +4,134 @@ This is the working evidence ledger for `multibody-library-coverage`, based on
 main commit `97eb3ab74b3e11264ab2000437eb47df1a57214d`. Work is in progress;
 complete MultiBody support has not been established.
 
+## Automatic independent-state selection reaches the original trace
+
+The ordinary DAE-to-Solve entry now constructs a source-bound independent
+state candidate when reduction retains more constrained coordinates than the
+source differential dimension. Selection uses the shared tensor residual
+lowerer and directional AD, bounded minimum-norm trial corrections, and a
+numerically full-rank dependent complement. `always` coordinates remain
+independent and `never` coordinates remain dependent; source preferences order
+the remaining choices. Trial points never become initial equations, runtime
+seeds, or OMC-derived overrides. Original initialization and runtime numerical
+checks remain mandatory. SPEC_0007 / STRUCT-T07 owns the transformation;
+SPEC_0029 assigns numerical matrix operations to `rumoca-eval-solve`.
+
+The original RevoluteConstraint DAE completes through this automatic path,
+without a supplied coordinate set or OMC values. The native comparator checks
+918 shared trajectory channels and 918 initial values, all high, with zero
+minor, deviating, or severe channels. Maximum channel bounded normalized L1
+error is 2.74724e-5. The uninstrumented probe takes 16.7448 seconds for build,
+simulation, and trace serialization together; its 501 samples cover 0–10
+seconds with unchanged 1e-6 tolerances and a 12-second solver budget.
+Evidence is `original-automatic-{simulation,comparison}-2` and its source,
+driver, and trace under `.git/multibody-campaign/rolling-wheel/`.
+
+That total is not a 14-second simulation-watchdog measurement. The normal
+worker gives Solve, backend preparation, initialization, and Sim separate phase
+budgets. An earlier progress update conflated these; the ordinary-worker result
+below is the authoritative phase-budget evidence. The `perf` diagnostic of the
+same executable completes in 16.6391 seconds. Leading self costs include
+structural dependency projection (5.42%), block output-index construction
+(3.50%), and assignment-queue operations (3.28%). Profiling records are in
+`original-automatic-perf-2`; these percentages alone do not locate a timeout.
+
+Connecting the automatic path exposed general defects, reproduced in existing
+small core fixtures and repaired at their owners:
+
+- Causal-definition admission required identical types, so `Real normal[3] =
+  {0,0,1}` was not seeded. Writing Real literals alone made the contact fixture
+  pass, isolating the first divergence. The unchanged Integer-literal fixture
+  now passes using the shared assignment-compatibility query and typed
+  Integer-to-Real coercion, as required by MLS §10.6.13 / ARR-009.
+- Blanket preservation of every `start` attribute retained inherited zeros for
+  algebraic observations, leaving `atan2` AD at the undefined origin. A
+  `DefaultStart` provenance hypothesis also failed because inherited defaults
+  may carry source provenance. The final trial policy retains state, fixed,
+  `always`/`prefer`, and explicit override guesses, and evaluates required
+  acyclic definitions for the other algebraics. Original constraints still
+  determine actual initialization.
+- Candidate aggregate states lost nonzero source starts. They now project
+  original start expressions, including parameter dependencies, scalar
+  broadcasts, and matrix component order, with `fixed=false`. Formal derivative
+  tensors retain their unfixed zero guesses (MLS §8.6).
+- Required algebraic states had no formal successor when only an alias was
+  differentiated. Tensor-offset refinement now supplies that successor while
+  independently preserving every signature inequality, matching equality,
+  and differential dimension (MLS §4.8.7.1).
+- Reconstruction copied a model-level `LinearSolve` outside its aggregate
+  function owner. Replay now uses the existing shared pure-function owner;
+  function-scoped solves retain their typed operation. Existing non-singular
+  contact tests pass, while the singular auxiliary fixture still refuses.
+- Fixed algebraic initialization rows previously claimed every unknown.
+  Planning now follows each exact matched definition and start-expression
+  dependency and prioritizes lower-degree rows. Complete residual and numerical
+  rank checks remain required; structural degree is not a regularity proof.
+
+The bilinear tensor fixture requested fifteen `always` coordinates in a
+three-dimensional system. Its original source remains an explicit rejection
+test; legal positive variants require the three independent coordinates and
+prefer the dependent tensor observations. OMC accepts the original but selects
+only three matrix elements, recorded in `automatic-always-omc-1`, rather than
+retaining all fifteen requirements. That acceptance does not satisfy MLS
+§4.8.7.1. [OpenModelica ticket 3689](https://trac.openmodelica.org/OpenModelica/ticket/3689) also records ignored `always` requirements
+as a compiler defect. No failing model is removed from the corpus.
+
+The first ordinary-worker run, `multibody-automatic-basis-revolute`, also passes
+the trace comparator: 918 high trajectory and initial channels, no skips,
+missing traces, exclusions, or nonidentifiable traces. Solve takes 8.4704 s,
+backend preparation 3.3352 s, initialization 0.0552 s, and simulation 1.0752 s.
+The fixed twenty-model `multibody-automatic-basis-canary` preserves all prior
+phase and agreement bands: nine compared high, 175 high initial channels,
+eleven existing failures, and zero skipped/missing/excluded/nonidentifiable
+traces. Its receipt binds worktree digest
+`46ba7f678c8bb55da0b1ee169e81dad920c3e9ac270e4c940c7735e1e61752fb`.
+
+Inspecting the successful worker's state metadata exposed an additional
+handoff defect: the four-coordinate candidate reached the runtime with six
+states. Its consuming preparation reran source state promotion, adding
+`joint.phi` and `joint.w` alongside the aggregate that already represented
+them. A one-state `always` fixture reproduces the same unwanted reconstruction.
+The candidate now retains its constructor-issued structural analysis and moves
+the exact checked root into preparation, transferring original initial-value
+obligations without repeating state selection. The regression proves unchanged
+declarations, one state, retained fixed-value pins, and structural ownership.
+All 674 core tests pass after this fix. The next worker receipt measures its
+four-state execution; the earlier six-state result is retained as evidence,
+not silently relabeled.
+
+Architecture checks also exposed new runtime assertions and an unchanged
+dependency pin. Formal stage coordinates now carry their checked declaration
+views into Solve; fixed-value incidence matches typed identities directly.
+Numeric trial data and typed-program construction propagate explicit failures
+instead of panicking on unavailable inputs. The totality-debt ceiling is
+unchanged. The exact dependency inventory adds the specified external
+`nalgebra` numerical library and still forbids every upward Rumoca dependency.
+
+Final ordinary-worker evidence is `target/msl/multibody-automatic-basis-revolute-2`:
+the trace records exactly four runtime states, and the comparator again checks
+918 trajectory channels and 918 initial values, all high. Maximum channel
+bounded normalized L1 is 6.07710e-6. Solve takes 8.2368 s, backend preparation
+3.3438 s, initialization 0.0559 s, and simulation 1.0344 s. Every phase fits
+its unchanged budget. The state-name-set comparator is unmeasured for this
+aggregate representation; the four-state count comes directly from the trace,
+not from that comparator's zero-count summary.
+
+`multibody-automatic-basis-canary-2` again preserves every phase and band from
+the same twenty targets: nine high comparisons, 175 high initial channels,
+eleven existing failures, zero skipped/missing/excluded/nonidentifiable traces.
+The delta binds worktree digest
+`2737630234c0e37186a8bf343130bb4e90a5838f019be0e2617777c16cd38490`.
+Validation passes 674 core tests; 194 evaluator, 190 DAE, 144 Solve, 217
+structural, and 109 GALEC library tests; 243 architecture tests; six spec gates;
+affected-library and core Clippy; formatting and whitespace checks. Evidence
+is bound by `rolling-wheel/automatic-basis-evidence-1.json`.
+
+This restores the original model in focused validation; it is not a new
+full-cohort coverage claim. The next named-commit Tier 2 sweep must preserve
+all previously high models before breadth resumes. Release quick/full,
+baseline promotion, push, and a PR remain pending.
+
 ## RevoluteConstraint: original equations and a supplied independent basis
 
 The original formal system now has numerical evidence against OMC, beyond the

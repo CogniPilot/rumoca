@@ -1,4 +1,4 @@
-//! Checked coordinate proposals; numerical basis admission remains separate.
+//! Checked coordinate transformations; numerical regularity remains an execution obligation.
 
 use super::*;
 use rumoca_core::StateSelect;
@@ -18,13 +18,14 @@ pub(in crate::dae_transform) struct SelectedCoordinate {
     pub scalar: u32,
 }
 
-/// A structurally checked proposal, without permission to execute a state basis.
+/// A checked coordinate transformation retaining the complete source equations.
 pub struct FormalStateCandidate<'system, 'source> {
     formal: &'system FormalDerivativeSystem<'source>,
     model: dae::Dae,
     variables: Vec<u32>,
     state: Option<u32>,
     selection: Vec<SelectedCoordinate>,
+    structural: super::super::PreparedStructuralAnalysis,
 }
 
 pub struct FormalStateCandidateView<'map, 'source, 'formal, 'target> {
@@ -101,13 +102,14 @@ impl<'source> FormalDerivativeSystem<'source> {
         })?;
         let (model, variables, state) =
             super::super::reconstruction::rebuild_state_candidate(&self.model, &selection)?;
-        model.inspect(|view| crate::sort(view).map(|_| ()))?;
+        let structural = super::super::structural_analysis(&model)?;
         Ok(FormalStateCandidate {
             formal: self,
             model,
             variables,
             state,
             selection,
+            structural,
         })
     }
 }
@@ -152,6 +154,13 @@ fn check_selection<'formal>(
 }
 
 impl FormalStateCandidate<'_, '_> {
+    /// Prepare the exact coordinate transformation. Like every `PreparedDae`,
+    /// this establishes structural ownership; runtime initialization and
+    /// numerical reconstruction must still establish regularity before use.
+    pub fn into_prepared(self) -> Result<super::super::PreparedDae<'static>, StructuralError> {
+        super::super::transformed(self.model, Vec::new(), self.structural)
+    }
+
     pub fn inspect<R>(
         &self,
         inspect: impl for<'s, 'f, 't> FnOnce(FormalStateCandidateView<'_, 's, 'f, 't>) -> R,

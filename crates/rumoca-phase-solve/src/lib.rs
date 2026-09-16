@@ -11,6 +11,7 @@ mod layout;
 mod lower;
 mod model_values;
 mod model_wire;
+mod state_selection;
 
 pub mod ad;
 pub mod diagnostic_codes;
@@ -53,12 +54,13 @@ pub struct LoweredSolvePackage {
 
 /// Lower one immutable checked DAE and retain its model-level call owners.
 pub fn lower_solve_package(dae: &dae::Dae) -> Result<LoweredSolvePackage, LowerError> {
-    let prepared = rumoca_phase_structural::prepare_for_solve(dae).map_err(|error| {
-        LowerError::Structural {
-            reason: error.to_string(),
-            span: error.source_span(),
-        }
-    })?;
+    let prepared =
+        state_selection::prepare(dae, &std::collections::HashMap::new()).map_err(|error| {
+            LowerError::Structural {
+                reason: error.to_string(),
+                span: error.source_span(),
+            }
+        })?;
     lower_prepared_solve_package(&prepared, &std::collections::HashMap::new())
 }
 

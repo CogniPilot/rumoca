@@ -88,17 +88,22 @@ pub(super) fn lower_transferred_initial_values<'dae>(
                 span,
             ));
         };
-        let incidence = match coordinate.role() {
-            dae::VariableRole::State => InitialRowIncidence::StateValue {
+        let incidence = match coordinate.identity() {
+            dae::VariableIdentity::State(_) => InitialRowIncidence::StateValue {
                 index,
                 terms: terms
                     .iter()
                     .map(|(expression, scalar, _)| (*expression, *scalar))
                     .collect(),
             },
-            dae::VariableRole::Algebraic | dae::VariableRole::Output => {
-                InitialRowIncidence::ImplicitAlgebraic
-            }
+            dae::VariableIdentity::Algebraic(variable) => InitialRowIncidence::AlgebraicValue {
+                variable,
+                scalar: pin.scalar as usize,
+                terms: terms
+                    .iter()
+                    .map(|(expression, scalar, _)| (*expression, *scalar))
+                    .collect(),
+            },
             _ => {
                 return Err(LowerError::contract(
                     "a retained continuous initial value targets a non-continuous coordinate",
@@ -197,16 +202,24 @@ fn lower_unrepresented_fixed_continuous_reals<'dae>(
             let program = compiler.slot_start_residual_program(slot, start, span)?;
             let output = lowered.checks.len();
             lowered.checks.push(program, span, output);
-            lowered
-                .check_incidence
-                .push(if variable.role() == dae::VariableRole::State {
-                    InitialRowIncidence::StateValue {
-                        index,
-                        terms: start.into_iter().collect(),
-                    }
-                } else {
-                    InitialRowIncidence::ImplicitAlgebraic
-                });
+            let incidence = match variable.identity() {
+                dae::VariableIdentity::State(_) => InitialRowIncidence::StateValue {
+                    index,
+                    terms: start.into_iter().collect(),
+                },
+                dae::VariableIdentity::Algebraic(variable) => InitialRowIncidence::AlgebraicValue {
+                    variable,
+                    scalar,
+                    terms: start.into_iter().collect(),
+                },
+                _ => {
+                    return Err(LowerError::contract(
+                        "fixed continuous value has no continuous identity",
+                        span,
+                    ));
+                }
+            };
+            lowered.check_incidence.push(incidence);
         }
     }
     Ok(())

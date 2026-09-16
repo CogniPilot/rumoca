@@ -19,6 +19,126 @@ fn named<'d>(view: dae::DaeView<'d>, name: &str) -> dae::VariableId<'d> {
 }
 
 #[test]
+fn constrained_rotation_lowering_selects_only_independent_states() {
+    let source = compile(
+        include_str!("../fixtures/index_reduction/RateCancellation.mo"),
+        "RateCancellation",
+    );
+    let lowered =
+        rumoca_phase_solve::lower_solve_model(&source, &std::collections::HashMap::new(), |_| {})
+            .unwrap();
+    assert_eq!(lowered.model().state_scalar_count(), 2);
+    source.inspect(|view| {
+        for (_, variable) in view.variables() {
+            for scalar in 0..variable.scalar_count() {
+                assert!(
+                    lowered
+                        .model()
+                        .visible_names
+                        .contains(&variable.scalar_name(scalar).unwrap())
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn candidate_start_projects_authored_tensor_guesses_without_fixing_them() {
+    for (attribute, expected) in [
+        ("start={{1,2},{3,p}}", [7.0, 1.0, 3.0, 2.0]),
+        ("each start=p", [7.0; 4]),
+    ] {
+        let source = compile(
+            &format!(
+                "model Matrix parameter Real p=7; Real x[2,2]({attribute},each fixed=false); equation der(x)=-x; end Matrix;"
+            ),
+            "Matrix",
+        );
+        let formal = construct_formal_derivatives(&source).unwrap();
+        let candidate = formal
+            .construct_state_candidate(|view| {
+                let x = named(view.source, "x");
+                [3, 0, 2, 1]
+                    .into_iter()
+                    .map(|scalar| view.state_coordinate(x, 0, scalar))
+                    .collect()
+            })
+            .unwrap();
+        candidate.inspect(|system| {
+            let state = system.view.variable(system.state().unwrap()).unwrap();
+            assert_eq!(state.fixed(), Some(false));
+            let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(system.view);
+            assert_eq!(evaluator.initial_value(state.id()).unwrap(), expected);
+            assert_eq!(
+                system.view.initialization_owner_count(),
+                system.formal.view.initialization_owner_count()
+            );
+        });
+    }
+}
+
+#[test]
+fn required_algebraic_state_has_a_formal_derivative_successor() {
+    let source = compile(
+        "model Requested Real x(stateSelect=StateSelect.always); Real q(stateSelect=StateSelect.avoid); equation x=q; der(q)=-q; end Requested;",
+        "Requested",
+    );
+    let formal = construct_formal_derivatives(&source).unwrap();
+    formal
+        .construct_state_candidate(|view| {
+            assert_eq!(view.formal_dimension(), 1);
+            Ok(vec![view.state_coordinate(
+                named(view.source, "x"),
+                0,
+                0,
+            )?])
+        })
+        .unwrap();
+}
+
+#[test]
+fn preparing_a_candidate_does_not_repeat_required_state_promotion() {
+    let source = compile(
+        "model Required Real x(start=1,fixed=true,stateSelect=StateSelect.always); equation der(x)=-x; end Required;",
+        "Required",
+    );
+    let formal = construct_formal_derivatives(&source).unwrap();
+    let candidate = formal
+        .construct_state_candidate(|view| {
+            Ok(vec![view.state_coordinate(
+                named(view.source, "x"),
+                0,
+                0,
+            )?])
+        })
+        .unwrap();
+    let candidate_variables = candidate.inspect(|system| system.view.variables().count());
+    let prepared = candidate.into_prepared().unwrap();
+    prepared.inspect(|system| {
+        assert_eq!(system.view.variables().count(), candidate_variables);
+        assert_eq!(
+            system
+                .view
+                .variables()
+                .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
+                .map(|(_, variable)| variable.scalar_count())
+                .sum::<usize>(),
+            1,
+        );
+        assert_eq!(
+            system
+                .view
+                .variable(named(system.view, "x"))
+                .unwrap()
+                .role(),
+            dae::VariableRole::Algebraic,
+        );
+        assert!(system.structural.is_some());
+        assert!(!system.pins.is_empty());
+    });
+}
+
+#[test]
 fn rotation_candidate_preserves_source_owners_and_binds_formal_successors() {
     let source = compile(
         include_str!("../fixtures/index_reduction/RateCancellation.mo"),

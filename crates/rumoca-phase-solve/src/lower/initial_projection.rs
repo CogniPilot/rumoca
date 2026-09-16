@@ -173,22 +173,6 @@ pub(super) fn initialization_unknown_space<'a, 'dae>(
     })
 }
 
-impl<'dae> InitializationUnknownSpace<'_, 'dae> {
-    fn all_projection_unknowns(&self) -> BTreeSet<InitialUnknown> {
-        self.ownership
-            .all_projection_unknown_slots()
-            .map(InitialUnknown::Parameter)
-            .chain(
-                self.states
-                    .values()
-                    .copied()
-                    .filter(|index| !self.given_state_indices.contains(index))
-                    .map(InitialUnknown::State),
-            )
-            .collect()
-    }
-}
-
 /// Exact state coordinates of the simultaneous initialization system.
 fn state_initial_slots(
     view: dae::DaeView<'_>,
@@ -226,12 +210,13 @@ pub(super) enum InitialRowIncidence<'dae> {
         index: usize,
         terms: Vec<(dae::ExprId<'dae>, usize)>,
     },
-    /// A fixed algebraic/output checked after solving the simultaneous
-    /// continuous algebraic system. Its exact total incidence is implicit in
-    /// that solve, so it conservatively joins every initialization unknown;
-    /// zero numerical sensitivity can make the block fail, never certify a
-    /// wrong value.
-    ImplicitAlgebraic,
+    /// A fixed algebraic/output follows its matched continuous definition and
+    /// its start expression, just like an authored initial residual.
+    AlgebraicValue {
+        variable: dae::AlgebraicId<'dae>,
+        scalar: usize,
+        terms: Vec<(dae::ExprId<'dae>, usize)>,
+    },
 }
 
 pub(super) struct InitialProjection {
@@ -261,11 +246,9 @@ pub(super) struct InitialProjection {
 /// silently shipping the parameter's guess as its value.
 ///
 /// The matching is structural, so it is rank-blind: it takes the first augmenting
-/// assignment, which can pick a block whose Jacobian is numerically singular while
-/// a different assignment of the same rows would not be. The runtime reports that
-/// as a failed solve rather than a wrong answer, and a minimum-degree ordering
-/// would choose better; until then the risk is accepted and named here rather than
-/// left implied.
+/// assignment after preferring rows with fewer unknowns. A chosen block can still
+/// have a numerically singular Jacobian while another assignment would not.
+/// Runtime numerical checks remain required; structural degree is not a rank proof.
 pub(super) fn plan_initialization_projection<'dae>(
     space: &InitializationUnknownSpace<'_, 'dae>,
     rows: &[InitialRowIncidence<'dae>],
@@ -425,7 +408,8 @@ fn row_unknowns<'dae>(
 ) -> RowIncidence {
     let pending = match row {
         InitialRowIncidence::Residual(residual) => vec![residual.clone()],
-        InitialRowIncidence::StateValue { terms, .. } => terms
+        InitialRowIncidence::StateValue { terms, .. }
+        | InitialRowIncidence::AlgebraicValue { terms, .. } => terms
             .iter()
             .map(|(expression, scalar)| ScalarRowSource {
                 expression: *expression,
@@ -433,12 +417,6 @@ fn row_unknowns<'dae>(
                 domain_point: None,
             })
             .collect(),
-        InitialRowIncidence::ImplicitAlgebraic => {
-            return RowIncidence::Owned {
-                unknowns: space.all_projection_unknowns(),
-                algebraic_reads: true,
-            };
-        }
     };
     let mut incidence = InitialIncidence {
         unknowns: match row {
@@ -455,6 +433,12 @@ fn row_unknowns<'dae>(
         algebraics: BTreeSet::new(),
         pending,
     };
+    if let InitialRowIncidence::AlgebraicValue {
+        variable, scalar, ..
+    } = row
+    {
+        incidence.visit_algebraic(space, *variable, *scalar);
+    }
     // One coordinate the projection cannot own already disqualifies the row, but
     // *which* one decides what the runtime is told, and the algebraic reading is
     // the one worth reporting (see the module header). So the walk keeps going
@@ -691,6 +675,9 @@ fn match_component(component: &ProjectionComponent) -> Option<Vec<(usize, Initia
                 adjacency[*unknown].push(row);
             }
         }
+    }
+    for rows in &mut adjacency {
+        rows.sort_by_key(|&row| (component.row_unknowns[row].len(), component.rows[row]));
     }
     let mut matching = RowUnknownMatching {
         row_of_unknown: vec![None; unknown_count],

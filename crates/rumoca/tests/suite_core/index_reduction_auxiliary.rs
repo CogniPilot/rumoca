@@ -199,7 +199,7 @@ fn a_nonlinear_tensor_block_remains_outside_the_affine_proof() {
 }
 
 #[test]
-fn a_singular_auxiliary_matrix_fails_at_the_checked_execution_boundary() {
+fn a_singular_auxiliary_matrix_is_rejected_before_integration() {
     let source = SOURCE.replace("q*{1.0,-1.0} = 3*theta;", "q*{1.0,1.0} = 3*theta;");
     let compiled = Compiler::new()
         .model("ImplicitTensorAuxiliary")
@@ -219,7 +219,7 @@ fn a_singular_auxiliary_matrix_fails_at_the_checked_execution_boundary() {
         assert!(
             error
                 .to_string()
-                .contains("tensor linear solve is singular or non-finite"),
+                .contains("stage -2 has a singular dependent Jacobian"),
             "{error}"
         );
     }

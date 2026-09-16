@@ -4454,6 +4454,7 @@ name = "rumoca-eval-solve"
 version = "0.10.0"
 dependencies = [
  "indexmap 2.14.0",
+ "nalgebra",
  "rumoca-core",
  "rumoca-ir-solve",
  "serde_json",

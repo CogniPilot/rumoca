@@ -37,7 +37,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         self.solve_derivative_rhs(function, matrix_value, remainder, provenance)
     }
 
-    pub(super) fn linear_solve_function(
+    pub(in crate::dae_transform) fn linear_solve_function(
         &self,
         arguments: dae::ExpressionOperands<'source>,
     ) -> dae::FunctionId<'target> {

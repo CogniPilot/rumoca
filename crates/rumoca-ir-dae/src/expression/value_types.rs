@@ -112,6 +112,14 @@ impl ValueType {
         &self.dimensions
     }
 
+    /// MLS §10.6.13 permits shape-preserving Integer-to-Real assignment.
+    pub fn accepts_value_type(&self, source: &Self) -> bool {
+        self == source
+            || (self.dimensions() == source.dimensions()
+                && self.scalar_type() == ScalarType::Real
+                && source.scalar_type() == ScalarType::Integer)
+    }
+
     pub fn is_scalar(&self) -> bool {
         self.scalar != ScalarType::Record && self.dimensions.is_empty()
     }

@@ -94,15 +94,6 @@ impl<'dae> InitializationParameterOwnership<'dae> {
         self.projection_unknowns.get(&parameter).map(Vec::as_slice)
     }
 
-    /// Every parameter scalar the initialization projection owns. The order is
-    /// irrelevant to incidence construction; the caller collects into a
-    /// deterministic set before issuing a plan.
-    pub(super) fn all_projection_unknown_slots(&self) -> impl Iterator<Item = usize> + '_ {
-        self.projection_unknowns
-            .values()
-            .flat_map(|indices| indices.iter().copied())
-    }
-
     /// The binding an initialization residual must recompute for a parameter,
     /// when a binding is its owner and it reads a projection unknown.
     pub(super) fn substitution(&self, parameter: u32) -> Option<dae::ExprId<'dae>> {

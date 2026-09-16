@@ -12,6 +12,7 @@ indexmap = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 tracing = { workspace = true }
+nalgebra = "0.34"
 
 [dev-dependencies]
 serde_json = { workspace = true }

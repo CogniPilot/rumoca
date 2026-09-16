@@ -28,8 +28,8 @@ pub struct FormalDerivativeStage<'map, 'source, 'formal> {
 /// A complete source declaration and its corresponding formal derivative tensor.
 #[derive(Clone, Copy)]
 pub struct FormalStageCoordinate<'source, 'formal> {
-    source: dae::VariableId<'source>,
-    value: dae::VariableId<'formal>,
+    source: dae::VariableView<'source>,
+    value: dae::VariableView<'formal>,
     order: usize,
 }
 
@@ -83,11 +83,16 @@ impl<'source, 'formal> FormalDerivativeStage<'_, 'source, 'formal> {
                 let coordinates = &self.system.coordinates[id.index() as usize];
                 let order = (coordinates.len() - 1).checked_sub(self.distance)?;
                 Some(FormalStageCoordinate {
-                    source: id,
+                    source: variable,
                     value: self
                         .system
-                        .coordinate(id, order)
-                        .expect("formal coordinate"),
+                        .view
+                        .variable(
+                            self.system
+                                .coordinate(id, order)
+                                .expect("formal coordinate"),
+                        )
+                        .expect("formal coordinate declaration"),
                     order,
                 })
             })
@@ -114,13 +119,7 @@ impl<'source, 'formal> FormalDerivativeStage<'_, 'source, 'formal> {
 
     pub fn scalar_coordinate_count(self) -> usize {
         self.coordinates()
-            .map(|coordinate| {
-                self.system
-                    .view
-                    .variable(coordinate.value)
-                    .expect("formal coordinate declaration")
-                    .scalar_count()
-            })
+            .map(|coordinate| coordinate.value.scalar_count())
             .sum()
     }
 
@@ -145,10 +144,18 @@ impl<'source, 'formal> FormalDerivativeStage<'_, 'source, 'formal> {
 
 impl<'source, 'formal> FormalStageCoordinate<'source, 'formal> {
     pub fn source(self) -> dae::VariableId<'source> {
-        self.source
+        self.source.id()
     }
 
     pub fn value(self) -> dae::VariableId<'formal> {
+        self.value.id()
+    }
+
+    pub fn source_variable(self) -> dae::VariableView<'source> {
+        self.source
+    }
+
+    pub fn value_variable(self) -> dae::VariableView<'formal> {
         self.value
     }
 

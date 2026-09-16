@@ -28,6 +28,7 @@ use rumoca_ir_solve::{
 };
 
 mod compute_block_scalarize;
+pub mod dense_basis;
 pub mod linear_solve;
 pub mod nan_trace;
 mod ops;

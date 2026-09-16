@@ -181,11 +181,7 @@ impl Storage {
     ) -> Result<(), DaeConstructionError> {
         let expected = self.value_type_at(expected, at)?;
         let found = self.value_type_at(found, at)?;
-        if expected == found
-            || (expected.dimensions() == found.dimensions()
-                && expected.scalar_type() == ScalarType::Real
-                && found.scalar_type() == ScalarType::Integer)
-        {
+        if expected.accepts_value_type(found) {
             return Ok(());
         }
         Err(DaeConstructionError::ShapeMismatch { span: at.span() })

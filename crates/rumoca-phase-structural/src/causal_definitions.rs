@@ -479,7 +479,10 @@ fn compatible_definition<'dae>(
 ) -> Option<(dae::AlgebraicId<'dae>, dae::ExprId<'dae>)> {
     let variable = view.variable(dae::VariableId::from(target))?;
     let expression = view.expression(value)?;
-    (variable.value_type() == expression.value_type()).then_some((target, value))
+    variable
+        .value_type()
+        .accepts_value_type(expression.value_type())
+        .then_some((target, value))
 }
 
 fn whole_algebraic<'dae>(

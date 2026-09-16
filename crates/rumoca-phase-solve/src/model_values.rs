@@ -144,7 +144,7 @@ pub fn lower_solve_model<'source>(
 ) -> Result<LoweredSolveModel<'source>, SolveModelLoweringError> {
     begin_stage(SolveModelLoweringStage::Programs);
     let program_start = rumoca_core::maybe_start_timer();
-    let prepared = rumoca_phase_structural::prepare_for_solve(model).map_err(|error| {
+    let prepared = crate::state_selection::prepare(model, overrides).map_err(|error| {
         LowerError::Structural {
             reason: error.to_string(),
             span: error.source_span(),

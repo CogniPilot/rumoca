@@ -18,6 +18,7 @@ pub struct FormalDerivativePrograms<'map, 'source, 'formal> {
     formal: FormalDerivativeView<'map, 'source, 'formal>,
     table: solve::SolvePureCallTable,
     stages: Vec<FormalStageProgram<'map, 'source, 'formal>>,
+    guesses: Vec<FormalCausalGuess<'formal>>,
 }
 
 pub struct FormalStageProgram<'map, 'source, 'formal> {
@@ -30,10 +31,19 @@ pub struct FormalStageProgram<'map, 'source, 'formal> {
 /// outputs at each domain point. Assertion predicates follow all result outputs.
 pub struct FormalResidualProgram<'source, 'formal> {
     equation: FormalStageEquation<'source, 'formal>,
-    site: solve::SolvePureCallSite,
-    inputs: Vec<dae::CoordinateView<'formal>>,
-    residual_outputs: usize,
-    assertions: Vec<FormalResidualAssertion<'formal>>,
+    program: FormalExpressionProgram<'formal>,
+}
+
+pub(crate) struct FormalCausalGuess<'formal> {
+    pub(crate) target: dae::AlgebraicId<'formal>,
+    pub(crate) program: FormalExpressionProgram<'formal>,
+}
+
+pub(crate) struct FormalExpressionProgram<'formal> {
+    pub(crate) site: solve::SolvePureCallSite,
+    pub(crate) inputs: Vec<dae::CoordinateView<'formal>>,
+    pub(crate) value_outputs: usize,
+    pub(crate) assertions: Vec<FormalResidualAssertion<'formal>>,
 }
 
 pub struct FormalResidualAssertion<'formal> {
@@ -51,6 +61,9 @@ impl<'map, 'source, 'formal> FormalDerivativePrograms<'map, 'source, 'formal> {
     pub fn stages(&self) -> &[FormalStageProgram<'map, 'source, 'formal>] {
         &self.stages
     }
+    pub(crate) fn guesses(&self) -> &[FormalCausalGuess<'formal>] {
+        &self.guesses
+    }
 }
 
 impl<'map, 'source, 'formal> FormalStageProgram<'map, 'source, 'formal> {
@@ -67,16 +80,16 @@ impl<'source, 'formal> FormalResidualProgram<'source, 'formal> {
         self.equation
     }
     pub fn site(&self) -> &solve::SolvePureCallSite {
-        &self.site
+        &self.program.site
     }
     pub fn inputs(&self) -> &[dae::CoordinateView<'formal>] {
-        &self.inputs
+        &self.program.inputs
     }
     pub fn residual_outputs(&self) -> usize {
-        self.residual_outputs
+        self.program.value_outputs
     }
     pub fn assertions(&self) -> &[FormalResidualAssertion<'formal>] {
-        &self.assertions
+        &self.program.assertions
     }
 }
 
@@ -95,9 +108,25 @@ pub fn lower_formal_derivative_stages<'map, 'source, 'formal>(
     formal: FormalDerivativeView<'map, 'source, 'formal>,
 ) -> Result<FormalDerivativePrograms<'map, 'source, 'formal>, solve::SolveProgramConstructionError>
 {
+    lower_stages(formal, true)
+}
+
+pub(crate) fn lower_state_selection_stages<'map, 'source, 'formal>(
+    formal: FormalDerivativeView<'map, 'source, 'formal>,
+) -> Result<FormalDerivativePrograms<'map, 'source, 'formal>, solve::SolveProgramConstructionError>
+{
+    lower_stages(formal, false)
+}
+
+fn lower_stages<'map, 'source, 'formal>(
+    formal: FormalDerivativeView<'map, 'source, 'formal>,
+    include_highest: bool,
+) -> Result<FormalDerivativePrograms<'map, 'source, 'formal>, solve::SolveProgramConstructionError>
+{
     let mut registry = PureCallRegistry::new();
     let stages = formal
         .stages()
+        .filter(|stage| include_highest || stage.level() < 0)
         .map(|stage| {
             let equations = stage
                 .equations()
@@ -106,16 +135,86 @@ pub fn lower_formal_derivative_stages<'map, 'source, 'formal>(
             Ok(FormalStageProgram { stage, equations })
         })
         .collect::<Result<Vec<_>, solve::SolveProgramConstructionError>>()?;
+    let guesses = if include_highest {
+        Vec::new()
+    } else {
+        lower_guesses(formal.view, &stages, &mut registry)?
+    };
     Ok(FormalDerivativePrograms {
         formal,
         table: registry.finish(),
         stages,
+        guesses,
     })
 }
 
 struct ResidualBodyDomain<'formal> {
     id: dae::DomainId<'formal>,
     domain: StructuredIndexDomain,
+}
+
+#[derive(Clone, Copy)]
+struct FormalExpressionBody<'formal> {
+    value: dae::ExprId<'formal>,
+    value_type: dae::ValueTypeId<'formal>,
+}
+
+fn lower_guesses<'formal>(
+    view: dae::DaeView<'formal>,
+    stages: &[FormalStageProgram<'_, '_, 'formal>],
+    registry: &mut PureCallRegistry<'formal>,
+) -> Result<Vec<FormalCausalGuess<'formal>>, solve::SolveProgramConstructionError> {
+    let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+    let mut needed = std::collections::BTreeSet::new();
+    for equation in stages.iter().flat_map(|stage| stage.equations()) {
+        for &coordinate in equation.inputs() {
+            if let dae::CoordinateView::Algebraic(variable) = coordinate {
+                needed.insert(variable.index());
+            }
+        }
+    }
+    for &target in definitions.order().iter().rev() {
+        if !needed.contains(&target.index()) {
+            continue;
+        }
+        let expression = definitions
+            .definition(target)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+        let at = view
+            .expression(expression)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+            .provenance()
+            .span();
+        for (coordinate, _) in collect_model_coordinate_types(view, [expression], [], at)? {
+            if let dae::CoordinateView::Algebraic(variable) = coordinate.coordinate() {
+                needed.insert(variable.index());
+            }
+        }
+    }
+    definitions
+        .order()
+        .iter()
+        .filter(|target| needed.contains(&target.index()))
+        .map(|&target| {
+            let expression = definitions
+                .definition(target)
+                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+            let at = view
+                .expression(expression)
+                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+                .provenance()
+                .span();
+            let body = FormalExpressionBody {
+                value: expression,
+                value_type: view
+                    .variable(target.into())
+                    .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+                    .value_type_id(),
+            };
+            let program = registry.formal_expressions(view, vec![body], None, at)?;
+            Ok(FormalCausalGuess { target, program })
+        })
+        .collect()
 }
 
 fn owner_bodies<'formal>(
@@ -165,13 +264,13 @@ fn owner_bodies<'formal>(
 
 fn residual_output_type<'formal>(
     view: dae::DaeView<'formal>,
-    body: dae::ExprId<'formal>,
+    body: FormalExpressionBody<'formal>,
     domain: Option<&ResidualBodyDomain<'formal>>,
 ) -> Result<solve::SolveValueType, solve::SolveProgramConstructionError> {
     let node = view
-        .expression(body)
+        .expression(body.value)
         .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-    let value_type = lower_primitive_type(view, node.value_type_id(), arithmetic_profile())?;
+    let value_type = lower_primitive_type(view, body.value_type, arithmetic_profile())?;
     let Some(domain) = domain else {
         return Ok(value_type);
     };
@@ -208,9 +307,33 @@ impl<'formal> PureCallRegistry<'formal> {
         equation: FormalStageEquation<'source, 'formal>,
     ) -> Result<FormalResidualProgram<'source, 'formal>, solve::SolveProgramConstructionError> {
         let (bodies, domain, at) = owner_bodies(view, equation.value())?;
-        let coordinates = collect_model_coordinate_types(view, bodies.iter().copied(), [], at)?;
+        let bodies = bodies
+            .into_iter()
+            .map(|value| {
+                Ok(FormalExpressionBody {
+                    value,
+                    value_type: view
+                        .expression(value)
+                        .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+                        .value_type_id(),
+                })
+            })
+            .collect::<Result<_, solve::SolveProgramConstructionError>>()?;
+        let program = self.formal_expressions(view, bodies, domain, at)?;
+        Ok(FormalResidualProgram { equation, program })
+    }
+
+    fn formal_expressions(
+        &mut self,
+        view: dae::DaeView<'formal>,
+        bodies: Vec<FormalExpressionBody<'formal>>,
+        domain: Option<ResidualBodyDomain<'formal>>,
+        at: Span,
+    ) -> Result<FormalExpressionProgram<'formal>, solve::SolveProgramConstructionError> {
+        let coordinates =
+            collect_model_coordinate_types(view, bodies.iter().map(|body| body.value), [], at)?;
         let (callees, predicate_ranges, assertions) =
-            self.register_expression_calls(view, bodies.iter().copied().map(|body| (body, ())))?;
+            self.register_expression_calls(view, bodies.iter().map(|body| (body.value, ())))?;
         let predicate_count = assertions.len();
         let inputs = coordinates
             .iter()
@@ -277,8 +400,7 @@ impl<'formal> PureCallRegistry<'formal> {
                     }
                     Ok(())
                 })?;
-        Ok(FormalResidualProgram {
-            equation,
+        Ok(FormalExpressionProgram {
             site: self
                 .table
                 .call_site(owner)
@@ -287,7 +409,7 @@ impl<'formal> PureCallRegistry<'formal> {
                 .into_iter()
                 .map(|(coordinate, _)| coordinate.coordinate())
                 .collect(),
-            residual_outputs,
+            value_outputs: residual_outputs,
             assertions: assertions
                 .into_iter()
                 .map(|entry| FormalResidualAssertion {
@@ -302,14 +424,16 @@ impl<'formal> PureCallRegistry<'formal> {
 impl<'program, 'formal> ExpressionLowerer<'_, 'program, 'formal> {
     fn residual_body(
         &mut self,
-        body: dae::ExprId<'formal>,
+        body: FormalExpressionBody<'formal>,
         domain: Option<&ResidualBodyDomain<'formal>>,
         at: Span,
     ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
         if let Some(domain) = domain {
-            self.mapped_expression(body, domain.id, domain.domain.clone(), at)
+            self.mapped_expression(body.value, domain.id, domain.domain.clone(), at)
         } else {
-            self.expression(body)?.only_register(at)
+            let value = self.expression(body.value)?;
+            self.coerce_value(value, body.value_type, at)?
+                .only_register(at)
         }
     }
 }

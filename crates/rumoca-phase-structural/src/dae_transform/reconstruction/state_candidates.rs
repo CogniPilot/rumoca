@@ -52,7 +52,8 @@ pub(in crate::dae_transform) fn rebuild_state_candidate(
                             None,
                             quotients,
                         )?;
-                        state = append_projection(source, target, variables, selected)?;
+                        state =
+                            append_projection(source, target, variables, &expressions, selected)?;
                         Ok(())
                     },
                 )
@@ -66,6 +67,7 @@ fn append_projection<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     variables: &[ReservedVariable<'target>],
+    source_expressions: &[dae::ExprId<'target>],
     selected: &[SelectedCoordinate],
 ) -> Result<Option<u32>, dae::DaeConstructionError> {
     let Some(first) = selected.first() else {
@@ -86,7 +88,13 @@ fn append_projection<'target>(
     let value_type = target
         .types(|types| types.derived(dae::ValueType::array(dae::ScalarType::Real, [extent]), at))?;
     let start = target.expressions(|expressions| {
-        super::super::expressions::shaped_zero(expressions, &[extent], at)
+        let values = selected
+            .iter()
+            .map(|coordinate| {
+                project_start(source, expressions, source_expressions, *coordinate, at)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        expressions.at(at).array(values)
     })?;
     let state = target.variables(|variables| {
         variables.state(
@@ -169,20 +177,51 @@ fn project<'target>(
                 .expect("selected coordinate exists"),
         )
         .expect("selected declaration exists");
-    let dimensions = declaration.value_type().dimensions();
+    project_value(target, value, declaration.value_type(), scalar, at)
+}
+
+fn project_start<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::Expressions<'_, 'target>,
+    source_expressions: &[dae::ExprId<'target>],
+    coordinate: SelectedCoordinate,
+    at: dae::DaeProvenance,
+) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+    let declaration = source
+        .variable(
+            source
+                .variable_id(coordinate.value as usize)
+                .expect("selected source value"),
+        )
+        .expect("selected source declaration");
+    let Some(start) = declaration.start() else {
+        return target.at(at).literal(dae::DaeLiteral::Real(0.0));
+    };
+    let value_type = source.expression(start).expect("source start").value_type();
+    project_value(
+        target,
+        source_expressions[start.index() as usize],
+        value_type,
+        coordinate.scalar,
+        at,
+    )
+}
+
+fn project_value<'target>(
+    target: &mut dae::Expressions<'_, 'target>,
+    value: dae::ExprId<'target>,
+    value_type: &dae::ValueType,
+    scalar: u32,
+    at: dae::DaeProvenance,
+) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+    let dimensions = value_type.dimensions();
     if dimensions.is_empty() {
         return Ok(value);
     }
-    let mut remainder = scalar;
-    let mut indices = Vec::with_capacity(dimensions.len());
-    for &extent in dimensions.iter().rev() {
-        let index = remainder % extent;
-        remainder /= extent;
-        indices.push(index + 1);
-    }
-    let indices = indices
+    let indices = value_type
+        .scalar_subscripts(scalar as usize)
+        .ok_or_else(|| invalid_projection(at))?
         .into_iter()
-        .rev()
         .map(|index| {
             Ok(dae::Subscript::Index {
                 expression: target

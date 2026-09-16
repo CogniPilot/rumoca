@@ -285,7 +285,7 @@ replayable proof receipts, and mutable partition callbacks are prohibited.
 Other transformations require amendments.
 
 State selection certifies signatures, tensor-uniform offsets, formal derivatives,
-candidate maps and analysis kernels (STRUCT-T07); integration requires a regular basis.
+candidate maps and numerical proposals (STRUCT-T07); integration requires a regular basis.
 
 STRUCT-T03 preserves shared expression identity. Reuse requires identical
 source, call substitutions, derivative order, reconstruction mode, and provenance;

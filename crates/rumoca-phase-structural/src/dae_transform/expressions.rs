@@ -442,8 +442,19 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .array_update(base, value, subscripts)?
             }
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
+                let function = (builtin == dae::PureBuiltin::LinearSolve
+                    && self
+                        .source
+                        .expression(source_id)
+                        .expect("source expression")
+                        .function_scope()
+                        .is_none())
+                .then(|| self.linear_solve_function(arguments));
                 let arguments = self.rebuild_operands(arguments)?;
-                self.target.at(provenance).builtin(builtin, arguments)?
+                match function {
+                    Some(function) => self.target.at(provenance).call(function, 0, arguments)?,
+                    None => self.target.at(provenance).builtin(builtin, arguments)?,
+                }
             }
             dae::ExpressionOperation::Call {
                 owner,

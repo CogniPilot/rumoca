@@ -68,10 +68,28 @@ pub(super) fn analyze<'analysis, 'dae>(
         rows: &row_groups,
         columns: &column_groups,
     };
+    let variable_orders = source
+        .variables
+        .iter()
+        .zip(&source.variable_orders)
+        .map(|(coordinate, &order)| {
+            let variable = view
+                .variable(coordinate.variable)
+                .expect("source differential coordinate");
+            if variable.state_select() == rumoca_core::StateSelect::Always
+                && variable.variability() == dae::ExpressionVariability::Continuous
+                && variable.value_type().scalar_type() == dae::ScalarType::Real
+            {
+                order.max(1)
+            } else {
+                order
+            }
+        })
+        .collect::<Vec<_>>();
     let Some((equations, variables)) = refine(
         &source.rows,
         &source.matching,
-        (&source.equation_orders, &source.variable_orders),
+        (&source.equation_orders, &variable_orders),
         groups,
     )
     .map_err(|reason| contract(&spans, reason))?

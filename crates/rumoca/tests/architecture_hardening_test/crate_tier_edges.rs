@@ -20,7 +20,13 @@ use std::path::PathBuf;
 /// Pinned (not a "must not contain rumoca-solver" check) so that *any* new
 /// dependency on a Tier 4/5 crate is a deliberate, reviewable change rather
 /// than an accident.
-const EVAL_SOLVE_DEPENDENCIES: &[&str] = &["indexmap", "rumoca-core", "rumoca-ir-solve", "tracing"];
+const EVAL_SOLVE_DEPENDENCIES: &[&str] = &[
+    "indexmap",
+    "nalgebra",
+    "rumoca-core",
+    "rumoca-ir-solve",
+    "tracing",
+];
 
 fn read_manifest(crate_name: &str) -> String {
     let path = workspace_root()

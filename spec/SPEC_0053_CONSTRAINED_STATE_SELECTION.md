@@ -10,9 +10,9 @@ construct their value, derivative, and FMI mappings together.
 ## Specification
 
 This proposal extends SPEC_0007 / STRUCT-T07. Source signature analysis and
-coupled formal derivatives and candidate coordinate maps are implemented; executable independent
-state selection remains pending.
-It does not change the current acceptance profile. The existing implementation retains
+coupled formal derivatives, candidate coordinate maps, and an initial static
+coordinate-selection profile are implemented under STRUCT-T07. Dynamic basis
+changes remain proposed. The existing implementation retains
 lower-order constraints in `ContinuousSolveSystem::manifold_residual` and
 `manifold_projection_plan` (`rumoca-ir-solve/src/model.rs`), while
 `SolveRuntime` evaluates derivatives of every retained state coordinate.
@@ -43,9 +43,9 @@ also lives in STRUCT-T07. Its `construct_state_candidate` method accepts source-
 coordinate proposals and returns an inspectable `FormalStateCandidate`, preserving
 source owners and appending aggregate value/derivative maps. It checks formal
 dimension, distinctness, bounds, required/forbidden source states, and complete
-structural matching. It does not issue a numerical regularity certificate or an
-executable state basis. The remaining basis-selection and runtime obligations
-below are still proposed.
+structural matching. Consuming preparation preserves that exact transformed root for ordinary Solve
+lowering and FMI projection. Numerical initialization and reconstruction remain
+required before integration; structural matching is no regularity certificate.
 
 `FormalDerivativeView::stages` now exposes complete source-bound equation and
 coordinate owners at each derivative order minus certified tensor offset.
@@ -60,6 +60,22 @@ body ordering, compact domains, and call assertions. It evaluates residuals at
 supplied points; it does not issue a regular basis or an executable prepared model.
 
 ### 2. Value and derivative agreement
+
+The static implementation first seeds needed acyclic definitions through the
+shared typed lowerer, including assignment coercions. Source states, fixed
+values, `always`/`prefer` guesses, and explicit overrides retain their guesses.
+It then settles lower differential stages with bounded least-squares Newton steps. Those trial points
+select coordinates only: they are not initialization results or overrides.
+Mandatory states are excluded from dependent-column pivoting; declared states
+and their formal derivatives precede newly introduced algebraic candidates.
+Every selected lower stage retains all residuals and requires a full-rank
+dependent basis. Highest-derivative reconstruction retains the ordinary numerical
+kernel checks.
+The selected aggregate projects original start expressions in coordinate order,
+retaining parameter dependencies and scalar broadcasts; formal derivatives use
+unfixed zero guesses. The selected checked DAE still solves the original
+initialization problem before integration. Numerical rank at a trial point never
+certifies global regularity.
 
 Here `z` denotes independent coordinates and `d` dependent coordinates. A local
 coordinate representation satisfies `g(d,z,p,t)=0` with nonsingular `g_d`.

@@ -16,8 +16,8 @@ algorithm
 end products;
 model BilinearConstraint
   Real x[3](start={1,2,3}, each fixed=true, each stateSelect=StateSelect.always);
-  Real matrix[3,3](each stateSelect=StateSelect.always);
-  Real spin[3](each stateSelect=StateSelect.always);
+  Real matrix[3,3](each stateSelect=StateSelect.prefer);
+  Real spin[3](each stateSelect=StateSelect.prefer);
   Real matrix_rate[3,3];
   Real spin_rate[3];
   Products p;
@@ -32,12 +32,12 @@ end BilinearConstraint;
 "#;
 
 #[test]
-fn retained_manifolds_preserve_bilinear_tensor_function_values() {
+fn preferred_coordinates_preserve_bilinear_tensor_function_values() {
     check_bilinear_constraint(SOURCE);
 }
 
 #[test]
-fn retained_manifolds_preserve_bilinear_values_with_real_arguments() {
+fn preferred_coordinates_preserve_bilinear_values_with_real_arguments() {
     check_bilinear_constraint(&SOURCE.replace("{2,-1,1}", "{2.0,-1.0,1.0}"));
 }
 
@@ -46,8 +46,29 @@ fn direct_state_substitution_preserves_real_function_argument_types() {
     check_bilinear_constraint(
         &SOURCE
             .replace(", each stateSelect=StateSelect.always", "")
-            .replace("(each stateSelect=StateSelect.always)", ""),
+            .replace("(each stateSelect=StateSelect.prefer)", ""),
     );
+}
+
+#[test]
+fn dependent_coordinates_cannot_all_be_required_independent_states() {
+    let source = SOURCE.replace("StateSelect.prefer", "StateSelect.always");
+    let compiled = Compiler::new()
+        .model("BilinearConstraint")
+        .compile_str(&source, "overrequested_states.mo")
+        .unwrap();
+    for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+        let error = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                solver_mode,
+                t_end: 0.1,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("StateSelect.always requires 15 independent coordinates, but the differential dimension is 3"), "{error}");
+    }
 }
 
 fn check_bilinear_constraint(source: &str) {
