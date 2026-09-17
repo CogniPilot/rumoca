@@ -1,6 +1,8 @@
 use super::*;
 use indexmap::IndexSet;
+use rumoca_core::ExpressionVisitor;
 use rumoca_ir_ast as ast;
+use rustc_hash::FxHashSet;
 
 type FlowVarSet = IndexSet<rumoca_core::VarName>;
 pub(super) type InterfaceStreamEndpointsByScope =
@@ -182,6 +184,279 @@ fn generate_outside_stream_equations(
             let equation = flat::Equation::new_array(residual, *span, origin, scalar_count);
             add_connection_equation(flat, equation, preferred_dims.as_deref())?;
             mark_connected(flat, stream);
+        }
+    }
+    Ok(())
+}
+
+/// Resolve one connection-set member to its declared Flat variable, whether the
+/// member names a scalar declaration or an element of a declared array.
+fn connection_member_variable<'flat>(
+    flat: &'flat flat::Model,
+    var: &rumoca_core::VarName,
+) -> Option<&'flat flat::Variable> {
+    if let Some(declared) = flat.variables.get(var) {
+        return Some(declared);
+    }
+    declared_array_element(var, flat).map(|(_, declared, _)| declared)
+}
+
+/// Base variable name a connection-set member selects, so an element member and
+/// its declaration are proven "used" together.
+fn connection_member_base(flat: &flat::Model, var: &rumoca_core::VarName) -> rumoca_core::VarName {
+    if flat.variables.contains_key(var) {
+        return var.clone();
+    }
+    declared_array_element(var, flat)
+        .map(|(base, _, _)| base)
+        .unwrap_or_else(|| var.clone())
+}
+
+/// Every base variable name referenced anywhere outside a generated connection
+/// equation: model and initial equations, structured comprehension templates,
+/// assertions, algorithm sections, when chains, and declaration bindings.
+///
+/// A member of an expandable connector that appears here is used by the model
+/// even if it never reaches a non-expandable connector, so it must be retained.
+/// Only members absent from this set are candidates for MLS §9.1.3 removal.
+fn variables_referenced_outside_connections(flat: &flat::Model) -> FxHashSet<rumoca_core::VarName> {
+    let mut collector = ReferenceCollector::default();
+    for equation in &flat.equations {
+        if matches!(equation.origin, flat::EquationOrigin::Connection { .. }) {
+            continue;
+        }
+        collector.visit_expression(&equation.residual);
+    }
+    for equation in &flat.initial_equations {
+        collector.visit_expression(&equation.residual);
+    }
+    for family in flat
+        .structured_equations
+        .iter()
+        .chain(&flat.initial_structured_equations)
+    {
+        if let Some(template) = &family.template {
+            for body in &template.body {
+                collector.visit_expression(body);
+            }
+        }
+    }
+    for assertion in flat
+        .assert_equations
+        .iter()
+        .chain(&flat.initial_assert_equations)
+    {
+        collector.visit_expression(&assertion.condition);
+        collector.visit_expression(&assertion.message);
+        if let Some(level) = &assertion.level {
+            collector.visit_expression(level);
+        }
+    }
+    for algorithm in flat.algorithms.iter().chain(&flat.initial_algorithms) {
+        for statement in &algorithm.statements {
+            flat::StatementVisitor::visit_statement(&mut collector, statement);
+        }
+    }
+    for chain in &flat.when_chains {
+        for branch in chain.branches() {
+            collector.visit_expression(&branch.condition);
+            for equation in &branch.equations {
+                collector.collect_when_equation(equation);
+            }
+        }
+    }
+    for variable in flat.variables.values() {
+        if let Some(binding) = &variable.binding {
+            collector.visit_expression(binding);
+        }
+    }
+    collector.into_names()
+}
+
+/// Collects every base variable name a model construct reads or assigns.
+#[derive(Default)]
+struct ReferenceCollector {
+    names: FxHashSet<rumoca_core::VarName>,
+}
+
+impl ReferenceCollector {
+    fn into_names(self) -> FxHashSet<rumoca_core::VarName> {
+        self.names
+    }
+
+    fn record_component(&mut self, component: &rumoca_core::ComponentReference) {
+        self.names.insert(
+            rumoca_core::component_ref_to_base_reference(component)
+                .var_name()
+                .clone(),
+        );
+    }
+
+    fn collect_when_equations(&mut self, equations: &[flat::WhenEquation]) {
+        for equation in equations {
+            self.collect_when_equation(equation);
+        }
+    }
+
+    fn collect_when_equation(&mut self, equation: &flat::WhenEquation) {
+        match equation {
+            flat::WhenEquation::Assign { target, value, .. } => {
+                self.names.insert(target.clone());
+                self.visit_expression(value);
+            }
+            flat::WhenEquation::Reinit { state, value, .. } => {
+                self.names.insert(state.clone());
+                self.visit_expression(value);
+            }
+            flat::WhenEquation::Assert {
+                condition,
+                message,
+                level,
+                ..
+            } => {
+                self.visit_expression(condition);
+                self.visit_expression(message);
+                if let Some(level) = level {
+                    self.visit_expression(level);
+                }
+            }
+            flat::WhenEquation::Terminate { message, .. } => self.visit_expression(message),
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (condition, equations) in branches {
+                    self.visit_expression(condition);
+                    self.collect_when_equations(equations);
+                }
+                if let Some(equations) = else_branch {
+                    self.collect_when_equations(equations);
+                }
+            }
+            flat::WhenEquation::FunctionCallOutputs {
+                outputs, function, ..
+            } => {
+                for output in outputs {
+                    self.names.insert(output.clone());
+                }
+                self.visit_expression(function);
+            }
+        }
+    }
+}
+
+impl rumoca_core::ExpressionVisitor for ReferenceCollector {
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        self.names.insert(name.var_name().clone());
+        self.walk_var_ref(name, subscripts);
+    }
+}
+
+impl flat::StatementVisitor for ReferenceCollector {
+    fn visit_assignment(
+        &mut self,
+        comp: &rumoca_core::ComponentReference,
+        value: &rumoca_core::Expression,
+    ) {
+        self.record_component(comp);
+        self.visit_expression(value);
+    }
+
+    fn visit_reinit(
+        &mut self,
+        variable: &rumoca_core::ComponentReference,
+        value: &rumoca_core::Expression,
+    ) {
+        self.record_component(variable);
+        self.visit_expression(value);
+    }
+
+    fn visit_statement_function_call(
+        &mut self,
+        comp: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        outputs: &[Option<rumoca_core::ComponentReference>],
+    ) {
+        if let Some(component) = comp.component_ref() {
+            self.record_component(component);
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+        for output in outputs.iter().flatten() {
+            self.record_component(output);
+        }
+    }
+}
+
+/// Whether a potential connection set is an unused expandable bus set
+/// (MLS §9.1.3).
+///
+/// An expandable connector declares a default set of elements, and connecting
+/// two expandable connectors unites their members. When every member of a
+/// potential set is a default element of an expandable connector that carries
+/// no binding and is used nowhere outside the connection graph, the set never
+/// reaches a non-expandable connector and no equation, algorithm, or binding
+/// consumes it: it is a bus branch declared but only ever connected to other
+/// expandable elements. MLS §9.1.3 does not keep such elements; a partially used
+/// bus contributes only the branches that reach a real connector. Skipping the
+/// equality equations for this set leaves each member unconnected, so model-role
+/// planning classifies it as an unused expandable coordinate and drops it,
+/// matching the balanced elaboration a tool produces by expanding the union of
+/// the used members only.
+fn potential_set_is_unused_expandable(
+    flat: &flat::Model,
+    referenced: &FxHashSet<rumoca_core::VarName>,
+    variables: &[rumoca_core::VarName],
+) -> bool {
+    !variables.is_empty()
+        && variables.iter().all(|var| {
+            connection_member_variable(flat, var).is_some_and(|declared| {
+                declared.from_expandable_connector && declared.binding.is_none()
+            }) && !referenced.contains(&connection_member_base(flat, var))
+        })
+}
+
+/// Emit one connection equation per connection set, skipping unused expandable
+/// bus branches (MLS §9.1.3).
+///
+/// The set of names used outside the connection graph is built once, so an
+/// expandable branch is removed only when no equation, algorithm, or binding
+/// still reads it.
+fn generate_connection_set_equations(
+    flat: &mut flat::Model,
+    connection_sets: Vec<ConnectionSet>,
+    interface_flow_vars_by_scope: &IndexMap<String, FlowVarSet>,
+    oc_forest: &mut crate::vcg::OverconstrainedEquationForest,
+) -> Result<(), FlattenError> {
+    let referenced_outside_connections = variables_referenced_outside_connections(flat);
+    for set in connection_sets {
+        match set.kind {
+            ConnectionKind::Flow => generate_flow_equation(
+                flat,
+                &set.variables,
+                set.scope.as_str(),
+                interface_flow_vars_by_scope,
+                set.span,
+            )?,
+            ConnectionKind::Potential => {
+                // Leaving an unused expandable branch unconnected lets model-role
+                // planning remove its members instead of emitting equality
+                // equations that would leave them structurally unbalanced.
+                if potential_set_is_unused_expandable(
+                    flat,
+                    &referenced_outside_connections,
+                    &set.variables,
+                ) {
+                    continue;
+                }
+                generate_equality_equations(flat, &set.variables, set.span, oc_forest)?;
+            }
         }
     }
     Ok(())
@@ -659,21 +934,12 @@ pub(crate) fn process_connections(
     let (connection_sets, stream_sets) =
         build_connection_sets(&all_connections, flat, &prefix_children, &var_index)?;
 
-    // Generate equations for each connection set
-    for set in connection_sets {
-        match set.kind {
-            ConnectionKind::Flow => generate_flow_equation(
-                flat,
-                &set.variables,
-                set.scope.as_str(),
-                &interface_flow_vars_by_scope,
-                set.span,
-            )?,
-            ConnectionKind::Potential => {
-                generate_equality_equations(flat, &set.variables, set.span, oc_forest)?;
-            }
-        }
-    }
+    generate_connection_set_equations(
+        flat,
+        connection_sets,
+        &interface_flow_vars_by_scope,
+        oc_forest,
+    )?;
 
     for stream_set in &stream_sets {
         mark_stream_connection_set(flat, &stream_set.variables);

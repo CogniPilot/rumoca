@@ -1543,6 +1543,27 @@ struct StructuredDiscreteFamilyInput<'scope, 'flat, 'dae> {
     owner: dae::DaeProvenance,
 }
 
+/// Select the scalar view a structured discrete-value family lowers with.
+///
+/// A source `for` equation over a discrete array carries the default
+/// `BinderSubstitution` view: each domain point owns one scalar body. Its
+/// element rows (`x[i] = e`) are claimed by the aggregate discrete owner, which
+/// packs them into one row-major aggregate value spanning the whole coordinate
+/// and records that packing with `scalar_count`. A packed aggregate value is a
+/// whole tensor, not a scalar body, so it must be projected row-major over the
+/// domain rather than substituted point by point. When every assignment carries
+/// a packed aggregate value the family lowers as `RowMajorProjection`; a genuine
+/// per-point scalar plan keeps the declared view.
+fn discrete_family_scalar_view(
+    declared: rumoca_core::ComprehensionScalarView,
+    assignments: &[DiscreteValueAssignmentPlan<'_>],
+) -> rumoca_core::ComprehensionScalarView {
+    if !assignments.is_empty() && assignments.iter().all(|plan| plan.scalar_count.is_some()) {
+        return rumoca_core::ComprehensionScalarView::RowMajorProjection;
+    }
+    declared
+}
+
 fn lower_structured_discrete_family<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
@@ -1554,11 +1575,12 @@ fn lower_structured_discrete_family<'dae>(
         .get(&input.family.first_equation_index)
         .map(|plan| input.environment.clocks.id(plan, input.family.span))
         .transpose()?;
+    let scalar_view = discrete_family_scalar_view(input.scalar_view, input.assignments);
     let semantic_owner = discrete_values
         .structured_owner(
             input.owner,
             input.domain,
-            input.scalar_view,
+            scalar_view,
             input.assignments.iter().map(|plan| plan.target.clone()),
             input.coordinates,
             input.environment.topology,

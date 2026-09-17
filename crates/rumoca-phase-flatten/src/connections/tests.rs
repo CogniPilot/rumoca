@@ -425,8 +425,21 @@ fn add_expandable_member(flat: &mut flat::Model, name: &str) {
     );
 }
 
+fn expandable_test_var_ref(name: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from(name),
+        subscripts: Vec::new(),
+        span: test_span(),
+    }
+}
+
 #[test]
 fn expandable_connectors_with_same_declared_members_are_supported() {
+    // Identical declared members require no augmentation, so the connection is
+    // accepted. The members are only ever connected to each other and never
+    // reach a non-expandable connector, so MLS §9.1.3 removes this unused bus
+    // branch: no equality equation is generated and neither endpoint is marked
+    // connected, keeping the model structurally balanced.
     let mut flat = flat::Model::new();
     add_expandable_member(&mut flat, "a.signal");
     add_expandable_member(&mut flat, "b.signal");
@@ -437,9 +450,44 @@ fn expandable_connectors_with_same_declared_members_are_supported() {
         .expect("identical declared members require no augmentation");
 
     assert!(
+        flat.equations.is_empty(),
+        "an unused expandable bus branch generates no equation"
+    );
+    assert!(
         flat.variables
             .get(&rumoca_core::VarName::new("a.signal"))
-            .is_some_and(|var| var.connected)
+            .is_some_and(|var| !var.connected),
+        "an unused expandable bus branch is not marked connected"
+    );
+}
+
+#[test]
+fn expandable_member_used_outside_the_connection_is_retained() {
+    // The same identical-member connection, but `a.signal` is read by a model
+    // equation. A used member is not an unused bus branch, so the connection is
+    // retained: the equality equation is generated and both endpoints are marked
+    // connected.
+    let mut flat = flat::Model::new();
+    add_expandable_member(&mut flat, "a.signal");
+    add_expandable_member(&mut flat, "b.signal");
+    flat.add_equation(flat::Equation::new(
+        expandable_test_var_ref("a.signal"),
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+    let overlay = expandable_connector_test_overlay();
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
+
+    process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect("identical declared members require no augmentation");
+
+    assert!(
+        flat.variables
+            .get(&rumoca_core::VarName::new("a.signal"))
+            .is_some_and(|var| var.connected),
+        "a used expandable member stays connected"
     );
 }
 

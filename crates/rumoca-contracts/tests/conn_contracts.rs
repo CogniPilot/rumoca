@@ -1355,3 +1355,81 @@ fn unsupported_expandable_input_without_source_fails_closed() {
         "EF020",
     );
 }
+
+// =============================================================================
+// Unused expandable connector branch removal
+// MLS 3.6 §9.1.3: expandable connector elements that are only ever connected to
+// other expandable connector elements, never reaching a non-expandable
+// connector, are not part of the elaborated model. A partially used bus keeps
+// only the branches that reach a real connector, and the removed branches must
+// not leave the model structurally unbalanced.
+// =============================================================================
+
+#[test]
+fn expandable_partially_used_bus_branch_is_removed_and_balanced() {
+    // sub1 reaches the non-expandable RealOut/RealIn connectors, so it is kept.
+    // sub2 is only ever connected between the two expandable buses, so both its
+    // members are removed and the model still balances.
+    expect_balanced(
+        r#"
+        connector RealOut = output Real;
+        connector RealIn = input Real;
+        expandable connector SubBus
+            Real a;
+            Boolean b;
+        end SubBus;
+        expandable connector Bus
+            SubBus sub1;
+            SubBus sub2;
+        end Bus;
+        model Source
+            RealOut y;
+        equation
+            y = time;
+        end Source;
+        model Sink
+            RealIn u;
+            Real x;
+        equation
+            x = u;
+        end Sink;
+        model BusPartialUse
+            Bus busA;
+            Bus busB;
+            Source src;
+            Sink snk;
+        equation
+            connect(busA, busB);
+            connect(src.y, busA.sub1.a);
+            connect(busB.sub1.a, snk.u);
+        end BusPartialUse;
+    "#,
+        "BusPartialUse",
+    );
+}
+
+#[test]
+fn expandable_referenced_member_is_not_removed() {
+    // busA.a is read by an equation but never defined and never reaches a
+    // non-expandable connector. It must not be silently removed to fake a
+    // balanced system: the missing definition is a real imbalance the ToDae
+    // balance gate reports.
+    expect_failure_in_phase_with_code(
+        r#"
+        expandable connector Bus
+            Real a;
+        end Bus;
+        model BusReadOnly
+            Bus busA;
+            Bus busB;
+            Real y;
+        equation
+            connect(busA, busB);
+            y = busA.a;
+        end BusReadOnly;
+    "#,
+        "BusReadOnly",
+        FailedPhase::ToDae,
+        "ED001",
+    );
+}

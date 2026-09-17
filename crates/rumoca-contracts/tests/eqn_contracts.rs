@@ -1306,3 +1306,56 @@ fn eqn_028_noneval_nested_for_range_rejected() {
         "ER124",
     );
 }
+
+// =============================================================================
+// Discrete-valued array assignment inside a for-equation
+// MLS 3.6 §8.3.3 (for-equations) and §8.5 (discrete-time variables): a
+// for-equation may assign the elements of a discrete-valued (Boolean or
+// Integer) output array. Each domain point defines one element from the
+// element-assignment body, and the family lowers to canonical DAE without a
+// spurious shape mismatch.
+// =============================================================================
+
+#[test]
+fn discrete_for_loop_element_assignment_succeeds() {
+    expect_success(
+        r#"
+        model DiscreteForLoop
+            parameter Integer n = 3;
+            Boolean moving[n];
+            Boolean motion_ref;
+            parameter Real q_begin[n] = {0, 1, 2};
+            parameter Real q_end[n] = {1, 1, 3};
+            constant Real eps = 1e-15;
+        equation
+            motion_ref = time < 0.5;
+            for i in 1:n loop
+                moving[i] = if abs(q_begin[i] - q_end[i]) > eps then motion_ref else false;
+            end for;
+        end DiscreteForLoop;
+    "#,
+        "DiscreteForLoop",
+    );
+}
+
+#[test]
+fn discrete_for_loop_element_shape_mismatch_rejected() {
+    // A scalar discrete element cannot be assigned a vector value. The
+    // for-equation lowering must still reject this shape mismatch rather than
+    // accept every discrete element for-equation.
+    expect_failure_in_phase_with_code(
+        r#"
+        model BadDiscreteForLoop
+            parameter Integer n = 2;
+            Boolean moving[n];
+        equation
+            for i in 1:n loop
+                moving[i] = {true, false};
+            end for;
+        end BadDiscreteForLoop;
+    "#,
+        "BadDiscreteForLoop",
+        FailedPhase::ToDae,
+        "ED020",
+    );
+}
