@@ -229,7 +229,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .source
             .expression(source_id)
             .expect("differentiable expression identity resolves");
-        if self.function_context.is_empty() && is_time_invariant(self.source, source_id) {
+        if self.function_context.is_empty()
+            && (is_time_invariant(self.source, source_id) || self.reads_only_invariants(source_id))
+        {
             return Ok(Derivative::Zero);
         }
         if self.formal_derivatives {
@@ -280,6 +282,20 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             }
             _ => unreachable!("differentiability preflight rejects this operation"),
         }
+    }
+
+    /// Whether the whole-model expression reduces to parameters, constants, and
+    /// algebraics proved parameter-constant, so its time derivative is zero.
+    ///
+    /// Restricted to models that carry at least one such algebraic, leaving the
+    /// derivative of every other model unchanged.
+    fn reads_only_invariants(&self, source_id: dae::ExprId<'source>) -> bool {
+        self.facts.invariant_algebraics.iter().any(|&flag| flag)
+            && crate::time_invariant::expression_is_time_invariant(
+                self.source,
+                source_id,
+                &self.facts.invariant_algebraics,
+            )
     }
 
     fn differentiate_coordinate(

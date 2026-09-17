@@ -19,6 +19,7 @@ pub mod runtime_defined;
 mod same_tick;
 mod tarjan;
 pub mod tearing;
+mod time_invariant;
 mod types;
 
 use std::collections::HashSet;

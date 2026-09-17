@@ -56,6 +56,11 @@ pub struct DifferentialStructure<'dae> {
     equation_orders: Vec<u32>,
     variable_orders: Vec<u32>,
     formal_dimension: usize,
+    /// Columns whose coordinate is a parameter-constant algebraic. Their offset
+    /// is pinned to zero and their derivatives are always available as the zero
+    /// constant, so a differentiated equation that reads one never raises its
+    /// order.
+    invariant_columns: Vec<bool>,
 }
 
 impl<'dae> DifferentialStructure<'dae> {
@@ -87,6 +92,12 @@ impl<'dae> DifferentialStructure<'dae> {
     /// Assignment dimension, conditional on a regular differentiated Jacobian.
     pub fn formal_dimension(&self) -> usize {
         self.formal_dimension
+    }
+
+    /// Columns pinned to offset zero because their algebraic value is a
+    /// parameter-constant, aligned with [`Self::variables`].
+    pub(super) fn invariant_columns(&self) -> &[bool] {
+        &self.invariant_columns
     }
 
     pub fn matched_variable(&self, row: EquationRef) -> Option<DifferentialCoordinate<'dae>> {
@@ -129,12 +140,22 @@ pub fn analyze_differential_structure<'dae>(
         .map_err(|reason| contract(&spans, reason))?;
     let matching = require_square_matching(view, &variables, &rows, matching)?;
     let variable_lower_bounds = state_derivative_lower_bounds(view, variables.len(), &bases)?;
-    let (equation_orders, variable_orders) =
-        offsets::least_offsets_with_lower_bounds(&rows, &matching, &variable_lower_bounds)
-            .map_err(|reason| contract(&spans, reason))?;
-    let formal_dimension =
-        offsets::certify(&rows, &matching, &equation_orders, &variable_orders)
-            .ok_or_else(|| contract(&spans, "differential assignment certificate is invalid"))?;
+    let invariant_columns = invariant_columns(view, &variables);
+    let (equation_orders, variable_orders) = offsets::least_offsets_with_lower_bounds(
+        &rows,
+        &matching,
+        &variable_lower_bounds,
+        &invariant_columns,
+    )
+    .map_err(|reason| contract(&spans, reason))?;
+    let formal_dimension = offsets::certify(
+        &rows,
+        &matching,
+        &equation_orders,
+        &variable_orders,
+        &invariant_columns,
+    )
+    .ok_or_else(|| contract(&spans, "differential assignment certificate is invalid"))?;
     Ok(DifferentialStructure {
         variables,
         rows,
@@ -142,6 +163,7 @@ pub fn analyze_differential_structure<'dae>(
         equation_orders,
         variable_orders,
         formal_dimension,
+        invariant_columns,
     })
 }
 
@@ -270,6 +292,23 @@ fn project_signature<'dae>(
         .into_iter()
         .map(|(column, order)| SignatureEntry { column, order })
         .collect())
+}
+
+/// Mark every scalar column whose variable is a parameter-constant algebraic.
+fn invariant_columns(
+    view: dae::DaeView<'_>,
+    variables: &[DifferentialCoordinate<'_>],
+) -> Vec<bool> {
+    let invariant = crate::time_invariant::invariant_algebraic_variables(view);
+    variables
+        .iter()
+        .map(|coordinate| {
+            invariant
+                .get(coordinate.variable.index() as usize)
+                .copied()
+                .unwrap_or(false)
+        })
+        .collect()
 }
 
 type VariableColumns<'dae> = (Vec<DifferentialCoordinate<'dae>>, Vec<Option<usize>>);

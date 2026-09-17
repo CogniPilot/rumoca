@@ -73,7 +73,7 @@ fn every_three_by_three_signature_agrees_with_enumeration() {
             let matching: Vec<_> = matching.into_iter().map(Option::unwrap).collect();
             let (c, d) = offsets::least_offsets(&rows, &matching).unwrap();
             assert_eq!(
-                offsets::certify(&rows, &matching, &c, &d),
+                offsets::certify_scalar(&rows, &matching, &c, &d),
                 Some(actual.1 as usize)
             );
         }
@@ -92,7 +92,10 @@ fn independent_derivative_pairs_require_no_shortest_path_searches() {
     super::assignment::SEARCHES.with(|count| assert_eq!(count.get(), 0));
     let matching = matching.into_iter().map(Option::unwrap).collect::<Vec<_>>();
     let (c, d) = offsets::least_offsets(&rows, &matching).unwrap();
-    assert_eq!(offsets::certify(&rows, &matching, &c, &d), Some(COUNT));
+    assert_eq!(
+        offsets::certify_scalar(&rows, &matching, &c, &d),
+        Some(COUNT)
+    );
 }
 
 #[test]
@@ -104,7 +107,7 @@ fn weighted_augmentations_can_reassign_directly_matched_columns() {
     assert_eq!(matching, [Some(1), Some(0), Some(2)]);
     let matching = matching.into_iter().map(Option::unwrap).collect::<Vec<_>>();
     let (c, d) = offsets::least_offsets(&rows, &matching).unwrap();
-    assert_eq!(offsets::certify(&rows, &matching, &c, &d), Some(3));
+    assert_eq!(offsets::certify_scalar(&rows, &matching, &c, &d), Some(3));
 }
 
 #[test]
@@ -125,7 +128,7 @@ fn pendulum_offsets_account_for_hidden_velocity_constraint() {
     let (c, d) = offsets::least_offsets(&rows, &matching).unwrap();
     assert_eq!(c, [1, 1, 0, 0, 2]);
     assert_eq!(d, [2, 2, 1, 1, 0]);
-    assert_eq!(offsets::certify(&rows, &matching, &c, &d), Some(2));
+    assert_eq!(offsets::certify_scalar(&rows, &matching, &c, &d), Some(2));
 }
 
 #[test]
@@ -139,7 +142,7 @@ fn second_order_form_has_the_same_formal_dimension() {
     let (c, d) = offsets::least_offsets(&rows, &matching).unwrap();
     assert_eq!(c, [0, 0, 2]);
     assert_eq!(d, [2, 2, 0]);
-    assert_eq!(offsets::certify(&rows, &matching, &c, &d), Some(2));
+    assert_eq!(offsets::certify_scalar(&rows, &matching, &c, &d), Some(2));
 }
 
 #[test]
@@ -159,10 +162,10 @@ fn a_state_derivative_lower_bound_prolongs_its_defining_equation() {
     // Marking w a state (lower bound one) forces its defining equation `w = phi'`
     // to be differentiated once, which lifts phi to second order and supplies the
     // missing `w'` through the ordinary prolongation. The certificate still holds.
-    let (c, d) = offsets::least_offsets_with_lower_bounds(&rows, &matching, &[0, 0, 1]).unwrap();
+    let (c, d) = offsets::least_offsets_bounded(&rows, &matching, &[0, 0, 1]).unwrap();
     assert_eq!(c, [1, 0, 1]);
     assert_eq!(d, [2, 1, 1]);
-    assert_eq!(offsets::certify(&rows, &matching, &c, &d), Some(2));
+    assert_eq!(offsets::certify_scalar(&rows, &matching, &c, &d), Some(2));
 }
 
 #[test]
@@ -172,7 +175,7 @@ fn a_state_lower_bound_is_non_binding_when_the_derivative_already_appears() {
     let rows = signature(&[&[1, 0], &[0, 1]]);
     let matching = vec![0, 1];
     let unbounded = offsets::least_offsets(&rows, &matching).unwrap();
-    let bounded = offsets::least_offsets_with_lower_bounds(&rows, &matching, &[1, 1]).unwrap();
+    let bounded = offsets::least_offsets_bounded(&rows, &matching, &[1, 1]).unwrap();
     assert_eq!(unbounded, bounded);
     assert_eq!(bounded, (vec![0, 0], vec![1, 1]));
 }
@@ -181,22 +184,28 @@ fn a_state_lower_bound_is_non_binding_when_the_derivative_already_appears() {
 fn certificate_rejects_corrupt_matching_and_offsets() {
     let rows = signature(&[&[1, 0, -1], &[0, 1, -1], &[-1, -1, 0]]);
     assert_eq!(
-        offsets::certify(&rows, &[0, 1, 2], &[0; 3], &[1, 1, 0]),
+        offsets::certify_scalar(&rows, &[0, 1, 2], &[0; 3], &[1, 1, 0]),
         Some(2)
     );
     for matching in [&[0, 0, 2][..], &[2, 1, 0], &[0, 1, 3], &[0, 1]] {
-        assert_eq!(offsets::certify(&rows, matching, &[0; 3], &[1, 1, 0]), None);
+        assert_eq!(
+            offsets::certify_scalar(&rows, matching, &[0; 3], &[1, 1, 0]),
+            None
+        );
     }
     for variables in [&[0, 1, 0][..], &[2, 1, 0], &[1, 1]] {
         assert_eq!(
-            offsets::certify(&rows, &[0, 1, 2], &[0; 3], variables),
+            offsets::certify_scalar(&rows, &[0, 1, 2], &[0; 3], variables),
             None
         );
     }
     // Every selected edge is tight, but the off-diagonal inequalities fail.
-    assert_eq!(offsets::certify(&rows, &[1, 0, 2], &[0; 3], &[0; 3]), None);
     assert_eq!(
-        offsets::certify(&rows, &[0, 1, 2], &[2, 0, 0], &[1, 1, 0]),
+        offsets::certify_scalar(&rows, &[1, 0, 2], &[0; 3], &[0; 3]),
+        None
+    );
+    assert_eq!(
+        offsets::certify_scalar(&rows, &[0, 1, 2], &[2, 0, 0], &[1, 1, 0]),
         None
     );
 }

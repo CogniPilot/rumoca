@@ -41,7 +41,7 @@ fn oracle(
             let value = d[group.clone()].iter().copied().max().unwrap();
             d[group.clone()].fill(value);
         }
-        if offsets::certify(rows, matching, &c, &d).is_none() {
+        if offsets::certify_scalar(rows, matching, &c, &d).is_none() {
             continue;
         }
         if best.as_ref().is_none_or(|(bc, bd)| {
@@ -72,7 +72,8 @@ fn all_two_by_two_signatures_and_owner_partitions_match_enumeration() {
                     rows: row_groups,
                     columns: column_groups,
                 };
-                let actual = refine(&rows, &matching, (&initial.0, &initial.1), groups).unwrap();
+                let actual =
+                    refine_scalar(&rows, &matching, (&initial.0, &initial.1), groups).unwrap();
                 assert_eq!(
                     actual,
                     oracle(&rows, &matching, groups),
@@ -91,7 +92,7 @@ fn zero_length_owners_do_not_create_equations_or_break_the_partition() {
     }]];
     let groups = [0..0, 0..1, 1..1];
     assert_eq!(
-        refine(
+        refine_scalar(
             &rows,
             &[0],
             (&[0], &[1]),
@@ -125,9 +126,12 @@ fn incompatible_uniform_owners_do_not_reject_the_scalar_signature() {
         }],
     ];
     let groups = std::iter::once(0..2).collect::<Vec<_>>();
-    assert_eq!(offsets::certify(&rows, &[0, 1], &[0, 0], &[1, 0]), Some(1));
+    assert_eq!(
+        offsets::certify_scalar(&rows, &[0, 1], &[0, 0], &[1, 0]),
+        Some(1)
+    );
     assert!(
-        refine(
+        refine_scalar(
             &rows,
             &[0, 1],
             (&[0, 0], &[1, 0]),
@@ -161,7 +165,7 @@ fn refinement_rejects_invalid_partitions_and_checked_order_overflow() {
     ];
     let groups = std::iter::once(0..2).collect::<Vec<_>>();
     assert!(
-        refine(
+        refine_scalar(
             &rows,
             &[0, 1],
             (&[0, 0], &[u32::MAX, 0]),
@@ -179,7 +183,7 @@ fn refinement_rejects_invalid_partitions_and_checked_order_overflow() {
         std::iter::once(0..3).collect(),
     ] {
         assert!(
-            refine(
+            refine_scalar(
                 &rows,
                 &[0, 1],
                 (&[0, 0], &[u32::MAX, 0]),

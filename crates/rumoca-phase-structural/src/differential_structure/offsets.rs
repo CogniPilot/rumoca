@@ -10,7 +10,44 @@ pub(super) fn least_offsets(
     rows: &[Vec<SignatureEntry>],
     matching: &[usize],
 ) -> Result<(Vec<u32>, Vec<u32>), &'static str> {
-    least_offsets_with_lower_bounds(rows, matching, &vec![0_u32; rows.len()])
+    least_offsets_with_lower_bounds(
+        rows,
+        matching,
+        &vec![0_u32; rows.len()],
+        &vec![false; rows.len()],
+    )
+}
+
+/// Least offsets with per-column lower bounds and no invariant columns.
+#[cfg(test)]
+pub(super) fn least_offsets_bounded(
+    rows: &[Vec<SignatureEntry>],
+    matching: &[usize],
+    variable_lower_bounds: &[u32],
+) -> Result<(Vec<u32>, Vec<u32>), &'static str> {
+    least_offsets_with_lower_bounds(
+        rows,
+        matching,
+        variable_lower_bounds,
+        &vec![false; rows.len()],
+    )
+}
+
+/// Certify an assignment that carries no invariant columns.
+#[cfg(test)]
+pub(super) fn certify_scalar(
+    rows: &[Vec<SignatureEntry>],
+    matching: &[usize],
+    equations: &[u32],
+    variables: &[u32],
+) -> Option<usize> {
+    certify(
+        rows,
+        matching,
+        equations,
+        variables,
+        &vec![false; rows.len()],
+    )
 }
 
 /// The least offsets of [`least_offsets`], refined by a per-column lower bound on
@@ -25,16 +62,50 @@ pub(super) fn least_offsets(
 /// state whose derivative already appears continuously: that column reaches at
 /// least one from the signature alone, so the refined offsets equal the pure
 /// least offsets for every well-posed index-one and holonomic system.
+/// Raise each variable offset to the largest order any row demands of it. A
+/// parameter-constant column carries the zero derivative at every order, so
+/// differentiating a row that reads it never raises its offset.
+fn relax_variable_offsets(
+    equations: &[u32],
+    variables: &mut [u32],
+    rows: &[Vec<SignatureEntry>],
+    invariant_columns: &[bool],
+) -> Result<(), &'static str> {
+    for (row, entries) in rows.iter().enumerate() {
+        for entry in entries {
+            if invariant_columns
+                .get(entry.column)
+                .copied()
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let value = equations[row]
+                .checked_add(entry.order)
+                .ok_or("differential order overflow")?;
+            let target = variables
+                .get_mut(entry.column)
+                .ok_or("signature column is out of range")?;
+            *target = (*target).max(value);
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn least_offsets_with_lower_bounds(
     rows: &[Vec<SignatureEntry>],
     matching: &[usize],
     variable_lower_bounds: &[u32],
+    invariant_columns: &[bool],
 ) -> Result<(Vec<u32>, Vec<u32>), &'static str> {
     if matching.len() != rows.len() {
         return Err("differential matching has the wrong row count");
     }
     if variable_lower_bounds.len() != rows.len() {
         return Err("differential lower bounds have the wrong column count");
+    }
+    if invariant_columns.len() != rows.len() {
+        return Err("differential invariant columns have the wrong column count");
     }
     let mut equations = vec![0_u32; rows.len()];
     let mut variables = vec![0_u32; rows.len()];
@@ -43,17 +114,7 @@ pub(super) fn least_offsets_with_lower_bounds(
     // fewer than n edges. The final iteration verifies the fixed point.
     for _ in 0..=rows.len() {
         variables.copy_from_slice(variable_lower_bounds);
-        for (row, entries) in rows.iter().enumerate() {
-            for entry in entries {
-                let value = equations[row]
-                    .checked_add(entry.order)
-                    .ok_or("differential order overflow")?;
-                let target = variables
-                    .get_mut(entry.column)
-                    .ok_or("signature column is out of range")?;
-                *target = (*target).max(value);
-            }
-        }
+        relax_variable_offsets(&equations, &mut variables, rows, invariant_columns)?;
         let mut changed = false;
         for (row, &column) in matching.iter().enumerate() {
             let entry = rows[row]
@@ -81,11 +142,17 @@ pub(super) fn certify(
     matching: &[usize],
     equations: &[u32],
     variables: &[u32],
+    invariant_columns: &[bool],
 ) -> Option<usize> {
     let count = rows.len();
-    if [matching.len(), equations.len(), variables.len()]
-        .iter()
-        .any(|&len| len != count)
+    if [
+        matching.len(),
+        equations.len(),
+        variables.len(),
+        invariant_columns.len(),
+    ]
+    .iter()
+    .any(|&len| len != count)
     {
         return None;
     }
@@ -102,6 +169,12 @@ pub(super) fn certify(
         }
         objective = objective.checked_add(usize::try_from(matched.order).ok()?)?;
         for entry in entries {
+            // A parameter-constant column's derivatives are the zero constant at
+            // every order, so it is available to any differentiated row without
+            // an offset obligation.
+            if *invariant_columns.get(entry.column)? {
+                continue;
+            }
             if variables.get(entry.column)?.checked_sub(equations[row])? < entry.order {
                 return None;
             }
