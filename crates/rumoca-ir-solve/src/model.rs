@@ -98,12 +98,70 @@ impl ReducedChartSet {
 /// against `trial_singular_threshold`; the mirror of a folding coordinate is a
 /// structurally admissible chart whose `trial_rcond` may be at or below the
 /// threshold at the trial point because it is regular elsewhere.
-#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+///
+/// `plan` carries the chart's executable reconstruction and derivative kernel.
+/// It is present only for an ALTERNATE chart (chart index one and above): the
+/// primary basis (chart index zero) is already executed by the enclosing
+/// [`ContinuousSolveSystem`], so it carries no separate plan. An absent plan is
+/// dropped from human-readable serialization by the manual [`Serialize`] below,
+/// keeping the primary chart and every partition-only chart byte-identical to IR
+/// that predates the field; positional binary formats keep the field so their
+/// fixed layout still round-trips.
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct ReducedChart {
     pub independent_y_indices: Vec<usize>,
     pub dependent_y_indices: Vec<usize>,
     pub trial_rcond: f64,
     pub trial_singular_threshold: f64,
+    #[serde(default)]
+    pub plan: Option<ReducedChartPlan>,
+}
+
+impl Serialize for ReducedChart {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        // A present plan is always written. An absent plan is dropped only from
+        // human-readable formats (JSON), keeping a partition-only chart
+        // byte-identical, while non-self-describing formats (bincode) retain
+        // every field so a positional round-trip reads back the same layout.
+        let omit_plan = serializer.is_human_readable() && self.plan.is_none();
+        let field_count = if omit_plan { 4 } else { 5 };
+        let mut state = serializer.serialize_struct("ReducedChart", field_count)?;
+        state.serialize_field("independent_y_indices", &self.independent_y_indices)?;
+        state.serialize_field("dependent_y_indices", &self.dependent_y_indices)?;
+        state.serialize_field("trial_rcond", &self.trial_rcond)?;
+        state.serialize_field("trial_singular_threshold", &self.trial_singular_threshold)?;
+        if !omit_plan {
+            state.serialize_field("plan", &self.plan)?;
+        }
+        state.end()
+    }
+}
+
+/// The executable reconstruction and derivative kernel of one alternate reduced
+/// chart, expressed in the same solver-Y index space as the primary basis.
+///
+/// A folding definitional first-integral group has no globally regular reduced
+/// chart, so the primary basis folds when one of its dependent coordinates
+/// passes through zero. This kernel is the alternate basis lowered through the
+/// same machinery that produced the primary: `implicit_rhs`/`implicit_row_targets`
+/// and `residual` compute the alternate reconstruction rows (its generated
+/// `$state_coordinates` identity plus its dependent-coordinate reconstructions),
+/// `algebraic_projection_plan` sequences their solves over the alternate
+/// Dependent coordinates, and `derivative_rhs` advances the alternate Independent
+/// coordinates by their own formal derivatives. It carries no manifold projection
+/// (a reduced first-integral group has none) and no refresh owners (a runtime
+/// prepares those from the plan).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ReducedChartPlan {
+    pub implicit_rhs: ComputeBlock,
+    pub implicit_row_targets: Vec<Option<ScalarSlot>>,
+    pub algebraic_projection_plan: AlgebraicProjectionPlan,
+    pub residual: ComputeBlock,
+    pub derivative_rhs: ComputeBlock,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]

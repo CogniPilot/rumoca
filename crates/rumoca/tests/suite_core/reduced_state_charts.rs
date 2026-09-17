@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rumoca::Compiler;
-use rumoca_ir_solve::{AlgebraicProjectionPlan, SolveModel};
+use rumoca_ir_solve::{AlgebraicProjectionPlan, ComputeBlock, ComputeNode, LinearOp, SolveModel};
 
 fn lowered(source: &str, model: &str) -> SolveModel {
     let dae = Compiler::new()
@@ -66,6 +66,36 @@ fn has_scalar_block(plan: &AlgebraicProjectionPlan, y_index: usize) -> bool {
         .any(|block| block.rows.len() == 1 && block.y_indices == [y_index])
 }
 
+/// The residual row a single-row, single-unknown algebraic block uses to
+/// reconstruct solver-Y index `y`, if one does.
+fn scalar_block_row_for(plan: &AlgebraicProjectionPlan, y: usize) -> Option<usize> {
+    plan.blocks
+        .iter()
+        .find(|block| block.rows.len() == 1 && block.y_indices == [y])
+        .map(|block| block.rows[0])
+}
+
+/// The solver-Y index a single-row, single-unknown algebraic block reconstructs
+/// from residual row `row`, if one does.
+fn scalar_block_reconstructed_from(plan: &AlgebraicProjectionPlan, row: usize) -> Option<usize> {
+    plan.blocks
+        .iter()
+        .find(|block| block.rows == [row] && block.y_indices.len() == 1)
+        .map(|block| block.y_indices[0])
+}
+
+/// The sole solver-Y index a state-derivative kernel loads: the base formal
+/// derivative slot that advances its first integrated coordinate.
+fn sole_load_y_index(block: &ComputeBlock) -> Option<usize> {
+    block.nodes.iter().find_map(|node| match node {
+        ComputeNode::Map { base_ops, .. } => base_ops.iter().find_map(|op| match op {
+            LinearOp::LoadY { index, .. } => Some(*index),
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
 const CIRCLE_CHART: &str = include_str!("../fixtures/index_reduction/CircleChart.mo");
 
 #[test]
@@ -113,6 +143,107 @@ fn circle_chart_yields_two_reduced_charts_over_the_real_lowered_shape() {
             chart.dependent_y_indices[0]
         ));
     }
+}
+
+#[test]
+fn circle_chart_primary_chart_carries_no_executable_plan() {
+    // The primary basis (chart index zero) is executed by the enclosing
+    // continuous system, so it carries no separate re-lowered plan; only the
+    // alternate charts do.
+    let model = lowered(CIRCLE_CHART, "CircleChart");
+    let charts = &model.problem.continuous.reduced_chart_set.charts;
+    assert_eq!(charts.len(), 2);
+    assert!(
+        charts[0].plan.is_none(),
+        "the primary chart is executed by the enclosing continuous system"
+    );
+}
+
+#[test]
+fn circle_chart_alternate_chart_re_lowers_to_a_regular_mirror_plan() {
+    // The alternate chart is the primary coordinate transformation run with the
+    // mirror Independent set, re-lowered through the same machinery. Its plan must
+    // reconstruct the mirror dependent coordinate q[2] from the conserved
+    // q*q = 1 residual (a regular reconstruction at a generic non-fold point) and
+    // advance its own integrated coordinate q[1] by q[1]'s formal derivative, not
+    // q[2]'s. Both artifacts live in the same solver-Y space as the primary basis.
+    let model = lowered(CIRCLE_CHART, "CircleChart");
+    let maps = model.problem.solve_layout.solver_maps();
+    let names = &maps.names;
+    let continuous = &model.problem.continuous;
+    let charts = &continuous.reduced_chart_set.charts;
+    assert_eq!(charts.len(), 2);
+
+    let primary = &charts[0];
+    let alternate = &charts[1];
+    let plan = alternate
+        .plan
+        .as_ref()
+        .expect("an alternate chart carries a re-lowered executable plan");
+
+    // The alternate integrates q[1] and reconstructs q[2]: the exact swap of the
+    // primary, confirmed against the source names in the shared solver-Y space.
+    assert_eq!(names[alternate.independent_y_indices[0]], "q[1]");
+    assert_eq!(names[alternate.dependent_y_indices[0]], "q[2]");
+
+    // The primary reconstructs its dependent q[1] from the conserved-norm residual
+    // row; the alternate reconstructs its dependent q[2] from that SAME row. A
+    // regular first-integral reconstruction away from the fold.
+    let norm_row = scalar_block_row_for(
+        &continuous.algebraic_projection_plan,
+        primary.dependent_y_indices[0],
+    )
+    .expect("the primary reconstructs its dependent from a single norm residual row");
+    assert_eq!(
+        scalar_block_reconstructed_from(&plan.algebraic_projection_plan, norm_row),
+        Some(alternate.dependent_y_indices[0]),
+        "the alternate reconstructs q[2] from the q*q=1 residual row"
+    );
+
+    // The alternate reconstructs its now-integrated coordinate q[1] from the
+    // generated $state_coordinates identity row -- the row that binds the primary's
+    // integrated coordinate q[2] in the primary plan. This identity row exists only
+    // because the alternate was re-lowered with q[1] integrated.
+    let identity_row = scalar_block_row_for(
+        &continuous.algebraic_projection_plan,
+        primary.independent_y_indices[0],
+    )
+    .expect("the primary reconstructs its integrated coordinate from an identity row");
+    assert_eq!(
+        scalar_block_reconstructed_from(&plan.algebraic_projection_plan, identity_row),
+        Some(alternate.independent_y_indices[0]),
+        "the alternate reconstructs q[1] from the generated identity row"
+    );
+
+    // The alternate derivative kernel advances q[1] by its own formal derivative
+    // ($formal_derivative.1.q[1]); the primary advances q[2] by $formal_derivative.1.q[2].
+    let integrated = &names[alternate.independent_y_indices[0]];
+    let alternate_slot = maps
+        .name_to_idx
+        .get(&format!("$formal_derivative.1.{integrated}"))
+        .copied()
+        .expect("q[1] has a formal derivative slot");
+    let primary_integrated = &names[primary.independent_y_indices[0]];
+    let primary_slot = maps
+        .name_to_idx
+        .get(&format!("$formal_derivative.1.{primary_integrated}"))
+        .copied()
+        .expect("q[2] has a formal derivative slot");
+    assert_eq!(
+        sole_load_y_index(&plan.derivative_rhs),
+        Some(alternate_slot),
+        "the alternate kernel loads q[1]'s derivative slot"
+    );
+    assert_eq!(
+        sole_load_y_index(&continuous.derivative_rhs),
+        Some(primary_slot),
+        "the primary kernel loads q[2]'s derivative slot"
+    );
+    assert_ne!(
+        sole_load_y_index(&plan.derivative_rhs),
+        sole_load_y_index(&continuous.derivative_rhs),
+        "the alternate advances a different integrated coordinate than the primary"
+    );
 }
 
 #[test]

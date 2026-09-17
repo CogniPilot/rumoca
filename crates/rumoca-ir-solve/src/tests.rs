@@ -1665,7 +1665,8 @@ fn reduced_chart_set_is_omitted_when_empty_and_round_trips_when_present() {
     assert!(decoded.reduced_chart_set.charts.is_empty());
 
     // Present: a two-chart set (a primary and its mirror) is written to JSON and
-    // round-tripped by both formats without loss.
+    // round-tripped by both formats without loss. The primary chart (index zero)
+    // carries no executable plan; the alternate carries one.
     let mut present = representative_continuous_system();
     present.reduced_chart_set = ReducedChartSet {
         charts: vec![
@@ -1674,29 +1675,43 @@ fn reduced_chart_set_is_omitted_when_empty_and_round_trips_when_present() {
                 dependent_y_indices: vec![2],
                 trial_rcond: 1.0,
                 trial_singular_threshold: 4.440892098500626e-16,
+                plan: None,
             },
             ReducedChart {
                 independent_y_indices: vec![2],
                 dependent_y_indices: vec![3],
                 trial_rcond: 0.0,
                 trial_singular_threshold: 4.440892098500626e-16,
+                plan: Some(ReducedChartPlan::default()),
             },
         ],
     };
     let json = serde_json::to_string(&present).expect("serialize present continuous system");
     assert!(json.contains("reduced_chart_set"));
+    // A partition-only chart omits its plan from JSON; an alternate keeps it, so a
+    // model that predates the field stays byte-identical while the alternate gains
+    // exactly one executable kernel.
+    let primary_only =
+        serde_json::to_string(&present.reduced_chart_set.charts[0]).expect("serialize primary");
+    assert!(!primary_only.contains("plan"));
+    let alternate_only =
+        serde_json::to_string(&present.reduced_chart_set.charts[1]).expect("serialize alternate");
+    assert!(alternate_only.contains("\"plan\""));
+
+    // Both formats round-trip the present set without loss: re-serializing the
+    // decoded system reproduces the original bytes exactly.
     let from_json: ContinuousSolveSystem =
         serde_json::from_str(&json).expect("deserialize present from json");
     assert_eq!(
-        from_json.reduced_chart_set.charts,
-        present.reduced_chart_set.charts
+        serde_json::to_string(&from_json).expect("re-serialize present from json"),
+        json
     );
     let bytes = bincode::serialize(&present).expect("serialize present as bincode");
     let from_bincode: ContinuousSolveSystem =
         bincode::deserialize(&bytes).expect("deserialize present from bincode");
     assert_eq!(
-        from_bincode.reduced_chart_set.charts,
-        present.reduced_chart_set.charts
+        bincode::serialize(&from_bincode).expect("re-serialize present from bincode"),
+        bytes
     );
 }
 

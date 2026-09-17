@@ -8,18 +8,34 @@ use rumoca_core::StateSelect;
 use rumoca_eval_solve::dense_basis::ColumnChoice;
 use rumoca_ir_dae as dae;
 use rumoca_phase_structural::{
-    FormalDerivativeView, FormalStageCoordinate, PreparedDae, ReducedSelectionChart,
-    StateSelection, StructuralError, construct_formal_derivatives, prepare_for_solve,
+    FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate, FormalStateCoordinate,
+    PreparedDae, ReducedSelectionChart, StateSelection, StructuralError,
+    construct_formal_derivatives, prepare_for_solve,
 };
 
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
 
 use evaluation::TrialPoint;
 
+/// The prepared reduced state selection: the primary basis every model executes,
+/// plus one fully prepared alternate DAE per alternate reduced chart of a folding
+/// definitional first-integral group.
+///
+/// The alternates are the same coordinate transformation as the primary run with
+/// a mirror Independent set, so each lowers through the ordinary Solve machinery
+/// into its own executable reconstruction and derivative kernel. They are empty
+/// for every model without a folding first-integral group. The alternates align
+/// with the primary's reduced chart set positionally: `alternates[k]` is the
+/// prepared DAE for reduced chart `k + 1` (chart zero is the primary basis).
+pub(crate) struct PreparedSelection<'source> {
+    pub primary: PreparedDae<'source>,
+    pub alternates: Vec<PreparedDae<'static>>,
+}
+
 pub(crate) fn prepare<'source>(
     model: &'source dae::Dae,
     overrides: &HashMap<String, f64>,
-) -> Result<PreparedDae<'source>, StructuralError> {
+) -> Result<PreparedSelection<'source>, StructuralError> {
     match prepare_for_solve(model) {
         Ok(prepared) => reduce_or_retain(model, prepared, overrides),
         // The ordinary reducer cannot desingularize every constrained system: a
@@ -63,10 +79,10 @@ fn reduce_or_retain<'source>(
     model: &'source dae::Dae,
     prepared: PreparedDae<'source>,
     overrides: &HashMap<String, f64>,
-) -> Result<PreparedDae<'source>, StructuralError> {
+) -> Result<PreparedSelection<'source>, StructuralError> {
     let constrained = prepared.inspect(|system| !system.manifold.is_empty());
     if !constrained {
-        return Ok(prepared);
+        return Ok(PreparedSelection::retained(prepared));
     }
     let formal = construct_formal_derivatives(model)?;
     let dimension = formal.inspect(|formal| formal.formal_dimension());
@@ -77,19 +93,27 @@ fn reduce_or_retain<'source>(
             .sum::<usize>()
     });
     if dimension >= retained {
-        return Ok(prepared);
+        return Ok(PreparedSelection::retained(prepared));
     }
     // Construct the reduced candidate first so an infeasible request (an
     // over-constrained `StateSelect.always`, a singular stage Jacobian) still
     // surfaces its exact typed failure rather than being masked by retention.
-    let candidate =
-        formal.construct_state_candidate_with_charts(|formal| select(formal, overrides))?;
+    let mut alternate_selections = Vec::new();
+    let candidate = formal.construct_state_candidate_with_charts(|formal| {
+        let (selection, alternates) = select(formal, overrides)?;
+        alternate_selections = alternates;
+        Ok(selection)
+    })?;
     // Retain the source basis when every manifold constraint is a conserved
     // first integral, reduce when any constraint is a redundant loop closure.
     if !prepared.manifold_requires_reduction() {
-        return Ok(prepared);
+        return Ok(PreparedSelection::retained(prepared));
     }
-    candidate.into_prepared()
+    let alternates = prepare_alternate_charts(&formal, &alternate_selections)?;
+    Ok(PreparedSelection {
+        primary: candidate.into_prepared()?,
+        alternates,
+    })
 }
 
 /// Attempt the formal-derivative reduction for a system the ordinary reducer
@@ -99,19 +123,93 @@ fn reduce_or_retain<'source>(
 fn recover_singular_via_formal(
     model: &dae::Dae,
     overrides: &HashMap<String, f64>,
-) -> Option<PreparedDae<'static>> {
+) -> Option<PreparedSelection<'static>> {
     let formal = construct_formal_derivatives(model).ok()?;
-    formal
-        .construct_state_candidate_with_charts(|formal| select(formal, overrides))
-        .ok()?
-        .into_prepared()
-        .ok()
+    let mut alternate_selections = Vec::new();
+    let candidate = formal
+        .construct_state_candidate_with_charts(|formal| {
+            let (selection, alternates) = select(formal, overrides)?;
+            alternate_selections = alternates;
+            Ok(selection)
+        })
+        .ok()?;
+    let alternates = prepare_alternate_charts(&formal, &alternate_selections).ok()?;
+    Some(PreparedSelection {
+        primary: candidate.into_prepared().ok()?,
+        alternates,
+    })
 }
+
+impl<'source> PreparedSelection<'source> {
+    /// The retained (or reducer-accepted) basis with no alternate charts. Every
+    /// model that keeps its source basis or reduces without a folding
+    /// first-integral group carries no alternates.
+    fn retained(primary: PreparedDae<'source>) -> Self {
+        Self {
+            primary,
+            alternates: Vec::new(),
+        }
+    }
+}
+
+/// Prepare one transformed DAE per alternate reduced chart by re-running the
+/// ordinary coordinate transformation with the chart's mirror Independent set as
+/// the chosen states. Each alternate is a distinct, fully checked candidate; it
+/// carries no reduced chart set of its own, so no re-enumeration recurses.
+///
+/// The selections name their coordinates by source variable ordinal, formal
+/// derivative order, and tensor scalar, which the finalized transformed root
+/// resolves back to branded coordinates. This reuses the same construction the
+/// primary basis went through, so an alternate plan is as trustworthy as the
+/// primary.
+fn prepare_alternate_charts(
+    formal: &FormalDerivativeSystem<'_>,
+    selections: &[Vec<(u32, usize, u32)>],
+) -> Result<Vec<PreparedDae<'static>>, StructuralError> {
+    selections
+        .iter()
+        .map(|selection| prepare_alternate_chart(formal, selection))
+        .collect()
+}
+
+/// Prepare one alternate chart's transformed DAE from its lifetime-free
+/// Independent set.
+fn prepare_alternate_chart(
+    formal: &FormalDerivativeSystem<'_>,
+    selection: &[(u32, usize, u32)],
+) -> Result<PreparedDae<'static>, StructuralError> {
+    formal
+        .construct_state_candidate(|view| resolve_alternate_coordinates(view, selection))?
+        .into_prepared()
+}
+
+/// Rebind an alternate chart's lifetime-free Independent set onto branded formal
+/// coordinates of the inspected view.
+fn resolve_alternate_coordinates<'source, 'formal>(
+    view: FormalDerivativeView<'_, 'source, 'formal>,
+    selection: &[(u32, usize, u32)],
+) -> Result<Vec<FormalStateCoordinate<'formal>>, StructuralError> {
+    selection
+        .iter()
+        .map(|&(source, order, scalar)| {
+            let variable = view
+                .source
+                .variable_id(source as usize)
+                .ok_or_else(|| failure("alternate chart coordinate has no source owner"))?;
+            view.state_coordinate(variable, order, scalar)
+        })
+        .collect()
+}
+
+/// The primary reduced selection plus the full Independent set of each alternate
+/// reduced chart, described by source variable ordinal, formal derivative order,
+/// and tensor scalar so it survives the branded-coordinate lifetime.
+type SelectionWithAlternates<'formal> = (StateSelection<'formal>, Vec<Vec<(u32, usize, u32)>>);
 
 fn select<'formal>(
     formal: FormalDerivativeView<'_, '_, 'formal>,
     overrides: &HashMap<String, f64>,
-) -> Result<StateSelection<'formal>, StructuralError> {
+) -> Result<SelectionWithAlternates<'formal>, StructuralError> {
     let required = formal
         .source
         .variables()
@@ -128,7 +226,13 @@ fn select<'formal>(
     let mut point = TrialPoint::new(formal, overrides)?;
     point.seed_definitions(&programs)?;
     let mut result = Vec::new();
+    // Every selected independent coordinate in `result`, named by source ordinal,
+    // formal order, and scalar. An alternate chart is this list with the folding
+    // group's integrated scalar remapped, so it must be recorded as the primary
+    // basis is built.
+    let mut primary_selection: Vec<(u32, usize, u32)> = Vec::new();
     let mut charts = Vec::new();
+    let mut fold = None;
     let mut deepest_stage = true;
     for stage in programs.stages().iter().filter(|s| s.stage().level() < 0) {
         let coordinates = stage
@@ -167,7 +271,9 @@ fn select<'formal>(
         // bounded regular reconstruction charts here; every higher stage follows
         // the primary basis and is not re-enumerated.
         if deepest_stage {
-            charts = enumerate_reduced_charts(&matrix, &coordinates, &selected);
+            let (enumerated, group) = enumerate_reduced_charts(&matrix, &coordinates, &selected);
+            charts = enumerated;
+            fold = group;
             deepest_stage = false;
         }
         for index in selected {
@@ -177,12 +283,23 @@ fn select<'formal>(
                 coordinate.order(),
                 scalar as u32,
             )?);
+            primary_selection.push((
+                coordinate.source().index(),
+                coordinate.order(),
+                scalar as u32,
+            ));
         }
     }
-    Ok(StateSelection {
-        coordinates: result,
-        charts,
-    })
+    let alternates = fold
+        .map(|group| group.alternate_selections(&primary_selection))
+        .unwrap_or_default();
+    Ok((
+        StateSelection {
+            coordinates: result,
+            charts,
+        },
+        alternates,
+    ))
 }
 
 /// Enumerate the bounded regular reconstruction charts of one folding
@@ -204,12 +321,12 @@ fn enumerate_reduced_charts(
     matrix: &rumoca_eval_solve::dense_basis::DenseStageMatrix,
     coordinates: &[(FormalStageCoordinate<'_, '_>, usize)],
     selected: &[usize],
-) -> Vec<ReducedSelectionChart> {
+) -> (Vec<ReducedSelectionChart>, Option<ReducedFoldGroup>) {
     let columns = coordinates.len();
     let independent: std::collections::BTreeSet<usize> = selected.iter().copied().collect();
     let dependent: Vec<usize> = (0..columns).filter(|c| !independent.contains(c)).collect();
     if dependent.len() != 1 || columns < 2 {
-        return Vec::new();
+        return (Vec::new(), None);
     }
     let coordinate = |column: usize| {
         let (stage_coordinate, scalar) = coordinates[column];
@@ -218,7 +335,8 @@ fn enumerate_reduced_charts(
     // The primary reconstructed column leads, so the primary basis is chart zero.
     let primary = dependent[0];
     let order = std::iter::once(primary).chain((0..columns).filter(|&c| c != primary));
-    order
+    let charts = order
+        .clone()
         .map(|reconstructed| {
             let (trial_rcond, trial_singular_threshold) = matrix
                 .dependent_conditioning(&[reconstructed])
@@ -233,7 +351,87 @@ fn enumerate_reduced_charts(
                 trial_singular_threshold,
             }
         })
-        .collect()
+        .collect();
+    // The alternate plans are re-lowered only when the folding group is a single
+    // source tensor (a norm-constrained coordinate whose scalars alias one
+    // another across every differentiation order). A mixed-source deepest stage
+    // keeps its partition-only charts unchanged but issues no re-lowered plan.
+    let group = single_source(coordinates).map(|source| ReducedFoldGroup {
+        source,
+        primary_reconstructed_scalar: coordinates[primary].1 as u32,
+        alternate_reconstructed_scalars: order
+            .skip(1)
+            .map(|reconstructed| coordinates[reconstructed].1 as u32)
+            .collect(),
+    });
+    (charts, group)
+}
+
+/// The common source variable ordinal of a stage's coordinates, or `None` when
+/// they span more than one source.
+fn single_source(coordinates: &[(FormalStageCoordinate<'_, '_>, usize)]) -> Option<u32> {
+    let mut sources = coordinates
+        .iter()
+        .map(|(coordinate, _)| coordinate.source().index());
+    let first = sources.next()?;
+    sources.all(|source| source == first).then_some(first)
+}
+
+/// A folding definitional first-integral group at the deepest selection stage:
+/// one source tensor whose scalars are aliased by a conserved holonomic
+/// constraint across every differentiation order. Its alternate charts are the
+/// primary Independent set with the integrated scalar of this source remapped.
+struct ReducedFoldGroup {
+    /// Source variable ordinal of the folding tensor.
+    source: u32,
+    /// Scalar the primary basis reconstructs (its Dependent coordinate).
+    primary_reconstructed_scalar: u32,
+    /// Scalar each alternate chart reconstructs instead, in chart order.
+    alternate_reconstructed_scalars: Vec<u32>,
+}
+
+impl ReducedFoldGroup {
+    /// The full Independent set of each alternate chart, derived from the primary
+    /// selection by swapping the folding source's integration role: the scalar an
+    /// alternate reconstructs leaves the integrated set and the scalar the primary
+    /// reconstructed enters it. Because the conserved constraint aliases the same
+    /// scalar indices at every order, the swap applies to every selected
+    /// coordinate of this source across all stages.
+    fn alternate_selections(
+        &self,
+        primary_selection: &[(u32, usize, u32)],
+    ) -> Vec<Vec<(u32, usize, u32)>> {
+        self.alternate_reconstructed_scalars
+            .iter()
+            .map(|&reconstructed| self.remap_selection(primary_selection, reconstructed))
+            .collect()
+    }
+
+    /// The primary Independent set with this source's `reconstructed` scalar
+    /// swapped out of the integrated role and the primary's reconstructed scalar
+    /// swapped in.
+    fn remap_selection(
+        &self,
+        primary_selection: &[(u32, usize, u32)],
+        reconstructed: u32,
+    ) -> Vec<(u32, usize, u32)> {
+        primary_selection
+            .iter()
+            .map(|&coordinate| self.remap_coordinate(coordinate, reconstructed))
+            .collect()
+    }
+
+    fn remap_coordinate(
+        &self,
+        (source, order, scalar): (u32, usize, u32),
+        reconstructed: u32,
+    ) -> (u32, usize, u32) {
+        if source == self.source && scalar == reconstructed {
+            (source, order, self.primary_reconstructed_scalar)
+        } else {
+            (source, order, scalar)
+        }
+    }
 }
 
 /// A `StateSelect.always` request forces an independent differential state only

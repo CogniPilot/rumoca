@@ -603,6 +603,9 @@ fn lower_reduced_chart_set(
                 dependent_y_indices: to_y(&chart.dependent)?,
                 trial_rcond: chart.trial_rcond,
                 trial_singular_threshold: chart.trial_singular_threshold,
+                // The primary basis and every partition-only chart carry no
+                // separate plan; alternate plans are attached after lowering.
+                plan: None,
             })
         })
         .collect::<Result<Vec<_>, LowerError>>()?;

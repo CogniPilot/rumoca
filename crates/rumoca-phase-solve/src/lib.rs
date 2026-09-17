@@ -54,14 +54,61 @@ pub struct LoweredSolvePackage {
 
 /// Lower one immutable checked DAE and retain its model-level call owners.
 pub fn lower_solve_package(dae: &dae::Dae) -> Result<LoweredSolvePackage, LowerError> {
-    let prepared =
+    let selection =
         state_selection::prepare(dae, &std::collections::HashMap::new()).map_err(|error| {
             LowerError::Structural {
                 reason: error.to_string(),
                 span: error.source_span(),
             }
         })?;
-    lower_prepared_solve_package(&prepared, &std::collections::HashMap::new())
+    lower_selection(&selection, &std::collections::HashMap::new())
+}
+
+/// Lower the primary basis and attach each alternate reduced chart's executable
+/// plan, re-lowered from its own prepared DAE. The primary problem is unchanged;
+/// a model with no alternate charts lowers exactly as before.
+pub(crate) fn lower_selection(
+    selection: &state_selection::PreparedSelection<'_>,
+    overrides: &std::collections::HashMap<String, f64>,
+) -> Result<LoweredSolvePackage, LowerError> {
+    let mut package = lower_prepared_solve_package(&selection.primary, overrides)?;
+    attach_alternate_chart_plans(
+        &mut package.problem.continuous,
+        &selection.alternates,
+        overrides,
+    )?;
+    Ok(package)
+}
+
+/// Re-lower each alternate reduced chart's prepared DAE and carry its
+/// reconstruction and derivative kernel on the matching chart. The alternates
+/// align positionally with reduced chart index one and above; chart zero is the
+/// primary basis and keeps no separate plan.
+fn attach_alternate_chart_plans(
+    continuous: &mut solve::ContinuousSolveSystem,
+    alternates: &[rumoca_phase_structural::PreparedDae<'_>],
+    overrides: &std::collections::HashMap<String, f64>,
+) -> Result<(), LowerError> {
+    if alternates.is_empty() {
+        return Ok(());
+    }
+    if continuous.reduced_chart_set.charts.len() != alternates.len() + 1 {
+        return Err(LowerError::unspanned_non_computable(
+            "reduced chart count does not match the prepared alternate selections",
+        ));
+    }
+    for (offset, alternate) in alternates.iter().enumerate() {
+        let lowered = lower_prepared_solve_package(alternate, overrides)?;
+        let alternate_continuous = lowered.problem.continuous;
+        continuous.reduced_chart_set.charts[offset + 1].plan = Some(solve::ReducedChartPlan {
+            implicit_rhs: alternate_continuous.implicit_rhs,
+            implicit_row_targets: alternate_continuous.implicit_row_targets,
+            algebraic_projection_plan: alternate_continuous.algebraic_projection_plan,
+            residual: alternate_continuous.residual,
+            derivative_rhs: alternate_continuous.derivative_rhs,
+        });
+    }
+    Ok(())
 }
 
 /// Lower the exact prepared DAE retained by complete-model construction.

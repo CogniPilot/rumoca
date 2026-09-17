@@ -5,7 +5,7 @@ use rumoca_eval_dae::{NumericEvaluationError, NumericEvaluationErrorKind, Numeri
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
-use crate::{LowerError, lower_prepared_solve_package, lower_solve_artifacts};
+use crate::{LowerError, lower_selection, lower_solve_artifacts};
 
 /// Failure while constructing the complete executable Solve root from one DAE.
 #[derive(Debug)]
@@ -144,13 +144,14 @@ pub fn lower_solve_model<'source>(
 ) -> Result<LoweredSolveModel<'source>, SolveModelLoweringError> {
     begin_stage(SolveModelLoweringStage::Programs);
     let program_start = rumoca_core::maybe_start_timer();
-    let prepared = crate::state_selection::prepare(model, overrides).map_err(|error| {
+    let selection = crate::state_selection::prepare(model, overrides).map_err(|error| {
         LowerError::Structural {
             reason: error.to_string(),
             span: error.source_span(),
         }
     })?;
-    let package = lower_prepared_solve_package(&prepared, overrides)?;
+    let package = lower_selection(&selection, overrides)?;
+    let prepared = selection.primary;
     let problem = package.problem;
     let artifacts = lower_solve_artifacts(&problem)?;
     let program_seconds = rumoca_core::maybe_elapsed_seconds(program_start);
