@@ -264,6 +264,21 @@ impl IncidenceRowsBuilder {
         self.push_unsorted(occurrences.iter().copied());
     }
 
+    /// Append a row copied from an already-canonical source run.
+    ///
+    /// The incremental reduction reuses the rows of equations a demotion does
+    /// not touch. Those runs come straight out of a finished [`IncidenceRows`],
+    /// so they already satisfy the ascending, duplicate-free invariant and are
+    /// appended verbatim.
+    pub(crate) fn push_canonical_row(&mut self, columns: &[usize]) {
+        debug_assert!(
+            columns.windows(2).all(|pair| pair[0] < pair[1]),
+            "push_canonical_row requires a strictly ascending run"
+        );
+        self.columns.extend_from_slice(columns);
+        self.offsets.push(self.columns.len());
+    }
+
     /// Affinely translate ordered unknown occurrences and append their
     /// canonical incidence set.
     ///

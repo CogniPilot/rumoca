@@ -340,6 +340,42 @@ fn structural_analysis(model: &dae::Dae) -> Result<PreparedStructuralAnalysis, S
     model.inspect(|view| sort(view).map(PreparedStructuralAnalysis::issue))
 }
 
+/// One direct-demotion round's structural analysis, retaining the incidence so
+/// the next round can reuse the rows this demotion did not touch.
+///
+/// `reuse` supplies the prior round's incidence and the owners the demotion
+/// rewrites; when it is `None` the incidence is built from scratch. The
+/// [`ReusableIncidence`] is returned whenever the incidence built, even if the
+/// system is singular, because a singular-with-residue round is exactly the one
+/// whose incidence the next round reuses.
+fn structural_analysis_capturing(
+    model: &dae::Dae,
+    reuse: Option<&crate::incidence::ReusableIncidence>,
+    touched: Option<&[bool]>,
+) -> (
+    Result<PreparedStructuralAnalysis, StructuralError>,
+    Option<crate::incidence::ReusableIncidence>,
+) {
+    let reuse = reuse
+        .zip(touched)
+        .map(|(prev, mask)| crate::incidence::IncidenceReuse::new(prev, mask));
+    model.inspect(|view| {
+        let incidence = match reuse {
+            Some(reuse) => crate::incidence::build_incidence_reusing(view, reuse),
+            None => crate::incidence::build_incidence(view),
+        };
+        match incidence {
+            Ok(incidence) => {
+                let reusable = crate::incidence::ReusableIncidence::from_incidence(&incidence);
+                let analysis = crate::sort_from_incidence(view, &incidence)
+                    .map(PreparedStructuralAnalysis::issue);
+                (analysis, Some(reusable))
+            }
+            Err(error) => (Err(error), None),
+        }
+    })
+}
+
 #[derive(Clone, Copy)]
 struct DirectStateConstraint {
     state: u32,
@@ -525,13 +561,13 @@ fn reduce_for_solve_with_observer<'source>(
     model: &'source dae::Dae,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'source>, StructuralError> {
-    let singular = match structural_analysis(model) {
-        Ok(structural) => return borrowed_with_observer(model, structural, observer),
-        Err(error @ StructuralError::Singular { .. }) => error,
-        Err(StructuralError::EmptySystem) => {
+    let (singular, mut current_reusable) = match structural_analysis_capturing(model, None, None) {
+        (Ok(structural), _) => return borrowed_with_observer(model, structural, observer),
+        (Err(error @ StructuralError::Singular { .. }), reusable) => (error, reusable),
+        (Err(StructuralError::EmptySystem), _) => {
             return borrowed_with_observer(model, PreparedStructuralAnalysis::empty(), observer);
         }
-        Err(error) => {
+        (Err(error), _) => {
             observer.observe(ReductionEvent::Stopped {
                 outcome: StoppedOutcome::Failure { error: &error },
             });
@@ -552,11 +588,17 @@ fn reduce_for_solve_with_observer<'source>(
             round: round_number,
             error: current_error,
         });
-        let round =
-            match demote_direct_state_with_observer(current_model, residue, &[], true, observer) {
-                Ok(round) => round,
-                Err(error) => return observed_failure(error, observer),
-            };
+        let round = match demote_direct_state_with_observer(
+            current_model,
+            residue,
+            &[],
+            true,
+            current_reusable.as_ref(),
+            observer,
+        ) {
+            Ok(round) => round,
+            Err(error) => return observed_failure(error, observer),
+        };
         match round.step {
             None => break round.blocked,
             Some(DemotionStep::Sorted {
@@ -568,11 +610,13 @@ fn reduce_for_solve_with_observer<'source>(
                 dae,
                 residue: next,
                 error,
+                reusable,
                 ..
             }) => {
                 residue = next;
                 demoted_error = Some(error);
                 demoted = Some(dae);
+                current_reusable = Some(reusable);
             }
         }
     };
@@ -748,6 +792,9 @@ enum DemotionStep {
         manifold: Vec<ManifoldConstraint>,
         residue: usize,
         error: StructuralError,
+        /// The incidence of the reduced system, carried to the next round so it
+        /// reuses the rows this demotion did not touch.
+        reusable: crate::incidence::ReusableIncidence,
     },
 }
 
@@ -763,9 +810,12 @@ struct DemotionRound {
 }
 
 #[derive(Clone, Copy)]
-struct DemotionPassPolicy {
+struct DemotionPassPolicy<'a> {
     group: CandidateGroup,
     allow_held: bool,
+    /// The prior round's incidence, reused for owners this demotion leaves
+    /// untouched; `None` disables reuse and rebuilds the incidence in full.
+    reuse: Option<&'a crate::incidence::ReusableIncidence>,
 }
 
 /// Demote one directly defined state of `model`.
@@ -791,6 +841,7 @@ fn demote_direct_state_with_observer(
     residue: usize,
     prior_manifold: &[ManifoldConstraint],
     allow_held: bool,
+    reuse: Option<&crate::incidence::ReusableIncidence>,
     observer: &mut impl ReductionObserver,
 ) -> Result<DemotionRound, StructuralError> {
     let source = ReductionSource::new(model);
@@ -805,6 +856,7 @@ fn demote_direct_state_with_observer(
         DemotionPassPolicy {
             group: CandidateGroup::DirectAdmissible,
             allow_held,
+            reuse,
         },
         observer,
     )?;
@@ -820,6 +872,7 @@ fn demote_direct_state_with_observer(
         DemotionPassPolicy {
             group: CandidateGroup::DirectConditional,
             allow_held,
+            reuse,
         },
         observer,
     )?;
@@ -883,6 +936,7 @@ fn attempt_direct_candidate(
     stated: &[u32],
     candidate: &DirectStateConstraint,
     prior_manifold: &[ManifoldConstraint],
+    reuse: Option<&crate::incidence::ReusableIncidence>,
     observer: &mut impl ReductionObserver,
 ) -> Result<DirectAttempt, StructuralError> {
     let identity = Identity::Direct(DirectIdentity::from(candidate));
@@ -896,7 +950,15 @@ fn attempt_direct_candidate(
         });
         return Ok(DirectAttempt::Rejected);
     }
-    reconstruct_direct_candidate(source, residue, stated, candidate, prior_manifold, observer)
+    reconstruct_direct_candidate(
+        source,
+        residue,
+        stated,
+        candidate,
+        prior_manifold,
+        reuse,
+        observer,
+    )
 }
 
 fn reconstruct_direct_candidate(
@@ -905,6 +967,7 @@ fn reconstruct_direct_candidate(
     stated: &[u32],
     candidate: &DirectStateConstraint,
     prior_manifold: &[ManifoldConstraint],
+    reuse: Option<&crate::incidence::ReusableIncidence>,
     observer: &mut impl ReductionObserver,
 ) -> Result<DirectAttempt, StructuralError> {
     let model = source.model();
@@ -929,7 +992,13 @@ fn reconstruct_direct_candidate(
         });
         return Ok(DirectAttempt::Rejected);
     }
-    let (next, retained_error, structural) = match structural_analysis(&rebuilt) {
+    // A direct demotion with no retained manifold rewrites only the owners that
+    // reference the demoted variable, so the next round can reuse every other
+    // row of this round's incidence rather than reproject the whole system.
+    let touched = (reuse.is_some() && prior_manifold.is_empty())
+        .then(|| source.demotion_rows.touched_owners(candidate.state));
+    let (analysis, reusable) = structural_analysis_capturing(&rebuilt, reuse, touched.as_deref());
+    let (next, retained_error, structural) = match analysis {
         Ok(structural) => (None, None, Some(structural)),
         Err(error) => match unmatched_residue(&error) {
             Some(next) if next <= residue => (Some(next), Some(error), None),
@@ -999,6 +1068,7 @@ fn reconstruct_direct_candidate(
             manifold,
             residue: next,
             error: retained_error.expect("reduced/held candidate retains its proving error"),
+            reusable: reusable.expect("a reduced candidate built its incidence"),
         },
     })
 }
@@ -1024,7 +1094,7 @@ fn demotion_pass_with_observer(
     stated: &[u32],
     candidates: &[DirectStateConstraint],
     prior_manifold: &[ManifoldConstraint],
-    policy: DemotionPassPolicy,
+    policy: DemotionPassPolicy<'_>,
     observer: &mut impl ReductionObserver,
 ) -> Result<DemotionRound, StructuralError> {
     observer.observe(ReductionEvent::Candidates {
@@ -1049,6 +1119,7 @@ fn demotion_pass_with_observer(
             stated,
             candidate,
             prior_manifold,
+            policy.reuse,
             observer,
         )? {
             DirectAttempt::Sorted {
@@ -1238,6 +1309,7 @@ impl HolonomicReductionState {
             self.residue,
             &self.manifold,
             allow_held,
+            None,
             observer,
         )?;
         self.blocked = self.blocked.take().or(round.blocked);
@@ -1303,6 +1375,7 @@ impl From<DemotionStep> for HolonomicStep {
                 manifold,
                 residue,
                 error,
+                reusable: _,
             } => Self::Reduced {
                 dae,
                 manifold,
@@ -1457,7 +1530,7 @@ fn select_dummy_states(
     StructuralError,
 > {
     loop {
-        let round = demote_direct_state_with_observer(&model, 0, &manifold, false, &mut ())?;
+        let round = demote_direct_state_with_observer(&model, 0, &manifold, false, None, &mut ())?;
         match round.step {
             Some(DemotionStep::Sorted {
                 dae,

@@ -11,6 +11,11 @@ use super::ManifoldConstraint;
 pub(super) struct DemotionRowBounds {
     state_rows: Vec<usize>,
     owner_rows: Vec<usize>,
+    /// Continuous owners that reference each variable in any coordinate form,
+    /// in ascending owner order. A direct-state demotion rewrites exactly the
+    /// owners that mention the demoted variable, so this is the set of rows the
+    /// incremental incidence reprojects; every other row is reused unchanged.
+    variable_owners: Vec<Vec<usize>>,
 }
 
 impl DemotionRowBounds {
@@ -18,11 +23,12 @@ impl DemotionRowBounds {
         let mut bounds = Self {
             state_rows: vec![0; view.variable_count()],
             owner_rows: Vec::new(),
+            variable_owners: vec![Vec::new(); view.variable_count()],
         };
         let mut traversal = dae::ExpressionTraversal::new();
         let mut seen = vec![0; view.variable_count()];
         let mut roots = Vec::new();
-        for owner in view.continuous_owners() {
+        for (owner_index, owner) in view.continuous_owners().enumerate() {
             roots.clear();
             let rows = match owner {
                 dae::ContinuousOwnerView::Residual { equation, .. } => {
@@ -40,12 +46,39 @@ impl DemotionRowBounds {
             };
             bounds.owner_rows.push(rows);
             let stamp = bounds.owner_rows.len();
+            let mut accumulator = CoordinateAccumulator {
+                seen: &mut seen,
+                counts: &mut bounds.state_rows,
+                variable_owners: &mut bounds.variable_owners,
+            };
             traversal.visit_pruned(view, roots.iter().copied(), |_, node| {
-                record_coordinate_rows(node, stamp, rows, &mut seen, &mut bounds.state_rows);
+                accumulator.record(
+                    node,
+                    OwnerRows {
+                        stamp,
+                        owner_index,
+                        rows,
+                    },
+                );
                 true
             });
         }
         bounds
+    }
+
+    /// Mask of the continuous owners a demotion of `variable` rewrites.
+    ///
+    /// Every owner referencing the variable in any coordinate is `true`, so the
+    /// incremental incidence reprojects exactly those and reuses the rest.
+    pub(super) fn touched_owners(&self, variable: u32) -> Vec<bool> {
+        let mut mask = vec![false; self.owner_rows.len()];
+        let owners = self.variable_owners.get(variable as usize);
+        for &owner in owners.into_iter().flatten() {
+            if let Some(entry) = mask.get_mut(owner) {
+                *entry = true;
+            }
+        }
+        mask
     }
 
     pub(super) fn cannot_sort(
@@ -68,19 +101,31 @@ impl DemotionRowBounds {
     }
 }
 
-fn record_coordinate_rows(
-    node: dae::ExpressionView<'_>,
+/// The current owner's stamp, ordinal, and scalar-row count.
+#[derive(Clone, Copy)]
+struct OwnerRows {
     stamp: usize,
+    owner_index: usize,
     rows: usize,
-    seen: &mut [usize],
-    counts: &mut [usize],
-) {
-    let Some(variable) = node.variable_coordinate() else {
-        return;
-    };
-    let index = variable.index() as usize;
-    if seen[index] != stamp {
-        seen[index] = stamp;
-        counts[index] = counts[index].saturating_add(rows);
+}
+
+/// Per-variable accumulators shared across one collection pass.
+struct CoordinateAccumulator<'a> {
+    seen: &'a mut [usize],
+    counts: &'a mut [usize],
+    variable_owners: &'a mut [Vec<usize>],
+}
+
+impl CoordinateAccumulator<'_> {
+    fn record(&mut self, node: dae::ExpressionView<'_>, owner: OwnerRows) {
+        let Some(variable) = node.variable_coordinate() else {
+            return;
+        };
+        let index = variable.index() as usize;
+        if self.seen[index] != owner.stamp {
+            self.seen[index] = owner.stamp;
+            self.counts[index] = self.counts[index].saturating_add(owner.rows);
+            self.variable_owners[index].push(owner.owner_index);
+        }
     }
 }

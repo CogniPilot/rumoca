@@ -6,7 +6,8 @@ fn candidate_reconstructions_share_facts_only_within_their_source_round() {
     let error = structural_analysis(&model).err().unwrap();
     let residue = unmatched_residue(&error).unwrap();
     constraints::FACT_COLLECTIONS.set(0);
-    let round = demote_direct_state_with_observer(&model, residue, &[], true, &mut ()).unwrap();
+    let round =
+        demote_direct_state_with_observer(&model, residue, &[], true, None, &mut ()).unwrap();
     let Some(DemotionStep::Reduced { dae, residue, .. }) = round.step else {
         panic!("one of two independent constraints must remain singular");
     };
@@ -15,7 +16,7 @@ fn candidate_reconstructions_share_facts_only_within_their_source_round() {
         1,
         "one immutable source proof per round"
     );
-    let next = demote_direct_state_with_observer(&dae, residue, &[], true, &mut ()).unwrap();
+    let next = demote_direct_state_with_observer(&dae, residue, &[], true, None, &mut ()).unwrap();
     assert!(matches!(next.step, Some(DemotionStep::Sorted { .. })));
     assert_eq!(
         constraints::FACT_COLLECTIONS.get(),

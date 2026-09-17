@@ -269,6 +269,7 @@ fn a_derivative_proof_does_not_authorize_an_unavailable_manifold_value() {
         &[],
         &candidate,
         &[retained],
+        None,
         &mut (),
     )
     .expect("an unavailable value rejects this candidate without aborting reduction");

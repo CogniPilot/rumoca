@@ -45,12 +45,13 @@ fn later_sorted_tensor_candidate_still_beats_a_reduced_scalar_candidate() {
     let (model, candidates) = mixed_width_constraint();
     let residue = unmatched_residue(&structural_analysis(&model).err().unwrap()).unwrap();
     let source = ReductionSource::new(&model);
-    let first =
-        attempt_direct_candidate(&source, residue, &[], &candidates[0], &[], &mut ()).unwrap();
+    let first = attempt_direct_candidate(&source, residue, &[], &candidates[0], &[], None, &mut ())
+        .unwrap();
     assert!(matches!(first, DirectAttempt::Accepted { residue: next, .. } if next < residue));
     let DirectAttempt::Sorted {
         rebuilt: expected, ..
-    } = attempt_direct_candidate(&source, residue, &[], &candidates[1], &[], &mut ()).unwrap()
+    } = attempt_direct_candidate(&source, residue, &[], &candidates[1], &[], None, &mut ())
+        .unwrap()
     else {
         panic!("the whole tensor demotion sorts both constraint rows");
     };
@@ -63,6 +64,7 @@ fn later_sorted_tensor_candidate_still_beats_a_reduced_scalar_candidate() {
         DemotionPassPolicy {
             group: CandidateGroup::DirectAdmissible,
             allow_held: true,
+            reuse: None,
         },
         &mut (),
     )

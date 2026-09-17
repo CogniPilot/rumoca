@@ -70,29 +70,30 @@ pub fn sort<'dae>(view: dae::DaeView<'dae>) -> Result<SortedDae<'dae>, Structura
         unknowns = incidence.n_var,
         "built scalar incidence"
     );
+    sort_from_incidence(view, &incidence)
+}
+
+/// BLT-sort a DAE whose scalar incidence is already built.
+///
+/// The reduction pipeline builds the incidence of a demoted system by reusing
+/// the untouched rows of the prior round (see
+/// [`incidence::build_incidence_reusing`]); it then finishes the analysis
+/// through this tail so the matching, singularity check, and BLT run on that
+/// incidence exactly as they would on a freshly built one.
+pub(crate) fn sort_from_incidence<'dae>(
+    view: dae::DaeView<'dae>,
+    incidence: &Incidence<'dae>,
+) -> Result<SortedDae<'dae>, StructuralError> {
     if incidence.n_eq == 0 && incidence.n_var == 0 {
         return Err(StructuralError::EmptySystem);
     }
-    let preferences = explicit_derivative_preferences(view, &incidence);
-    let (match_eq, match_var) = maximum_matching(&incidence, &preferences);
-    #[cfg(feature = "tracing")]
-    tracing::debug!(
-        target: "rumoca_phase_structural::timing",
-        elapsed_seconds = stage_start.elapsed().as_secs_f64(),
-        "completed structural matching"
-    );
-    require_perfect_matching(view, &incidence, &match_eq, &match_var)?;
+    let preferences = explicit_derivative_preferences(view, incidence);
+    let (match_eq, match_var) = maximum_matching(incidence, &preferences);
+    require_perfect_matching(view, incidence, &match_eq, &match_var)?;
     let adjacency =
         incidence::build_dependency_graph(&incidence.eq_unknowns, &match_var, incidence.n_eq);
-    let diagnostics = diagnostics::collect_warnings(view, &incidence, &match_eq, &adjacency);
-    let blocks = blt::build_blt_blocks(&incidence, &match_eq, &adjacency);
-    #[cfg(feature = "tracing")]
-    tracing::debug!(
-        target: "rumoca_phase_structural::timing",
-        elapsed_seconds = stage_start.elapsed().as_secs_f64(),
-        blocks = blocks.len(),
-        "completed BLT analysis"
-    );
+    let diagnostics = diagnostics::collect_warnings(view, incidence, &match_eq, &adjacency);
+    let blocks = blt::build_blt_blocks(incidence, &match_eq, &adjacency);
     let matching = match_eq
         .iter()
         .enumerate()

@@ -22,6 +22,63 @@ pub struct Incidence<'dae> {
     pub equation_refs: Vec<EquationRef>,
     pub equation_spans: Vec<rumoca_core::Span>,
     pub(crate) structured_matching: Vec<StructuredMatchingFamily>,
+    /// First scalar row of each continuous owner, terminated by `n_eq`, so
+    /// owner `i` occupies rows `owner_first_row[i]..owner_first_row[i + 1]`.
+    /// This lets the incremental reduction copy an untouched owner's rows
+    /// verbatim from a prior round.
+    pub(crate) owner_first_row: Vec<usize>,
+}
+
+/// The lifetime-free scalar rows of one round's incidence, detached from the
+/// DAE they were branded to so the next round can reuse the runs of equations
+/// its demotion does not touch.
+///
+/// A direct-state demotion substitutes only the demoted variable's
+/// coordinates, so every continuous owner that does not reference that variable
+/// keeps the exact incident-unknown set it had; the variable catalog is the
+/// unified dense [`dae::VariableId`] order, which a role change leaves in
+/// place, so unknown positions are stable across the rebuild. Reusing those
+/// runs reproduces the from-scratch incidence bit for bit.
+#[derive(Clone, Debug)]
+pub(crate) struct ReusableIncidence {
+    rows: IncidenceRows,
+    equation_spans: Vec<rumoca_core::Span>,
+    owner_first_row: Vec<usize>,
+}
+
+impl ReusableIncidence {
+    pub(crate) fn from_incidence(incidence: &Incidence<'_>) -> Self {
+        Self {
+            rows: incidence.eq_unknowns.clone(),
+            equation_spans: incidence.equation_spans.clone(),
+            owner_first_row: incidence.owner_first_row.clone(),
+        }
+    }
+
+    fn owner_rows(&self, owner: usize) -> Option<std::ops::Range<usize>> {
+        let start = *self.owner_first_row.get(owner)?;
+        let end = *self.owner_first_row.get(owner.checked_add(1)?)?;
+        Some(start..end)
+    }
+}
+
+/// A prior round's incidence together with the owners a demotion touched.
+///
+/// `touched_owner[i]` is `true` when continuous owner `i` references the
+/// demoted variable and must be projected afresh; every other owner's rows are
+/// copied from `prev`.
+pub(crate) struct IncidenceReuse<'a> {
+    prev: &'a ReusableIncidence,
+    touched_owner: &'a [bool],
+}
+
+impl<'a> IncidenceReuse<'a> {
+    pub(crate) fn new(prev: &'a ReusableIncidence, touched_owner: &'a [bool]) -> Self {
+        Self {
+            prev,
+            touched_owner,
+        }
+    }
 }
 
 /// Exact affine matching candidates for one checked structured family.
@@ -86,6 +143,29 @@ enum UnknownKey {
 pub(crate) fn build_incidence<'dae>(
     view: dae::DaeView<'dae>,
 ) -> Result<Incidence<'dae>, StructuralError> {
+    build_incidence_inner(view, None)
+}
+
+/// Build the incidence of a demoted system by reusing the rows of every owner
+/// the demotion did not touch.
+///
+/// The result is asserted equal to a from-scratch [`build_incidence`] under
+/// debug assertions (see [`assert_reuse_matches_fresh`]), so the reuse can only
+/// ever reproduce the exact rows the full projection would have produced.
+pub(crate) fn build_incidence_reusing<'dae>(
+    view: dae::DaeView<'dae>,
+    reuse: IncidenceReuse<'_>,
+) -> Result<Incidence<'dae>, StructuralError> {
+    let incidence = build_incidence_inner(view, Some(reuse))?;
+    #[cfg(debug_assertions)]
+    assert_reuse_matches_fresh(view, &incidence);
+    Ok(incidence)
+}
+
+fn build_incidence_inner<'dae>(
+    view: dae::DaeView<'dae>,
+    reuse: Option<IncidenceReuse<'_>>,
+) -> Result<Incidence<'dae>, StructuralError> {
     let unknowns = build_unknowns(view)?;
     let mut builder = IncidenceBuilder {
         view,
@@ -96,13 +176,34 @@ pub(crate) fn build_incidence<'dae>(
         structured_matching: Vec::new(),
         projection_cache: ScalarCoordinateProjectionCache::default(),
     };
-    for owner in view.continuous_owners() {
+    let mut owner_first_row = Vec::new();
+    for (owner_index, owner) in view.continuous_owners().enumerate() {
         #[cfg(feature = "tracing")]
         let owner_start = std::time::Instant::now();
         let first_row = builder.rows.row_count();
-        projection::visit_owner_rows(view, owner, |row| {
-            builder.push_expression(row.expression, row.scalar, row.domain_point, row.provenance)
-        })?;
+        owner_first_row.push(first_row);
+        let reused = reuse
+            .as_ref()
+            .filter(|reuse| {
+                !reuse
+                    .touched_owner
+                    .get(owner_index)
+                    .copied()
+                    .unwrap_or(true)
+            })
+            .map(|reuse| reuse.prev)
+            .and_then(|prev| builder.copy_owner_rows(prev, owner_index))
+            .is_some();
+        if !reused {
+            projection::visit_owner_rows(view, owner, |row| {
+                builder.push_expression(
+                    row.expression,
+                    row.scalar,
+                    row.domain_point,
+                    row.provenance,
+                )
+            })?;
+        }
         if let dae::ContinuousOwnerView::Structured { family, .. } = owner {
             builder.record_family(family, first_row);
         }
@@ -116,6 +217,7 @@ pub(crate) fn build_incidence<'dae>(
     }
     let eq_unknowns = builder.rows.finish();
     let n_eq = eq_unknowns.len();
+    owner_first_row.push(n_eq);
     Ok(Incidence {
         n_eq,
         n_var: unknowns.ids.len(),
@@ -125,7 +227,28 @@ pub(crate) fn build_incidence<'dae>(
         equation_refs: builder.equation_refs,
         equation_spans: builder.equation_spans,
         structured_matching: builder.structured_matching,
+        owner_first_row,
     })
+}
+
+/// Fail loudly whenever a reused incidence diverges from the full projection.
+///
+/// The scalar rows and their provenance spans are the only data the reuse path
+/// copies; the unknown catalog, its spans, and the structured-matching
+/// descriptors are rederived from `view` on every build. Equal rows therefore
+/// certify equal incidence.
+#[cfg(debug_assertions)]
+fn assert_reuse_matches_fresh(view: dae::DaeView<'_>, reused: &Incidence<'_>) {
+    let fresh = build_incidence_inner(view, None)
+        .expect("a system that reuses incidence rebuilt its full incidence once already");
+    debug_assert!(
+        reused.eq_unknowns == fresh.eq_unknowns,
+        "incremental incidence rows diverged from the full projection"
+    );
+    debug_assert!(
+        reused.equation_spans == fresh.equation_spans,
+        "incremental incidence spans diverged from the full projection"
+    );
 }
 
 struct UnknownCatalog<'dae> {
@@ -260,6 +383,24 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
             .push(EquationRef(self.equation_refs.len()));
         self.equation_spans.push(owner.span());
         Ok(())
+    }
+
+    /// Copy owner `owner_index`'s scalar rows verbatim from a prior round.
+    ///
+    /// Returns `None` (leaving the builder untouched) when the prior incidence
+    /// has no matching owner range, so the caller falls back to a full
+    /// projection.
+    fn copy_owner_rows(&mut self, prev: &ReusableIncidence, owner_index: usize) -> Option<()> {
+        let range = prev.owner_rows(owner_index)?;
+        for row in range {
+            let occurrences = prev.rows.get(row)?;
+            let span = *prev.equation_spans.get(row)?;
+            self.rows.push_canonical_row(occurrences);
+            self.equation_refs
+                .push(EquationRef(self.equation_refs.len()));
+            self.equation_spans.push(span);
+        }
+        Some(())
     }
 
     fn record_family(&mut self, family: dae::StructuredFamilyView<'dae>, first_row: usize) {
@@ -445,5 +586,137 @@ pub fn solver_incidence(
         equation_refs: (0..n_eq).map(EquationRef).collect(),
         equation_spans: Vec::new(),
         structured_matching: Vec::new(),
+        owner_first_row: (0..=n_eq).collect(),
     })
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use rumoca_core::{SourceMap, Span, TypeId, VarName};
+
+    use super::*;
+
+    fn at(source: rumoca_core::SourceId, start: usize, end: usize) -> dae::DaeProvenance {
+        dae::DaeProvenance::source(Span::from_offsets(source, start, end)).unwrap()
+    }
+
+    /// Three residuals over two states and one algebraic, enough that owners
+    /// carry distinct incident-unknown runs.
+    fn coupled_model() -> dae::Dae {
+        let mut sources = SourceMap::new();
+        let source = sources.add(
+            "reuse_incidence.mo",
+            "Real x; Real v; Real a; equation der(x) - v = 0; der(v) - a = 0; a - x = 0;",
+        );
+        let x_at = at(source, 0, 6);
+        let v_at = at(source, 8, 14);
+        let a_at = at(source, 16, 22);
+        let first_at = at(source, 33, 47);
+        let second_at = at(source, 49, 63);
+        let third_at = at(source, 65, 74);
+        dae::Dae::construct(sources, |model| {
+            let real = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    x_at,
+                )
+            })?;
+            let (x, v, a) = model.variables(|variables| {
+                Ok((
+                    variables.state(
+                        VarName::new("x"),
+                        real,
+                        x_at,
+                        dae::VariableAttributes::default(),
+                    )?,
+                    variables.state(
+                        VarName::new("v"),
+                        real,
+                        v_at,
+                        dae::VariableAttributes::default(),
+                    )?,
+                    variables.algebraic(
+                        VarName::new("a"),
+                        real,
+                        a_at,
+                        dae::VariableAttributes::default(),
+                    )?,
+                ))
+            })?;
+            let (first, second, third) = model.expressions(|expressions| {
+                let dx = expressions
+                    .at(first_at)
+                    .coordinate(dae::CoordinateInput::Derivative(x))?;
+                let v_read = expressions
+                    .at(first_at)
+                    .coordinate(dae::CoordinateInput::State(v))?;
+                let first =
+                    expressions
+                        .at(first_at)
+                        .binary(dae::BinaryOperator::Subtract, dx, v_read)?;
+                let dv = expressions
+                    .at(second_at)
+                    .coordinate(dae::CoordinateInput::Derivative(v))?;
+                let a_read = expressions
+                    .at(second_at)
+                    .coordinate(dae::CoordinateInput::Algebraic(a))?;
+                let second =
+                    expressions
+                        .at(second_at)
+                        .binary(dae::BinaryOperator::Subtract, dv, a_read)?;
+                let a_again = expressions
+                    .at(third_at)
+                    .coordinate(dae::CoordinateInput::Algebraic(a))?;
+                let x_read = expressions
+                    .at(third_at)
+                    .coordinate(dae::CoordinateInput::State(x))?;
+                let third = expressions.at(third_at).binary(
+                    dae::BinaryOperator::Subtract,
+                    a_again,
+                    x_read,
+                )?;
+                Ok((first, second, third))
+            })?;
+            model.continuous(|continuous| {
+                continuous.equation(first_at, |equation| equation.residual(first))?;
+                continuous.equation(second_at, |equation| equation.residual(second))?;
+                continuous.equation(third_at, |equation| equation.residual(third))?;
+                Ok(())
+            })
+        })
+        .unwrap()
+    }
+
+    /// Copying an untouched owner's rows and reprojecting a touched owner both
+    /// reproduce the from-scratch incidence exactly, for every partition of the
+    /// owners into touched and untouched. The rows and their provenance spans
+    /// are the only reused data, so their equality certifies equal incidence.
+    #[test]
+    fn every_touched_mask_reproduces_the_full_incidence() {
+        let model = coupled_model();
+        model.inspect(|view| {
+            let fresh = build_incidence(view).expect("coupled model has scalar incidence");
+            let reusable = ReusableIncidence::from_incidence(&fresh);
+            let owner_count = view.continuous_owners().count();
+            assert_eq!(owner_count, 3);
+            for pattern in 0..(1u32 << owner_count) {
+                let touched: Vec<bool> = (0..owner_count)
+                    .map(|owner| pattern & (1 << owner) != 0)
+                    .collect();
+                let reused =
+                    build_incidence_reusing(view, IncidenceReuse::new(&reusable, &touched))
+                        .expect("reuse keeps the incidence buildable");
+                assert_eq!(
+                    reused.eq_unknowns, fresh.eq_unknowns,
+                    "rows diverged for touched pattern {pattern:b}"
+                );
+                assert_eq!(
+                    reused.equation_spans, fresh.equation_spans,
+                    "spans diverged for touched pattern {pattern:b}"
+                );
+                assert_eq!(reused.owner_first_row, fresh.owner_first_row);
+            }
+        });
+    }
 }
