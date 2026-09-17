@@ -2,12 +2,39 @@
 
 use super::SignatureEntry;
 
+/// The pure structural least offsets, with no external per-column obligation.
+/// Exercises the difference-constraint solver directly; the production analysis
+/// uses [`least_offsets_with_lower_bounds`] to carry the state-derivative bound.
+#[cfg(test)]
 pub(super) fn least_offsets(
     rows: &[Vec<SignatureEntry>],
     matching: &[usize],
 ) -> Result<(Vec<u32>, Vec<u32>), &'static str> {
+    least_offsets_with_lower_bounds(rows, matching, &vec![0_u32; rows.len()])
+}
+
+/// The least offsets of [`least_offsets`], refined by a per-column lower bound on
+/// the variable offset.
+///
+/// A designated differential state owns an integration slot, so its first
+/// derivative must exist in the prolonged system even when that derivative never
+/// appears in a continuous equation (its only occurrence is an initial-equation
+/// constraint on the derivative's value). Seeding that column's offset at one
+/// forces the equation defining the state to be differentiated, supplying the
+/// derivative through the ordinary prolongation. The bound is non-binding for a
+/// state whose derivative already appears continuously: that column reaches at
+/// least one from the signature alone, so the refined offsets equal the pure
+/// least offsets for every well-posed index-one and holonomic system.
+pub(super) fn least_offsets_with_lower_bounds(
+    rows: &[Vec<SignatureEntry>],
+    matching: &[usize],
+    variable_lower_bounds: &[u32],
+) -> Result<(Vec<u32>, Vec<u32>), &'static str> {
     if matching.len() != rows.len() {
         return Err("differential matching has the wrong row count");
+    }
+    if variable_lower_bounds.len() != rows.len() {
+        return Err("differential lower bounds have the wrong column count");
     }
     let mut equations = vec![0_u32; rows.len()];
     let mut variables = vec![0_u32; rows.len()];
@@ -15,7 +42,7 @@ pub(super) fn least_offsets(
     // optimal assignment has no positive cycle; a longest simple path uses
     // fewer than n edges. The final iteration verifies the fixed point.
     for _ in 0..=rows.len() {
-        variables.fill(0);
+        variables.copy_from_slice(variable_lower_bounds);
         for (row, entries) in rows.iter().enumerate() {
             for entry in entries {
                 let value = equations[row]

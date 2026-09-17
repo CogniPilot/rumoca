@@ -143,6 +143,41 @@ fn second_order_form_has_the_same_formal_dimension() {
 }
 
 #[test]
+fn a_state_derivative_lower_bound_prolongs_its_defining_equation() {
+    // phi'=v, j*v'=-c*phi, w=phi': the derivative alias w carries a state slot
+    // whose derivative appears only in an initial equation, so the continuous
+    // signature alone leaves w at offset zero.
+    let rows = signature(&[&[1, 0, -1], &[0, 1, -1], &[1, -1, 0]]);
+    let matching = vec![0, 1, 2];
+
+    // Without the state obligation the alias stays algebraic: no equation is
+    // differentiated and w keeps offset zero.
+    let (c, d) = offsets::least_offsets(&rows, &matching).unwrap();
+    assert_eq!(c, [0, 0, 0]);
+    assert_eq!(d, [1, 1, 0]);
+
+    // Marking w a state (lower bound one) forces its defining equation `w = phi'`
+    // to be differentiated once, which lifts phi to second order and supplies the
+    // missing `w'` through the ordinary prolongation. The certificate still holds.
+    let (c, d) = offsets::least_offsets_with_lower_bounds(&rows, &matching, &[0, 0, 1]).unwrap();
+    assert_eq!(c, [1, 0, 1]);
+    assert_eq!(d, [2, 1, 1]);
+    assert_eq!(offsets::certify(&rows, &matching, &c, &d), Some(2));
+}
+
+#[test]
+fn a_state_lower_bound_is_non_binding_when_the_derivative_already_appears() {
+    // phi'=v, v'=-phi: both states already carry their derivative in a continuous
+    // row, so seeding every column at one changes nothing.
+    let rows = signature(&[&[1, 0], &[0, 1]]);
+    let matching = vec![0, 1];
+    let unbounded = offsets::least_offsets(&rows, &matching).unwrap();
+    let bounded = offsets::least_offsets_with_lower_bounds(&rows, &matching, &[1, 1]).unwrap();
+    assert_eq!(unbounded, bounded);
+    assert_eq!(bounded, (vec![0, 0], vec![1, 1]));
+}
+
+#[test]
 fn certificate_rejects_corrupt_matching_and_offsets() {
     let rows = signature(&[&[1, 0, -1], &[0, 1, -1], &[-1, -1, 0]]);
     assert_eq!(

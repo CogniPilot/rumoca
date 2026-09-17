@@ -128,8 +128,10 @@ pub fn analyze_differential_structure<'dae>(
     let matching = assignment::maximum_weight_matching(&rows, variables.len())
         .map_err(|reason| contract(&spans, reason))?;
     let matching = require_square_matching(view, &variables, &rows, matching)?;
+    let variable_lower_bounds = state_derivative_lower_bounds(view, variables.len(), &bases)?;
     let (equation_orders, variable_orders) =
-        offsets::least_offsets(&rows, &matching).map_err(|reason| contract(&spans, reason))?;
+        offsets::least_offsets_with_lower_bounds(&rows, &matching, &variable_lower_bounds)
+            .map_err(|reason| contract(&spans, reason))?;
     let formal_dimension =
         offsets::certify(&rows, &matching, &equation_orders, &variable_orders)
             .ok_or_else(|| contract(&spans, "differential assignment certificate is invalid"))?;
@@ -141,6 +143,106 @@ pub fn analyze_differential_structure<'dae>(
         variable_orders,
         formal_dimension,
     })
+}
+
+/// A per-column lower bound on each variable offset: one for a scalar coordinate
+/// whose derivative is referenced only by an initialization equation, zero
+/// otherwise.
+///
+/// A coordinate whose derivative appears in a continuous equation already
+/// reaches offset one from the signature, so the bound there is non-binding. The
+/// case it exists for is a `Set_a_start`-style acceleration seed: `w = der(x)`
+/// continuously with `der(w) = a_start` in an `initial equation`, so `der(w)`
+/// never enters a continuous row and the continuous signature alone assigns `w`
+/// offset zero. Because that seed genuinely integrates `w`, its first derivative
+/// must exist in the prolonged system; the bound forces the linear defining
+/// equation `w = der(x)` to be differentiated, supplying the missing derivative
+/// through the ordinary prolongation. The bound is per scalar coordinate, not per
+/// declared variable: a state array with mixed element orders (one element
+/// differentiated, another purely algebraic) must keep its algebraic element at
+/// offset zero.
+fn state_derivative_lower_bounds<'dae>(
+    view: dae::DaeView<'dae>,
+    variable_count: usize,
+    bases: &[Option<usize>],
+) -> Result<Vec<u32>, StructuralError> {
+    let mut bounds = vec![0_u32; variable_count];
+    let mut cache = ScalarCoordinateProjectionCache::default();
+    for owner in view.initialization_owners() {
+        visit_initialization_rows(view, owner, |row| {
+            mark_initial_derivative_columns(view, &row, bases, &mut cache, &mut bounds)
+        })?;
+    }
+    Ok(bounds)
+}
+
+/// Raise the offset lower bound of every column whose derivative this
+/// initialization residual references.
+fn mark_initial_derivative_columns<'dae>(
+    view: dae::DaeView<'dae>,
+    row: &ScalarResidual<'dae, '_>,
+    bases: &[Option<usize>],
+    cache: &mut ScalarCoordinateProjectionCache<'dae>,
+    bounds: &mut [u32],
+) -> Result<(), StructuralError> {
+    for_each_scalar_coordinate_cached(
+        view,
+        row.expression,
+        row.scalar,
+        row.domain_point,
+        cache,
+        |coordinate, scalar| {
+            if matches!(coordinate, dae::CoordinateView::Derivative(_))
+                && let Some((column, _)) = coordinate_column(bases, coordinate, scalar)
+            {
+                bounds[column] = 1;
+            }
+        },
+    )
+    .map_err(projection_error)
+}
+
+/// The initialization counterpart of [`visit_owner_rows`]: one scalar residual
+/// per unstructured equation, or one per structured family body and domain point.
+fn visit_initialization_rows<'dae>(
+    view: dae::DaeView<'dae>,
+    owner: dae::InitializationOwnerView<'dae>,
+    mut visit: impl FnMut(ScalarResidual<'dae, '_>) -> Result<(), StructuralError>,
+) -> Result<(), StructuralError> {
+    let family = match owner {
+        dae::InitializationOwnerView::Residual { equation, .. } => {
+            return visit(ScalarResidual {
+                expression: equation.residual(),
+                scalar: 0,
+                domain_point: None,
+                provenance: equation.provenance(),
+            });
+        }
+        dae::InitializationOwnerView::Structured { family, .. } => family,
+    };
+    let domain = view
+        .domain(family.domain())
+        .expect("checked structured family domain resolves");
+    for point in 0..domain.scalar_count() as usize {
+        let values = domain
+            .structured()
+            .index_tuple_at(point)
+            .expect("checked structured domain stays valid")
+            .expect("point ordinal is inside checked domain");
+        let scalar = family
+            .scalar_view()
+            .body_scalar(point, domain.extents())
+            .expect("checked family view projects its domain point");
+        for expression in family.bodies().iter() {
+            visit(ScalarResidual {
+                expression,
+                scalar,
+                domain_point: Some((family.domain(), &values)),
+                provenance: family.provenance(),
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn project_signature<'dae>(

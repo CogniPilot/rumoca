@@ -49,6 +49,7 @@ mod component_redeclare_constraints;
 mod component_redeclare_dimensions;
 mod connection_normalization_golden;
 mod coupled_refresh_schedule;
+mod derivative_alias_initial_acceleration;
 mod differential_structure;
 mod enumeration_compact_range_test;
 mod event_commutation;
