@@ -336,8 +336,11 @@ impl Model {
         self.variables
             .iter()
             .filter_map(|(name, var)| {
+                // A parameter's `fixed` is uniform (flatten refuses non-uniform
+                // parameter arrays, EF033), so the whole-declaration reduction
+                // is exact and the default is `fixed = true` when absent.
                 if matches!(var.variability, Variability::Parameter(_))
-                    && var.fixed.unwrap_or(true)
+                    && var.fixed_uniform().unwrap_or(true)
                     && var.binding.is_none()
                     && !matches!(var.shape_size(), Ok(0))
                 {
@@ -352,8 +355,11 @@ impl Model {
     /// True if any fixed parameter has no binding equation.
     pub fn has_unbound_fixed_parameters(&self) -> bool {
         self.variables.values().any(|var| {
+            // Parameter `fixed` is uniform (non-uniform parameter arrays are
+            // refused in flatten, EF033), so this whole-declaration reduction
+            // is exact.
             matches!(var.variability, Variability::Parameter(_))
-                && var.fixed.unwrap_or(true)
+                && var.fixed_uniform().unwrap_or(true)
                 && var.binding.is_none()
                 && !matches!(var.shape_size(), Ok(0))
         })
@@ -742,8 +748,10 @@ pub struct Variable {
     // Resolved attributes
     /// Start value attribute.
     pub start: Option<Expression>,
-    /// Fixed attribute.
-    pub fixed: Option<bool>,
+    /// Fixed attribute, scalarized per array element (MLS §4.8, §4.8.6). A
+    /// single value broadcasts over every element; an array carries one value
+    /// per element.
+    pub fixed: Option<Vec<bool>>,
     /// Minimum value attribute.
     pub min: Option<Expression>,
     /// Maximum value attribute.
@@ -836,6 +844,39 @@ impl Variable {
 
     pub fn validate_shape_contract(&self) -> Result<(), VariableShapeContractError> {
         self.shape_size().map(|_| ())
+    }
+
+    /// The `fixed` attribute reduced to a single Boolean when every element
+    /// agrees (MLS §4.8): `None` when the attribute is absent or the element
+    /// values differ, which a whole-declaration decision cannot represent.
+    pub fn fixed_uniform(&self) -> Option<bool> {
+        uniform_bool(self.fixed.as_deref())
+    }
+
+    /// The `fixed` value that governs one scalar element (MLS §4.8, §4.8.6). A
+    /// single stored value broadcasts over every element; an array indexes by
+    /// element position.
+    pub fn fixed_scalar(&self, scalar: usize) -> Option<bool> {
+        scalar_bool(self.fixed.as_deref(), scalar)
+    }
+}
+
+/// Reduce a scalarized Boolean attribute to a single value when every element
+/// agrees. Absent attributes and differing elements both yield `None`.
+pub fn uniform_bool(values: Option<&[bool]>) -> Option<bool> {
+    let values = values?;
+    let first = *values.first()?;
+    values.iter().all(|&value| value == first).then_some(first)
+}
+
+/// Select the scalarized Boolean value for one element, broadcasting a single
+/// stored value over every element (MLS §4.8.6).
+pub fn scalar_bool(values: Option<&[bool]>, scalar: usize) -> Option<bool> {
+    let values = values?;
+    if values.len() == 1 {
+        values.first().copied()
+    } else {
+        values.get(scalar).copied()
     }
 }
 

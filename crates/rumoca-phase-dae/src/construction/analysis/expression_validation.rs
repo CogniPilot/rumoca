@@ -292,7 +292,7 @@ impl<'a> ExpressionValidator<'a> {
             Expression::Array { elements, .. } => self.validate_array(elements, span),
             Expression::Range {
                 start, step, end, ..
-            } => self.validate_range(start, step.as_deref(), end, span),
+            } => self.validate_range(expression, start, step.as_deref(), end, span),
             Expression::Index {
                 base, subscripts, ..
             } => {
@@ -345,18 +345,24 @@ impl<'a> ExpressionValidator<'a> {
         self.validate_subscripts(subscripts)
     }
 
-    /// MLS §10.4.1: a compact range is either an Integer range whose bounds are
-    /// settled at translation time or an enumeration range whose two bounds are
-    /// literals of one enumeration type. Planned roles carry "is an enumeration
-    /// literal" and the reference identities carry "declared by the same
-    /// enumeration type", so neither answer comes from a rendered name.
+    /// MLS §10.4.1 / §10.4.3: a compact range is either a numeric range whose
+    /// bounds are settled at translation time or an enumeration range whose two
+    /// bounds are literals of one enumeration type. Planned roles carry "is an
+    /// enumeration literal" and the reference identities carry "declared by the
+    /// same enumeration type", so neither answer comes from a rendered name.
     ///
     /// "Settled" is either a literal or a bound the current translation-time
-    /// value environment folds. In model scope that includes evaluable
-    /// parameters; MLS §12.2 additionally lets a function specialization settle
-    /// a bound such as `1:integer(m/2)` from its input `m`.
+    /// value environment folds. For an Integer range each bound is proven as an
+    /// exact extent; in model scope that includes evaluable parameters and MLS
+    /// §12.2 additionally lets a function specialization settle a bound such as
+    /// `1:integer(m/2)` from its input `m`. When the range type promotes to Real
+    /// (`0 + d:d:1`), MLS §10.4.3 makes the cardinality a floating-point
+    /// quotient the Integer extent rules do not decompose, so the whole range is
+    /// admitted exactly when the same evaluator the lowering uses folds it to a
+    /// settled array; the colon-local shape proof sizes from that identical fold.
     fn validate_range(
         self,
+        range: &Expression,
         start: &Expression,
         step: Option<&Expression>,
         end: &Expression,
@@ -379,6 +385,25 @@ impl<'a> ExpressionValidator<'a> {
                 span,
             ));
         }
+        let integer_bounds = self.require_static_integer_range_bounds(start, step, end);
+        if integer_bounds.is_ok() {
+            return Ok(());
+        }
+        if self
+            .values
+            .is_some_and(|values| values.folds_to_settled_array(range))
+        {
+            return Ok(());
+        }
+        integer_bounds
+    }
+
+    fn require_static_integer_range_bounds(
+        self,
+        start: &Expression,
+        step: Option<&Expression>,
+        end: &Expression,
+    ) -> Result<(), ToDaeError> {
         self.require_static_bound(start, "range start")?;
         if let Some(step) = step {
             self.require_static_bound(step, "range step")?;
@@ -1114,7 +1139,7 @@ mod tests {
                 name: parameter.clone(),
                 variability: Variability::Parameter(Default::default()),
                 type_id: rumoca_core::TypeId::new(1),
-                fixed: Some(false),
+                fixed: Some(vec![false]),
                 binding: Some(Expression::Literal {
                     value: Literal::Integer(3),
                     span,
@@ -1152,6 +1177,114 @@ mod tests {
         assert!(
             format!("{error:?}").contains("range end"),
             "the rejection must remain at the unproved bound: {error:?}"
+        );
+    }
+
+    // MLS §10.4.3 also admits a Real range `j:d:k` whose bounds are settled at
+    // translation time, where the cardinality is a floating-point quotient
+    // rather than an Integer one. A settled Real step `d = 0.5` sizes `d:d:1.0`
+    // to two elements; OMC folds the same range to `{0.5, 1.0}` (verified with
+    // omc on the ColorMaps.jet-shaped fixture RealRangeLocal.mo, which yields
+    // `m = {0.5, 1.0}`). Before the range validator folded the whole range the
+    // Real bounds were rejected as ED019 `range start`.
+    #[test]
+    fn model_compact_real_range_accepts_settled_real_bounds() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("real_range.mo", "d:d:1.0");
+        let span = Span::from_offsets(source, 0, 7);
+        let parameter = VarName::new("d");
+        let mut model = flat::Model::new();
+        model.add_variable(
+            parameter.clone(),
+            flat::Variable {
+                name: parameter.clone(),
+                variability: Variability::Parameter(Default::default()),
+                type_id: rumoca_core::TypeId::new(1),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(span)
+            },
+        );
+        let mut constants = EvalContext::new();
+        constants.add_parameter("d", EvalValue::Real(0.5));
+        let shapes = FunctionShapeAnalysis::analyze(&model, &constants)
+            .expect("the model parameter has one settled scalar value");
+        let real_bound = || {
+            Box::new(Expression::VarRef {
+                name: rumoca_core::Reference::new("d"),
+                subscripts: Vec::new(),
+                span,
+            })
+        };
+        let range = Expression::Range {
+            start: real_bound(),
+            step: Some(real_bound()),
+            end: Box::new(Expression::Literal {
+                value: Literal::Real(1.0),
+                span,
+            }),
+            span,
+        };
+
+        validate_model_expression_with_record_array_fields(
+            &range,
+            &HashMap::from([(parameter, PlannedRole::Parameter)]),
+            &HashSet::new(),
+            &RecordArrayFieldPlans::default(),
+            shapes.model_values(),
+        )
+        .expect("a settled Real compact range owns a static MLS §10.4.3 extent");
+    }
+
+    // The boundary must still reject a Real range whose bound is not settled at
+    // translation time: a continuous coordinate carries no folded value, so
+    // `w:0.5:1.0` has no static cardinality and stays ED019 at `range start`.
+    #[test]
+    fn model_compact_real_range_rejects_an_unsettled_real_bound() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("unsettled_real_range.mo", "w:0.5:1.0");
+        let span = Span::from_offsets(source, 0, 9);
+        let coordinate = VarName::new("w");
+        let mut model = flat::Model::new();
+        model.add_variable(
+            coordinate.clone(),
+            flat::Variable {
+                name: coordinate.clone(),
+                variability: Variability::Continuous(Default::default()),
+                type_id: rumoca_core::TypeId::new(1),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(span)
+            },
+        );
+        let shapes = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+            .expect("the model still has a scalar continuous shape");
+        let range = Expression::Range {
+            start: Box::new(Expression::VarRef {
+                name: rumoca_core::Reference::new("w"),
+                subscripts: Vec::new(),
+                span,
+            }),
+            step: Some(Box::new(Expression::Literal {
+                value: Literal::Real(0.5),
+                span,
+            })),
+            end: Box::new(Expression::Literal {
+                value: Literal::Real(1.0),
+                span,
+            }),
+            span,
+        };
+
+        let error = validate_model_expression_with_record_array_fields(
+            &range,
+            &HashMap::from([(coordinate, PlannedRole::State)]),
+            &HashSet::new(),
+            &RecordArrayFieldPlans::default(),
+            shapes.model_values(),
+        )
+        .expect_err("a continuous coordinate is not a translation-settled range bound");
+        assert!(
+            format!("{error:?}").contains("range start"),
+            "the rejection must name the unproved Real bound: {error:?}"
         );
     }
 }

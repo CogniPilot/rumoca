@@ -124,7 +124,9 @@ fn project_variables(view: dae::DaeView<'_>) -> Result<Vec<Value>, DaeBackendErr
                 "binding_values": binding_values,
                 "start": variable.start().map(|id| id.index()),
                 "start_values": start_values,
-                "fixed": variable.fixed(),
+                // Text/JSON emission metadata: a non-uniform continuous `fixed`
+                // reduces to null here and is not part of the numeric solve.
+                "fixed": variable.fixed_uniform(),
                 "minimum": variable.minimum().map(|id| id.index()),
                 "minimum_values": minimum_values,
                 "maximum": variable.maximum().map(|id| id.index()),

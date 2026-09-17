@@ -66,7 +66,7 @@ fn candidate_start_projects_authored_tensor_guesses_without_fixing_them() {
             .unwrap();
         candidate.inspect(|system| {
             let state = system.view.variable(system.state().unwrap()).unwrap();
-            assert_eq!(state.fixed(), Some(false));
+            assert_eq!(state.fixed_uniform(), Some(false));
             let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(system.view);
             assert_eq!(evaluator.initial_value(state.id()).unwrap(), expected);
             assert_eq!(
@@ -165,7 +165,7 @@ fn rotation_candidate_preserves_source_owners_and_binds_formal_successors() {
             let state = system.view.variable(system.state().unwrap()).unwrap();
             assert_eq!(state.role(), dae::VariableRole::State);
             assert_eq!(state.value_type().dimensions(), [2]);
-            assert_eq!(state.fixed(), Some(false));
+            assert_eq!(state.fixed_uniform(), Some(false));
             let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(system.view);
             assert_eq!(evaluator.initial_value(state.id()).unwrap(), [0.0; 2]);
             assert_eq!(
@@ -380,7 +380,7 @@ fn candidate_retains_required_initial_values_preferences_and_assertions() {
                     .unwrap(),
             )
             .unwrap();
-        assert_eq!(x.fixed(), Some(true));
+        assert_eq!(x.fixed_uniform(), Some(true));
         assert!(x.start().is_some());
         assert_eq!(x.state_select(), rumoca_core::StateSelect::Always);
         assert_eq!(
@@ -392,7 +392,7 @@ fn candidate_retains_required_initial_values_preferences_and_assertions() {
                 .view
                 .variable(system.state().unwrap())
                 .unwrap()
-                .fixed(),
+                .fixed_uniform(),
             Some(false)
         );
     });

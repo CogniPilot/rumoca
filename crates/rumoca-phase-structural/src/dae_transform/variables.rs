@@ -208,7 +208,7 @@ fn define_variable<'target>(
         component_ref: source.component_reference().cloned(),
         binding: source.binding().map(&expression),
         start: source.start().map(&expression),
-        fixed: source.fixed(),
+        fixed: source.fixed().map(<[bool]>::to_vec),
         min: source.minimum().map(&expression),
         max: source.maximum().map(&expression),
         nominal: source.nominal().map(expression),

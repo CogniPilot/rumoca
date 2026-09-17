@@ -25,7 +25,7 @@ mod function_eval;
 mod scoped_condition;
 
 pub use array_indices::{ArrayIndexTuples, array_index_tuples, generate_array_indices};
-pub use boolean_attribute::try_eval_uniform_boolean_attribute;
+pub use boolean_attribute::{eval_boolean_attribute_values, try_eval_uniform_boolean_attribute};
 use class_lookup::{resolve_class_constant_binding, resolve_component_ref_from_record_defaults};
 pub(super) use component_params::{
     component_expr_for_structural_eval, component_ref_to_dotted_no_subscripts,

@@ -24,9 +24,31 @@ lower-order constraints in `ContinuousSolveSystem::manifold_residual` and
 | Derive independent coordinates and dependent differential coordinates from source-bound equations, derivative incidence, and initialization obligations before constructing executable derivative kernels | structural reduction | Avoid an ill-conditioned ambient ODE with unnecessary independent directions |
 | Keep source tensors and equation families authoritative; coordinate selection is a checked aggregate map over their scalar views, never a replacement collection of scalar declarations | DAE and Solve construction | Preserve SPEC_0032 ownership and provenance |
 | A construction witness binds each candidate set, its integration dimension, reconstruction equations, derivative equations, and coordinate maps to the same DAE | checked Solve construction | Matching alone does not establish numerical regularity |
-| Honor `StateSelect` and `reinit` requirements by typed coordinate identity; an inconsistent requested basis fails explicitly | structural reduction | Preserve MLS state-selection semantics |
+| Honor `StateSelect` and `reinit` requirements by typed coordinate identity; a `StateSelect.always` coordinate that is structurally redundant (an algebraic or output coordinate with no independent integration slot: an alias of another state's derivative, an acceleration-level derivative sensor, or a constraint/function output) is demoted per MLS 3.6 §4.8.8, while an `always` set that is infeasible among peer primary differential state candidates fails explicitly | structural reduction | Preserve MLS state-selection semantics |
 | Preserve every source equation, assertion, initialization condition, and visible variable when changing differential roles | structural reconstruction | Coordinate choice cannot change the source solution set |
 | Prove dependency closure for the selected derivative outputs; dependent derivatives execute only when needed by that closure or an observation | Solve planning | Removing outputs must not discard needed equations or compute avoidable derivatives |
+| Classify each holonomic manifold constraint as definitional (a conserved first integral: its lower-order form is implied by the ODE, so one differentiation reconstructs a matched state derivative) or redundant (a loop closure: over-determining at the position level, closed only by differentiating to acceleration, which introduces a multiplier), carry that classification on the prepared manifold, and retain the source coordinates when every manifold constraint is definitional but reduce to an independent basis when any constraint is redundant | structural reduction classifies; Solve state selection decides | A first integral has no globally injective reduced chart, so a fixed reduced basis folds when a coordinate passes through zero, while a retained loop closure leaves a redundant acceleration residual the solver cannot integrate cheaply; the per-constraint differentiation order separates the two where no whole-model predicate can |
+
+The `StateSelect.always` demotion is likewise structural, read from the source
+role of each requested coordinate. Only a genuine state variable owns an
+independent integration slot, so it is the sole coordinate whose `always` request
+forces an independent basis column; `select`/`choice` in
+`rumoca-phase-solve/src/state_selection.rs` keep exactly those forced, and the
+selection obligation in `FormalDerivativeSystem::construct_state_candidate`
+requires exactly those back. An algebraic or output coordinate is determined by
+the equation system, so an `always` request on it cannot make it an independent
+state; it is demoted to a top-priority eligible column that is kept as a state
+whenever the stage's constraint structure admits it and released to a dependent
+coordinate otherwise. `Elementary.RollingWheelSetDriving` and
+`RollingWheelSetPulling` request `always` on the generalized coordinates and on
+the angular-velocity sensors `der_theta = der(theta)`: the sensors and the
+platform positions are algebraic and demote, so the three independent rolling
+constraints reduce the velocity level without an over-forced basis, while a
+velocity constraint that couples two genuine peer state candidates (each a
+differentiated state in its own right) still fails explicitly because neither
+peer is demotable.
+
+The manifold classification is structural, taken from `prepare_for_solve`'s differentiation proof rather than from a whole-model predicate. A constraint whose reconstruction closes after a single differentiation is definitional (for example a unit-quaternion norm `Q*Q = 1`, whose derivative `2*Q*der(Q) = 0` follows identically from the kinematic rate equations); one that closes only at acceleration level, differentiation `maximum_order` two, is a redundant loop closure that introduces a multiplier. The structural phase tags each retained manifold row and `PreparedDae::manifold_requires_reduction` reports whether any row is redundant, so state selection reads the decision without re-deriving structure. `Rotational3DEffects.GyroscopicEffects`, a tree of quaternion bodies, carries only definitional norms and retains its source basis; `Loops.Fourbar1` and the `Constraints` loops each close a kinematic loop at acceleration level and reduce.
 
 ### 1a. Differential structure analysis
 

@@ -263,19 +263,28 @@ fn lower_variable_attributes<'dae>(
     variable: VariableSpec<'_, 'dae>,
 ) -> Result<dae::VariableAttributes<'dae>, dae::DaeConstructionError> {
     let binding = lower_variable_binding(construction, context, variable)?;
-    let start = match variable.flat.start.as_ref() {
-        Some(start) => Some(lower_variable_attribute_expression(
-            construction,
-            context,
-            variable,
-            start,
-        )?),
-        None if needs_default_start(variable) => Some(default_start_expression(
-            construction,
-            variable.scalar_type,
-            variable.flat.source_span,
-        )?),
-        None => None,
+    // A native table handle is folded to its opaque integer id by the binding
+    // above; its declared `start` is the same ExternalObject constructor call,
+    // which is not numeric, so no start attribute is materialized for it.
+    let is_native_table_handle =
+        super::native_tables::native_table_id(context.flat, &variable.flat.name).is_some();
+    let start = if is_native_table_handle {
+        None
+    } else {
+        match variable.flat.start.as_ref() {
+            Some(start) => Some(lower_variable_attribute_expression(
+                construction,
+                context,
+                variable,
+                start,
+            )?),
+            None if needs_default_start(variable) => Some(default_start_expression(
+                construction,
+                variable.scalar_type,
+                variable.flat.source_span,
+            )?),
+            None => None,
+        }
     };
     let min = lower_optional_variable_attribute(
         construction,
@@ -306,7 +315,7 @@ fn lower_variable_attributes<'dae>(
         component_ref: variable.flat.component_ref.clone(),
         binding,
         start,
-        fixed: variable.flat.fixed,
+        fixed: variable.flat.fixed.clone(),
         min,
         max,
         nominal,
@@ -345,7 +354,9 @@ fn needs_default_start(variable: VariableSpec<'_, '_>) -> bool {
             | RuntimeVariableRole::DiscreteReal
             | RuntimeVariableRole::DiscreteValue
     ) || (matches!(variable.role, RuntimeVariableRole::Parameter)
-        && variable.flat.fixed == Some(false))
+        // Parameter `fixed` is uniform (flatten refuses non-uniform parameter
+        // arrays, EF033), so this whole-declaration reduction is exact.
+        && variable.flat.fixed_uniform() == Some(false))
 }
 
 fn lower_variable_binding<'dae>(
@@ -353,6 +364,24 @@ fn lower_variable_binding<'dae>(
     context: VariableDefinitionContext<'_, 'dae>,
     variable: VariableSpec<'_, 'dae>,
 ) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    if let Some(id) = super::native_tables::native_table_id(context.flat, &variable.flat.name) {
+        // MLS §12.9.7: a native table handle is folded to its opaque integer
+        // table id here; the ExternalObject constructor call is not lowered,
+        // and the loaded table descriptor travels with the DAE (see to_dae).
+        let provenance = dae::DaeProvenance::source(variable.flat.source_span)?;
+        let id = i64::try_from(id).map_err(|_| dae::DaeConstructionError::CapacityExceeded {
+            arena: "native table id",
+            attempted_index: usize::MAX,
+            span: variable.flat.source_span,
+        })?;
+        return construction
+            .expressions(|expressions| {
+                expressions
+                    .at(provenance)
+                    .literal(dae::DaeLiteral::Integer(id))
+            })
+            .map(Some);
+    }
     if let Some(plan) = context.derived_parameters.get(&variable.flat.name) {
         return lower_derived_parameter_binding(
             construction,

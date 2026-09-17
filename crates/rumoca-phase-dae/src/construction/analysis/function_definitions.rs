@@ -506,7 +506,7 @@ fn is_boolean_false(expression: &Expression) -> bool {
     )
 }
 
-fn generated_boolean_value<'expression>(
+pub(super) fn generated_boolean_value<'expression>(
     expression: &Expression,
     context: FunctionValidationContext<'expression>,
 ) -> Option<&'expression Expression> {

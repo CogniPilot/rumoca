@@ -505,7 +505,9 @@ fn plan_initial_parameter(
     value: ReplayedValue,
 ) -> Result<Expression, ToDaeError> {
     let variable = &flat.variables[target];
-    if variable.fixed != Some(false) {
+    // This target is a parameter; its `fixed` is uniform (flatten refuses
+    // non-uniform parameter arrays, EF033), so the reduction is exact.
+    if variable.fixed_uniform() != Some(false) {
         return Err(unsupported(
             format!(
                 "parameter `{target}` is not declared `fixed = false`; MLS §8.6 lets an initial \

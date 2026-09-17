@@ -45,6 +45,7 @@ fn check_manifold_field(field: usize) {
     let retained = ManifoldConstraint {
         expression: residual,
         lifted: None,
+        redundant: false,
     };
     let (rebuilt, manifold) = reconstruction::rebuild_with_state_demotion_and_manifold(
         &ReductionSource::new(&model),

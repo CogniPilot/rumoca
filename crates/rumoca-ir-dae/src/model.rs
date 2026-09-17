@@ -20,8 +20,8 @@ use initial_parameters::InitialParameterValueEntry;
 use std::marker::PhantomData;
 
 use rumoca_core::{
-    ComponentReference, InlineAnnotation, SourceMap, Span, StateSelect, StructuredIndexDomain,
-    TypeId, VarName,
+    ComponentReference, ExternalTableData, InlineAnnotation, SourceMap, Span, StateSelect,
+    StructuredIndexDomain, TypeId, VarName,
 };
 use serde::{Deserialize, Serialize};
 
@@ -204,7 +204,7 @@ pub(crate) struct VariableAttributesWire {
     component_ref: Option<ComponentReference>,
     binding: Option<u32>,
     start: Option<u32>,
-    fixed: Option<bool>,
+    fixed: Option<Vec<bool>>,
     min: Option<u32>,
     max: Option<u32>,
     nominal: Option<u32>,
@@ -294,7 +294,7 @@ pub struct VariableAttributes<'dae> {
     pub component_ref: Option<ComponentReference>,
     pub binding: Option<ExprId<'dae>>,
     pub start: Option<ExprId<'dae>>,
-    pub fixed: Option<bool>,
+    pub fixed: Option<Vec<bool>>,
     pub min: Option<ExprId<'dae>>,
     pub max: Option<ExprId<'dae>>,
     pub nominal: Option<ExprId<'dae>>,
@@ -593,6 +593,12 @@ pub struct Dae {
     /// finalized checked expression graph.
     #[serde(skip)]
     active_discrete_scalar_count: usize,
+    /// Loaded native table descriptors (MLS §12.9.7 ExternalObject handles) that
+    /// the constructor fold produced, keyed by the opaque integer id each handle
+    /// parameter binds to. The solver interpolates these with its native table
+    /// operators instead of calling foreign C code.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    external_tables: Vec<ExternalTableData>,
 }
 
 impl Dae {
@@ -621,7 +627,21 @@ impl Dae {
             source_map,
             storage,
             active_discrete_scalar_count,
+            external_tables: Vec::new(),
         })
+    }
+
+    /// Attach the loaded native table descriptors produced by the constructor
+    /// fold. Consumed once by the DAE construction phase after `construct`.
+    #[must_use]
+    pub fn with_external_tables(mut self, external_tables: Vec<ExternalTableData>) -> Self {
+        self.external_tables = external_tables;
+        self
+    }
+
+    /// The loaded native table descriptors carried by this DAE.
+    pub fn external_tables(&self) -> &[ExternalTableData] {
+        &self.external_tables
     }
 
     pub const fn schema_version(&self) -> u16 {
@@ -1104,6 +1124,26 @@ impl<'dae> Variables<'_, 'dae> {
                 .expect_attribute_type_compatible(expected, found, provenance)?;
         }
         Ok(())
+    }
+}
+
+/// Reduce a scalarized `fixed` attribute to a single value when every element
+/// agrees (MLS §4.8). Absent attributes and differing elements both yield
+/// `None`, which a whole-declaration decision cannot represent.
+pub(crate) fn uniform_fixed(values: Option<&[bool]>) -> Option<bool> {
+    let values = values?;
+    let first = *values.first()?;
+    values.iter().all(|&value| value == first).then_some(first)
+}
+
+/// Select the `fixed` value for one scalar element, broadcasting a single
+/// stored value over every element (MLS §4.8.6).
+pub(crate) fn scalar_fixed(values: Option<&[bool]>, scalar: usize) -> Option<bool> {
+    let values = values?;
+    if values.len() == 1 {
+        values.first().copied()
+    } else {
+        values.get(scalar).copied()
     }
 }
 

@@ -70,7 +70,9 @@ impl<'a> BindingEvaluator<'a> {
             Variability::Parameter(_) => variable.evaluate,
             _ => false,
         };
-        if !invariant || !variable.dims.is_empty() || variable.fixed == Some(false) {
+        // Guarded to scalars (`dims` empty), so `fixed` holds a single element
+        // and the reduction is exact; it also only reaches parameters/constants.
+        if !invariant || !variable.dims.is_empty() || variable.fixed_uniform() == Some(false) {
             return None;
         }
         let binding = self.rewrite_expression(variable.binding.as_ref()?).ok()?;

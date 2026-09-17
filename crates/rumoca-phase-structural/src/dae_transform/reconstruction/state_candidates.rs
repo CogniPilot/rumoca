@@ -103,7 +103,7 @@ fn append_projection<'target>(
             at,
             dae::VariableAttributes {
                 start: Some(start),
-                fixed: Some(false),
+                fixed: Some(vec![false]),
                 origin: dae::VariableOrigin::Generated,
                 ..Default::default()
             },

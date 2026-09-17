@@ -59,7 +59,9 @@ impl<'dae> InitializationEquations<'_, 'dae> {
                     index: target.index(),
                     span: owner.span(),
                 })?;
-        if attributes.fixed != Some(false) || attributes.binding.is_some() {
+        if crate::model::uniform_fixed(attributes.fixed.as_deref()) != Some(false)
+            || attributes.binding.is_some()
+        {
             return Err(DaeConstructionError::InvalidInitialParameter {
                 name: variable.name.clone(),
                 span: owner.span(),

@@ -507,6 +507,15 @@ where
             return Err(ProjectionError::FunctionRecursion { span });
         }
         let arguments = arguments.iter().collect::<Vec<_>>();
+        if self.is_native_table_call(function) {
+            // A native table interpolation (MLS §12.9) is a solver primitive:
+            // its result depends on its argument incidence, and the opaque
+            // external body is never entered.
+            for argument in &arguments {
+                self.expression(*argument, 0)?;
+            }
+            return Ok(());
+        }
         let dependency = FunctionResultDependency {
             function: function.index(),
             output,
@@ -514,6 +523,15 @@ where
             scalar: scalar_index,
         };
         self.project_function_result(dependency, function, arguments, span)
+    }
+
+    fn is_native_table_call(&self, function: dae::FunctionId<'dae>) -> bool {
+        self.view
+            .function(function)
+            .and_then(|definition| definition.external())
+            .is_some_and(|external| {
+                dae::NativeTableOperator::from_symbol(external.symbol().as_str()).is_some()
+            })
     }
 
     fn function_call_record_field(

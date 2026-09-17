@@ -412,7 +412,47 @@ pub fn flatten_ref_with_options(
         component_override_map: &component_override_map,
     })?;
 
+    reject_nonuniform_parameter_fixed(&flat)?;
+
     Ok(flat)
+}
+
+/// Reject a parameter or constant whose `fixed` array elements disagree.
+///
+/// Per-element `fixed` is representable for continuous coordinates because each
+/// state scalar is pinned independently (MLS §8.6). A parameter's `fixed`,
+/// however, selects one initialization role for the whole declaration: every
+/// downstream reader (`unbound_fixed_parameters`, the deferred-parameter and
+/// constant folds, and the initial-parameter projection) asks a single
+/// question of it. Reducing a non-uniform array to one Boolean would silently
+/// misclassify the differing elements, so this is refused explicitly at the
+/// phase that finalizes the resolved attribute.
+fn reject_nonuniform_parameter_fixed(flat: &flat::Model) -> Result<(), FlattenError> {
+    for variable in flat.variables.values() {
+        if !matches!(
+            variable.variability,
+            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+        ) {
+            continue;
+        }
+        let Some(values) = variable.fixed.as_ref() else {
+            continue;
+        };
+        let first = values.first().copied();
+        if values.iter().any(|value| Some(*value) != first) {
+            let rendered = values
+                .iter()
+                .map(|value| if *value { "true" } else { "false" })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(FlattenError::NonUniformParameterFixed {
+                name: variable.name.to_string(),
+                values: format!("{{{rendered}}}"),
+                span: variable.source_span,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Connection-set construction is intentionally scalar today, but the

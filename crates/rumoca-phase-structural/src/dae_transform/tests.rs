@@ -532,7 +532,7 @@ fn insert_fixture_record_companion<'dae>(
                 dae::VariableAttributes {
                     binding: Some(binding),
                     start: Some(start),
-                    fixed: Some(true),
+                    fixed: Some(vec![true]),
                     description: Some("record companion".to_owned()),
                     ..dae::VariableAttributes::default()
                 },
@@ -1613,7 +1613,7 @@ fn assert_primitive_record_companion_attributes(view: dae::DaeView<'_>) {
         .find(|(_, variable)| variable.name().as_str() == "recordCompanion")
         .expect("primitive record companion survives");
     assert_eq!(companion.role(), dae::VariableRole::Parameter);
-    assert_eq!(companion.fixed(), Some(true));
+    assert_eq!(companion.fixed_uniform(), Some(true));
     assert_eq!(companion.description(), Some("record companion"));
     assert_eq!(
         view.source_text(companion.declaration()),

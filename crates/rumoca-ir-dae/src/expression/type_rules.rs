@@ -174,10 +174,9 @@ pub(super) fn binary_result(
             }
             Ok(ValueType::scalar(ScalarType::String))
         }
-        BinaryOperator::Add
-        | BinaryOperator::Subtract
-        | BinaryOperator::ElementwiseAdd
-        | BinaryOperator::ElementwiseSubtract => {
+        // MLS 3.6 §10.6.1 gives array `+` and `-` a single admissible shape: the
+        // operands are scalars or arrays of equal size, with no scalar expansion.
+        BinaryOperator::Add | BinaryOperator::Subtract => {
             expect_same_shape(lhs, rhs, at)?;
             expect_numeric(lhs_scalar, at)?;
             expect_numeric(rhs_scalar, at)?;
@@ -187,7 +186,12 @@ pub(super) fn binary_result(
         BinaryOperator::Multiply => multiplication_result(lhs, rhs, at),
         BinaryOperator::Divide => division_result(lhs, rhs, at),
         BinaryOperator::Power => power_result(lhs, rhs, at),
-        BinaryOperator::ElementwiseMultiply
+        // MLS 3.6 §10.6.2 element-wise `.+` and `.-` admit `size(a) = size(b)`
+        // or a scalar `a` or `b`, so they broadcast a scalar operand exactly as
+        // §10.6.3/§10.6.6/§10.6.7 do for `.*`, `./`, and `.^`.
+        BinaryOperator::ElementwiseAdd
+        | BinaryOperator::ElementwiseSubtract
+        | BinaryOperator::ElementwiseMultiply
         | BinaryOperator::ElementwiseDivide
         | BinaryOperator::ElementwisePower => elementwise_result(operator, lhs, rhs, at),
         BinaryOperator::Equal
@@ -290,6 +294,9 @@ fn power_result(
     ))
 }
 
+/// The value type of an MLS 3.6 §10.6 element-wise operator (`.+`, `.-`, `.*`,
+/// `./`, `.^`). Each admits `size(a) = size(b)` or a scalar operand that is
+/// expanded to the other's shape; only `./` forces a Real result.
 fn elementwise_result(
     operator: BinaryOperator,
     lhs: &ValueType,

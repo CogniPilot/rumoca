@@ -579,8 +579,10 @@ pub struct InstanceData {
     // Resolved attribute values (MLS §4.4)
     /// Start value attribute.
     pub start: Option<Expression>,
-    /// Fixed attribute.
-    pub fixed: Option<bool>,
+    /// Fixed attribute, scalarized per component element (MLS §4.8, §4.8.6). A
+    /// single value broadcasts over every element; an array carries one value
+    /// per element.
+    pub fixed: Option<Vec<bool>>,
     /// Minimum value attribute.
     pub min: Option<Expression>,
     /// Maximum value attribute.

@@ -16,6 +16,19 @@ pub(super) struct RegisteredExpressionAssertion<'dae, Scope> {
     pub(super) scope: Scope,
 }
 
+/// Whether a call targets a native `ModelicaStandardTables` interpolation
+/// operator, which lowers to a solver table operator rather than a pure call.
+fn is_native_table_operator<'dae>(
+    view: dae::DaeView<'dae>,
+    function: dae::FunctionId<'dae>,
+) -> bool {
+    view.function(function)
+        .and_then(|definition| definition.external())
+        .is_some_and(|external| {
+            dae::NativeTableOperator::from_symbol(external.symbol().as_str()).is_some()
+        })
+}
+
 type RegisteredExpressionCalls<'dae, Scope> = (
     HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
     HashMap<dae::ExprId<'dae>, Range<usize>>,
@@ -35,9 +48,18 @@ impl<'dae> PureCallRegistry<'dae> {
         let mut conflicts = HashSet::new();
         for (expression, scope) in expressions {
             dae::for_each_expression(view, expression, |projection, node| {
-                let dae::ExpressionOperation::Call { owner, .. } = node.operation() else {
+                let dae::ExpressionOperation::Call {
+                    owner, function, ..
+                } = node.operation()
+                else {
                     return;
                 };
+                if is_native_table_operator(view, function) {
+                    // A native table interpolation (MLS §12.9) lowers to a
+                    // solver table operator, not a pure call, so it is never
+                    // registered in the pure-call table.
+                    return;
+                }
                 match seen.insert(owner, scope) {
                     None => roots.push((owner, projection, scope)),
                     Some(previous) if previous != scope => {

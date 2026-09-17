@@ -76,13 +76,7 @@ impl SolveMeKernel {
         let mut root_values = self.indicator_root_scratch.borrow_mut();
         let mut deadlines = self.indicator_deadline_scratch.borrow_mut();
         if self.indicator_plan.reads_deadlines() && settled_guess.is_none() {
-            *settled_guess = Some(self.runtime.full_solver_y(
-                time,
-                &self.states,
-                params,
-                ALGEBRAIC_REFRESH_TOL,
-                UPDATE_MAX_ITERS,
-            )?);
+            *settled_guess = Some(self.solver_y_at_parameters(time, params)?);
         }
         if self.indicator_plan.reads_root_values() {
             root_values.fill(0.0);
@@ -297,13 +291,7 @@ impl SolveMeKernel {
     /// Capture the component's own pre-event values before relation-memory
     /// overrides are consumed by Event Mode.
     pub(super) fn capture_event_entry(&mut self) -> Result<(), MeError> {
-        let pre_y = self.runtime.full_solver_y(
-            self.time,
-            &self.states,
-            &self.params,
-            ALGEBRAIC_REFRESH_TOL,
-            UPDATE_MAX_ITERS,
-        )?;
+        let pre_y = self.solver_y_at_time(self.time)?;
         self.pending_event_pre_y = Some(pre_y);
         self.pending_event_pre_p = Some(self.params.clone());
         Ok(())
@@ -891,22 +879,26 @@ impl SolveMeKernel {
     }
 
     pub(super) fn solver_y_at_time(&self, time: f64) -> Result<Vec<f64>, MeError> {
-        let settle = self.numerics_settle();
         self.with_delay_evaluation_params(time, &self.states, |params| {
-            self.with_callback_solver_y(|guess| {
-                self.runtime
-                    .full_solver_y_with_guess(
-                        time,
-                        &self.states,
-                        params,
-                        guess,
-                        settle.tol,
-                        settle.max_iters,
-                    )
-                    .map(|()| guess.clone())
-                    .map_err(MeError::from)
-            })
+            self.solver_y_at_parameters(time, params)
         })?
+    }
+
+    fn solver_y_at_parameters(&self, time: f64, params: &[f64]) -> Result<Vec<f64>, MeError> {
+        let settle = self.numerics_settle();
+        self.with_callback_solver_y(|guess| {
+            self.runtime
+                .full_solver_y_with_guess(
+                    time,
+                    &self.states,
+                    params,
+                    guess,
+                    settle.tol,
+                    settle.max_iters,
+                )
+                .map(|()| guess.clone())
+                .map_err(MeError::from)
+        })
     }
 
     pub(super) fn copy_states_from_solver_y(&mut self, solver_y: &[f64]) {

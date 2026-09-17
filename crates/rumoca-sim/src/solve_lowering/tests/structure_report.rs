@@ -69,7 +69,16 @@ fn structural_inspection_retains_a_fixed_initial_value() {
     };
     let solve = lower_dae_for_simulation(&dae, &options)
         .expect("the retained manifold and fixed value have a joint initialization owner");
-    assert_eq!(solve.problem.initialization.given_state_indices(), &[0]);
+    // The index-three pendulum reduces to an independent basis whose integrated
+    // state is a generated aggregate coordinate (fixed=false), so no source
+    // coordinate is a directly given integration start. MLS 3.6 §8.6 makes
+    // `x(start=1, fixed=true)` an initialization equation rather than a required
+    // integrator value, and SPEC_0053 section 2 solves that original
+    // initialization problem before mapping its result to the selected
+    // coordinates and adds no new fixed initial value. The fixed value is
+    // therefore enforced through the initialization solve (proved exactly by
+    // `x(0) == 1.0` below), not carried as a given-state index.
+    assert!(solve.problem.initialization.given_state_indices().is_empty());
     let report = structural_report_for_dae(&dae, &options)
         .expect("inspection consumes the same successful reduction");
     assert_eq!(report.n_equations, report.n_unknowns);

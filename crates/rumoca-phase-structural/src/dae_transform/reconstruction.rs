@@ -179,6 +179,7 @@ pub(super) fn rebuild_holonomic_constraint(
                             value_residual: expressions[lifted.value_residual as usize].index(),
                             ..lifted
                         }),
+                        redundant: entry.redundant,
                     }));
                     let replacement = rebuild_holonomic_replacement(
                         context,
@@ -531,6 +532,7 @@ fn restore_prior_manifold<'source, 'target>(
                     value_residual: expressions[lifted.value_residual as usize].index(),
                     ..lifted
                 }),
+                redundant: entry.redundant,
             });
         }
         Ok(())
@@ -603,9 +605,17 @@ fn rebuild_holonomic_replacement<'target>(
                     residual: replacement.index(),
                     value_residual,
                 }),
+                // A lifted algebraic differentiates its own causal definition
+                // once; its lower-order form is implied by that definition, so
+                // it is a conserved first integral, not a loop closure.
+                redundant: false,
             });
             return Ok(replacement);
         }
+        // A constraint that reconstructs after a single differentiation is a
+        // conserved first integral; one that only closes at acceleration level
+        // (maximum order two) is a redundant loop closure that must reduce.
+        let redundant = constraint.proof.maximum_order == 2;
         let value = rebuilder.materialize_holonomic_value(
             source_residual,
             &constraint.proof,
@@ -614,6 +624,7 @@ fn rebuild_holonomic_replacement<'target>(
         manifold.push(ManifoldConstraint {
             expression: value.index(),
             lifted: None,
+            redundant,
         });
         let first =
             rebuilder.differentiate_holonomic(source_residual, 1, &constraint.proof, provenance)?;
@@ -625,6 +636,7 @@ fn rebuild_holonomic_replacement<'target>(
             manifold.push(ManifoldConstraint {
                 expression: first.index(),
                 lifted: None,
+                redundant,
             });
         }
         let second =

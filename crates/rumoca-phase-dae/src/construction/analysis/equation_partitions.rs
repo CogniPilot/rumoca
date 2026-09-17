@@ -242,20 +242,27 @@ pub(super) fn aggregate_discrete_connections(
 ) -> Result<AggregateDiscreteConnections, ToDaeError> {
     let mut groups = HashMap::<VarName, AggregateConnectionGroup>::new();
     for (row, equation) in flat.equations.iter().enumerate() {
-        let (target, subscripts, value, ordered_scalar_self_dependencies) =
+        let (target, subscripts, value, ordered_scalar_self_dependencies, from_element) =
             if let Some((target, subscripts, value)) =
                 oriented_discrete_connection(flat, equation, roles, connection_ranks)
             {
-                (target, subscripts, value, false)
+                (target, subscripts, value, false, false)
             } else if let Some((target, subscripts, value)) =
                 discrete_element_assignment(equation, roles)
             {
-                (target, subscripts, value, true)
+                (target, subscripts, value, true, true)
             } else {
                 continue;
             };
-        if subscripts.is_empty()
-            || selection_denotes_whole_aggregate(&flat.variables[target], subscripts)
+        // A whole-array connection is oriented as a single coordinate by
+        // `discrete_connection_assignment`, so the aggregate builder skips it.
+        // An ordinary element equation has no such alternate owner: even when a
+        // single leading singleton index denotes the entire declared coordinate
+        // (a size-one array assigned as `x[1] = e`), the element rows are the
+        // only definition, so the aggregate builder must cover them here.
+        if !from_element
+            && (subscripts.is_empty()
+                || selection_denotes_whole_aggregate(&flat.variables[target], subscripts))
         {
             continue;
         }
@@ -522,6 +529,14 @@ pub(super) fn discrete_connection_ranks(
         if let Ok(Some(plan)) = discrete_value_assignment(&equation.residual, roles, equation.span)
         {
             producers.insert(plan.target.clone());
+        }
+        // An element equation `x[i] = e` defines the coordinate `x` outside the
+        // connection graph, so `x` is a producer that orients any connections
+        // from it outward. Without this, a discrete array fed by a for-loop of
+        // element equations looks source-free and a fan-out to same-causality
+        // consumers cannot be oriented from the true producer.
+        if let Some((target, _, _)) = discrete_element_assignment(equation, roles) {
+            producers.insert(target.clone());
         }
     }
     producers.extend(event_targets(flat));

@@ -356,6 +356,66 @@ equation
 end PinDeterminesParameter;
 "#;
 
+/// A pinned position aliased to the coordinate a state selection integrates,
+/// read by a law singular at the origin, inside a constrained tensor system.
+///
+/// `p = r` pins the class through `r`, and `g = -p/(p*p)` is undefined at
+/// `p = 0`. The unit-vector constraint `q*q = 1` forces the index reduction that
+/// aggregates `p`, `v`, `q`, and `wq` into one selected state basis (the shape
+/// `Parts.Body` produces under point gravity). The reduction keeps `r` as the
+/// defined alias and integrates `p`, whose start is otherwise zero, so the first
+/// gravity evaluation reads `p = 0` and returns a non-finite residual no
+/// initialization solve can leave. Carrying `r`'s start across the class seeds
+/// the integrated coordinate at `{0.6, 0.6, 0}` instead. Without the constraint
+/// the plain state gets its start through the ordinary §8.6 transfer, so the
+/// constraint is what exercises the aggregated path.
+///
+/// OpenModelica 4.1.0 simulates this source with `p(0) = {0.6, 0.6, 0}`,
+/// `g(0) = {-0.8333333333333334, -0.8333333333333334, 0}`, `v(0) = {0, 0, 0}`,
+/// and `q(0) = {1, 0, 0}`.
+const ALIASED_SINGULAR_TENSOR: &str = r#"
+model AliasedSingularTensor
+  Real r[3](start = {0.6, 0.6, 0}, each fixed = true);
+  Real p[3];
+  Real v[3](start = {0, 0, 0}, each fixed = true);
+  Real g[3];
+  Real q[3](start = {1, 0, 0}, each fixed = true);
+  Real wq[3](start = {0, 0, 0}, each fixed = true);
+  Real mu;
+equation
+  p = r;
+  g = -p / (p * p);
+  der(p) = v;
+  der(v) = g;
+  der(q) = cross(wq, q) + mu * q;
+  q * q = 1;
+  der(wq) = {0, 0, 0};
+end AliasedSingularTensor;
+"#;
+
+/// The same tensor system with `p` pinned to a value the alias `p = r`
+/// contradicts. OpenModelica 4.1.0 refuses it: "The model contains alias
+/// variables with conflicting fixed start values."
+const ALIASED_CONFLICTING_TENSOR: &str = r#"
+model AliasedConflictingTensor
+  Real r[3](start = {0.6, 0.6, 0}, each fixed = true);
+  Real p[3](start = {0.1, 0.1, 0}, each fixed = true);
+  Real v[3](start = {0, 0, 0}, each fixed = true);
+  Real g[3];
+  Real q[3](start = {1, 0, 0}, each fixed = true);
+  Real wq[3](start = {0, 0, 0}, each fixed = true);
+  Real mu;
+equation
+  p = r;
+  g = -p / (p * p);
+  der(p) = v;
+  der(v) = g;
+  der(q) = cross(wq, q) + mu * q;
+  q * q = 1;
+  der(wq) = {0, 0, 0};
+end AliasedConflictingTensor;
+"#;
+
 fn simulate(source: &str, model: &str) -> SimResult {
     let compiled = Compiler::new()
         .model(model)
@@ -579,4 +639,50 @@ fn a_carried_value_can_determine_the_parameter_its_displacement_reads() {
     let result = simulate(PIN_AND_PARAMETER, "PinDeterminesParameter");
     assert_initial(&result, "a", 3.0);
     assert_initial(&result, "b", 1.0);
+}
+
+/// The integrated coordinate an origin-singular law reads takes its guess from
+/// the pinned member of its alias class, so initialization starts from a finite
+/// residual and settles to the value OMC reports.
+///
+/// OMC 4.1.0: `p(0) = {0.6, 0.6, 0}`,
+/// `g(0) = {-0.8333333333333334, -0.8333333333333334, 0}`.
+#[test]
+fn a_singular_law_reading_an_aliased_state_initializes_from_the_pinned_member() {
+    let result = simulate(ALIASED_SINGULAR_TENSOR, "AliasedSingularTensor");
+    let sixth = -5.0 / 6.0;
+    for (scalar, (position, gravity)) in
+        [(0.6, sixth), (0.6, sixth), (0.0, 0.0)].into_iter().enumerate()
+    {
+        assert_initial(&result, &format!("p[{}]", scalar + 1), position);
+        assert_initial(&result, &format!("g[{}]", scalar + 1), gravity);
+    }
+}
+
+/// Two members of one aliased class carrying different `fixed = true` starts do
+/// not resolve to a silent choice: the guess is left unseeded and the
+/// initialization solve reports the contradiction it cannot satisfy. OMC 4.1.0
+/// refuses the same source ("alias variables with conflicting fixed start
+/// values").
+#[test]
+fn conflicting_fixed_starts_across_a_vector_alias_fail_loudly() {
+    let compiled = Compiler::new()
+        .model("AliasedConflictingTensor")
+        .compile_str(ALIASED_CONFLICTING_TENSOR, "AliasedConflictingTensor.mo")
+        .expect("the contradiction is numeric, not a construction failure");
+    let error = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(0.05),
+            solver_mode: SimSolverMode::Bdf,
+            ..SimOptions::default()
+        },
+    )
+    .expect_err("two fixed starts one alias equates must not pass silently");
+    let report = error.to_string();
+    assert!(
+        report.contains("initial variable projection did not satisfy"),
+        "unexpected diagnostic: {report}"
+    );
 }

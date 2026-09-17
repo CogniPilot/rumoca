@@ -101,7 +101,7 @@ fn pinned_alias_model(form: AliasForm, state: StateDeclaration) -> dae::Dae {
                 x_reservation,
                 dae::VariableAttributes {
                     start: x_start,
-                    fixed: state.pinned.then_some(true),
+                    fixed: state.pinned.then(|| vec![true]),
                     ..dae::VariableAttributes::default()
                 },
                 at("Real x"),
@@ -110,7 +110,7 @@ fn pinned_alias_model(form: AliasForm, state: StateDeclaration) -> dae::Dae {
                 y_reservation,
                 dae::VariableAttributes {
                     start: y_start,
-                    fixed: Some(true),
+                    fixed: Some(vec![true]),
                     ..dae::VariableAttributes::default()
                 },
                 at("Real y(start = 1, fixed = true)"),
@@ -391,7 +391,7 @@ fn a_pinned_algebraic_without_a_state_is_retained_as_a_check() {
                 reservation,
                 dae::VariableAttributes {
                     start: Some(start),
-                    fixed: Some(true),
+                    fixed: Some(vec![true]),
                     ..dae::VariableAttributes::default()
                 },
                 at("Real a(start = 0, fixed = true)"),

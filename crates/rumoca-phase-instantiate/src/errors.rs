@@ -346,7 +346,7 @@ pub enum InstantiateError {
     #[diagnostic(
         code(rumoca::instantiate::EI035),
         help(
-            "the current declaration owner requires a decidable, uniform Boolean value; the supplied initialization constraint cannot be discarded"
+            "MLS §4.8: a `fixed` modifier must evaluate to a decidable Boolean scalar or a Boolean array of the component's dimensions; the supplied initialization constraint cannot be discarded"
         )
     )]
     UnsupportedFixedAttribute {

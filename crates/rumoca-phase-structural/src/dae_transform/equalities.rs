@@ -548,7 +548,7 @@ fn anchor_rank(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> (u8, u8, u8) {
             );
             (
                 selection,
-                u8::from(variable.fixed() == Some(true)),
+                u8::from(variable.fixed_any_true()),
                 singleton_aggregate,
             )
         }

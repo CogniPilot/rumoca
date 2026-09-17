@@ -476,7 +476,9 @@ fn checked_variable_meta<'dae>(
         nominal: variable
             .nominal()
             .and_then(|id| expression_source(model, view, id)),
-        fixed: variable.fixed(),
+        // Reporting metadata only; per-scalar initialization is decided in the
+        // solve lowering, not from this reduced flag.
+        fixed: variable.fixed_uniform(),
         description: variable.description().map(str::to_string),
     }
 }
@@ -593,7 +595,7 @@ fn tunable_variable_meta<'dae>(
                 .and_then(|id| expression_source(dae_model, view, id)),
             min_value: minimum.as_ref().map(|values| values[scalar]),
             max_value: maximum.as_ref().map(|values| values[scalar]),
-            fixed: variable.fixed(),
+            fixed: variable.fixed_scalar(scalar),
             description: variable.description().map(str::to_string),
         });
     }

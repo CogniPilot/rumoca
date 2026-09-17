@@ -236,7 +236,7 @@ pub(crate) fn create_flat_variable(
         dims: instance.dims.clone(),
         connected: false, // Will be set during connection processing
         start: attrs.start,
-        fixed: instance.fixed,
+        fixed: instance.fixed.clone(),
         min: attrs.min,
         max: attrs.max,
         nominal: attrs.nominal,

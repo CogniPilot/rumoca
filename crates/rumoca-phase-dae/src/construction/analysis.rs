@@ -1233,8 +1233,10 @@ fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
                     variable.variability,
                     Variability::Constant(_) | Variability::Parameter(_)
                 )
+                // Parameter `fixed` is uniform here (flatten refuses non-uniform
+                // parameter arrays, EF033), so this reduction is exact.
                 || matches!(variable.variability, Variability::Parameter(_))
-                    && variable.fixed == Some(false)
+                    && variable.fixed_uniform() == Some(false)
             {
                 continue;
             }
@@ -1307,8 +1309,10 @@ fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
 /// these sample starts construct at all, rather than with this diagnostic.
 fn register_deferred_parameters(flat: &flat::Model, context: &mut EvalContext) {
     for (name, variable) in &flat.variables {
+        // Parameter `fixed` is uniform (flatten refuses non-uniform parameter
+        // arrays, EF033), so this whole-declaration reduction is exact.
         if !matches!(variable.variability, Variability::Parameter(_))
-            || variable.fixed != Some(false)
+            || variable.fixed_uniform() != Some(false)
             || variable.binding.is_some()
             || context.instance_value(variable.instance_id).is_some()
         {
@@ -1569,6 +1573,12 @@ pub(super) fn effective_variable_scalar_type(
         Some(dae::ScalarType::String)
     } else if flat.enumeration_types.contains(&variable.type_id) {
         Some(dae::ScalarType::Enumeration)
+    } else if crate::construction::native_tables::native_table_family_of_variable(flat, variable)
+        .is_some()
+    {
+        // MLS §12.9.7: a native standard-library table handle is an opaque
+        // ExternalObject, modeled as an integer table id (never a Real).
+        Some(dae::ScalarType::Integer)
     } else {
         None
     }

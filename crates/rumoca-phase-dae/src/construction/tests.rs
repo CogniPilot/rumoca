@@ -1,5 +1,6 @@
 mod boundary;
 mod clocks_temporal;
+mod conditional_fold;
 mod discrete;
 mod event_algorithms;
 mod events;

@@ -1235,6 +1235,22 @@ pub(super) fn derivative_reference(
     }
 }
 
+/// Whether argument `index` of `function` is one of its MLS §10.3 declared
+/// array extents, which the checked constructor requires as a literal Integer.
+///
+/// `zeros`, `ones` and `identity` take only extents; `fill(s, n1, ...)` reserves
+/// its first argument for the fill value and declares extents from the rest;
+/// `linspace(x1, x2, n)` declares its single extent in the third argument. Every
+/// other builtin argument is an ordinary value and is lowered as written.
+fn is_declared_extent_argument(function: BuiltinFunction, index: usize) -> bool {
+    match function {
+        BuiltinFunction::Zeros | BuiltinFunction::Ones | BuiltinFunction::Identity => true,
+        BuiltinFunction::Fill => index >= 1,
+        BuiltinFunction::Linspace => index == 2,
+        _ => false,
+    }
+}
+
 fn lower_builtin_call<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
@@ -1243,20 +1259,21 @@ fn lower_builtin_call<'dae>(
     arguments: &[Expression],
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    // MLS §10.3: `zeros(n)` declares its own extents, and the checked
-    // constructor types the result from them, so each extent must arrive as the
-    // Integer it denotes. Inside a value-proven specialization `n` denotes one
-    // Integer — the same one the shape proof already read through
+    // MLS §10.3: the array-returning builtins declare their own extents, and the
+    // checked constructor types the result from them, so each extent must arrive
+    // as the Integer it denotes. Inside a value-proven specialization that extent
+    // denotes one Integer — the same one the shape proof already read through
     // `evaluate_shape_integer` — so folding it here is what keeps the two
     // agreeing instead of handing the constructor a coordinate it must refuse.
-    let extents_are_declared = matches!(
-        function,
-        BuiltinFunction::Zeros | BuiltinFunction::Ones | BuiltinFunction::Identity
-    );
+    // `fill(s, n1, ...)` keeps its first argument as the fill value and declares
+    // extents only from the trailing arguments, and `linspace(x1, x2, n)`
+    // declares its extent in the third; the extent positions are named per
+    // builtin so a non-extent argument is never mistaken for one.
     let arguments = arguments
         .iter()
-        .map(|argument| {
-            if extents_are_declared
+        .enumerate()
+        .map(|(index, argument)| {
+            if is_declared_extent_argument(function, index)
                 && !matches!(argument, Expression::Literal { .. })
                 && let Some(extent) = symbols.shapes.proven_extent(argument)
             {
@@ -1329,6 +1346,22 @@ fn lower_function_call<'dae>(
             arguments,
             provenance,
         );
+    }
+    // A native table bounds accessor on an in-memory constant table is a
+    // compile-time constant (MLS §12.9); fold it to its Real literal so the
+    // opaque table handle never reaches a numeric path that cannot execute the
+    // foreign C body.
+    if let Some(bound) = super::native_tables::native_table_bounds_literal(
+        symbols.functions.flat,
+        symbols.functions.constants,
+        name,
+        arguments,
+    ) {
+        return construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .literal(dae::DaeLiteral::Real(bound))
+        });
     }
     let call = lower_call_operands(construction, symbols, binders, name, arguments, provenance)?;
     call.result(construction, 0, provenance)
@@ -1607,6 +1640,20 @@ fn lower_empty_function_argument<'dae>(
     construction.expressions(|expressions| expressions.at(provenance).empty_array(value_type))
 }
 
+/// Lower an MLS §3.6.5 conditional expression, folding away any statically dead
+/// arm before it is built.
+///
+/// MLS §11.5 evaluates the branch conditions in declaration order and yields the
+/// value of the first whose condition is `true`, or the else value when none is.
+/// When this scope proves a condition constant, the arms MLS §11.5 would never
+/// reach carry no value the program observes, and their calls were never
+/// certified by shape discovery (`discover_conditional_calls` prunes the same
+/// arms). Building such an arm would hand the checked constructor an operation
+/// with no certificate, so a proven-`false` branch is dropped and the arms after
+/// a proven-`true` branch are never lowered. An unproven condition keeps its arm
+/// exactly as written, and a proven-`true` branch reached only after an earlier
+/// unproven condition becomes the fallback, since MLS §11.5 would still test the
+/// earlier condition first.
 fn lower_conditional_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
@@ -1617,12 +1664,36 @@ fn lower_conditional_expression<'dae>(
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let mut lowered = Vec::with_capacity(branches.len());
     for (condition, value) in branches {
-        lowered.push((
-            lower_expression_scoped(construction, symbols, binders, condition, None)?,
-            lower_expression_scoped(construction, symbols, binders, value, None)?,
-        ));
+        match symbols.shapes.proven_value(condition) {
+            // A proven-dead arm is never built; MLS §11.5 skips to the next
+            // condition, so lowering resumes at the following branch.
+            Some(ProvenValue::Boolean(false)) => continue,
+            // The first proven-`true` condition selects its value. With no
+            // undecided earlier branch its value is the whole result; otherwise
+            // it is the fallback the retained conditional falls through to.
+            Some(ProvenValue::Boolean(true)) => {
+                let taken = lower_expression_scoped(construction, symbols, binders, value, None)?;
+                if lowered.is_empty() {
+                    return Ok(taken);
+                }
+                return construction.expressions(|expressions| {
+                    expressions.at(provenance).conditional(lowered, taken)
+                });
+            }
+            // An unproven condition (or a non-Boolean fold, which a well-typed
+            // conditional never produces) keeps its arm exactly as written.
+            _ => {
+                lowered.push((
+                    lower_expression_scoped(construction, symbols, binders, condition, None)?,
+                    lower_expression_scoped(construction, symbols, binders, value, None)?,
+                ));
+            }
+        }
     }
     let fallback = lower_expression_scoped(construction, symbols, binders, else_branch, None)?;
+    if lowered.is_empty() {
+        return Ok(fallback);
+    }
     construction
         .expressions(|expressions| expressions.at(provenance).conditional(lowered, fallback))
 }

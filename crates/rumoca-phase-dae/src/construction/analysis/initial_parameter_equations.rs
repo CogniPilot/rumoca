@@ -61,7 +61,9 @@ fn target(
     let Some(variable) = flat.variables.get(name.var_name()) else {
         return Ok(None);
     };
-    if variable.fixed != Some(false) || variable.binding.is_some() {
+    // This target is a parameter; its `fixed` is uniform (flatten refuses
+    // non-uniform parameter arrays, EF033), so the reduction is exact.
+    if variable.fixed_uniform() != Some(false) || variable.binding.is_some() {
         return Ok(None);
     }
     let Some(scalar) = effective_variable_scalar_type(flat, variable) else {

@@ -20,7 +20,50 @@ pub(crate) fn prepare<'source>(
     model: &'source dae::Dae,
     overrides: &HashMap<String, f64>,
 ) -> Result<PreparedDae<'source>, StructuralError> {
-    let prepared = prepare_for_solve(model)?;
+    match prepare_for_solve(model) {
+        Ok(prepared) => reduce_or_retain(model, prepared, overrides),
+        // The ordinary reducer cannot desingularize every constrained system: a
+        // buried orientation lock (a quaternion body under a loop joint) leaves
+        // an unmatched acceleration residual it reports as structurally
+        // singular. The formal-derivative path differentiates and selects an
+        // independent basis for exactly those coordinates, so route a singular
+        // system through it before surfacing the reducer's failure. Nothing that
+        // the reducer already accepts changes: this branch is reached only when
+        // it fails.
+        Err(error) if matches!(error, StructuralError::Singular { .. }) => {
+            recover_singular_via_formal(model, overrides).ok_or(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Decide the prepared system for a model the ordinary reducer accepted.
+///
+/// The choice is per-constraint and structural, read off the manifold the
+/// structural phase already classified. A holonomic manifold constraint is
+/// *definitional* when it is a conserved first integral: its lower-order form is
+/// implied by the ODE, so a single differentiation reconstructs a matched state
+/// derivative (a unit-quaternion norm whose rate vanishes identically under the
+/// norm-preserving kinematics). It is *redundant* when it is a genuine loop
+/// closure: over-determining at the position level and closed only by
+/// differentiating to acceleration, which introduces a Lagrange multiplier.
+///
+/// Reduce iff at least one manifold constraint is redundant; retain when every
+/// manifold constraint is definitional. Reducing a conserved invariant to a
+/// fixed independent basis folds when a selected coordinate passes through zero,
+/// whereas retaining its source coordinates and enforcing the invariant through
+/// the manifold projection stays regular. A loop closure removes a shared degree
+/// of freedom, so retaining it leaves a redundant acceleration residual that
+/// costs the solver dearly; it must reduce. A system whose manifold mixes the two
+/// across separate blocks reduces as a whole: the candidate construction cannot
+/// yet retain one block while reducing another, and retaining a redundant loop
+/// closure is the failure this decision exists to avoid, so the presence of any
+/// redundant constraint chooses reduce.
+fn reduce_or_retain<'source>(
+    model: &'source dae::Dae,
+    prepared: PreparedDae<'source>,
+    overrides: &HashMap<String, f64>,
+) -> Result<PreparedDae<'source>, StructuralError> {
     let constrained = prepared.inspect(|system| !system.manifold.is_empty());
     if !constrained {
         return Ok(prepared);
@@ -36,9 +79,32 @@ pub(crate) fn prepare<'source>(
     if dimension >= retained {
         return Ok(prepared);
     }
+    // Construct the reduced candidate first so an infeasible request (an
+    // over-constrained `StateSelect.always`, a singular stage Jacobian) still
+    // surfaces its exact typed failure rather than being masked by retention.
+    let candidate = formal.construct_state_candidate(|formal| select(formal, overrides))?;
+    // Retain the source basis when every manifold constraint is a conserved
+    // first integral, reduce when any constraint is a redundant loop closure.
+    if !prepared.manifold_requires_reduction() {
+        return Ok(prepared);
+    }
+    candidate.into_prepared()
+}
+
+/// Attempt the formal-derivative reduction for a system the ordinary reducer
+/// left structurally singular. Returns `None` when the formal path does not
+/// apply or its selection fails, so the caller reports the reducer's original
+/// singularity unchanged.
+fn recover_singular_via_formal(
+    model: &dae::Dae,
+    overrides: &HashMap<String, f64>,
+) -> Option<PreparedDae<'static>> {
+    let formal = construct_formal_derivatives(model).ok()?;
     formal
-        .construct_state_candidate(|formal| select(formal, overrides))?
+        .construct_state_candidate(|formal| select(formal, overrides))
+        .ok()?
         .into_prepared()
+        .ok()
 }
 
 fn select<'formal>(
@@ -48,16 +114,7 @@ fn select<'formal>(
     let required = formal
         .source
         .variables()
-        .filter(|(_, variable)| {
-            variable.state_select() == StateSelect::Always
-                && variable.variability() == dae::ExpressionVariability::Continuous
-                && matches!(
-                    variable.role(),
-                    dae::VariableRole::State
-                        | dae::VariableRole::Algebraic
-                        | dae::VariableRole::Output
-                )
-        })
+        .filter(|(_, variable)| requests_forced_state(*variable))
         .map(|(_, variable)| variable.scalar_count())
         .sum::<usize>();
     if required > formal.formal_dimension() {
@@ -114,6 +171,26 @@ fn select<'formal>(
     Ok(result)
 }
 
+/// A `StateSelect.always` request forces an independent differential state only
+/// for a genuine state variable, which owns an independent integration slot. An
+/// algebraic or output coordinate carries no such slot: it is structurally
+/// determined by the equation system (an alias of another state's derivative, an
+/// acceleration-level derivative sensor, or a constraint/function output), so it
+/// cannot be an independent state. MLS 3.6 §4.8.8 makes `always` a request, not a
+/// guarantee: a coordinate that cannot be a state is demoted rather than failing.
+fn requests_forced_state(variable: dae::VariableView<'_>) -> bool {
+    variable.state_select() == StateSelect::Always
+        && variable.variability() == dae::ExpressionVariability::Continuous
+        && variable.role() == dae::VariableRole::State
+}
+
+/// Eligibility priority for a demoted `StateSelect.always` algebraic coordinate.
+/// It is above every other group (`Prefer` peaks at 6, plus a stated-initial-
+/// value bump), so the demoted request is honored as an independent state
+/// whenever the stage's constraint structure admits it, and is released to a
+/// dependent coordinate only when it cannot be an independent state.
+const DEMOTED_ALWAYS_PRIORITY: u8 = 8;
+
 fn choice<'source, 'formal>(
     formal: FormalDerivativeView<'_, 'source, 'formal>,
     coordinate: FormalStageCoordinate<'source, 'formal>,
@@ -122,7 +199,14 @@ fn choice<'source, 'formal>(
     let source = coordinate.source_variable();
     if coordinate.order() == 0 {
         match source.state_select() {
-            StateSelect::Always => return ColumnChoice::Independent,
+            StateSelect::Always if requests_forced_state(source) => {
+                return ColumnChoice::Independent;
+            }
+            StateSelect::Always => {
+                return ColumnChoice::Eligible(
+                    DEMOTED_ALWAYS_PRIORITY + u8::from(stated_initial_value),
+                );
+            }
             StateSelect::Never => return ColumnChoice::Dependent,
             _ => {}
         }

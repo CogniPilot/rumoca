@@ -64,7 +64,7 @@ fn inverse_motion(theta0: f64) -> dae::Dae {
                     at,
                     dae::VariableAttributes {
                         start: Some(start),
-                        fixed: Some(fixed),
+                        fixed: Some(vec![fixed]),
                         state_select: selection,
                         ..Default::default()
                     },
@@ -80,7 +80,7 @@ fn inverse_motion(theta0: f64) -> dae::Dae {
                     at,
                     dae::VariableAttributes {
                         start: Some(initial[3]),
-                        fixed: Some(false),
+                        fixed: Some(vec![false]),
                         ..Default::default()
                     },
                 )?,

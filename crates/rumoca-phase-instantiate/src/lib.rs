@@ -145,7 +145,7 @@ pub use templates::{ClassTemplate, ClassTemplateCache};
 pub struct ExtractedAttributes {
     pub start: Option<ast::Expression>,
     pub start_is_explicit: bool,
-    pub fixed: Option<bool>,
+    pub fixed: Option<Vec<bool>>,
     pub min: Option<ast::Expression>,
     pub max: Option<ast::Expression>,
     pub nominal: Option<ast::Expression>,

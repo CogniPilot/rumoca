@@ -115,7 +115,7 @@ fn aliased_pair_model(x: StatedInitialValue, y: StatedInitialValue) -> dae::Dae 
                 x_reservation,
                 dae::VariableAttributes {
                     start: x_start,
-                    fixed: Some(x.fixed),
+                    fixed: Some(vec![x.fixed]),
                     state_select: x.select,
                     ..dae::VariableAttributes::default()
                 },
@@ -125,7 +125,7 @@ fn aliased_pair_model(x: StatedInitialValue, y: StatedInitialValue) -> dae::Dae 
                 y_reservation,
                 dae::VariableAttributes {
                     start: y_start,
-                    fixed: Some(y.fixed),
+                    fixed: Some(vec![y.fixed]),
                     state_select: y.select,
                     ..dae::VariableAttributes::default()
                 },
@@ -323,7 +323,7 @@ fn asserted_value_model(x: StatedInitialValue, asserted: AssertedValue) -> dae::
                 x_reservation,
                 dae::VariableAttributes {
                     start: x_start,
-                    fixed: Some(x.fixed),
+                    fixed: Some(vec![x.fixed]),
                     state_select: x.select,
                     ..dae::VariableAttributes::default()
                 },
@@ -366,7 +366,7 @@ fn stated_initial_value(dae: &dae::Dae, name: &str) -> (Option<f64>, Option<bool
                 _ => None,
             }
         });
-        (start, variable.fixed())
+        (start, variable.fixed_uniform())
     })
 }
 
@@ -611,7 +611,7 @@ fn assert_retained_initial_constraint(asserted: AssertedValue) {
         let view = system.view;
         let (id, x) = view.variables().find(|(_, v)| v.name().as_str() == "x").unwrap();
         assert_eq!(x.role(), dae::VariableRole::Algebraic);
-        assert_eq!(x.fixed(), Some(true));
+        assert_eq!(x.fixed_uniform(), Some(true));
         assert_eq!(rumoca_eval_dae::NumericEvaluator::new(view).expression(x.start().unwrap()).unwrap(), [1.0]);
         assert!(!x.declaration().span().is_dummy());
         assert!(system.manifold.is_empty(), "direct reduction retains the continuous owner");

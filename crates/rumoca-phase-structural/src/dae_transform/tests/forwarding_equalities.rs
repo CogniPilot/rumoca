@@ -258,6 +258,7 @@ fn a_derivative_proof_does_not_authorize_an_unavailable_manifold_value() {
     let retained = ManifoldConstraint {
         expression: residual,
         lifted: None,
+        redundant: false,
     };
     assert!(manifold_is_state_only(&model, &[retained]));
     reconstruction::rebuild_with_state_demotion(&model, candidate)
@@ -281,6 +282,7 @@ fn a_materializable_whole_call_survives_manifold_state_demotion() {
     let retained = ManifoldConstraint {
         expression: residual,
         lifted: None,
+        redundant: false,
     };
     let (rebuilt, manifold) = reconstruction::rebuild_with_state_demotion_and_manifold(
         &ReductionSource::new(&model),

@@ -163,15 +163,17 @@ impl Context {
                 || var.is_discrete_type
             })
             .filter_map(|(name, var)| {
+                // Parameter `fixed` is uniform (flatten refuses non-uniform
+                // parameter arrays, EF033), so both reductions below are exact.
                 if matches!(var.variability, rumoca_core::Variability::Parameter(_))
-                    && var.fixed == Some(false)
+                    && var.fixed_uniform() == Some(false)
                     && !var.evaluate
                 {
                     self.non_structural_params.insert(name.to_string());
                 }
                 let is_fixed_parameter =
                     matches!(var.variability, rumoca_core::Variability::Parameter(_))
-                        && var.fixed != Some(false);
+                        && var.fixed_uniform() != Some(false);
                 let may_be_record_alias = !var.is_primitive;
                 if var.evaluate
                     || matches!(var.variability, rumoca_core::Variability::Constant(_))

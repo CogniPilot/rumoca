@@ -55,7 +55,7 @@ fn dae_modelica_retains_initial_parameter_definitions_without_numeric_rows() {
                 boolean,
                 at,
                 dae::VariableAttributes {
-                    fixed: Some(false),
+                    fixed: Some(vec![false]),
                     ..Default::default()
                 },
             )

@@ -131,13 +131,15 @@ fn check_selection<'formal>(
             ));
         }
     }
+    // Only a genuine state variable is a forced `StateSelect.always` request. An
+    // algebraic or output coordinate has no independent integration slot, so it
+    // is structurally determined and MLS 3.6 §4.8.8 permits demoting it; the
+    // selection releases such a coordinate to a dependent slot when it cannot be
+    // an independent state, and this obligation must not require it back.
     for (id, source) in view.source.variables() {
         if source.state_select() != StateSelect::Always
             || source.variability() != dae::ExpressionVariability::Continuous
-            || !matches!(
-                source.role(),
-                dae::VariableRole::State | dae::VariableRole::Algebraic | dae::VariableRole::Output
-            )
+            || source.role() != dae::VariableRole::State
         {
             continue;
         }

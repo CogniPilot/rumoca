@@ -1,7 +1,7 @@
 use super::*;
 use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, eval_state_select_expr_with_source_scope, expr_to_string,
-    parse_state_select, try_eval_uniform_boolean_attribute,
+    InstantiateEvalCtx, eval_boolean_attribute_values, eval_state_select_expr_with_source_scope,
+    expr_to_string, parse_state_select,
 };
 
 pub(super) struct ComponentAttrsAndBinding {
@@ -409,7 +409,7 @@ fn extract_fixed_attribute(
     comp_name: &str,
     eval_ctx: &InstantiateEvalCtx<'_>,
     imports: &[(String, String)],
-) -> InstantiateResult<Option<bool>> {
+) -> InstantiateResult<Option<Vec<bool>>> {
     let path = ast::QualifiedName::from_ident(comp_name).child("fixed");
     match eval_ctx.mod_env.get(&path) {
         Some(value) => {
@@ -429,11 +429,11 @@ fn parse_required_fixed(
     eval_ctx: &InstantiateEvalCtx<'_>,
     imports: &[(String, String)],
     source_scope: Option<&ast::QualifiedName>,
-) -> InstantiateResult<bool> {
-    try_eval_uniform_boolean_attribute(eval_ctx, value, source_scope)
+) -> InstantiateResult<Vec<bool>> {
+    eval_boolean_attribute_values(eval_ctx, value, source_scope)
         .or_else(|| {
             let qualified = crate::dims::qualify_shape_expr_imports(eval_ctx.tree, value, imports);
-            try_eval_uniform_boolean_attribute(eval_ctx, &qualified, source_scope)
+            eval_boolean_attribute_values(eval_ctx, &qualified, source_scope)
         })
         .ok_or_else(|| {
             Box::new(InstantiateError::UnsupportedFixedAttribute {

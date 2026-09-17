@@ -21,7 +21,7 @@ fn variable_attributes(dae: &Dae, role: VariableRole, name: &str) -> Option<(boo
     dae.inspect(|view| {
         view.variables()
             .find(|(_, variable)| variable.role() == role && variable.name().as_str() == name)
-            .map(|(_, variable)| (variable.start().is_some(), variable.fixed()))
+            .map(|(_, variable)| (variable.start().is_some(), variable.fixed_uniform()))
     })
 }
 

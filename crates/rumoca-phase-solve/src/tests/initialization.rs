@@ -299,7 +299,7 @@ fn fixed_false_parameter_becomes_an_initialization_projection_unknown() {
                 declaration,
                 dae::VariableAttributes {
                     start: Some(start),
-                    fixed: Some(false),
+                    fixed: Some(vec![false]),
                     ..dae::VariableAttributes::default()
                 },
             )
@@ -383,7 +383,7 @@ fn fixed_algebraic_initial_equation_joins_the_continuous_initial_solve() {
                 q_at,
                 dae::VariableAttributes {
                     start: Some(q_start),
-                    fixed: Some(false),
+                    fixed: Some(vec![false]),
                     ..dae::VariableAttributes::default()
                 },
             )?;
@@ -395,7 +395,7 @@ fn fixed_algebraic_initial_equation_joins_the_continuous_initial_solve() {
                 a_reservation,
                 dae::VariableAttributes {
                     start: Some(a_start),
-                    fixed: Some(true),
+                    fixed: Some(vec![true]),
                     ..dae::VariableAttributes::default()
                 },
                 a_at,
@@ -533,7 +533,7 @@ fn dependent_parameter_model() -> dae::Dae {
                 declaration,
                 dae::VariableAttributes {
                     start: Some(start),
-                    fixed: Some(false),
+                    fixed: Some(vec![false]),
                     ..dae::VariableAttributes::default()
                 },
             )

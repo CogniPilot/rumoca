@@ -110,6 +110,16 @@ model FixedAttributeOverride
     FixedAttributeLeaf enabled(x(fixed=not pinned));
     FixedAttributeLeaf disabled(x(fixed=pinned));
 end FixedAttributeOverride;
+
+model NonUniformStateFixedBank
+    Real x[3](start = {2, 1, 0}, fixed = {true, false, false});
+equation
+    der(x) = -x;
+end NonUniformStateFixedBank;
+
+model NonUniformParameterFixedBank
+    parameter Real p[2](start = {1, 2}, fixed = {false, true});
+end NonUniformParameterFixedBank;
 "#;
 
 fn flatten_model(model_name: &str) -> rumoca_ir_flat::Model {
@@ -130,6 +140,48 @@ fn flatten_source() -> rumoca_ir_flat::Model {
     flatten_model("Top")
 }
 
+fn flatten_result(
+    model_name: &str,
+) -> Result<rumoca_ir_flat::Model, rumoca_phase_flatten::FlattenError> {
+    let stored = rumoca_phase_parse::parse_to_ast(SOURCE, SOURCE_NAME).expect("source parses");
+    let mut tree = ast::ClassTree::from_parsed(stored);
+    tree.source_map.add(SOURCE_NAME, SOURCE);
+    let resolved =
+        rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source resolves");
+    let instanced =
+        rumoca_phase_instantiate::instantiate(resolved, model_name).expect("model instantiates");
+    let ast::InstancedTree { tree, mut overlay } = instanced;
+    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model_name)
+        .expect("instanced model typechecks");
+    rumoca_phase_flatten::flatten_ref(&tree, &overlay, model_name)
+}
+
+/// MLS §4.8.6: a continuous state array carries its `fixed` per element, so a
+/// non-uniform Boolean array is retained rather than reduced or refused.
+#[test]
+fn non_uniform_fixed_on_a_state_array_is_preserved() {
+    let model = flatten_model("NonUniformStateFixedBank");
+    let x = &model.variables[&rumoca_core::VarName::new("x")];
+    assert_eq!(x.dims, vec![3]);
+    assert_eq!(x.fixed, Some(vec![true, false, false]));
+}
+
+/// MLS §8.6: a parameter's `fixed` selects one initialization role for the whole
+/// declaration, so a non-uniform Boolean array on a parameter is refused with an
+/// explicit diagnostic instead of being silently reduced to a single Boolean.
+#[test]
+fn non_uniform_fixed_on_a_parameter_array_is_refused() {
+    let error = flatten_result("NonUniformParameterFixedBank")
+        .expect_err("a parameter cannot carry a per-element `fixed` array");
+    assert!(
+        matches!(
+            error,
+            rumoca_phase_flatten::FlattenError::NonUniformParameterFixed { .. }
+        ),
+        "expected NonUniformParameterFixed, got {error:?}"
+    );
+}
+
 #[test]
 fn parameter_array_fixed_attributes_preserve_instance_initial_constraints() {
     let model = flatten_model("FixedAttributeInstances");
@@ -138,7 +190,7 @@ fn parameter_array_fixed_attributes_preserve_instance_initial_constraints() {
         assert_eq!(variable.dims, vec![3]);
         assert_eq!(
             variable.fixed,
-            Some(expected),
+            Some(vec![expected]),
             "MLS 8.6: the fixed array must retain each instance's initial constraints for {name}"
         );
     }
@@ -150,7 +202,7 @@ fn computed_fixed_modifier_uses_its_written_scope_and_overrides_local_default() 
     for (name, expected) in [("enabled.x", true), ("disabled.x", false)] {
         assert_eq!(
             model.variables[&rumoca_core::VarName::new(name)].fixed,
-            Some(expected),
+            Some(vec![expected]),
             "the modifier must read the enclosing pinned=false, not the leaf's pinned=true"
         );
     }

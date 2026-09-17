@@ -19,6 +19,7 @@ mod initial_parameter_values;
 mod model_algorithm;
 mod model_events;
 mod multi_output_equations;
+mod native_tables;
 mod record_equation;
 mod structured_body;
 #[cfg(test)]
@@ -100,9 +101,9 @@ use function_seeds::{
     collect_function_sequence_seeds, lower_function_sequence_seeds, lower_named_function_seeds,
 };
 use function_shapes::{
-    FunctionShapeAnalysis, FunctionShapeCertificate, FunctionSpecializationKey, ShapeEnvironment,
-    ValueShape, call_free_expression_shape, call_free_target_shape, evaluate_shape_integer,
-    infer_function_integer_bounds, proven_conditional_branch,
+    FunctionShapeAnalysis, FunctionShapeCertificate, FunctionSpecializationKey, ProvenValue,
+    ShapeEnvironment, ValueShape, call_free_expression_shape, call_free_target_shape,
+    evaluate_shape_integer, infer_function_integer_bounds, proven_conditional_branch,
 };
 use model_algorithm::{
     ModelAlgorithmLowering, lower_declarative_model_algorithm,
@@ -236,11 +237,13 @@ pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae
         return Err(ToDaeError::unbalanced_from_detail(analysis.balance));
     }
     let variable_plan = plan_variable_construction(flat, &analysis)?;
+    let external_tables = native_tables::build_external_tables(flat, &analysis.constants)?;
 
-    dae::Dae::construct(source_map, |construction| {
+    let dae = dae::Dae::construct(source_map, |construction| {
         build_checked(flat, &analysis, &variable_plan, construction)
     })
-    .map_err(ToDaeError::from)
+    .map_err(ToDaeError::from)?;
+    Ok(dae.with_external_tables(external_tables))
 }
 
 pub(crate) fn balance_detail(flat: &flat::Model) -> Result<BalanceDetail, ToDaeError> {

@@ -62,8 +62,10 @@ impl<'dae> ZeroCoefficients<'dae> {
             ) => true,
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(parameter)) => {
                 let variable = view.variable(parameter.into()).unwrap();
+                // A parameter's `fixed` is uniform (flatten refuses non-uniform
+                // parameter arrays, EF033), so this reduction is exact.
                 !variable.is_tunable()
-                    && variable.fixed() != Some(false)
+                    && variable.fixed_uniform() != Some(false)
                     && variable
                         .binding()
                         .is_some_and(|binding| self.prove(view, binding, scalar, active))

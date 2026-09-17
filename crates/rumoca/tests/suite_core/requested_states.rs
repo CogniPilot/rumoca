@@ -249,3 +249,55 @@ fn check_product_constraint(source: &str) {
         }
     }
 }
+
+// A nonholonomic velocity constraint couples vx and vy, so requesting every
+// coordinate as StateSelect.always is infeasible under every admissible
+// assignment: at least one required coordinate cannot be an independent state.
+// OMC also rejects it. The demotion retry cannot rescue a request that is
+// infeasible under all assignments, so lowering still fails.
+const NONHOLONOMIC_OVER_REQUEST: &str = r#"
+model NonholonomicOverRequest
+  Real x(start=0, stateSelect=StateSelect.always);
+  Real y(start=0, stateSelect=StateSelect.always);
+  Real theta(start=0.3, stateSelect=StateSelect.always);
+  Real vx(start=1, stateSelect=StateSelect.always);
+  Real vy(start=0, stateSelect=StateSelect.always);
+  Real w(start=1);
+  Real fx;
+  Real fy;
+equation
+  der(x)=vx;
+  der(y)=vy;
+  der(theta)=w;
+  der(vx)=fx;
+  der(vy)=fy;
+  der(w)=0;
+  vx*sin(theta) - vy*cos(theta) = 0;
+  fx*cos(theta) + fy*sin(theta) = 1;
+end NonholonomicOverRequest;
+"#;
+
+#[test]
+fn a_nonholonomic_over_request_infeasible_under_every_assignment_still_fails() {
+    let compiled = Compiler::new()
+        .model("NonholonomicOverRequest")
+        .compile_str(NONHOLONOMIC_OVER_REQUEST, "nonholonomic_over_request.mo")
+        .unwrap();
+    let message = match rumoca_phase_solve::lower_solve_model(
+        &compiled.dae,
+        &std::collections::HashMap::new(),
+        |_| {},
+    ) {
+        Ok(_) => panic!("an over-request infeasible under every admissible assignment cannot lower"),
+        Err(error) => error.to_string(),
+    };
+    // The request fails either at the required-count/stage check or, when the
+    // ordinary reducer already reports the coupled velocities as singular, with
+    // that structural singularity; both are correct rejections.
+    assert!(
+        message.contains("state selection")
+            || message.contains("StateSelect.always")
+            || message.contains("singular"),
+        "{message}"
+    );
+}

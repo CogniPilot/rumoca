@@ -488,6 +488,135 @@ fn eval_row_hydrates_serialized_external_table_data() {
     assert!((value - 1.0).abs() <= 1.0e-12);
 }
 
+/// One `TableLookup` of `column` at `abscissa` over `tables`.
+fn table_lookup_value(
+    tables: &[rumoca_core::ExternalTableData],
+    column: f64,
+    abscissa: f64,
+) -> f64 {
+    let row = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::Const {
+            dst: 1,
+            value: column,
+        },
+        LinearOp::Const {
+            dst: 2,
+            value: abscissa,
+        },
+        LinearOp::TableLookup {
+            dst: 3,
+            table_id: 0,
+            column: 1,
+            input: 2,
+        },
+        LinearOp::StoreOutput { src: 3 },
+    ];
+    eval_row_with_context(
+        &row,
+        &[],
+        &[],
+        0.0,
+        RowEvalContext {
+            external_tables: Some(tables),
+            ..Default::default()
+        },
+    )
+    .expect("table lookup row evaluates")
+}
+
+/// The `TableNextEvent` of `tables` at `time`.
+fn table_next_event(tables: &[rumoca_core::ExternalTableData], time: f64) -> f64 {
+    let row = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::Const {
+            dst: 1,
+            value: time,
+        },
+        LinearOp::TableNextEvent {
+            dst: 2,
+            table_id: 0,
+            time: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    eval_row_with_context(
+        &row,
+        &[],
+        &[],
+        0.0,
+        RowEvalContext {
+            external_tables: Some(tables),
+            ..Default::default()
+        },
+    )
+    .expect("table next-event row evaluates")
+}
+
+#[test]
+fn combi_table_1d_linear_segments_matches_omc_reference_values() {
+    // Modelica.Blocks.Tables.CombiTable1Ds(table=[0,0; 1,2; 2,3],
+    // smoothness=LinearSegments, extrapolation=HoldLastPoint). OpenModelica on
+    // the same source reports y = 0, 1, 2, 2.5, 3 at t = 0, 0.5, 1, 1.5, 2 and
+    // holds the last point (3) beyond the final abscissa.
+    let tables = vec![rumoca_core::ExternalTableData {
+        id: 1,
+        data: vec![vec![0.0, 0.0], vec![1.0, 2.0], vec![2.0, 3.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 1,
+    }];
+    for (abscissa, expected) in [
+        (0.0, 0.0),
+        (0.5, 1.0),
+        (1.0, 2.0),
+        (1.5, 2.5),
+        (2.0, 3.0),
+        (2.5, 3.0),
+    ] {
+        let value = table_lookup_value(&tables, 1.0, abscissa);
+        assert!(
+            (value - expected).abs() <= 1.0e-12,
+            "t={abscissa}: interpolated {value}, expected {expected}"
+        );
+    }
+}
+
+#[test]
+fn combi_time_table_constant_segments_reports_knot_time_events_and_values() {
+    // Modelica.Blocks.Sources.CombiTimeTable(table=[0,0; 1,1; 2,0],
+    // smoothness=ConstantSegments, extrapolation=HoldLastPoint). OpenModelica on
+    // the same source schedules time events at the knots t=1 and t=2, holds the
+    // left segment value between them, and reports no further event past the
+    // last knot.
+    let tables = vec![rumoca_core::ExternalTableData {
+        id: 1,
+        data: vec![vec![0.0, 0.0], vec![1.0, 1.0], vec![2.0, 0.0]],
+        columns: vec![2],
+        smoothness: 3,
+        extrapolation: 1,
+    }];
+    for (time, expected) in [(0.0, 1.0), (0.5, 1.0), (1.0, 2.0), (1.5, 2.0)] {
+        let event = table_next_event(&tables, time);
+        assert!(
+            (event - expected).abs() <= 1.0e-12,
+            "getNextTimeEvent at t={time}: {event}, expected knot {expected}"
+        );
+    }
+    assert_eq!(
+        table_next_event(&tables, 2.0),
+        f64::MAX,
+        "no time event is scheduled beyond the final knot"
+    );
+    for (time, expected) in [(0.5, 0.0), (1.0, 1.0), (1.5, 1.0), (2.0, 0.0)] {
+        let value = table_lookup_value(&tables, 1.0, time);
+        assert!(
+            (value - expected).abs() <= 1.0e-12,
+            "constant-segment value at t={time}: {value}, expected {expected}"
+        );
+    }
+}
+
 #[test]
 fn eval_row_division_uses_ieee_semantics() {
     let row = vec![

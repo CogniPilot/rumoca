@@ -101,10 +101,7 @@ impl DenseStageMatrix {
             let matrix = DMatrix::from_fn(self.0.nrows(), dependent.len(), |r, c| {
                 self.0[(r, dependent[c])]
             });
-            let decomposition = decompose(matrix)?;
-            if decomposition.rank(self.threshold(decomposition.singular_values.amax()))
-                != dependent.len()
-            {
+            if !self.is_full_column_rank(matrix) {
                 return Err(DenseBasisError::Rank);
             }
         }
@@ -143,6 +140,19 @@ impl DenseStageMatrix {
             }
         }
         Ok(())
+    }
+
+    /// Confirm a square dependent block spans its own column count. Column-pivoted
+    /// QR is rank revealing: the pivot ordering places the pivot magnitudes on the
+    /// diagonal in descending order, so the leading entry is the block's largest
+    /// and sets the scale. The block is full rank exactly when every pivot clears
+    /// the leading-pivot-scaled threshold, the same acceptance the spectral-norm
+    /// rank test applied, without computing a full singular value decomposition.
+    fn is_full_column_rank(&self, matrix: DMatrix<f64>) -> bool {
+        let columns = matrix.ncols();
+        let r = matrix.col_piv_qr().r();
+        let threshold = self.threshold(r[(0, 0)].abs());
+        (0..columns).all(|index| r[(index, index)].abs() > threshold)
     }
 
     fn threshold(&self, scale: f64) -> f64 {

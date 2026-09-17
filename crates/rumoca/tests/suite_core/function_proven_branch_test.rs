@@ -473,3 +473,125 @@ end TriangularComprehension;
         "the rejection must name the comprehension index: {rendered}"
     );
 }
+
+/// `Modelica.Math.Vectors.relNodePositions` is the shape this covers: several
+/// conditionals over the node count `nNodes`, the last of which carries a `for`
+/// loop in its `elseif` arm. The loop rewrite that snapshots a branch predicate
+/// before its arm runs presents that conditional to the planner as a generated
+/// branch guard rather than its source relation, so a specialization that proves
+/// `nNodes` must fold the guard back to settle which arm MLS §11.5 executes.
+/// Before the fix `ToDae` rejected the whole function with ED019 `function
+/// conditional` ("requires assignments or nested conditionals in every checked
+/// branch") because the guarded loop arm read as a runtime branch that has no
+/// owner for the loop.
+///
+/// The proven arm is an ordinary unconditional algorithm section: the loop
+/// contributes its element coverage exactly as a top-level loop does, and the
+/// per-element definedness certificate makes `xsi` total across the three
+/// conditionals. OMC (MSL 4.1.0) gives `relNodePositions(7) = {0, 0.1, 0.3, 0.5,
+/// 0.7, 0.9, 1}`, `relNodePositions(5) = {0, 1/6, 0.5, 5/6, 1}`, and
+/// `relNodePositions(3) = {0, 0.5, 1}`; these values are asserted below.
+const REL_NODE_POSITIONS: &str = r#"
+within;
+function relNodePositions
+  input Integer nNodes;
+  output Real xsi[nNodes];
+protected
+  Real delta;
+algorithm
+  if nNodes >= 1 then
+    xsi[1] := 0;
+  end if;
+  if nNodes >= 2 then
+    xsi[nNodes] := 1;
+  end if;
+  if nNodes == 3 then
+    xsi[2] := 0.5;
+  elseif nNodes > 3 then
+    delta := 1/(nNodes - 2);
+    for i in 2:nNodes - 1 loop
+      xsi[i] := (i - 1.5)*delta;
+    end for;
+  end if;
+end relNodePositions;
+model NodePositions
+  Real seven[7];
+  Real five[5];
+  Real three[3];
+equation
+  seven = relNodePositions(7);
+  five = relNodePositions(5);
+  three = relNodePositions(3);
+end NodePositions;
+"#;
+
+#[test]
+fn a_proven_guard_arm_that_carries_a_loop_folds_and_covers_every_element() {
+    let report = evaluate(REL_NODE_POSITIONS, "NodePositions", "NodePositions.mo");
+    // nNodes = 7 proves `nNodes > 3`, so the `for` loop arm runs: it writes
+    // xsi[2..6] while xsi[1] and xsi[7] come from the two earlier conditionals.
+    let seven = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0];
+    for (index, value) in seven.iter().enumerate() {
+        close(
+            algebraic(&report, &format!("seven[{}]", index + 1)),
+            *value,
+            "seven",
+        );
+    }
+    // nNodes = 5 owns a distinct loop domain (2:4) over the same source span.
+    let five = [0.0, 1.0 / 6.0, 0.5, 5.0 / 6.0, 1.0];
+    for (index, value) in five.iter().enumerate() {
+        close(
+            algebraic(&report, &format!("five[{}]", index + 1)),
+            *value,
+            "five",
+        );
+    }
+    // nNodes = 3 proves `nNodes == 3`, so the loop arm is unexecuted and the
+    // scalar arm defines the middle element instead.
+    let three = [0.0, 0.5, 1.0];
+    for (index, value) in three.iter().enumerate() {
+        close(
+            algebraic(&report, &format!("three[{}]", index + 1)),
+            *value,
+            "three",
+        );
+    }
+}
+
+/// Folding the guard back settles which arm runs; it does not widen coverage.
+/// A proven loop arm that writes only some of the output's elements leaves the
+/// rest undefined, and MLS §12.4.4 gives an unwritten function value no value,
+/// so the output totality boundary rejects it at the same place and with the
+/// same message a partial straight-line body would. The `for` loop here covers
+/// `xsi[1..nNodes-1]` and never writes `xsi[nNodes]`.
+#[test]
+fn a_proven_loop_arm_that_leaves_an_element_undefined_is_still_rejected() {
+    let source = r#"
+within;
+function partialNodes
+  input Integer nNodes;
+  output Real xsi[nNodes];
+algorithm
+  if nNodes > 1 then
+    for i in 1:nNodes - 1 loop
+      xsi[i] := i;
+    end for;
+  end if;
+end partialNodes;
+model PartialNodePositions
+  Real four[4];
+equation
+  four = partialNodes(4);
+end PartialNodePositions;
+"#;
+    let error = Compiler::new()
+        .model("PartialNodePositions")
+        .compile_str(source, "PartialNodePositions.mo")
+        .expect_err("a proven loop arm that skips an element defines an incomplete output");
+    let rendered = format!("{error:?}");
+    assert!(
+        rendered.contains("without defining every declared element"),
+        "the loop's element coverage must stay exact: {rendered}"
+    );
+}

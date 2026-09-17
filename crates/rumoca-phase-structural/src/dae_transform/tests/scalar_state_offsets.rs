@@ -82,6 +82,7 @@ fn derivative_only_definition_cannot_supply_a_manifold_value() {
         let manifold = [ManifoldConstraint {
             expression: equation.residual().index(),
             lifted: None,
+            redundant: false,
         }];
         assert!(constraints::demotion_preserves_manifold_values(
             view,
@@ -169,7 +170,7 @@ fn offset_model(shape: &[u32], form: Form, opposite: bool) -> dae::Dae {
                     at,
                     dae::VariableAttributes {
                         start: Some(one),
-                        fixed: Some(true),
+                        fixed: Some(vec![true]),
                         ..Default::default()
                     },
                 )?,

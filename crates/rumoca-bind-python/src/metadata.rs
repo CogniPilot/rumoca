@@ -95,7 +95,9 @@ impl VariableInfo {
             min: opt_literal(view, variable.minimum()),
             max: opt_literal(view, variable.maximum()),
             nominal: opt_literal(view, variable.nominal()),
-            fixed: variable.fixed().unwrap_or(false),
+            // Reporting metadata only; per-scalar `fixed` drives initialization
+            // in the solve lowering, not this reduced flag.
+            fixed: variable.fixed_uniform().unwrap_or(false),
             description: variable.description().map(str::to_string),
             dims: variable
                 .value_type()
@@ -161,7 +163,9 @@ impl ParameterInfo {
             min: opt_literal(view, variable.minimum()),
             max: opt_literal(view, variable.maximum()),
             nominal: opt_literal(view, variable.nominal()),
-            fixed: variable.fixed().unwrap_or(false),
+            // Reporting metadata only; per-scalar `fixed` drives initialization
+            // in the solve lowering, not this reduced flag.
+            fixed: variable.fixed_uniform().unwrap_or(false),
             description: variable.description().map(str::to_string),
             dims: variable
                 .value_type()

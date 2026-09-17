@@ -142,7 +142,7 @@ fn tensor_stage_residual_and_ad_include_parameters_inputs_and_time() {
                 .view
                 .variable(formal.coordinate(x, 0).unwrap())
                 .unwrap()
-                .fixed(),
+                .fixed_uniform(),
             Some(true)
         );
     });

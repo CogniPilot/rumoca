@@ -986,3 +986,163 @@ fn a_value_no_dimension_reads_does_not_split_specializations() {
     let analysis = analyze(&model).expect("no declared dimension reads `n`");
     assert_eq!(analysis.certificates().len(), 1);
 }
+
+/// MLS §12.7.1 gives a `derivative` function's inputs as all original inputs
+/// followed by one derivative "for each input containing reals". An
+/// `ExternalObject` (MLS §12.9.7) holds opaque external state and contains no
+/// Real, so it is passed through without a tangent exactly like an Integer or
+/// Boolean input, while an adjacent Real input still gains one. This is the
+/// exact shape of the MSL `Modelica.Blocks.Tables` interpolation functions,
+/// whose `tableID` input is an `ExternalObject`.
+#[test]
+fn an_external_object_input_carries_no_tangent_while_a_real_input_does() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("external_object_derivative.mo", "f(1.0, 1.0);");
+    let span = Span::from_offsets(source, 0, 12);
+
+    let handle_type = TypeId::new(90);
+    let handle_def_id = DefId::new(50);
+    let mut model = model_with_predefined_types();
+
+    // MLS §12.9.7: an ExternalObject value is produced only by its own
+    // constructor, an external function that returns the external-object type.
+    let mut constructor = rumoca_core::Function::new("Handle", span);
+    constructor.add_input(param("seed", "Real", real_type(), Vec::new(), span));
+    constructor.add_output(
+        param("handle", "Handle", handle_type, Vec::new(), span).with_type_def_id(handle_def_id),
+    );
+    constructor.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("make_handle".to_string()),
+        output_name: Some("handle".to_string()),
+        args: Vec::new(),
+        annotations: Vec::new(),
+    });
+    model.add_function(constructor);
+
+    // The derivative function's declared inputs are (tableID, u, der_u): the
+    // ExternalObject and Real originals, then one tangent for the Real input.
+    let mut derivative = rumoca_core::Function::new("f_der", span);
+    derivative.add_input(
+        param("tableID", "Handle", handle_type, Vec::new(), span).with_type_def_id(handle_def_id),
+    );
+    derivative.add_input(param("u", "Real", real_type(), Vec::new(), span));
+    derivative.add_input(param("der_u", "Real", real_type(), Vec::new(), span));
+    derivative.add_output(param("der_y", "Real", real_type(), Vec::new(), span));
+    model.add_function(derivative);
+    let derivative_instance = model.functions[&VarName::new("f_der")]
+        .instance_id
+        .expect("Flat assigns the derivative function an exact instance");
+
+    let mut primal = rumoca_core::Function::new("f", span);
+    primal.add_input(
+        param("tableID", "Handle", handle_type, Vec::new(), span).with_type_def_id(handle_def_id),
+    );
+    primal.add_input(param("u", "Real", real_type(), Vec::new(), span));
+    primal.add_output(param("y", "Real", real_type(), Vec::new(), span));
+    primal.derivatives.push(rumoca_core::DerivativeAnnotation {
+        derivative_function: exact_function_reference("f_der", derivative_instance),
+        order: 1,
+        inputs: vec![
+            rumoca_core::FunctionDerivativeInput::Differentiate,
+            rumoca_core::FunctionDerivativeInput::Differentiate,
+        ],
+    });
+    model.add_function(primal);
+
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("f"),
+            args: vec![literal(1.0, span), literal(1.0, span)],
+            is_constructor: false,
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let analysis =
+        analyze(&model).expect("an ExternalObject input carries no tangent (MLS §12.7.1)");
+    let [derivative_certificate] = analysis.derivatives() else {
+        panic!("the primal's order-1 annotation is discovered exactly once");
+    };
+    let specialized = &analysis.certificates()[derivative_certificate.target];
+    assert_eq!(specialized.key.function, VarName::new("f_der"));
+    assert_eq!(
+        specialized.key.inputs,
+        vec![Vec::<u32>::new(), Vec::<u32>::new(), Vec::<u32>::new()],
+        "the ExternalObject `tableID` gains no tangent while the Real `u` does, so the specialized signature is (tableID, u, der_u)"
+    );
+}
+
+/// A Real-bearing record reaching derivative specialization has not been
+/// decomposed into its scalar fields, so the rejection that names that
+/// requirement stays reachable rather than silently dropping the record's Real
+/// tangents.
+#[test]
+fn a_real_bearing_record_input_still_requires_decomposition() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("record_derivative.mo", "g(1.0);");
+    let span = Span::from_offsets(source, 0, 7);
+    let (mut model, _pair_constructor, _left) = pair_constructor_model(span);
+    model.predefined_types.real = real_type();
+    model.predefined_types.integer = integer_type();
+
+    let record_type = TypeId::new(91);
+    let record_def_id = DefId::new(40);
+
+    let mut derivative = rumoca_core::Function::new("g_der", span);
+    derivative.add_input(
+        param("p", "Pair", record_type, Vec::new(), span).with_type_def_id(record_def_id),
+    );
+    derivative.add_input(param("der_left", "Real", real_type(), Vec::new(), span));
+    derivative.add_input(param("der_right", "Real", real_type(), Vec::new(), span));
+    derivative.add_output(param("der_y", "Real", real_type(), Vec::new(), span));
+    model.add_function(derivative);
+    let derivative_instance = model.functions[&VarName::new("g_der")]
+        .instance_id
+        .expect("Flat assigns the derivative function an exact instance");
+
+    let mut primal = rumoca_core::Function::new("g", span);
+    primal.add_input(
+        param("p", "Pair", record_type, Vec::new(), span).with_type_def_id(record_def_id),
+    );
+    primal.add_output(param("y", "Real", real_type(), Vec::new(), span));
+    primal.derivatives.push(rumoca_core::DerivativeAnnotation {
+        derivative_function: exact_function_reference("g_der", derivative_instance),
+        order: 1,
+        inputs: vec![rumoca_core::FunctionDerivativeInput::Differentiate],
+    });
+    model.add_function(primal);
+
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("g"),
+            args: vec![literal(1.0, span)],
+            is_constructor: false,
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let Err(error) = analyze(&model) else {
+        panic!("a Real-bearing record input must keep its decomposition rejection");
+    };
+    assert!(
+        matches!(
+            error,
+            ToDaeError::UnsupportedFlatSemantics {
+                ref feature,
+                ref detail,
+                ..
+            } if feature == "function derivative"
+                && detail == "record inputs must be decomposed before derivative specialization"
+        ),
+        "unexpected error: {error:?}"
+    );
+}

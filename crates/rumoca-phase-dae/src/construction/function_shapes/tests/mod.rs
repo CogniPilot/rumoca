@@ -1,3 +1,4 @@
+mod local_binding_shapes;
 mod missing_provenance;
 mod value_proven_shapes;
 
@@ -132,6 +133,76 @@ fn size_of_specialized_array_is_one_proven_extent() {
     };
 
     assert_eq!(values.proven_extent(&expression), Some(4));
+}
+
+/// `size(array, 1) == 1`, the MLS §10.3.1 dimension relation the MSL
+/// `CombiTimeTable`/`CombiTable` offset broadcast is guarded by.
+fn size_first_dimension_equals_one(array: &str, span: Span) -> Expression {
+    Expression::Binary {
+        op: OpBinary::Eq,
+        lhs: Box::new(Expression::BuiltinCall {
+            function: BuiltinFunction::Size,
+            args: vec![
+                Expression::VarRef {
+                    name: Reference::new(array),
+                    subscripts: Vec::new(),
+                    span,
+                },
+                Expression::Literal {
+                    value: Literal::Integer(1),
+                    span,
+                },
+            ],
+            span,
+        }),
+        rhs: Box::new(Expression::Literal {
+            value: Literal::Integer(1),
+            span,
+        }),
+        span,
+    }
+}
+
+/// A constant relation over a statically-known dimension is proven Boolean, so
+/// the MLS §3.6.5 conditional fold can select its arm. `size(v, 1) == 1` is
+/// `true` for a length-one `v` and `false` for a length-two `v`; this is the
+/// value the lowering reads before pruning the arm MLS §11.5 would never reach.
+#[test]
+fn a_size_relation_over_a_known_dimension_is_a_proven_boolean() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("size_relation.mo", "size(v, 1) == 1");
+    let span = Span::from_offsets(source, 0, 15);
+
+    let mut length_one = ShapeEnvironment::with_capacity(1);
+    length_one.insert(VarName::new("v"), vec![1]);
+    assert_eq!(
+        length_one.proven_value(&size_first_dimension_equals_one("v", span)),
+        Some(ProvenValue::Boolean(true)),
+    );
+
+    let mut length_two = ShapeEnvironment::with_capacity(1);
+    length_two.insert(VarName::new("v"), vec![2]);
+    assert_eq!(
+        length_two.proven_value(&size_first_dimension_equals_one("v", span)),
+        Some(ProvenValue::Boolean(false)),
+    );
+}
+
+/// A dimension that is not statically known does not fold: with no proven shape
+/// for `v`, `size(v, 1)` has no translation-time value, so `size(v, 1) == 1` is
+/// unproven and the MLS §3.6.5 conditional keeps both arms rather than selecting
+/// one from a guessed extent. This preserves the genuine variable-size case.
+#[test]
+fn a_size_relation_over_an_unknown_dimension_does_not_fold() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("size_relation.mo", "size(v, 1) == 1");
+    let span = Span::from_offsets(source, 0, 15);
+
+    let values = ShapeEnvironment::with_capacity(0);
+    assert_eq!(
+        values.proven_value(&size_first_dimension_equals_one("v", span)),
+        None,
+    );
 }
 
 fn real_param(name: &str, dimensions: Vec<i64>, span: Span) -> rumoca_core::FunctionParam {

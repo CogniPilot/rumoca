@@ -94,6 +94,14 @@ pub(super) fn lower_range<'dae>(
     {
         return lower_enumeration_range(construction, symbols, start, end, input.provenance);
     }
+    // MLS §10.4.3: a Real compact range (`0 + d:d:1`) has a floating-point
+    // cardinality that the Integer DAE range node cannot carry, so when the
+    // scope folds it to its settled elements it is lowered as that constant
+    // array. This is the same fold the shape proof uses to size the colon local
+    // the range binds, so the emitted array and the proven extent agree.
+    if let Some(elements) = symbols.shapes.folded_real_range(input.expression) {
+        return lower_real_range_array(construction, &elements, input.provenance);
+    }
     let mut bound =
         |bound: &Expression| lower_range_bound(construction, symbols, binders, bound, &input);
     let start = bound(start)?;
@@ -104,6 +112,27 @@ pub(super) fn lower_range<'dae>(
             .at(input.provenance)
             .range(start, explicit_step, end)
     })
+}
+
+/// Lower a folded Real compact range to its constant array of Real elements.
+///
+/// MLS §10.4.3 makes the range vector `{start + i*step}` for the exact element
+/// count the scope proved, so the canonical DAE owner is the array of those Real
+/// literals rather than a range node, which is Integer-only.
+fn lower_real_range_array<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    elements: &[f64],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let mut lowered = Vec::with_capacity(elements.len());
+    for value in elements {
+        lowered.push(construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .literal(dae::DaeLiteral::Real(*value))
+        })?);
+    }
+    construction.expressions(|expressions| expressions.at(provenance).array(lowered))
 }
 
 /// Lower one compact-range bound, folding it when the scope proves its value.

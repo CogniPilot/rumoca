@@ -64,10 +64,12 @@ impl TrialPoint {
                 .coordinate(source, 0)
                 .ok_or_else(|| failure("trial source coordinate has no formal value"))?;
             values[target.index() as usize] = Some(value);
-            stated_initial_values[target.index() as usize] =
-                vec![variable.fixed() == Some(true); variable.scalar_count()];
+            stated_initial_values[target.index() as usize] = (0..variable.scalar_count())
+                .map(|scalar| variable.fixed_scalar(scalar) == Some(true))
+                .collect();
             retained_guesses[target.index() as usize] = variable.role() == dae::VariableRole::State
-                || variable.fixed() == Some(true)
+                || (0..variable.scalar_count())
+                    .any(|scalar| variable.fixed_scalar(scalar) == Some(true))
                 || matches!(
                     variable.state_select(),
                     StateSelect::Always | StateSelect::Prefer

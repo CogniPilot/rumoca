@@ -140,7 +140,7 @@ pub(super) fn reserve_derivatives<'target>(
                     reservation,
                     dae::VariableAttributes {
                         start: Some(start),
-                        fixed: Some(false),
+                        fixed: Some(vec![false]),
                         origin: dae::VariableOrigin::Generated,
                         ..Default::default()
                     },

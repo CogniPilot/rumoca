@@ -248,7 +248,11 @@ fn projection_unknown_slots<'dae>(
 ) -> Result<HashMap<u32, Vec<usize>>, LowerError> {
     let mut slots = HashMap::new();
     for (id, variable) in view.variables() {
-        if variable.role() != dae::VariableRole::Parameter || variable.fixed() != Some(false) {
+        // Parameter `fixed` is uniform (flatten refuses non-uniform parameter
+        // arrays, EF033), so this whole-declaration reduction is exact.
+        if variable.role() != dae::VariableRole::Parameter
+            || variable.fixed_uniform() != Some(false)
+        {
             continue;
         }
         if bound.contains_key(&id.index()) {

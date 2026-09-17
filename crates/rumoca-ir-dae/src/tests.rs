@@ -486,6 +486,66 @@ fn promoted_concatenation_derives_exact_shapes_during_construction() {
     });
 }
 
+// MLS 3.6 §10.6.2 admits an element-wise `.+`/`.-` where one operand is a
+// scalar, expanding it to the other operand's shape. Modelica.Mechanics
+// .MultiBody.Examples.Elementary.Surfaces binds
+// `PipeWithScalarField.T = sin(pi*xsi)*cos(pi*time) .+ 1`, a `Real[:] .+ 1`.
+// OMC accepts and simulates the reduced form `y = {sin(time), cos(time), time}
+// .+ 1`, giving y(0) = {1.0, 2.0, 1.0} and y(1) = {1.8414709848, 1.5403023059,
+// 2.0}: the scalar 1 is added to every element. The result keeps the array's
+// shape, so a `Real[3] .+ Integer` is a `Real[3]`.
+#[test]
+fn elementwise_addition_broadcasts_a_scalar_operand_to_the_array_shape() {
+    let source = TestSource::new("{a, b, c} .+ 1");
+    let at = source.source("{a, b, c} .+ 1", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let a = expressions.at(at).literal(DaeLiteral::Real(1.0))?;
+            let b = expressions.at(at).literal(DaeLiteral::Real(2.0))?;
+            let c = expressions.at(at).literal(DaeLiteral::Real(3.0))?;
+            let vector = expressions.at(at).array([a, b, c])?;
+            let one = expressions.at(at).literal(DaeLiteral::Integer(1))?;
+            expressions
+                .at(at)
+                .binary(BinaryOperator::ElementwiseAdd, vector, one)?;
+            Ok(())
+        })
+    })
+    .expect("a scalar `.+` operand expands to the vector shape");
+
+    dae.inspect(|view| {
+        let root = view.expression_id(5).expect("the `.+` expression exists");
+        let result = view.expression(root).unwrap();
+        assert_eq!(result.value_type().dimensions(), &[3]);
+        assert_eq!(result.value_type().scalar_type(), ScalarType::Real);
+    });
+}
+
+// The scalar-expansion admission is confined to the element-wise operators: a
+// plain `+` still requires equal shapes. OMC's `checkModel` rejects
+// `{1, 2, 3} + 1` ("Cannot resolve type ... operands have types Integer[3],
+// Integer"), so `Real[3] + Integer` stays an ED020 shape mismatch here.
+#[test]
+fn plain_addition_still_rejects_a_scalar_against_an_array() {
+    let source = TestSource::new("{a, b, c} + 1");
+    let at = source.source("{a, b, c} + 1", 0);
+    let error = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let a = expressions.at(at).literal(DaeLiteral::Real(1.0))?;
+            let b = expressions.at(at).literal(DaeLiteral::Real(2.0))?;
+            let c = expressions.at(at).literal(DaeLiteral::Real(3.0))?;
+            let vector = expressions.at(at).array([a, b, c])?;
+            let one = expressions.at(at).literal(DaeLiteral::Integer(1))?;
+            expressions
+                .at(at)
+                .binary(BinaryOperator::Add, vector, one)?;
+            Ok(())
+        })
+    })
+    .expect_err("plain `+` has no scalar expansion");
+    assert!(matches!(error, DaeConstructionError::ShapeMismatch { .. }));
+}
+
 #[test]
 fn numeric_promotion_is_derived_during_construction() {
     let source = TestSource::new("Real x; equation der(x) = 1; x + 2; if true then 3 else x;");

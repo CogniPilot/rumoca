@@ -80,6 +80,10 @@ pub enum PreparedDae<'source> {
     Transformed {
         dae: Box<dae::Dae>,
         manifold: Box<[u32]>,
+        /// Redundancy classification parallel to `manifold`: `true` marks a row
+        /// of a loop-closure constraint that must reduce, `false` a conserved
+        /// first integral that may be retained.
+        manifold_redundant: Box<[bool]>,
         pins: Box<[InitialValuePin]>,
         structural: PreparedStructuralAnalysis,
     },
@@ -90,6 +94,23 @@ impl PreparedDae<'_> {
         match self {
             Self::Borrowed { dae, .. } => dae,
             Self::Transformed { dae, .. } => dae,
+        }
+    }
+
+    /// True when the retained manifold carries a redundant loop-closure
+    /// constraint: one whose position form is over-determining and is closed
+    /// only by differentiating to acceleration, introducing a multiplier. State
+    /// selection reduces such a system to an independent basis. A system whose
+    /// manifold constraints are all conserved first integrals returns false:
+    /// retaining its source coordinates and enforcing the invariants through the
+    /// manifold projection stays regular, whereas reducing folds when a selected
+    /// coordinate passes through zero.
+    pub fn manifold_requires_reduction(&self) -> bool {
+        match self {
+            Self::Borrowed { .. } => false,
+            Self::Transformed {
+                manifold_redundant, ..
+            } => manifold_redundant.contains(&true),
         }
     }
 
@@ -371,6 +392,34 @@ impl HolonomicConstraint {
 struct ManifoldConstraint {
     expression: u32,
     lifted: Option<LiftedManifoldOwner>,
+    /// Whether this row belongs to a redundant loop-closure constraint. A
+    /// conserved first integral (its lower-order form is implied by the ODE, so
+    /// one differentiation already reconstructs a matched state derivative) is
+    /// definitional and keeps `false`; a genuine loop closure, whose position
+    /// form is over-determining and is closed only by differentiating to
+    /// acceleration through a multiplier, is redundant and carries `true`.
+    redundant: bool,
+}
+
+/// One retained manifold constraint as the reduction pipeline hands it over: a
+/// DAE-local expression ordinal and whether it belongs to a redundant loop
+/// closure. The finalized [`PreparedDae`] stores these split into two primitive
+/// arrays so no phase-private type leaks through its public shape; state
+/// selection reads the redundancy classification through
+/// [`PreparedDae::manifold_requires_reduction`] without re-deriving structure.
+#[derive(Clone, Copy)]
+struct ManifoldEntry {
+    expression: u32,
+    redundant: bool,
+}
+
+impl ManifoldEntry {
+    fn from_constraint(constraint: ManifoldConstraint) -> Self {
+        Self {
+            expression: constraint.expression,
+            redundant: constraint.redundant,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -452,17 +501,20 @@ fn prepare_for_solve_with_observer<'source>(
         } => Ok(PreparedDae::Transformed {
             dae: Box::new(selected),
             manifold: Box::new([]),
+            manifold_redundant: Box::new([]),
             pins,
             structural,
         }),
         PreparedDae::Transformed {
             dae,
             manifold,
+            manifold_redundant,
             pins,
             structural,
         } => Ok(PreparedDae::Transformed {
             dae,
             manifold,
+            manifold_redundant,
             pins,
             structural,
         }),
@@ -546,10 +598,26 @@ fn reduce_for_solve_with_observer<'source>(
             blocked: pristine.blocked.or(holonomic.blocked),
         };
     }
-    match (holonomic.step, blocked.or(holonomic.blocked)) {
+    finalize_holonomic_outcome(holonomic, blocked, singular, observer)
+}
+
+/// Turn the final holonomic round into a prepared system: a reduction becomes a
+/// transformed DAE carrying the classified manifold, a blocked stated initial
+/// value surfaces as its own diagnostic, and an exhausted system reports the
+/// original singularity.
+fn finalize_holonomic_outcome(
+    holonomic: HolonomicRound,
+    outer_blocked: Option<DiscardedInitialValue>,
+    singular: StructuralError,
+    observer: &mut impl ReductionObserver,
+) -> Result<PreparedDae<'static>, StructuralError> {
+    match (holonomic.step, outer_blocked.or(holonomic.blocked)) {
         (Some((dae, manifold, structural)), _) => transformed_with_observer(
             dae,
-            manifold.into_iter().map(|entry| entry.expression).collect(),
+            manifold
+                .into_iter()
+                .map(ManifoldEntry::from_constraint)
+                .collect(),
             structural,
             observer,
         ),
@@ -631,13 +699,18 @@ fn borrowed_with_observer<'source>(
 /// so that a demotion's new roles decide which coordinate the runtime seeds.
 fn transformed(
     model: dae::Dae,
-    manifold: Vec<u32>,
+    manifold: Vec<ManifoldEntry>,
     structural: PreparedStructuralAnalysis,
 ) -> Result<PreparedDae<'static>, StructuralError> {
     let pins = model.inspect(transferred_initial_values)?;
+    let (expressions, redundant): (Vec<u32>, Vec<bool>) = manifold
+        .into_iter()
+        .map(|entry| (entry.expression, entry.redundant))
+        .unzip();
     Ok(PreparedDae::Transformed {
         dae: Box::new(model),
-        manifold: manifold.into_boxed_slice(),
+        manifold: expressions.into_boxed_slice(),
+        manifold_redundant: redundant.into_boxed_slice(),
         pins: pins.into_boxed_slice(),
         structural,
     })
@@ -645,7 +718,7 @@ fn transformed(
 
 fn transformed_with_observer(
     model: dae::Dae,
-    manifold: Vec<u32>,
+    manifold: Vec<ManifoldEntry>,
     structural: PreparedStructuralAnalysis,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'static>, StructuralError> {

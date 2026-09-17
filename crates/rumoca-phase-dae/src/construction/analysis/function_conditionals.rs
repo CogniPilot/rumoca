@@ -35,6 +35,15 @@ pub(super) fn plan_function_conditional(
     if let Some(selected) = proven_conditional_branch(blocks, context.shapes) {
         return plan_proven_conditional_branch(blocks, fallback, selected, context);
     }
+    // A conditional whose arm carries a loop reaches this planner as a generated
+    // branch guard rather than its source predicate, which `proven_value` cannot
+    // fold. Settling the guard chain recovers the same MLS §11.5 selection, so a
+    // specialization that proves the predicate plans the executed arm as the
+    // unconditional algorithm section it is instead of a runtime branch that has
+    // no owner for the loop.
+    if let Some(selected) = statically_selected_branch(blocks, fallback, context)? {
+        return plan_proven_conditional_branch(blocks, fallback, selected, context);
+    }
     let branch_context = FunctionValidationContext {
         call_scoped_actions: false,
         ..context
@@ -279,6 +288,27 @@ fn static_boolean_expression(
     expression: &Expression,
     context: FunctionValidationContext<'_>,
 ) -> Result<Option<bool>, ToDaeError> {
+    static_boolean_expression_at_depth(expression, context, 0)
+}
+
+/// The value a specialization settles for one Boolean condition, if any.
+///
+/// A compiler-generated branch guard captures its MLS §11.5 branch predicate in
+/// an immutable Boolean before the algorithm's mutable values can change; its
+/// definition is an ordinary Boolean expression over the function inputs and
+/// earlier guards. Folding a guard back to its definition is what lets a
+/// value-proven specialization settle the branch selection of a conditional
+/// whose arm carries a loop, which the guard rewrite would otherwise hide behind
+/// the generated name. `depth` bounds that expansion; the guard chain is acyclic
+/// because each guard reads only guards defined before it.
+fn static_boolean_expression_at_depth(
+    expression: &Expression,
+    context: FunctionValidationContext<'_>,
+    depth: usize,
+) -> Result<Option<bool>, ToDaeError> {
+    if depth >= 64 {
+        return Ok(None);
+    }
     match expression {
         Expression::Literal {
             value: Literal::Boolean(value),
@@ -288,7 +318,7 @@ fn static_boolean_expression(
             op: OpUnary::Not,
             rhs,
             ..
-        } => Ok(static_boolean_expression(rhs, context)?.map(|value| !value)),
+        } => Ok(static_boolean_expression_at_depth(rhs, context, depth + 1)?.map(|value| !value)),
         Expression::Binary {
             op: OpBinary::And,
             lhs,
@@ -296,8 +326,8 @@ fn static_boolean_expression(
             ..
         } => Ok(
             match (
-                static_boolean_expression(lhs, context)?,
-                static_boolean_expression(rhs, context)?,
+                static_boolean_expression_at_depth(lhs, context, depth + 1)?,
+                static_boolean_expression_at_depth(rhs, context, depth + 1)?,
             ) {
                 (Some(false), _) | (_, Some(false)) => Some(false),
                 (Some(true), Some(true)) => Some(true),
@@ -311,8 +341,8 @@ fn static_boolean_expression(
             ..
         } => Ok(
             match (
-                static_boolean_expression(lhs, context)?,
-                static_boolean_expression(rhs, context)?,
+                static_boolean_expression_at_depth(lhs, context, depth + 1)?,
+                static_boolean_expression_at_depth(rhs, context, depth + 1)?,
             ) {
                 (Some(true), _) | (_, Some(true)) => Some(true),
                 (Some(false), Some(false)) => Some(false),
@@ -350,7 +380,32 @@ fn static_boolean_expression(
                 _ => unreachable!("guard admits relational operators"),
             }))
         }
-        _ => Ok(None),
+        // MLS §11.5 evaluates a conditional's branch conditions in order; the
+        // guard rewrite renders that same first-true selection as an `if`
+        // expression, so folding it settles the guard exactly when the
+        // specialization settles every condition it must evaluate.
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                match static_boolean_expression_at_depth(condition, context, depth + 1)? {
+                    Some(true) => {
+                        return static_boolean_expression_at_depth(value, context, depth + 1);
+                    }
+                    Some(false) => {}
+                    None => return Ok(None),
+                }
+            }
+            static_boolean_expression_at_depth(else_branch, context, depth + 1)
+        }
+        // A generated branch guard is a name for its definition; fold through it
+        // so the branch selection is settled by the same inputs the guard reads.
+        _ => match super::function_definitions::generated_boolean_value(expression, context) {
+            Some(value) => static_boolean_expression_at_depth(value, context, depth + 1),
+            None => Ok(None),
+        },
     }
 }
 

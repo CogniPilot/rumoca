@@ -1396,7 +1396,7 @@ fn define_variables<'dae>(
             component_ref: attributes.component_ref.clone(),
             binding: attributes.binding.map(mapped_expression).transpose()?,
             start: attributes.start.map(mapped_expression).transpose()?,
-            fixed: attributes.fixed,
+            fixed: attributes.fixed.clone(),
             min: attributes.min.map(mapped_expression).transpose()?,
             max: attributes.max.map(mapped_expression).transpose()?,
             nominal: attributes.nominal.map(mapped_expression).transpose()?,

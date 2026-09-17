@@ -422,3 +422,78 @@ fn differentiated_time_and_invariant_constraints_keep_initial_contradictions() {
         }
     }
 }
+
+// A holonomic constraint that is a conserved invariant of the differentiated
+// dynamics (its highest differentiation is matched to a state derivative of the
+// block it couples, introducing no Lagrange multiplier) keeps its source
+// coordinates as states; a loop closure, whose differentiated constraint
+// determines a multiplier, still reduces to an independent basis.
+// See spec/SPEC_0053_CONSTRAINED_STATE_SELECTION.md section 1.
+const CONSERVED_QUATERNION: &str = r#"
+model ConservedQuaternion
+  Real Q[4](start={1,0,0,0});
+  parameter Real w1=0.1, w2=0.2, w3=0.3;
+equation
+  der(Q[1]) = 0.5*(-Q[2]*w1 - Q[3]*w2 - Q[4]*w3);
+  der(Q[2]) = 0.5*( Q[1]*w1 + Q[3]*w3 - Q[4]*w2);
+  der(Q[3]) = 0.5*( Q[1]*w2 - Q[2]*w3 + Q[4]*w1);
+  Q*Q = 1;
+end ConservedQuaternion;
+"#;
+
+const PLANAR_LOOP_CLOSURE: &str = r#"
+model PlanarLoopClosure
+  Real q[2](start={1,0});
+  Real v[2](start={0,1});
+  Real lambda;
+equation
+  der(q) = v;
+  der(v) = lambda*q;
+  q*q = 1;
+end PlanarLoopClosure;
+"#;
+
+#[test]
+fn conserved_quaternion_norm_retains_the_source_basis() {
+    let compiled = Compiler::new()
+        .model("ConservedQuaternion")
+        .compile_str(CONSERVED_QUATERNION, "conserved_quaternion.mo")
+        .unwrap();
+    // The unit-norm constraint is a first integral of the kinematic rate
+    // equations, so all four quaternion components are retained as states and
+    // the norm is enforced by the manifold projection rather than reducing the
+    // basis to three folding coordinates.
+    let prepared = rumoca_phase_structural::prepare_for_solve(&compiled.dae).unwrap();
+    assert!(prepared.inspect(|system| !system.manifold.is_empty()));
+    let lowered = rumoca_phase_solve::lower_solve_model(
+        &compiled.dae,
+        &std::collections::HashMap::new(),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(lowered.model().state_scalar_count(), 4);
+    assert!(
+        compiled.dae.inspect(|view| view
+            .variables()
+            .any(|(_, variable)| variable.name().as_str() == "Q"))
+    );
+}
+
+#[test]
+fn planar_loop_closure_still_reduces_to_its_independent_basis() {
+    let compiled = Compiler::new()
+        .model("PlanarLoopClosure")
+        .compile_str(PLANAR_LOOP_CLOSURE, "planar_loop_closure.mo")
+        .unwrap();
+    // der(v) = lambda*q reads the multiplier lambda, so the twice-differentiated
+    // position constraint determines a Lagrange multiplier. This block is a loop
+    // closure and reduces from four retained coordinates to its two independent
+    // states.
+    let lowered = rumoca_phase_solve::lower_solve_model(
+        &compiled.dae,
+        &std::collections::HashMap::new(),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(lowered.model().state_scalar_count(), 2);
+}

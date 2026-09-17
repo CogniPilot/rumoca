@@ -51,7 +51,7 @@ fn formal_rotation_equations_preserve_tensors_and_initialization() {
             for derivative in (1..=2).filter_map(|order| system.coordinate(id, order)) {
                 let derivative = system.view.variable(derivative).unwrap();
                 assert_eq!(derivative.value_type(), variable.value_type());
-                assert_eq!(derivative.fixed(), Some(false));
+                assert_eq!(derivative.fixed_uniform(), Some(false));
                 assert_eq!(derivative.role(), dae::VariableRole::Algebraic);
                 let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(system.view);
                 assert_eq!(

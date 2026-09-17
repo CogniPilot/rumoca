@@ -283,6 +283,19 @@ pub(super) fn function_value_type<'dae>(
             )
         });
     }
+    if let Some(type_def_id) = value.type_def_id
+        && super::native_tables::native_table_family(flat, type_def_id).is_some()
+    {
+        // MLS §12.9.7: an opaque native table handle is modeled as an integer
+        // table id (never a Real, so derivative specialization seeds no tangent
+        // for it, matching the derivative classification in function_shapes).
+        return construction.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Integer, dimensions.clone()),
+                provenance,
+            )
+        });
+    }
     let type_def_id = value
         .type_def_id
         .expect("function analysis requires resolved record type identity");

@@ -130,7 +130,7 @@ fn partial_explicit_derivative_coverage_still_receives_a_whole_tensor_alias() {
         assert_eq!(generated.len(), 1);
         assert_eq!(generated[0].1.role(), dae::VariableRole::Algebraic);
         assert_eq!(generated[0].1.value_type().dimensions(), &[2]);
-        assert_eq!(generated[0].1.fixed(), Some(false));
+        assert_eq!(generated[0].1.fixed_uniform(), Some(false));
     });
 }
 
@@ -189,7 +189,7 @@ fn check_implicit_rate_motion(source: &str) {
             .collect::<Vec<_>>();
         assert_eq!(generated.len(), 1);
         assert_eq!(generated[0].1.value_type().dimensions(), &[2]);
-        assert_eq!(generated[0].1.fixed(), Some(false));
+        assert_eq!(generated[0].1.fixed_uniform(), Some(false));
     });
 }
 
@@ -222,7 +222,7 @@ fn derivative_aliases_preserve_tensor_owners_and_do_not_add_initial_constraints(
         let (_, alias) = aliases[0];
         assert_eq!(alias.role(), dae::VariableRole::Algebraic);
         assert_eq!(alias.value_type().dimensions(), &[2]);
-        assert_eq!(alias.fixed(), Some(false));
+        assert_eq!(alias.fixed_uniform(), Some(false));
         assert!(alias.start().is_some());
         assert!(alias.binding().is_none());
     });

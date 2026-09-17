@@ -136,7 +136,12 @@ fn lower_unrepresented_fixed_continuous_reals<'dae>(
 ) -> Result<(), LowerError> {
     let mut projection_cache = rumoca_eval_dae::ScalarCoordinateProjectionCache::default();
     for (id, variable) in view.variables() {
-        if variable.fixed() != Some(true)
+        // MLS §4.8.6: each array element carries its own `fixed`, so an element
+        // is pinned independently of its siblings. A declaration with no pinned
+        // element contributes nothing here.
+        let has_fixed_element =
+            (0..variable.scalar_count()).any(|scalar| variable.fixed_scalar(scalar) == Some(true));
+        if !has_fixed_element
             || variable.value_type().scalar_type() != dae::ScalarType::Real
             || !matches!(
                 variable.role(),
@@ -169,6 +174,9 @@ fn lower_unrepresented_fixed_continuous_reals<'dae>(
             ));
         }
         for scalar in 0..variable.scalar_count() {
+            if variable.fixed_scalar(scalar) != Some(true) {
+                continue;
+            }
             if pins
                 .iter()
                 .any(|pin| pin.source == id.index() && pin.source_scalar as usize == scalar)

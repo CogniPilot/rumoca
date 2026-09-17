@@ -34,7 +34,7 @@ fn construct(
                 boolean,
                 owner,
                 VariableAttributes {
-                    fixed,
+                    fixed: fixed.map(|value| vec![value]),
                     binding: bound.then_some(seed),
                     ..Default::default()
                 },
@@ -105,7 +105,7 @@ fn initialization_parameter_requires_exact_shape_and_a_non_real_target() {
                     ty,
                     owner,
                     VariableAttributes {
-                        fixed: Some(false),
+                        fixed: Some(vec![false]),
                         ..Default::default()
                     },
                 )

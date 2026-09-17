@@ -621,7 +621,7 @@ impl<'dae> VariableView<'dae> {
             |view| view.attributes().binding.map(ExprId::from_raw);
         fn start -> Option<ExprId<'dae>> =
             |view| view.attributes().start.map(ExprId::from_raw);
-        fn fixed -> Option<bool> = |view| view.attributes().fixed;
+        fn fixed -> Option<&'dae [bool]> = |view| view.attributes().fixed.as_deref();
         fn minimum -> Option<ExprId<'dae>> =
             |view| view.attributes().min.map(ExprId::from_raw);
         fn maximum -> Option<ExprId<'dae>> =
@@ -636,6 +636,28 @@ impl<'dae> VariableView<'dae> {
         fn is_tunable -> bool = |view| view.attributes().is_tunable;
         fn is_held -> bool = |view| view.attributes().is_held;
         fn origin -> VariableOrigin = |view| view.attributes().origin;
+    }
+
+    /// The `fixed` attribute reduced to a single Boolean when every element
+    /// agrees (MLS §4.8): `None` when the attribute is absent or the element
+    /// values differ.
+    pub fn fixed_uniform(self) -> Option<bool> {
+        crate::model::uniform_fixed(self.fixed())
+    }
+
+    /// The `fixed` value that governs one scalar element (MLS §4.8, §4.8.6): a
+    /// single stored value broadcasts over every element; an array indexes by
+    /// element position.
+    pub fn fixed_scalar(self, scalar: usize) -> Option<bool> {
+        crate::model::scalar_fixed(self.fixed(), scalar)
+    }
+
+    /// Whether any element is declared `fixed = true` (MLS §4.8.6): the
+    /// declaration then contributes at least one stated initial value even when
+    /// its elements disagree.
+    pub fn fixed_any_true(self) -> bool {
+        self.fixed()
+            .is_some_and(|values| values.iter().any(|&value| value))
     }
 
     pub fn identity(self) -> VariableIdentity<'dae> {

@@ -3838,6 +3838,107 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         lowered
     }
 
+    /// Lower a call to a native `ModelicaStandardTables` interpolation function
+    /// (MLS §12.9) onto the solver's native table operators, so the opaque
+    /// ExternalObject table handle is never handed to foreign C code.
+    ///
+    /// The `getValue` family becomes a table lookup and `getDerValue` its slope
+    /// times the abscissa derivative (MLS §12.7); the abscissa/time bounds and
+    /// the next time event become their dedicated operators. Every other
+    /// external function returns `None` and stays on the existing path.
+    fn try_native_table_call(
+        &mut self,
+        function: dae::FunctionId<'dae>,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<Option<solve::Reg>, LowerError> {
+        let Some(external) = self
+            .view
+            .function(function)
+            .and_then(|definition| definition.external())
+        else {
+            return Ok(None);
+        };
+        let Some(op) = dae::NativeTableOperator::from_symbol(external.symbol().as_str()) else {
+            return Ok(None);
+        };
+        if scalar != 0 {
+            return Err(LowerError::non_computable(
+                "a native table operator returns a scalar value",
+                span,
+            ));
+        }
+        let table_id = self.native_table_argument(arguments, 0, span)?;
+        let dst = self.register(span)?;
+        match op {
+            dae::NativeTableOperator::Lookup => {
+                let column = self.native_table_argument(arguments, 1, span)?;
+                let input = self.native_table_argument(arguments, 2, span)?;
+                self.ops.push(solve::LinearOp::TableLookup {
+                    dst,
+                    table_id,
+                    column,
+                    input,
+                });
+            }
+            dae::NativeTableOperator::Slope => {
+                let column = self.native_table_argument(arguments, 1, span)?;
+                let input = self.native_table_argument(arguments, 2, span)?;
+                let derivative =
+                    self.native_table_argument(arguments, arguments.len() - 1, span)?;
+                let slope = self.register(span)?;
+                self.ops.push(solve::LinearOp::TableLookupSlope {
+                    dst: slope,
+                    table_id,
+                    column,
+                    input,
+                });
+                self.ops.push(solve::LinearOp::Binary {
+                    dst,
+                    op: solve::BinaryOp::Mul,
+                    lhs: slope,
+                    rhs: derivative,
+                });
+            }
+            dae::NativeTableOperator::BoundsMin => {
+                self.ops.push(solve::LinearOp::TableBounds {
+                    dst,
+                    table_id,
+                    max: false,
+                });
+            }
+            dae::NativeTableOperator::BoundsMax => {
+                self.ops.push(solve::LinearOp::TableBounds {
+                    dst,
+                    table_id,
+                    max: true,
+                });
+            }
+            dae::NativeTableOperator::NextEvent => {
+                let time = self.native_table_argument(arguments, 1, span)?;
+                self.ops.push(solve::LinearOp::TableNextEvent {
+                    dst,
+                    table_id,
+                    time,
+                });
+            }
+        }
+        Ok(Some(dst))
+    }
+
+    fn native_table_argument(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        index: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let expression = arguments.get(index).ok_or_else(|| {
+            LowerError::contract("native table operator argument is out of range", span)
+        })?;
+        self.expression(expression, 0)
+    }
+
     pub(super) fn function_call(
         &mut self,
         call: dae::ExprId<'dae>,
@@ -3847,6 +3948,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        if let Some(register) = self.try_native_table_call(function, arguments, scalar, span)? {
+            return Ok(register);
+        }
         if let Some((start, registered)) =
             self.emit_typed_pure_call(call, function, arguments, span)?
         {
@@ -3928,6 +4032,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         arguments: dae::ExpressionOperands<'dae>,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        // A native table interpolation (MLS §12.9) lowers to a solver table
+        // operator in every execution domain, including the aggregate packing
+        // path a `when` body or other block-valued context reaches. It returns
+        // a single scalar (`output` 0), so the operator register is the whole
+        // packed result; routing it here keeps the opaque ExternalObject handle
+        // off the pure-call path that a foreign C function would take.
+        if let Some(register) = self.try_native_table_call(function, arguments, 0, span)? {
+            return Ok(register);
+        }
         if let Some((start, registered)) =
             self.emit_typed_pure_call(call, function, arguments, span)?
         {

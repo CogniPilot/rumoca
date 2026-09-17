@@ -813,7 +813,7 @@ fn deferred_start_sample_model(
     t0.variability = Variability::Parameter(Default::default());
     // The declaration defers the value (MLS §4.4) and carries no binding, so
     // the initial section is its only determining owner (MLS §8.6).
-    t0.fixed = Some(false);
+    t0.fixed = Some(vec![false]);
     t0.binding = None;
 
     let settling_span = source.span("t0", 0);

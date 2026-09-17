@@ -9,6 +9,14 @@ pub(super) fn validate_function_value_type(
     if effective_function_scalar_type(flat, value).is_some() {
         return Ok(());
     }
+    if let Some(type_def_id) = value.type_def_id
+        && crate::construction::native_tables::native_table_family(flat, type_def_id).is_some()
+    {
+        // MLS §12.9.7: a native standard-library table handle is an opaque
+        // ExternalObject. It carries no readable Real field, so it is accepted
+        // as an opaque integer table id rather than decomposed like a record.
+        return Ok(());
+    }
     if value.type_class != Some(rumoca_core::ClassType::Record) {
         return Err(unsupported_type(value, function));
     }

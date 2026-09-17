@@ -495,18 +495,24 @@ fn aggregate_pins(view: dae::DaeView<'_>) -> Vec<InitialValuePin> {
         if target.scalar_count() != variable.scalar_count() {
             continue;
         }
-        let role = if target.fixed() == Some(true) || definitions.contains(&state) {
-            InitialValueRole::Check
-        } else {
-            definitions.push(state);
-            InitialValueRole::Definition
-        };
         let start = variable.start();
         let start_count = start.and_then(|start| {
             view.expression(start)
                 .and_then(|expression| expression.value_type().scalar_count())
         });
         for scalar in 0..variable.scalar_count() {
+            // MLS §4.8.6: each state element owns its `fixed` independently. An
+            // element the state already pins through its own fixed start takes
+            // the transferred value as a consistency check; a free element takes
+            // it as its definition, and only the first transfer defines it.
+            let role = if target.fixed_scalar(scalar) == Some(true)
+                || definitions.contains(&(state, scalar as u32))
+            {
+                InitialValueRole::Check
+            } else {
+                definitions.push((state, scalar as u32));
+                InitialValueRole::Definition
+            };
             let value = start
                 .map(|start| {
                     vec![PinTerm {
@@ -808,7 +814,7 @@ impl ValueClosure {
 /// with `fixed = false` is an unknown of the initialization system rather than
 /// a stated value.
 fn carries_a_stated_initial_value(variable: dae::VariableView<'_>) -> bool {
-    variable.fixed() == Some(true)
+    variable.fixed_any_true()
         && variable.value_type().scalar_type() == dae::ScalarType::Real
         && matches!(
             variable.role(),

@@ -440,6 +440,30 @@ pub enum FlattenError {
         #[label("derivative annotation does not satisfy MLS §12.7.1")]
         span: Span,
     },
+
+    /// A parameter or constant declares a `fixed` array whose elements disagree.
+    ///
+    /// MLS §8.6 makes each `fixed = false` parameter scalar an initialization
+    /// unknown and each `fixed = true` scalar a value the declaration supplies.
+    /// A parameter whose elements mix the two would need per-element parameter
+    /// initialization; the initialization system owns one determination per
+    /// whole parameter, so a non-uniform `fixed` cannot be represented and must
+    /// be reported rather than reduced to a single Boolean.
+    #[error(
+        "per-element `fixed` on parameter arrays is not supported: `{name}` declares a non-uniform `fixed` modifier {values}"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF033),
+        help(
+            "MLS §8.6: a parameter's `fixed` elements must all agree; declare the array with a single `fixed` value, or split the differing elements into separate declarations"
+        )
+    )]
+    NonUniformParameterFixed {
+        name: String,
+        values: String,
+        #[label("non-uniform `fixed` on a parameter or constant")]
+        span: Span,
+    },
 }
 
 impl FlattenError {
@@ -757,6 +781,7 @@ impl PhaseError for FlattenError {
             | Self::MissingFunctionSelectionIdentity { span, .. }
             | Self::UnhonoredFunctionRedeclare { span, .. }
             | Self::InvalidDerivativeAnnotation { span, .. }
+            | Self::NonUniformParameterFixed { span, .. }
             | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
             | Self::CyclicConstantBinding { span, .. }
             | Self::InvalidConnectionGraph { span, .. }

@@ -696,7 +696,7 @@ fn keeps_stated_initial_value(
     else {
         return false;
     };
-    if variable.fixed() != Some(true) {
+    if variable.fixed_uniform() != Some(true) {
         return true;
     }
     match equalities.value_anchor_of(state) {
@@ -704,7 +704,8 @@ fn keeps_stated_initial_value(
             .variable_id(anchor as usize)
             .and_then(|id| view.variable(id))
             .is_some_and(|anchor| {
-                anchor.fixed() == Some(true) && states_the_same_start(view, variable, anchor)
+                anchor.fixed_uniform() == Some(true)
+                    && states_the_same_start(view, variable, anchor)
             }),
         _ => false,
     }
@@ -1179,7 +1180,7 @@ fn causal_definition<'dae>(
             if variable.role() != dae::VariableRole::Algebraic
                 || variable.variability() != dae::ExpressionVariability::Continuous
                 || variable.value_type().scalar_type() != dae::ScalarType::Real
-                || variable.fixed() == Some(true)
+                || variable.fixed_any_true()
                 || causal.event_holds_variable(algebraic.into())
             {
                 return None;

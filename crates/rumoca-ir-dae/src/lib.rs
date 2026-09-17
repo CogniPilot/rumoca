@@ -124,6 +124,7 @@ mod expression;
 mod ids;
 mod model;
 mod model_event_transactions;
+mod native_table;
 mod provenance;
 mod temporal;
 
@@ -181,6 +182,7 @@ pub use model::{
     ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
     VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
 };
+pub use native_table::NativeTableOperator;
 pub use model_event_transactions::{
     ModelEventDefinition, ModelEventDefinitionView, ModelEventStep, ModelEventStepView,
     ModelEventTarget, ModelEventTransactionView, ModelEventTransactions,

@@ -56,7 +56,7 @@ pub(super) struct VariableAttributesInput {
     pub(super) component_ref: Option<rumoca_core::ComponentReference>,
     pub(super) binding: Option<u32>,
     pub(super) start: Option<u32>,
-    pub(super) fixed: Option<bool>,
+    pub(super) fixed: Option<Vec<bool>>,
     pub(super) min: Option<u32>,
     pub(super) max: Option<u32>,
     pub(super) nominal: Option<u32>,

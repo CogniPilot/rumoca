@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rumoca_ir_dae as dae;
 
 use super::variables::{ReservedVariable, TargetVariable};
-use super::{PreparedDae, PreparedSystem, structural_analysis, transformed};
+use super::{ManifoldEntry, PreparedDae, PreparedSystem, structural_analysis, transformed};
 use crate::{BltBlock, EquationRef, StructuralError, UnknownId};
 
 pub(super) fn normalize(prepared: PreparedDae<'_>) -> Result<PreparedDae<'_>, StructuralError> {
@@ -17,15 +17,27 @@ pub(super) fn normalize(prepared: PreparedDae<'_>) -> Result<PreparedDae<'_>, St
     if selected.is_empty() {
         return Ok(prepared);
     }
-    let manifold = prepared.inspect(|system| {
-        system
-            .manifold
-            .iter()
-            .map(|id| id.index())
-            .collect::<Vec<_>>()
-    });
-    let (model, manifold) =
-        super::reconstruction::rebuild_derivative_aliases(prepared.as_dae(), &selected, &manifold)?;
+    // Rebuilding the derivative aliases reorders nothing in the manifold: the
+    // rebuilt expression ordinals come back in the input order, so the redundancy
+    // classification is zipped back onto them unchanged.
+    let (ids, redundant): (Vec<u32>, Vec<bool>) = match &prepared {
+        PreparedDae::Borrowed { .. } => (Vec::new(), Vec::new()),
+        PreparedDae::Transformed {
+            manifold,
+            manifold_redundant,
+            ..
+        } => (manifold.to_vec(), manifold_redundant.to_vec()),
+    };
+    let (model, ids) =
+        super::reconstruction::rebuild_derivative_aliases(prepared.as_dae(), &selected, &ids)?;
+    let manifold = ids
+        .into_iter()
+        .zip(redundant)
+        .map(|(expression, redundant)| ManifoldEntry {
+            expression,
+            redundant,
+        })
+        .collect::<Vec<_>>();
     let structural = structural_analysis(&model)?;
     transformed(model, manifold, structural)
 }
@@ -278,7 +290,7 @@ pub(super) fn reserve_aliases<'target>(
                 reservation,
                 dae::VariableAttributes {
                     start: Some(start),
-                    fixed: Some(false),
+                    fixed: Some(vec![false]),
                     origin: dae::VariableOrigin::Generated,
                     ..Default::default()
                 },

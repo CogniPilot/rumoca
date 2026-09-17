@@ -128,7 +128,7 @@ fn make_parameter_var(name: &str, fixed: Option<bool>, has_binding: bool) -> Var
     Variable {
         name: VarName::new(name),
         variability: Variability::Parameter(Token::default()),
-        fixed,
+        fixed: fixed.map(|value| vec![value]),
         binding: has_binding.then_some(Expression::Literal {
             value: Literal::Real(1.0),
             span: test_span(),

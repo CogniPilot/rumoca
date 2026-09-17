@@ -229,7 +229,7 @@ fn test_extract_attributes_preserves_local_fixed_with_local_start() {
         .expect("valid attributes should extract");
 
     assert!(attrs.start.is_some());
-    assert_eq!(attrs.fixed, Some(true));
+    assert_eq!(attrs.fixed, Some(vec![true]));
 }
 
 #[test]
@@ -251,7 +251,7 @@ fn test_extract_attributes_preserves_local_fixed_with_outer_start() {
         .expect("valid attributes should extract");
 
     assert!(attrs.start.is_some());
-    assert_eq!(attrs.fixed, Some(true));
+    assert_eq!(attrs.fixed, Some(vec![true]));
 }
 
 #[test]
@@ -276,7 +276,11 @@ fn test_extract_attributes_does_not_default_an_unresolved_outer_fixed() {
 }
 
 #[test]
-fn test_extract_attributes_does_not_collapse_nonuniform_fixed_values() {
+fn test_extract_attributes_preserves_nonuniform_fixed_values() {
+    // MLS §4.8.6: a `fixed` modifier on an array component is itself an array
+    // of the component's dimensions, and each element governs the corresponding
+    // component element independently. Differing values must be retained per
+    // element, not collapsed or rejected.
     let mut comp = make_component("x", "Real", None);
     comp.modifications.insert(
         "fixed".to_string(),
@@ -290,12 +294,9 @@ fn test_extract_attributes_does_not_collapse_nonuniform_fixed_values() {
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let error = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
-        .expect_err("a uniform declaration owner cannot replace differing fixed values");
-    assert!(matches!(
-        *error,
-        InstantiateError::UnsupportedFixedAttribute { .. }
-    ));
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
+        .expect("a Boolean array fixed modifier is a valid per-element attribute");
+    assert_eq!(attrs.fixed, Some(vec![true, false]));
 }
 
 #[test]

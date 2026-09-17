@@ -48,7 +48,7 @@ fn coefficient<'dae>(
             dae::VariableAttributes {
                 binding: Some(binding),
                 is_tunable: matches!(kind, Coefficient::Tunable),
-                fixed: Some(!matches!(kind, Coefficient::Initialization)),
+                fixed: Some(vec![!matches!(kind, Coefficient::Initialization)]),
                 ..Default::default()
             },
         )

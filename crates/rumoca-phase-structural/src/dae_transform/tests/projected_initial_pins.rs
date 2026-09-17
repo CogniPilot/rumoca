@@ -163,7 +163,7 @@ fn projected_pin_model(shape: &[u32], indices: &[i64], opposite: bool) -> dae::D
                     at,
                     dae::VariableAttributes {
                         start: Some(one),
-                        fixed: Some(true),
+                        fixed: Some(vec![true]),
                         causality: dae::VariableCausality::Output,
                         ..Default::default()
                     },
@@ -258,7 +258,7 @@ fn component_pin_model(profile: PinProfile) -> dae::Dae {
                     at,
                     dae::VariableAttributes {
                         start: Some(zero),
-                        fixed: Some(profile == PinProfile::FixedTarget),
+                        fixed: Some(vec![profile == PinProfile::FixedTarget]),
                         ..Default::default()
                     },
                 )?,
@@ -268,7 +268,7 @@ fn component_pin_model(profile: PinProfile) -> dae::Dae {
                     at,
                     dae::VariableAttributes {
                         start: Some(one),
-                        fixed: Some(true),
+                        fixed: Some(vec![true]),
                         ..Default::default()
                     },
                 )?,
@@ -278,7 +278,7 @@ fn component_pin_model(profile: PinProfile) -> dae::Dae {
                     at,
                     dae::VariableAttributes {
                         start: Some(two),
-                        fixed: Some(true),
+                        fixed: Some(vec![true]),
                         ..Default::default()
                     },
                 )?,
