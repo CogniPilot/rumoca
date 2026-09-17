@@ -180,6 +180,7 @@ fn decay_solve() -> SolveProblem {
                     rows: vec![0],
                     y_indices: vec![0],
                     tearing: None,
+                    alternate_charts: Vec::new(),
                 }],
             },
             ..Default::default()
@@ -230,6 +231,7 @@ fn logistic_solve() -> SolveProblem {
                     rows: vec![0],
                     y_indices: vec![0],
                     tearing: None,
+                    alternate_charts: Vec::new(),
                 }],
             },
             ..Default::default()

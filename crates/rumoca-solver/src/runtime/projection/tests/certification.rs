@@ -44,6 +44,7 @@ impl ImplicitProjectionModel for IllConditionedCoupledProjectionModel {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
                 tearing: None,
+                alternate_charts: Vec::new(),
             }],
         })
     }
@@ -162,6 +163,7 @@ fn certified_torn_projection_checks_recovered_coordinates() {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
                 tearing: Some(tearing.clone()),
+                alternate_charts: Vec::new(),
             }],
         },
     };

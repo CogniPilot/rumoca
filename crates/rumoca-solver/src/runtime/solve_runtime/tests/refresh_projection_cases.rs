@@ -55,11 +55,13 @@ fn projection_affinity_treats_earlier_block_values_as_coefficients() {
                             rows: vec![0],
                             y_indices: vec![0],
                             tearing: None,
+                            alternate_charts: Vec::new(),
                         },
                         solve::AlgebraicProjectionBlock {
                             rows: vec![1, 2],
                             y_indices: vec![1, 2],
                             tearing: None,
+                            alternate_charts: Vec::new(),
                         },
                     ],
                 },
@@ -425,6 +427,7 @@ fn staged_projection_still_rejects_a_genuine_backward_dependency() {
             rows: vec![2],
             y_indices: vec![2],
             tearing: None,
+            alternate_charts: Vec::new(),
         });
     let mut jvp = mode_dependent_repivot_jvp_rows();
     jvp[0].pop();

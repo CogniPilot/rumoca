@@ -47,6 +47,7 @@ fn manifold_projection_uses_rectangular_minimum_norm_state_correction() {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1, 2, 3],
                 tearing: None,
+                alternate_charts: Vec::new(),
             }],
         },
     };
@@ -111,6 +112,7 @@ fn failed_manifold_projection_rolls_back_every_y_slot() {
                 rows: vec![0],
                 y_indices: vec![0, 1],
                 tearing: None,
+                alternate_charts: Vec::new(),
             }],
         },
     };
@@ -135,6 +137,7 @@ fn initial_manifold_certification_checks_without_correcting_states() {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1, 2, 3],
                 tearing: None,
+                alternate_charts: Vec::new(),
             }],
         },
     };

@@ -57,11 +57,13 @@ fn a_large_direction_does_not_pollute_exact_zero_acceleration() {
                     rows: vec![0, 1, 2],
                     y_indices: vec![1, 2, 3],
                     tearing: None,
+                    alternate_charts: Vec::new(),
                 },
                 solve::AlgebraicProjectionBlock {
                     rows: vec![3],
                     y_indices: vec![4],
                     tearing: None,
+                    alternate_charts: Vec::new(),
                 },
             ],
         },

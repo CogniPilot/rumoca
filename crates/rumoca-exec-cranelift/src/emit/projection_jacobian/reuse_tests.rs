@@ -18,6 +18,7 @@ fn application(source: &ScalarProgramBlock) -> ProjectionJacobianApplication {
             rows: vec![0, 1],
             y_indices: vec![0, 1],
             tearing: None,
+            alternate_charts: Vec::new(),
         }],
     };
     let artifacts = ContinuousStructuralArtifacts::derived(

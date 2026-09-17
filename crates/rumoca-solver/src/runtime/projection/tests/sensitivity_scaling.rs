@@ -52,6 +52,7 @@ fn model() -> LinearSensitivity {
                 rows: vec![0, 1],
                 y_indices: vec![1, 2],
                 tearing: None,
+                alternate_charts: Vec::new(),
             }],
         },
     }

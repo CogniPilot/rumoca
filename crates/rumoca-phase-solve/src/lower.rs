@@ -852,6 +852,7 @@ fn lower_algebraic_projection<'dae>(
                 rows,
                 y_indices: indices,
                 tearing,
+                alternate_charts: Vec::new(),
             })
         })
         .collect::<Result<Vec<_>, LowerError>>()?;
@@ -1013,6 +1014,7 @@ fn manifold_projection_plan(
             rows,
             y_indices: states.into_iter().collect(),
             tearing: None,
+            alternate_charts: Vec::new(),
         });
     }
     Ok(solve::AlgebraicProjectionPlan { blocks })

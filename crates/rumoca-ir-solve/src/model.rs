@@ -40,7 +40,7 @@ impl AlgebraicProjectionPlan {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct AlgebraicProjectionBlock {
     pub rows: Vec<usize>,
     pub y_indices: Vec<usize>,
@@ -51,6 +51,44 @@ pub struct AlgebraicProjectionBlock {
     /// block Newton over every unknown.
     #[serde(default)]
     pub tearing: Option<BlockTearing>,
+    /// Additional admissible reconstruction charts for this block. Each chart
+    /// re-partitions the block's `y_indices` into dependent (reconstructed) and
+    /// independent (integrated) coordinates over the same `manifold_residual`
+    /// rows; `tearing` remains the primary chart. A definitional first-integral
+    /// manifold has no globally regular reduced chart, so a fixed partition
+    /// folds when a dependent coordinate passes through zero. This bounded set
+    /// of coordinate patches lets a runtime re-select a regular chart across
+    /// such a fold. Empty for every single-chart block.
+    ///
+    /// An empty set is omitted from human-readable serialization by the manual
+    /// [`Serialize`] below, so a single-chart block's JSON is byte-identical to
+    /// a block that predates the field; positional binary formats keep the
+    /// field so their fixed layout still round-trips.
+    #[serde(default)]
+    pub alternate_charts: Vec<BlockTearing>,
+}
+
+impl Serialize for AlgebraicProjectionBlock {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        // A non-empty set is always written. An empty set is dropped only from
+        // human-readable formats (JSON), keeping single-chart IR byte-identical,
+        // while non-self-describing formats (bincode) retain every field so a
+        // positional round-trip reads back the same layout.
+        let omit_alternate = serializer.is_human_readable() && self.alternate_charts.is_empty();
+        let field_count = if omit_alternate { 3 } else { 4 };
+        let mut state = serializer.serialize_struct("AlgebraicProjectionBlock", field_count)?;
+        state.serialize_field("rows", &self.rows)?;
+        state.serialize_field("y_indices", &self.y_indices)?;
+        state.serialize_field("tearing", &self.tearing)?;
+        if !omit_alternate {
+            state.serialize_field("alternate_charts", &self.alternate_charts)?;
+        }
+        state.end()
+    }
 }
 
 /// Tearing of one coupled algebraic block into a reduced iteration set plus an

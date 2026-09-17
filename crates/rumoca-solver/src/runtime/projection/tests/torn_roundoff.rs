@@ -27,6 +27,7 @@ impl ParallelResistances {
                             solve::CausalStep { row: 1, y_index: 2 },
                         ],
                     }),
+                    alternate_charts: Vec::new(),
                 }],
             },
         }

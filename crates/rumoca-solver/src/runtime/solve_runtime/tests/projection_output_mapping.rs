@@ -32,11 +32,13 @@ fn projection_honors_nonidentity_scalar_output_mapping() {
                             rows: vec![1],
                             y_indices: vec![1],
                             tearing: None,
+                            alternate_charts: Vec::new(),
                         },
                         solve::AlgebraicProjectionBlock {
                             rows: vec![0],
                             y_indices: vec![0],
                             tearing: None,
+                            alternate_charts: Vec::new(),
                         },
                     ],
                 },

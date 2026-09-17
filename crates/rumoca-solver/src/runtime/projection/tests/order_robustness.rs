@@ -77,6 +77,7 @@ impl PermutedReluctance {
                     },
                 ],
             }),
+            alternate_charts: Vec::new(),
         };
         Self {
             total_flux,
@@ -134,6 +135,7 @@ impl PermutedReluctance {
                 rows: self.rows.to_vec(),
                 y_indices: self.slots.to_vec(),
                 tearing: None,
+                alternate_charts: Vec::new(),
             }],
         }
     }

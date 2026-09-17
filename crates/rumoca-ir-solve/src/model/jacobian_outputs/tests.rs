@@ -33,6 +33,7 @@ fn projection_blocks_derive_shared_source_invariance_once() {
                 rows: vec![index],
                 y_indices: vec![index],
                 tearing: None,
+                alternate_charts: Vec::new(),
             })
             .collect(),
     };
@@ -144,6 +145,7 @@ fn outputs_with_primal(
             rows: vec![3, 7],
             y_indices: vec![1, 0],
             tearing: None,
+            alternate_charts: Vec::new(),
         }],
     };
     ContinuousStructuralArtifacts::derived(None, vec![pattern], vec![false], None, vec![], None)
@@ -161,6 +163,7 @@ fn manifold_outputs(source: &ScalarProgramBlock) -> ContinuousStructuralArtifact
             rows: vec![3, 7],
             y_indices: vec![1, 0],
             tearing: None,
+            alternate_charts: Vec::new(),
         }],
     };
     ContinuousStructuralArtifacts::derived(None, vec![], vec![], None, vec![pattern], None)

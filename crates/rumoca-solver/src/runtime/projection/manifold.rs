@@ -2,6 +2,8 @@
 mod selected_tests;
 
 use nalgebra::DMatrix;
+#[cfg(test)]
+use rumoca_eval_solve::dense_basis::DenseStageMatrix;
 use rumoca_ir_solve as solve;
 
 use super::{
@@ -89,6 +91,146 @@ pub(crate) fn project_state_manifold<M: ManifoldProjectionModel>(
             .take(state_count)
             .any(|(before, after)| before != after)
     })
+}
+
+/// Safety multiple on the singular threshold at which a chart is reported to
+/// be approaching a fold while its dependent reconstruction is still regular.
+///
+/// A chart crosses `folding` only when its reciprocal conditioning reaches the
+/// rank-test threshold, which is near machine epsilon; by then the fixed
+/// reconstruction has already collapsed. `margin` widens the boundary so the
+/// approach is observable one step earlier, while the active chart still pins
+/// the branch. It changes no behavior on its own: the probe reports it and
+/// takes no action.
+///
+/// The probe is instrumentation for the runtime coordinate re-selection that
+/// consumes [`solve::AlgebraicProjectionBlock::alternate_charts`]. Until a
+/// caller reads it, it is compiled only under test.
+#[cfg(test)]
+const CHART_MARGIN_MULTIPLE: f64 = 1.0e6;
+
+/// Read-only conditioning of one manifold reconstruction chart at an accepted
+/// continuous point.
+///
+/// A chart partitions the block's state coordinates into dependent columns it
+/// reconstructs (its tear and causal unknowns) and independent columns it
+/// integrates. `rcond` is the reciprocal conditioning of the dependent
+/// Jacobian `g_d` relative to the whole block Jacobian's pivot scale, obtained
+/// through the same column-pivoted QR the coordinate selection uses. `folding`
+/// marks a chart whose `rcond` has reached the singular threshold the rank test
+/// rejects; `margin` marks the earlier approach, an `rcond` under a safety
+/// multiple of that threshold.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ChartConditioning {
+    pub block_index: usize,
+    pub rcond: f64,
+    pub folding: bool,
+    pub margin: bool,
+}
+
+/// Estimate the conditioning of `chart` for manifold block `block` at the
+/// accepted point `(y, p, t)` without changing any state.
+///
+/// This is a query only. It evaluates the block Jacobian of `manifold_residual`
+/// (reusing [`manifold_block_jacobian`]), restricts it to the chart's residual
+/// rows and dependent reconstruction columns, and estimates the dependent
+/// block's reciprocal conditioning against the whole block Jacobian's pivot
+/// scale through [`DenseStageMatrix::dependent_conditioning`]. It performs no
+/// projection, mutates no `y`, and requests no chart change.
+#[cfg(test)]
+pub(crate) fn probe_chart_conditioning<M: ManifoldProjectionModel>(
+    model: &M,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    block: &solve::AlgebraicProjectionBlock,
+    block_index: usize,
+    chart: &solve::BlockTearing,
+) -> Result<ChartConditioning, RuntimeSolveError> {
+    let dependent_columns = chart_dependent_columns(block, chart)?;
+    let residual_row_positions = chart
+        .residual_rows
+        .iter()
+        .map(|row| {
+            block
+                .rows
+                .iter()
+                .position(|&candidate| candidate == *row)
+                .ok_or_else(|| {
+                    RuntimeSolveError::solve_ir(format!(
+                        "chart residual row {row} is not a row of manifold block {block_index}"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if residual_row_positions.len() != dependent_columns.len() {
+        return Err(RuntimeSolveError::solve_ir(format!(
+            "chart for manifold block {block_index} reconstructs {} columns over {} residual rows",
+            dependent_columns.len(),
+            residual_row_positions.len()
+        )));
+    }
+    let jacobian = manifold_block_jacobian(model, y, p, t, block, block_index)?;
+    let columns = block.y_indices.len();
+    let mut stage_values = Vec::with_capacity(residual_row_positions.len() * columns);
+    for &row_position in &residual_row_positions {
+        for column in 0..columns {
+            stage_values.push(jacobian[(row_position, column)]);
+        }
+    }
+    let stage = DenseStageMatrix::new(residual_row_positions.len(), columns, &stage_values)
+        .map_err(|error| {
+            RuntimeSolveError::solve_ir(format!(
+                "manifold block {block_index} chart Jacobian is not a finite stage matrix: {error:?}"
+            ))
+        })?;
+    let conditioning = stage
+        .dependent_conditioning(&dependent_columns)
+        .map_err(|error| {
+            RuntimeSolveError::solve_ir(format!(
+                "manifold block {block_index} chart conditioning is undefined: {error:?}"
+            ))
+        })?;
+    Ok(ChartConditioning {
+        block_index,
+        rcond: conditioning.rcond,
+        folding: conditioning.rcond <= conditioning.singular_threshold,
+        margin: conditioning.rcond <= CHART_MARGIN_MULTIPLE * conditioning.singular_threshold,
+    })
+}
+
+/// Column positions within `block.y_indices` of the coordinates `chart`
+/// reconstructs: its tear unknowns and its causal back-substitution unknowns.
+#[cfg(test)]
+fn chart_dependent_columns(
+    block: &solve::AlgebraicProjectionBlock,
+    chart: &solve::BlockTearing,
+) -> Result<Vec<usize>, RuntimeSolveError> {
+    let mut columns = Vec::with_capacity(chart.tear_y_indices.len() + chart.causal_steps.len());
+    let dependent_ys = chart
+        .tear_y_indices
+        .iter()
+        .copied()
+        .chain(chart.causal_steps.iter().map(|step| step.y_index));
+    for y_index in dependent_ys {
+        let position = block
+            .y_indices
+            .iter()
+            .position(|&candidate| candidate == y_index)
+            .ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "chart dependent coordinate Y[{y_index}] is not a state of this manifold block"
+                ))
+            })?;
+        if columns.contains(&position) {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "chart reconstructs coordinate Y[{y_index}] more than once"
+            )));
+        }
+        columns.push(position);
+    }
+    Ok(columns)
 }
 
 fn validate_manifold_projection_plan(
@@ -423,4 +565,166 @@ fn manifold_block_scales<M: ManifoldProjectionModel>(
         structure,
     );
     (row_scales, variable_scales)
+}
+
+#[cfg(test)]
+mod conditioning_tests {
+    use super::*;
+
+    /// The `CircleChart` orientation manifold: the first-integral norm
+    /// `q[1]^2 + q[2]^2 = 1` retained by index reduction. Its dependent
+    /// reconstruction Jacobian for a chart that keeps `q[i]` dependent is
+    /// `2 * q[i]`, which collapses as that coordinate crosses zero.
+    struct CircleChartManifold {
+        plan: solve::AlgebraicProjectionPlan,
+    }
+
+    impl ManifoldProjectionModel for CircleChartManifold {
+        fn eval_manifold_residual(
+            &self,
+            y: &[f64],
+            _p: &[f64],
+            _t: f64,
+            out: &mut [f64],
+        ) -> Result<(), RuntimeSolveError> {
+            out[0] = y[0] * y[0] + y[1] * y[1] - 1.0;
+            Ok(())
+        }
+
+        fn eval_manifold_jacobian_v(
+            &self,
+            y: &[f64],
+            _p: &[f64],
+            _t: f64,
+            v: &[f64],
+            out: &mut [f64],
+        ) -> Result<(), RuntimeSolveError> {
+            out[0] = 2.0 * y[0] * v[0] + 2.0 * y[1] * v[1];
+            Ok(())
+        }
+
+        fn manifold_residual_len(&self) -> usize {
+            1
+        }
+
+        fn manifold_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
+            &self.plan
+        }
+    }
+
+    // Chart A: reconstruct q[1] (dependent), integrate q[2] (independent).
+    fn chart_reconstructing_q1() -> solve::BlockTearing {
+        solve::BlockTearing {
+            tear_y_indices: vec![0],
+            residual_rows: vec![0],
+            causal_steps: vec![],
+        }
+    }
+
+    // Chart B: reconstruct q[2] (dependent), integrate q[1] (independent).
+    fn chart_reconstructing_q2() -> solve::BlockTearing {
+        solve::BlockTearing {
+            tear_y_indices: vec![1],
+            residual_rows: vec![0],
+            causal_steps: vec![],
+        }
+    }
+
+    fn circle_block() -> solve::AlgebraicProjectionBlock {
+        solve::AlgebraicProjectionBlock {
+            rows: vec![0],
+            y_indices: vec![0, 1],
+            tearing: Some(chart_reconstructing_q1()),
+            alternate_charts: vec![chart_reconstructing_q2()],
+        }
+    }
+
+    fn model() -> CircleChartManifold {
+        CircleChartManifold {
+            plan: solve::AlgebraicProjectionPlan {
+                blocks: vec![circle_block()],
+            },
+        }
+    }
+
+    #[test]
+    fn chart_folds_as_its_dependent_coordinate_passes_through_zero() {
+        let model = model();
+        let block = circle_block();
+        let chart = chart_reconstructing_q1();
+
+        // Away from the fold: q[1] is well clear of zero, so g_d = 2*q[1] is a
+        // well-conditioned dependent reconstruction.
+        let regular =
+            probe_chart_conditioning(&model, &[0.6, 0.8], &[], 0.0, &block, 0, &chart).unwrap();
+        assert!(
+            !regular.folding,
+            "chart must be regular away from the fold: {regular:?}"
+        );
+        assert!(
+            !regular.margin,
+            "chart must clear the margin away from the fold: {regular:?}"
+        );
+        assert!(
+            regular.rcond > 1.0e-3,
+            "expected a well-conditioned chart: {regular:?}"
+        );
+
+        // The quarter turn: q[1] -> 0, so g_d = 2*q[1] collapses toward zero.
+        let folded =
+            probe_chart_conditioning(&model, &[1.0e-18, 1.0], &[], 0.0, &block, 0, &chart).unwrap();
+        assert!(
+            folded.folding,
+            "chart must report folding as q[1] -> 0: {folded:?}"
+        );
+        assert!(
+            folded.margin,
+            "a folding chart is also within the margin: {folded:?}"
+        );
+        assert!(
+            folded.rcond < regular.rcond,
+            "the fold must be worse conditioned than the regular point: {folded:?} vs {regular:?}"
+        );
+    }
+
+    #[test]
+    fn margin_fires_before_folding_on_the_approach() {
+        let model = model();
+        let block = circle_block();
+        let chart = chart_reconstructing_q1();
+
+        // Approaching the fold: still full rank by the pivot test, but the
+        // reciprocal conditioning has fallen under the safety margin.
+        let approaching =
+            probe_chart_conditioning(&model, &[1.0e-12, 1.0], &[], 0.0, &block, 0, &chart).unwrap();
+        assert!(
+            !approaching.folding,
+            "the chart is still regular on approach: {approaching:?}"
+        );
+        assert!(
+            approaching.margin,
+            "the margin must fire before the fold: {approaching:?}"
+        );
+    }
+
+    #[test]
+    fn alternate_chart_stays_regular_across_the_fold() {
+        let model = model();
+        let block = circle_block();
+        let alternate = chart_reconstructing_q2();
+
+        // At the same quarter turn the alternate chart reconstructs q[2], whose
+        // g_d = 2*q[2] ~ 2 is far from singular, so it neither folds nor margins.
+        let conditioning =
+            probe_chart_conditioning(&model, &[1.0e-18, 1.0], &[], 0.0, &block, 0, &alternate)
+                .unwrap();
+        assert!(
+            !conditioning.folding,
+            "the alternate chart must remain regular at the fold: {conditioning:?}"
+        );
+        assert!(
+            !conditioning.margin,
+            "the alternate chart must clear the margin at the fold: {conditioning:?}"
+        );
+    }
 }

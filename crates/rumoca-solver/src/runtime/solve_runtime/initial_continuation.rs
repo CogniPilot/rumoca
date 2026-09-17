@@ -625,6 +625,7 @@ mod tests {
                     rows: vec![1, 2],
                     y_indices: vec![1, 2],
                     tearing: None,
+                    alternate_charts: Vec::new(),
                 }],
             },
             ..Default::default()
@@ -673,21 +674,25 @@ mod tests {
                         rows: vec![4],
                         y_indices: vec![4],
                         tearing: None,
+                        alternate_charts: Vec::new(),
                     },
                     solve::AlgebraicProjectionBlock {
                         rows: vec![1],
                         y_indices: vec![1],
                         tearing: None,
+                        alternate_charts: Vec::new(),
                     },
                     solve::AlgebraicProjectionBlock {
                         rows: vec![2],
                         y_indices: vec![2],
                         tearing: None,
+                        alternate_charts: Vec::new(),
                     },
                     solve::AlgebraicProjectionBlock {
                         rows: vec![3],
                         y_indices: vec![3],
                         tearing: None,
+                        alternate_charts: Vec::new(),
                     },
                 ],
             },
@@ -738,6 +743,7 @@ mod tests {
                     rows: vec![4, 5],
                     y_indices: vec![4, 5],
                     tearing: None,
+                    alternate_charts: Vec::new(),
                 }],
             },
             ..Default::default()

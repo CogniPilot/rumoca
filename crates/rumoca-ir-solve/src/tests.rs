@@ -624,6 +624,7 @@ fn representative_continuous_system() -> ContinuousSolveSystem {
                 rows: vec![0],
                 y_indices: vec![1],
                 tearing: None,
+                alternate_charts: Vec::new(),
             }],
         },
         residual: ComputeBlock::from_scalar_program_block(
@@ -2148,5 +2149,84 @@ fn clock_partition_order_excludes_transaction_owned_producers() {
             .to_string()
             .contains("scalar step names a transaction-owned row"),
         "unexpected rejection: {error}"
+    );
+}
+
+#[test]
+fn empty_alternate_charts_are_omitted_from_serialization() {
+    let block = AlgebraicProjectionBlock {
+        rows: vec![0, 1],
+        y_indices: vec![0, 1, 2],
+        tearing: Some(BlockTearing {
+            tear_y_indices: vec![0],
+            residual_rows: vec![0],
+            causal_steps: vec![CausalStep { row: 1, y_index: 1 }],
+        }),
+        alternate_charts: Vec::new(),
+    };
+    let value = serde_json::to_value(&block).expect("block serializes");
+    let map = value.as_object().expect("a block is a JSON object");
+    assert!(
+        !map.contains_key("alternate_charts"),
+        "an empty alternate-chart set must not appear in the serialized block: {value}"
+    );
+    // A block carrying only the pre-existing fields is the byte-identical shape.
+    let legacy = serde_json::json!({
+        "rows": [0, 1],
+        "y_indices": [0, 1, 2],
+        "tearing": {
+            "tear_y_indices": [0],
+            "residual_rows": [0],
+            "causal_steps": [{ "row": 1, "y_index": 1 }],
+        },
+    });
+    assert_eq!(
+        value, legacy,
+        "an empty alternate-chart set changed the serialized block shape"
+    );
+    let restored: AlgebraicProjectionBlock =
+        serde_json::from_value(value).expect("block deserializes");
+    assert_eq!(
+        restored, block,
+        "serialization round-trip must preserve the block"
+    );
+    // A block whose serialization predates the field still deserializes.
+    let restored_legacy: AlgebraicProjectionBlock =
+        serde_json::from_value(legacy).expect("a block without the field deserializes");
+    assert!(
+        restored_legacy.alternate_charts.is_empty(),
+        "a missing alternate-chart set must default to empty"
+    );
+}
+
+#[test]
+fn nonempty_alternate_charts_are_serialized() {
+    let block = AlgebraicProjectionBlock {
+        rows: vec![0],
+        y_indices: vec![0, 1],
+        tearing: Some(BlockTearing {
+            tear_y_indices: vec![0],
+            residual_rows: vec![0],
+            causal_steps: vec![],
+        }),
+        alternate_charts: vec![BlockTearing {
+            tear_y_indices: vec![1],
+            residual_rows: vec![0],
+            causal_steps: vec![],
+        }],
+    };
+    let value = serde_json::to_value(&block).expect("block serializes");
+    assert!(
+        value
+            .as_object()
+            .expect("a block is a JSON object")
+            .contains_key("alternate_charts"),
+        "a non-empty alternate-chart set must be serialized: {value}"
+    );
+    let restored: AlgebraicProjectionBlock =
+        serde_json::from_value(value).expect("block deserializes");
+    assert_eq!(
+        restored, block,
+        "serialization round-trip must preserve the block"
     );
 }

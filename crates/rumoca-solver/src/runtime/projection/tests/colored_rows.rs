@@ -34,6 +34,7 @@ impl ColoredRows {
                     rows: vec![4, 1, 3],
                     y_indices: vec![2, 0, 1],
                     tearing: None,
+                    alternate_charts: Vec::new(),
                 }],
             },
             structure: solve::JacobianStructure::derived(pattern),

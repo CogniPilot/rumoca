@@ -327,6 +327,7 @@ fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
                         rows: vec![1],
                         y_indices: vec![1],
                         tearing: None,
+                        alternate_charts: Vec::new(),
                     }],
                 },
                 ..Default::default()

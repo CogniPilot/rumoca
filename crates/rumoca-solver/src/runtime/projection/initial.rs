@@ -69,6 +69,7 @@ pub(super) fn combined_initial_projection_plan(
             rows: block.rows.clone(),
             y_indices: indices,
             tearing: None,
+            alternate_charts: Vec::new(),
         });
     }
     Ok(solve::AlgebraicProjectionPlan { blocks })

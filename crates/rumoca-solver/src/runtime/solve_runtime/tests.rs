@@ -72,6 +72,7 @@ fn set_complete_test_projection_plan(model: &mut solve::SolveModel) {
                 y_indices: rows.clone(),
                 rows,
                 tearing: None,
+                alternate_charts: Vec::new(),
             }],
         }
     };
@@ -86,6 +87,7 @@ fn set_causal_test_projection_plan(model: &mut solve::SolveModel) {
                 rows: vec![index],
                 y_indices: vec![index],
                 tearing: None,
+                alternate_charts: Vec::new(),
             })
             .collect(),
     };
@@ -278,11 +280,13 @@ fn derivative_refresh_keeps_coupled_dependency_block_but_drops_unrelated_output(
                             rows: vec![1, 2],
                             y_indices: vec![1, 2],
                             tearing: None,
+                            alternate_charts: Vec::new(),
                         },
                         solve::AlgebraicProjectionBlock {
                             rows: vec![3],
                             y_indices: vec![3],
                             tearing: None,
+                            alternate_charts: Vec::new(),
                         },
                     ],
                 },
@@ -346,6 +350,7 @@ fn derivative_refresh_rejects_missing_owner_without_exact_isolation() {
                         rows: vec![1],
                         y_indices: vec![1],
                         tearing: None,
+                        alternate_charts: Vec::new(),
                     }],
                 },
                 ..Default::default()
@@ -453,6 +458,7 @@ fn causal_certificate_keeps_equation_rows_distinct_from_solver_y_indices() {
                         rows: vec![0],
                         y_indices: vec![1],
                         tearing: None,
+                        alternate_charts: Vec::new(),
                     }],
                 },
                 ..Default::default()
@@ -592,11 +598,13 @@ fn causal_certificate_rejects_swapped_blt_equation_target_pairs() {
                             rows: vec![0],
                             y_indices: vec![1],
                             tearing: None,
+                            alternate_charts: Vec::new(),
                         },
                         solve::AlgebraicProjectionBlock {
                             rows: vec![1],
                             y_indices: vec![0],
                             tearing: None,
+                            alternate_charts: Vec::new(),
                         },
                     ],
                 },
@@ -673,11 +681,13 @@ fn uncertified_seed_keeps_its_projection_block_after_dependency_projection() {
                             rows: vec![0],
                             y_indices: vec![0],
                             tearing: None,
+                            alternate_charts: Vec::new(),
                         },
                         solve::AlgebraicProjectionBlock {
                             rows: vec![1],
                             y_indices: vec![1],
                             tearing: None,
+                            alternate_charts: Vec::new(),
                         },
                     ],
                 },
@@ -796,6 +806,7 @@ fn refresh_residual_fallback_solves_positive_unit_coefficient() {
                         rows: vec![0],
                         y_indices: vec![0],
                         tearing: None,
+                        alternate_charts: Vec::new(),
                     }],
                 },
                 ..Default::default()
@@ -929,6 +940,7 @@ fn mode_dependent_repivot_model() -> solve::SolveModel {
                         rows: vec![0, 1],
                         y_indices: vec![0, 1],
                         tearing: None,
+                        alternate_charts: Vec::new(),
                     }],
                 },
                 ..Default::default()

@@ -46,6 +46,7 @@ impl TornSingularIsolatorModel {
                         residual_rows: vec![0],
                         causal_steps: vec![solve::CausalStep { row: 1, y_index: 1 }],
                     }),
+                    alternate_charts: Vec::new(),
                 }],
             },
         }
@@ -147,6 +148,7 @@ impl SingletonSingularIsolatorModel {
                     rows: vec![0],
                     y_indices: vec![0],
                     tearing: None,
+                    alternate_charts: Vec::new(),
                 }],
             },
         }

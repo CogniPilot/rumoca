@@ -22,6 +22,21 @@ pub enum DenseBasisError {
     Rank,
 }
 
+/// Reciprocal conditioning of a set of dependent columns measured against the
+/// full stage's pivot scale, paired with the singular threshold the rank test
+/// rejects.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DependentConditioning {
+    /// The smallest column-pivoted pivot of the dependent columns divided by
+    /// the largest column-pivoted pivot of the whole stage. It falls to zero as
+    /// a dependent reconstruction column collapses relative to the stage.
+    pub rcond: f64,
+    /// `max(rows, cols) * EPSILON`: the relative pivot boundary
+    /// [`DenseStageMatrix::independent_columns`] applies. An `rcond` at or below
+    /// this is the rank loss the column-pivoted QR test rejects.
+    pub singular_threshold: f64,
+}
+
 /// Finite numerical payload, materialized only at the evaluation boundary.
 pub struct DenseStageMatrix(DMatrix<f64>);
 
@@ -153,6 +168,56 @@ impl DenseStageMatrix {
         let r = matrix.col_piv_qr().r();
         let threshold = self.threshold(r[(0, 0)].abs());
         (0..columns).all(|index| r[(index, index)].abs() > threshold)
+    }
+
+    /// Reciprocal conditioning of the `dependent` columns of this stage,
+    /// measured against the whole stage's pivot scale. The stage's
+    /// column-pivoted QR sets the scale: its leading pivot `r[(0, 0)]` is the
+    /// largest column magnitude across every column, dependent and independent.
+    /// The dependent submatrix has its own column-pivoted QR whose smallest
+    /// diagonal pivot is the reconstruction's weakest direction. Their ratio
+    /// estimates `1/cond` in the same relative pivot scale
+    /// [`Self::is_full_column_rank`] applies, so `rcond <= singular_threshold`
+    /// is exactly the rank loss the acceptance rejects. Measuring the dependent
+    /// pivot against the full stage rather than the submatrix's own leading
+    /// pivot is what lets a single-column reconstruction chart register as
+    /// folding: a lone dependent column that collapses toward zero has a
+    /// unit within-block ratio but a vanishing ratio against the stage.
+    pub fn dependent_conditioning(
+        &self,
+        dependent: &[usize],
+    ) -> Result<DependentConditioning, DenseBasisError> {
+        if self.0.nrows() == 0 || self.0.ncols() == 0 {
+            return Err(DenseBasisError::Shape);
+        }
+        if dependent.is_empty() || dependent.len() > self.0.ncols() {
+            return Err(DenseBasisError::Shape);
+        }
+        let mut seen = vec![false; self.0.ncols()];
+        for &column in dependent {
+            let slot = seen.get_mut(column).ok_or(DenseBasisError::Shape)?;
+            if std::mem::replace(slot, true) {
+                return Err(DenseBasisError::Shape);
+            }
+        }
+        let stage_scale = self.0.clone().col_piv_qr().r()[(0, 0)].abs();
+        let block = DMatrix::from_fn(self.0.nrows(), dependent.len(), |r, c| {
+            self.0[(r, dependent[c])]
+        });
+        let pivots = block.nrows().min(block.ncols());
+        let block_r = block.col_piv_qr().r();
+        let smallest = (0..pivots)
+            .map(|index| block_r[(index, index)].abs())
+            .fold(f64::INFINITY, f64::min);
+        let rcond = if stage_scale > 0.0 && smallest.is_finite() {
+            smallest / stage_scale
+        } else {
+            0.0
+        };
+        Ok(DependentConditioning {
+            rcond,
+            singular_threshold: self.threshold(1.0),
+        })
     }
 
     fn threshold(&self, scale: f64) -> f64 {

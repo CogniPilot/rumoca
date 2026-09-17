@@ -38,6 +38,7 @@ impl CyclicAffine {
                         .map(|row| solve::CausalStep { row, y_index: row })
                         .collect(),
                 }),
+                alternate_charts: Vec::new(),
             }],
         };
         let dependencies = (0..DIMENSION)

@@ -238,6 +238,7 @@ fn mixed_projection_exact_plan(projection_first: bool) -> RefreshPlan {
         rows: vec![0],
         y_indices: vec![0],
         tearing: None,
+        alternate_charts: Vec::new(),
     };
     let seed = RefreshStage::CausalSeedSweep {
         static_sequence: Default::default(),
@@ -272,6 +273,7 @@ fn mixed_projection_exact_plan(projection_first: bool) -> RefreshPlan {
                     rows: vec![1],
                     y_indices: vec![1],
                     tearing: None,
+                    alternate_charts: Vec::new(),
                 },
             ],
         },
@@ -407,6 +409,7 @@ fn exact_assignment_completeness_requires_full_blt_coverage() {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: None,
+                alternate_charts: Vec::new(),
             }],
         },
         simultaneous_block_indices: vec![0],
@@ -880,6 +883,7 @@ fn derivative_settle_relation_keeps_only_uncovered_root_stages() {
                 rows: vec![1, 2],
                 y_indices: vec![1, 2],
                 tearing: None,
+                alternate_charts: Vec::new(),
             }],
         },
         seed_rows: RefreshRowSelection::default(),

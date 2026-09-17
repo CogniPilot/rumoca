@@ -36,6 +36,7 @@ fn constrained_state_with_nonlinear_output(target: f64) -> solve::SolveModel {
             rows: vec![0],
             y_indices: vec![0],
             tearing: None,
+            alternate_charts: Vec::new(),
         }],
     };
     model

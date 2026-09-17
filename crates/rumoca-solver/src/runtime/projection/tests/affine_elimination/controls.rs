@@ -181,6 +181,7 @@ fn reduced_affine_refinement_preserves_tiny_switching_voltage() {
                 residual_rows: vec![3],
                 causal_steps,
             }),
+            alternate_charts: Vec::new(),
         }],
     };
     let mut model = CyclicAffine::from_system(matrix, rhs, plan, dependencies);

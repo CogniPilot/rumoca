@@ -342,6 +342,7 @@ fn event_iteration_advances_discrete_pre_before_the_next_whole_equation_pass() {
                         rows: vec![0],
                         y_indices: vec![0],
                         tearing: None,
+                        alternate_charts: Vec::new(),
                     }],
                 },
                 ..Default::default()
@@ -1044,6 +1045,7 @@ fn algebraic_relation_partition_model() -> solve::SolveModel {
                         rows: vec![1],
                         y_indices: vec![1],
                         tearing: None,
+                        alternate_charts: Vec::new(),
                     }],
                 },
                 ..Default::default()
