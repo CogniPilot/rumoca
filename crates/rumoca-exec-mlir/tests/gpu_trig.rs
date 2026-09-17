@@ -175,6 +175,7 @@ fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::
                 // the finished problem below, so the literal only reserves the
                 // slot Solve lowering fills.
                 refresh_owners: rumoca_ir_solve::ContinuousRefreshOwners::default(),
+                reduced_chart_set: rumoca_ir_solve::ReducedChartSet::default(),
             },
             initialization: InitializationSolveSystem::construct(
                 rumoca_ir_solve::InitializationSystemInput {

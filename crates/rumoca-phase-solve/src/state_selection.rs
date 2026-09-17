@@ -8,8 +8,8 @@ use rumoca_core::StateSelect;
 use rumoca_eval_solve::dense_basis::ColumnChoice;
 use rumoca_ir_dae as dae;
 use rumoca_phase_structural::{
-    FormalDerivativeView, FormalStageCoordinate, FormalStateCoordinate, PreparedDae,
-    StructuralError, construct_formal_derivatives, prepare_for_solve,
+    FormalDerivativeView, FormalStageCoordinate, PreparedDae, ReducedSelectionChart,
+    StateSelection, StructuralError, construct_formal_derivatives, prepare_for_solve,
 };
 
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
@@ -82,7 +82,8 @@ fn reduce_or_retain<'source>(
     // Construct the reduced candidate first so an infeasible request (an
     // over-constrained `StateSelect.always`, a singular stage Jacobian) still
     // surfaces its exact typed failure rather than being masked by retention.
-    let candidate = formal.construct_state_candidate(|formal| select(formal, overrides))?;
+    let candidate =
+        formal.construct_state_candidate_with_charts(|formal| select(formal, overrides))?;
     // Retain the source basis when every manifold constraint is a conserved
     // first integral, reduce when any constraint is a redundant loop closure.
     if !prepared.manifold_requires_reduction() {
@@ -101,7 +102,7 @@ fn recover_singular_via_formal(
 ) -> Option<PreparedDae<'static>> {
     let formal = construct_formal_derivatives(model).ok()?;
     formal
-        .construct_state_candidate(|formal| select(formal, overrides))
+        .construct_state_candidate_with_charts(|formal| select(formal, overrides))
         .ok()?
         .into_prepared()
         .ok()
@@ -110,7 +111,7 @@ fn recover_singular_via_formal(
 fn select<'formal>(
     formal: FormalDerivativeView<'_, '_, 'formal>,
     overrides: &HashMap<String, f64>,
-) -> Result<Vec<FormalStateCoordinate<'formal>>, StructuralError> {
+) -> Result<StateSelection<'formal>, StructuralError> {
     let required = formal
         .source
         .variables()
@@ -127,6 +128,8 @@ fn select<'formal>(
     let mut point = TrialPoint::new(formal, overrides)?;
     point.seed_definitions(&programs)?;
     let mut result = Vec::new();
+    let mut charts = Vec::new();
+    let mut deepest_stage = true;
     for stage in programs.stages().iter().filter(|s| s.stage().level() < 0) {
         let coordinates = stage
             .stage()
@@ -159,6 +162,14 @@ fn select<'formal>(
                     stage.stage().level()
                 )),
             })?;
+        // The deepest stage carries the lowest-order (position-level) holonomic
+        // constraint, where a definitional first integral folds. Enumerate its
+        // bounded regular reconstruction charts here; every higher stage follows
+        // the primary basis and is not re-enumerated.
+        if deepest_stage {
+            charts = enumerate_reduced_charts(&matrix, &coordinates, &selected);
+            deepest_stage = false;
+        }
         for index in selected {
             let (coordinate, scalar) = coordinates[index];
             result.push(formal.state_coordinate(
@@ -168,7 +179,61 @@ fn select<'formal>(
             )?);
         }
     }
-    Ok(result)
+    Ok(StateSelection {
+        coordinates: result,
+        charts,
+    })
+}
+
+/// Enumerate the bounded regular reconstruction charts of one folding
+/// definitional first-integral coordinate group at the trial point.
+///
+/// The primary selection reconstructs a single dependent coordinate from a
+/// conserved holonomic constraint (a norm `g = x*x - 1`, whose gradient
+/// `g_d = 2*x_i` vanishes as `x_i` passes through zero). Every source scalar of
+/// the group is an admissible reconstructed coordinate, so this issues one chart
+/// per column: the primary (chart index zero) plus its mirrors. A mirror is kept
+/// even when its dependent Jacobian is singular at the trial point, because its
+/// purpose is regularity at the configuration where the primary folds; its
+/// trial-point conditioning is recorded, not used as a filter.
+///
+/// Only a single-constraint group with a genuine alternate (two or more columns,
+/// one reconstructed coordinate) is enumerated; any other stage carries no
+/// alternates.
+fn enumerate_reduced_charts(
+    matrix: &rumoca_eval_solve::dense_basis::DenseStageMatrix,
+    coordinates: &[(FormalStageCoordinate<'_, '_>, usize)],
+    selected: &[usize],
+) -> Vec<ReducedSelectionChart> {
+    let columns = coordinates.len();
+    let independent: std::collections::BTreeSet<usize> = selected.iter().copied().collect();
+    let dependent: Vec<usize> = (0..columns).filter(|c| !independent.contains(c)).collect();
+    if dependent.len() != 1 || columns < 2 {
+        return Vec::new();
+    }
+    let coordinate = |column: usize| {
+        let (stage_coordinate, scalar) = coordinates[column];
+        (stage_coordinate.value().index(), scalar as u32)
+    };
+    // The primary reconstructed column leads, so the primary basis is chart zero.
+    let primary = dependent[0];
+    let order = std::iter::once(primary).chain((0..columns).filter(|&c| c != primary));
+    order
+        .map(|reconstructed| {
+            let (trial_rcond, trial_singular_threshold) = matrix
+                .dependent_conditioning(&[reconstructed])
+                .map_or((0.0, 0.0), |c| (c.rcond, c.singular_threshold));
+            ReducedSelectionChart {
+                dependent: vec![coordinate(reconstructed)],
+                independent: (0..columns)
+                    .filter(|&c| c != reconstructed)
+                    .map(coordinate)
+                    .collect(),
+                trial_rcond,
+                trial_singular_threshold,
+            }
+        })
+        .collect()
 }
 
 /// A `StateSelect.always` request forces an independent differential state only

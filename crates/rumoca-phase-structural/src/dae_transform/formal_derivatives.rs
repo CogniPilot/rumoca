@@ -12,7 +12,10 @@ mod state_candidates;
 pub(super) use stages::EquationProlongation;
 pub use stages::{FormalDerivativeStage, FormalStageCoordinate, FormalStageEquation};
 pub(super) use state_candidates::SelectedCoordinate;
-pub use state_candidates::{FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate};
+pub use state_candidates::{
+    FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate, ReducedSelectionChart,
+    StateSelection,
+};
 
 /// An inspectable prolongation of one source DAE, not an executable state basis.
 pub struct FormalDerivativeSystem<'source> {

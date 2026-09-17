@@ -131,6 +131,7 @@ mod pipeline_test;
 mod prepared_vectors_refresh;
 mod public_observation_convergence;
 mod receiver_function_redeclare;
+mod reduced_state_charts;
 mod replaceable_function_redeclare;
 mod requested_states;
 mod sampled_integral_consistency;

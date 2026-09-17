@@ -62,13 +62,36 @@ use crate::{
 pub use self::formal_derivatives::{
     FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
     FormalStageEquation, FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate,
-    construct_formal_derivatives,
+    ReducedSelectionChart, StateSelection, construct_formal_derivatives,
 };
 pub use self::initial_pins::{InitialValuePin, InitialValueRole, PinTerm};
 pub use self::observation::{
     ReductionCandidateGroup, ReductionIdentity, ReductionLane, ReductionOutcome, ReductionRecord,
     ReductionReport, ReductionSnapshot, ReductionStop, UnmatchedKind, UnmatchedName,
 };
+
+/// One admissible reduced state-selection chart, in the finalized transformed
+/// DAE's own variable-ordinal space.
+///
+/// The reduced state selection picks a Dependent/Independent split of a
+/// definitional first-integral coordinate group. A conserved first integral has
+/// no globally injective reduced chart, so the fixed primary split folds when a
+/// dependent coordinate passes through zero. This records one alternate split of
+/// that same group: the `dependent` coordinates are reconstructed and the
+/// `independent` coordinates are integrated. Each coordinate is a
+/// `(transformed variable ordinal, scalar)` pair naming a scalar of the finalized
+/// DAE that `PreparedDae::inspect` binds. The primary split is chart index zero.
+#[derive(Clone, Debug)]
+pub struct PreparedReducedChart {
+    pub dependent: Box<[(u32, u32)]>,
+    pub independent: Box<[(u32, u32)]>,
+    /// Reciprocal conditioning of this chart's dependent Jacobian at the
+    /// construction trial point, and the singular threshold it is measured
+    /// against. The mirror of a folding coordinate may sit at or below the
+    /// threshold here because it is regular at a different configuration.
+    pub trial_rcond: f64,
+    pub trial_singular_threshold: f64,
+}
 
 /// A finalized DAE ready for Solve lowering.
 pub enum PreparedDae<'source> {
@@ -86,6 +109,10 @@ pub enum PreparedDae<'source> {
         manifold_redundant: Box<[bool]>,
         pins: Box<[InitialValuePin]>,
         structural: PreparedStructuralAnalysis,
+        /// Admissible reduced state-selection charts issued by the
+        /// formal-derivative selection. Empty except on the reduced-selection
+        /// path that finalizes a folding definitional first-integral group.
+        charts: Box<[PreparedReducedChart]>,
     },
 }
 
@@ -115,16 +142,17 @@ impl PreparedDae<'_> {
     }
 
     pub fn inspect<R>(&self, inspect: impl for<'dae> FnOnce(PreparedSystem<'_, 'dae>) -> R) -> R {
-        let (manifold, pins, structural) = match self {
+        let (manifold, pins, structural, charts) = match self {
             Self::Borrowed {
                 pins, structural, ..
-            } => ([].as_slice(), pins, structural),
+            } => ([].as_slice(), pins, structural, [].as_slice()),
             Self::Transformed {
                 manifold,
                 pins,
                 structural,
+                charts,
                 ..
-            } => (&**manifold, pins, structural),
+            } => (&**manifold, pins, structural, &**charts),
         };
         self.as_dae().inspect(|view| {
             let manifold = manifold
@@ -139,6 +167,7 @@ impl PreparedDae<'_> {
                 manifold: &manifold,
                 pins,
                 structural: structural.bind(view),
+                charts,
             })
         })
     }
@@ -162,6 +191,10 @@ pub struct PreparedSystem<'prepared, 'dae> {
     /// Structural matching and BLT analysis issued while this exact finalized
     /// DAE was admitted by structural preparation.
     pub structural: Option<SortedDae<'dae>>,
+    /// Admissible reduced state-selection charts for a folding definitional
+    /// first-integral coordinate group, naming scalars of `view`. Empty for
+    /// every prepared system without such a group.
+    pub charts: &'prepared [PreparedReducedChart],
 }
 
 /// The structural analysis coupled to one prepared DAE root.
@@ -540,6 +573,7 @@ fn prepare_for_solve_with_observer<'source>(
             manifold_redundant: Box::new([]),
             pins,
             structural,
+            charts: Box::new([]),
         }),
         PreparedDae::Transformed {
             dae,
@@ -547,12 +581,14 @@ fn prepare_for_solve_with_observer<'source>(
             manifold_redundant,
             pins,
             structural,
+            charts,
         } => Ok(PreparedDae::Transformed {
             dae,
             manifold,
             manifold_redundant,
             pins,
             structural,
+            charts,
         }),
     }
 }
@@ -745,6 +781,7 @@ fn transformed(
     model: dae::Dae,
     manifold: Vec<ManifoldEntry>,
     structural: PreparedStructuralAnalysis,
+    charts: Box<[PreparedReducedChart]>,
 ) -> Result<PreparedDae<'static>, StructuralError> {
     let pins = model.inspect(transferred_initial_values)?;
     let (expressions, redundant): (Vec<u32>, Vec<bool>) = manifold
@@ -757,6 +794,7 @@ fn transformed(
         manifold_redundant: redundant.into_boxed_slice(),
         pins: pins.into_boxed_slice(),
         structural,
+        charts,
     })
 }
 
@@ -766,7 +804,8 @@ fn transformed_with_observer(
     structural: PreparedStructuralAnalysis,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'static>, StructuralError> {
-    let result = transformed(model, manifold, structural).and_then(derivative_aliases::normalize);
+    let result = transformed(model, manifold, structural, Box::new([]))
+        .and_then(derivative_aliases::normalize);
     observer.observe(ReductionEvent::Stopped {
         outcome: match &result {
             Ok(_) => StoppedOutcome::Sorted,

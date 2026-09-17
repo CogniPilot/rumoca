@@ -41,6 +41,7 @@ pub(crate) fn lower_solve_problem(
         manifold,
         pins,
         structural,
+        charts,
     } = prepared;
     if view.variable_count() == 0
         && view.continuous_owner_count() == 0
@@ -57,7 +58,8 @@ pub(crate) fn lower_solve_problem(
     clocks::reject_clocked_continuous_feedback(view, &clocks, &structural)?;
     clocks::reject_cross_clock_coincident_cycle(view, &clocks, &structural)?;
     let derivatives = index_continuous_rows(view, &structural.rows)?;
-    let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
+    let mut continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
+    continuous.reduced_chart_set = lower_reduced_chart_set(charts, &lowered.solve_layout)?;
     let initialization = initialization::lower_initialization(
         view,
         &lowered,
@@ -568,7 +570,43 @@ fn lower_continuous<'dae>(
             first_model_span(view),
         )?,
         refresh_owners: solve::ContinuousRefreshOwners::default(),
+        reduced_chart_set: solve::ReducedChartSet::default(),
     })
+}
+
+/// Rebind the reduced state-selection charts from finalized-DAE variable
+/// ordinals onto solver-Y indices. Each chart coordinate is a reconstructed or
+/// integrated source scalar of a reduced first-integral group, so it resolves to
+/// solver state storage; a coordinate that does not is a construction fault.
+fn lower_reduced_chart_set(
+    charts: &[structural::PreparedReducedChart],
+    solve_layout: &solve::SolveLayout,
+) -> Result<solve::ReducedChartSet, LowerError> {
+    let to_y = |coordinates: &[(u32, u32)]| {
+        coordinates
+            .iter()
+            .map(|&(variable, scalar)| {
+                match solve_layout.variable_scalar_slot(variable as usize, scalar as usize) {
+                    Some(solve::ScalarSlot::Y { index, .. }) => Ok(index),
+                    _ => Err(LowerError::unspanned_non_computable(
+                        "reduced chart coordinate has no solver state slot",
+                    )),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let charts = charts
+        .iter()
+        .map(|chart| {
+            Ok(solve::ReducedChart {
+                independent_y_indices: to_y(&chart.independent)?,
+                dependent_y_indices: to_y(&chart.dependent)?,
+                trial_rcond: chart.trial_rcond,
+                trial_singular_threshold: chart.trial_singular_threshold,
+            })
+        })
+        .collect::<Result<Vec<_>, LowerError>>()?;
+    Ok(solve::ReducedChartSet { charts })
 }
 
 fn aggregate_call_reads_derivative<'dae>(

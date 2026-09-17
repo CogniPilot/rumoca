@@ -39,7 +39,12 @@ pub(super) fn normalize(prepared: PreparedDae<'_>) -> Result<PreparedDae<'_>, St
         })
         .collect::<Vec<_>>();
     let structural = structural_analysis(&model)?;
-    transformed(model, manifold, structural)
+    // Derivative-alias normalization runs only on the ordinary reducer path,
+    // which issues no reduced state-selection charts; rebuilding the aliases
+    // renumbers variables, so any charts (which name variable ordinals) could
+    // not survive it unchanged. The reduced-selection path that issues charts
+    // finalizes through `into_prepared` and never reaches this normalization.
+    transformed(model, manifold, structural, Box::new([]))
 }
 
 fn implicit_states(system: PreparedSystem<'_, '_>) -> Vec<u32> {

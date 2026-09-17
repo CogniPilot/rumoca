@@ -641,6 +641,7 @@ fn representative_continuous_system() -> ContinuousSolveSystem {
         manifold_projection_plan: AlgebraicProjectionPlan::default(),
         derivative_rhs: representative_derivative_rhs(),
         refresh_owners: ContinuousRefreshOwners::default(),
+        reduced_chart_set: ReducedChartSet::default(),
     }
 }
 
@@ -1648,6 +1649,55 @@ fn representative_solve_problem_bincode_roundtrip_preserves_schema_shape() {
     let decoded: SolveProblem =
         bincode::deserialize(&bytes).expect("deserialize SolveProblem from bincode");
     assert_same_json_shape(&decoded, &problem);
+}
+
+#[test]
+fn reduced_chart_set_is_omitted_when_empty_and_round_trips_when_present() {
+    // Empty: dropped from human-readable JSON so a model without a folding
+    // first-integral group keeps byte-identical IR, yet retained by bincode so the
+    // positional layout still round-trips.
+    let empty = representative_continuous_system();
+    let json = serde_json::to_string(&empty).expect("serialize empty continuous system");
+    assert!(!json.contains("reduced_chart_set"));
+    let bytes = bincode::serialize(&empty).expect("serialize empty as bincode");
+    let decoded: ContinuousSolveSystem =
+        bincode::deserialize(&bytes).expect("deserialize empty from bincode");
+    assert!(decoded.reduced_chart_set.charts.is_empty());
+
+    // Present: a two-chart set (a primary and its mirror) is written to JSON and
+    // round-tripped by both formats without loss.
+    let mut present = representative_continuous_system();
+    present.reduced_chart_set = ReducedChartSet {
+        charts: vec![
+            ReducedChart {
+                independent_y_indices: vec![3],
+                dependent_y_indices: vec![2],
+                trial_rcond: 1.0,
+                trial_singular_threshold: 4.440892098500626e-16,
+            },
+            ReducedChart {
+                independent_y_indices: vec![2],
+                dependent_y_indices: vec![3],
+                trial_rcond: 0.0,
+                trial_singular_threshold: 4.440892098500626e-16,
+            },
+        ],
+    };
+    let json = serde_json::to_string(&present).expect("serialize present continuous system");
+    assert!(json.contains("reduced_chart_set"));
+    let from_json: ContinuousSolveSystem =
+        serde_json::from_str(&json).expect("deserialize present from json");
+    assert_eq!(
+        from_json.reduced_chart_set.charts,
+        present.reduced_chart_set.charts
+    );
+    let bytes = bincode::serialize(&present).expect("serialize present as bincode");
+    let from_bincode: ContinuousSolveSystem =
+        bincode::deserialize(&bytes).expect("deserialize present from bincode");
+    assert_eq!(
+        from_bincode.reduced_chart_set.charts,
+        present.reduced_chart_set.charts
+    );
 }
 
 #[test]
