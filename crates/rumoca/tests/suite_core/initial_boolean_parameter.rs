@@ -16,6 +16,27 @@ equation
 end BooleanInitialProbe;
 "#;
 
+// A fixed=false Boolean parameter whose initial equation reads an algebraic
+// determined by a nonlinear continuous equation. Unlike `q` above (a state the
+// projection owns), `a` here is reconstructed by the continuous algebraic solve
+// and never appears as an explicit assignment, so its initialization-consistent
+// value is available only after the algebraics are refreshed. MLS §8.6 solves
+// the continuous equations and the parameter together, so the branch must be
+// selected at the solved geometry (a = 2, so a > 1), not the start seed (a = 0).
+const NONLINEAR_ALGEBRAIC_SOURCE: &str = r#"model NonlinearBranchProbe
+  parameter Boolean pos(fixed=false);
+  Real a;
+  Real x(start=2.0, fixed=true);
+  Real d;
+initial equation
+  pos = a > 1.0;
+equation
+  sin(a) + a = sin(x) + x;
+  der(x) = 0;
+  d = if pos then 100.0 else -100.0;
+end NonlinearBranchProbe;
+"#;
+
 const DEPENDENT_SOURCE: &str = r#"model InitialParameterChain
   function positive
     input Real x;
@@ -125,6 +146,30 @@ fn boolean_initial_parameter_uses_solved_state_instead_of_start_guesses() {
                 solver_mode,
             );
         }
+    }
+}
+
+#[test]
+fn boolean_initial_parameter_uses_nonlinear_algebraic_branch() {
+    let compiled = Compiler::new()
+        .model("NonlinearBranchProbe")
+        .compile_str(NONLINEAR_ALGEBRAIC_SOURCE, "nonlinear_branch_probe.mo")
+        .expect("a Boolean initialization equation reading an algebraic has a typed owner");
+    for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+        let result = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 0.2,
+                dt: Some(0.05),
+                solver_mode,
+                ..Default::default()
+            },
+        )
+        .expect("initialization must reconstruct the algebraic before selecting the branch");
+        // a solves to 2 (the unique root of sin(a) + a = sin(2) + 2), so pos is
+        // true and d holds 100. Reading a at its start seed of 0 would select
+        // the false branch and hold -100.
+        assert_affine_trace(&result, &[("x", 0.0, 2.0), ("d", 0.0, 100.0)], solver_mode);
     }
 }
 

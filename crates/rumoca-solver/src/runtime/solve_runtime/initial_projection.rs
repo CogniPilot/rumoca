@@ -591,6 +591,18 @@ impl SolveRuntime {
         tol: f64,
         max_iters: usize,
     ) -> Result<(), RuntimeSolveError> {
+        // MLS 3.6 §8.6 solves the continuous equations, the initial equations,
+        // and the `fixed = false` parameters as one simultaneous system, so a
+        // parameter update that reads an algebraic coordinate must observe the
+        // value the continuous equations determine, not the algebraic's
+        // declaration seed. When an initialization update row reads such a
+        // coordinate, reconstruct the algebraics into the coordinate vector
+        // after the projection has settled the states each pass, before the
+        // update rows re-read them; otherwise a `fixed = false` parameter whose
+        // definition depends on an algebraic solved by a nonlinear block (never
+        // reconstructed as an explicit assignment) freezes at the branch the
+        // seed selects instead of the branch the initialized geometry selects.
+        let refresh_algebraics_for_updates = self.initialization_updates_read_algebraic_slots();
         for _ in 0..max_iters {
             // MLS 3.6 §3.7.2 defines delay(u, ...) = u throughout
             // initialization. The delayed-value P slots are runtime storage,
@@ -606,6 +618,9 @@ impl SolveRuntime {
             let before_delay_refresh = p.to_vec();
             self.refresh_delay_values(t, y, p)?;
             let delay_changed = crate::runtime_values_changed(&before_delay_refresh, p, tol);
+            if refresh_algebraics_for_updates {
+                self.refresh_algebraic_and_output_slots(t, y, p, tol, max_iters)?;
+            }
             let update_changed = self.apply_initialization_updates(y, p, t, tol, max_iters)?;
             if !delay_changed && !update_changed {
                 return Ok(());
@@ -614,6 +629,39 @@ impl SolveRuntime {
         Err(RuntimeSolveError::solve_ir(format!(
             "initial algebraic/update projection did not converge at t={t}"
         )))
+    }
+
+    /// Whether any initialization update row reads an algebraic coordinate.
+    ///
+    /// States occupy the first `state_scalar_count` solver-vector slots and
+    /// algebraic/output coordinates occupy the remainder, so an update program
+    /// that loads a solver slot at or beyond the state count depends on a
+    /// coordinate the continuous equations determine rather than a state the
+    /// projection owns. Such an update needs the algebraics reconstructed into
+    /// the coordinate vector before it re-reads them (see the caller). Both the
+    /// scalar solver-vector load and the packed tensor load reach the algebraic
+    /// range; a vector-valued binding (an analytic-loop geometry read, say) is
+    /// lowered to the tensor form, so testing only the scalar load would miss
+    /// exactly the reads that select an assembly branch.
+    fn initialization_updates_read_algebraic_slots(&self) -> bool {
+        let state_count = self.model.state_scalar_count();
+        self.model
+            .problem
+            .initialization
+            .update_rhs()
+            .programs()
+            .iter()
+            .flatten()
+            .any(|op| match op {
+                solve::LinearOp::LoadY { index, .. } => *index >= state_count,
+                solve::LinearOp::TensorLoad {
+                    input: solve::TensorInputKind::Y,
+                    input_start,
+                    count,
+                    ..
+                } => input_start.saturating_add(*count) > state_count,
+                _ => false,
+            })
     }
 }
 
