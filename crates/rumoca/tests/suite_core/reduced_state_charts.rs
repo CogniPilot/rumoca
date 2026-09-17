@@ -15,7 +15,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rumoca::Compiler;
-use rumoca_ir_solve::{AlgebraicProjectionPlan, ComputeBlock, ComputeNode, LinearOp, SolveModel};
+use rumoca_ir_solve::{
+    AlgebraicProjectionPlan, ComputeBlock, ComputeNode, ContinuousSolveSystem, LinearOp, SolveModel,
+};
 
 fn lowered(source: &str, model: &str) -> SolveModel {
     let dae = Compiler::new()
@@ -243,6 +245,198 @@ fn circle_chart_alternate_chart_re_lowers_to_a_regular_mirror_plan() {
         sole_load_y_index(&plan.derivative_rhs),
         sole_load_y_index(&continuous.derivative_rhs),
         "the alternate advances a different integrated coordinate than the primary"
+    );
+}
+
+/// Build the solver model of one alternate reduced chart by splicing its carried
+/// continuous kernel and artifacts into the shared problem skeleton. This is the
+/// per-chart image a runtime activates across a fold: the alternate basis executes
+/// as the continuous system, backed by the alternate's own artifacts and refresh
+/// owners, in the same solver-Y space as the primary.
+fn alternate_chart_model(model: &SolveModel) -> SolveModel {
+    let plan = model.problem.continuous.reduced_chart_set.charts[1]
+        .plan
+        .as_ref()
+        .expect("the alternate chart carries an executable plan");
+    let mut alternate = model.clone();
+    alternate.problem.continuous = ContinuousSolveSystem {
+        implicit_rhs: plan.implicit_rhs.clone(),
+        implicit_row_targets: plan.implicit_row_targets.clone(),
+        algebraic_projection_plan: plan.algebraic_projection_plan.clone(),
+        residual: plan.residual.clone(),
+        manifold_residual: ComputeBlock::default(),
+        manifold_projection_plan: AlgebraicProjectionPlan::default(),
+        derivative_rhs: plan.derivative_rhs.clone(),
+        refresh_owners: plan.refresh_owners.clone(),
+        reduced_chart_set: Default::default(),
+    };
+    alternate.artifacts.continuous = plan.artifacts.clone();
+    alternate
+}
+
+#[test]
+fn circle_chart_alternate_chart_carries_runtime_executable_artifacts() {
+    // Stage 1c: each alternate reduced chart carries the complete runtime-executable
+    // image of its basis, not only the reconstruction kernel. The continuous solver
+    // constructor reads a forward-mode AD Jacobian-vector product of the implicit
+    // residual, its per-row scalar form, a full state Jacobian, the derived
+    // structural patterns, and the issued continuous refresh owners; all of them
+    // must be present on the alternate chart or the chart is not executable.
+    let model = lowered(CIRCLE_CHART, "CircleChart");
+    let charts = &model.problem.continuous.reduced_chart_set.charts;
+    assert_eq!(charts.len(), 2);
+    let plan = charts[1]
+        .plan
+        .as_ref()
+        .expect("the alternate chart carries an executable plan");
+
+    // The alternate carries its own construction-issued continuous refresh owners.
+    assert!(
+        plan.refresh_owners.is_issued(),
+        "the alternate chart carries construction-issued continuous refresh owners"
+    );
+
+    let artifacts = &plan.artifacts;
+    // The implicit residual JVP is row-aligned with the alternate residual: one
+    // Jacobian row per residual row. The alternate residual holds the shared
+    // q*q = 1 norm row plus the generated $state_coordinates identity row for its
+    // now-integrated coordinate, so a JVP that covers every row (not just the norm
+    // row) is the proof the alternate residual is differentiable end to end.
+    let residual_rows = plan
+        .implicit_rhs
+        .len()
+        .expect("the alternate implicit residual is shaped");
+    assert!(
+        residual_rows >= 2,
+        "the alternate residual holds the shared norm row and its generated identity row"
+    );
+    assert!(
+        !artifacts.implicit_jacobian_v.nodes.is_empty(),
+        "the alternate implicit JVP is a non-empty kernel"
+    );
+    assert_eq!(
+        artifacts
+            .implicit_jacobian_v
+            .len()
+            .expect("the alternate implicit JVP is shaped"),
+        residual_rows,
+        "the alternate implicit JVP covers every alternate residual row"
+    );
+
+    // The per-row scalar JVP and the full state-derivative Jacobian kernel used by
+    // the state-only path are both present.
+    assert!(
+        artifacts.implicit_jacobian_v_scalar.row_count() > 0,
+        "the alternate carries a per-row scalar implicit JVP"
+    );
+    assert!(
+        artifacts.full_jacobian_v.row_count() > 0,
+        "the alternate carries a full state-derivative Jacobian kernel"
+    );
+
+    // The derived structural artifacts are present and cover every alternate
+    // algebraic block, including the block that reconstructs the now-integrated
+    // coordinate from the generated identity row.
+    assert!(
+        artifacts.structural.implicit().is_some(),
+        "the alternate carries a derived implicit Jacobian structure"
+    );
+    assert_eq!(
+        artifacts.structural.algebraic_projection().len(),
+        plan.algebraic_projection_plan.blocks.len(),
+        "one derived Jacobian structure per alternate algebraic block"
+    );
+
+    // A reduced first-integral chart retains no manifold, so its manifold JVP is
+    // empty.
+    assert!(
+        artifacts.manifold_jacobian_v.nodes.is_empty(),
+        "a reduced first-integral chart retains no manifold projection"
+    );
+
+    // The primary chart is executed by the enclosing continuous system and carries
+    // no separate plan or artifacts, exactly as before Stage 1c.
+    assert!(charts[0].plan.is_none());
+}
+
+#[test]
+fn circle_chart_alternate_chart_constructs_a_solve_runtime() {
+    // The de-risking gate for the Stage 2 runtime swap: the alternate chart's
+    // carried image is complete enough to construct the continuous solver runtime
+    // with no missing-artifact error. Constructing the runtime exercises the exact
+    // constructor path that reads the AD Jacobian, the structural artifacts, and
+    // the refresh owners, so a successful build proves the alternate is executable
+    // and that Stage 1c closed the last compiler gap.
+    let model = lowered(CIRCLE_CHART, "CircleChart");
+    let alternate = alternate_chart_model(&model);
+    let runtime = rumoca_solver::SolveRuntime::new(&alternate);
+    assert!(
+        runtime.is_ok(),
+        "the alternate reduced chart is a complete runtime-executable image: {:?}",
+        runtime.err()
+    );
+}
+
+#[test]
+fn circle_chart_alternate_chart_artifacts_survive_the_model_wire() {
+    // Chart artifacts are derived data and are absent from the serialized wire, like
+    // the primary artifacts. Decoding the model rebuilds every alternate chart's
+    // executable image through the same assembly used at construction, so a decoded
+    // chart is byte-identical to the constructed one and remains runtime-executable.
+    let model = lowered(CIRCLE_CHART, "CircleChart");
+    let wire = serde_json::to_vec(
+        &serde_json::to_value(rumoca_phase_solve::solve_model_wire(&model).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let replayed = rumoca_phase_solve::deserialize_solve_model(
+        &mut serde_json::Deserializer::from_slice(&wire),
+    )
+    .expect("the chart-carrying model replays from its wire");
+
+    let original = model.problem.continuous.reduced_chart_set.charts[1]
+        .plan
+        .as_ref()
+        .expect("the constructed alternate carries a plan");
+    let decoded = replayed.problem.continuous.reduced_chart_set.charts[1]
+        .plan
+        .as_ref()
+        .expect("the alternate plan survives the wire");
+
+    // The rebuilt artifacts are byte-identical to the constructed ones.
+    assert_eq!(
+        serde_json::to_value(&decoded.artifacts.implicit_jacobian_v_scalar).unwrap(),
+        serde_json::to_value(&original.artifacts.implicit_jacobian_v_scalar).unwrap(),
+        "the decoded scalar implicit JVP is byte-identical to the constructed one"
+    );
+    assert_eq!(
+        serde_json::to_value(&decoded.artifacts.full_jacobian_v).unwrap(),
+        serde_json::to_value(&original.artifacts.full_jacobian_v).unwrap(),
+        "the decoded full Jacobian kernel is byte-identical to the constructed one"
+    );
+    assert_eq!(
+        decoded
+            .artifacts
+            .implicit_jacobian_v
+            .len()
+            .expect("decoded JVP is shaped"),
+        original
+            .artifacts
+            .implicit_jacobian_v
+            .len()
+            .expect("constructed JVP is shaped"),
+    );
+    assert!(!decoded.artifacts.implicit_jacobian_v.nodes.is_empty());
+    assert_eq!(
+        decoded.artifacts.structural.algebraic_projection().len(),
+        original.artifacts.structural.algebraic_projection().len(),
+    );
+    assert!(decoded.refresh_owners.is_issued());
+
+    // The decoded alternate still constructs a continuous solver runtime.
+    let alternate = alternate_chart_model(&replayed);
+    assert!(
+        rumoca_solver::SolveRuntime::new(&alternate).is_ok(),
+        "the decoded alternate chart is still runtime-executable"
     );
 }
 

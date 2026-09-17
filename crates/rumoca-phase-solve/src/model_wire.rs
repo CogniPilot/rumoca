@@ -101,7 +101,7 @@ where
     replay_solve_model(wire).map_err(serde::de::Error::custom)
 }
 
-fn replay_solve_model(wire: SolveModelWire) -> Result<solve::SolveModel, SolveModelWireError> {
+fn replay_solve_model(mut wire: SolveModelWire) -> Result<solve::SolveModel, SolveModelWireError> {
     if wire.schema_version != SOLVE_MODEL_SCHEMA_VERSION {
         return Err(SolveModelWireError::SchemaVersion {
             actual: wire.schema_version,
@@ -120,6 +120,10 @@ fn replay_solve_model(wire: SolveModelWire) -> Result<solve::SolveModel, SolveMo
     let artifacts =
         super::artifacts::lower_solve_artifacts(&wire.problem, solve::MassMatrix::Identity)
             .map_err(|error| SolveModelWireError::ArtifactDerivation(error.to_string()))?;
+    // Chart artifacts are derived data absent from the wire: rebuild each alternate
+    // reduced chart's executable image with the same assembly used at construction.
+    super::replay_reduced_chart_artifacts(&mut wire.problem)
+        .map_err(|error| SolveModelWireError::ArtifactDerivation(error.to_string()))?;
     let model = solve::SolveModel {
         problem: wire.problem,
         pure_calls: wire.pure_calls,

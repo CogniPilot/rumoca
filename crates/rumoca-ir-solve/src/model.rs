@@ -99,9 +99,10 @@ impl ReducedChartSet {
 /// structurally admissible chart whose `trial_rcond` may be at or below the
 /// threshold at the trial point because it is regular elsewhere.
 ///
-/// `plan` carries the chart's executable reconstruction and derivative kernel.
-/// It is present only for an ALTERNATE chart (chart index one and above): the
-/// primary basis (chart index zero) is already executed by the enclosing
+/// `plan` carries the chart's executable reconstruction, derivative kernel, and
+/// the runtime-executable solver artifacts of the alternate basis. It is present
+/// only for an ALTERNATE chart (chart index one and above): the primary basis
+/// (chart index zero) is already executed by the enclosing
 /// [`ContinuousSolveSystem`], so it carries no separate plan. An absent plan is
 /// dropped from human-readable serialization by the manual [`Serialize`] below,
 /// keeping the primary chart and every partition-only chart byte-identical to IR
@@ -153,8 +154,21 @@ impl Serialize for ReducedChart {
 /// `algebraic_projection_plan` sequences their solves over the alternate
 /// Dependent coordinates, and `derivative_rhs` advances the alternate Independent
 /// coordinates by their own formal derivatives. It carries no manifold projection
-/// (a reduced first-integral group has none) and no refresh owners (a runtime
-/// prepares those from the plan).
+/// (a reduced first-integral group has none).
+///
+/// `artifacts` and `refresh_owners` complete the runtime-executable image of the
+/// alternate basis: everything the continuous solver constructor reads to run
+/// this chart (the forward-mode AD Jacobian-vector products, the derived
+/// structural patterns, and the issued continuous refresh owners). They are the
+/// alternate analogue of [`ContinuousSolveSystem::refresh_owners`] and the
+/// enclosing model's continuous [`ContinuousSolveArtifacts`].
+///
+/// `refresh_owners` is serialized directly and reconstructs its checked schedules
+/// on decode, exactly as the primary owners do. `artifacts` is derived data: like
+/// the enclosing model's primary artifacts it is never written to the wire and is
+/// rebuilt through the same artifact lowering after decode, so a chart-carrying
+/// model stays byte-identical across formats and every alternate basis is
+/// re-materialized as an executable image before a runtime observes it.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ReducedChartPlan {
     pub implicit_rhs: ComputeBlock,
@@ -162,6 +176,15 @@ pub struct ReducedChartPlan {
     pub algebraic_projection_plan: AlgebraicProjectionPlan,
     pub residual: ComputeBlock,
     pub derivative_rhs: ComputeBlock,
+    /// Issued continuous refresh owners of the alternate basis. Serialized and
+    /// decoded through [`ContinuousRefreshOwners`]'s own checked replay.
+    pub refresh_owners: ContinuousRefreshOwners,
+    /// Runtime-executable continuous solver artifacts of the alternate basis:
+    /// its AD Jacobian-vector products and derived structural patterns. Derived
+    /// data, rebuilt after decode by the owning phase, so it is skipped by every
+    /// serializer and defaults to empty until re-materialized.
+    #[serde(skip)]
+    pub artifacts: ContinuousSolveArtifacts,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
