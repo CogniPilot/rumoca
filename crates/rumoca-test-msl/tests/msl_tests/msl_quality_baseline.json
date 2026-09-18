@@ -303,7 +303,7 @@
     "bounded_normalized_l1": {
       "sample_count": 192,
       "min": 0.0,
-      "median": 4.18343673343987e-11,
+      "median": 4.18343673343987E-11,
       "mean": 0.000020559227071078744,
       "max": 0.000999001079033892
     },
@@ -312,14 +312,14 @@
     "model_mean_channel_bounded_normalized_l1": {
       "sample_count": 192,
       "min": 0.0,
-      "median": 8.456961692413088e-7,
+      "median": 8.456961692413088E-7,
       "mean": 0.00015271054979339939,
       "max": 0.0052197167076635555
     },
     "model_max_channel_bounded_normalized_l1": {
       "sample_count": 192,
       "min": 0.0,
-      "median": 9.936815845028067e-6,
+      "median": 0.000009936815845028067,
       "mean": 0.006341005278742683,
       "max": 0.17976647441118312
     },
@@ -959,5 +959,23 @@
     "Modelica.Thermal.HeatTransfer.Examples.ControlledTemperature",
     "Modelica.Thermal.HeatTransfer.Examples.Motor",
     "Modelica.Thermal.HeatTransfer.Examples.TwoMasses"
-  ]
+  ],
+  "omc_context_migration": {
+    "from_omc_version": "OpenModelica 1.27.0~dev.beta.3",
+    "to_omc_version": "a96aa1a-cmake",
+    "sim_target_models": 566
+  },
+  "promoted_baseline_bridge": {
+    "from_quality_gate_version": 1,
+    "from_git_commit": "08fac54846fd73a3471bafc6609a0d34e74f9fe3",
+    "from_sha256": "2b0a478b922583106342272bbf85411c539d50d9b9e0ca54c4dbb87621f05fe8",
+    "to_quality_gate_version": 4,
+    "sim_target_models": 566,
+    "evidence_git_commits": [
+      "a499eb8f15bf6af9d28f5a7011e82edfe73803b4",
+      "3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b",
+      "6d57e9644b4da542a5498ee42510551e7e7ade70",
+      "5394156facb1e5ff9f099f21c0e833c4870c506f"
+    ]
+  }
 }
