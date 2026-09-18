@@ -8,7 +8,7 @@ use super::common::MslPaths;
 const DEFAULT_BASELINE_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
 const DEFAULT_CURRENT_REL: &str = "msl_quality_current.json";
-const EXPECTED_QUALITY_GATE_VERSION: u64 = 6;
+const EXPECTED_QUALITY_GATE_VERSION: u64 = 7;
 const RUN_SCOPE_FULL: &str = "full";
 const RUN_SCOPE_PARTIAL: &str = "partial";
 
