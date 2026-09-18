@@ -1,10 +1,10 @@
 {
   "generated_by": "cargo xtask coverage gate",
-  "generated_at_unix_secs": 1789726238,
+  "generated_at_unix_secs": 1789749608,
   "source_candidates_file": "target/llvm-cov/trim-candidates.json",
-  "workspace_line_coverage_percent": 78.60556404941235,
-  "workspace_lines_covered": 335215,
-  "workspace_lines_total": 426452,
+  "workspace_line_coverage_percent": 78.6148602718148,
+  "workspace_lines_covered": 335382,
+  "workspace_lines_total": 426614,
   "packages": {
     "rumoca": {
       "zero_count_functions_total": 627,
@@ -205,9 +205,9 @@
       "needs_targeted_test_candidates": 71
     },
     "rumoca-phase-parse": {
-      "zero_count_functions_total": 69,
-      "candidates_total": 68,
-      "dead_likely_candidates": 35,
+      "zero_count_functions_total": 68,
+      "candidates_total": 67,
+      "dead_likely_candidates": 34,
       "needs_targeted_test_candidates": 21
     },
     "rumoca-phase-parse-galec": {
@@ -331,9 +331,9 @@
       "needs_targeted_test_candidates": 63
     },
     "xtask": {
-      "zero_count_functions_total": 1118,
-      "candidates_total": 1113,
-      "dead_likely_candidates": 492,
+      "zero_count_functions_total": 1119,
+      "candidates_total": 1114,
+      "dead_likely_candidates": 493,
       "needs_targeted_test_candidates": 313
     }
   }
