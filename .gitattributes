@@ -1,5 +1,6 @@
 *.jinja text eol=lf
 *.rs text eol=lf
+*.mo text eol=lf
 # Preserve upstream formatting in the pinned dependency; review its explicit
 # source patch through vendor/diffsol/RUMOCA_PATCH.md.
 vendor/diffsol/** -whitespace linguist-vendored
