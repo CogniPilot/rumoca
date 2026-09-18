@@ -285,12 +285,12 @@ fn test_prepare_gpu_simulation_separates_output_and_fixed_step_intervals() {
     clear_source_root_cache().expect("clear source-root cache");
 }
 
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-#[test]
 /// MLS §8.6: The initialization problem contains all initial equations and solves the
 /// variables they determine before integration starts. Structured (for-loop) initial
 /// equations that directly determine array states are planned through the reduced
 /// initialization projection, so their solved values appear in the exported y0.
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
 fn test_prepare_gpu_simulation_solves_structured_initial_equations() {
     let _guard = session_test_guard();
     clear_source_root_cache().expect("clear source-root cache");
