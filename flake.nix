@@ -158,6 +158,10 @@
               && !(pkgs.lib.hasInfix "node_modules" rel)
             )
             || pkgs.lib.hasPrefix ".cargo" rel
+            # vendor/diffsol is a patched path dependency the workspace builds
+            # from source; keep its tree (and the vendor dir so it is walked).
+            || rel == "vendor"
+            || pkgs.lib.hasPrefix "vendor/diffsol" rel
             || rel == "Cargo.toml"
             || rel == "Cargo.lock"
             || rel == "rust-toolchain.toml";
