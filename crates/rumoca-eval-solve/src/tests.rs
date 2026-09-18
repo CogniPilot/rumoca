@@ -2057,3 +2057,6 @@ fn random_opcode_helper_rejects_non_random_op() {
         }
     ));
 }
+
+// SPEC_0021 file-size exception: this file is 2059 lines, over the 2000-line
+// action threshold; split plan: group the eval-solve tests by subsystem (projection, dense-basis, refresh) into sibling test modules.

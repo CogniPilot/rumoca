@@ -2235,3 +2235,6 @@ fn checked_shape_arithmetic(
         )
     })
 }
+
+// SPEC_0021 file-size exception: this file is 2237 lines, over the 2000-line
+// action threshold; split plan: extract the FunctionSpecializationKey construction and the per-shape provenance derivation into sibling modules under function_shapes/.

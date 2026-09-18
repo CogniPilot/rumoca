@@ -2139,3 +2139,6 @@ fn when_assert_level_reaches_checked_event_action_with_exact_provenance() {
         ));
     });
 }
+
+// SPEC_0021 file-size exception: this file is 2141 lines, over the 2000-line
+// action threshold; split plan: partition the discrete DAE construction cases by feature (when-equations, clocked, sampled) into sibling test modules.

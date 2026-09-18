@@ -2024,3 +2024,6 @@ fn unmatched_residue(error: &StructuralError) -> Option<usize> {
     };
     Some((n_equations - n_matched) + (n_unknowns - n_matched))
 }
+
+// SPEC_0021 file-size exception: this file is 2026 lines, over the 2000-line
+// action threshold; split plan: move the reconstruction and holonomic-constraint helpers into the existing dae_transform/ submodules.
