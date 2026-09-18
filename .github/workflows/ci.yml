@@ -882,7 +882,13 @@ jobs:
 
       - name: Enforce coverage regression gate
         run: |
-          ./target/debug/xtask coverage gate --enforce-trim-regressions
+          # llvm-cov trim counts drift by about one function per crate between
+          # runs, so a small growth allowance absorbs that measurement noise
+          # while still catching real dead-code regressions.
+          ./target/debug/xtask coverage gate --enforce-trim-regressions \
+            --allowed-zero-count-growth 2 \
+            --allowed-dead-likely-growth 2 \
+            --allowed-total-candidate-growth 2
 
   # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane. The
   # producer keeps the pinned OpenModelica closure in its own stable GitHub

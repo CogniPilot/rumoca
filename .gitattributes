@@ -1,3 +1,6 @@
+# Normalize every text file to LF on checkout so byte-exact fixtures and
+# digests match on Windows as well as Linux; git leaves binary files alone.
+* text=auto eol=lf
 *.jinja text eol=lf
 *.rs text eol=lf
 *.mo text eol=lf
