@@ -472,11 +472,10 @@ fn conserved_quaternion_norm_retains_the_source_basis() {
     )
     .unwrap();
     assert_eq!(lowered.model().state_scalar_count(), 4);
-    assert!(
-        compiled.dae.inspect(|view| view
-            .variables()
-            .any(|(_, variable)| variable.name().as_str() == "Q"))
-    );
+    assert!(compiled.dae.inspect(|view| {
+        view.variables()
+            .any(|(_, variable)| variable.name().as_str() == "Q")
+    }));
 }
 
 #[test]

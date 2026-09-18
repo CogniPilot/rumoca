@@ -288,7 +288,9 @@ fn a_nonholonomic_over_request_infeasible_under_every_assignment_still_fails() {
         &std::collections::HashMap::new(),
         |_| {},
     ) {
-        Ok(_) => panic!("an over-request infeasible under every admissible assignment cannot lower"),
+        Ok(_) => {
+            panic!("an over-request infeasible under every admissible assignment cannot lower")
+        }
         Err(error) => error.to_string(),
     };
     // The request fails either at the required-count/stage check or, when the

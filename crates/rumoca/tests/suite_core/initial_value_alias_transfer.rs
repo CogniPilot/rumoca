@@ -651,8 +651,9 @@ fn a_carried_value_can_determine_the_parameter_its_displacement_reads() {
 fn a_singular_law_reading_an_aliased_state_initializes_from_the_pinned_member() {
     let result = simulate(ALIASED_SINGULAR_TENSOR, "AliasedSingularTensor");
     let sixth = -5.0 / 6.0;
-    for (scalar, (position, gravity)) in
-        [(0.6, sixth), (0.6, sixth), (0.0, 0.0)].into_iter().enumerate()
+    for (scalar, (position, gravity)) in [(0.6, sixth), (0.6, sixth), (0.0, 0.0)]
+        .into_iter()
+        .enumerate()
     {
         assert_initial(&result, &format!("p[{}]", scalar + 1), position);
         assert_initial(&result, &format!("g[{}]", scalar + 1), gravity);

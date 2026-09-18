@@ -78,7 +78,13 @@ fn structural_inspection_retains_a_fixed_initial_value() {
     // coordinates and adds no new fixed initial value. The fixed value is
     // therefore enforced through the initialization solve (proved exactly by
     // `x(0) == 1.0` below), not carried as a given-state index.
-    assert!(solve.problem.initialization.given_state_indices().is_empty());
+    assert!(
+        solve
+            .problem
+            .initialization
+            .given_state_indices()
+            .is_empty()
+    );
     let report = structural_report_for_dae(&dae, &options)
         .expect("inspection consumes the same successful reduction");
     assert_eq!(report.n_equations, report.n_unknowns);

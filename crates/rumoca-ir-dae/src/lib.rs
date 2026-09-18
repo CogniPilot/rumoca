@@ -182,11 +182,11 @@ pub use model::{
     ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
     VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
 };
-pub use native_table::NativeTableOperator;
 pub use model_event_transactions::{
     ModelEventDefinition, ModelEventDefinitionView, ModelEventStep, ModelEventStepView,
     ModelEventTarget, ModelEventTransactionView, ModelEventTransactions,
 };
+pub use native_table::NativeTableOperator;
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 pub use temporal::{
     DelayCoordinate, DelayOperation, DelayView, PositiveParameter, PositiveParameterView,
