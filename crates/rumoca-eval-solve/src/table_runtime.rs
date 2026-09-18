@@ -337,11 +337,144 @@ fn eval_table_1d_lookup(
         });
     }
 
+    // ContinuousDerivative smoothness (Akima cubic Hermite spline). The Akima
+    // construction needs at least three knots to fabricate its boundary
+    // secants; ModelicaStandardTables.c falls back to linear segments for a
+    // two-row table, so a shorter table keeps the linear path below.
+    if table.smoothness == 2 && table.data.len() >= 3 {
+        return eval_akima_1d(table, output_col, x_real, k, out_of_range, preserve_slope);
+    }
+
     let slope = (y1 - y0) / (x1 - x0);
     Ok(TableLookupResult {
         value: y0 + (x_real - x0) * slope,
         slope: if preserve_slope { slope } else { 0.0 },
     })
+}
+
+/// Evaluate a 1D table with `ContinuousDerivative` smoothness (the Akima cubic
+/// Hermite spline), bit-matching ModelicaStandardTables.c `akimaSpline1DInit`
+/// together with `CombiTable1D_getValue`/`getDerValue`.
+///
+/// The knot derivatives are Akima slopes computed from the surrounding secant
+/// slopes. Two synthetic secants are fabricated beyond each end (extrapolating
+/// the boundary secants with `3*d[2]-2*d[3]`, `2*d[2]-d[3]` on the left and the
+/// mirror pair on the right) so the first and last knot derivatives are
+/// defined. When the two secant differences around a knot both vanish, the
+/// slope is their unweighted average, matching the exact divide-by-zero guard
+/// in the C runtime. Inside an interval the value is the cubic Hermite
+/// polynomial of the two knot values and the two Akima knot slopes, and the
+/// returned slope is that cubic's analytic derivative so the solver Jacobian
+/// stays consistent with the value.
+///
+/// Out-of-range abscissae follow the same rules as the C runtime: under
+/// `LastTwoPoints` the boundary tangent is continued (a line through the
+/// boundary knot with the Akima boundary slope), and under a holding mode the
+/// boundary knot value is held with a zero slope.
+fn eval_akima_1d(
+    table: &ExternalTableData,
+    output_col: usize,
+    x: f64,
+    segment: usize,
+    out_of_range: bool,
+    preserve_slope: bool,
+) -> Result<TableLookupResult, TableRuntimeError> {
+    let n = table.data.len();
+    let mut xs = Vec::with_capacity(n);
+    let mut ys = Vec::with_capacity(n);
+    for row in 0..n {
+        xs.push(table_row_x(table, row)?);
+        ys.push(table_row_value(table, row, output_col)?);
+    }
+    let slopes = akima_knot_slopes(&xs, &ys);
+    let x_min = xs[0];
+    let x_max = xs[n - 1];
+
+    // LastTwoPoints extrapolation continues the boundary tangent: a line through
+    // the boundary knot whose gradient is the Akima boundary slope, exactly as
+    // `CombiTable1D_getValue` does for AKIMA_C1 under LAST_TWO_POINTS. `x` here
+    // is the untransformed abscissa, so a strictly outside value is either below
+    // the first knot (LEFT) or above the last knot (RIGHT).
+    if out_of_range && preserve_slope {
+        if x < x_min {
+            let (_, _, c2) = akima_interval_coeffs(&xs, &ys, &slopes, 0);
+            return Ok(TableLookupResult {
+                value: ys[0] + c2 * (x - x_min),
+                slope: c2,
+            });
+        }
+        let last = n - 2;
+        let (c0, c1, c2) = akima_interval_coeffs(&xs, &ys, &slopes, last);
+        let v = x_max - xs[last];
+        let slope = (3.0 * c0 * v + 2.0 * c1) * v + c2;
+        return Ok(TableLookupResult {
+            value: ys[n - 1] + slope * (x - x_max),
+            slope,
+        });
+    }
+
+    // In-table, or an abscissa a holding mode has already clamped to a boundary
+    // knot: evaluate the interval cubic in local coordinates. A held abscissa
+    // reports a zero slope (`preserve_slope` is false) while its clamped value
+    // still resolves to the boundary knot through the cubic.
+    let (c0, c1, c2) = akima_interval_coeffs(&xs, &ys, &slopes, segment);
+    let v = x - xs[segment];
+    let value = ys[segment] + ((c0 * v + c1) * v + c2) * v;
+    let slope = if preserve_slope {
+        (3.0 * c0 * v + 2.0 * c1) * v + c2
+    } else {
+        0.0
+    };
+    Ok(TableLookupResult { value, slope })
+}
+
+/// The Akima first-order derivative at every knot of one table column.
+///
+/// Mirrors the divided-difference array of `akimaSpline1DInit`: the interior
+/// entries hold the interval secant slopes and four fabricated entries
+/// extrapolate them past each boundary, so the weighted Akima average is
+/// defined at the first and last knots.
+fn akima_knot_slopes(xs: &[f64], ys: &[f64]) -> Vec<f64> {
+    let n = xs.len();
+    // The caller guarantees at least three knots, so every fabricated boundary
+    // secant references a genuine interior secant.
+    let mut d = vec![0.0_f64; n + 3];
+    for i in 0..n - 1 {
+        d[i + 2] = (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]);
+    }
+    d[0] = 3.0 * d[2] - 2.0 * d[3];
+    d[1] = 2.0 * d[2] - d[3];
+    d[n + 1] = 2.0 * d[n] - d[n - 1];
+    d[n + 2] = 3.0 * d[n] - 2.0 * d[n - 1];
+
+    let mut slopes = Vec::with_capacity(n);
+    for j in 0..n {
+        let right = (d[j + 3] - d[j + 2]).abs();
+        let left = (d[j + 1] - d[j]).abs();
+        let denom = right + left;
+        let slope = if denom > 0.0 {
+            let a = left / denom;
+            (1.0 - a) * d[j + 1] + a * d[j + 2]
+        } else {
+            0.5 * d[j + 1] + 0.5 * d[j + 2]
+        };
+        slopes.push(slope);
+    }
+    slopes
+}
+
+/// The cubic Hermite coefficients `(c0, c1, c2)` of the interval starting at
+/// knot `i`, expressed in the local coordinate `v = x - xs[i]` so that
+/// `value = ys[i] + ((c0*v + c1)*v + c2)*v`. This reproduces the coefficient
+/// arithmetic of `akimaSpline1DInit` exactly.
+fn akima_interval_coeffs(xs: &[f64], ys: &[f64], slopes: &[f64], i: usize) -> (f64, f64, f64) {
+    let dx = xs[i + 1] - xs[i];
+    let secant = (ys[i + 1] - ys[i]) / dx;
+    let c2 = slopes[i];
+    let c2_next = slopes[i + 1];
+    let c1 = (3.0 * secant - 2.0 * c2 - c2_next) / dx;
+    let c0 = (c2 + c2_next - 2.0 * secant) / (dx * dx);
+    (c0, c1, c2)
 }
 
 fn lookup_segment_index(
@@ -467,4 +600,115 @@ fn finite_floor_to_i64(value: f64, table_id: u64, time: f64) -> Result<i64, Tabl
         return Err(TableRuntimeError::PeriodicEventCycleOutOfRange { table_id, time });
     }
     Ok(floored as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExternalTableData, eval_table_lookup_slope_value_in, eval_table_lookup_value_in};
+
+    /// A single-column 1D table with the given knots and the given smoothness
+    /// and extrapolation runtime codes.
+    fn table_1d(
+        knots: &[(f64, f64)],
+        smoothness: i64,
+        extrapolation: i64,
+    ) -> Vec<ExternalTableData> {
+        vec![ExternalTableData {
+            id: 1,
+            data: knots.iter().map(|&(x, y)| vec![x, y]).collect(),
+            columns: vec![2],
+            smoothness,
+            extrapolation,
+        }]
+    }
+
+    fn value_at(tables: &[ExternalTableData], x: f64) -> f64 {
+        eval_table_lookup_value_in(1.0, 1.0, x, tables).expect("table lookup")
+    }
+
+    fn slope_at(tables: &[ExternalTableData], x: f64) -> f64 {
+        eval_table_lookup_slope_value_in(1.0, 1.0, x, tables).expect("table slope")
+    }
+
+    const AKIMA: i64 = 2;
+    const LAST_TWO_POINTS: i64 = 2;
+    const HOLD_LAST_POINT: i64 = 1;
+
+    #[test]
+    fn akima_reproduces_a_quadratic_exactly() {
+        // On an evenly spaced sample of y = x^2, the fabricated boundary
+        // secants make every Akima knot slope equal 2*x, so the interpolant is
+        // the exact quadratic (its cubic term vanishes).
+        let tables = table_1d(
+            &[(0.0, 0.0), (1.0, 1.0), (2.0, 4.0), (3.0, 9.0), (4.0, 16.0)],
+            AKIMA,
+            LAST_TWO_POINTS,
+        );
+        assert!((value_at(&tables, 0.5) - 0.25).abs() < 1e-12);
+        assert!((slope_at(&tables, 0.5) - 1.0).abs() < 1e-12);
+        assert!((value_at(&tables, 2.5) - 6.25).abs() < 1e-12);
+        assert!((slope_at(&tables, 2.5) - 5.0).abs() < 1e-12);
+        // The knots are reproduced with a slope matching the exact derivative.
+        assert!((value_at(&tables, 3.0) - 9.0).abs() < 1e-12);
+        assert!((slope_at(&tables, 3.0) - 6.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn akima_evaluates_a_genuine_cubic_interval() {
+        // An oscillating table forces non-zero cubic terms. The hand-computed
+        // Akima knot slopes are [2, 0, 0, 2]; interval 1 has coefficients
+        // c0 = 2, c1 = -3, c2 = 0 in the local coordinate, so the midpoint
+        // value is 0.5 and its slope is -1.5.
+        let tables = table_1d(
+            &[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0), (3.0, 1.0)],
+            AKIMA,
+            LAST_TWO_POINTS,
+        );
+        assert!((value_at(&tables, 1.5) - 0.5).abs() < 1e-12);
+        assert!((slope_at(&tables, 1.5) - (-1.5)).abs() < 1e-12);
+        // The first interval overshoots the linear chord (0.75 > 0.5),
+        // demonstrating the continuous-derivative shape.
+        assert!((value_at(&tables, 0.5) - 0.75).abs() < 1e-12);
+    }
+
+    #[test]
+    fn akima_last_two_points_continues_the_boundary_tangent() {
+        // Below the first knot the boundary tangent (slope = Akima slope at the
+        // first knot = 2) is continued; above the last knot the tangent uses
+        // the right-boundary cubic derivative (also 2 here).
+        let tables = table_1d(
+            &[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0), (3.0, 1.0)],
+            AKIMA,
+            LAST_TWO_POINTS,
+        );
+        assert!((value_at(&tables, -0.5) - (-1.0)).abs() < 1e-12);
+        assert!((slope_at(&tables, -0.5) - 2.0).abs() < 1e-12);
+        assert!((value_at(&tables, 3.5) - 2.0).abs() < 1e-12);
+        assert!((slope_at(&tables, 3.5) - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn akima_hold_last_point_holds_the_boundary_knot() {
+        // A holding extrapolation clamps to the boundary knot value with a zero
+        // reported slope, independent of the Akima boundary tangent.
+        let tables = table_1d(
+            &[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0), (3.0, 1.0)],
+            AKIMA,
+            HOLD_LAST_POINT,
+        );
+        assert!((value_at(&tables, -0.5) - 0.0).abs() < 1e-12);
+        assert!(slope_at(&tables, -0.5).abs() < 1e-12);
+        assert!((value_at(&tables, 3.5) - 1.0).abs() < 1e-12);
+        assert!(slope_at(&tables, 3.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn akima_falls_back_to_linear_for_two_row_tables() {
+        // With only two knots the Akima construction cannot fabricate its
+        // boundary secants, so a two-row table interpolates linearly, matching
+        // the ModelicaStandardTables.c fallback.
+        let tables = table_1d(&[(0.0, 0.0), (2.0, 4.0)], AKIMA, LAST_TWO_POINTS);
+        assert!((value_at(&tables, 1.0) - 2.0).abs() < 1e-12);
+        assert!((slope_at(&tables, 1.0) - 2.0).abs() < 1e-12);
+    }
 }

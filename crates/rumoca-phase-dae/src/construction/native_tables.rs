@@ -424,8 +424,12 @@ impl ConstructorCall<'_> {
 }
 
 /// MLS `Modelica.Blocks.Types.Smoothness` enumeration values, as the native
-/// table runtime interprets them (constant-segment interpolation is code 3;
-/// every other smoothness is interpolated linearly).
+/// table runtime interprets them. Code 1 (`LinearSegments`) interpolates
+/// linearly, code 2 (`ContinuousDerivative`) with the Akima cubic Hermite
+/// spline, and code 3 (`ConstantSegments`) holds each segment. The monotone
+/// variants (codes 4, 5) and `ModifiedContinuousDerivative` (code 6) are
+/// carried through with their runtime codes but the runtime still interpolates
+/// them linearly, pending their own spline constructions.
 fn smoothness_code(literal: &str) -> Option<i64> {
     match literal {
         "LinearSegments" => Some(1),
