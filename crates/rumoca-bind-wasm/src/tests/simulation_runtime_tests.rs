@@ -288,8 +288,10 @@ fn test_prepare_gpu_simulation_separates_output_and_fixed_step_intervals() {
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
 /// MLS §8.6: The initialization problem contains all initial equations and solves the
-/// variables they determine before integration starts.
-fn test_prepare_gpu_simulation_refuses_unowned_structured_initial_equations() {
+/// variables they determine before integration starts. Structured (for-loop) initial
+/// equations that directly determine array states are planned through the reduced
+/// initialization projection, so their solved values appear in the exported y0.
+fn test_prepare_gpu_simulation_solves_structured_initial_equations() {
     let _guard = session_test_guard();
     clear_source_root_cache().expect("clear source-root cache");
 
@@ -318,14 +320,49 @@ fn test_prepare_gpu_simulation_refuses_unowned_structured_initial_equations() {
     end GpuWaveInitial;
     "#;
 
-    let error = prepare_gpu_simulation(source, "GpuWaveInitial")
-        .expect_err("an unowned structured initialization row must fail closed");
-    assert!(
-        error
-            .to_string()
-            .contains("outside the planned initialization unknown space"),
-        "unexpected structured-initialization refusal: {error}"
+    let json = prepare_gpu_simulation(source, "GpuWaveInitial")
+        .expect("structured initialization rows that determine array states must be solved");
+    let payload: serde_json::Value =
+        serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
+
+    assert_eq!(
+        payload.get("n_states").and_then(serde_json::Value::as_u64),
+        Some(50),
+        "the 5x5 u and w arrays contribute 50 states: {payload:?}"
     );
+    let y0 = payload
+        .get("y0")
+        .and_then(serde_json::Value::as_array)
+        .expect("GPU prep should expose the solved initial state vector");
+    assert_eq!(y0.len(), 50, "y0 must cover every array state: {payload:?}");
+
+    // state order is u[1,1]..u[5,5] (indices 0..25) then w[1,1]..w[5,5] (25..50).
+    // The Gaussian center u[3,3] sits at index 12; exp(0) = 1.0 there.
+    let u_center = y0[12]
+        .as_f64()
+        .expect("u[3,3] initial value should be numeric");
+    assert!(
+        (u_center - 1.0).abs() < 1e-9,
+        "the structured initial equation must solve u[3,3] = exp(0) = 1.0, got {u_center}"
+    );
+    // The far corner u[1,1] evaluates the Gaussian tail exp(-100), a tiny positive value.
+    let u_corner = y0[0]
+        .as_f64()
+        .expect("u[1,1] initial value should be numeric");
+    assert!(
+        u_corner > 0.0 && u_corner < 1e-40,
+        "u[1,1] must solve the Gaussian tail exp(-100), got {u_corner}"
+    );
+    // Every w[i, j] initial equation sets the velocity field to zero.
+    for (offset, value) in y0[25..50].iter().enumerate() {
+        let w = value.as_f64().expect("w initial value should be numeric");
+        assert_eq!(
+            w,
+            0.0,
+            "the structured initial equation must solve w to zero at index {}, got {w}",
+            25 + offset
+        );
+    }
 
     clear_source_root_cache().expect("clear source-root cache");
 }
