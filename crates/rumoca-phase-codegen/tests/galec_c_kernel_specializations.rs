@@ -1,17 +1,18 @@
 //! Drift guard for the fixed-count GALEC kernel specializations.
 //!
 //! The `_N` specializations (SPEC_0034 GAL-037 working set) are spelled out in
-//! three independent places, none of which the compiler ties together:
+//! two independent places, neither of which the compiler ties to the other:
 //!
 //! * `embedded-c-galec/model.c.jinja` decides which literal counts a call site
 //!   is allowed to emit as `..._N(...)` instead of the generic counted kernel;
-//! * `embedded-c-galec/kernels.c.jinja` defines the `_N` bodies;
-//! * `embedded-c-galec/kernels.h.jinja` declares their prototypes by hand.
+//! * `embedded-c-galec/kernels.h.jinja` defines the `_N` bodies as
+//!   `static inline`, which is both their definition and their declaration, so
+//!   the compiler can inline them at each call site.
 //!
 //! Adding a count to the selection list alone is a link error at the target
 //! gate; adding one to the library alone is dead flash in every generated
 //! container. Neither shows up in this crate's own tests, so this test parses
-//! the three lists straight out of the template sources and holds them equal.
+//! the two lists straight out of the template sources and holds them equal.
 //!
 //! It reads the templates from the source tree rather than the build-script
 //! bundle on purpose: the bundle is what a mismatch would ship, the sources are
@@ -65,15 +66,15 @@ fn selected_counts(source: &str, selector: &str) -> Vec<u32> {
     parse_int_list(line)
 }
 
-/// The counts `kernels.c.jinja` writes bodies for, read off the `{% for %}`
-/// that drives each family's definitions.
+/// The counts `kernels.h.jinja` writes `static inline` bodies for, read off the
+/// `{% for %}` that drives each family's definitions.
 fn defined_counts(source: &str, kernel: &str) -> Vec<u32> {
     let signature = format!("rumoca_galec_{kernel}_real_{{{{ count }}}}(");
     let lines: Vec<&str> = source.lines().collect();
     let definition = lines
         .iter()
         .position(|line| line.contains(&signature))
-        .unwrap_or_else(|| panic!("kernels.c.jinja defines `{signature}`"));
+        .unwrap_or_else(|| panic!("kernels.h.jinja defines `{signature}`"));
     let driver = lines[..definition]
         .iter()
         .rposition(|line| line.contains("for count in ["))
@@ -81,51 +82,21 @@ fn defined_counts(source: &str, kernel: &str) -> Vec<u32> {
     parse_int_list(lines[driver])
 }
 
-/// The counts `kernels.h.jinja` declares prototypes for. The prototypes are
-/// hand-written, one per line, so they are read one per line.
-fn prototyped_counts(source: &str, kernel: &str) -> Vec<u32> {
-    let prefix = format!("rumoca_galec_{kernel}_real_");
-    let mut counts = Vec::new();
-    for line in source.lines() {
-        let Some(rest) = line.split_once(&prefix).map(|(_, rest)| rest) else {
-            continue;
-        };
-        // `dot` is a prefix of nothing else, but `copy`/`fill`/`scaled_add`
-        // must not pick up the generic kernels, which take no `_N` suffix.
-        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-        if digits.is_empty() || !rest[digits.len()..].starts_with('(') {
-            continue;
-        }
-        counts.push(digits.parse::<u32>().expect("prototype suffix is a count"));
-    }
-    counts
-}
-
 #[test]
-fn specialized_kernel_counts_agree_across_the_three_hand_written_lists() {
+fn specialized_kernel_counts_agree_across_the_two_hand_written_lists() {
     let model = read_template("model.c.jinja");
-    let kernels_source = read_template("kernels.c.jinja");
     let kernels_header = read_template("kernels.h.jinja");
 
     for (selector, kernel) in FAMILIES {
         let mut selected = selected_counts(&model, selector);
-        let mut defined = defined_counts(&kernels_source, kernel);
-        let mut prototyped = prototyped_counts(&kernels_header, kernel);
+        let mut defined = defined_counts(&kernels_header, kernel);
         assert!(
             !selected.is_empty(),
             "{selector}: the selection list parsed empty, so this guard would pass vacuously"
         );
         selected.sort_unstable();
         defined.sort_unstable();
-        prototyped.sort_unstable();
 
-        assert_eq!(
-            defined, prototyped,
-            "rumoca_galec_{kernel}_real_N: kernels.c.jinja defines {defined:?} but \
-             kernels.h.jinja declares {prototyped:?}; a definition without a prototype \
-             fails the target gate's -Wmissing-prototypes, a prototype without a \
-             definition fails the link"
-        );
         assert_eq!(
             selected, defined,
             "rumoca_galec_{kernel}_real_N: model.c.jinja selects {selected:?} but the \
@@ -185,7 +156,7 @@ fn the_count_lists_have_exactly_one_home_per_role() {
         );
         assert_eq!(
             templates_containing(&templates, &definition),
-            vec!["embedded-c-galec/kernels.c.jinja".to_string()],
+            vec!["embedded-c-galec/kernels.h.jinja".to_string()],
             "rumoca_galec_{kernel}_real_N must be defined in exactly one template"
         );
     }

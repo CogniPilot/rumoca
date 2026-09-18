@@ -27,7 +27,12 @@
  * MISRA compliance and DO-178C compliance are not claimed. */
 
 #include "rumoca_galec_kernels.h"
-
+{# This translation unit defines only the generic counted kernels. The
+   fixed-count `_N` specializations are emitted as `static inline` definitions
+   in `kernels.h.jinja` so the compiler can inline them at each call site;
+   every unit that includes the header, this one included, carries their
+   bodies. Both templates' bytes feed RUMOCA_GALEC_KERNELS_VERSION, so a body's
+   location does not affect the version check. #}
 /* The header this was compiled against must be the one emitted beside it. */
 #if RUMOCA_GALEC_KERNELS_VERSION != UINT32_C(0x{{ "%08x" | format(galec_kernels_version) }})
 #error "rumoca_galec_kernels.c and rumoca_galec_kernels.h come from different rumoca builds"
@@ -82,39 +87,3 @@ void rumoca_galec_scaled_add_real(int32_t count, float target[], float scale, co
         target[element] = target[element] + (scale * source[element]);
     }
 }
-
-/* Fixed-count specializations. Each is the counted kernel of the same name
- * with `count` bound to the literal in its suffix and the loop written out
- * one element per line, in the identical ascending order — the substitution
- * is bit-preserving by construction, element for element. They exist because
- * a hot estimator step is dominated by short fixed-length runs whose loop
- * control costs more than their arithmetic; straight-line bodies carry no
- * control flow at all. The counts are fixed properties of this library, not
- * of any model: a generated model calls a specialization exactly when its
- * emitted literal count matches one, and the generic kernels above remain
- * the contract for every other count. */
-{% for count in [3, 15, 24] %}
-void rumoca_galec_copy_real_{{ count }}(float target[], const float source[]) {
-{% for element in range(count) %}    target[{{ element }}] = source[{{ element }}];
-{% endfor -%}
-}
-{% endfor %}
-{%- for count in [2, 3, 15] %}
-void rumoca_galec_fill_real_{{ count }}(float target[], float value) {
-{% for element in range(count) %}    target[{{ element }}] = value;
-{% endfor -%}
-}
-{% endfor %}
-{%- for count in [6, 12, 15] %}
-float rumoca_galec_dot_real_{{ count }}(const float lhs[], const float rhs[]) {
-    float accumulator = 0.0f;
-{% for element in range(count) %}    accumulator = accumulator + (lhs[{{ element }}] * rhs[{{ element }}]);
-{% endfor %}    return accumulator;
-}
-{% endfor %}
-{%- for count in [2, 3, 6, 12, 15] %}
-void rumoca_galec_scaled_add_real_{{ count }}(float target[], float scale, const float source[]) {
-{% for element in range(count) %}    target[{{ element }}] = target[{{ element }}] + (scale * source[{{ element }}]);
-{% endfor -%}
-}
-{% endfor -%}
