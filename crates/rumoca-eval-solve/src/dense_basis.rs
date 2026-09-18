@@ -177,7 +177,7 @@ impl DenseStageMatrix {
     /// The dependent submatrix has its own column-pivoted QR whose smallest
     /// diagonal pivot is the reconstruction's weakest direction. Their ratio
     /// estimates `1/cond` in the same relative pivot scale
-    /// [`Self::is_full_column_rank`] applies, so `rcond <= singular_threshold`
+    /// `is_full_column_rank` applies, so `rcond <= singular_threshold`
     /// is exactly the rank loss the acceptance rejects. Measuring the dependent
     /// pivot against the full stage rather than the submatrix's own leading
     /// pivot is what lets a single-column reconstruction chart register as

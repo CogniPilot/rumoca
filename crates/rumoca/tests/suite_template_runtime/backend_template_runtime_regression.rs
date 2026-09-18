@@ -507,10 +507,11 @@ fn dae_template_context_exposes_checked_semantic_schema() {
 
     // Pinned to `dae_backend::TEMPLATE_SCHEMA_VERSION`: every change to the
     // projected template shape bumps that constant, and this literal must be
-    // bumped with it so template consumers see the break loudly. Version 5 is
-    // the shape carrying checked function owners, checked discrete ownership,
-    // and the proved-projection gate.
-    assert_eq!(rendered, "rumoca.checked-dae-template:5");
+    // bumped with it so template consumers see the break loudly. Version 6
+    // adds checked initialization parameter definitions on top of version 5's
+    // checked function owners, checked discrete ownership, and proved-projection
+    // gate.
+    assert_eq!(rendered, "rumoca.checked-dae-template:6");
 }
 
 #[test]

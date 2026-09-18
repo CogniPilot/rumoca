@@ -319,6 +319,10 @@ fn changed_rust_files(repo_root: &Path, base: &str, head: &str) -> Result<Vec<Pa
     }
     Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
+        // vendor/ holds vendored third-party crates (e.g. the patched diffsol
+        // path dependency); they are not project sources and are outside the
+        // architecture gates the scan enforces.
+        .filter(|line| !line.starts_with("vendor/"))
         .filter(|line| line.ends_with(".rs") || line.ends_with("Cargo.toml"))
         .map(PathBuf::from)
         .collect())
