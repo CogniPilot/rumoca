@@ -790,6 +790,7 @@ mod tests {
             "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_CurrentControlled",
             "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Drive",
             "Modelica.Electrical.Machines.Examples.InductionMachines.IMS_Start",
+            "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Braking",
             "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic",
             "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse",
             "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.HalfControlledBridge2mPulse",

@@ -149,8 +149,10 @@ fn folding_rows_for(plan: &AlgebraicProjectionPlan, dependent: &[usize]) -> Opti
 }
 
 /// Build the runtime-executable image of every reduced chart of `runtime`'s
-/// continuous system, or `None` when the system carries no folding
-/// first-integral group.
+/// continuous system that carries a lowered executable plan. Returns `None`
+/// when the system carries no folding first-integral group, and equally when no
+/// alternate basis of that group lowered to an executable plan, so in both cases
+/// the component runs on its primary basis alone.
 pub(super) fn build_reduced_charts(
     runtime: &Rc<SolveRuntime>,
     state_count: usize,
@@ -179,9 +181,16 @@ pub(super) fn build_reduced_charts(
         let chart_runtime = if index == 0 {
             Rc::clone(runtime)
         } else {
-            let alternate = alternate_chart_model(model, index).ok_or_else(|| {
-                RuntimeSolveError::solve_ir("alternate reduced chart carries no executable plan")
-            })?;
+            // The chart enumeration produced by the phase-solve state-selection
+            // pass is broader than plan lowering: an alternate basis can be
+            // admissible as geometry yet carry no lowered executable plan
+            // (initialization and holonomic fixtures reach this). Such a chart
+            // cannot be run, so it is not built. Only charts with a plan enter
+            // the runtime set, and the completed-step detector can therefore
+            // only ever select a chart that was actually built here.
+            let Some(alternate) = alternate_chart_model(model, index) else {
+                continue;
+            };
             Rc::new(SolveRuntime::new(&alternate).map_err(|error| {
                 RuntimeSolveError::solve_ir(format!(
                     "alternate reduced chart is not runtime-executable: {error:?}"
@@ -245,6 +254,14 @@ pub(super) fn build_reduced_charts(
             folding_rows,
             binding_rows,
         });
+    }
+
+    // When no alternate basis carried an executable plan, the component holds
+    // only its primary basis. There is no runtime state selection to perform, so
+    // the component behaves exactly as it did before dynamic state selection
+    // existed.
+    if charts.len() <= 1 {
+        return Ok(None);
     }
 
     Ok(Some(ReducedChartRuntimes {

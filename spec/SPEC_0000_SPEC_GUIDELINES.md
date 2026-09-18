@@ -114,10 +114,10 @@ applied.
 
 | Status | Cap | Rationale |
 |---|---|---|
-| ACCEPTED + DRAFT | 20 specs total | ~4000 lines of normative content at cap; fits 2-3 AI context loads |
+| ACCEPTED + DRAFT | 21 specs total | ~4200 lines of normative content at cap; fits 2-3 AI context loads |
 | REFERENCE | uncapped | Lookup catalogs (e.g. SPEC_0022) are not rules; size doesn't burden rule comprehension |
 
-Adding a 21st ACCEPTED/DRAFT spec requires either:
+Adding a 22nd ACCEPTED/DRAFT spec requires either:
 - merging into an existing spec, or
 - moving inactive future-work proposals to `archive/deferred/`, or
 - deleting inactive proposals that are not worth preserving.

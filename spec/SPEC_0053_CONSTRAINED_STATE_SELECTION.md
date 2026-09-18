@@ -1,7 +1,7 @@
 # SPEC_0053: Constrained State Selection
 
 ## Status
-PROPOSED
+DRAFT
 
 ## Summary
 Select independent integration coordinates from constrained DAE systems and

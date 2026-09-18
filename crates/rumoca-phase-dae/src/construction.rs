@@ -1102,7 +1102,11 @@ fn lower_attribute_expression<'dae>(
         LoweringSymbols {
             coordinates,
             functions,
-            shapes: functions.shapes.model_values(),
+            // A variable's attribute and binding values keep their MLS §3.6.5
+            // conditionals so a tunable-parameter guard re-selects the branch in
+            // the eFMI `Recalibrate` step instead of freezing at the parameter's
+            // translation-time value.
+            shapes: functions.shapes.model_attribute_values(),
             function_body: None,
             values: None,
             owner_clock: None,

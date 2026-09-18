@@ -250,19 +250,13 @@ fn shaping() -> Vec<Row> {
 /// derivative around it stays right.
 fn constant() -> Vec<Row> {
     let admitted: &[(&'static str, Shape, &str, Carrier, Verdict)] = &[
-        ("zeros", Scalar, "({a}) .+ zeros(3)", VECTOR_OUT, ELSEWHERE),
+        ("zeros", Scalar, "({a}) .+ zeros(3)", VECTOR_OUT, HERE),
         ("zeros", Vector, "({a}) .+ zeros(3)", VECTOR_OUT, HERE),
         ("zeros", Matrix, "({a}) .+ zeros(3, 3)", MATRIX_OUT, HERE),
         ("ones", Scalar, "({a}) .* ones(3)", VECTOR_OUT, HERE),
         ("ones", Vector, "({a}) .* ones(3)", VECTOR_OUT, HERE),
         ("ones", Matrix, "({a}) .* ones(3, 3)", MATRIX_OUT, HERE),
-        (
-            "identity",
-            Scalar,
-            "({a}) .+ identity(3)",
-            MATRIX_OUT,
-            ELSEWHERE,
-        ),
+        ("identity", Scalar, "({a}) .+ identity(3)", MATRIX_OUT, HERE),
         ("identity", Matrix, "({a}) .+ identity(3)", MATRIX_OUT, HERE),
         (
             "size",
@@ -348,23 +342,11 @@ fn arithmetic() -> Vec<Row> {
     for shape in Shape::ALL {
         rows.push(binary("/", *shape, Scalar, carrier_of(*shape)));
     }
-    // `.*` and `./` spread a rank-0 operand here; `.+` and `.-` do not, so
-    // their spreading rows are checked in OpenModelica.
-    for operator in [".*", "./"] {
+    // Every elementwise operator spreads a rank-0 operand over the other here,
+    // so each pairs the shapes `PAIRED` lists in-process (MLS 10.6.5).
+    for operator in [".*", "./", ".+", ".-"] {
         for (left, right, carrier) in PAIRED {
             rows.push(binary(operator, *left, *right, *carrier));
-        }
-    }
-    for operator in [".+", ".-"] {
-        for (left, right, carrier) in PAIRED {
-            rows.push(row(
-                Family::Arithmetic,
-                operator,
-                &[*left, *right],
-                &format!("({{a}}) {operator} ({{b}})"),
-                *carrier,
-                checked_where(*left, *right),
-            ));
         }
     }
     let stated = rows.clone();

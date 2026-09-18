@@ -179,14 +179,20 @@ fn seed_initial_pins<'source>(
         if pin.role != rumoca_phase_structural::InitialValueRole::Definition {
             continue;
         }
-        let source = formal.source.variable_id(pin.coordinate as usize).unwrap();
-        let target = formal.coordinate(source, 0).unwrap().index() as usize;
+        let source = formal
+            .source
+            .variable_id(pin.coordinate as usize)
+            .ok_or_else(|| failure("initial pin names an out-of-range source coordinate"))?;
+        let target = formal
+            .coordinate(source, 0)
+            .ok_or_else(|| failure("initial pin source has no zero-order formal coordinate"))?
+            .index() as usize;
         let mut value = 0.;
         for term in &pin.value {
             let expression = formal
                 .source
                 .expression_id(term.expression as usize)
-                .unwrap();
+                .ok_or_else(|| failure("initial pin term names an out-of-range expression"))?;
             let values = evaluate(expression)?;
             let term_value = values[term.scalar as usize];
             value += if term.negated {
@@ -195,7 +201,10 @@ fn seed_initial_pins<'source>(
                 term_value
             };
         }
-        point.values[target].as_mut().unwrap()[pin.scalar as usize] = value;
+        point.values[target]
+            .as_mut()
+            .ok_or_else(|| failure("initial pin target has no allocated value slot"))?
+            [pin.scalar as usize] = value;
         point.stated_initial_values[target][pin.scalar as usize] = true;
         point.retained_guesses[target] = true;
     }

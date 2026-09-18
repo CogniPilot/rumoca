@@ -1,4 +1,5 @@
 mod calls;
+mod conditional_guards;
 mod operators;
 mod temporal;
 
@@ -6,6 +7,7 @@ use super::*;
 
 use calls::*;
 pub(super) use calls::{FunctionCallLowering, classify_function_call};
+use conditional_guards::{conditional_calls_a_user_function, guard_reads_tunable_parameter};
 use operators::*;
 use temporal::*;
 
@@ -1662,9 +1664,28 @@ fn lower_conditional_expression<'dae>(
     else_branch: &Expression,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    // A variable's attribute or binding value keeps a conditional whose guard
+    // reads a tunable parameter unfolded, so a change to that parameter
+    // re-selects the branch after the code is generated (an eFMI `Recalibrate`
+    // runs the same statement). Folding it to the parameter's translation-time
+    // value silently freezes the branch. The conditional is preserved only when
+    // no arm calls a user function: shape discovery prunes a dead arm's calls,
+    // so preserving an arm whose call carries no shape certificate could not be
+    // built. A structural guard, and any conditional with a call in an arm, keep
+    // folding exactly as before.
+    let preserve_tunable_conditional = symbols.shapes.is_attribute_scope()
+        && !conditional_calls_a_user_function(branches, else_branch)
+        && branches
+            .iter()
+            .any(|(condition, _)| guard_reads_tunable_parameter(symbols.coordinates, condition));
     let mut lowered = Vec::with_capacity(branches.len());
     for (condition, value) in branches {
-        match symbols.shapes.proven_value(condition) {
+        let proven = if preserve_tunable_conditional {
+            None
+        } else {
+            symbols.shapes.proven_value(condition)
+        };
+        match proven {
             // A proven-dead arm is never built; MLS §11.5 skips to the next
             // condition, so lowering resumes at the following branch.
             Some(ProvenValue::Boolean(false)) => continue,

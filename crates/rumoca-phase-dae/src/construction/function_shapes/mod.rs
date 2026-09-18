@@ -136,6 +136,17 @@ pub(super) struct ShapeEnvironment {
     /// §12.9 external argument is in specialization scope with no body — so the
     /// distinction is carried by the environment that actually differs.
     specialized: bool,
+    /// Whether this environment lowers a variable's attribute or binding value.
+    ///
+    /// Such a value keeps an MLS §3.6.5 conditional whose guard reads a tunable
+    /// parameter, so a change to that parameter re-selects the branch after the
+    /// code is generated (an eFMI `Recalibrate` recomputes the same statement).
+    /// Folding such a guard to the parameter's translation-time value silently
+    /// freezes the branch. A structural guard (`size`/`ndims`, a constant, an
+    /// enumeration extent) still folds, because its value cannot change after
+    /// translation; only a guard that reads a tunable parameter is preserved.
+    /// Equation and function-body lowering leave this `false` and fold as usual.
+    attribute_scope: bool,
 }
 
 impl ShapeEnvironment {
@@ -149,7 +160,22 @@ impl ShapeEnvironment {
             values: EvalContext::with_capacity(capacity, 0, 0),
             dimension_extents: HashMap::with_capacity(capacity),
             specialized: false,
+            attribute_scope: false,
         }
+    }
+
+    /// A clone of this environment marked as lowering a variable's attribute or
+    /// binding value, where an MLS §3.6.5 guard that reads a tunable parameter is
+    /// preserved rather than folded.
+    pub(super) fn in_attribute_scope(&self) -> Self {
+        let mut environment = self.clone();
+        environment.attribute_scope = true;
+        environment
+    }
+
+    /// Whether this environment lowers a variable's attribute or binding value.
+    pub(super) fn is_attribute_scope(&self) -> bool {
+        self.attribute_scope
     }
 
     /// Mark this scope as one function specialization's proven environment.
@@ -524,6 +550,10 @@ struct CallInputProjection {
 
 pub(super) struct FunctionShapeAnalysis {
     model_values: ShapeEnvironment,
+    /// [`Self::model_values`] marked as attribute scope, used to lower a
+    /// variable's attribute and binding values so an MLS §3.6.5 guard over a
+    /// tunable parameter survives to the eFMI `Recalibrate` step.
+    attribute_values: ShapeEnvironment,
     certificates: Vec<FunctionShapeCertificate>,
     certificate_by_key: HashMap<FunctionSpecializationKey, usize>,
     call_certificates: HashMap<FunctionSpecializationKey, FunctionCallShapeCertificate>,
@@ -589,6 +619,7 @@ impl FunctionShapeAnalysis {
             flat,
             analysis: Self {
                 model_values,
+                attribute_values: ShapeEnvironment::default(),
                 certificates: Vec::new(),
                 certificate_by_key: HashMap::new(),
                 call_certificates: HashMap::new(),
@@ -603,7 +634,9 @@ impl FunctionShapeAnalysis {
         };
         analyzer.discover_model_calls()?;
         analyzer.discover_derivative_calls()?;
-        Ok(analyzer.analysis)
+        let mut analysis = analyzer.analysis;
+        analysis.attribute_values = analysis.model_values.in_attribute_scope();
+        Ok(analysis)
     }
 
     pub(super) fn record_array_fields(&self) -> &Arc<RecordArrayFieldPlans> {
@@ -642,6 +675,13 @@ impl FunctionShapeAnalysis {
 
     pub(super) fn model_values(&self) -> &ShapeEnvironment {
         &self.model_values
+    }
+
+    /// The model environment for lowering a variable's attribute and binding
+    /// values, where an MLS §3.6.5 conditional guard is left unfolded so a guard
+    /// over a tunable parameter survives to the eFMI `Recalibrate` step.
+    pub(super) fn model_attribute_values(&self) -> &ShapeEnvironment {
+        &self.attribute_values
     }
 
     pub(super) fn certificates(&self) -> &[FunctionShapeCertificate] {
