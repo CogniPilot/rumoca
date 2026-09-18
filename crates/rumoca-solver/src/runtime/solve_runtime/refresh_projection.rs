@@ -6,8 +6,11 @@ pub(super) use prepared_jacobian::{
     prepare_projection_jacobians, projection_jacobian_source, validate_projection_primal_source,
 };
 
-use crate::runtime::projection::{ScaledNewtonSystem, per_row_torn_block_sweep};
+use crate::runtime::projection::{
+    ImplicitProjectionModel, ScaledNewtonSystem, per_row_torn_block_sweep,
+};
 use nalgebra::DVector;
+use rumoca_eval_solve::dense_basis::{DenseStageMatrix, DependentConditioning};
 use rumoca_eval_solve::{PreparedTornSweep, TornSweepStatus};
 
 use super::*;
@@ -1239,4 +1242,186 @@ pub(super) fn seed_error_allows_projection(error: &RuntimeSolveError) -> bool {
             | RuntimeSolveError::RefreshTargetUnassignable { .. }
             | RuntimeSolveError::RefreshTargetSingular { .. }
     )
+}
+
+impl SolveRuntime {
+    /// A value-projection model view over this runtime's algebraic refresh plan,
+    /// used to evaluate individual implicit residual rows and their Jacobian
+    /// rows for reduced-chart conditioning and re-seeding.
+    fn reduced_chart_projection_model(&self) -> RefreshProjectionModel<'_> {
+        RefreshProjectionModel {
+            runtime: self,
+            seed_linearizations: None,
+            #[cfg(test)]
+            plan: &self.algebraic_refresh.value_projection_plan,
+            block_indices: &self.algebraic_refresh.simultaneous_block_indices,
+            plan_validated: true,
+            jacobian_v: ProjectionJacobian::SolverY {
+                block: &self.implicit_projection_jacobian_v,
+                scalar: &self.implicit_projection_scalar_jacobian_v,
+            },
+        }
+    }
+
+    /// Evaluate the dependent-Jacobian conditioning of each reduced state
+    /// selection chart at a settled solver coordinate.
+    ///
+    /// `folding_rows` are the implicit residual rows of the folding first
+    /// integral (`g = 0`); `group_cols` are the solver-Y columns of the
+    /// constrained coordinate group; `chart_dependent_positions[j]` are the
+    /// positions within `group_cols` that chart `j` reconstructs (its dependent
+    /// coordinates). The returned conditioning per chart estimates `1/cond` of
+    /// that chart's `g_d` in the same relative pivot scale
+    /// [`rumoca_eval_solve::dense_basis::DenseStageMatrix::is_full_column_rank`]
+    /// applies, so a chart whose `rcond` falls to its `singular_threshold` is
+    /// the one folding at this coordinate.
+    pub fn reduced_chart_dependent_conditioning(
+        &self,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        folding_rows: &[usize],
+        group_cols: &[usize],
+        chart_dependent_positions: &[Vec<usize>],
+    ) -> Result<Vec<DependentConditioning>, RuntimeSolveError> {
+        if folding_rows.is_empty() || group_cols.is_empty() {
+            return Err(RuntimeSolveError::solve_ir(
+                "reduced-chart conditioning needs a non-empty folding stage",
+            ));
+        }
+        let model = self.reduced_chart_projection_model();
+        let mut seed = vec![0.0; self.solver_count];
+        let mut values = Vec::with_capacity(folding_rows.len() * group_cols.len());
+        for &row in folding_rows {
+            for &col in group_cols {
+                values.push(folding_jacobian_entry(
+                    &model, row, col, solver_y, params, t, &mut seed,
+                )?);
+            }
+        }
+        let stage = DenseStageMatrix::new(folding_rows.len(), group_cols.len(), &values).map_err(
+            |error| {
+                RuntimeSolveError::solve_ir(format!("folding stage matrix rejected: {error:?}"))
+            },
+        )?;
+        chart_dependent_positions
+            .iter()
+            .map(|dependent| {
+                stage.dependent_conditioning(dependent).map_err(|error| {
+                    RuntimeSolveError::solve_ir(format!(
+                        "reduced-chart dependent conditioning failed: {error:?}"
+                    ))
+                })
+            })
+            .collect()
+    }
+
+    /// Evaluate selected implicit residual rows at `solver_y`.
+    pub fn evaluate_implicit_residual_rows(
+        &self,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        rows: &[usize],
+    ) -> Result<Vec<f64>, RuntimeSolveError> {
+        let model = self.reduced_chart_projection_model();
+        rows.iter()
+            .map(|&row| {
+                model
+                    .eval_implicit_residual_row(row, solver_y, params, t)?
+                    .ok_or_else(|| {
+                        RuntimeSolveError::solve_ir("implicit residual row has no scalar view")
+                    })
+            })
+            .collect()
+    }
+
+    /// The number of scalar implicit residual rows, i.e. the number of reduced
+    /// reconstruction targets the continuous projection drives to zero.
+    pub fn implicit_residual_row_count(&self) -> usize {
+        self.model.problem.continuous.implicit_row_targets.len()
+    }
+
+    /// For each generated state coordinate (solver-Y `0..state_count`), the
+    /// unique implicit residual row whose value is its identity `state - source`,
+    /// i.e. the row whose Jacobian with respect to that state column is a unit
+    /// pivot. The row's residual reconstructs the integrated source coordinate,
+    /// so `state[k] - residual[binding_row[k]]` recovers that source's value.
+    pub fn implicit_state_binding_rows(
+        &self,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        state_count: usize,
+    ) -> Result<Vec<usize>, RuntimeSolveError> {
+        let model = self.reduced_chart_projection_model();
+        let row_count = self.implicit_residual_row_count();
+        let mut seed = vec![0.0; self.solver_count];
+        (0..state_count)
+            .map(|state| {
+                let slot = seed.get_mut(state).ok_or_else(|| {
+                    RuntimeSolveError::solve_ir("state coordinate is out of solver range")
+                })?;
+                *slot = 1.0;
+                let binding = unit_binding_row(&model, row_count, solver_y, params, t, &seed);
+                seed[state] = 0.0;
+                binding
+            })
+            .collect()
+    }
+}
+
+/// One entry of the folding stage Jacobian: the derivative of implicit residual
+/// `row` with respect to solver-Y column `col`, evaluated by a unit seed. `seed`
+/// is left zeroed for reuse.
+fn folding_jacobian_entry(
+    model: &RefreshProjectionModel<'_>,
+    row: usize,
+    col: usize,
+    solver_y: &[f64],
+    params: &[f64],
+    t: f64,
+    seed: &mut [f64],
+) -> Result<f64, RuntimeSolveError> {
+    let slot = seed.get_mut(col).ok_or_else(|| {
+        RuntimeSolveError::solve_ir("folding group column is out of solver range")
+    })?;
+    *slot = 1.0;
+    let entry = model
+        .eval_implicit_jacobian_v_row(row, solver_y, params, t, seed)?
+        .ok_or_else(|| {
+            RuntimeSolveError::solve_ir("folding residual row has no scalar Jacobian view")
+        })?;
+    seed[col] = 0.0;
+    Ok(entry)
+}
+
+/// The unique implicit residual row whose Jacobian with respect to the state
+/// column seeded in `seed` is a unit pivot: that state coordinate's identity
+/// row. Fails when no row or more than one row carries that pivot.
+fn unit_binding_row(
+    model: &RefreshProjectionModel<'_>,
+    row_count: usize,
+    solver_y: &[f64],
+    params: &[f64],
+    t: f64,
+    seed: &[f64],
+) -> Result<usize, RuntimeSolveError> {
+    let mut binding = None;
+    for row in 0..row_count {
+        let Some(value) = model.eval_implicit_jacobian_v_row(row, solver_y, params, t, seed)?
+        else {
+            continue;
+        };
+        if value.abs() > 0.5 {
+            if binding.is_some() {
+                return Err(RuntimeSolveError::solve_ir(
+                    "state coordinate binds more than one implicit residual row",
+                ));
+            }
+            binding = Some(row);
+        }
+    }
+    binding
+        .ok_or_else(|| RuntimeSolveError::solve_ir("state coordinate has no identity residual row"))
 }

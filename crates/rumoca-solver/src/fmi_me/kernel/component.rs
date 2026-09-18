@@ -425,7 +425,31 @@ impl SolveMeKernel {
                 &self.settled_initialization_y,
                 &state.settled_initialization_y,
             )
-            && self.runtime.matches_snapshot(&state.runtime)
+            && self.active_chart == state.active_chart
+            && self.chart_runtimes_match_snapshots(&state.runtimes)
+    }
+
+    /// Whether every reduced-chart runtime matches a saved snapshot, in chart
+    /// index order. A model with no folding first-integral group compares its
+    /// single primary runtime against the single saved snapshot.
+    #[cfg(test)]
+    fn chart_runtimes_match_snapshots(
+        &self,
+        snapshots: &[crate::runtime::solve_runtime::SolveRuntimeSnapshot],
+    ) -> bool {
+        match &self.reduced_charts {
+            None => snapshots
+                .first()
+                .is_some_and(|snapshot| self.runtime.as_ref().matches_snapshot(snapshot)),
+            Some(charts) => {
+                charts.runtimes.len() == snapshots.len()
+                    && charts
+                        .runtimes
+                        .iter()
+                        .zip(snapshots)
+                        .all(|(runtime, snapshot)| runtime.as_ref().matches_snapshot(snapshot))
+            }
+        }
     }
 
     pub(super) fn require_lifecycle_transition(
@@ -541,22 +565,18 @@ impl SolveMeKernel {
             },
         )
         .map_err(|error| contract(error.to_string()))?;
-        let indicator_value_scratch =
-            reserved_indicator_values(indicator_plan.len(), "event-indicator values")?;
-        let indicator_root_scratch =
-            reserved_indicator_values(indicator_plan.root_value_len(), "event-indicator roots")?;
-        let indicator_deadline_scratch = reserved_indicator_values(
-            indicator_plan.deadline_len(),
-            "event-indicator dynamic-time deadlines",
-        )?;
-        let indicator_domain_scratch = reserved_indicator_domains(indicator_plan.len())?;
-        let frozen_indicator_positive = reserved_indicator_domains(indicator_plan.len())?;
+        let scratch = reserve_indicator_scratch(&indicator_plan)?;
+        let reduced_charts = dynamic_chart::build_reduced_charts(&runtime, state_count)
+            .map_err(|error| contract(error.to_string()))?;
         Ok(Self {
+            reduced_charts,
+            active_chart: 0,
+            pending_basis_change: None,
             solver_y_guess: RefCell::new(runtime.model.initial_y.clone()),
-            indicator_root_scratch: RefCell::new(indicator_root_scratch),
-            indicator_deadline_scratch: RefCell::new(indicator_deadline_scratch),
-            indicator_value_scratch,
-            indicator_domain_scratch,
+            indicator_root_scratch: RefCell::new(scratch.indicator_root_scratch),
+            indicator_deadline_scratch: RefCell::new(scratch.indicator_deadline_scratch),
+            indicator_value_scratch: scratch.indicator_value_scratch,
+            indicator_domain_scratch: scratch.indicator_domain_scratch,
             delay_params_scratch: RefCell::new(params.clone()),
             delay_solver_y_scratch: RefCell::new(runtime.model.initial_y.clone()),
             runtime,
@@ -581,7 +601,7 @@ impl SolveMeKernel {
             state_time_coincidence: StateTimeCoincidence::None,
             initial_event_pending: false,
             pending_root_crossings: Vec::new(),
-            frozen_indicator_positive,
+            frozen_indicator_positive: scratch.frozen_indicator_positive,
             pending_event_pre_y: None,
             pending_event_pre_p: None,
             boundary_event_pre_y: None,
@@ -1642,6 +1662,7 @@ impl SolveMeKernel {
                     &self.states,
                 ))
             }
+            MeEventCause::BasisChange => self.run_basis_change_boundary(),
         }
     }
 
@@ -1668,6 +1689,210 @@ impl SolveMeKernel {
             next_event_time,
         })
     }
+
+    // -- dynamic state selection (SPEC_0053 section 2a, carrier A) ---------
+
+    /// Snapshot the mutable numerical state of every reduced-chart runtime, in
+    /// chart index order. A model with no folding first-integral group has one
+    /// runtime, so the vector is a single primary-basis snapshot.
+    pub(super) fn chart_runtime_snapshots(
+        &self,
+    ) -> Vec<crate::runtime::solve_runtime::SolveRuntimeSnapshot> {
+        match &self.reduced_charts {
+            None => vec![self.runtime.snapshot()],
+            Some(charts) => charts
+                .runtimes
+                .iter()
+                .map(|runtime| runtime.snapshot())
+                .collect(),
+        }
+    }
+
+    /// Restore every reduced-chart runtime from a saved snapshot and rebind the
+    /// active basis pointer to the saved chart.
+    pub(super) fn restore_chart_runtimes(
+        &mut self,
+        active_chart: usize,
+        snapshots: &[crate::runtime::solve_runtime::SolveRuntimeSnapshot],
+    ) -> Result<(), MeError> {
+        match &self.reduced_charts {
+            None => {
+                let snapshot = snapshots
+                    .first()
+                    .ok_or_else(|| contract("saved state carries no runtime snapshot"))?;
+                self.runtime.restore(snapshot);
+                self.active_chart = 0;
+            }
+            Some(charts) => {
+                if snapshots.len() != charts.runtimes.len() {
+                    return Err(contract(
+                        "saved state carries a different number of chart runtimes",
+                    ));
+                }
+                let active = charts.runtimes.get(active_chart).ok_or_else(|| {
+                    contract("saved state names a chart index the component does not carry")
+                })?;
+                let active = Rc::clone(active);
+                for (runtime, snapshot) in charts.runtimes.iter().zip(snapshots) {
+                    runtime.restore(snapshot);
+                }
+                self.active_chart = active_chart;
+                self.runtime = active;
+            }
+        }
+        Ok(())
+    }
+
+    /// At an accepted step, estimate the conditioning of the active reduced
+    /// chart and, when it is approaching its fold while a strictly better
+    /// conditioned regular alternate exists, latch a basis-change request whose
+    /// coordinate is this step's settled full physical vector. Returns whether a
+    /// request was latched. A model with no folding first-integral group never
+    /// enters this path, so its completed step is unchanged.
+    pub(super) fn detect_basis_change_request(&mut self) -> Result<bool, MeError> {
+        let Some(charts) = self.reduced_charts.as_ref() else {
+            return Ok(false);
+        };
+        let t = self.continuous_eval_time();
+        let settle = self.numerics_settle();
+        // Warm-start the reconstruction from the last settled continuous vector
+        // so the dependent first-integral coordinate stays on the physical
+        // branch rather than the mirror root a cold declaration guess selects.
+        let mut solver_y = self.solver_y_guess.borrow().clone();
+        self.runtime
+            .full_solver_y_with_guess(
+                t,
+                &self.states,
+                &self.params,
+                &mut solver_y,
+                settle.tol,
+                settle.max_iters,
+            )
+            .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
+        let target = dynamic_chart::detect_basis_change(
+            &self.runtime,
+            &charts.charts,
+            &charts.group_cols,
+            self.active_chart,
+            t,
+            &solver_y,
+            &self.params,
+        )
+        .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
+        match target {
+            Some(target) => {
+                self.pending_basis_change = Some(dynamic_chart::PendingBasisChange {
+                    target,
+                    physical_solver_y: solver_y,
+                });
+                Ok(true)
+            }
+            None => {
+                self.pending_basis_change = None;
+                Ok(false)
+            }
+        }
+    }
+
+    /// Apply a latched basis change as one atomic Event-Mode transaction: swap
+    /// the active basis, re-seed the generated state coordinates to the target
+    /// chart from the pre-margin physical coordinate, re-establish the target
+    /// chart's reconstruction with branch-limited certified projection, and
+    /// rebind the coordinate map, integrator state, numerical caches, and
+    /// rollback context to the one active basis. A failed trial reconstruction
+    /// stays a loud error and never becomes an accepted step.
+    pub(super) fn run_basis_change_boundary(&mut self) -> Result<MeDiscreteStates, MeError> {
+        let before = self.states.clone();
+        let change = self
+            .pending_basis_change
+            .take()
+            .ok_or_else(|| contract("basis-change boundary requires a latched basis change"))?;
+        let target = change.target;
+        let (target_runtime, binding_rows) = {
+            let charts = self
+                .reduced_charts
+                .as_ref()
+                .ok_or_else(|| contract("basis change requested without a reduced chart set"))?;
+            let runtime = charts
+                .runtimes
+                .get(target)
+                .ok_or_else(|| contract("basis change names an unknown chart index"))?;
+            let chart = &charts.charts[target];
+            (Rc::clone(runtime), chart.binding_rows.clone())
+        };
+        self.active_chart = target;
+        self.runtime = target_runtime;
+
+        let t = self.continuous_eval_time();
+        let physical = &change.physical_solver_y;
+        // Recover the target chart's integrated source value for each generated
+        // state coordinate from the identity residual `state - source`.
+        let residuals = self
+            .runtime
+            .evaluate_implicit_residual_rows(t, physical, &self.params, &binding_rows)
+            .map_err(|error| MeError::from(error).at_stage(MeStage::EventIteration))?;
+        let mut new_states = before.clone();
+        for (state, residual) in new_states.iter_mut().zip(&residuals) {
+            *state -= residual;
+        }
+
+        // Seed the transferred solve from the pre-margin physical coordinate so
+        // the branch-limited certified projection stays on the physical branch
+        // rather than the mirror root the fold shares.
+        let mut solver_y = physical.clone();
+        let prefix = solver_y
+            .get_mut(..self.state_count)
+            .ok_or_else(|| contract("physical coordinate is shorter than the state prefix"))?;
+        prefix.copy_from_slice(&new_states);
+        let settle = self.numerics_settle();
+        self.runtime
+            .refresh_algebraic_and_output_slots_certified(
+                t,
+                &mut solver_y,
+                &self.params,
+                settle.tol,
+                settle.max_iters,
+            )
+            .map_err(|error| MeError::from(error).at_stage(MeStage::EventIteration))?;
+
+        self.copy_states_from_solver_y(&solver_y);
+        *self.solver_y_guess.borrow_mut() = solver_y;
+        self.clear_runtime_caches();
+        self.invalidate_continuous_linearization();
+        self.discrete_states_after_update(continuous_state_values_changed(&before, &self.states))
+    }
+}
+
+/// Working storage the component sizes once from the resolved indicator plan.
+struct IndicatorScratch {
+    indicator_value_scratch: Vec<f64>,
+    indicator_root_scratch: Vec<f64>,
+    indicator_deadline_scratch: Vec<f64>,
+    indicator_domain_scratch: Vec<bool>,
+    frozen_indicator_positive: Vec<bool>,
+}
+
+/// Reserve every indicator working buffer, each sized to the plan so a read
+/// reserves nothing proportional to the model.
+fn reserve_indicator_scratch(
+    indicator_plan: &FmiIndicatorPlan,
+) -> Result<IndicatorScratch, MeError> {
+    Ok(IndicatorScratch {
+        indicator_value_scratch: reserved_indicator_values(
+            indicator_plan.len(),
+            "event-indicator values",
+        )?,
+        indicator_root_scratch: reserved_indicator_values(
+            indicator_plan.root_value_len(),
+            "event-indicator roots",
+        )?,
+        indicator_deadline_scratch: reserved_indicator_values(
+            indicator_plan.deadline_len(),
+            "event-indicator dynamic-time deadlines",
+        )?,
+        indicator_domain_scratch: reserved_indicator_domains(indicator_plan.len())?,
+        frozen_indicator_positive: reserved_indicator_domains(indicator_plan.len())?,
+    })
 }
 
 /// The scalar value one resolved indicator position reports.

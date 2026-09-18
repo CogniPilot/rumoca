@@ -1073,6 +1073,7 @@ fn the_component_retains_the_typed_post_side_of_a_strict_root() {
         super::MeCompletedIntegratorStep {
             enter_event_mode: true,
             terminate_simulation: false,
+            basis_change: false,
         },
         "the standard callback reports the component-observed domain change"
     );

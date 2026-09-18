@@ -911,6 +911,8 @@ impl MeSimulationSession<'_, '_> {
             self.publish_event_left(pending.take())?;
             let cause = if reaches_time_event {
                 MeEventCause::TimeEvent
+            } else if completed.basis_change {
+                MeEventCause::BasisChange
             } else {
                 MeEventCause::StateEvent
             };

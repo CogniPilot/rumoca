@@ -633,6 +633,12 @@ pub enum MeEventCause {
     /// The instant the component itself scheduled through
     /// `SolveMeKernel::next_event_stop`.
     TimeEvent,
+    /// A completed step requested a reduced state selection basis change
+    /// (SPEC_0053 section 2a): the active chart is approaching its fold and a
+    /// better-conditioned regular chart is available. The transition swaps the
+    /// active basis and reports changed continuous-state values rather than
+    /// processing an event-indicator crossing.
+    BasisChange,
 }
 
 /// `fmi3EnterEventMode` arguments.
@@ -681,6 +687,10 @@ pub struct MeCompletedIntegratorStep {
     pub enter_event_mode: bool,
     /// FMI `terminateSimulation`: the component requests termination.
     pub terminate_simulation: bool,
+    /// The requested Event Mode is a reduced state selection basis change
+    /// (SPEC_0053 section 2a), not an event-indicator crossing. Always `false`
+    /// for a model with no folding first-integral group.
+    pub basis_change: bool,
 }
 
 /// An observation point: the component's refreshed observable state.

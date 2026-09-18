@@ -1,6 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 mod component;
+mod dynamic_chart;
 mod event_boundary;
 mod indicator_plan;
 
@@ -117,7 +118,21 @@ impl StateTimeCoincidence {
 /// SPEC_0038 forbids integrators from reaching Solve rows, layouts, opcodes,
 /// events, or runtime objects: the only way in is [`SolveMeKernel`].
 pub struct SolveMeKernel {
+    /// The active continuous basis. For a model with no folding first-integral
+    /// group this is the only basis and never changes; a chart-bearing model
+    /// swaps this pointer to `reduced_chart_runtimes[active_chart]` when the
+    /// completed-step detector requests a basis change.
     runtime: Rc<SolveRuntime>,
+    /// The runtime-executable image of every reduced state selection chart, and
+    /// the geometry the detector and the basis transition need. `None` for every
+    /// model without a folding first-integral group, keeping that path inert.
+    reduced_charts: Option<dynamic_chart::ReducedChartRuntimes>,
+    /// The index of the active chart within `reduced_charts`. Always zero (the
+    /// primary basis) when `reduced_charts` is `None`.
+    active_chart: usize,
+    /// A completed step's request to transfer to a better-conditioned chart,
+    /// applied atomically in the following Event-Mode transition.
+    pending_basis_change: Option<dynamic_chart::PendingBasisChange>,
     /// The FMI event-indicator table, resolved once at instantiation.
     indicator_plan: FmiIndicatorPlan,
     instance_brand: Rc<()>,
@@ -220,7 +235,11 @@ pub(crate) struct MeKernelSnapshot {
     last_projection_changed: bool,
     termination: Option<SimTermination>,
     settled_initialization_y: Option<Vec<f64>>,
-    runtime: SolveRuntimeSnapshot,
+    active_chart: usize,
+    pending_basis_change: Option<dynamic_chart::PendingBasisChange>,
+    /// One snapshot per reduced-chart runtime, in chart index order; a single
+    /// entry for a model with no folding first-integral group.
+    runtimes: Vec<SolveRuntimeSnapshot>,
 }
 
 pub(super) fn event_right_limit_state_derivatives(
@@ -492,7 +511,14 @@ impl SolveMeKernel {
     ) -> Result<MeCompletedIntegratorStep, MeError> {
         self.require_active_lifecycle("completed_integrator_step")?;
         self.post_event_eval_time = None;
-        let enter_event_mode = self.complete_indicator_domains()?;
+        let mut enter_event_mode = self.complete_indicator_domains()?;
+        // A located indicator event takes precedence; a basis change is only
+        // requested when the step is otherwise accepted, and is re-detected on
+        // the next completed step if an event preempts it here.
+        let basis_change = !enter_event_mode && self.detect_basis_change_request()?;
+        if basis_change {
+            enter_event_mode = true;
+        }
         if enter_event_mode {
             self.clear_runtime_caches();
         } else if self.last_projection_changed {
@@ -503,6 +529,7 @@ impl SolveMeKernel {
         Ok(MeCompletedIntegratorStep {
             enter_event_mode,
             terminate_simulation: false,
+            basis_change,
         })
     }
 
@@ -763,7 +790,9 @@ impl SolveMeKernel {
                 last_projection_changed: self.last_projection_changed,
                 termination: self.termination.clone(),
                 settled_initialization_y: self.settled_initialization_y.clone(),
-                runtime: self.runtime.snapshot(),
+                active_chart: self.active_chart,
+                pending_basis_change: self.pending_basis_change.clone(),
+                runtimes: self.chart_runtime_snapshots(),
             },
             instance_brand: Rc::clone(&self.instance_brand),
         }
@@ -825,7 +854,9 @@ impl SolveMeKernel {
         self.termination.clone_from(&state.termination);
         self.settled_initialization_y
             .clone_from(&state.settled_initialization_y);
-        self.runtime.restore(&state.runtime);
+        self.restore_chart_runtimes(state.active_chart, &state.runtimes)?;
+        self.pending_basis_change
+            .clone_from(&state.pending_basis_change);
         self.lifecycle.restore(state.lifecycle);
         Ok(())
     }

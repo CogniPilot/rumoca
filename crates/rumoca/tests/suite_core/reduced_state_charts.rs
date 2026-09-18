@@ -537,3 +537,68 @@ fn a_retained_definitional_model_carries_no_reduced_charts() {
         "a retained definitional model carries no reduced state-selection charts"
     );
 }
+
+/// SPEC_0053 section 2a, Stage 2 runtime chart swap (carrier A): a full
+/// revolution of `CircleChart` re-selects a regular reduced chart at each
+/// quarter turn and completes on the physical branch, matching the analytic
+/// unit circle rather than the mirror root a fixed reduced basis folds onto.
+///
+/// The interior trace points are event-left observations the recorder captures
+/// by saving the component FMU state at each accepted step and restoring it to
+/// observe the left limit. Because those saved states span the chart switches
+/// (the active chart index and its runtime), the analytic match of the whole
+/// trace is also the get/set-FMU-state round-trip evidence: a save and restore
+/// across a basis change preserves every observable.
+#[test]
+fn circle_chart_runtime_chart_swap_completes_the_revolution_on_the_physical_branch() {
+    use rumoca_sim::{SimOptions, simulate_dae_with_diagnostics};
+
+    let compiled = Compiler::new()
+        .model("CircleChart")
+        .compile_str(CIRCLE_CHART, "reduced_state_charts.mo")
+        .unwrap();
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: std::f64::consts::TAU,
+            dt: Some(0.01),
+            rtol: 1e-8,
+            atol: 1e-8,
+            ..Default::default()
+        },
+    )
+    .expect("CircleChart completes a full revolution through the runtime chart swaps");
+
+    let column = |name: &str| {
+        result
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("trace exposes {name}"))
+    };
+    let (q1, q2, v1, v2) = (
+        column("q[1]"),
+        column("q[2]"),
+        column("v[1]"),
+        column("v[2]"),
+    );
+
+    // q(t) = (cos t, sin t), v(t) = (-sin t, cos t). A mirror-branch failure
+    // would leave q[1] off by up to two units; the sound swap keeps every
+    // observable within a small multiple of the integration tolerance.
+    let mut worst = 0.0_f64;
+    for (index, &time) in result.times.iter().enumerate() {
+        for (col, expected) in [
+            (q1, time.cos()),
+            (q2, time.sin()),
+            (v1, -time.sin()),
+            (v2, time.cos()),
+        ] {
+            worst = worst.max((result.data[col][index] - expected).abs());
+        }
+    }
+    assert!(
+        worst < 1e-4,
+        "the swapped trajectory stays on the physical branch: worst observable error {worst}"
+    );
+}
