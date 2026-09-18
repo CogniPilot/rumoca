@@ -643,6 +643,28 @@ mod tests {
     }
 
     #[test]
+    fn test_get_integer_param_rejects_stale_integer_over_nonintegral_real() {
+        // A record field declared `parameter Real p = 0` seeds the integer
+        // table with the literal-0 declaration default, while the applied
+        // modifier resolves the authoritative real value (here non-integral).
+        // Reading such a parameter as an integer must report no integer value
+        // rather than the stale 0, so a relational fold such as `p <= 0` is not
+        // decided against the modifier (MLS 7.2.4).
+        let mut ctx = Context::new();
+        ctx.parameter_values
+            .insert("aimc.strayLoad.strayLoadParameters.PRef".to_string(), 0);
+        ctx.real_parameter_values.insert(
+            "aimc.strayLoad.strayLoadParameters.PRef".to_string(),
+            102.18857277543316,
+        );
+
+        assert_eq!(
+            ctx.get_integer_param("aimc.strayLoad.strayLoadParameters.PRef"),
+            None
+        );
+    }
+
+    #[test]
     fn test_propagate_unexpanded_record_array_dims_prepends_parent_dims_to_field_arrays() {
         let mut flat = flat::Model::default();
 

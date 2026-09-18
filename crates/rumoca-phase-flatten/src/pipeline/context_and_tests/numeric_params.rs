@@ -232,16 +232,27 @@ impl Context {
     pub(crate) fn get_integer_param(&self, name: &str) -> Option<i64> {
         // Try direct lookup in integer parameters first
         if let Some(val) = self.parameter_values.get(name).copied() {
-            // Prefer the evaluated real value when both maps disagree.
-            // Later constant/default injection can seed stale integer values.
-            return Some(self.integral_real_param(name).unwrap_or(val));
+            // A fully-evaluated real value is authoritative over the integer
+            // table, which can carry a stale declaration default seeded from an
+            // integer literal (MLS 7.2.4: modifiers override the declaration
+            // default). When such a real value exists, defer to it entirely: an
+            // integral real yields that integer, while a non-integral real means
+            // the quantity is a Real, not an Integer, so report no integer here
+            // rather than falling back to the stale table entry.
+            if self.real_parameter_values.contains_key(name) {
+                return self.integral_real_param(name);
+            }
+            return Some(val);
         }
         // Try alias resolution for integers
         let resolved = self.resolve_alias(name);
         if resolved != name
             && let Some(val) = self.parameter_values.get(&resolved).copied()
         {
-            return Some(self.integral_real_param(&resolved).unwrap_or(val));
+            if self.real_parameter_values.contains_key(&resolved) {
+                return self.integral_real_param(&resolved);
+            }
+            return Some(val);
         }
         // Fallback: try real parameters that are whole numbers (e.g., Real m = 3)
         let real_name = if resolved != name { &resolved } else { name };
