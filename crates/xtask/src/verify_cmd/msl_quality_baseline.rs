@@ -16,8 +16,8 @@ use reference_boundary::{ReferenceBoundaryMigration, validate_reference_boundary
 const MSL_QUALITY_BASELINE_ASSET_URL: &str = "https://github.com/CogniPilot/rumoca/releases/download/msl-quality-baseline/msl_quality_baseline.json";
 const MSL_QUALITY_BASELINE_FALLBACK_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
-const MSL_QUALITY_GATE_VERSION: u64 = 6;
-const PREVIOUS_REFERENCE_BOUNDARY_VERSION: u64 = 5;
+const MSL_QUALITY_GATE_VERSION: u64 = 7;
+const PREVIOUS_REFERENCE_BOUNDARY_VERSION: u64 = 6;
 const PARTIAL_MIGRATION_TO_QUALITY_GATE_VERSION: u64 = 4;
 const PREVIOUS_MSL_QUALITY_GATE_VERSION: u64 = 3;
 const COMPARATOR_MIGRATION_FROM_QUALITY_GATE_VERSION: u64 = 2;

@@ -1690,14 +1690,14 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
 
     let reference = baseline
         .reference_boundary_migration
-        .expect("reviewed v4-to-v5-to-v6 boundaries");
+        .expect("reviewed v4-to-v5-to-v6-to-v7 boundaries");
     assert_eq!(reference, reviewed_reference_boundary_migration());
     assert_eq!(
         reference.metric.strict_high_before,
         reference.metric.strict_high_after
     );
     assert_eq!(
-        reference.policy_excluded_before + 1,
+        reference.policy_excluded_before + 2,
         reference.metric.policy_excluded_after
     );
     assert_eq!(reference.metric.excluded_strict_high_before, 0);

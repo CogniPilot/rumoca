@@ -73,9 +73,11 @@ pub(super) fn omc_sim_reference_timeout_secs() -> u64 {
 }
 /// Force low-impact OpenMP/BLAS threading in OMC child processes.
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
-/// Version 5 records a reference-convergence boundary without changing any
-/// baseline floor. Version 4's source-static partial roster remains pinned.
-pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 6;
+/// Version 7 records a reviewed non-identifiable discrete-flag and internal-node
+/// boundary without changing any baseline floor. Earlier reference-convergence
+/// and conditioned-observable boundaries and version 4's source-static partial
+/// roster remain pinned.
+pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 7;
 pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
 pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
@@ -1233,7 +1235,8 @@ pub(super) fn msl_quality_context_mismatch_reason(
         != Some(&reviewed_reference_boundary_migration())
     {
         return Some(
-            "oracle policy migration differs from the reviewed v4-to-v5 boundary".to_string(),
+            "oracle policy migration differs from the reviewed reference boundary chain"
+                .to_string(),
         );
     }
     if baseline.run_scope != MSL_QUALITY_RUN_SCOPE_FULL {

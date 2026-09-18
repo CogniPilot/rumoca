@@ -20,6 +20,26 @@ pub(super) fn quality_gate_v3_metric_schema_migration() -> MslMetricSchemaMigrat
 pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMigration {
     let mut migration = previous_reference_boundary_migration();
     migration.previous = Some(Box::new(migration.clone()));
+    migration.metric.from_quality_gate_version = 6;
+    migration.metric.to_quality_gate_version = 7;
+    migration.metric.change =
+        "reviewed-non-identifiable-discrete-and-internal-node-boundary-v1".to_string();
+    migration.metric.strict_high_before = 166;
+    migration.metric.strict_high_after = 166;
+    migration.metric.policy_excluded_after = 23;
+    migration.metric.excluded_strict_high_before = 0;
+    migration.metric.excluded_non_high_before = 2;
+    migration.metric.exclusions_sha256 =
+        "2f4742677e95825bc98f392ef063fdeb2b910b5de1b80c9e94e407a0de6f31dd".to_string();
+    migration.evidence_git_commit = "9e5b5c7d52e6dde1edc6164727a5620d5e0867bc".to_string();
+    migration.evidence_run = "msl-quality-0.10.0-reviewed-exclusions".to_string();
+    migration.policy_excluded_before = 21;
+    migration
+}
+
+pub(super) fn previous_reference_boundary_migration() -> MslReferenceBoundaryMigration {
+    let mut migration = base_reference_boundary_migration();
+    migration.previous = Some(Box::new(migration.clone()));
     migration.metric.from_quality_gate_version = 5;
     migration.metric.to_quality_gate_version = 6;
     migration.metric.change = "reviewed-conditioned-observable-reference-boundary-v1".to_string();
@@ -34,7 +54,7 @@ pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMig
     migration
 }
 
-pub(super) fn previous_reference_boundary_migration() -> MslReferenceBoundaryMigration {
+pub(super) fn base_reference_boundary_migration() -> MslReferenceBoundaryMigration {
     MslReferenceBoundaryMigration {
         metric: MslMetricSchemaMigration {
             from_quality_gate_version: 4,
