@@ -1816,3 +1816,43 @@ fn project_initial_variables_solves_fixed_false_parameter_unknown() {
 
     assert!((p[0] - 2.0).abs() <= 1.0e-10);
 }
+
+#[test]
+fn nudge_singular_zero_seed_advances_only_vanished_zero_columns() {
+    let block = solve::AlgebraicProjectionBlock {
+        rows: vec![0, 1],
+        y_indices: vec![2, 3],
+        tearing: None,
+        alternate_charts: Vec::new(),
+    };
+    let scales = vec![1.0, 4.0];
+
+    // Column 0 (unknown y[2]) vanishes at the seed while column 1 (unknown y[3])
+    // stays live. Only the vanished-column zero advances, to +scale; the
+    // live-column zero is a determined value and is left untouched.
+    let jacobian = DMatrix::from_row_slice(2, 2, &[0.0, 1.0, 0.0, 2.0]);
+    let mut y = vec![0.0, 0.0, 0.0, 0.0];
+    assert!(nudge_singular_zero_seed(&mut y, &block, &jacobian, &scales));
+    assert_eq!(y[2], 1.0, "vanished-column zero seed advances to +scale");
+    assert_eq!(
+        y[3], 0.0,
+        "a live-column zero is a determined value, untouched"
+    );
+
+    // With both columns vanished, a nonzero seed keeps its chosen branch and a
+    // zero seed advances to that unknown's +scale.
+    let jacobian = DMatrix::from_row_slice(2, 2, &[0.0, 0.0, 0.0, 0.0]);
+    let mut y = vec![0.0, 0.0, -5.0, 0.0];
+    assert!(nudge_singular_zero_seed(&mut y, &block, &jacobian, &scales));
+    assert_eq!(y[2], -5.0, "a nonzero seed keeps its chosen branch");
+    assert_eq!(y[3], 4.0, "a vanished-column zero seed advances to +scale");
+
+    // A fully regular block never nudges, whatever the seeds.
+    let jacobian = DMatrix::from_row_slice(2, 2, &[3.0, 1.0, 1.0, 2.0]);
+    let mut y = vec![0.0, 0.0, 0.0, 7.0];
+    assert!(!nudge_singular_zero_seed(
+        &mut y, &block, &jacobian, &scales
+    ));
+    assert_eq!(y[2], 0.0);
+    assert_eq!(y[3], 7.0);
+}

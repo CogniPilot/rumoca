@@ -376,16 +376,15 @@ fn event_right_limit_derivative_retains_the_full_algebraic_seed() {
             .expect("the retained positive algebraic branch should remain solvable");
     assert_eq!(derivative, vec![2.0]);
 
-    let error =
+    // A zeroed algebraic seed leaves `a` resting on the singular point of
+    // `a² - x` (its Jacobian `2*a` vanishes at `a = 0`). Rather than stall,
+    // the projection advances off the critical seed toward the positive branch,
+    // matching OpenModelica's default-seed convention, so `a` recovers `+2` and
+    // the derivative matches the branch-carrying seed above.
+    let recovered =
         event_right_limit_state_derivatives(&runtime, &[4.0, 0.0], 0.0, &[4.0], &[], settle)
-            .expect_err("a zeroed algebraic seed is singular for a² - x at a = 0");
-    assert!(
-        error
-            .to_string()
-            .contains("algebraic projection did not establish coordinate convergence"),
-        "{error}"
-    );
-    assert!(error.to_string().contains("target=a"), "{error}");
+            .expect("a zeroed algebraic seed advances off the singular point");
+    assert_eq!(recovered, vec![2.0]);
 }
 
 fn strict_root_relation_memory() -> solve::SolveModel {

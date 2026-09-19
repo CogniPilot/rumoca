@@ -761,6 +761,12 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
         },
     );
     let Some(delta) = delta else {
+        if !residual_converged && nudge_singular_zero_seed(y, block, &jacobian, &variable_scales) {
+            return Ok(ProjectionBlockUpdate {
+                changed: true,
+                settled: false,
+            });
+        }
         return Ok(ProjectionBlockUpdate {
             changed,
             settled: false,
@@ -789,10 +795,66 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
         delta.as_slice(),
     )?;
     changed |= update.changed;
+    // A nonlinear unknown can rest on a singular seed whose Jacobian column
+    // vanishes, leaving Newton no direction to accept and the residual still
+    // open. Advance it off the critical point so the next sweep linearizes at a
+    // regular iterate instead of reporting a false non-convergence.
+    if !update.changed
+        && !residual_converged
+        && nudge_singular_zero_seed(y, block, &jacobian, &variable_scales)
+    {
+        return Ok(ProjectionBlockUpdate {
+            changed: true,
+            settled: false,
+        });
+    }
     Ok(ProjectionBlockUpdate {
         changed,
         settled: update.settled,
     })
+}
+
+/// Advance an algebraic unknown off a singular seed so Newton can proceed.
+///
+/// A nonlinear unknown can rest on a point where its own Jacobian column is
+/// identically zero: `r` in `r*r = c` at the default seed `r = 0` is the
+/// canonical case. Newton then carries no first-order information to move it and
+/// the block stalls with the residual still open. OpenModelica breaks the same
+/// tie by advancing off zero toward the positive branch (its default `start = 0`
+/// lands on `+sqrt(c)`, a negative start on `-sqrt(c)`); mirror that by seeding
+/// each such unknown to `+scale`, leaving the sign convention for nonzero seeds
+/// untouched. Only unknowns resting exactly at zero with a vanished column are
+/// advanced, so a determined zero (live column) and every non-stalled block are
+/// left unchanged. Returns whether any unknown moved.
+fn nudge_singular_zero_seed(
+    y: &mut [f64],
+    block: &solve::AlgebraicProjectionBlock,
+    jacobian: &DMatrix<f64>,
+    variable_scales: &[f64],
+) -> bool {
+    if jacobian.ncols() != block.y_indices.len() {
+        return false;
+    }
+    let mut nudged = false;
+    for (column, y_index) in block.y_indices.iter().copied().enumerate() {
+        let Some(slot) = y.get_mut(y_index) else {
+            continue;
+        };
+        if *slot != 0.0 {
+            continue;
+        }
+        if jacobian.column(column).iter().any(|entry| *entry != 0.0) {
+            continue;
+        }
+        let scale = variable_scales.get(column).copied().unwrap_or(1.0);
+        *slot = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        nudged = true;
+    }
+    nudged
 }
 
 fn seed_algebraic_block_assignments<M: ImplicitProjectionModel>(

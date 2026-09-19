@@ -151,6 +151,7 @@ mod record_output_dependencies;
 mod reverse_vjp_test;
 mod runtime_index_derivative;
 mod scoped_import_flatten;
+mod singular_algebraic_seed;
 mod solve_model_round_trip;
 mod state_demotion_through_alias;
 mod state_select_enclosing_constant_test;
