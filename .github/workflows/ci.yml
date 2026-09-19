@@ -2220,11 +2220,30 @@ jobs:
         run: |
           nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
             set -euo pipefail
+            target="${{ matrix.target }}"
+            # Linux runners ship a very new glibc, so a native build tags the
+            # wheels `linux_*`, which PyPI rejects. Cross-link the Linux wheels
+            # with zig against glibc 2.28 to earn a manylinux_2_28 tag. macOS
+            # targets already produce installable macosx wheels, so leave them
+            # to the native toolchain.
+            compat_args=()
+            case "$target" in
+              *linux*)
+                compat_args=(--zig --compatibility manylinux_2_28)
+                # The Nix CPython exports _PYTHON_HOST_PLATFORM (e.g.
+                # linux-x86_64), which maturin honors and would stamp a bare
+                # linux_* tag over the manylinux tag from --compatibility.
+                # Clear it so the zig cross-link keeps the PyPI-acceptable
+                # manylinux_2_28 tag.
+                unset _PYTHON_HOST_PLATFORM
+                ;;
+            esac
             maturin build \
               --release \
               --out dist \
               --manifest-path crates/rumoca-bind-python/Cargo.toml \
-              --target "${{ matrix.target }}"
+              --target "$target" \
+              "${compat_args[@]}"
           '
 
       - name: Build wheels (Windows)

@@ -454,6 +454,10 @@
         devShells.ci-python-wheel = mkDevShell [
           pkgs.maturin
           pkgs.python312
+          # `zig` lets `maturin build --zig` cross-link the Linux wheels
+          # against an older glibc, so they carry a real manylinux platform
+          # tag that PyPI accepts instead of a bare `linux_*` tag.
+          pkgs.zig
         ];
         # WASM packaging needs the workspace build inputs plus the JavaScript
         # and optimization tools. Keep the interactive shell's Rumoca, OMC,
