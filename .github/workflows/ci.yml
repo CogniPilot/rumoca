@@ -2523,6 +2523,28 @@ jobs:
             exit 1
           fi
 
+          # Marketplace publishing is not idempotent: re-running a release (for
+          # example after fixing a later job) hits an "already exists" error for
+          # a version a prior run already published. Treat that as success so the
+          # rest of the release, including the PyPI publish, still proceeds; any
+          # other failure still fails the step.
+          publish_idempotent() {
+            local label="$1"; shift
+            local out rc
+            set +e
+            out="$("$@" 2>&1)"
+            rc=$?
+            set -e
+            echo "$out"
+            if [ "$rc" -ne 0 ]; then
+              if echo "$out" | grep -qi "already exists"; then
+                echo "::notice::${label}: this version is already published; leaving it in place."
+                return 0
+              fi
+              return "$rc"
+            fi
+          }
+
           if [ -z "${VSCE_PAT:-}" ]; then
             echo "::warning::VSCE_PAT secret not set; skipping Visual Studio Marketplace publish"
           else
@@ -2530,7 +2552,8 @@ jobs:
               echo "Publishing $(basename "$vsix_file") to Visual Studio Marketplace"
               (
                 cd packages/vscode
-                npx @vscode/vsce publish --packagePath "../../${vsix_file}" --no-dependencies --no-yarn
+                publish_idempotent "Visual Studio Marketplace" \
+                  npx @vscode/vsce publish --packagePath "../../${vsix_file}" --no-dependencies --no-yarn
               )
             done
           fi
@@ -2542,7 +2565,8 @@ jobs:
               echo "Publishing $(basename "$vsix_file") to Open VSX"
               (
                 cd packages/vscode
-                npx --yes ovsx publish "../../${vsix_file}" -p "${OVSX_TOKEN}"
+                publish_idempotent "Open VSX" \
+                  npx --yes ovsx publish "../../${vsix_file}" -p "${OVSX_TOKEN}"
               )
             done
           fi
