@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const EXPECTED_QUALITY_GATE_VERSION = 2;
+const EXPECTED_QUALITY_GATE_VERSION = 7;
 const DEFAULT_CHECKED_IN_BASELINE_PATH = fileURLToPath(
   new URL(
     '../../crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json',
