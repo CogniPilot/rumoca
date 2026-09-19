@@ -296,7 +296,7 @@ ctx.onFrame = (api) => {
                 title: trimMaybeString(entry.title) || `View ${out.length + 1}`,
                 type,
                 x,
-                y: type === '3d' ? y.slice(0, 2) : y,
+                y: type === '3d' ? [] : y,
                 ...(scatterSeries ? { scatterSeries } : {}),
                 ...(script ? { script } : {}),
                 ...(scriptPath ? { scriptPath } : {}),
@@ -2999,13 +2999,12 @@ ctx.onFrame = (api) => {
         const x = String(xEl?.value || '').trim() || 'time';
         const y = parseLines(yEl?.value);
         if (type !== '3d' && y.length === 0) fail('Add at least one y series for each plot panel.', yEl);
-        if (type === '3d' && y.length > 0 && y.length < 2) fail('3D panels need two y entries for y/z data, or leave the field blank for script-driven views.', yEl);
         const view = {
           id: sanitizeId(preservedId || title, 'view_' + String(index + 1)),
           title,
           type,
           x,
-          y: type === '3d' && y.length === 0 ? [] : y,
+          y: type === '3d' ? [] : y,
         };
         const scriptPath = String(scriptPathEl?.value || '').trim();
         if (type === '3d' && scriptPath) view.scriptPath = scriptPath;
@@ -3383,6 +3382,14 @@ ctx.onFrame = (api) => {
     }
     document.getElementById('plotViewsList')?.addEventListener('change', (event) => {
       if (event.target?.matches?.('[data-view-field="type"]')) {
+        if (String(event.target.value || '') === '3d') {
+          const row = event.target.closest('[data-view-index]');
+          const yEl = row?.querySelector('[data-view-field="y"]');
+          if (yEl) {
+            yEl.value = '';
+            yEl.classList.remove('invalid');
+          }
+        }
         syncPlotViewVisibility();
       }
     });
