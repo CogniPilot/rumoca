@@ -116,6 +116,33 @@ x = "time"
 y = ["x", "v"]
 ```
 
+The `y` list selects which channels a `timeseries` view plots. Entries are
+either exact channel names (any state or output/algebraic variable) or one of
+the wildcards below, and the two forms can be mixed in a single list:
+
+| Entry | Expands to |
+| --- | --- |
+| `*states` | Every state variable, in solver order. |
+| `*outputs` | Every output/algebraic variable (all non-state channels). |
+| `*all` | Every channel (states followed by outputs). |
+
+For example, to plot all states plus one specific output:
+
+```toml
+[[plot.views]]
+id = "states_and_energy"
+title = "States and Energy"
+type = "timeseries"
+x = "time"
+y = ["*states", "*outputs", "energy"]
+```
+
+Duplicates are removed and unknown names are ignored when the view is rendered,
+so combining a wildcard with an explicit name that the wildcard already covers
+is harmless. The same `y` selection can also be built interactively from the
+results panel's channel picker (see the playground guide); saving that picker
+writes the selection back to this section.
+
 ### `[transport.*]` — external viewer and coupling
 
 HTTP and WebSocket transports serve an external browser viewer surface:

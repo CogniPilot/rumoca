@@ -39,7 +39,15 @@ pub(crate) fn run_playground_smoke_check(root: &Path) -> Result<()> {
     stage_playground_vendor_assets(root)?;
     check_playground_js_syntax(root)?;
     check_playground_expected_sources(root)?;
+    run_results_picker_smoke(root)?;
     run_single_threaded_wasm_smoke(root)
+}
+
+fn run_results_picker_smoke(root: &Path) -> Result<()> {
+    let mut cmd = Command::new("node");
+    cmd.arg("packages/playground/tests/results_picker_smoke.mjs")
+        .current_dir(root);
+    run_status(cmd)
 }
 
 fn check_playground_js_syntax(root: &Path) -> Result<()> {

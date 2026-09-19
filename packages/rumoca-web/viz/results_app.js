@@ -235,6 +235,16 @@ import * as shared from './visualization_shared.js';
         return names.slice(0, stateCount);
     }
 
+    function outputNamesForPayload(payload) {
+        const names = Array.isArray(payload?.names) ? payload.names.map(String) : [];
+        const stateCount = Number.isFinite(payload?.nStates) ? Math.max(0, payload.nStates) : 0;
+        return names.slice(stateCount);
+    }
+
+    function allNamesForPayload(payload) {
+        return Array.isArray(payload?.names) ? payload.names.map(String) : [];
+    }
+
     function plottedSeriesSummary(payload, view) {
         if (!view || typeof view !== 'object') {
             return '';
@@ -253,6 +263,10 @@ import * as shared from './visualization_shared.js';
         for (const item of requested) {
             if (item === '*states') {
                 expanded.push(...stateNamesForPayload(payload));
+            } else if (item === '*outputs') {
+                expanded.push(...outputNamesForPayload(payload));
+            } else if (item === '*all') {
+                expanded.push(...allNamesForPayload(payload));
             } else {
                 expanded.push(item);
             }
@@ -481,6 +495,9 @@ import * as shared from './visualization_shared.js';
         const shared = options.shared;
         const bridge = options.bridge;
         const modelRef = options.modelRef;
+        const getPayload = typeof options.getPayload === 'function'
+            ? options.getPayload
+            : function() { return null; };
         const modal = document.createElement('div');
         modal.className = 'rumoca-results-settings';
 
@@ -540,6 +557,17 @@ import * as shared from './visualization_shared.js';
             return field;
         }
 
+        function buildBlockField(labelText, node) {
+            const field = document.createElement('div');
+            field.className = 'rumoca-results-field';
+            const label = document.createElement('span');
+            label.className = 'rumoca-results-field-label';
+            label.textContent = labelText;
+            field.appendChild(label);
+            field.appendChild(node);
+            return field;
+        }
+
         const titleInput = document.createElement('input');
         const typeInput = document.createElement('select');
         for (const type of ['timeseries', 'scatter', '3d']) {
@@ -551,6 +579,9 @@ import * as shared from './visualization_shared.js';
         const xInput = document.createElement('input');
         const yInput = document.createElement('textarea');
         yInput.rows = 3;
+        const yHint = document.createElement('div');
+        yHint.className = 'rumoca-results-field-hint';
+        yHint.textContent = 'One channel per line or comma separated. Wildcards: *states, *outputs, *all.';
         const scatterInput = document.createElement('textarea');
         scatterInput.rows = 4;
         const scatterHint = document.createElement('div');
@@ -562,6 +593,10 @@ import * as shared from './visualization_shared.js';
         const typeField = buildField('Type', typeInput);
         const xField = buildField('X', xInput);
         const yField = buildField('Y', yInput);
+        yField.appendChild(yHint);
+        const picker = document.createElement('div');
+        picker.className = 'rumoca-results-picker';
+        const pickerField = buildBlockField('Channels', picker);
         const scatterField = buildField('Scatter Series', scatterInput);
         scatterField.appendChild(scatterHint);
         const scriptPathField = buildField('3D Script Path', scriptPathInput);
@@ -569,6 +604,7 @@ import * as shared from './visualization_shared.js';
         editor.appendChild(typeField);
         editor.appendChild(xField);
         editor.appendChild(yField);
+        editor.appendChild(pickerField);
         editor.appendChild(scatterField);
         editor.appendChild(scriptPathField);
 
@@ -615,6 +651,65 @@ import * as shared from './visualization_shared.js';
             yField.style.display = showSeriesFields ? 'grid' : 'none';
             scatterField.style.display = viewType === 'scatter' ? 'grid' : 'none';
             scriptPathField.style.display = viewType === '3d' ? 'grid' : 'none';
+            renderPicker(showSeriesFields);
+        }
+
+        function currentYSelection() {
+            return new Set(parseSeriesList(yInput.value));
+        }
+
+        function toggleChannel(name, include) {
+            yInput.value = shared.toggleSeriesName(yInput.value, name, include);
+            syncDraftFromInputs();
+        }
+
+        function buildPickerGroup(title, channels, selected) {
+            const group = document.createElement('div');
+            group.className = 'rumoca-results-picker-group';
+            const heading = document.createElement('div');
+            heading.className = 'rumoca-results-picker-heading';
+            heading.textContent = `${title} (${channels.length})`;
+            group.appendChild(heading);
+            const list = document.createElement('div');
+            list.className = 'rumoca-results-picker-list';
+            if (channels.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'rumoca-results-picker-empty';
+                empty.textContent = `No ${title.toLowerCase()} available`;
+                list.appendChild(empty);
+            }
+            for (const name of channels) {
+                const row = document.createElement('label');
+                row.className = 'rumoca-results-picker-item';
+                const box = document.createElement('input');
+                box.type = 'checkbox';
+                box.checked = selected.has(name);
+                box.addEventListener('change', function() {
+                    toggleChannel(name, box.checked);
+                });
+                const text = document.createElement('span');
+                text.textContent = name;
+                row.appendChild(box);
+                row.appendChild(text);
+                list.appendChild(row);
+            }
+            group.appendChild(list);
+            return group;
+        }
+
+        function renderPicker(showSeriesFields) {
+            const payload = getPayload();
+            const states = shared.availableStateNames(payload);
+            const outputs = shared.availableOutputNames(payload);
+            picker.innerHTML = '';
+            if (!showSeriesFields || states.length + outputs.length === 0) {
+                pickerField.style.display = 'none';
+                return;
+            }
+            pickerField.style.display = 'grid';
+            const selected = currentYSelection();
+            picker.appendChild(buildPickerGroup('States', states, selected));
+            picker.appendChild(buildPickerGroup('Outputs', outputs, selected));
         }
 
         function renderList() {
@@ -766,6 +861,11 @@ import * as shared from './visualization_shared.js';
         });
         typeInput.addEventListener('change', function() {
             applyTypeVisibility(typeInput.value);
+        });
+        yInput.addEventListener('input', function() {
+            syncDraftFromInputs();
+            const viewType = safeViewType(typeInput.value);
+            renderPicker(viewType !== 'scatter' && viewType !== '3d');
         });
         cancelBtn.addEventListener('click', close);
         modal.addEventListener('click', function(event) {
@@ -2210,6 +2310,7 @@ import * as shared from './visualization_shared.js';
             ? createSettingsModal({
                 bridge: bridge,
                 modelRef: modelRef,
+                getPayload: function() { return payload; },
                 onSave: function(nextViews) {
                     views = normalizeResultsViewDrafts(shared, nextViews);
                     activeViewId = chooseActiveViewId(views, activeViewId);

@@ -318,6 +318,28 @@ ctx.onFrame = (api) => {
         return names.slice(0, stateCount).map(String);
     }
 
+    function availableOutputNames(result) {
+        const names = Array.isArray(result?.names) ? result.names : [];
+        const stateCount = Number.isFinite(result?.nStates) ? Math.max(0, result.nStates) : 0;
+        return names.slice(stateCount).map(String);
+    }
+
+    function parseSeriesListText(text) {
+        return String(text || '')
+            .split(/[\n,]/)
+            .map(trimMaybeString)
+            .filter(Boolean);
+    }
+
+    function toggleSeriesName(yText, name, include) {
+        const target = trimMaybeString(name);
+        const filtered = parseSeriesListText(yText).filter((entry) => entry !== target);
+        if (include && target) {
+            filtered.push(target);
+        }
+        return filtered.join(', ');
+    }
+
     function expandRequestedSeries(result, requested) {
         const names = Array.isArray(result?.names) ? result.names.map(String) : [];
         const expanded = [];
@@ -328,6 +350,14 @@ ctx.onFrame = (api) => {
             }
             if (name === '*states') {
                 expanded.push(...availableStateNames(result));
+                continue;
+            }
+            if (name === '*outputs') {
+                expanded.push(...availableOutputNames(result));
+                continue;
+            }
+            if (name === '*all') {
+                expanded.push(...names);
                 continue;
             }
             if (names.includes(name)) {
@@ -3494,7 +3524,11 @@ ctx.onFrame = (api) => {
     }
 
 const VisualizationShared = {
+        availableOutputNames,
+        availableStateNames,
         buildHostedResultsPanelState,
+        expandRequestedSeries,
+        toggleSeriesName,
         flattenScenarioConfig,
         setScenarioConfigValue,
         applyScenarioConfigEdits,
@@ -3539,7 +3573,11 @@ const VisualizationShared = {
     };
 
 export {
+        availableOutputNames,
+        availableStateNames,
         buildHostedResultsPanelState,
+        expandRequestedSeries,
+        toggleSeriesName,
         flattenScenarioConfig,
         setScenarioConfigValue,
         applyScenarioConfigEdits,

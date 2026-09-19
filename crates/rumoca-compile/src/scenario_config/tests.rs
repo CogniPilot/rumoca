@@ -264,6 +264,91 @@ mode = "auto"
 }
 
 #[test]
+fn plot_view_wildcards_round_trip_through_toml() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("rumoca-scenario.interactive.toml");
+    fs::write(
+        &config_path,
+        r#"
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+name = "Examples.Ball"
+file = "Ball.mo"
+"#,
+    )
+    .expect("write config");
+
+    write_plot_views_for_model(
+        temp.path(),
+        "Examples.Ball",
+        vec![PlotViewConfig {
+            id: "states_outputs".to_string(),
+            title: "States and Outputs".to_string(),
+            view_type: "timeseries".to_string(),
+            x: Some("time".to_string()),
+            y: vec![
+                "*states".to_string(),
+                "*outputs".to_string(),
+                "energy".to_string(),
+            ],
+            script: None,
+            script_path: None,
+        }],
+    )
+    .expect("write views");
+
+    let text = fs::read_to_string(&config_path).expect("read config");
+    assert!(
+        text.contains("\"*states\""),
+        "TOML keeps the *states wildcard"
+    );
+    assert!(
+        text.contains("\"*outputs\""),
+        "TOML keeps the *outputs wildcard"
+    );
+
+    let loaded = load_plot_views_for_model(temp.path(), "Examples.Ball").expect("load views");
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(
+        loaded[0].y,
+        vec![
+            "*states".to_string(),
+            "*outputs".to_string(),
+            "energy".to_string(),
+        ],
+        "wildcards and explicit output names survive the round trip verbatim",
+    );
+}
+
+#[test]
+fn parse_views_payload_preserves_output_wildcards() {
+    let payload = serde_json::json!([
+        {
+            "id": "mixed",
+            "title": "Mixed",
+            "type": "timeseries",
+            "x": "time",
+            "y": ["*states", "*outputs", "*all", "power"]
+        }
+    ]);
+
+    let views = parse_views_payload(&payload).expect("wildcard view payload parses");
+    assert_eq!(views.len(), 1);
+    assert_eq!(
+        views[0].y,
+        vec![
+            "*states".to_string(),
+            "*outputs".to_string(),
+            "*all".to_string(),
+            "power".to_string(),
+        ],
+    );
+}
+
+#[test]
 fn parse_views_payload_accepts_scatter_series_from_editor() {
     let payload = serde_json::json!([
         {

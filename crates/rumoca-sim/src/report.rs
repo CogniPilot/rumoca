@@ -203,6 +203,70 @@ mod tests {
     }
 
     #[test]
+    fn hydrate_plot_view_preserves_wildcard_y_entries() {
+        let dir = std::env::temp_dir().join(format!("rumoca-hydrate-wc-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let view = PlotViewConfig {
+            id: "states_outputs".to_string(),
+            title: "States and Outputs".to_string(),
+            view_type: "timeseries".to_string(),
+            x: Some("time".to_string()),
+            y: vec![
+                "*states".to_string(),
+                "*outputs".to_string(),
+                "energy".to_string(),
+            ],
+            script: None,
+            script_path: None,
+        };
+        let encoded = hydrate_plot_view(&dir, view);
+        assert_eq!(encoded["type"], "timeseries");
+        assert_eq!(
+            encoded["y"],
+            serde_json::json!(["*states", "*outputs", "energy"]),
+            "hydration keeps every requested channel, wildcards included",
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_views_value_carries_wildcards_from_scenario_toml() {
+        let dir = std::env::temp_dir().join(format!("rumoca-loadviews-wc-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        fs::write(
+            dir.join("rumoca-scenario.interactive.toml"),
+            r#"
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+name = "Examples.Ball"
+file = "Ball.mo"
+
+[[plot.views]]
+id = "states_outputs"
+title = "States and Outputs"
+type = "timeseries"
+x = "time"
+y = ["*states", "*outputs", "energy"]
+"#,
+        )
+        .expect("write scenario");
+
+        let value =
+            load_views_value("Examples.Ball", Some(dir.as_path())).expect("load views value");
+        let views = value.as_array().expect("views array");
+        assert_eq!(views.len(), 1);
+        assert_eq!(
+            views[0]["y"],
+            serde_json::json!(["*states", "*outputs", "energy"]),
+            "the report mount payload keeps the configured wildcards",
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn csv_results_reject_truncated_series() {
         let sim = SimResult {
             times: vec![0.0, 0.5],
