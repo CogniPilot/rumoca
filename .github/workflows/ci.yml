@@ -2537,7 +2537,8 @@ jobs:
             set -e
             echo "$out"
             if [ "$rc" -ne 0 ]; then
-              if echo "$out" | grep -qi "already exists"; then
+              # vsce reports "already exists"; ovsx reports "already published".
+              if echo "$out" | grep -qiE "already exists|already published"; then
                 echo "::notice::${label}: this version is already published; leaving it in place."
                 return 0
               fi
