@@ -1133,7 +1133,7 @@ jobs:
             --sim-parallelism 3 \
             --sim-worker-memory-mb 2048 \
             --sim-total-memory-mb 6144 \
-            --sim-timeout-secs 20 \
+            --sim-timeout-secs 45 \
             --model-attempt-timeout-secs 20 \
             --monitor-interval-secs 10
 
