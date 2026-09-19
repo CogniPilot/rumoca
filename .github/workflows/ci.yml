@@ -203,8 +203,9 @@ jobs:
           # Nix evaluates the finite Crane + LLVM derivation graph recursively.
           # The default hosted-runner stack is too small for this workspace;
           # keep the evaluator budget explicit and bounded rather than relying
-          # on an unlimited process stack.
-          ulimit -s 65536
+          # on an unlimited process stack. The flake eval depth outgrew the
+          # earlier 64 MB budget, so raise it to 1 GB (still bounded).
+          ulimit -s 1048576
           nix build --print-build-logs \
             .#checks.x86_64-linux.rumoca \
             .#checks.x86_64-linux.mlir-cpu
