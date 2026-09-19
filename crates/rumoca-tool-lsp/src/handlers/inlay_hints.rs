@@ -3,9 +3,37 @@
 use crate::text_position::{byte_offset_to_position, char_column_to_utf16_column, line_text};
 use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintTooltip, Position, Range};
 use rumoca_compile::parsing::ast;
+use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use crate::traversal_adapter;
+
+/// Controls whether parameter-name inlay hints are emitted, and for which
+/// callees. Array-dimension type hints are independent of this setting and are
+/// always produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ParameterNameHintMode {
+    /// No parameter-name hints are emitted.
+    #[default]
+    None,
+    /// Hints are emitted only for calls to user-defined functions, using the
+    /// callee's declared input parameter names.
+    UserFunctions,
+    /// Hints are emitted for user-defined functions and for known builtins.
+    All,
+}
+
+impl ParameterNameHintMode {
+    /// Parse the `rumoca.inlayHints.parameterNames` setting value. Any
+    /// unrecognized value (including an absent setting) resolves to `None`.
+    pub fn from_setting(value: &str) -> Self {
+        match value {
+            "all" => Self::All,
+            "userFunctions" => Self::UserFunctions,
+            _ => Self::None,
+        }
+    }
+}
 
 /// Resolve a location's LSP position from its byte offset, falling back to the
 /// lexer's 1-based character column when the location carries no byte span.
@@ -24,19 +52,44 @@ fn position_at(source: &str, line: u32, byte_offset: u32, char_column_1based: u3
 /// Handle inlay hints request.
 ///
 /// Provides:
-/// - Array dimension hints for component declarations.
-/// - Parameter name hints for common builtin function calls.
+/// - Array dimension hints for component declarations (always on).
+/// - Parameter name hints for function calls, gated by `mode`.
 pub fn handle_inlay_hints(
     ast: &ast::StoredDefinition,
     source: &str,
     range: &Range,
+    mode: ParameterNameHintMode,
 ) -> Vec<InlayHint> {
-    let mut collector = InlayHintCollector::new(range, source);
-    // Also scan raw source lines for direct builtin calls not represented in AST sections.
-    // This keeps hints useful even for partially parsed files during editing.
-    collect_loose_builtin_call_hints(source, range, &mut collector.hints);
+    let user_functions = if mode == ParameterNameHintMode::None {
+        HashMap::new()
+    } else {
+        let mut map = HashMap::new();
+        collect_user_function_params(&ast.classes, &mut map);
+        map
+    };
+    let mut collector = InlayHintCollector::new(range, source, mode, user_functions);
     let _ = traversal_adapter::walk_stored_definition(&mut collector, ast);
     collector.hints
+}
+
+/// Recursively index user-defined functions by name, mapping each to its
+/// declared input parameter names in source order.
+fn collect_user_function_params(
+    classes: &ast::AstIndexMap<String, ast::ClassDef>,
+    out: &mut HashMap<String, Vec<String>>,
+) {
+    for class in classes.values() {
+        if class.class_type == rumoca_core::ClassType::Function {
+            let params: Vec<String> = class
+                .components
+                .values()
+                .filter(|comp| matches!(comp.causality, rumoca_core::Causality::Input(_)))
+                .map(|comp| comp.name.clone())
+                .collect();
+            out.entry(class.name.text.to_string()).or_insert(params);
+        }
+        collect_user_function_params(&class.classes, out);
+    }
 }
 
 fn component_dimension_hint(
@@ -89,14 +142,23 @@ fn component_dimension_hint(
 struct InlayHintCollector<'a> {
     range: &'a Range,
     source: &'a str,
+    mode: ParameterNameHintMode,
+    user_functions: HashMap<String, Vec<String>>,
     hints: Vec<InlayHint>,
 }
 
 impl<'a> InlayHintCollector<'a> {
-    fn new(range: &'a Range, source: &'a str) -> Self {
+    fn new(
+        range: &'a Range,
+        source: &'a str,
+        mode: ParameterNameHintMode,
+        user_functions: HashMap<String, Vec<String>>,
+    ) -> Self {
         Self {
             range,
             source,
+            mode,
+            user_functions,
             hints: Vec::new(),
         }
     }
@@ -120,7 +182,15 @@ impl ast::visitor::Visitor for InlayHintCollector<'_> {
         args: &[ast::Expression],
         ctx: ast::visitor::FunctionCallContext,
     ) -> ControlFlow<()> {
-        collect_function_call_hints(comp, args, self.range, self.source, &mut self.hints);
+        collect_function_call_hints(
+            comp,
+            args,
+            self.range,
+            self.source,
+            self.mode,
+            &self.user_functions,
+            &mut self.hints,
+        );
         ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
     }
 
@@ -129,37 +199,81 @@ impl ast::visitor::Visitor for InlayHintCollector<'_> {
     }
 }
 
+/// Resolve the LSP position for a parameter-name hint anchored at the start of
+/// the full argument expression, including any leading unary operator.
+///
+/// `Expression::span` covers the whole expression (the leading `-` of
+/// `-0.9*pre(v)` included), unlike `Expression::get_location`, which for a unary
+/// expression reports the operand location. Returns `None` when the position
+/// falls outside the requested range.
+fn arg_hint_position(source: &str, arg: &ast::Expression, range: &Range) -> Option<Position> {
+    let start = arg.span().start.0;
+    let position = if start > 0 && start <= source.len() {
+        byte_offset_to_position(source, start)
+    } else {
+        let loc = arg.get_location()?;
+        let line = loc.start_line.saturating_sub(1);
+        position_at(source, line, loc.start, loc.start_column)
+    };
+    if position.line < range.start.line || position.line > range.end.line {
+        return None;
+    }
+    Some(position)
+}
+
 fn collect_function_call_hints(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
     range: &Range,
     source: &str,
+    mode: ParameterNameHintMode,
+    user_functions: &HashMap<String, Vec<String>>,
     hints: &mut Vec<InlayHint>,
 ) {
+    if mode == ParameterNameHintMode::None {
+        return;
+    }
     let Some(function_name) = comp.parts.last().map(|p| p.ident.text.as_ref()) else {
         return;
     };
-    let param_names = builtin_param_names(function_name);
+
+    // Prefer a user-defined function's declared parameters. Builtins only
+    // contribute names in `All` mode.
+    let param_names: Vec<&str> = if let Some(user_params) = user_functions.get(function_name) {
+        user_params.iter().map(String::as_str).collect()
+    } else if mode == ParameterNameHintMode::All {
+        builtin_param_names(function_name).to_vec()
+    } else {
+        return;
+    };
     if param_names.is_empty() {
         return;
     }
 
-    for (idx, arg) in args.iter().enumerate() {
+    // Single-argument calls gain nothing from a parameter-name hint (der(x)
+    // adds no information), so suppress them.
+    let positional_count = args
+        .iter()
+        .filter(|arg| !matches!(arg, ast::Expression::NamedArgument { .. }))
+        .count();
+    if positional_count <= 1 {
+        return;
+    }
+
+    let mut positional_index = 0usize;
+    for arg in args {
         if matches!(arg, ast::Expression::NamedArgument { .. }) {
             continue;
         }
-        let Some(param_name) = param_names.get(idx) else {
+        let Some(param_name) = param_names.get(positional_index) else {
             break;
         };
-        let Some(loc) = arg.get_location() else {
+        positional_index += 1;
+        let Some(position) = arg_hint_position(source, arg, range) else {
             continue;
         };
-        let line = loc.start_line.saturating_sub(1);
-        if line < range.start.line || line > range.end.line {
-            continue;
-        }
         hints.push(InlayHint {
-            position: position_at(source, line, loc.start, loc.start_column),
+            position,
             label: InlayHintLabel::String(format!("{param_name}:")),
             kind: Some(InlayHintKind::PARAMETER),
             text_edits: None,
@@ -191,43 +305,34 @@ fn builtin_param_names(name: &str) -> &'static [&'static str] {
     }
 }
 
-fn collect_loose_builtin_call_hints(source: &str, range: &Range, hints: &mut Vec<InlayHint>) {
-    for (line_idx, line) in source.lines().enumerate() {
-        let line_u32 = line_idx as u32;
-        if line_u32 < range.start.line || line_u32 > range.end.line {
-            continue;
-        }
-        for func in ["der(", "reinit(", "assert(", "connect("] {
-            let mut search_from = 0usize;
-            while let Some(pos) = line[search_from..].find(func) {
-                let abs = search_from + pos + func.len();
-                hints.push(InlayHint {
-                    position: Position {
-                        line: line_u32,
-                        // `abs` is a byte column within the line; LSP needs the
-                        // UTF-16 column, which differs on any non-ASCII line.
-                        character: byte_offset_to_position(line, abs).character,
-                    },
-                    label: InlayHintLabel::String("...".to_string()),
-                    kind: Some(InlayHintKind::PARAMETER),
-                    text_edits: None,
-                    tooltip: Some(InlayHintTooltip::String(
-                        "Builtin call parameters".to_string(),
-                    )),
-                    padding_left: Some(false),
-                    padding_right: Some(false),
-                    data: None,
-                });
-                search_from = abs;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use rumoca_compile::parsing::parse_source_to_ast;
+
+    fn full_range() -> Range {
+        Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 100,
+                character: 0,
+            },
+        }
+    }
+
+    fn parameter_hints(hints: &[InlayHint]) -> Vec<(&InlayHint, &str)> {
+        hints
+            .iter()
+            .filter(|hint| hint.kind == Some(InlayHintKind::PARAMETER))
+            .filter_map(|hint| match &hint.label {
+                InlayHintLabel::String(label) => Some((hint, label.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
 
     #[test]
     fn provides_array_dimension_inlay_hint() {
@@ -239,23 +344,155 @@ equation
 end M;
 "#;
         let ast = parse_source_to_ast(source, "input.mo").expect("parse");
-        let range = Range {
-            start: Position {
-                line: 0,
-                character: 0,
-            },
-            end: Position {
-                line: 20,
-                character: 0,
-            },
-        };
-        let hints = handle_inlay_hints(&ast, source, &range);
+        let hints = handle_inlay_hints(&ast, source, &full_range(), ParameterNameHintMode::None);
         assert!(
             hints.iter().any(|h| match &h.label {
                 InlayHintLabel::String(s) => s.contains("[2x3]"),
                 _ => false,
             }),
             "expected dimension inlay hint, got: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn parameter_hints_off_by_default() {
+        let source = r#"
+model M
+  Real y;
+  Real v;
+equation
+  y = atan2(v, 2 * v);
+end M;
+"#;
+        let ast = parse_source_to_ast(source, "input.mo").expect("parse");
+        let hints = handle_inlay_hints(&ast, source, &full_range(), ParameterNameHintMode::None);
+        assert!(
+            parameter_hints(&hints).is_empty(),
+            "no parameter-name hints should be emitted in None mode, got: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn builtin_parameter_hints_emitted_in_all_mode() {
+        let source = r#"
+model M
+  Real y;
+  Real v;
+equation
+  y = atan2(v, 2 * v);
+end M;
+"#;
+        let ast = parse_source_to_ast(source, "input.mo").expect("parse");
+        let hints = handle_inlay_hints(&ast, source, &full_range(), ParameterNameHintMode::All);
+        let labels: Vec<&str> = parameter_hints(&hints).iter().map(|(_, l)| *l).collect();
+        assert!(
+            labels.contains(&"y:") && labels.contains(&"x:"),
+            "atan2 should emit its two builtin parameter names in All mode, got: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn single_argument_calls_are_suppressed() {
+        let source = r#"
+model M
+  Real v;
+equation
+  der(v) = sin(v);
+end M;
+"#;
+        let ast = parse_source_to_ast(source, "input.mo").expect("parse");
+        let hints = handle_inlay_hints(&ast, source, &full_range(), ParameterNameHintMode::All);
+        assert!(
+            parameter_hints(&hints).is_empty(),
+            "single-argument builtin calls must not emit parameter hints, got: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn leading_unary_minus_anchors_hint_before_operator() {
+        let source = "model M\n  Real v;\nequation\n  when v > 0 then\n    reinit(v, -0.9*pre(v));\n  end when;\nend M;\n";
+        let ast = parse_source_to_ast(source, "input.mo").expect("parse");
+        let hints = handle_inlay_hints(&ast, source, &full_range(), ParameterNameHintMode::All);
+        let expr_hint = parameter_hints(&hints)
+            .into_iter()
+            .find(|(_, label)| *label == "expr:")
+            .map(|(hint, _)| hint)
+            .expect("reinit should emit an `expr:` parameter hint in All mode");
+
+        // Line index 4 (0-based) is `    reinit(v, -0.9*pre(v));`.
+        let minus_line = source.lines().nth(4).expect("reinit line");
+        let minus_column = minus_line
+            .find('-')
+            .expect("the reinit line contains a leading minus") as u32;
+        assert_eq!(
+            expr_hint.position.line, 4,
+            "expr hint should land on the reinit line, got: {:?}",
+            expr_hint
+        );
+        assert_eq!(
+            expr_hint.position.character, minus_column,
+            "expr hint must anchor before the leading `-`, not on the `0`; got char {} (minus at {})",
+            expr_hint.position.character, minus_column
+        );
+    }
+
+    #[test]
+    fn user_function_hints_use_declared_parameter_names() {
+        let source = r#"
+function scale
+  input Real value;
+  input Real factor;
+  output Real result;
+algorithm
+  result := value * factor;
+end scale;
+
+model M
+  Real y;
+  Real v;
+equation
+  y = scale(v, 2.0);
+end M;
+"#;
+        let ast = parse_source_to_ast(source, "input.mo").expect("parse");
+        let hints = handle_inlay_hints(
+            &ast,
+            source,
+            &full_range(),
+            ParameterNameHintMode::UserFunctions,
+        );
+        let labels: Vec<&str> = parameter_hints(&hints).iter().map(|(_, l)| *l).collect();
+        assert!(
+            labels.contains(&"value:") && labels.contains(&"factor:"),
+            "user function call should use declared parameter names, got: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn user_functions_mode_skips_builtins() {
+        let source = r#"
+model M
+  Real y;
+  Real v;
+equation
+  y = atan2(v, 2 * v);
+end M;
+"#;
+        let ast = parse_source_to_ast(source, "input.mo").expect("parse");
+        let hints = handle_inlay_hints(
+            &ast,
+            source,
+            &full_range(),
+            ParameterNameHintMode::UserFunctions,
+        );
+        assert!(
+            parameter_hints(&hints).is_empty(),
+            "builtins must not emit hints in UserFunctions mode, got: {:?}",
             hints
         );
     }

@@ -2245,6 +2245,8 @@ export async function activate(context: vscode.ExtensionContext) {
             debugLog(`[${elapsed()}] Environment MODELICAPATH: ${sourceRootPaths.environmentPaths.join(', ')}`);
         }
 
+        const inlayHintsParameterNames =
+            currentConfig.get<string>('inlayHints.parameterNames') ?? 'none';
         const serverArgs = benchmarkServerArgs(vscode.workspace.getConfiguration('rumoca'));
         const nextClient = new LanguageClient(
             'rumoca',
@@ -2262,7 +2264,8 @@ export async function activate(context: vscode.ExtensionContext) {
                 outputChannelName: 'Rumoca LSP',
                 initializationOptions: {
                     debug: debug,
-                    sourceRootPaths: sourceRootPaths.mergedPaths
+                    sourceRootPaths: sourceRootPaths.mergedPaths,
+                    inlayHintsParameterNames: inlayHintsParameterNames
                 }
             } satisfies LanguageClientOptions
         );

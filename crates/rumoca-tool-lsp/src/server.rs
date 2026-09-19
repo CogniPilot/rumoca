@@ -127,6 +127,9 @@ pub struct ModelicaLanguageServer {
     work_lanes: Arc<ServerWorkLanes>,
     initial_source_root_paths: Arc<RwLock<Vec<String>>>,
     source_root_paths: Arc<RwLock<Vec<String>>>,
+    /// Effective `rumoca.inlayHints.parameterNames` setting, read once from the
+    /// client's initialization options. Defaults to `None` (hints off).
+    parameter_name_hint_mode: Arc<RwLock<handlers::ParameterNameHintMode>>,
     document_versions: Arc<RwLock<HashMap<String, i32>>>,
     completion_mutation_epoch: Arc<AtomicU64>,
     source_root_load_diagnostics: Arc<RwLock<HashMap<String, Vec<Diagnostic>>>>,
@@ -184,6 +187,9 @@ impl ModelicaLanguageServer {
             work_lanes: Arc::new(ServerWorkLanes::default()),
             initial_source_root_paths: Arc::new(RwLock::new(Vec::new())),
             source_root_paths: Arc::new(RwLock::new(Vec::new())),
+            parameter_name_hint_mode: Arc::new(RwLock::new(
+                handlers::ParameterNameHintMode::default(),
+            )),
             document_versions: Arc::new(RwLock::new(HashMap::new())),
             completion_mutation_epoch: Arc::new(AtomicU64::new(0)),
             source_root_load_diagnostics: Arc::new(RwLock::new(HashMap::new())),
@@ -1077,6 +1083,14 @@ impl LanguageServer for ModelicaLanguageServer {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let parameter_name_hint_mode = params
+            .initialization_options
+            .as_ref()
+            .and_then(|value| value.get("inlayHintsParameterNames"))
+            .and_then(|value| value.as_str())
+            .map(handlers::ParameterNameHintMode::from_setting)
+            .unwrap_or_default();
+        *self.parameter_name_hint_mode.write().await = parameter_name_hint_mode;
         let parse_init_options_ms = parse_init_started.elapsed().as_millis() as u64;
         let initial_source_root_paths = paths.len();
         *self.initial_source_root_paths.write().await = paths;
@@ -1844,7 +1858,8 @@ impl LanguageServer for ModelicaLanguageServer {
         if let Some(doc) = self.document_snapshot(&uri_path).await
             && let Some(ast) = doc.parsed()
         {
-            let hints = handlers::handle_inlay_hints(ast, &doc.content, &params.range);
+            let mode = *self.parameter_name_hint_mode.read().await;
+            let hints = handlers::handle_inlay_hints(ast, &doc.content, &params.range, mode);
             return Ok(Some(hints));
         }
         Ok(Some(Vec::new()))

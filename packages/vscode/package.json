@@ -143,6 +143,22 @@
           "default": true,
           "description": "Collapse single-line annotation contents by default, showing 'annotation(...)' instead of the full content. Click on the annotation to expand."
         },
+        "rumoca.inlayHints.parameterNames": {
+          "type": "string",
+          "enum": [
+            "none",
+            "userFunctions",
+            "all"
+          ],
+          "enumDescriptions": [
+            "Do not show parameter-name inlay hints.",
+            "Show parameter-name hints only for calls to user-defined functions, using each function's declared parameter names.",
+            "Show parameter-name hints for user-defined functions and for known builtin functions."
+          ],
+          "default": "none",
+          "scope": "resource",
+          "markdownDescription": "Show parameter-name inlay hints before call arguments. Hints are skipped for single-argument calls and are off by default; array-dimension hints are controlled separately and always shown. Changing this setting takes effect after the language server restarts."
+        },
         "rumoca.simulation.model": {
           "type": "string",
           "default": "",

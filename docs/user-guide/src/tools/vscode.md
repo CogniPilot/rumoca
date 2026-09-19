@@ -38,6 +38,23 @@ Open Rumoca settings from the toolbar or command palette
 The picker stores workspace-relative paths whenever the selected folder is
 inside the workspace.
 
+## Inlay Hints
+
+Array-dimension hints (for example `[2x3]` after a component name) are always
+shown. Parameter-name hints, which label call arguments with the callee's
+parameter names, are controlled by `rumoca.inlayHints.parameterNames` and are
+off by default. Set it to one of:
+
+- `none` (default): no parameter-name hints.
+- `userFunctions`: hints only for calls to user-defined functions, using each
+  function's declared parameter names.
+- `all`: hints for user-defined functions and for known builtin functions.
+
+Single-argument calls (such as `der(x)`) never receive a parameter-name hint,
+and each hint is anchored at the start of the full argument, including any
+leading unary operator. Changing the setting takes effect after the language
+server restarts.
+
 ## Running Models
 
 Run actions operate on `rumoca-scenario.toml` scenario files. The extension contributes

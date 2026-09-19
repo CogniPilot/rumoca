@@ -84,16 +84,51 @@ pub(super) async fn assert_document_links_and_inlay_hints(
         )),
         "inlay hints should include the array-dimension hint"
     );
-    // Both special-case hint families must stay live: the array-dimension hint
-    // above and the builtin parameter-name hint for `sin(helperInst.gain)`.
-    // The full-MSL editor gate asserts the same two families over the wire.
+    // Parameter-name hints default off (`rumoca.inlayHints.parameterNames` =
+    // "none"): the array-dimension type hint above is always on, but no
+    // parameter-name hint may appear until the setting is raised.
     assert!(
-        hints.iter().any(|hint| {
-            hint.kind == Some(InlayHintKind::PARAMETER)
-                && matches!(&hint.label, InlayHintLabel::String(label) if label == "u:")
-        }),
-        "inlay hints should include the builtin parameter-name hint: {hints:?}"
+        !hints
+            .iter()
+            .any(|hint| hint.kind == Some(InlayHintKind::PARAMETER)),
+        "parameter-name hints must be off by default: {hints:?}"
     );
+
+    // Raising the setting to "all" turns builtin parameter-name hints back on.
+    // The shared surface uses a single-argument `sin` call (now suppressed), so
+    // exercise a two-argument builtin on a dedicated document.
+    *server.parameter_name_hint_mode.write().await = handlers::ParameterNameHintMode::All;
+    let raised_uri =
+        Url::from_file_path(new_temp_dir("param-hints").join("raised.mo")).expect("file uri");
+    {
+        let mut session = server.session.write().await;
+        session.update_document(
+            &session_document_uri_key(&raised_uri),
+            "model R\n  Real y;\n  Real v;\nequation\n  y = atan2(v, 2 * v);\nend R;\n",
+        );
+    }
+    let raised_hints = server
+        .inlay_hint(InlayHintParams {
+            text_document: TextDocumentIdentifier {
+                uri: raised_uri.clone(),
+            },
+            range: Range {
+                start: Position::new(0, 0),
+                end: Position::new(20, 0),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        })
+        .await
+        .expect("inlay hints should succeed")
+        .expect("inlay hints response");
+    assert!(
+        raised_hints.iter().any(|hint| {
+            hint.kind == Some(InlayHintKind::PARAMETER)
+                && matches!(&hint.label, InlayHintLabel::String(label) if label == "y:")
+        }),
+        "raising the setting should emit builtin parameter-name hints: {raised_hints:?}"
+    );
+    *server.parameter_name_hint_mode.write().await = handlers::ParameterNameHintMode::None;
 }
 
 pub(super) async fn assert_code_actions_wrap_handler(
