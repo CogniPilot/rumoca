@@ -885,6 +885,11 @@ pub struct InstanceOverlay {
     /// Populated when `outer` components had no matching `inner` and automatic
     /// synthesis succeeded.
     pub synthesized_inners: Vec<String>,
+    /// Diagnostic messages attached to synthesized inner classes (MLS §5.4).
+    /// Populated from each synthesized class's `missingInnerMessage` annotation
+    /// when present, so the synthesized-inner warning can surface the class
+    /// author's own guidance instead of a generic notice.
+    pub synthesized_inner_messages: Vec<String>,
     /// Canonical type roots for compatibility checks (alias/enumeration normalization).
     /// Keys are resolved type identities and values are canonical root type identities.
     /// Populated by typecheck_instanced for flatten-time type compatibility.

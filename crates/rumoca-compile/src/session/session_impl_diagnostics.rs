@@ -587,6 +587,7 @@ fn build_model_diagnostics_for_typed_model(
 
     collected.extend(synthesized_inner_diagnostics(
         &overlay.synthesized_inners,
+        &overlay.synthesized_inner_messages,
         model_span,
     ));
 
@@ -649,12 +650,17 @@ fn build_model_diagnostics_for_dae_model(
 
 fn synthesized_inner_diagnostics(
     synthesized_inners: &[String],
+    synthesized_inner_messages: &[String],
     model_span: Span,
 ) -> Vec<CommonDiagnostic> {
-    InstantiateWarning::synthesized_inner(synthesized_inners, model_span)
-        .map(|warning| warning.to_diagnostic())
-        .into_iter()
-        .collect()
+    InstantiateWarning::synthesized_inner(
+        synthesized_inners,
+        synthesized_inner_messages,
+        model_span,
+    )
+    .map(|warning| warning.to_diagnostic())
+    .into_iter()
+    .collect()
 }
 
 pub(super) fn resolve_diagnostic_in_target_files(

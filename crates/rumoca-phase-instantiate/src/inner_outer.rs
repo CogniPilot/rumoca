@@ -23,6 +23,10 @@ pub(crate) enum SyntheticInnerError {
     SourceContext(Box<InstantiateError>),
     /// The retry instantiation itself failed.
     InstantiationFailed,
+    /// MLS §5.4 forbids the synthesis outright: the same-name outer declarations
+    /// name different classes, or the class is partial. The carried error is the
+    /// honest diagnostic to surface instead of silently synthesizing a default.
+    Rejected(Box<InstantiateError>),
 }
 
 /// Create a minimal synthetic inner `ast::Component` for a missing inner declaration.
@@ -68,6 +72,11 @@ pub(crate) fn retry_with_synthetic_inners(
     missing: &[MissingInnerInfo],
     options: InstantiateOptions,
 ) -> Result<ast::InstanceOverlay, SyntheticInnerError> {
+    // MLS §5.4: synthesis is only legal when a unique non-partial class is used
+    // for all same-name unmatched outer declarations. Reject conflicting classes
+    // and partial classes with an honest diagnostic before building anything.
+    let plan = plan_synthetic_inners(tree, missing)?;
+
     let mut ctx = InstantiateContext::with_options(options);
     ctx.index_source_scopes(tree);
     let mut overlay = ast::InstanceOverlay::new();
@@ -77,12 +86,14 @@ pub(crate) fn retry_with_synthetic_inners(
     overlay.root_description = description_tokens_to_string(&model.description);
     let root_instance_id = overlay.alloc_id();
 
-    // For each missing inner, look up the class, register it in root scope,
-    // and instantiate its sub-components at root level.
-    for mi in missing {
-        let inner_class = match find_class_in_tree(tree, &mi.type_name) {
-            Some(c) => c,
-            None => continue, // Skip if type not found; will remain missing
+    let mut messages: Vec<String> = Vec::new();
+
+    // For each unique missing inner, register it in the top-level scope and
+    // instantiate its sub-components there (MLS §5.4: the inner is added at the
+    // top of the model).
+    for mi in &plan {
+        let Some(inner_class) = find_class_in_tree(tree, &mi.type_name) else {
+            continue; // Skip if type not found; the re-run will report it missing.
         };
 
         let synthetic = create_synthetic_inner_component(mi, inner_class, &tree.source_map)
@@ -97,7 +108,7 @@ pub(crate) fn retry_with_synthetic_inners(
         let empty_siblings = IndexMap::default();
         let empty_type_overrides = TypeOverrideMap::new();
         ctx.push_path(&mi.name);
-        if instantiate_component(
+        let instantiated = instantiate_component(
             tree,
             &synthetic,
             &mut ctx,
@@ -108,12 +119,32 @@ pub(crate) fn retry_with_synthetic_inners(
                 type_overrides: &empty_type_overrides,
                 imports: ComponentImports::EMPTY,
             },
-        )
-        .is_err()
-        {
-            return Err(SyntheticInnerError::InstantiationFailed);
-        }
+        );
         ctx.pop_path();
+        if let Err(error) = instantiated {
+            // Surface the genuine failure (e.g. EI012 for a partial class) rather
+            // than masking it as a still-missing inner.
+            return Err(SyntheticInnerError::Rejected(error));
+        }
+
+        // MLS §5.4/§4.4.5: a conditional-component condition in a nested class can
+        // read a parameter through its `outer` reference (`world.enableAnimation`,
+        // or `sphereDiameter = world.defaultBodyDiameter`). Record the synthesized
+        // inner's default Boolean and Real parameters under its instance path so
+        // those conditions decide exactly as they would against a declared inner.
+        register_default_inner_params(
+            tree,
+            &mut ctx,
+            &mi.type_name,
+            &ast::QualifiedName::from_ident(&mi.name),
+        )
+        .map_err(SyntheticInnerError::SourceContext)?;
+
+        if let Some(message) = class_missing_inner_message(inner_class)
+            && !messages.contains(&message)
+        {
+            messages.push(message);
+        }
     }
 
     // Re-run the main model instantiation with inners now available
@@ -137,7 +168,145 @@ pub(crate) fn retry_with_synthetic_inners(
         });
     }
 
+    overlay.synthesized_inner_messages = messages;
     Ok(overlay)
+}
+
+/// Validate the unmatched outers and reduce them to one synthesizable inner per
+/// name (MLS §5.4).
+///
+/// Returns the representative declaration for each name that names a resolvable
+/// non-partial class, in first-seen order. A name whose class cannot be resolved
+/// is dropped so the retry's re-run reports it as still missing; a name whose
+/// same-name outers disagree on class, or whose unique class is partial, is
+/// rejected with the honest diagnostic.
+fn plan_synthetic_inners(
+    tree: &ast::ClassTree,
+    missing: &[MissingInnerInfo],
+) -> Result<Vec<MissingInnerInfo>, SyntheticInnerError> {
+    let mut order: Vec<String> = Vec::new();
+    let mut by_name: FxHashMap<String, MissingInnerInfo> = FxHashMap::default();
+    for mi in missing {
+        match by_name.get(&mi.name) {
+            None => {
+                order.push(mi.name.clone());
+                by_name.insert(mi.name.clone(), mi.clone());
+            }
+            Some(existing) if !same_outer_class(existing, mi) => {
+                return Err(SyntheticInnerError::Rejected(Box::new(
+                    InstantiateError::automatic_inner_conflicting_class(
+                        &mi.name,
+                        &existing.type_name,
+                        &mi.type_name,
+                        mi.span,
+                    ),
+                )));
+            }
+            Some(_) => {}
+        }
+    }
+
+    let mut plan = Vec::with_capacity(order.len());
+    for name in order {
+        let mi = by_name
+            .remove(&name)
+            .expect("every ordered name was inserted");
+        let Some(class) = find_class_in_tree(tree, &mi.type_name) else {
+            continue; // Unresolvable class: cannot synthesize; re-run reports missing.
+        };
+        if class.partial {
+            return Err(SyntheticInnerError::Rejected(Box::new(
+                InstantiateError::partial_class_instantiation(&mi.name, &mi.type_name, mi.span),
+            )));
+        }
+        plan.push(mi);
+    }
+    Ok(plan)
+}
+
+/// True when two unmatched outers name the same class (MLS §5.4).
+///
+/// The resolved declaration identity is authoritative when both carry one; two
+/// unresolved declarations fall back to their written type name.
+fn same_outer_class(a: &MissingInnerInfo, b: &MissingInnerInfo) -> bool {
+    match (a.type_def_id, b.type_def_id) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.type_name == b.type_name,
+    }
+}
+
+/// Record the default Boolean and Real parameters of a synthesized inner class
+/// under its instance path (MLS §5.4 support for MLS §4.4.5 conditions).
+///
+/// The synthesized inner carries no enclosing modifiers, so the values are the
+/// class's own declared defaults. Nothing is invented: a parameter this phase
+/// cannot fold is simply absent from the recorded maps.
+fn register_default_inner_params(
+    tree: &ast::ClassTree,
+    ctx: &mut InstantiateContext,
+    type_name: &str,
+    inner_path: &ast::QualifiedName,
+) -> InstantiateResult<()> {
+    let Some(inner_class) = find_class_in_tree(tree, type_name) else {
+        return Ok(());
+    };
+    let template = get_or_compute_template(tree, inner_class, &mut ctx.template_cache)?;
+    let class_scope = ast::ModificationEnvironment::new();
+    let inner_ctx = InstantiateEvalCtx {
+        tree,
+        mod_env: &class_scope,
+        effective_components: &template.effective_components,
+        resolve_class_components: resolve_effective_components_for_eval,
+    };
+    let bools = extract_bool_params_with_mods(&template.effective_components, &class_scope);
+    let reals = extract_real_params_with_mods(&inner_ctx, &FxHashMap::default());
+    ctx.register_known_bool_params(inner_path, &bools);
+    ctx.register_known_real_params(inner_path, &reals);
+    Ok(())
+}
+
+/// The class-authored `missingInnerMessage` guidance, if the class declares one
+/// (MLS §5.4). MultiBody's `World` uses it to explain the default gravity field.
+fn class_missing_inner_message(class: &ast::ClassDef) -> Option<String> {
+    class
+        .annotation
+        .iter()
+        .find_map(annotation_missing_inner_message)
+}
+
+fn annotation_missing_inner_message(anno: &ast::Expression) -> Option<String> {
+    let (name_text, value) = match anno {
+        ast::Expression::NamedArgument { name, value, .. } => (name.text.as_ref(), value.as_ref()),
+        ast::Expression::Modification { target, value, .. } => {
+            let first = target.parts.first()?;
+            (first.ident.text.as_ref(), value.as_ref())
+        }
+        _ => return None,
+    };
+    if name_text != "missingInnerMessage" {
+        return None;
+    }
+    let ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::String,
+        token,
+        ..
+    } = value
+    else {
+        return None;
+    };
+    Some(normalize_annotation_string(token.text.as_ref()))
+}
+
+/// Reduce an annotation string literal to a single-line message: strip the
+/// surrounding quotes, unescape embedded quotes, and collapse the source's line
+/// breaks and indentation into single spaces.
+fn normalize_annotation_string(raw: &str) -> String {
+    raw.trim()
+        .trim_matches('"')
+        .replace("\\\"", "\"")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 /// Instantiate a component.
 ///

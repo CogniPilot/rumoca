@@ -163,7 +163,9 @@ the typecheck meanings of `ET0xx` are unchanged.
 
 `EI013` is retired. Older builds used it for the non-fatal synthesized-inner
 notice; the phase-owned diagnostic is `WI013`, whose prefix records its warning
-severity.
+severity. `WI013` fires when MLS §5.4 automatic inner creation succeeds; when it
+cannot, `EI015` reports same-name outer declarations that name different classes
+and `EI012` reports an outer whose class is partial.
 
 **Known drift**, tracked separately: `rumoca-phase-structural` emits
 `ES001`/`ES002` at warning severity. For these, severity MUST be read from the

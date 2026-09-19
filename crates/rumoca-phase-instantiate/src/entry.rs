@@ -122,6 +122,7 @@ pub fn instantiate_model_with_outcome_options(
                 }
             }
             Err(SyntheticInnerError::SourceContext(error)) => InstantiationOutcome::Error(error),
+            Err(SyntheticInnerError::Rejected(error)) => InstantiationOutcome::Error(error),
         }
     } else {
         successful_instantiation_outcome(tree, overlay)

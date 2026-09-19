@@ -10,7 +10,7 @@
 
 use super::{
     IndexMap, InstantiateContext, InstantiateError, InstantiateEvalCtx, InstantiateResult,
-    OuterValues, ast, evaluate_component_condition_with_outer_values,
+    OuterValues, ast, evaluate_component_condition_with_outer_values, find_class_in_tree,
     resolve_effective_components_for_eval,
 };
 
@@ -168,6 +168,18 @@ pub(crate) fn mark_disabled_component_if_needed(
         resolve_class_components: resolve_effective_components_for_eval,
     };
     let Some(condition_value) = decide_condition(&eval_ctx, cond, scope) else {
+        if condition_deferrable_to_synthesized_inner(
+            cond,
+            scope.effective_components,
+            ctx,
+            scope.tree,
+        ) {
+            // MLS §5.4: the condition is undecidable only because it reads a
+            // parameter through an `outer` reference with no matching inner. Defer
+            // this conditional; the missing-inner retry synthesizes a default
+            // inner from the outer's class and re-decides the condition against it.
+            return Ok(true);
+        }
         return Err(Box::new(InstantiateError::conditional_error(
             name,
             cond.span(),
@@ -213,4 +225,114 @@ fn decide_condition(
     }
     let qualified = crate::dims::qualify_shape_expr_imports(scope.tree, cond, scope.imports);
     evaluate_component_condition_with_outer_values(eval_ctx, &qualified, outer_values)
+}
+
+/// Maximum binding hops followed while attributing an undecidable condition to
+/// an unmatched `outer` component.
+const MAX_OUTER_ATTRIBUTION_DEPTH: usize = 8;
+
+/// True when an undecidable condition reads, directly or through a local
+/// binding, an `outer` component that has no matching inner in any enclosing
+/// scope but names a resolvable non-partial class (MLS §5.4).
+///
+/// Only in that case may the conditional be deferred to the missing-inner
+/// retry: the default inner it synthesizes then supplies the parameter and the
+/// condition decides. A condition undecidable for any other reason stays an
+/// honest [`InstantiateError::ConditionalError`], so no component silently
+/// appears or disappears (SPEC_0008).
+fn condition_deferrable_to_synthesized_inner(
+    cond: &ast::Expression,
+    effective_components: &IndexMap<String, ast::Component>,
+    ctx: &InstantiateContext,
+    tree: &ast::ClassTree,
+) -> bool {
+    let mut roots = Vec::new();
+    collect_cref_roots(cond, &mut roots);
+    let mut seen: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    let mut pending: Vec<(String, usize)> = roots.into_iter().map(|root| (root, 0)).collect();
+    while let Some((root, depth)) = pending.pop() {
+        if depth > MAX_OUTER_ATTRIBUTION_DEPTH || !seen.insert(root.clone()) {
+            continue;
+        }
+        let Some(comp) = effective_components.get(&root) else {
+            continue;
+        };
+        if comp.outer {
+            // Require an unconditional outer: MLS §5.4 (INST-032) ignores a
+            // disabled conditional outer for automatic inner creation, and only
+            // an unconditional outer is guaranteed to be recorded as missing so
+            // the retry actually runs. A conditional outer keeps the honest
+            // EI006 rather than a silent skip.
+            if comp.condition.is_none()
+                && ctx.find_inner(&root).is_none()
+                && outer_class_is_synthesizable(tree, comp)
+            {
+                return true;
+            }
+            continue;
+        }
+        // Follow the local binding: `sphereDiameter = world.defaultBodyDiameter`
+        // makes an outer-free condition (`sphereDiameter > 0`) depend on `world`.
+        if let Some(binding) = comp.binding.as_ref() {
+            let mut binding_roots = Vec::new();
+            collect_cref_roots(binding, &mut binding_roots);
+            pending.extend(binding_roots.into_iter().map(|root| (root, depth + 1)));
+        }
+    }
+    false
+}
+
+/// True when an `outer` component names a class MLS §5.4 permits to be
+/// synthesized: it must resolve to a non-partial class.
+fn outer_class_is_synthesizable(tree: &ast::ClassTree, comp: &ast::Component) -> bool {
+    comp.type_def_id
+        .and_then(|def_id| tree.get_class_by_def_id(def_id))
+        .or_else(|| find_class_in_tree(tree, &comp.type_name.to_string()))
+        .is_some_and(|class| !class.partial)
+}
+
+/// Collect the root identifier of every component reference in an expression.
+///
+/// Covers the operator and reference forms a conditional-component condition can
+/// take (MLS §4.4.5); other expression shapes contribute no roots.
+fn collect_cref_roots(expr: &ast::Expression, roots: &mut Vec<String>) {
+    match expr {
+        ast::Expression::ComponentReference(cref) => {
+            if let Some(first) = cref.parts.first() {
+                roots.push(first.ident.text.to_string());
+            }
+        }
+        ast::Expression::Unary { rhs, .. } => collect_cref_roots(rhs, roots),
+        ast::Expression::Binary { lhs, rhs, .. } => {
+            collect_cref_roots(lhs, roots);
+            collect_cref_roots(rhs, roots);
+        }
+        ast::Expression::Range {
+            start, step, end, ..
+        } => {
+            collect_cref_roots(start, roots);
+            if let Some(step) = step {
+                collect_cref_roots(step, roots);
+            }
+            collect_cref_roots(end, roots);
+        }
+        ast::Expression::Parenthesized { inner, .. } => collect_cref_roots(inner, roots),
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (cond, body) in branches {
+                collect_cref_roots(cond, roots);
+                collect_cref_roots(body, roots);
+            }
+            collect_cref_roots(else_branch, roots);
+        }
+        ast::Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_cref_roots(arg, roots);
+            }
+        }
+        _ => {}
+    }
 }

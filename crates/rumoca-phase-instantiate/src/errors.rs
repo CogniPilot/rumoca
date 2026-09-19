@@ -20,6 +20,7 @@
 //! | EI012 | PartialClassInstantiation | §4.7 |
 //! | WI013 | SynthesizedInner | §5.4 |
 //! | EI014 | RedeclareNonReplaceable | §7.3 |
+//! | EI015 | AutomaticInnerConflictingClass | §5.4 |
 //! | EI027 | RedeclareConstraintViolation | §7.3.2 |
 //! | EI028 | RedeclareFinal | §7.2.6 |
 //! | EI029 | InvalidBreakName | §7.4 |
@@ -51,7 +52,7 @@ pub enum InstantiateWarning {
     /// `outer` declarations. The successful construction remains visible to
     /// users as a warning rather than being reconstructed by a frontend.
     #[error(
-        "outer without matching inner detected ({synthesized_inners}); synthesizing root-level inner declaration(s)"
+        "outer without matching inner detected ({synthesized_inners}); synthesizing root-level inner declaration(s){detail}"
     )]
     #[diagnostic(
         code(rumoca::instantiate::WI013),
@@ -60,17 +61,33 @@ pub enum InstantiateWarning {
     )]
     SynthesizedInner {
         synthesized_inners: String,
+        /// Trailing detail appended to the message; carries any class-authored
+        /// `missingInnerMessage` guidance, or empty when none was declared.
+        detail: String,
         #[label("synthesized inner declaration")]
         span: Span,
     },
 }
 
 impl InstantiateWarning {
+    /// Build the MLS §5.4 synthesized-inner warning.
+    ///
+    /// `messages` carries the `missingInnerMessage` guidance declared by the
+    /// synthesized classes (empty when none declare one); the strings are
+    /// surfaced verbatim so no diagnostic text is fabricated.
     #[must_use]
-    pub fn synthesized_inner(names: &[String], span: Span) -> Option<Self> {
-        (!names.is_empty()).then(|| Self::SynthesizedInner {
-            synthesized_inners: names.join(", "),
-            span,
+    pub fn synthesized_inner(names: &[String], messages: &[String], span: Span) -> Option<Self> {
+        (!names.is_empty()).then(|| {
+            let detail = if messages.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", messages.join(" "))
+            };
+            Self::SynthesizedInner {
+                synthesized_inners: names.join(", "),
+                detail,
+                span,
+            }
         })
     }
 }
@@ -248,6 +265,25 @@ pub enum InstantiateError {
         outer_type: String,
         inner_type: String,
         #[label("type mismatch")]
+        span: Span,
+    },
+
+    /// Two or more unmatched `outer` declarations of the same name name different
+    /// classes, so no unique inner can be synthesized (MLS §5.4).
+    #[error(
+        "cannot synthesize inner `{name}`: unmatched outer declarations name different classes `{class1}` and `{class2}`"
+    )]
+    #[diagnostic(
+        code(rumoca::instantiate::EI015),
+        help(
+            "MLS §5.4: automatic inner creation requires a unique non-partial class across all same-name outer declarations lacking a matching inner"
+        )
+    )]
+    AutomaticInnerConflictingClass {
+        name: String,
+        class1: String,
+        class2: String,
+        #[label("conflicting outer class")]
         span: Span,
     },
 
@@ -439,6 +475,14 @@ impl InstantiateError {
         }
     );
     error_constructor!(
+        automatic_inner_conflicting_class,
+        AutomaticInnerConflictingClass {
+            name: String,
+            class1: String,
+            class2: String
+        }
+    );
+    error_constructor!(
         conflicting_inheritance,
         ConflictingInheritance {
             name: String,
@@ -507,6 +551,7 @@ impl PhaseError for InstantiateError {
             | Self::InvalidBreakName { span, .. }
             | Self::MissingInner { span, .. }
             | Self::InnerOuterTypeMismatch { span, .. }
+            | Self::AutomaticInnerConflictingClass { span, .. }
             | Self::ConflictingInheritance { span, .. }
             | Self::ConflictingModifications { span, .. }
             | Self::PartialClassInstantiation { span, .. }
@@ -662,7 +707,7 @@ mod tests {
             3,
             9,
         );
-        let warning = InstantiateWarning::synthesized_inner(&["world".to_owned()], span)
+        let warning = InstantiateWarning::synthesized_inner(&["world".to_owned()], &[], span)
             .expect("non-empty synthesis set produces a warning");
         let diagnostic = warning.to_diagnostic();
 
@@ -672,6 +717,20 @@ mod tests {
             diagnostic.severity,
             rumoca_core::DiagnosticSeverity::Warning
         );
-        assert!(InstantiateWarning::synthesized_inner(&[], span).is_none());
+        assert!(InstantiateWarning::synthesized_inner(&[], &[], span).is_none());
+
+        let with_message = InstantiateWarning::synthesized_inner(
+            &["world".to_owned()],
+            &["A default world component will be used.".to_owned()],
+            span,
+        )
+        .expect("non-empty synthesis set produces a warning");
+        assert!(
+            with_message
+                .to_diagnostic()
+                .message
+                .contains("A default world component will be used."),
+            "declared missingInnerMessage guidance must reach the diagnostic"
+        );
     }
 }

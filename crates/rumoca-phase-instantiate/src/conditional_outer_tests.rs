@@ -8,7 +8,7 @@
 //! `outer World world` was unevaluable, so both arms of a mutually exclusive
 //! pair were instantiated and the resulting system was structurally singular.
 
-use crate::instantiate_model;
+use crate::{InstantiateError, instantiate_model};
 use rumoca_ir_ast as ast;
 use rumoca_phase_parse::parse_to_ast;
 use rumoca_phase_resolve::resolve;
@@ -54,6 +54,16 @@ fn instantiate(source: &str, model: &str) -> ast::InstanceOverlay {
     let resolved = resolve(ast::ParsedTree::new(tree)).expect("resolve should succeed");
     let tree = resolved.into_inner();
     instantiate_model(&tree, model).expect("instantiation should succeed")
+}
+
+fn instantiate_result(source: &str, model: &str) -> crate::InstantiateResult<ast::InstanceOverlay> {
+    let file_name = "<conditional_outer_test>";
+    let stored = parse_to_ast(source, file_name).expect("parse should succeed");
+    let mut tree = ast::ClassTree::from_parsed(stored);
+    tree.source_map.add(file_name, source);
+    let resolved = resolve(ast::ParsedTree::new(tree)).expect("resolve should succeed");
+    let tree = resolved.into_inner();
+    instantiate_model(&tree, model)
 }
 
 fn component_paths(overlay: &ast::InstanceOverlay) -> Vec<String> {
@@ -217,5 +227,156 @@ fn local_parameter_still_wins_over_outer_resolution() {
             .iter()
             .any(|p| p == "local1.leaf.x"),
         "local1.leaf.x must exist"
+    );
+}
+
+/// The `Modelica.Mechanics.MultiBody.Parts.Body` reproduction: a model that uses
+/// `Body` without declaring `inner World world`. MLS §5.4 requires a default
+/// inner to be synthesized from the outer's class; the `sphere` visualiser then
+/// decides against the synthesized world's defaults (`enableAnimation = true`,
+/// `defaultBodyDiameter = 1/9 > 0`) instead of raising EI006.
+const BODY_WITHOUT_INNER_WORLD: &str = r#"
+    model World
+        parameter Boolean enableAnimation = true;
+        parameter Real nominalLength = 1;
+        parameter Real defaultBodyDiameter = nominalLength/9;
+        annotation(
+            defaultComponentName="world",
+            defaultComponentPrefixes="inner",
+            missingInnerMessage="A default world component with the default
+gravity field will be used.");
+    end World;
+    model Shape
+        Real s;
+    equation
+        s = 1.0;
+    end Shape;
+    model Body
+        outer World world;
+        parameter Boolean animation = true;
+        parameter Real sphereDiameter = world.defaultBodyDiameter;
+        Shape sphere if world.enableAnimation and animation and sphereDiameter > 0;
+    end Body;
+    model Standalone
+        Body body;
+    end Standalone;
+"#;
+
+#[test]
+fn unmatched_outer_synthesizes_default_inner_and_decides_the_conditional() {
+    let overlay = instantiate(BODY_WITHOUT_INNER_WORLD, "Standalone");
+
+    assert!(
+        overlay.synthesized_inners.contains(&"world".to_string()),
+        "MLS §5.4 must synthesize a default inner `world`; synthesized = {:?}",
+        overlay.synthesized_inners
+    );
+    let disabled = disabled_paths(&overlay);
+    assert!(
+        !disabled.contains(&"body.sphere".to_string()),
+        "the synthesized world's enableAnimation = true keeps `sphere`; disabled = {disabled:?}"
+    );
+    assert!(
+        component_paths(&overlay)
+            .iter()
+            .any(|p| p == "body.sphere.s"),
+        "the enabled visualiser must contribute its variables"
+    );
+}
+
+#[test]
+fn synthesized_inner_surfaces_missing_inner_message_annotation() {
+    let overlay = instantiate(BODY_WITHOUT_INNER_WORLD, "Standalone");
+    assert!(
+        overlay
+            .synthesized_inner_messages
+            .iter()
+            .any(|message| message
+                == "A default world component with the default gravity field will be used."),
+        "the class-authored missingInnerMessage must reach the overlay; messages = {:?}",
+        overlay.synthesized_inner_messages
+    );
+}
+
+/// A real matching inner in an enclosing scope still wins: no synthesis occurs.
+#[test]
+fn real_inner_wins_over_synthesis() {
+    let overlay = instantiate(REAL_CONDITION_THROUGH_OUTER, "Plant");
+    assert!(
+        overlay.synthesized_inners.is_empty(),
+        "a declared inner must avoid synthesis; synthesized = {:?}",
+        overlay.synthesized_inners
+    );
+}
+
+/// MLS §5.4: an outer whose class is partial cannot be synthesized. rumoca
+/// already rejects a partial-class outer in the resolve phase (ER005) before
+/// synthesis is reached, so the compiler never papers over it with a default
+/// inner. `retry_with_synthetic_inners` keeps a defensive EI012 backstop should
+/// such a declaration ever reach it.
+#[test]
+fn unmatched_outer_of_partial_class_is_rejected() {
+    let source = r"
+        partial model Env
+            parameter Real g = 9.81;
+        end Env;
+        model Uses
+            outer Env env;
+            Real x;
+        equation
+            x = env.g;
+        end Uses;
+        model Root
+            Uses uses;
+        end Root;
+    ";
+    let file_name = "<conditional_outer_test>";
+    let stored = parse_to_ast(source, file_name).expect("parse should succeed");
+    let mut tree = ast::ClassTree::from_parsed(stored);
+    tree.source_map.add(file_name, source);
+    let error = resolve(ast::ParsedTree::new(tree))
+        .expect_err("a partial-class outer must be rejected, not synthesized");
+    assert!(
+        error.iter().any(|diag| diag.message.contains("partial")),
+        "expected a partial-class rejection, got: {error:?}"
+    );
+}
+
+/// MLS §5.4: two same-name unmatched outers naming different classes have no
+/// unique class to synthesize, so the compiler must report the conflict.
+#[test]
+fn unmatched_outers_with_conflicting_classes_error() {
+    let source = r"
+        model WorldA
+            parameter Real g = 1;
+        end WorldA;
+        model WorldB
+            parameter Real g = 2;
+        end WorldB;
+        model UsesA
+            outer WorldA world;
+            Real x;
+        equation
+            x = world.g;
+        end UsesA;
+        model UsesB
+            outer WorldB world;
+            Real y;
+        equation
+            y = world.g;
+        end UsesB;
+        model Root
+            UsesA a;
+            UsesB b;
+        end Root;
+    ";
+    let error =
+        instantiate_result(source, "Root").expect_err("conflicting outer classes must error");
+    assert!(
+        matches!(
+            *error,
+            InstantiateError::AutomaticInnerConflictingClass { .. }
+        ),
+        "expected EI015 conflicting-class error, got: {error:?}"
     );
 }
