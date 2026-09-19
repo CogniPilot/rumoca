@@ -2340,7 +2340,11 @@ jobs:
     # the second run fail on "Release.tag_name already exists". Tag-only means
     # the release/publish path runs exactly once.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, lint, test, coverage-gate, msl-merge, modelicatest-gate, docs, vscode, deploy-pages, playground, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
+    # Gate every publish on a fully green build: the release deploys to all
+    # sites only when every test, gate, and build job has passed, so we never
+    # publish to one site off a partially red run. A publish step failing is the
+    # only thing that can leave a partial deploy.
+    needs: [detect-release-tag, fmt, lint, test, coverage-gate, kani, nix-checks, msl-merge, modelicatest-gate, modelica-models-gate, editor-msl-smoke, template-runtime-tests, docs, vscode, deploy-pages, playground, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
