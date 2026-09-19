@@ -1766,10 +1766,10 @@ impl LanguageServer for ModelicaLanguageServer {
             arguments: None,
         });
         if strict_failed {
-            let mut diagnostics = handlers::compute_diagnostics_with_options(
+            let mut diagnostics = handlers::compute_diagnostics_with_strict_compile(
                 &doc_snapshot.content,
                 &uri_path,
-                Some(&mut session),
+                &mut session,
                 &tool_options.lint,
                 rumoca_compile::compile::SemanticDiagnosticsMode::Save,
             );

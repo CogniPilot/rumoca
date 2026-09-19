@@ -83,6 +83,14 @@ a source span is available. CLI output uses rich terminal diagnostics; VS
 Code diagnostics use the raw file/range information without terminal
 wrappers.
 
+Compile and instantiate errors appear in the Problems panel as well, not only
+in the compile-status lens above a model. When a model fails its full compile
+because a component's class cannot be instantiated, the error is anchored at
+the enclosing model or class name in your open document, and the originating
+library location is included in the diagnostic message so the detail is not
+lost. This means the failure you would otherwise see only when simulating is
+now visible as a squiggle while you edit.
+
 ## Documentation Access
 
 The user guide and the contributor guide are available directly from the

@@ -2,11 +2,17 @@
 
 use crate::text_position::span_to_range;
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
+#[cfg(feature = "server")]
+use lsp_types::{DiagnosticRelatedInformation, Location, Url};
 use rumoca_compile::Session;
 use rumoca_compile::compile::SemanticDiagnosticsMode;
 #[cfg(test)]
 use rumoca_compile::compile::SourceRootKind;
+#[cfg(feature = "server")]
+use rumoca_compile::compile::{ModelFailureDiagnostic, StrictCompileReport};
 use rumoca_compile::parsing::ast;
+#[cfg(feature = "server")]
+use rumoca_compile::parsing::collect_model_declarations;
 use rumoca_compile::parsing::{ParseError, parse_source_to_ast_with_errors};
 use rumoca_core;
 use rumoca_core::{
@@ -136,6 +142,241 @@ pub(crate) fn common_diagnostics_for_file(
         out.push(lsp_diag);
     }
     out
+}
+
+/// Compute editor diagnostics for `source` and additionally surface strict
+/// compile / instantiate failures.
+///
+/// The per-model semantic query ([`compute_diagnostics_with_options`]) reports
+/// resolve, typecheck, flatten, and in-file instantiate errors. A model can
+/// still fail its full strict compile with a failure whose source span points
+/// into a *library* file the user has not opened (for example an instantiate
+/// error raised while instantiating a component's class). Those failures carry
+/// no label in the focus document, so [`common_diagnostic_to_lsp`] drops them
+/// and the Problems panel stays empty even though the compile status lens above
+/// the model reports the failure. This pass runs the same strict compile the
+/// lens uses and anchors any such failure in the user's document.
+#[cfg(feature = "server")]
+pub(crate) fn compute_diagnostics_with_strict_compile(
+    source: &str,
+    file_name: &str,
+    session: &mut Session,
+    lint_options: &LintOptions,
+    mode: SemanticDiagnosticsMode,
+) -> Vec<Diagnostic> {
+    let mut diagnostics =
+        compute_diagnostics_with_options(source, file_name, Some(session), lint_options, mode);
+    append_strict_compile_diagnostics(&mut diagnostics, source, file_name, session);
+    diagnostics
+}
+
+/// Append strict-compile failure diagnostics for every model declared in the
+/// focus document, de-duplicated against `diagnostics` by span and message so a
+/// failure already surfaced by the per-model semantic query is not repeated.
+#[cfg(feature = "server")]
+pub(crate) fn append_strict_compile_diagnostics(
+    diagnostics: &mut Vec<Diagnostic>,
+    source: &str,
+    file_name: &str,
+    session: &mut Session,
+) {
+    let Ok(ast) = parse_source_to_ast_with_errors(source, file_name) else {
+        // Parse errors are already reported; a strict compile cannot run.
+        return;
+    };
+    let model_names: Vec<String> = collect_model_declarations(&ast)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    if model_names.is_empty() {
+        return;
+    }
+
+    let mut seen: HashSet<String> = diagnostics.iter().map(diagnostic_key).collect();
+    for model_name in model_names {
+        let report = session.compile_model_strict_reachable_with_recovery(&model_name);
+        if report.requested_succeeded() {
+            continue;
+        }
+        for diag in strict_report_focus_diagnostics(&report, file_name, source, &ast) {
+            let key = diagnostic_key(&diag);
+            if seen.insert(key) {
+                diagnostics.push(diag);
+            }
+        }
+    }
+}
+
+/// Convert every failure in a strict-compile report into an LSP diagnostic
+/// anchored in the focus document.
+#[cfg(feature = "server")]
+fn strict_report_focus_diagnostics(
+    report: &StrictCompileReport,
+    focus_file: &str,
+    focus_source: &str,
+    focus_ast: &ast::StoredDefinition,
+) -> Vec<Diagnostic> {
+    let source_map = report.source_map.as_ref();
+    report
+        .failures
+        .iter()
+        .filter_map(|failure| {
+            strict_failure_to_focus_diagnostic(
+                failure,
+                report,
+                source_map,
+                focus_file,
+                focus_source,
+                focus_ast,
+            )
+        })
+        .collect()
+}
+
+/// Location of the source span a strict failure anchors on, once resolved
+/// through the report's source map: the file it belongs to and the range within
+/// that file's text.
+#[cfg(feature = "server")]
+struct FailureSpanLocation<'a> {
+    file_name: &'a str,
+    range: Range,
+}
+
+#[cfg(feature = "server")]
+fn resolve_failure_span<'a>(
+    failure: &ModelFailureDiagnostic,
+    source_map: Option<&'a SourceMap>,
+) -> Option<FailureSpanLocation<'a>> {
+    let label = failure.primary_label.as_ref()?;
+    let map = source_map?;
+    let (name, content) = map.get_source(label.span.source)?;
+    Some(FailureSpanLocation {
+        file_name: name,
+        range: span_to_range(content, label.span.start.0, label.span.end.0),
+    })
+}
+
+#[cfg(feature = "server")]
+fn strict_failure_to_focus_diagnostic(
+    failure: &ModelFailureDiagnostic,
+    report: &StrictCompileReport,
+    source_map: Option<&SourceMap>,
+    focus_file: &str,
+    focus_source: &str,
+    focus_ast: &ast::StoredDefinition,
+) -> Option<Diagnostic> {
+    let span_location = resolve_failure_span(failure, source_map);
+
+    // Case 1: the failure already points into the user's open document. Emit it
+    // at its precise span; the de-duplication pass drops it when the per-model
+    // semantic query already reported the same diagnostic.
+    if let Some(location) = &span_location
+        && location.file_name == focus_file
+    {
+        return Some(build_strict_compile_diagnostic(
+            failure,
+            location.range,
+            None,
+        ));
+    }
+
+    // Case 2: the failure points into a library file (or names no source at
+    // all). Anchor it in the focus document at the enclosing model/class name so
+    // the squiggle lands where the user can act, and carry the library location
+    // in the message and related information rather than squiggling a file the
+    // user did not open.
+    let anchor_range = focus_class_anchor_range(focus_ast, focus_source, failure, report);
+    let origin = span_location.map(|location| (location.file_name.to_string(), location.range));
+    Some(build_strict_compile_diagnostic(
+        failure,
+        anchor_range,
+        origin,
+    ))
+}
+
+/// Range of the model/class name to anchor a library-anchored failure on.
+///
+/// Prefers the class the failure is attributed to, then the requested model,
+/// both looked up in the focus document. Falls back to the top-left of the file
+/// so a compile failure is never silently dropped.
+#[cfg(feature = "server")]
+fn focus_class_anchor_range(
+    focus_ast: &ast::StoredDefinition,
+    focus_source: &str,
+    failure: &ModelFailureDiagnostic,
+    report: &StrictCompileReport,
+) -> Range {
+    for candidate in [failure.model_name.as_str(), report.requested_model.as_str()] {
+        if let Some(class) = crate::helpers::parsed_class_by_qualified_name(focus_ast, candidate) {
+            return crate::helpers::location_to_range_in_source(focus_source, &class.name.location);
+        }
+    }
+    top_left_range(focus_source)
+}
+
+#[cfg(feature = "server")]
+fn build_strict_compile_diagnostic(
+    failure: &ModelFailureDiagnostic,
+    range: Range,
+    origin: Option<(String, Range)>,
+) -> Diagnostic {
+    let mut message = strict_failure_message(failure);
+    let mut related_information = None;
+    if let Some((origin_file, origin_range)) = origin {
+        message.push_str(&format!(
+            "\norigin: {}:{}:{}",
+            origin_file,
+            origin_range.start.line + 1,
+            origin_range.start.character + 1
+        ));
+        if let Some(uri) = library_origin_url(&origin_file) {
+            related_information = Some(vec![DiagnosticRelatedInformation {
+                location: Location {
+                    uri,
+                    range: origin_range,
+                },
+                message: "instantiation failed here".to_string(),
+            }]);
+        }
+    }
+
+    Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: failure.error_code.clone().map(NumberOrString::String),
+        source: Some("rumoca".to_string()),
+        message,
+        related_information,
+        tags: None,
+        code_description: None,
+        data: Some(json!({ "precise_range": true })),
+    }
+}
+
+/// The message for a strict failure, matching the per-model semantic query's
+/// `message + note` shape so identical in-file diagnostics de-duplicate cleanly.
+#[cfg(feature = "server")]
+fn strict_failure_message(failure: &ModelFailureDiagnostic) -> String {
+    let mut message = summarize_message(&failure.error);
+    for note in &failure.notes {
+        let note = summarize_message(note);
+        if !note.is_empty() {
+            message.push_str("\nnote: ");
+            message.push_str(&note);
+        }
+    }
+    message
+}
+
+/// Build a document URL for a library origin file name, when it names a real
+/// path (source-root files use absolute paths). Relative or synthesized names
+/// yield `None`; the origin then survives only in the message text.
+#[cfg(feature = "server")]
+fn library_origin_url(file_name: &str) -> Option<Url> {
+    if file_name.contains("://") {
+        return Url::parse(file_name).ok();
+    }
+    Url::from_file_path(file_name).ok()
 }
 
 fn diagnostic_key(diag: &Diagnostic) -> String {

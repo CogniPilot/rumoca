@@ -148,10 +148,10 @@ impl ModelicaLanguageServer {
             let diagnostics_started = Instant::now();
             let tool_options = self.tool_options_for_document_or_default(&file_name).await;
             let mut session = self.session.write().await;
-            let mut diagnostics = handlers::compute_diagnostics_with_options(
+            let mut diagnostics = handlers::compute_diagnostics_with_strict_compile(
                 text,
                 &file_name,
-                Some(&mut session),
+                &mut session,
                 &tool_options.lint,
                 rumoca_compile::compile::SemanticDiagnosticsMode::Save,
             );

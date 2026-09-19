@@ -26,6 +26,7 @@ mod source_root_load_diagnostic_tests;
 mod source_root_read_prewarm_tests;
 mod source_root_refresh_tests;
 mod startup_timing_tests;
+mod strict_compile_diagnostic_tests;
 mod tool_config_tests;
 mod utf16_range_tests;
 mod workspace_query_tests;

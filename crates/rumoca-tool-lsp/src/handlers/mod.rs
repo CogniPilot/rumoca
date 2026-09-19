@@ -27,6 +27,8 @@ mod signature_help;
 pub use diagnostics::compute_diagnostics;
 #[cfg(feature = "server")]
 pub(crate) use diagnostics::compute_diagnostics_with_options;
+#[cfg(feature = "server")]
+pub(crate) use diagnostics::compute_diagnostics_with_strict_compile;
 pub use document_symbols::handle_document_symbols;
 pub use semantic_tokens::{get_semantic_token_legend, handle_semantic_tokens};
 
