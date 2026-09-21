@@ -148,7 +148,7 @@ fn synthetic_validation_context() -> SyntheticValidationContext {
         },
         signature_position: ProbePosition {
             line: 17,
-            character: "  helperInst.y = sin(".len() as u32,
+            character: "  helperInst.y = atan2(".len() as u32,
         },
     }
 }
@@ -668,13 +668,13 @@ fn validate_synthetic_outline_requests(
         .collect::<Vec<_>>();
     // Both special-case hint families the server advertises must be live: the
     // array-dimension hint for `Real arr[2, 3]` and the builtin parameter-name
-    // hint for `sin(helperInst.gain)`.
+    // hint for `atan2(helperInst.gain, 2.0)`.
     ensure!(
         inlay_labels.iter().any(|label| label.contains("[2x3]")),
         "inlayHint should expose the array-dimension hint: {inlay_labels:?}"
     );
     ensure!(
-        inlay_labels.contains(&"u:"),
+        inlay_labels.contains(&"y:"),
         "inlayHint should expose the builtin parameter-name hint: {inlay_labels:?}"
     );
     let inlay_count = inlay_hints.len();
@@ -684,7 +684,7 @@ fn validate_synthetic_outline_requests(
             "signatureHelp",
             "req",
             Some(signature_ms),
-            "synthetic builtin=sin",
+            "synthetic builtin=atan2",
         ),
         ok_validation(
             "foldingRange",
@@ -1616,6 +1616,7 @@ pub(crate) fn run_lsp_api_validation(
         }],
         "initializationOptions": {
             "sourceRootPaths": modelica_paths,
+            "inlayHintsParameterNames": "all",
         }
     });
     let (initialize_ms, initialize_response) =

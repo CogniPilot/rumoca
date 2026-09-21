@@ -72,13 +72,17 @@ pub fn handle_inlay_hints(
     collector.hints
 }
 
-/// Recursively index user-defined functions by name, mapping each to its
+/// Index user-defined functions by name in pre-order, mapping each to its
 /// declared input parameter names in source order.
 fn collect_user_function_params(
     classes: &ast::AstIndexMap<String, ast::ClassDef>,
     out: &mut HashMap<String, Vec<String>>,
 ) {
-    for class in classes.values() {
+    let mut stack: Vec<&ast::ClassDef> = Vec::new();
+    for class in classes.values().rev() {
+        stack.push(class);
+    }
+    while let Some(class) = stack.pop() {
         if class.class_type == rumoca_core::ClassType::Function {
             let params: Vec<String> = class
                 .components
@@ -88,7 +92,9 @@ fn collect_user_function_params(
                 .collect();
             out.entry(class.name.text.to_string()).or_insert(params);
         }
-        collect_user_function_params(&class.classes, out);
+        for child in class.classes.values().rev() {
+            stack.push(child);
+        }
     }
 }
 
@@ -443,19 +449,21 @@ end M;
     #[test]
     fn user_function_hints_use_declared_parameter_names() {
         let source = r#"
-function scale
-  input Real value;
-  input Real factor;
-  output Real result;
-algorithm
-  result := value * factor;
-end scale;
+package MyPkg
+  function scale
+    input Real value;
+    input Real factor;
+    output Real result;
+  algorithm
+    result := value * factor;
+  end scale;
+end MyPkg;
 
 model M
   Real y;
   Real v;
 equation
-  y = scale(v, 2.0);
+  y = MyPkg.scale(v, 2.0);
 end M;
 "#;
         let ast = parse_source_to_ast(source, "input.mo").expect("parse");
@@ -468,7 +476,7 @@ end M;
         let labels: Vec<&str> = parameter_hints(&hints).iter().map(|(_, l)| *l).collect();
         assert!(
             labels.contains(&"value:") && labels.contains(&"factor:"),
-            "user function call should use declared parameter names, got: {:?}",
+            "nested user function call should use declared parameter names, got: {:?}",
             hints
         );
     }

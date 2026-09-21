@@ -1,11 +1,11 @@
 //! INST (Instantiation) contract tests - MLS §5, §7
 //!
-//! Tests for the 53 instantiation contracts defined in SPEC_0022.
+//! Tests for the 54 instantiation contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
-    expect_balanced, expect_failure_in_phase_with_code, expect_parse_err_with_code,
-    expect_resolve_failure_with_code, expect_success,
+    expect_balanced, expect_compile_warning, expect_failure_in_phase_with_code,
+    expect_parse_err_with_code, expect_resolve_failure_with_code, expect_success,
 };
 
 fn flat_var_is_protected(result: &rumoca_compile::compile::CompilationResult, name: &str) -> bool {
@@ -1089,6 +1089,46 @@ fn inst_053_conditional_true_kept() {
         end Test;
     "#,
         "Test",
+    );
+}
+
+// =============================================================================
+// INST-054: Automatic inner creation
+// "An inner declaration of a unique non-partial class is automatically added
+// for outer declarations lacking a matching inner, with a diagnostic"
+// =============================================================================
+
+#[test]
+fn inst_054_outer_without_inner_synthesizes_default() {
+    expect_compile_warning(
+        r#"
+        model World
+            parameter Boolean enableAnimation = true;
+            parameter Real nominalLength = 1;
+            parameter Real defaultBodyDiameter = nominalLength/9;
+            annotation(
+                defaultComponentName="world",
+                defaultComponentPrefixes="inner",
+                missingInnerMessage="A default world component with the default
+gravity field will be used.");
+        end World;
+        model Shape
+            Real s;
+        equation
+            s = 1.0;
+        end Shape;
+        model Body
+            outer World world;
+            parameter Boolean animation = true;
+            parameter Real sphereDiameter = world.defaultBodyDiameter;
+            Shape sphere if world.enableAnimation and animation and sphereDiameter > 0;
+        end Body;
+        model Standalone
+            Body body;
+        end Standalone;
+    "#,
+        "Standalone",
+        "WI013",
     );
 }
 
