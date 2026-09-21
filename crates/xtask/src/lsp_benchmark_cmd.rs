@@ -57,7 +57,7 @@ model M
   String local = "./Lib/package.mo";
   Alias helperInst;
 equation
-  helperInst.y = sin(helperInst.gain);
+  helperInst.y = atan2(helperInst.gain, 2.0);
 end M;
 "#;
 

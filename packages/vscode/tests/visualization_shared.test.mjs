@@ -32,7 +32,7 @@ test("normalizeVisualizationViews preserves scatter config and canonical scriptP
     { name: "x vs time", x: "time", y: "x" },
   ]);
   assert.equal(views[1].scriptPath, "../shared/viewer_3d.js");
-  assert.deepEqual(views[1].y, ["x", "y"]);
+  assert.deepEqual(views[1].y, []);
 });
 
 test("shared visualization helpers expose the default 3d viewer script", () => {

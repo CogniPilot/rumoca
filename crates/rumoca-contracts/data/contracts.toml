@@ -2965,6 +2965,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'INST-054'
+category = 'Instantiation'
+name = 'Automatic inner creation'
+mls_ref = '§5.4'
+requirement = 'If a unique non-partial class is used for all outer declarations of the same name lacking a matching inner declaration, an inner declaration of that class is automatically added at the top of the model and a diagnostic is given'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'LEX-001'
 category = 'Lexical'
 name = 'ASCII identifiers'

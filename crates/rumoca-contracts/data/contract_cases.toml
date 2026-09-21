@@ -1381,6 +1381,13 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'INST-054'
+case_id = 'inst_054_outer_without_inner_synthesizes_default'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'LEX-001'
 case_id = 'lex_001_ascii_identifiers_non_ascii'
 test_file = 'tests/lex_contracts.rs'
