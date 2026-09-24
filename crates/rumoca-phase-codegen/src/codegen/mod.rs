@@ -28,6 +28,7 @@ mod galec_golden_tests;
 #[cfg(test)]
 mod galec_manifest_template_tests;
 mod me_projection;
+mod pure_call_families;
 mod render_expr;
 mod render_solve;
 mod render_solve_ops;

@@ -1,5 +1,5 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array %}
 {%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields %}
 {%- from "fmi-typed-functions.jinja" import functions %}
 #include <float.h>
@@ -32,15 +32,11 @@ typedef struct {
 {{ functions(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 else []) }}
 
 static void initialize_values(ModelInstance* m) {
+{{- value_array("initial_y", "Y_LEN", fmi.initial_y) }}
+{{- value_array("initial_p", "P_LEN", fmi.initial_parameters) }}
     m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true;
-    memset(m->y, 0, sizeof(m->y));
-    memset(m->p, 0, sizeof(m->p));
-{%- for value in fmi.initial_y %}
-    m->y[{{ loop.index0 }}] = {{ value }};
-{%- endfor %}
-{%- for value in fmi.initial_parameters %}
-    m->p[{{ loop.index0 }}] = {{ value }};
-{%- endfor %}
+    memcpy(m->y, initial_y, sizeof(m->y));
+    memcpy(m->p, initial_p, sizeof(m->p));
     m->time = 0.0;
 }
 
@@ -96,64 +92,73 @@ static fmi2Status integrate_rk4(ModelInstance* m, fmi2Real start, fmi2Real step)
     return settle_assertion_event(m);
 }
 
+{#- One row per FMI 2 value reference, indexed by the reference itself: time
+    is 0, then every variable scalar in inventory order, then every state
+    derivative scalar. -#}
+enum RmcColumn { RMC_COLUMN_TIME, RMC_COLUMN_Y, RMC_COLUMN_P, RMC_COLUMN_DERIVATIVE };
+enum RmcAccess { RMC_ACCESS_FIXED, RMC_ACCESS_STATE, RMC_ACCESS_INPUT, RMC_ACCESS_PARAMETER, RMC_ACCESS_TUNABLE_PARAMETER };
+typedef struct { unsigned char column; unsigned char access; unsigned char marks_parameters; size_t index; } RmcValueReference;
+static const RmcValueReference rmc_value_references[] = {
+    {RMC_COLUMN_TIME, RMC_ACCESS_FIXED, 0, 0},
+{%- set row = namespace(count=0) %}
+{%- for variable in fmi.variables %}
+{%- set column %}{% if variable.storage.column == "y" %}RMC_COLUMN_Y{% elif variable.storage.column == "p" %}RMC_COLUMN_P{% else %}{{ fail("unsupported-feature:fmi.c.value-reference-column " ~ variable.storage.column) }}{% endif %}{% endset %}
+{%- set access %}{% if variable.role == "State" %}RMC_ACCESS_STATE{% elif variable.causality == "input" %}RMC_ACCESS_INPUT{% elif variable.causality == "parameter" %}{% if variable.tunable %}RMC_ACCESS_TUNABLE_PARAMETER{% else %}RMC_ACCESS_PARAMETER{% endif %}{% else %}RMC_ACCESS_FIXED{% endif %}{% endset %}
+{%- for scalar in range(variable.storage.scalar_count) %}{% if row.count % 6 == 0 %}
+   {% endif %} { {{- column }}, {{ access }}, {{ 1 if variable.causality == "parameter" else 0 }}, {{ variable.storage.base + scalar -}} },
+{%- set row.count = row.count + 1 %}
+{%- endfor %}
+{%- endfor %}
+{%- for scalar in range(solve.solve_layout.state_scalar_count) %}{% if row.count % 6 == 0 %}
+   {% endif %} {RMC_COLUMN_DERIVATIVE, RMC_ACCESS_FIXED, 0, {{ scalar }}},
+{%- set row.count = row.count + 1 %}
+{%- endfor %}
+};
+#define RMC_VALUE_REFERENCES (sizeof(rmc_value_references) / sizeof(rmc_value_references[0]))
+
 static fmi2Status get_real(ModelInstance* m, fmi2ValueReference vr, fmi2Real* value) {
     if (settle_values(m) != fmi2OK) return fmi2Error;
-    switch (vr) {
-    case 0: *value = m->time; return fmi2OK;
-{%- set vr = namespace(value=1) %}
-{%- for variable in fmi.variables %}
-{%- for scalar in range(variable.storage.scalar_count) %}
-    case {{ vr.value }}: *value = m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}]; return fmi2OK;
-{%- set vr.value = vr.value + 1 %}
-{%- endfor %}
-{%- endfor %}
-{%- for scalar in range(solve.solve_layout.state_scalar_count) %}
-    case {{ vr.value }}: if (evaluate_derivatives(m) != fmi2OK) return fmi2Error; *value = m->derivative[{{ scalar }}]; return fmi2OK;
-{%- set vr.value = vr.value + 1 %}
-{%- endfor %}
-    default: return fmi2Error;
+    if (vr >= RMC_VALUE_REFERENCES) return fmi2Error;
+    const RmcValueReference* ref = &rmc_value_references[vr];
+    switch (ref->column) {
+    case RMC_COLUMN_TIME: *value = m->time; return fmi2OK;
+    case RMC_COLUMN_Y: *value = m->y[ref->index]; return fmi2OK;
+    case RMC_COLUMN_P: *value = m->p[ref->index]; return fmi2OK;
+    default: if (evaluate_derivatives(m) != fmi2OK) return fmi2Error; *value = m->derivative[ref->index]; return fmi2OK;
     }
 }
 
 static fmi2Boolean can_set_real(const ModelInstance* m, fmi2ValueReference vr) {
-    switch (vr) {
-{%- set vr = namespace(value=1) %}
-{%- for variable in fmi.variables %}
-{%- for scalar in range(variable.storage.scalar_count) %}
-    case {{ vr.value }}:
-{%- if variable.role == "State" %}
+    if (vr >= RMC_VALUE_REFERENCES) return fmi2False;
+    switch (rmc_value_references[vr].access) {
+    case RMC_ACCESS_STATE:
         return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
             || (m->type == fmi2ModelExchange && m->state == MODEL_CONTINUOUS);
-{%- elif variable.causality == "input" %}
+    case RMC_ACCESS_INPUT:
         return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
             || (m->type == fmi2ModelExchange && (m->state == MODEL_EVENT || m->state == MODEL_CONTINUOUS))
             || (m->type == fmi2CoSimulation && m->state == MODEL_STEP);
-{%- elif variable.causality == "parameter" %}
-        return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION{% if variable.tunable %}
+    case RMC_ACCESS_PARAMETER:
+        return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION;
+    case RMC_ACCESS_TUNABLE_PARAMETER:
+        return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
             || (m->type == fmi2ModelExchange && m->state == MODEL_EVENT)
-            || (m->type == fmi2CoSimulation && m->state == MODEL_STEP){% endif %};
-{%- else %}
-        return fmi2False;
-{%- endif %}
-{%- set vr.value = vr.value + 1 %}
-{%- endfor %}
-{%- endfor %}
+            || (m->type == fmi2CoSimulation && m->state == MODEL_STEP);
     default: return fmi2False;
     }
 }
 
 static fmi2Status set_real(ModelInstance* m, fmi2ValueReference vr, fmi2Real value) {
     if (!isfinite(value)) return fmi2Error;
-    switch (vr) {
-{%- set vr.value = 1 %}
-{%- for variable in fmi.variables %}
-{%- for scalar in range(variable.storage.scalar_count) %}
-    case {{ vr.value }}: m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] = value;{% if variable.causality == "parameter" %} m->parameters_dirty=true;{% endif %} return fmi2OK;
-{%- set vr.value = vr.value + 1 %}
-{%- endfor %}
-{%- endfor %}
+    if (vr >= RMC_VALUE_REFERENCES) return fmi2Error;
+    const RmcValueReference* ref = &rmc_value_references[vr];
+    switch (ref->column) {
+    case RMC_COLUMN_Y: m->y[ref->index] = value; break;
+    case RMC_COLUMN_P: m->p[ref->index] = value; break;
     default: return fmi2Error;
     }
+    if (ref->marks_parameters) m->parameters_dirty = true;
+    return fmi2OK;
 }
 
 FMI_EXPORT const char* fmi2GetTypesPlatform(void) { return "default"; }

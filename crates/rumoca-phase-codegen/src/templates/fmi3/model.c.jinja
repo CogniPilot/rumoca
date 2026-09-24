@@ -1,5 +1,5 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array %}
 {%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields %}
 {%- from "fmi-typed-functions.jinja" import functions %}
 #include <float.h>
@@ -21,14 +21,10 @@ typedef struct { bool assertions_initialized; bool assertion_failed; bool parame
 {{ functions(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 else []) }}
 
 static void initialize_values(ModelInstance* m) {
+{{- value_array("initial_y", "Y_LEN", fmi.initial_y) }}
+{{- value_array("initial_p", "P_LEN", fmi.initial_parameters) }}
     m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true;
-    memset(m->y, 0, sizeof(m->y)); memset(m->p, 0, sizeof(m->p)); m->time = 0.0;
-{%- for value in fmi.initial_y %}
-    m->y[{{ loop.index0 }}] = {{ value }};
-{%- endfor %}
-{%- for value in fmi.initial_parameters %}
-    m->p[{{ loop.index0 }}] = {{ value }};
-{%- endfor %}
+    memcpy(m->y, initial_y, sizeof(m->y)); memcpy(m->p, initial_p, sizeof(m->p)); m->time = 0.0;
 }
 {% if fmi.assertions %}
 static void log_assertion(ModelInstance* m, const char* message) { if (m->logger) m->logger(m->environment, fmi3Error, "assertion", message); }
@@ -67,62 +63,72 @@ static fmi3Status integrate_rk4(ModelInstance* m, fmi3Float64 start, fmi3Float64
     for(size_t i=0;i<count;++i){k4[i]=m->derivative[i];m->y[i]=initial[i]+step*(k1[i]+2.0*k2[i]+2.0*k3[i]+k4[i])/6.0;if(!isfinite(m->y[i]))return fmi3Error;}
     return settle_assertion_event(m);
 }
-static size_t value_count(fmi3ValueReference vr) {
-    switch (vr) {
-    case 0: return 1;
-{%- for variable in fmi.variables %}
-    case {{ variable.value_reference_fmi3 }}: return {{ variable.storage.scalar_count }};
+{#- One row per FMI 3 value reference, indexed by the reference itself: time
+    is 0, the variables are 1..N in inventory order and the state derivatives
+    follow (the renderer refuses any other numbering). -#}
+enum RmcColumn { RMC_COLUMN_TIME, RMC_COLUMN_Y, RMC_COLUMN_P, RMC_COLUMN_DERIVATIVE };
+enum RmcAccess { RMC_ACCESS_FIXED, RMC_ACCESS_STATE, RMC_ACCESS_INPUT, RMC_ACCESS_PARAMETER, RMC_ACCESS_TUNABLE_PARAMETER };
+typedef struct { unsigned char column; unsigned char access; unsigned char marks_parameters; size_t base; size_t count; } RmcValueReference;
+static const RmcValueReference rmc_value_references[] = {
+    {RMC_COLUMN_TIME, RMC_ACCESS_FIXED, 0, 0, 1},
+{%- for variable in fmi.variables %}{% if loop.index0 % 6 == 0 %}
+   {% endif %} {
+{%- if variable.storage.column == "y" %}RMC_COLUMN_Y{% elif variable.storage.column == "p" %}RMC_COLUMN_P{% else %}{{ fail("unsupported-feature:fmi.c.value-reference-column " ~ variable.storage.column) }}{% endif %}, {% if variable.role == "State" %}RMC_ACCESS_STATE{% elif variable.causality == "input" %}RMC_ACCESS_INPUT{% elif variable.causality == "parameter" %}{% if variable.tunable %}RMC_ACCESS_TUNABLE_PARAMETER{% else %}RMC_ACCESS_PARAMETER{% endif %}{% else %}RMC_ACCESS_FIXED{% endif %}, {{ 1 if variable.causality == "parameter" else 0 }}, {{ variable.storage.base }}, {{ variable.storage.scalar_count }}},
 {%- endfor %}
-{%- set derivative_ordinal = namespace(value=0) %}
-{%- for variable in fmi.variables %}{% if variable.role == "State" %}
-    case {{ fmi.derivative_value_reference_base_fmi3 + derivative_ordinal.value }}: return {{ variable.storage.scalar_count }};
-{%- set derivative_ordinal.value = derivative_ordinal.value + 1 %}{% endif %}{% endfor %}
-    default: return 0;
-    }
+{%- set derivative = namespace(ordinal=0, base=0) %}
+{%- for variable in fmi.variables %}{% if variable.role == "State" %}{% if derivative.ordinal % 6 == 0 %}
+   {% endif %} {RMC_COLUMN_DERIVATIVE, RMC_ACCESS_FIXED, 0, {{ derivative.base }}, {{ variable.storage.scalar_count }}},
+{%- set derivative.ordinal = derivative.ordinal + 1 %}{% set derivative.base = derivative.base + variable.storage.scalar_count %}{% endif %}{% endfor %}
+};
+#define RMC_VALUE_REFERENCES (sizeof(rmc_value_references) / sizeof(rmc_value_references[0]))
+static size_t value_count(fmi3ValueReference vr) {
+    return vr < RMC_VALUE_REFERENCES ? rmc_value_references[vr].count : 0;
 }
 static fmi3Status get_float64(ModelInstance* m, fmi3ValueReference vr, double* values) {
     if (settle_values(m) != fmi3OK) return fmi3Error;
-    switch (vr) {
-    case 0: values[0] = m->time; return fmi3OK;
-{%- for variable in fmi.variables %}
-    case {{ variable.value_reference_fmi3 }}:{% for scalar in range(variable.storage.scalar_count) %} values[{{ scalar }}] = m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}];{% endfor %} return fmi3OK;
-{%- endfor %}
-{%- set derivative_ordinal.value = 0 %}{%- set derivative_base = namespace(value=0) %}
-{%- for variable in fmi.variables %}{% if variable.role == "State" %}
-    case {{ fmi.derivative_value_reference_base_fmi3 + derivative_ordinal.value }}: if (evaluate_derivatives(m) != fmi3OK) return fmi3Error;{% for scalar in range(variable.storage.scalar_count) %} values[{{ scalar }}] = m->derivative[{{ derivative_base.value + scalar }}];{% endfor %} return fmi3OK;
-{%- set derivative_ordinal.value = derivative_ordinal.value + 1 %}{%- set derivative_base.value = derivative_base.value + variable.storage.scalar_count %}{% endif %}{% endfor %}
-    default: return fmi3Error;
+    if (vr >= RMC_VALUE_REFERENCES) return fmi3Error;
+    const RmcValueReference* ref = &rmc_value_references[vr];
+    const double* source;
+    switch (ref->column) {
+    case RMC_COLUMN_TIME: source = &m->time; break;
+    case RMC_COLUMN_Y: source = m->y; break;
+    case RMC_COLUMN_P: source = m->p; break;
+    default: if (evaluate_derivatives(m) != fmi3OK) return fmi3Error; source = m->derivative; break;
     }
+    for (size_t k = 0; k < ref->count; ++k) values[k] = source[ref->base + k];
+    return fmi3OK;
 }
 static fmi3Boolean can_set_float64(const ModelInstance* m, fmi3ValueReference vr) {
-    switch (vr) {
-{%- for variable in fmi.variables %}
-    case {{ variable.value_reference_fmi3 }}:
-{%- if variable.role == "State" %}
+    if (vr >= RMC_VALUE_REFERENCES) return fmi3False;
+    switch (rmc_value_references[vr].access) {
+    case RMC_ACCESS_STATE:
         return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
             || (m->type == INTERFACE_ME && m->state == MODEL_CONTINUOUS);
-{%- elif variable.causality == "input" %}
+    case RMC_ACCESS_INPUT:
         return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
             || (m->type == INTERFACE_ME && (m->state == MODEL_EVENT || m->state == MODEL_CONTINUOUS))
             || (m->type == INTERFACE_CS && m->state == MODEL_STEP);
-{%- elif variable.causality == "parameter" %}
-        return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION{% if variable.tunable %}
+    case RMC_ACCESS_PARAMETER:
+        return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION;
+    case RMC_ACCESS_TUNABLE_PARAMETER:
+        return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
             || (m->type == INTERFACE_ME && m->state == MODEL_EVENT)
-            || (m->type == INTERFACE_CS && m->state == MODEL_STEP){% endif %};
-{%- else %}
-        return fmi3False;
-{%- endif %}
-{%- endfor %}
+            || (m->type == INTERFACE_CS && m->state == MODEL_STEP);
     default: return fmi3False;
     }
 }
 static fmi3Status set_float64(ModelInstance* m, fmi3ValueReference vr, const double* values) {
-    switch (vr) {
-{%- for variable in fmi.variables %}
-    case {{ variable.value_reference_fmi3 }}:{% for scalar in range(variable.storage.scalar_count) %} m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] = values[{{ scalar }}];{% endfor %}{% if variable.causality == "parameter" %} m->parameters_dirty=true;{% endif %} return fmi3OK;
-{%- endfor %}
+    if (vr >= RMC_VALUE_REFERENCES) return fmi3Error;
+    const RmcValueReference* ref = &rmc_value_references[vr];
+    double* target;
+    switch (ref->column) {
+    case RMC_COLUMN_Y: target = m->y; break;
+    case RMC_COLUMN_P: target = m->p; break;
     default: return fmi3Error;
     }
+    for (size_t k = 0; k < ref->count; ++k) target[ref->base + k] = values[k];
+    if (ref->marks_parameters) m->parameters_dirty=true;
+    return fmi3OK;
 }
 FMI_EXPORT const char* fmi3GetVersion(void) { return "3.0"; }
 FMI_EXPORT fmi3Instance fmi3InstantiateModelExchange(fmi3String name, fmi3String token, fmi3String resources, fmi3Boolean visible, fmi3Boolean loggingOn, fmi3InstanceEnvironment environment, fmi3LogMessageCallback logger) {
