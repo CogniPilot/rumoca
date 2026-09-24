@@ -111,6 +111,7 @@ impl Model {
                 rows: vec![2, 1, 0],
                 y_indices: vec![4, 3, 1],
                 tearing: None,
+                guarded_tearing: None,
                 alternate_charts: Vec::new(),
             }],
         };

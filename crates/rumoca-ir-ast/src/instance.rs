@@ -401,6 +401,10 @@ pub struct ModificationValue {
     /// so downstream flat-output generation can keep parameter propagation
     /// relationships instead of hard-coding evaluated defaults.
     pub source: Option<Expression>,
+    /// Occurrence scope of `value` after following modifier references.
+    /// It can differ from the scope where `source` was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_scope: Option<QualifiedName>,
     /// Optional lexical scope where the modifier expression was written.
     ///
     /// MLS §7.2.4: component modifications are evaluated in the scope where the
@@ -420,6 +424,7 @@ impl ModificationValue {
         Self {
             value,
             source: None,
+            value_scope: None,
             source_scope: None,
             each: false,
             final_: false,
@@ -434,6 +439,7 @@ impl ModificationValue {
         Self {
             value,
             source: None,
+            value_scope: None,
             source_scope: None,
             each,
             final_,
@@ -465,10 +471,17 @@ impl ModificationValue {
         Self {
             value,
             source,
+            value_scope: source_scope.clone(),
             source_scope,
             each,
             final_,
         }
+    }
+
+    /// Record the occurrence that owns a value substituted from another modifier.
+    pub fn with_value_scope(mut self, value_scope: Option<QualifiedName>) -> Self {
+        self.value_scope = value_scope;
+        self
     }
 }
 
@@ -608,6 +621,9 @@ pub struct InstanceData {
     /// instantiation resolves a different value into `binding`. Flattening uses
     /// this source to preserve dependencies on changeable parent parameters.
     pub binding_source: Option<Expression>,
+    /// Occurrence scope of the evaluated modification binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_value_scope: Option<QualifiedName>,
     /// Lexical scope where a modification-derived binding was written.
     ///
     /// Used during flattening to qualify symbolic modifier references according
@@ -697,6 +713,7 @@ impl Default for InstanceData {
             state_select: StateSelect::default(),
             binding: None,
             binding_source: None,
+            binding_value_scope: None,
             binding_source_scope: None,
             attribute_source_scopes: IndexMap::default(),
             binding_from_modification: false,
@@ -875,6 +892,11 @@ pub struct InstanceOverlay {
     /// When an outer component `initialStep.stateGraphRoot` references inner `stateGraphRoot`,
     /// equations/connections using the outer prefix are redirected to the inner path.
     pub outer_prefix_to_inner: IndexMap<ComponentPath, ComponentPath>,
+    /// Exact source declaration remaps produced when identical inherited
+    /// declarations collapse in one concrete class occurrence. The outer key
+    /// is the owning `InstanceId`; remaps never apply across instances.
+    #[serde(default)]
+    pub inherited_def_id_remaps: IndexMap<InstanceId, IndexMap<DefId, DefId>>,
     /// Mapping from inner-outer component paths to their parent inner paths (MLS §5.4).
     /// When a component is declared `inner outer` (e.g., `inner outer StateGraphRoot stateGraphRoot`),
     /// it bridges two scopes: it serves as `inner` for children and as `outer` referencing the parent.

@@ -187,6 +187,137 @@ fn model() -> solve::SolveModel {
 }
 
 #[test]
+fn prepared_refresh_plans_do_not_repeat_structural_validation() {
+    let runtime = SolveRuntime::new_fixture(&model()).unwrap();
+    let before = crate::runtime::projection::algebraic_plan_validation_count();
+    for (p, t, target) in [(1.0, 0.0, 2.0), (2.0, 0.5, 3.0), (0.5, 1.0, 1.5)] {
+        let x = (p + t) * target * target;
+        for complete in [false, true] {
+            let mut y = [x, target * 1.1];
+            runtime
+                .project_refresh_slots(
+                    &runtime.algebraic_refresh,
+                    &mut RefreshSlotArgs {
+                        t,
+                        solver_y: &mut y,
+                        params: &[p],
+                        tol: 1e-10,
+                        max_iters: 12,
+                        certify_coordinates: true,
+                    },
+                    complete,
+                )
+                .unwrap();
+            assert!(((p + t) * y[1] * y[1] - x).abs() < 1e-8);
+            assert!((y[1] - target).abs() < 1e-8);
+        }
+        let mut seed = [1.0, 99.0, 0.0];
+        project(&runtime, &[x, target], &[p], t, &mut seed).unwrap();
+        assert!((seed[1] - 1.0 / (2.0 * (p + t) * target)).abs() < 1e-10);
+    }
+    assert_eq!(
+        crate::runtime::projection::algebraic_plan_validation_count() - before,
+        0,
+        "immutable prepared refresh plans were rescanned during value/seed execution"
+    );
+}
+
+fn corrupt_projection_layout(plan: &mut solve::AlgebraicProjectionPlan, fault: usize) {
+    match fault {
+        0 => {
+            plan.blocks[0].rows.clear();
+        }
+        1 => plan.blocks[0].rows[0] = 2,
+        2 => plan.blocks[0].y_indices[0] = 0,
+        3 => plan.blocks[0].y_indices[0] = 2,
+        4 => plan.blocks.push(plan.blocks[0].clone()),
+        5 => {
+            let mut duplicate_unknown = plan.blocks[0].clone();
+            duplicate_unknown.rows[0] = 0;
+            plan.blocks.push(duplicate_unknown);
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn prepared_refresh_admission_rejects_malformed_complete_value_and_stage_plans() {
+    let runtime = SolveRuntime::new_fixture(&model()).unwrap();
+    for variant in 0..3 {
+        for fault in 0..6 {
+            let mut plan = (*runtime.algebraic_refresh).clone();
+            let projection = match variant {
+                0 => &mut plan.simultaneous_plan,
+                1 => &mut plan.value_projection_plan,
+                _ => plan
+                    .value_stages
+                    .iter_mut()
+                    .find_map(|stage| match stage {
+                        solve::RefreshStage::ProjectionBlock { plan, .. } => Some(plan),
+                        _ => None,
+                    })
+                    .expect("nonlinear fixture retains a projection stage"),
+            };
+            corrupt_projection_layout(projection, fault);
+            assert!(
+                PreparedRefreshPlan::new(plan, 1, 2).is_err(),
+                "admitted malformed variant {variant}, fault {fault}"
+            );
+        }
+    }
+}
+
+#[test]
+fn prepared_refresh_rejects_changed_partition_and_slice_without_writes() {
+    for (states, solver, len) in [
+        (2, 2, 2),
+        (0, 2, 2),
+        (1, 3, 3),
+        (1, 1, 2),
+        (1, 2, 1),
+        (1, 2, 3),
+    ] {
+        let mut runtime = SolveRuntime::new_fixture(&model()).unwrap();
+        runtime.state_count = states;
+        runtime.solver_count = solver;
+        let mut y = vec![4.0; len];
+        let before = y.clone();
+        let error = runtime
+            .refresh_algebraic_and_output_slots_certified(0.0, &mut y, &[1.0], 1e-10, 4)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("prepared refresh layout mismatch")
+        );
+        assert_eq!(y, before);
+        for complete in [false, true] {
+            assert!(
+                runtime
+                    .project_refresh_slots(
+                        &runtime.algebraic_refresh,
+                        &mut RefreshSlotArgs {
+                            t: 0.0,
+                            solver_y: &mut y,
+                            params: &[1.0],
+                            tol: 1e-10,
+                            max_iters: 4,
+                            certify_coordinates: true,
+                        },
+                        complete,
+                    )
+                    .is_err()
+            );
+            assert_eq!(y, before);
+        }
+        let mut seed = [1.0, 99.0, 0.0];
+        let before_seed = seed;
+        assert!(project(&runtime, &y, &[1.0], 0.0, &mut seed).is_err());
+        assert_eq!(seed, before_seed);
+    }
+}
+
+#[test]
 fn algebraic_seed_requests_reuse_one_fixed_coordinate_linearization() {
     let mut runtime = SolveRuntime::new_fixture(&model()).unwrap();
     let native = Rc::new(CountedJacobian {
@@ -253,6 +384,7 @@ fn counted_runtime() -> (SolveRuntime, Rc<CountedJacobian>) {
 #[test]
 fn seed_linearization_key_covers_every_y_parameter_and_time_bit() {
     let (runtime, native) = counted_runtime();
+    let before_factor = crate::runtime::projection::seed_dense_factorization_count();
     let adjacent_x = f64::from_bits(4.0_f64.to_bits() + 1);
     for (index, (y, parameter, time)) in [
         ([4.0, 2.0], 1.0, 0.0),
@@ -272,6 +404,11 @@ fn seed_linearization_key_covers_every_y_parameter_and_time_bit() {
             let expected = (sx - y[1] * y[1] * 0.5) / (2.0 * (parameter + time) * y[1]);
             assert!((seed[1] - expected).abs() < 1e-12);
             assert_eq!(native.matrix_calls.get(), index + 1);
+            assert_eq!(
+                crate::runtime::projection::seed_dense_factorization_count(),
+                before_factor + index + 1,
+                "each exact point owns one fallback LU shared by both right-hand sides"
+            );
         }
     }
 }
@@ -312,10 +449,23 @@ fn seed_linearizations_without_construction_proofs_are_not_retained() {
 #[test]
 fn cloned_runtimes_start_with_independent_numerical_linearizations() {
     let (runtime, native) = counted_runtime();
+    let before_factor = crate::runtime::projection::seed_dense_factorization_count();
     project(&runtime, &[4.0, 2.0], &[1.0], 0.0, &mut [1.0, 99.0, 0.0]).unwrap();
+    assert_eq!(
+        crate::runtime::projection::seed_dense_factorization_count(),
+        before_factor + 1
+    );
     let cloned = runtime.clone();
     project(&cloned, &[4.0, 2.0], &[1.0], 0.0, &mut [1.0, 99.0, 0.0]).unwrap();
+    assert_eq!(
+        crate::runtime::projection::seed_dense_factorization_count(),
+        before_factor + 2
+    );
     assert_eq!(native.matrix_calls.get(), 2);
     project(&runtime, &[4.0, 2.0], &[1.0], 0.0, &mut [1.0, 99.0, 0.0]).unwrap();
     assert_eq!(native.matrix_calls.get(), 2);
+    assert_eq!(
+        crate::runtime::projection::seed_dense_factorization_count(),
+        before_factor + 2
+    );
 }

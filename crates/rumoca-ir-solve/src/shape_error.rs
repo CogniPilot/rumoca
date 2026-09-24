@@ -199,6 +199,10 @@ pub enum SolveProblemShapeContractError {
         index: usize,
         span: Option<Span>,
     },
+    ProjectionTearing {
+        context: &'static str,
+        span: Option<Span>,
+    },
     ProjectionBlockShapeMismatch {
         context: &'static str,
         row_count: usize,
@@ -244,6 +248,7 @@ impl SolveProblemShapeContractError {
             | Self::SolverIndexOutOfBounds { span, .. }
             | Self::VariableIndexOutOfBounds { span, .. }
             | Self::DuplicateIndex { span, .. }
+            | Self::ProjectionTearing { span, .. }
             | Self::ProjectionBlockShapeMismatch { span, .. }
             | Self::DuplicateProjectionUnknown { span, .. }
             | Self::InvalidProjectionUnknown { span, .. }
@@ -585,6 +590,10 @@ fn fmt_index_shape_contract_error(
         Error::DuplicateIndex { context, index, .. } => {
             write!(f, "{context} contains duplicate index {index}")
         }
+        Error::ProjectionTearing { context, .. } => write!(
+            f,
+            "{context} contains a duplicated or incomplete tearing partition, or a target/row outside its block"
+        ),
         Error::ProjectionBlockShapeMismatch {
             context,
             row_count,

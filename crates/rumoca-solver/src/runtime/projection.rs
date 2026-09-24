@@ -2,6 +2,8 @@ mod affine;
 mod branch_continuity;
 mod homotopy;
 mod initial;
+mod jacobian_values;
+pub(crate) use jacobian_values::{JacobianMatrix, JacobianStorage};
 mod initial_diagnostics;
 mod manifold;
 mod plan;
@@ -37,16 +39,34 @@ pub(crate) use manifold::{
     ManifoldProjectionModel, certify_state_manifold, project_state_manifold,
 };
 pub(crate) use seed_linearization::SeedBlockLinearization;
+#[cfg(test)]
+pub(crate) use seed_linearization::seed_dense_factorization_count;
 pub(crate) use tearing::per_row_torn_block_sweep;
 
 #[cfg(test)]
+pub(crate) use plan::algebraic_plan_validation_count;
+#[cfg(test)]
 use plan::algebraic_tail_len;
-use plan::{
-    require_square_projection_block, validate_algebraic_projection_plan,
-    validate_initial_projection_plan,
-};
+pub(crate) use plan::validate_algebraic_projection_plan;
+use plan::{require_square_projection_block, validate_initial_projection_plan};
 
 const ALGEBRAIC_PROJECTION_MAX_ITERS: usize = 32;
+
+#[cfg(test)]
+thread_local! {
+    static JACOBIAN_ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn jacobian_allocation_count() -> usize {
+    JACOBIAN_ALLOCATIONS.get()
+}
+
+pub(crate) fn allocate_projection_jacobian(rows: usize, columns: usize) -> DMatrix<f64> {
+    #[cfg(test)]
+    JACOBIAN_ALLOCATIONS.set(JACOBIAN_ALLOCATIONS.get() + 1);
+    DMatrix::zeros(rows, columns)
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct AlgebraicProjectionArgs<'a> {
@@ -57,6 +77,21 @@ pub(crate) struct AlgebraicProjectionArgs<'a> {
 }
 
 pub(crate) trait ImplicitProjectionModel {
+    /// Borrow storage only; every use must assemble fresh derivatives before solving.
+    fn lease_affine_jacobian(
+        &self,
+        _structure: &solve::JacobianStructure,
+        _coordinates: (&[usize], &[usize]),
+        _y_len: usize,
+    ) -> Result<Option<std::cell::RefMut<'_, JacobianStorage>>, RuntimeSolveError> {
+        Ok(None)
+    }
+
+    /// On `Ok(true)`, fulfill the complete, fresh stored-slot overwrite contract
+    /// of `CompiledSolveProjectionJacobian`, including numerical zero and
+    /// nonfinite values. Structural zeros remain implicit +0. `Ok(false)` may
+    /// dirty the destination; the caller clears it before interpreted fallback.
+    /// On `Err`, propagate without replay or consuming/publishing partial values.
     fn eval_prepared_implicit_jacobian(
         &self,
         _structure: &solve::JacobianStructure,
@@ -233,6 +268,18 @@ pub(crate) trait ImplicitProjectionModel {
         _system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
         None
+    }
+
+    fn solve_affine_torn_candidate(
+        &self,
+        block_index: usize,
+        candidate: solve::TearingCandidate,
+        system: ScaledNewtonSystem<'_>,
+    ) -> Option<DVector<f64>> {
+        match candidate {
+            solve::TearingCandidate::Primary => self.solve_affine_torn_delta(block_index, system),
+            solve::TearingCandidate::Guarded => None,
+        }
     }
 
     fn eval_implicit_target_value(
@@ -467,7 +514,7 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
             }
             seed[y_index] = value;
         }
-        row_scales.extend(linearization.row_scales(model, block_index, block, seed));
+        row_scales.extend(linearization.row_scales(model, block_index, block, seed)?);
     }
     seed_linearization::certify_with_refinement(model, plan, y, args, seed, row_scales)
 }
@@ -516,23 +563,41 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
     step_limit: StepLimit,
     certify_coordinates: bool,
 ) -> Result<(), RuntimeSolveError> {
+    let mut refinement_tokens = Vec::new();
+    refinement_tokens
+        .try_reserve_exact(plan.blocks.len())
+        .map_err(|error| {
+            RuntimeSolveError::solve_ir(format!(
+                "algebraic projection refinement-token allocation failed: {error}"
+            ))
+        })?;
+    refinement_tokens
+        .extend((0..plan.blocks.len()).map(|_| tearing::RefinementToken::new(certify_coordinates)));
     for iteration in 0..max_iters {
         seed_nonfinite_projection_unknowns(y, plan);
         let mut changed = false;
         let mut all_settled = true;
         let mut earlier_row_invalidated = false;
         for (block_index, block) in plan.blocks.iter().enumerate() {
-            let update = project_algebraic_block(
+            let refinement_token = refinement_tokens.get_mut(block_index).ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "algebraic projection refinement token missing for block {block_index}"
+                ))
+            })?;
+            let update = project_algebraic_block_with_context(
                 model,
                 y,
                 args.parameters,
                 args.time,
                 block,
-                block_index,
-                AlgebraicBlockProjectionPolicy {
-                    tolerance: args.tolerance,
-                    step_limit,
-                    certify_coordinates,
+                AlgebraicBlockProjectionContext {
+                    block_index,
+                    policy: AlgebraicBlockProjectionPolicy {
+                        tolerance: args.tolerance,
+                        step_limit,
+                        certify_coordinates,
+                    },
+                    refinement_token,
                 },
             )?;
             if update.changed && block_index != 0 && !earlier_row_invalidated {
@@ -576,26 +641,30 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
     )?;
     let row_scales = algebraic_plan_row_scales(model, y, args.parameters, args.time, plan)?;
     if certify_coordinates {
-        return Err(projection_error_for_rows(
-            model,
-            "algebraic projection did not establish coordinate convergence",
-            &rows,
-            &residual,
-            &row_scales,
-            args.tolerance,
-        ));
+        return Err(RuntimeSolveError::ProjectionNonConvergence {
+            message: projection_failure_message(
+                model,
+                "algebraic projection did not establish coordinate convergence",
+                &rows,
+                &residual,
+                &row_scales,
+                args.tolerance,
+            ),
+        });
     }
     if scaled_residual_converged(&residual, &row_scales, args.tolerance) {
         return Ok(());
     }
-    Err(projection_error_for_rows(
-        model,
-        "algebraic projection did not converge at event boundary",
-        &rows,
-        &residual,
-        &row_scales,
-        args.tolerance,
-    ))
+    Err(RuntimeSolveError::ProjectionNonConvergence {
+        message: projection_failure_message(
+            model,
+            "algebraic projection did not converge at event boundary",
+            &rows,
+            &residual,
+            &row_scales,
+            args.tolerance,
+        ),
+    })
 }
 
 /// Evaluate a block's selected residual, seeding non-finite rows once from the
@@ -633,15 +702,28 @@ fn try_torn_algebraic_block<M: ImplicitProjectionModel>(
     p: &[f64],
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
-    tol: f64,
-    certify_coordinates: bool,
+    context: &mut AlgebraicBlockProjectionContext<'_>,
 ) -> Result<Option<ProjectionBlockUpdate>, RuntimeSolveError> {
-    let Some(tearing) = block.tearing.as_ref() else {
-        return Ok(None);
-    };
-    tearing::project_torn_algebraic_block(model, y, p, t, tearing, tol, certify_coordinates)
+    for (_, tearing) in block.tearing_candidates() {
+        if let Some(update) = tearing::project_torn_algebraic_block_with_context(
+            model,
+            y,
+            p,
+            t,
+            tearing,
+            tearing::TornProjectionContext {
+                tolerance: context.policy.tolerance,
+                certify_coordinates: context.policy.certify_coordinates,
+                refinement_token: context.refinement_token,
+            },
+        )? {
+            return Ok(Some(update));
+        }
+    }
+    Ok(None)
 }
 
+#[cfg(test)]
 fn project_algebraic_block<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
@@ -651,11 +733,31 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
     block_index: usize,
     policy: AlgebraicBlockProjectionPolicy,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
-    let AlgebraicBlockProjectionPolicy {
-        tolerance: tol,
-        certify_coordinates,
-        ..
-    } = policy;
+    let mut refinement_token = tearing::RefinementToken::new(policy.certify_coordinates);
+    project_algebraic_block_with_context(
+        model,
+        y,
+        p,
+        t,
+        block,
+        AlgebraicBlockProjectionContext {
+            block_index,
+            policy,
+            refinement_token: &mut refinement_token,
+        },
+    )
+}
+
+fn project_algebraic_block_with_context<M: ImplicitProjectionModel>(
+    model: &M,
+    y: &mut [f64],
+    p: &[f64],
+    t: f64,
+    block: &solve::AlgebraicProjectionBlock,
+    mut context: AlgebraicBlockProjectionContext<'_>,
+) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
+    let tol = context.policy.tolerance;
+    let block_index = context.block_index;
     require_square_projection_block(block.rows.len(), block.y_indices.len(), "algebraic")?;
     if block.rows.is_empty() || block.y_indices.is_empty() {
         return Ok(ProjectionBlockUpdate {
@@ -691,8 +793,7 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
     // and corpus-pin gates rather than by any runtime cross-check (there is no
     // second ground truth to compare against, and re-solving densely would give
     // back the cost the tearing removes).
-    if let Some(update) = try_torn_algebraic_block(model, y, p, t, block, tol, certify_coordinates)?
-    {
+    if let Some(update) = try_torn_algebraic_block(model, y, p, t, block, &mut context)? {
         return Ok(update);
     }
     if !singleton_was_tried
@@ -700,7 +801,7 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
     {
         return Ok(update);
     }
-    project_algebraic_residual_block(model, y, p, t, block, block_index, policy)
+    project_algebraic_residual_block(model, y, p, t, block, block_index, context.policy)
 }
 
 fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
@@ -740,7 +841,8 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
     let jacobian =
         algebraic_block_jacobian(model, y, p, t, &block.rows, &block.y_indices, structure)?;
     let pattern = structure.map(solve::JacobianStructure::pattern);
-    let (row_scales, variable_scales) = algebraic_block_scales(model, y, block, &jacobian, pattern);
+    let (row_scales, variable_scales) =
+        algebraic_block_scales(model, y, block, &jacobian, pattern)?;
     let residual_converged = scaled_residual_converged(&residual, &row_scales, tol);
     if residual_converged && !certify_coordinates {
         return Ok(ProjectionBlockUpdate {
@@ -1271,6 +1373,12 @@ struct AlgebraicBlockProjectionPolicy {
     certify_coordinates: bool,
 }
 
+struct AlgebraicBlockProjectionContext<'a> {
+    block_index: usize,
+    policy: AlgebraicBlockProjectionPolicy,
+    refinement_token: &'a mut tearing::RefinementToken,
+}
+
 struct CombinedInitializationProjectionModel<'a, M> {
     model: &'a M,
     y_len: usize,
@@ -1395,6 +1503,15 @@ impl<M: AlgebraicProjectionModel> ImplicitProjectionModel
         system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
         self.model.solve_affine_torn_delta(block_index, system)
+    }
+    fn solve_affine_torn_candidate(
+        &self,
+        block_index: usize,
+        candidate: solve::TearingCandidate,
+        system: ScaledNewtonSystem<'_>,
+    ) -> Option<DVector<f64>> {
+        self.model
+            .solve_affine_torn_candidate(block_index, candidate, system)
     }
 }
 

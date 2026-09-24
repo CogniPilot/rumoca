@@ -624,6 +624,7 @@ fn representative_continuous_system() -> ContinuousSolveSystem {
                 rows: vec![0],
                 y_indices: vec![1],
                 tearing: None,
+                guarded_tearing: None,
                 alternate_charts: Vec::new(),
             }],
         },
@@ -2227,6 +2228,7 @@ fn empty_alternate_charts_are_omitted_from_serialization() {
             residual_rows: vec![0],
             causal_steps: vec![CausalStep { row: 1, y_index: 1 }],
         }),
+        guarded_tearing: None,
         alternate_charts: Vec::new(),
     };
     let value = serde_json::to_value(&block).expect("block serializes");
@@ -2274,6 +2276,7 @@ fn nonempty_alternate_charts_are_serialized() {
             residual_rows: vec![0],
             causal_steps: vec![],
         }),
+        guarded_tearing: None,
         alternate_charts: vec![BlockTearing {
             tear_y_indices: vec![1],
             residual_rows: vec![0],

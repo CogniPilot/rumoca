@@ -2,6 +2,11 @@
 mod tests;
 mod torn;
 
+#[cfg(test)]
+pub(super) use torn::pivot_check_count;
+#[cfg(test)]
+pub(super) use torn::recovery_dependency_scan_count;
+
 use faer::{
     Conj, MatMut, Par,
     dyn_stack::{MemBuffer, MemStack, StackReq},
@@ -10,9 +15,10 @@ use faer::{
         linalg::lu::{LuRef, NumericLu, SymbolicLu, factorize_symbolic_lu},
     },
 };
-use nalgebra::{DMatrix, DVector};
-use rumoca_ir_solve::StructuralPattern;
+use nalgebra::DVector;
+use rumoca_ir_solve::{StructuralPattern, TearingCandidate};
 
+use super::jacobian_values::{JacobianMatrix, JacobianReadMap};
 use super::scaling::valid_variable_scale;
 
 #[derive(Clone, Default)]
@@ -24,24 +30,31 @@ pub(crate) struct SparseNewtonCache {
 impl SparseNewtonCache {
     pub(super) fn solve_torn_scaled(
         &mut self,
-        source: &DMatrix<f64>,
+        source: &dyn JacobianMatrix,
         rhs: &DVector<f64>,
         row_scales: &[f64],
         variable_scales: &[f64],
+        candidate: TearingCandidate,
         layout: &rumoca_ir_solve::AffineEliminationLayout,
     ) -> Option<DVector<f64>> {
         self.torn
-            .solve_scaled(source, rhs, row_scales, variable_scales, layout)
+            .solve_scaled(source, rhs, row_scales, variable_scales, candidate, layout)
     }
 
     pub(super) fn solve_scaled(
         &mut self,
-        source: &DMatrix<f64>,
+        source: &dyn JacobianMatrix,
         rhs: &DVector<f64>,
         row_scales: &[f64],
         variable_scales: &[f64],
         pattern: &StructuralPattern,
     ) -> Option<DVector<f64>> {
+        if source
+            .value_layout()
+            .is_some_and(|layout| layout.pattern() != pattern)
+        {
+            return None;
+        }
         if self
             .system
             .as_ref()
@@ -64,6 +77,7 @@ struct PreparedSparseSystem {
     factorization: NumericFactor,
     factor_values: Box<[u64]>,
     workspace: SparseWorkspace,
+    reads: Option<JacobianReadMap>,
 }
 
 #[derive(Clone, Default)]
@@ -108,18 +122,42 @@ impl PreparedSparseSystem {
             factorization: NumericFactor::Unfactored,
             factor_values,
             workspace,
+            reads: None,
         })
     }
 
     fn solve_scaled(
         &mut self,
-        source: &DMatrix<f64>,
+        source: &dyn JacobianMatrix,
         rhs: &DVector<f64>,
         row_scales: &[f64],
         variable_scales: &[f64],
     ) -> Option<DVector<f64>> {
-        for (value, &(row, column)) in self.matrix.val_mut().iter_mut().zip(&self.coordinates) {
-            *value = source[(row, column)] * valid_variable_scale(variable_scales[column])
+        if source
+            .value_layout()
+            .is_some_and(|layout| layout.pattern() != &self.pattern)
+        {
+            return None;
+        }
+        if self
+            .reads
+            .as_ref()
+            .is_none_or(|reads| !reads.matches(source))
+        {
+            self.reads = Some(JacobianReadMap::prepare(
+                source,
+                self.coordinates.iter().copied(),
+            )?);
+        }
+        let reads = self.reads.as_ref()?.bind(source)?;
+        for (offset, (value, &(row, column))) in self
+            .matrix
+            .val_mut()
+            .iter_mut()
+            .zip(&self.coordinates)
+            .enumerate()
+        {
+            *value = reads.at(offset) * valid_variable_scale(variable_scales[column])
                 / valid_variable_scale(row_scales[row]);
         }
         let parallelism = faer::get_global_parallelism();

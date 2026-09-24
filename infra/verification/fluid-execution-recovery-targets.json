@@ -1,0 +1,15 @@
+[
+  "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_YD",
+  "Modelica.Electrical.Machines.Examples.InductionMachines.IMS_Start",
+  "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_VoltageSource",
+  "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_DOL",
+  "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic",
+  "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic",
+  "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonQuasiStatic",
+  "Modelica.Mechanics.MultiBody.Examples.Constraints.UniversalConstraint",
+  "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b",
+  "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1",
+  "Modelica.Mechanics.MultiBody.Examples.Loops.PlanarFourbar",
+  "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.BevelGear1D",
+  "Modelica.Mechanics.Translational.Examples.PreLoad"
+]

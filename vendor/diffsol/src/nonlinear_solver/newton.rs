@@ -1,8 +1,9 @@
 use crate::{
     error::{DiffsolError, NonLinearSolverError},
     non_linear_solver_error, Convergence, ConvergenceStatus, LineSearch, LinearSolver, Matrix,
-    NonLinearOp, NonLinearOpJacobian, NonLinearSolver, Vector,
+    NonLinearOp, NonLinearOpJacobian, NonLinearSolver, SupplementalErrorNorm, Vector,
 };
+use num_traits::{One, Zero};
 
 #[allow(clippy::too_many_arguments)]
 pub fn newton_iteration<V: Vector>(
@@ -14,6 +15,33 @@ pub fn newton_iteration<V: Vector>(
     convergence: &mut Convergence<V>,
     line_search: &mut impl LineSearch<V>,
 ) -> Result<(), DiffsolError> {
+    newton_iteration_with_observer(
+        xn,
+        tmp,
+        error_y,
+        fun,
+        linear_solver,
+        convergence,
+        line_search,
+        None,
+        V::T::zero(),
+    )
+}
+
+// SPEC_0021: Exception - this vendor entry point carries the complete Newton
+// state, line-search, convergence, and supplemental-observer contract.
+#[allow(clippy::too_many_arguments)]
+pub fn newton_iteration_with_observer<V: Vector>(
+    xn: &mut V,
+    tmp: &mut V,
+    error_y: &V,
+    fun: impl Fn(&V, &mut V),
+    linear_solver: impl Fn(&mut V) -> Result<(), DiffsolError>,
+    convergence: &mut Convergence<V>,
+    line_search: &mut impl LineSearch<V>,
+    mut observer: Option<&mut dyn SupplementalErrorNorm<V>>,
+    time: V::T,
+) -> Result<(), DiffsolError> {
     convergence.reset();
     line_search.reset();
     for _ in 0..convergence.max_iter() {
@@ -23,7 +51,29 @@ pub fn newton_iteration<V: Vector>(
 
         match res {
             ConvergenceStatus::Continue => continue,
-            ConvergenceStatus::Converged => return Ok(()),
+            ConvergenceStatus::Converged => {
+                if let Some(observer) = observer.as_deref_mut() {
+                    // The line search has already applied its pending
+                    // correction to `xn`. Re-evaluate the residual at that
+                    // returned iterate and solve one fresh correction so the
+                    // host observes genuinely remaining error, rather than
+                    // the correction which just produced this iterate.
+                    fun(xn, tmp);
+                    linear_solver(tmp)?;
+                    // `linear_solver` returns the vector subtracted from the
+                    // iterate by the line search. The host API receives the
+                    // correction which would be added to the returned state.
+                    let mut remaining_delta = tmp.clone();
+                    remaining_delta *= crate::scale(-V::T::one());
+                    let supplemental_error =
+                        observer.supplemental_error(time, xn, &remaining_delta)?;
+                    if supplemental_error > convergence.tolerance() {
+                        line_search.refresh_pending_correction(tmp, error_y, convergence);
+                        continue;
+                    }
+                }
+                return Ok(());
+            }
             ConvergenceStatus::Diverged => return Err(non_linear_solver_error!(NewtonDiverged)),
         }
     }
@@ -120,6 +170,40 @@ impl<M: Matrix, Ls: LinearSolver<M>, Lsearch: LineSearch<M::V>> NonLinearSolver<
             linear_solver,
             convergence,
             &mut self.line_search,
+        )
+    }
+
+    fn solve_in_place_with_observer<C: NonLinearOp<V = M::V, T = M::T, M = M>>(
+        &mut self,
+        op: &C,
+        xn: &mut M::V,
+        t: M::T,
+        error_y: &M::V,
+        convergence: &mut Convergence<M::V>,
+        observer: &mut dyn SupplementalErrorNorm<M::V>,
+    ) -> Result<(), DiffsolError> {
+        if !self.is_jacobian_set {
+            return Err(non_linear_solver_error!(JacobianNotReset));
+        }
+        if xn.len() != op.nstates() {
+            let error = NonLinearSolverError::WrongStateLength {
+                expected: op.nstates(),
+                found: xn.len(),
+            };
+            return Err(DiffsolError::from(error));
+        }
+        let linear_solver = |x: &mut C::V| self.linear_solver.solve_in_place(x);
+        let fun = |x: &C::V, y: &mut C::V| op.call_inplace(x, t, y);
+        newton_iteration_with_observer(
+            xn,
+            &mut self.tmp,
+            error_y,
+            fun,
+            linear_solver,
+            convergence,
+            &mut self.line_search,
+            Some(observer),
+            t,
         )
     }
 }

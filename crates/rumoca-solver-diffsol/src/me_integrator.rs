@@ -10,12 +10,15 @@ mod convergence_tests;
 #[cfg(test)]
 mod failure_budget_tests;
 
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use diffsol::{
     BacktrackingLineSearch, BdfState, Closure, ConstantClosure, DefaultDenseMatrix, DiffsolError,
     NewtonNonlinearSolver, OdeBuilder, OdeSolverMethod, OdeSolverProblem, OdeSolverState,
-    OdeSolverStopReason, UnitCallable, VectorHost, error::OdeSolverError,
+    OdeSolverStopReason, SupplementalErrorNorm, UnitCallable, VectorHost, error::OdeSolverError,
 };
 use rumoca_solver::fmi_me::{
     MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeIntegrationError,
@@ -56,6 +59,27 @@ type BdfSolver<'problem> = diffsol::Bdf<
     BdfDenseMatrix,
     diffsol::NoAug<BdfEquations>,
 >;
+
+struct ObservableErrorAdapter {
+    derivatives: Rc<MeDerivativeHandle>,
+}
+
+impl SupplementalErrorNorm<Vector> for ObservableErrorAdapter {
+    fn supplemental_error(
+        &mut self,
+        time: Scalar,
+        actual_trial_state: &Vector,
+        estimated_delta: &Vector,
+    ) -> Result<Scalar, DiffsolError> {
+        self.derivatives
+            .observable_error(
+                time,
+                actual_trial_state.as_slice(),
+                estimated_delta.as_slice(),
+            )
+            .map_err(|_| DiffsolError::Other("the host refused observable-error evaluation".into()))
+    }
+}
 
 self_cell!(
     /// One owned Diffsol problem and the BDF method that borrows it.
@@ -117,8 +141,11 @@ impl DiffsolBdfIntegrator {
             .derivatives(point.time(), point.states())
             .map_err(MeIntegrationError::from)?;
         let state = initial_state(&problem, point, &initial_derivatives, failure)?;
+        let observable_error = Rc::new(RefCell::new(ObservableErrorAdapter {
+            derivatives: Rc::clone(&derivatives),
+        }));
         let solver = BdfCell::try_new(problem, move |owned| {
-            diffsol::Bdf::new(
+            let mut method = diffsol::Bdf::new(
                 owned,
                 state,
                 NewtonNonlinearSolver::new(
@@ -126,7 +153,9 @@ impl DiffsolBdfIntegrator {
                     BacktrackingLineSearch::default(),
                 ),
             )
-            .map_err(|error| numerical(failure, error))
+            .map_err(|error| numerical(failure, error))?;
+            method.set_supplemental_error_norm(observable_error);
+            Ok::<_, MeIntegrationError>(method)
         })?;
         if derivatives.has_failed() {
             return Err(MeIntegrationError::DerivativeRefused);
@@ -255,7 +284,9 @@ impl MeIntegratorBackend for DiffsolBdfIntegrator {
     ) -> Result<MeStepCandidate, MeIntegrationError> {
         self.require_current_point(request)?;
         let latest = request.latest_accepted_time();
-        let candidate = self.require_solver_mut()?.with_dependent_mut(|_, method| {
+        let minimum_step = request.minimum_step_duration();
+        let candidate_result = self.require_solver_mut()?.with_dependent_mut(|_, method| {
+            method.config_mut().minimum_timestep = minimum_step;
             method
                 .set_stop_time(latest)
                 .map_err(|error| numerical(MeNumericalFailure::AdvanceExhausted, error))?;
@@ -279,7 +310,19 @@ impl MeIntegratorBackend for DiffsolBdfIntegrator {
                 )
             })?;
             Ok(MeStepCandidate::new(state.t, states, order))
-        })?;
+        });
+        let candidate = match candidate_result {
+            Ok(candidate) => candidate,
+            Err(_error)
+                if self
+                    .derivatives
+                    .as_ref()
+                    .is_some_and(|derivatives| derivatives.has_failed()) =>
+            {
+                return Err(MeIntegrationError::DerivativeRefused);
+            }
+            Err(error) => return Err(error),
+        };
         if self
             .derivatives
             .as_ref()

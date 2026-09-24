@@ -3,8 +3,6 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
-
 use super::{AlgebraicProjectionBlock, StructuralPattern};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,6 +22,14 @@ impl AffineEliminationLayout {
         pattern: &StructuralPattern,
     ) -> Option<Self> {
         let tearing = block.tearing.as_ref()?;
+        Self::derive_for_tearing(block, pattern, tearing)
+    }
+
+    pub(super) fn derive_for_tearing(
+        block: &AlgebraicProjectionBlock,
+        pattern: &StructuralPattern,
+        tearing: &super::BlockTearing,
+    ) -> Option<Self> {
         let n = block.rows.len();
         if n != block.y_indices.len()
             || n != pattern.rows() as usize
@@ -34,40 +40,23 @@ impl AffineEliminationLayout {
         {
             return None;
         }
-        let rows = local_positions(&block.rows)?;
-        let columns = local_positions(&block.y_indices)?;
-        let residuals = tearing
-            .residual_rows
-            .iter()
-            .map(|row| rows.get(row).copied())
-            .collect::<Option<Box<[_]>>>()?;
-        let tears = tearing
-            .tear_y_indices
-            .iter()
-            .map(|column| columns.get(column).copied())
-            .collect::<Option<Box<[_]>>>()?;
-        let causal = tearing
-            .causal_steps
-            .iter()
-            .map(|step| Some((*rows.get(&step.row)?, *columns.get(&step.y_index)?)))
-            .collect::<Option<Box<[_]>>>()?;
-        let mut seen_rows = vec![false; n];
+        let partition = super::tearing_pair::LocalTearingPartition::derive(block, tearing)?;
+        let super::tearing_pair::LocalTearingPartition {
+            residuals,
+            tears,
+            causal,
+        } = partition;
         let mut known_columns = vec![false; n];
-        let mut zero_guards = Vec::new();
-        for (&row, &column) in residuals.iter().zip(&tears) {
-            claim(&mut seen_rows, row)?;
-            claim(&mut known_columns, column)?;
+        for &column in &tears {
+            known_columns[column] = true;
         }
+        let mut zero_guards = Vec::new();
         for &(row, column) in &causal {
-            claim(&mut seen_rows, row)?;
-            claim(&mut known_columns, column)?;
+            known_columns[column] = true;
             if !pattern.contains(row as u32, column as u32) {
                 return None;
             }
             append_zero_guards(pattern, row, &known_columns, &mut zero_guards);
-        }
-        if !seen_rows.iter().chain(&known_columns).all(|seen| *seen) {
-            return None;
         }
         let row_columns = (0..n)
             .map(|row| {
@@ -117,21 +106,6 @@ impl AffineEliminationLayout {
     pub fn tears(&self) -> &[usize] {
         &self.tears
     }
-}
-
-fn local_positions(indices: &[usize]) -> Option<BTreeMap<usize, usize>> {
-    let mut positions = BTreeMap::new();
-    for (local, &source) in indices.iter().enumerate() {
-        if positions.insert(source, local).is_some() {
-            return None;
-        }
-    }
-    Some(positions)
-}
-
-fn claim(seen: &mut [bool], index: usize) -> Option<()> {
-    let previous = std::mem::replace(seen.get_mut(index)?, true);
-    (!previous).then_some(())
 }
 
 fn append_zero_guards(

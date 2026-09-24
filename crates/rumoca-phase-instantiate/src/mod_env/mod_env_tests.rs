@@ -110,6 +110,7 @@ fn local_modifier_replaces_unrelated_parent_final_key() {
             key: key.clone(),
             value: make_int_expr(5),
             source: Some(make_comp_ref_expr(&["outer_m"])),
+            value_scope: None,
             source_scope: None,
             prefixes: ModifierPrefixes::default(),
         },

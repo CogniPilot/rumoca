@@ -36,6 +36,8 @@ mod derivative;
 pub mod time_only;
 
 pub(super) use derivative::MeDerivativeController;
+#[cfg(test)]
+pub(in crate::fmi_me) use derivative::with_observable_transaction;
 pub use derivative::{MeDerivativeHandle, MeDerivativeRefused};
 
 #[cfg(test)]
@@ -524,6 +526,22 @@ impl MeAdvanceRequest {
         self.latest_accepted_time
     }
 
+    /// Smallest representable interval beyond the host's progress roundoff.
+    /// Numerical methods use the current coordinate, rather than an absolute
+    /// duration in seconds, to bound error-driven step reduction. The accepted
+    /// candidate still has to prove progress and accuracy independently.
+    #[must_use]
+    pub fn minimum_step_duration(&self) -> f64 {
+        let now = self.current.time();
+        let endpoint = now + accepted_step_roundoff(now, 0.0);
+        let duration = endpoint - now;
+        if duration > accepted_step_roundoff(now, duration) {
+            duration
+        } else {
+            endpoint.next_up() - now
+        }
+    }
+
     /// The **least** host-issued public coordinate within `roundoff` of
     /// `accepted_time`, if any.
     ///
@@ -858,6 +876,8 @@ fn normalize_endpoint(
 /// no output schedule, and no trace. They see only the host-issued coordinates
 /// in [`MeAdvanceRequest`], the checked [`MeNumericalSetup`] they were built
 /// with, and the opaque [`MeDerivativeHandle`] the host issues at `initialize`.
+/// Its derivative, JVP, and observable-error methods share one host activation
+/// and typed failure latch.
 ///
 /// The handle is *retained* rather than lent, so a persistent numerical problem
 /// can own it across accepted steps. Reachability is governed by the host's
@@ -953,6 +973,34 @@ mod tests {
     fn request(now: f64, yield_time: f64) -> MeAdvanceRequest {
         MeAdvanceRequest::new(point(now, &[1.0]), None, yield_time, None, None)
             .expect("fixture request is checked")
+    }
+
+    #[test]
+    fn host_step_floor_admits_progress_across_time_origins() {
+        for origin in [0.0_f64, 1e-200, -1e-200, 1.0, -1.0, 1e12, -1e12] {
+            let advance = request(origin, origin + origin.abs().max(1.0));
+            let step = advance.minimum_step_duration();
+            assert!(step.is_finite() && step > 0.0);
+            bind(advance, origin + step, &[1.0], 1)
+                .expect("the host-issued floor must pass its unchanged progress check");
+        }
+    }
+
+    #[test]
+    fn rounded_away_step_is_refused_at_positive_and_negative_origins() {
+        for origin in [1.0_f64, -1.0, 1e12, -1e12] {
+            let rounded_away = (origin.next_up() - origin) / 4.0;
+            assert_eq!(origin + rounded_away, origin);
+            assert!(
+                bind(
+                    request(origin, origin + 1.0),
+                    origin + rounded_away,
+                    &[1.0],
+                    1
+                )
+                .is_err()
+            );
+        }
     }
 
     /// Bind a candidate exactly as the session does: consuming the actual

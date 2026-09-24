@@ -8,8 +8,8 @@
 
 use super::class_hierarchy::extends_base_classes;
 use super::override_map::TypeOverrideMap;
-use crate::InstantiateResult;
 use crate::type_lookup::find_member_type_in_class;
+use crate::{InstantiateError, InstantiateResult, location_to_span};
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 
@@ -33,22 +33,58 @@ pub(crate) fn apply_type_override<'a>(
                 exact_type_override_preserves_declaration_slot(tree, source_def_id, *target_def_id)
             })
     });
-    let dynamic_root_override = (|| {
-        if comp.type_def_id.is_some() || comp.type_name.name.len() < 2 {
-            return None;
+    let dynamic_root_override = (|| -> InstantiateResult<Option<DefId>> {
+        if comp.type_name.name.len() < 2 {
+            return Ok(None);
         }
-        let dynamic_root_def_id = comp.type_name.def_id?;
-        let selected_class_def_id = type_overrides.target_for_alias_def_id(dynamic_root_def_id)?;
-        let selected_class = tree.get_class_by_def_id(selected_class_def_id)?;
-        let member_path = comp
-            .type_name
-            .name
+        let Some(dynamic_root_def_id) = comp.type_name.def_id else {
+            return Ok(None);
+        };
+        let Some(selected_class_def_id) =
+            type_overrides.target_for_alias_def_id(dynamic_root_def_id)
+        else {
+            return Ok(None);
+        };
+        let Some(selected_class) = tree.get_class_by_def_id(selected_class_def_id) else {
+            return Ok(None);
+        };
+        let member_path = ast::QualifiedName {
+            parts: comp
+                .type_name
+                .name
+                .iter()
+                .skip(1)
+                .map(|part| (part.text.to_string(), Vec::new()))
+                .collect(),
+        };
+        let member_segments = member_path
+            .parts
             .iter()
-            .skip(1)
-            .map(|part| part.text.as_ref())
+            .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>();
-        find_member_type_path_segments(tree, selected_class, &member_path)?.def_id
-    })();
+        if type_overrides.selected_member_is_rejected(selected_class_def_id, &member_path) {
+            let span = location_to_span(
+                &comp.location,
+                &tree.source_map,
+                "selected package member type",
+            )?;
+            return Err(Box::new(InstantiateError::redeclare_error(
+                comp.type_name.to_string(),
+                "selected package has conflicting nested redeclarations",
+                span,
+            )));
+        }
+        if let Some(target_def_id) =
+            type_overrides.target_for_selected_member(selected_class_def_id, &member_path)
+        {
+            return Ok(Some(target_def_id));
+        }
+        let Some(member) = find_member_type_path_segments(tree, selected_class, &member_segments)
+        else {
+            return Ok(None);
+        };
+        Ok(member.def_id)
+    })()?;
 
     let override_def_id = dynamic_root_override.or(exact_override);
     if let Some(override_def_id) = override_def_id

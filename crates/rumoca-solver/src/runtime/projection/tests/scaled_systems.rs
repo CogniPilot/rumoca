@@ -26,7 +26,7 @@ fn sparse_row_scaling_preserves_finite_maxima_and_zero_or_nonfinite_fallbacks() 
     let variables = [1e12, 7.0, 11.0, 0.0];
     let fallback = [4.0, 5.0, 6.0, 7.0];
     for structure in [None, Some(&pattern)] {
-        let result = jacobian_row_scales(&matrix, &variables, &fallback, structure);
+        let result = jacobian_row_scales(&matrix, &variables, &fallback, structure).unwrap();
         assert!((result[0] - 2000.0).abs() < 1e-12);
         assert_eq!(&result[1..], &[5.0, 6.0, 7.0]);
     }
@@ -88,6 +88,7 @@ fn nominal_scaled_projection_corrects_small_physical_residual() {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: None,
+                guarded_tearing: None,
                 alternate_charts: Vec::new(),
             }],
         },
@@ -114,6 +115,7 @@ fn projection_row_scale_includes_jacobian_coefficient() {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: None,
+                guarded_tearing: None,
                 alternate_charts: Vec::new(),
             }],
         },
@@ -138,6 +140,7 @@ fn projection_scale_expands_to_the_current_coordinate_magnitude() {
         rows: vec![0],
         y_indices: vec![0],
         tearing: None,
+        guarded_tearing: None,
         alternate_charts: Vec::new(),
     };
     let model = NominalScaledProjectionModel {
@@ -151,7 +154,7 @@ fn projection_scale_expands_to_the_current_coordinate_magnitude() {
     let jacobian = DMatrix::from_element(1, 1, 1.0e-5);
 
     let (row_scales, variable_scales) =
-        algebraic_block_scales(&model, &[5.0e6], &block, &jacobian, None);
+        algebraic_block_scales(&model, &[5.0e6], &block, &jacobian, None).unwrap();
 
     assert_eq!(variable_scales, vec![5.0e6]);
     assert!((row_scales[0] - 50.0).abs() <= 1.0e-12);
@@ -348,12 +351,14 @@ fn initial_singleton_assignment_writes_sub_tolerance_constant_divisor() {
                     rows: vec![0],
                     y_indices: vec![0],
                     tearing: None,
+                    guarded_tearing: None,
                     alternate_charts: Vec::new(),
                 },
                 solve::AlgebraicProjectionBlock {
                     rows: vec![1],
                     y_indices: vec![1],
                     tearing: None,
+                    guarded_tearing: None,
                     alternate_charts: Vec::new(),
                 },
             ],

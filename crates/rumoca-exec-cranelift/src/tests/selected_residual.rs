@@ -65,6 +65,25 @@ fn selected_residual_does_not_split_a_shared_conditional_owner() {
     let mut output = [0.0; 2];
     compiled.call(&[], &[], 0.0, &mut output).unwrap();
     assert_eq!(output, [3.0, 7.0]);
+    let mut program = block.programs()[0].clone();
+    *program.last_mut().unwrap() = LinearOp::StoreOutputRange {
+        start: 0,
+        count: 2,
+        stride: 1,
+    };
+    let aggregate =
+        ScalarProgramBlock::with_output_indices(vec![program], vec![fixture_span()], vec![0, 1])
+            .unwrap();
+    let selection = batch::selection(&aggregate, vec![1, 0]);
+    let native = compile_selectable_expression_scalar_program_block(&aggregate, None).unwrap();
+    let mut out = [99.0; 2];
+    assert!(
+        !native
+            .call_projection_outputs(&selection, &[], &[], 0.0, &[], &mut out)
+            .unwrap()
+    );
+    assert_eq!(out, [99.0; 2]);
+    assert_eq!(native.jit.jit_call_count(), 0);
 }
 
 fn aggregate_and_table() -> ScalarProgramBlock {
@@ -243,3 +262,5 @@ fn selected_native_residual_checks_program_output_and_input_extents() {
             .is_err()
     );
 }
+
+mod batch;

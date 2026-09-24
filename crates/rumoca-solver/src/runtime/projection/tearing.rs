@@ -38,6 +38,30 @@ use super::scaling::{
 };
 use super::{ImplicitProjectionModel, ProjectionBlockUpdate, RuntimeSolveError};
 
+pub(super) struct RefinementToken {
+    available: bool,
+}
+
+pub(super) struct TornProjectionContext<'a> {
+    pub(super) tolerance: f64,
+    pub(super) certify_coordinates: bool,
+    pub(super) refinement_token: &'a mut RefinementToken,
+}
+
+impl RefinementToken {
+    pub(super) fn new(available: bool) -> Self {
+        Self { available }
+    }
+
+    fn is_available(&self) -> bool {
+        self.available
+    }
+
+    fn consume(&mut self) {
+        self.available = false;
+    }
+}
+
 /// Maximum reduced Newton iterations over the tear variables.
 const TORN_OUTER_MAX_ITERS: usize = 64;
 /// Maximum step halvings in the reduced Newton line search.
@@ -49,6 +73,7 @@ const TORN_BACKTRACK_STEPS: usize = 24;
 /// set) and `Ok(None)` when the torn solve could not proceed, in which case
 /// `y` is restored to the values it held on entry and the caller solves the
 /// block densely.
+#[cfg(test)]
 pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
@@ -58,6 +83,34 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
     tol: f64,
     certify_coordinates: bool,
 ) -> Result<Option<ProjectionBlockUpdate>, RuntimeSolveError> {
+    let mut refinement_token = RefinementToken::new(certify_coordinates);
+    project_torn_algebraic_block_with_context(
+        model,
+        y,
+        p,
+        t,
+        tearing,
+        TornProjectionContext {
+            tolerance: tol,
+            certify_coordinates,
+            refinement_token: &mut refinement_token,
+        },
+    )
+}
+
+pub(super) fn project_torn_algebraic_block_with_context<M: ImplicitProjectionModel>(
+    model: &M,
+    y: &mut [f64],
+    p: &[f64],
+    t: f64,
+    tearing: &solve::BlockTearing,
+    context: TornProjectionContext<'_>,
+) -> Result<Option<ProjectionBlockUpdate>, RuntimeSolveError> {
+    let TornProjectionContext {
+        tolerance: tol,
+        certify_coordinates,
+        refinement_token,
+    } = context;
     if tearing.tear_y_indices.len() != tearing.residual_rows.len() {
         return Ok(None);
     }
@@ -71,60 +124,77 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
     if out_of_range {
         return Ok(None);
     }
+    // Keep token consumption transactional. A torn attempt can accept a final
+    // correction and then decline on a fresh sweep; in that case the caller
+    // falls back to the dense solve and the block must retain its allowance.
+    let mut trial_token = RefinementToken::new(refinement_token.is_available());
     let snapshot = y.to_vec();
+    let result = (|| {
+        let mut residual = Vec::with_capacity(tearing.residual_rows.len());
+        if !model.torn_block_sweep(tearing, y, p, t, &mut residual)? {
+            y.copy_from_slice(&snapshot);
+            return Ok(None);
+        }
 
-    let mut residual = Vec::with_capacity(tearing.residual_rows.len());
-    if !model.torn_block_sweep(tearing, y, p, t, &mut residual)? {
-        y.copy_from_slice(&snapshot);
-        return Ok(None);
-    }
+        // The sweep writes only causal unknowns and the scales read only tear
+        // slots, so computing them after the residual rows leaves the values the
+        // pre-sweep ordering produced.
+        let variable_scales = tearing
+            .tear_y_indices
+            .iter()
+            .map(|&index| model_variable_scale(model, index, y[index]))
+            .collect::<Vec<_>>();
 
-    // The sweep writes only causal unknowns and the scales read only tear
-    // slots, so computing them after the residual rows leaves the values the
-    // pre-sweep ordering produced.
-    let variable_scales = tearing
-        .tear_y_indices
-        .iter()
-        .map(|&index| model_variable_scale(model, index, y[index]))
-        .collect::<Vec<_>>();
+        if !all_finite(&residual) {
+            y.copy_from_slice(&snapshot);
+            return Ok(None);
+        }
 
-    if !all_finite(&residual) {
-        y.copy_from_slice(&snapshot);
-        return Ok(None);
-    }
-
-    for _ in 0..TORN_OUTER_MAX_ITERS {
-        match advance_torn_newton(
-            model,
-            y,
-            p,
-            t,
-            tearing,
-            &residual,
-            &variable_scales,
-            tol,
-            certify_coordinates,
-        )? {
-            TornStep::Settled => {
-                let changed = slices_differ(y, &snapshot);
-                return Ok(Some(ProjectionBlockUpdate {
-                    changed,
-                    settled: true,
-                }));
-            }
-            TornStep::Advanced(next) => residual = next,
-            TornStep::Decline => {
-                y.copy_from_slice(&snapshot);
-                return Ok(None);
+        for _ in 0..TORN_OUTER_MAX_ITERS {
+            match advance_torn_newton(
+                model,
+                y,
+                p,
+                t,
+                tearing,
+                &residual,
+                &variable_scales,
+                tol,
+                certify_coordinates,
+                trial_token.is_available(),
+            )? {
+                TornStep::Settled => {
+                    let changed = slices_differ(y, &snapshot);
+                    *refinement_token = trial_token;
+                    return Ok(Some(ProjectionBlockUpdate {
+                        changed,
+                        settled: true,
+                    }));
+                }
+                TornStep::Advanced(next) => {
+                    residual = next;
+                }
+                TornStep::Refined(next) => {
+                    trial_token.consume();
+                    residual = next;
+                }
+                TornStep::Decline => {
+                    y.copy_from_slice(&snapshot);
+                    return Ok(None);
+                }
             }
         }
-    }
 
-    // The reduced Newton exhausted its iterations without meeting tolerance.
-    // Restore the incoming values so the dense fallback starts exactly where it
-    // would have without the torn attempt.
-    y.copy_from_slice(&snapshot);
-    Ok(None)
+        // The reduced Newton exhausted its iterations without meeting tolerance.
+        // Restore the incoming values so the dense fallback starts exactly where it
+        // would have without the torn attempt.
+        y.copy_from_slice(&snapshot);
+        Ok(None)
+    })();
+    if result.is_err() {
+        y.copy_from_slice(&snapshot);
+    }
+    result
 }
 
 /// Outcome of one reduced Newton iteration over the tear variables.
@@ -133,6 +203,9 @@ enum TornStep {
     Settled,
     /// A step was accepted; carries the reduced residual at the new point.
     Advanced(Vec<f64>),
+    /// The one permitted final correction was accepted; the next outer
+    /// iteration must recheck the fresh residual and coordinate correction.
+    Refined(Vec<f64>),
     /// The torn solve cannot proceed; the caller falls back to the dense solve.
     Decline,
 }
@@ -153,6 +226,7 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
     variable_scales: &[f64],
     tol: f64,
     certify_coordinates: bool,
+    allow_final_refinement: bool,
 ) -> Result<TornStep, RuntimeSolveError> {
     // A residual that is exactly zero rowwise satisfies every positive scaled
     // tolerance (`scaled_tolerance` never falls below `f64::MIN_POSITIVE`),
@@ -184,7 +258,7 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
         return Ok(TornStep::Decline);
     };
     let row_scales =
-        jacobian_row_scales(&jacobian.residual, variable_scales, variable_scales, None);
+        jacobian_row_scales(&jacobian.residual, variable_scales, variable_scales, None)?;
     let converged = scaled_residual_converged(residual, &row_scales, tol);
     let delta = scaled_newton_delta(ScaledNewtonSystem {
         jacobian: &jacobian.residual,
@@ -221,6 +295,12 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
                 )
                 && causal_correction_converged(model, p, t, tearing, &step)?))
     {
+        if allow_final_refinement {
+            match line_search(model, y, p, t, tearing, step)? {
+                Some(next) => return Ok(TornStep::Refined(next)),
+                None => return Ok(TornStep::Settled),
+            }
+        }
         return Ok(TornStep::Settled);
     }
     match line_search(model, y, p, t, tearing, step)? {

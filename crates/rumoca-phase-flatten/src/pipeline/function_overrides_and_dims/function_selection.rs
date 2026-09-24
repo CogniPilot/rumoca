@@ -138,13 +138,22 @@ fn exact_function_exposure(
 ) -> Result<rumoca_core::DefId, FlattenError> {
     let mut exposures = FxHashSet::default();
     if let Some(prefix) = component_ref.component_scope().prefix_parts().last() {
-        let owner = exact_prefix_owner_def_id(ctx.class_index, prefix.def_id).ok_or_else(|| {
-            FlattenError::missing_function_selection_identity(
-                reference.as_str(),
-                "callable prefix DefId has no exact class owner",
-                span,
-            )
-        })?;
+        let source_owner =
+            exact_prefix_owner_def_id(ctx.class_index, prefix.def_id).ok_or_else(|| {
+                FlattenError::missing_function_selection_identity(
+                    reference.as_str(),
+                    "callable prefix DefId has no exact class owner",
+                    span,
+                )
+            })?;
+        let owner = exact_override_package_for_callable_prefix(
+            reference,
+            source_owner,
+            Some(prefix.def_id),
+            ctx,
+            span,
+        )?
+        .map_or(source_owner, |package| package.def_id);
         collect_function_exposures_for_implementation(
             ctx.class_index,
             owner,
@@ -177,6 +186,43 @@ fn exact_function_exposure(
     }
 }
 
+pub(super) fn exact_override_package_for_alias_def_id<'a>(
+    reference: &rumoca_core::Reference,
+    alias_def_id: rumoca_core::DefId,
+    ctx: &'a FunctionOverrideRewriteContext<'a>,
+    span: rumoca_core::Span,
+) -> Result<Option<&'a OverrideTarget>, FlattenError> {
+    let mut matches = ctx
+        .override_packages
+        .iter()
+        .filter(|package| package.alias_def_id == Some(alias_def_id));
+    let selected = matches.next();
+    if matches.next().is_some() {
+        return Err(FlattenError::missing_function_selection_identity(
+            reference.as_str(),
+            "replaceable package slot has multiple exact selections",
+            span,
+        ));
+    }
+    Ok(selected)
+}
+
+fn exact_override_package_for_callable_prefix<'a>(
+    reference: &rumoca_core::Reference,
+    source_owner: rumoca_core::DefId,
+    alias_def_id: Option<rumoca_core::DefId>,
+    ctx: &'a FunctionOverrideRewriteContext<'a>,
+    span: rumoca_core::Span,
+) -> Result<Option<&'a OverrideTarget>, FlattenError> {
+    if let Some(alias_def_id) = alias_def_id
+        && let Some(package) =
+            exact_override_package_for_alias_def_id(reference, alias_def_id, ctx, span)?
+    {
+        return Ok(Some(package));
+    }
+    exact_override_package_for_source_package(reference, source_owner, ctx, span)
+}
+
 fn resolved_function_rewrite(
     reference: &rumoca_core::Reference,
     selection: FunctionSelection,
@@ -185,6 +231,7 @@ fn resolved_function_rewrite(
     span: rumoca_core::Span,
     missing_display_reason: &'static str,
 ) -> Result<ResolvedFunctionRewrite, FlattenError> {
+    let keeps_source_display = display_name.is_none();
     ctx.tree
         .def_map
         .get(&selection.implementation)
@@ -198,7 +245,13 @@ fn resolved_function_rewrite(
     Ok(ResolvedFunctionRewrite {
         display_name: display_name.unwrap_or_else(|| reference.as_str().to_string()),
         selection,
-        occurrence_identity: CallOccurrenceIdentity::SelectedImplementation,
+        occurrence_identity: if keeps_source_display
+            && selection.exposure != selection.implementation
+        {
+            CallOccurrenceIdentity::ExposedDeclaration
+        } else {
+            CallOccurrenceIdentity::SelectedImplementation
+        },
         exposed_package: None,
         spell_exact_target: false,
     })
@@ -377,8 +430,16 @@ fn exact_package_function_rewrite(
     let Some(member) = member else {
         return Ok(None);
     };
-    let Some(package) =
-        exact_override_package_for_source_package(reference, source_owner, ctx, span)?
+    let Some(package) = exact_override_package_for_callable_prefix(
+        reference,
+        source_owner,
+        reference
+            .component_ref()
+            .and_then(|component_ref| component_ref.component_scope().prefix_parts().last())
+            .map(|prefix| prefix.def_id),
+        ctx,
+        span,
+    )?
     else {
         return Ok(None);
     };
@@ -410,13 +471,18 @@ fn exact_package_function_rewrite(
         exposure,
         implementation,
     };
-    if projected == selection {
+    let selected_name = format!("{}.{}", package.name, member);
+    let reference_package = reference
+        .component_ref()
+        .and_then(|component_ref| component_ref.component_scope().prefix_parts().last())
+        .map(|prefix| prefix.def_id);
+    if projected == selection && reference_package == Some(package.def_id) {
         return Ok(None);
     }
     let mut rewrite = resolved_function_rewrite(
         reference,
         projected,
-        Some(format!("{}.{}", package.name, member)),
+        Some(selected_name),
         ctx,
         span,
         "selected package implementation has no canonical display entry",

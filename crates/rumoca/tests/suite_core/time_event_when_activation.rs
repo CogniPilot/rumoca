@@ -220,13 +220,13 @@
 //!   and [`an_initial_element_does_not_enable_an_already_true_element`]); the
 //!   scalar one is a separate §8.6 admissibility question and no test below
 //!   asserts it.
-//! * **A `when` body reading a variable the same body assigns — SPEC VIOLATION**
-//!   (pre-existing). MLS §8.3.5.1 expands a `when` body to *simultaneous
-//!   equations*, one `v = if edge(b) then expr else pre(v)` per assigned
-//!   variable. They are equations, not statements, so a body that reads `a`
-//!   after assigning it must see the **new** `a`. rumoca evaluates the rows of
-//!   an event pass sequentially against the event-entry snapshot, so it sees the
-//!   old one.
+//! * **A `when` body reading a variable the same body assigns — fixed here.**
+//!   MLS §8.3.5.1 expands a `when` body to *simultaneous equations*, one
+//!   `v = if edge(b) then expr else pre(v)` per assigned variable. They are
+//!   equations, not statements, so a body that reads `a` after assigning it
+//!   must see the **new** `a`. The checked discrete-real causal plan now orders
+//!   the lowered definitions and the guarded scalar compiler carries current
+//!   values through scalar, array, and record reads.
 //!
 //!   ```modelica
 //!   when time > 0.5 then
@@ -235,20 +235,10 @@
 //!   end when;
 //!   ```
 //!
-//!   `omc` gives `b = 100`; rumoca gives `b = -100`, on both solver sessions and
-//!   both before and after this change (`a` itself is correct in all four). The
-//!   same defect in its cross-`when` form is `when pre(b) then …` beside
-//!   `when time > 0.7 then b = false;`, where the two `when`s disagree about
-//!   which `b` the instant `t = 0.7` sees.
-//!
-//!   This is a §8.3.5.1 violation rather than a presentation difference, and it
-//!   is the whole of what still separates rumoca from `omc` on
-//!   `Modelica.Blocks.Math.ContinuousSignalExtrema`'s shape: its `t_min`/`t_max`
-//!   bodies are `if y_min < pre(y_min) then time else pre(t_min)`, read after
-//!   `y_min` is assigned in the same body, and they stay at their start values
-//!   for exactly this reason. Its `y_min`/`y_max` — which read nothing the body
-//!   assigns — track `omc` exactly. Fixing it is a separate change to
-//!   event-pass row scheduling; no test below asserts the violated shape.
+//!   `omc` and both rumoca solver sessions now give `b = 100`; the focused
+//!   tests also reverse source order and exercise an array range.
+//!   The unrelated cross-`when` and `ContinuousSignalExtrema` shapes remain
+//!   outside this regression.
 //! * **A `discrete Boolean` assigned by a relation equation** (pre-existing, and
 //!   not about `when` at all). `discrete Boolean b; b = time < 0.5; when b then
 //!   y = 1;` — `omc` gives `b = 1` until `t = 0.5` and `0` after. rumoca never
@@ -648,6 +638,143 @@ equation
   end when;
 end InitialBesideStateCondition;
 ";
+
+const SAME_EVENT_CASUAL_DEPENDENCY: &str = "model SameEventCausalDependency
+  Real x(start = 0, fixed = true);
+  discrete Real scaled(start = 0, fixed = true);
+  discrete Real next(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when time > 0.5 then
+    scaled = pre(scaled) + 1;
+    next = if scaled > pre(scaled) then 100 else -100;
+  end when;
+end SameEventCausalDependency;
+";
+
+const SAME_EVENT_REVERSED_SOURCE_ORDER: &str = "model SameEventReversedSourceOrder
+  Real x(start = 0, fixed = true);
+  discrete Real scaled(start = 0, fixed = true);
+  discrete Real next(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when time > 0.5 then
+    next = if scaled > pre(scaled) then 100 else -100;
+    scaled = pre(scaled) + 1;
+  end when;
+end SameEventReversedSourceOrder;
+";
+
+const SAME_EVENT_ARRAY_DEPENDENCY: &str = "model SameEventArrayDependency
+  Real x(start = 0, fixed = true);
+  discrete Real scaled[2](start = {0, 0}, fixed = {true, true});
+  discrete Real next[2](start = {0, 0}, fixed = {true, true});
+equation
+  der(x) = 1;
+  when time > 0.5 then
+    scaled = pre(scaled) + {1, 2};
+    next = scaled;
+  end when;
+end SameEventArrayDependency;
+";
+
+const SAME_EVENT_MIXED_PRE_MODE: &str = "model SameEventMixedPreMode
+  Real unusedState(start = 0, fixed = true);
+  Real x(start = 1, fixed = false);
+  discrete Real a(start = 0, fixed = true);
+  discrete Real b(start = 0, fixed = false);
+equation
+  der(unusedState) = 0;
+  x * x = a + 1;
+  when initial() then
+    a = pre(a) + 1;
+    b = x;
+  end when;
+end SameEventMixedPreMode;
+";
+
+const SAME_EVENT_INITIAL_VECTOR: &str = "model SameEventInitialVector
+  Real unusedState(start = 0, fixed = true);
+  Real x(start = 1, fixed = false);
+  discrete Real a(start = 0, fixed = true);
+  discrete Real b(start = 0, fixed = false);
+equation
+  der(unusedState) = 0;
+  x * x = a + 1;
+  when {initial(), time > 0.5} then
+    a = pre(a) + 1;
+    b = x;
+  end when;
+end SameEventInitialVector;
+";
+
+/// A guarded event equation is a simultaneous MLS equation set, but its
+/// discrete-real definitions still have a checked acyclic causal order. The
+/// second assignment must consume the first assignment's same-instant value;
+/// reading both from the pass-entry snapshot falsely settles the event.
+#[test]
+fn same_event_discrete_real_dependency_uses_new_value_on_both_sessions() {
+    for mode in SESSIONS {
+        let (_, sim) = simulate_on(
+            mode,
+            "SameEventCausalDependency",
+            SAME_EVENT_CASUAL_DEPENDENCY,
+        );
+        assert_eq!(value_at(&sim, "scaled", 0.45), 0.0);
+        assert_eq!(value_at(&sim, "scaled", AFTER_INSTANT), 1.0);
+        assert_eq!(
+            value_at(&sim, "next", AFTER_INSTANT),
+            100.0,
+            "the second same-event definition must see the new `scaled` value on {mode:?}"
+        );
+    }
+}
+
+#[test]
+fn same_event_causal_order_survives_reversed_source_order_and_arrays() {
+    for mode in SESSIONS {
+        let (_, reversed) = simulate_on(
+            mode,
+            "SameEventReversedSourceOrder",
+            SAME_EVENT_REVERSED_SOURCE_ORDER,
+        );
+        assert_eq!(value_at(&reversed, "next", AFTER_INSTANT), 100.0);
+        assert_eq!(value_at(&reversed, "scaled", AFTER_INSTANT), 1.0);
+
+        let (_, array) = simulate_on(
+            mode,
+            "SameEventArrayDependency",
+            SAME_EVENT_ARRAY_DEPENDENCY,
+        );
+        assert_eq!(value_at(&array, "next[1]", AFTER_INSTANT), 1.0);
+        assert_eq!(value_at(&array, "next[2]", AFTER_INSTANT), 2.0);
+    }
+}
+
+#[test]
+fn same_event_mixed_pre_mode_keeps_follow_current_consumer() {
+    for mode in SESSIONS {
+        let (_, sim) = simulate_on(mode, "SameEventMixedPreMode", SAME_EVENT_MIXED_PRE_MODE);
+        assert_eq!(value_at(&sim, "a", 0.0), 1.0);
+        let x = value_at(&sim, "x", 0.0);
+        assert_eq!(value_at(&sim, "b", 0.0), x);
+    }
+}
+
+#[test]
+fn initial_vector_activation_stays_active_only_during_initial_fixed_point() {
+    for mode in SESSIONS {
+        let (_, sim) = simulate_on(mode, "SameEventInitialVector", SAME_EVENT_INITIAL_VECTOR);
+        let initial_x = value_at(&sim, "x", 0.0);
+        assert_eq!(value_at(&sim, "a", 0.0), 1.0);
+        assert!((initial_x - 2.0_f64.sqrt()).abs() < 1.0e-12);
+        assert_eq!(value_at(&sim, "b", 0.0), initial_x);
+        assert_eq!(value_at(&sim, "a", 0.6), 2.0);
+        let final_x = value_at(&sim, "x", 0.6);
+        assert!((final_x - 3.0_f64.sqrt()).abs() < 1.0e-12);
+        assert_eq!(value_at(&sim, "b", 0.6), final_x);
+    }
+}
 
 const NEGATED_TIME: &str = "model NegatedTime
   Real x(start = 0, fixed = true);

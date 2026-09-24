@@ -1,6 +1,10 @@
 use log::{debug, info, trace};
 use std::ops::AddAssign;
-use std::{cell::Ref, fmt::Display};
+use std::{
+    cell::{Ref, RefCell},
+    fmt::Display,
+    rc::Rc,
+};
 
 use crate::{
     error::{DiffsolError, OdeSolverError},
@@ -12,7 +16,10 @@ use serde::Serialize;
 
 use crate::ode_solver_error;
 use crate::{
-    matrix::MatrixRef, nonlinear_solver::root::RootFinder, op::bdf::BdfCallable, scalar::scale,
+    matrix::MatrixRef,
+    nonlinear_solver::{root::RootFinder, SupplementalErrorNorm},
+    op::bdf::BdfCallable,
+    scalar::scale,
     AugmentedOdeEquations, BdfState, DenseMatrix, JacobianUpdate, MatrixViewMut, NonLinearOp,
     NonLinearSolver, OdeEquationsImplicit, OdeEquationsImplicitAdjoint, OdeEquationsImplicitSens,
     OdeSolverMethod, OdeSolverProblem, OdeSolverState, OdeSolverStopReason, Op, Scalar,
@@ -157,6 +164,7 @@ pub struct Bdf<
     is_state_modified: bool,
     jacobian_update: JacobianUpdate<Eqn::T>,
     config: BdfConfig<Eqn::T>,
+    supplemental_error_norm: Option<Rc<RefCell<dyn SupplementalErrorNorm<Eqn::V> + 'a>>>,
 }
 
 impl<M, Eqn, Nls, AugmentedEqn> Clone for Bdf<'_, Eqn, Nls, M, AugmentedEqn>
@@ -211,6 +219,7 @@ where
             is_state_modified: self.is_state_modified,
             jacobian_update: self.jacobian_update.clone(),
             config: self.config.clone(),
+            supplemental_error_norm: self.supplemental_error_norm.clone(),
         }
     }
 }
@@ -250,6 +259,16 @@ where
             true,
             BdfConfig::new(&problem.ode_options),
         )
+    }
+
+    /// Attach the host-owned observable check used by both the nonlinear and
+    /// LTE admission paths. The callback is shared with a cloned method so a
+    /// persistent host capability keeps one component identity and latch.
+    pub fn set_supplemental_error_norm(
+        &mut self,
+        callback: Rc<RefCell<dyn SupplementalErrorNorm<Eqn::V> + 'a>>,
+    ) {
+        self.supplemental_error_norm = Some(callback);
     }
 
     fn _new(
@@ -365,6 +384,7 @@ where
             is_state_modified,
             jacobian_update: JacobianUpdate::new(&problem.ode_options),
             config,
+            supplemental_error_norm: None,
         })
     }
 
@@ -823,7 +843,7 @@ where
             let atol = &self.ode_problem.atol;
             let rtol = self.ode_problem.rtol;
             error_norm +=
-                self.y_delta.squared_norm(&state.y, atol, rtol) * self.error_const2[order - 1];
+                self.y_delta.squared_norm(&state.y, atol, rtol) * self.error_const2[order];
             ncontrib += 1;
             if output_in_error_control {
                 let rtol = self.ode_problem.out_rtol.unwrap();
@@ -857,7 +877,35 @@ where
         error_norm
     }
 
-    fn predict_error_control(&self, order: usize) -> Eqn::T {
+    fn supplemental_error_control(&self) -> Result<Eqn::T, DiffsolError> {
+        let Some(callback) = self.supplemental_error_norm.as_ref() else {
+            return Ok(Eqn::T::zero());
+        };
+        let order = self.state.order;
+        let mut actual_trial_state = self.y_predict.clone();
+        actual_trial_state += &self.y_delta;
+        let estimated_delta = self.y_delta.clone() * scale(-self.error_const2[order].sqrt());
+        callback.borrow_mut().supplemental_error(
+            self.t_predict,
+            &actual_trial_state,
+            &estimated_delta,
+        )
+    }
+
+    fn supplemental_predict_error_control(&self, order: usize) -> Result<Eqn::T, DiffsolError> {
+        let Some(callback) = self.supplemental_error_norm.as_ref() else {
+            return Ok(Eqn::T::zero());
+        };
+        let state = &self.state;
+        let mut estimated_delta = state.y.clone();
+        estimated_delta.copy_from_view(&state.diff.column(order + 1));
+        estimated_delta *= scale(-self.error_const2[order].sqrt());
+        callback
+            .borrow_mut()
+            .supplemental_error(state.t, &state.y, &estimated_delta)
+    }
+
+    fn predict_error_control(&self, order: usize) -> Result<Eqn::T, DiffsolError> {
         let state = &self.state;
         let output_in_error_control = self.ode_problem.output_in_error_control();
         let integrate_sens = self.s_op.is_some();
@@ -919,11 +967,45 @@ where
             }
             ncontrib += state.sgdiff.len();
         }
-        if ncontrib == 0 {
+        let mut error_norm = if ncontrib == 0 {
             error_norm
         } else {
             error_norm / <Eqn::T as FromPrimitive>::from_f64(ncontrib as f64).unwrap()
+        };
+        let supplemental_error_norm = self.supplemental_predict_error_control(order)?;
+        let supplemental_error_squared = supplemental_error_norm * supplemental_error_norm;
+        if supplemental_error_squared > error_norm {
+            error_norm = supplemental_error_squared;
         }
+        Ok(error_norm)
+    }
+
+    fn order_selection_factors(
+        &self,
+        order: usize,
+        error_norm: Eqn::T,
+    ) -> Result<Vec<Eqn::T>, DiffsolError> {
+        let error_m_norm = if order > 1 {
+            self.predict_error_control(order - 1)?
+        } else {
+            Eqn::T::INFINITY
+        };
+        let error_p_norm = if order < BdfState::<Eqn::V, M>::MAX_ORDER {
+            self.predict_error_control(order + 1)?
+        } else {
+            Eqn::T::INFINITY
+        };
+
+        let error_norms = [error_m_norm, error_norm, error_p_norm];
+        Ok(error_norms
+            .into_iter()
+            .enumerate()
+            .map(|(i, error_norm)| {
+                error_norm.pow(
+                    <Eqn::T as FromPrimitive>::from_f64(-0.5 / (i as f64 + order as f64)).unwrap(),
+                )
+            })
+            .collect())
     }
 
     fn sensitivity_solve(&mut self, t_new: Eqn::T) -> Result<(), DiffsolError> {
@@ -1319,13 +1401,25 @@ where
             // solve BDF equation using y0 as starting point
             let mut solve_result = Ok(());
             if let Some(op) = self.op.as_ref() {
-                solve_result = self.nonlinear_solver.solve_in_place(
-                    op,
-                    &mut self.y_delta,
-                    self.t_predict,
-                    &self.y_predict,
-                    &mut self.convergence,
-                );
+                solve_result = if let Some(callback) = self.supplemental_error_norm.as_ref() {
+                    let mut callback = callback.borrow_mut();
+                    self.nonlinear_solver.solve_in_place_with_observer(
+                        op,
+                        &mut self.y_delta,
+                        self.t_predict,
+                        &self.y_predict,
+                        &mut self.convergence,
+                        &mut *callback,
+                    )
+                } else {
+                    self.nonlinear_solver.solve_in_place(
+                        op,
+                        &mut self.y_delta,
+                        self.t_predict,
+                        &self.y_predict,
+                        &mut self.convergence,
+                    )
+                };
                 // update statistics
                 self.statistics.number_of_nonlinear_solver_iterations += self.convergence.niter();
 
@@ -1396,6 +1490,11 @@ where
             }
 
             error_norm = self.error_control();
+            let supplemental_error_norm = self.supplemental_error_control()?;
+            let supplemental_error_squared = supplemental_error_norm * supplemental_error_norm;
+            if supplemental_error_squared > error_norm {
+                error_norm = supplemental_error_squared;
+            }
 
             // need to caulate safety even if step is accepted
             let maxiter = self.convergence.max_iter() as f64;
@@ -1475,34 +1574,10 @@ where
         self.n_equal_steps += 1;
 
         if self.n_equal_steps > self.state.order {
-            let factors = {
-                let order = self.state.order;
-                // similar to the optimal step size factor we calculated above for the current
-                // order k, we need to calculate the optimal step size factors for orders
-                // k-1 and k+1. To do this, we note that the error = C_k * D^{k+1} y_n
-                let error_m_norm = if order > 1 {
-                    self.predict_error_control(order - 1)
-                } else {
-                    Eqn::T::INFINITY
-                };
-                let error_p_norm = if order < BdfState::<Eqn::V, M>::MAX_ORDER {
-                    self.predict_error_control(order + 1)
-                } else {
-                    Eqn::T::INFINITY
-                };
-
-                let error_norms = [error_m_norm, error_norm, error_p_norm];
-                error_norms
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, error_norm)| {
-                        error_norm.pow(
-                            <Eqn::T as FromPrimitive>::from_f64(-0.5 / (i as f64 + order as f64))
-                                .unwrap(),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            };
+            let order = self.state.order;
+            // The candidate factors include the same supplemental observable
+            // obligation as the state LTE before selecting the next order.
+            let factors = self.order_selection_factors(order, error_norm)?;
 
             // now we have the three factors for orders k-1, k and k+1, pick the maximum in
             // order to maximise the resultant step size
@@ -1594,6 +1669,9 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::{cell::RefCell, rc::Rc};
+
+    use crate::error::DiffsolError;
     use crate::{
         matrix::dense_nalgebra_serial::NalgebraMat,
         ode_equations::test_models::{
@@ -1626,14 +1704,288 @@ mod test {
             test_solve_adjoint_with_single_reset_root,
             test_solve_soln_adjoint_sum_squares_with_single_reset_root,
             test_solve_soln_adjoint_with_single_reset_root, test_state_mut,
-            test_state_mut_on_problem,
+            test_state_mut_on_problem, TestEqn,
         },
         scale, ConstantOp, Context, DenseMatrix, FaerLU, FaerMat, FaerSparseLU, FaerSparseMat,
-        MatrixCommon, NalgebraLU, OdeEquations, OdeSolverMethod, Op, Vector, VectorView,
+        MatrixCommon, NalgebraLU, NalgebraVec, NewtonNonlinearSolver, NoLineSearch, OdeEquations,
+        OdeSolverMethod, Op, SupplementalErrorNorm, Vector, VectorView, VectorViewMut,
     };
 
     type M = NalgebraMat<f64>;
     type LS = NalgebraLU<f64>;
+
+    struct QuadraticObserver {
+        k: f64,
+        rtol: f64,
+        atol: f64,
+        calls: usize,
+        time: Option<f64>,
+        state: Option<NalgebraVec<f64>>,
+        delta: Option<NalgebraVec<f64>>,
+        last_score: Option<f64>,
+        refuse: bool,
+    }
+
+    impl SupplementalErrorNorm<NalgebraVec<f64>> for QuadraticObserver {
+        fn supplemental_error(
+            &mut self,
+            time: f64,
+            actual_trial_state: &NalgebraVec<f64>,
+            estimated_delta: &NalgebraVec<f64>,
+        ) -> Result<f64, DiffsolError> {
+            self.calls += 1;
+            self.time = Some(time);
+            self.state = Some(actual_trial_state.clone());
+            self.delta = Some(estimated_delta.clone());
+            if self.refuse {
+                return Err(DiffsolError::Other("analytic observer refusal".into()));
+            }
+            let x = actual_trial_state.get_index(0);
+            let delta = estimated_delta.get_index(0);
+            let q = self.k * x * x;
+            let corrected_q = self.k * (x + delta) * (x + delta);
+            let score = (corrected_q - q).abs() / (self.atol + self.rtol * q.abs());
+            self.last_score = Some(score);
+            Ok(score)
+        }
+    }
+
+    struct SaturatingObserver {
+        boundary: f64,
+        budget: f64,
+        corrected_q: Option<f64>,
+        delta: Option<f64>,
+    }
+
+    impl SupplementalErrorNorm<NalgebraVec<f64>> for SaturatingObserver {
+        fn supplemental_error(
+            &mut self,
+            _time: f64,
+            actual_trial_state: &NalgebraVec<f64>,
+            estimated_delta: &NalgebraVec<f64>,
+        ) -> Result<f64, DiffsolError> {
+            let x = actual_trial_state.get_index(0);
+            let delta = estimated_delta.get_index(0);
+            let q = (self.boundary - x).max(0.0);
+            let corrected_q = (self.boundary - (x + delta)).max(0.0);
+            self.delta = Some(delta);
+            self.corrected_q = Some(corrected_q);
+            Ok((corrected_q - q).abs() / self.budget)
+        }
+    }
+
+    fn predictor_test_solver(
+    ) -> crate::Bdf<'static, TestEqn<M>, NewtonNonlinearSolver<M, LS, NoLineSearch>> {
+        let problem = Box::leak(Box::new(test_problem::<M>(false)));
+        problem.bdf::<LS>().unwrap()
+    }
+
+    #[test]
+    fn bdf_order_prediction_selects_with_analytic_observable_error() {
+        let mut plain = predictor_test_solver();
+        plain.state.order = 1;
+        plain.state.t = 0.25;
+        plain.state.y.set_index(0, 1.0);
+        let mut plain_difference = plain.state.y.clone();
+        plain_difference *= scale(8.5e-6);
+        plain.state.diff.column_mut(3).copy_from(&plain_difference);
+        let plain_factors = plain.order_selection_factors(1, 1.0).unwrap();
+        let plain_choice = plain_factors
+            .iter()
+            .enumerate()
+            .max_by(|(_, left), (_, right)| left.partial_cmp(right).unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(
+            plain_choice, 2,
+            "state-only candidate should choose order +1"
+        );
+
+        let mut zero = predictor_test_solver();
+        zero.state.order = 1;
+        zero.state.t = 0.25;
+        zero.state.y.set_index(0, 1.0);
+        let mut zero_difference = zero.state.y.clone();
+        zero_difference *= scale(8.5e-6);
+        zero.state.diff.column_mut(3).copy_from(&zero_difference);
+        let observer = Rc::new(RefCell::new(QuadraticObserver {
+            k: 0.0,
+            rtol: 1.0e-6,
+            atol: 1.0e-6,
+            calls: 0,
+            time: None,
+            state: None,
+            delta: None,
+            last_score: None,
+            refuse: false,
+        }));
+        zero.set_supplemental_error_norm(observer.clone());
+        let zero_factors = zero.order_selection_factors(1, 1.0).unwrap();
+        assert_eq!(zero_factors, plain_factors);
+        assert_eq!(observer.borrow().calls, 1);
+
+        let mut guarded = predictor_test_solver();
+        guarded.state.order = 1;
+        guarded.state.t = 0.25;
+        guarded.state.y.set_index(0, 1.0);
+        let mut guarded_difference = guarded.state.y.clone();
+        guarded_difference *= scale(8.5e-6);
+        guarded
+            .state
+            .diff
+            .column_mut(3)
+            .copy_from(&guarded_difference);
+        let observer = Rc::new(RefCell::new(QuadraticObserver {
+            k: 1.0,
+            rtol: 1.0e-6,
+            atol: 1.0e-6,
+            calls: 0,
+            time: None,
+            state: None,
+            delta: None,
+            last_score: None,
+            refuse: false,
+        }));
+        guarded.set_supplemental_error_norm(observer.clone());
+        let guarded_factors = guarded.order_selection_factors(1, 1.0).unwrap();
+        let guarded_choice = guarded_factors
+            .iter()
+            .enumerate()
+            .max_by(|(_, left), (_, right)| left.partial_cmp(right).unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(
+            guarded_choice, 1,
+            "q response should retain the current order"
+        );
+        let observer = observer.borrow();
+        assert_eq!(observer.calls, 1);
+        assert_eq!(observer.time, Some(0.25));
+        assert_eq!(observer.state.as_ref().unwrap().get_index(0), 1.0);
+        assert!((observer.delta.as_ref().unwrap().get_index(0) + 8.5e-6 / 6.0).abs() < 1.0e-20);
+        assert!(observer.last_score.unwrap() > 1.0);
+    }
+
+    #[test]
+    fn bdf_observable_correction_uses_signed_ndf_error() {
+        let mut solver = predictor_test_solver();
+        solver.state.order = 1;
+
+        // The startup predictor for y' = y is 1 + h and psi = alpha * h.
+        // With alpha = 1 / (1 - kappa_1), the NDF correction is
+        // alpha * h^2 / (1 - alpha * h), which overshoots exp(h).
+        let h: f64 = 0.1;
+        let alpha: f64 = 1.0 / 1.185;
+        let predictor = 1.0 + h;
+        let correction = alpha * h * h / (1.0 - alpha * h);
+        let numerical = predictor + correction;
+        let exact = h.exp();
+        let coefficient: f64 = 0.315;
+        let boundary: f64 = 1.108;
+        let budget: f64 = 1.0e-4;
+        assert!(numerical > boundary);
+        assert!(exact < boundary);
+
+        // q(x) = max(0, boundary - x) is zero on the numerical side of the
+        // crossing and positive on the exact side.
+        let positive_q = (boundary - (numerical + coefficient * correction)).max(0.0);
+        let negative_q = (boundary - (numerical - coefficient * correction)).max(0.0);
+        let exact_q = (boundary - exact).max(0.0);
+        assert_eq!(positive_q, 0.0, "positive error misses the crossing");
+        assert!(exact_q > budget, "the exact crossing exceeds the budget");
+        assert!(
+            negative_q > budget,
+            "signed correction must expose the crossing"
+        );
+
+        solver.y_predict.set_index(0, predictor);
+        solver.y_delta.set_index(0, correction);
+        solver.t_predict = h;
+        let observer = Rc::new(RefCell::new(SaturatingObserver {
+            boundary,
+            budget,
+            corrected_q: None,
+            delta: None,
+        }));
+        solver.set_supplemental_error_norm(observer.clone());
+        let score = solver.supplemental_error_control().unwrap();
+        let observer = observer.borrow();
+        let expected_delta = -coefficient * correction;
+        assert!((observer.delta.unwrap() - expected_delta).abs() < 1.0e-15);
+        assert!((observer.corrected_q.unwrap() - negative_q).abs() < 1.0e-15);
+        assert!(score > 1.0);
+
+        // A linear observable is sign-invariant under the absolute norm; the
+        // sign is needed for nonlinear/piecewise observables such as q above.
+        let positive_linear = (numerical + coefficient * correction - numerical).abs();
+        let negative_linear = (numerical - coefficient * correction - numerical).abs();
+        assert!((positive_linear - negative_linear).abs() < 1.0e-15);
+    }
+
+    #[test]
+    fn bdf_error_control_uses_the_same_order_coefficient_for_state_and_observer() {
+        for order in 1..=3 {
+            let mut solver = predictor_test_solver();
+            solver.state.order = order;
+            solver.state.t = 0.25;
+            solver.state.y.set_index(0, 1.0);
+            let mut difference = solver.state.y.clone();
+            difference *= scale(1.0e-6);
+            solver.y_delta.copy_from(&difference);
+            solver.y_predict.copy_from(&solver.state.y);
+            solver.t_predict = 0.5;
+
+            let expected_coefficient = match order {
+                1 => 0.315,
+                2 => 1.0 / 6.0,
+                3 => 0.09911666666666667,
+                _ => unreachable!(),
+            };
+            let expected = solver.y_delta.squared_norm(
+                &solver.state.y,
+                &solver.ode_problem.atol,
+                solver.ode_problem.rtol,
+            ) * expected_coefficient
+                * expected_coefficient;
+            assert!((solver.error_control() - expected).abs() < 1.0e-14);
+
+            let observer = Rc::new(RefCell::new(QuadraticObserver {
+                k: 0.0,
+                rtol: 1.0e-6,
+                atol: 1.0e-6,
+                calls: 0,
+                time: None,
+                state: None,
+                delta: None,
+                last_score: None,
+                refuse: false,
+            }));
+            solver.set_supplemental_error_norm(observer.clone());
+            assert_eq!(solver.supplemental_error_control().unwrap(), 0.0);
+            let observer = observer.borrow();
+            let expected_delta = -1.0e-6 * expected_coefficient;
+            assert_eq!(observer.calls, 1);
+            assert!(
+                (observer.delta.as_ref().unwrap().get_index(0) - expected_delta).abs() < 1.0e-20
+            );
+        }
+
+        let mut solver = predictor_test_solver();
+        solver.state.order = 1;
+        let observer = Rc::new(RefCell::new(QuadraticObserver {
+            k: 1.0,
+            rtol: 1.0e-6,
+            atol: 1.0e-6,
+            calls: 0,
+            time: None,
+            state: None,
+            delta: None,
+            last_score: None,
+            refuse: true,
+        }));
+        solver.set_supplemental_error_norm(observer);
+        assert!(solver.order_selection_factors(1, 1.0).is_err());
+    }
     #[test]
     fn bdf_state_mut() {
         test_state_mut(test_problem::<M>(false).bdf::<LS>().unwrap());

@@ -83,7 +83,7 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
         while let Some(scope) = enclosing {
             let path = scope.join(&relative);
             if let Some(selected) = overrides.get(&path) {
-                return (Some(selected), path);
+                return (Some(&selected.by_alias), path);
             }
             enclosing = scope.parent();
         }

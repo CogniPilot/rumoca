@@ -9,7 +9,7 @@ mod cost_tests;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Result of tearing an algebraic loop.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TearingResult {
     /// Indices of tear (iteration) variables within the block's unknown list.
     pub tear_var_local_indices: Vec<usize>,
@@ -273,11 +273,47 @@ fn tear_with_priority(
         return None;
     }
 
-    Some(TearingResult {
+    let plan = TearingResult {
         tear_var_local_indices: tear_vars,
         residual_eq_local_indices: residual_eqs,
         causal_sequence,
-    })
+    };
+    candidate_plan_is_valid(n, eq_unknowns, causal_candidates, &plan).then_some(plan)
+}
+
+fn candidate_plan_is_valid(
+    n: usize,
+    incidence: &[HashSet<usize>],
+    candidates: &[HashSet<usize>],
+    plan: &TearingResult,
+) -> bool {
+    let mut known = HashSet::new();
+    let mut rows = HashSet::new();
+    for &variable in &plan.tear_var_local_indices {
+        if variable >= n || !known.insert(variable) {
+            return false;
+        }
+    }
+    for &row in &plan.residual_eq_local_indices {
+        if row >= n || !rows.insert(row) {
+            return false;
+        }
+    }
+    for &(row, variable) in &plan.causal_sequence {
+        if row >= n
+            || variable >= n
+            || !candidates[row].contains(&variable)
+            || !incidence[row].contains(&variable)
+            || incidence[row]
+                .iter()
+                .any(|read| *read != variable && !known.contains(read))
+            || !rows.insert(row)
+            || !known.insert(variable)
+        {
+            return false;
+        }
+    }
+    rows.len() == n && known.len() == n
 }
 
 #[cfg(test)]

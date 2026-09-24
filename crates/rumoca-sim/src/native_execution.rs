@@ -18,6 +18,20 @@ struct CraneliftEventTransaction {
 }
 
 impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
+    fn call_projection_outputs(
+        &self,
+        selection: &rumoca_ir_solve::ProjectionOutputSelection,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<bool, String> {
+        self.0
+            .call_projection_outputs(selection, y, p, t, tables, out)
+            .map_err(|error| error.to_string())
+    }
+
     fn call_program_outputs(
         &self,
         program: usize,
@@ -128,6 +142,24 @@ impl rumoca_solver::CompiledSolveProjectionJacobian for CraneliftProjectionJacob
 }
 
 impl rumoca_solver::CompiledSolveAssignmentSchedule for CraneliftAssignmentSchedule {
+    fn call_torn(
+        &self,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        tables: &[rumoca_core::ExternalTableData],
+    ) -> Result<Option<rumoca_eval_solve::TornSweepStatus>, String> {
+        let status = self
+            .0
+            .call_torn(y, p, t, tables)
+            .map_err(|error| error.to_string())?;
+        Ok(match status {
+            None => None,
+            Some(true) => Some(rumoca_eval_solve::TornSweepStatus::Completed),
+            Some(false) => Some(rumoca_eval_solve::TornSweepStatus::Declined),
+        })
+    }
+
     fn call(
         &self,
         y: &mut [f64],
@@ -264,14 +296,11 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         rows: &[Vec<rumoca_ir_solve::LinearOp>],
         target_y_indices: &[usize],
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
-        let compiled = match &self.pure_calls {
-            Some(pure_calls) => rumoca_exec_cranelift::compile_assignment_schedule_with_pure_calls(
-                rows,
-                target_y_indices,
-                pure_calls,
-            ),
-            None => rumoca_exec_cranelift::compile_assignment_schedule(rows, target_y_indices),
-        };
+        let compiled = rumoca_exec_cranelift::compile_torn_assignment_schedule(
+            rows,
+            target_y_indices,
+            self.pure_calls.as_ref(),
+        );
         compiled
             .map(|compiled| Rc::new(CraneliftAssignmentSchedule(compiled)) as Rc<_>)
             .map_err(|error| error.to_string())

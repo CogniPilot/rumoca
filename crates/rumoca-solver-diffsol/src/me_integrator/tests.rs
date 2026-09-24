@@ -1,4 +1,36 @@
-use diffsol::{DiffsolError, FaerLU, FaerMat, OdeBuilder, OdeSolverMethod, VectorHost};
+use std::{cell::RefCell, rc::Rc};
+
+use diffsol::{
+    BacktrackingLineSearch, Bdf, BdfState, DiffsolError, FaerLU, FaerMat, FaerSparseLU,
+    FaerSparseMat, FaerVec, NewtonNonlinearSolver, OdeBuilder, OdeSolverMethod, OdeSolverState,
+    SupplementalErrorNorm, VectorHost,
+};
+
+struct VoltageObserver {
+    resistance: f64,
+    amplitude: f64,
+    frequency: f64,
+    nominal: f64,
+    relative_tolerance: f64,
+    absolute_tolerance: f64,
+}
+
+impl SupplementalErrorNorm<FaerVec<f64>> for VoltageObserver {
+    fn supplemental_error(
+        &mut self,
+        time: f64,
+        actual_trial_state: &FaerVec<f64>,
+        estimated_delta: &FaerVec<f64>,
+    ) -> Result<f64, DiffsolError> {
+        let voltage =
+            |state: f64| self.amplitude * (self.frequency * time).sin() - self.resistance * state;
+        let actual = voltage(actual_trial_state.as_slice()[0]);
+        let corrected = voltage(actual_trial_state.as_slice()[0] + estimated_delta.as_slice()[0]);
+        let absolute = (self.absolute_tolerance * self.nominal).clamp(f64::MIN_POSITIVE, f64::MAX);
+        let scale = actual.abs().max(corrected.abs());
+        Ok((corrected - actual).abs() / (absolute + self.relative_tolerance * scale))
+    }
+}
 
 #[test]
 fn native_bdf_minimum_step_still_rejects_unresolved_dynamics() {
@@ -114,11 +146,6 @@ fn native_bdf_endpoint_matches_its_continuous_extension() {
 
 #[test]
 fn shortened_bdf_step_preserves_the_stiff_voltage_solution() {
-    use diffsol::{
-        BacktrackingLineSearch, Bdf, BdfState, FaerSparseLU, FaerSparseMat, NewtonNonlinearSolver,
-        OdeSolverState,
-    };
-
     // SPEC_0038 / ME-INT-004: a hard stop changes the numerical step's
     // coefficient just as ordinary step-size adaptation does.
     const RESISTANCE: f64 = 3e6;
@@ -150,6 +177,14 @@ fn shortened_bdf_step_preserves_the_stiff_voltage_solution() {
         ),
     )
     .unwrap();
+    method.set_supplemental_error_norm(Rc::new(RefCell::new(VoltageObserver {
+        resistance: RESISTANCE,
+        amplitude: 100.0,
+        frequency: FREQUENCY,
+        nominal: 1.0,
+        relative_tolerance: 1e-6,
+        absolute_tolerance: 1e-6,
+    })));
     let stop_time = 0.02;
     method.set_stop_time(stop_time).unwrap();
     while method.state().t < stop_time {

@@ -14,6 +14,11 @@ pub enum RuntimeSolveError {
         span: Option<rumoca_core::Span>,
     },
 
+    /// The value projection exhausted its residual/coordinate convergence check.
+    /// Distinct from evaluation errors, which must never authorize replay.
+    #[error("solve-IR evaluation failed: {message}")]
+    ProjectionNonConvergence { message: String },
+
     #[error("unsupported solve-IR runtime model: {reason}")]
     UnsupportedModel { reason: String },
 

@@ -95,6 +95,7 @@ struct ScopedModifierBinding {
     key: ast::QualifiedName,
     value: ast::Expression,
     source: Option<ast::Expression>,
+    value_scope: Option<ast::QualifiedName>,
     source_scope: Option<ast::QualifiedName>,
     prefixes: ModifierPrefixes,
 }
@@ -146,17 +147,30 @@ fn insert_modifier_value_with_structural_overrides(
     insert_ctx: &ScopedInsertContext<'_>,
 ) -> InstantiateResult<()> {
     let qn = ast::QualifiedName::from_ident(target_name);
-    let (binding_source, binding_source_scope) =
-        inherited_modifier_source_metadata(target_name, value_expr, ctx.mod_env()).map_or(
-            (Some(value_expr.clone()), insert_ctx.source_scope.clone()),
-            |(src, scope)| {
+    let (binding_source, binding_source_scope, initial_value_scope) =
+        inherited_modifier_source_metadata(
+            target_name,
+            value_expr,
+            ctx.mod_env(),
+            insert_ctx.source_scope.as_ref(),
+        )
+        .map_or_else(
+            || {
+                (
+                    Some(value_expr.clone()),
+                    insert_ctx.source_scope.clone(),
+                    insert_ctx.source_scope.clone(),
+                )
+            },
+            |(src, source_scope, value_scope)| {
                 (
                     src.or_else(|| Some(value_expr.clone())),
-                    scope.or_else(|| insert_ctx.source_scope.clone()),
+                    source_scope.or_else(|| insert_ctx.source_scope.clone()),
+                    value_scope,
                 )
             },
         );
-    let resolved_expr = resolve_modification_expr(
+    let (resolved_expr, value_scope) = resolve_modification_expr(
         value_expr,
         ModifierResolveScope {
             mod_env: ctx.mod_env(),
@@ -165,6 +179,7 @@ fn insert_modifier_value_with_structural_overrides(
             imports: insert_ctx.imports,
         },
         options.allow_string_eval,
+        initial_value_scope.as_ref(),
     )?;
     let structural_field_overrides = collect_structural_integer_fields_from_sibling_reference(
         value_expr,
@@ -178,6 +193,7 @@ fn insert_modifier_value_with_structural_overrides(
             key: qn,
             value: resolved_expr,
             source: binding_source,
+            value_scope: value_scope.clone(),
             source_scope: binding_source_scope.clone(),
             prefixes: options.prefixes,
         },
@@ -192,6 +208,7 @@ fn insert_modifier_value_with_structural_overrides(
                 key: field_qn,
                 value: field_value,
                 source: None,
+                value_scope: value_scope.clone(),
                 source_scope: binding_source_scope.clone(),
                 prefixes: options.prefixes,
             },
@@ -206,7 +223,12 @@ fn inherited_modifier_source_metadata(
     target_name: &str,
     expr: &ast::Expression,
     mod_env: &ast::ModificationEnvironment,
-) -> Option<(Option<ast::Expression>, Option<ast::QualifiedName>)> {
+    written_scope: Option<&ast::QualifiedName>,
+) -> Option<(
+    Option<ast::Expression>,
+    Option<ast::QualifiedName>,
+    Option<ast::QualifiedName>,
+)> {
     let target_qn = ast::QualifiedName::from_ident(target_name);
     if let Some(existing) = mod_env.get(&target_qn)
         && existing.value == *expr
@@ -217,6 +239,7 @@ fn inherited_modifier_source_metadata(
                 .clone()
                 .or_else(|| Some(existing.value.clone())),
             existing.source_scope.clone(),
+            existing.value_scope.clone(),
         ));
     }
 
@@ -243,6 +266,7 @@ fn inherited_modifier_source_metadata(
             .clone()
             .or_else(|| Some(mod_value.value.clone())),
         mod_value.source_scope.clone(),
+        written_scope.cloned(),
     ))
 }
 
@@ -429,6 +453,7 @@ fn insert_scoped_modifier_binding(
         key,
         value,
         source,
+        value_scope,
         source_scope,
         prefixes,
     } = binding;
@@ -467,7 +492,8 @@ fn insert_scoped_modifier_binding(
             source_scope,
             prefixes.each,
             prefixes.final_,
-        ),
+        )
+        .with_value_scope(value_scope),
     );
     Ok(())
 }
@@ -575,12 +601,14 @@ fn resolve_modification_expr(
     expr: &ast::Expression,
     scope: ModifierResolveScope<'_>,
     allow_string_eval: bool,
-) -> InstantiateResult<ast::Expression> {
+    written_scope: Option<&ast::QualifiedName>,
+) -> InstantiateResult<(ast::Expression, Option<ast::QualifiedName>)> {
     resolve_modification_expr_with_depth(
         expr,
         scope,
         allow_string_eval,
         ModificationResolveMode::Modifier,
+        written_scope.cloned(),
         0,
     )
 }
@@ -601,8 +629,10 @@ pub(super) fn resolve_declaration_binding_expr(
         },
         false,
         ModificationResolveMode::DeclarationBinding,
+        None,
         0,
     )
+    .map(|(value, _)| value)
 }
 
 /// Decide a Boolean parameter expression written in this scope (MLS §4.4.5).
@@ -634,10 +664,11 @@ fn resolve_modification_expr_with_depth(
     scope: ModifierResolveScope<'_>,
     allow_string_eval: bool,
     mode: ModificationResolveMode,
+    value_scope: Option<ast::QualifiedName>,
     depth: usize,
-) -> InstantiateResult<ast::Expression> {
+) -> InstantiateResult<(ast::Expression, Option<ast::QualifiedName>)> {
     if depth > MAX_MOD_RESOLVE_DEPTH {
-        return Ok(expr.clone());
+        return Ok((expr.clone(), value_scope));
     }
     let ModifierResolveScope {
         mod_env,
@@ -656,51 +687,66 @@ fn resolve_modification_expr_with_depth(
     // Resolve booleans first (e.g., useFilter=useFilter) so conditional
     // components in nested classes evaluate against the parent's value.
     if let Some(value) = decide_boolean_modifier(expr, scope, &eval_ctx) {
-        return Ok(ast::Expression::Terminal {
-            terminal_type: rumoca_ir_ast::TerminalType::Bool,
-            token: rumoca_core::Token {
-                text: value.to_string().into(),
-                ..Default::default()
+        return Ok((
+            ast::Expression::Terminal {
+                terminal_type: rumoca_ir_ast::TerminalType::Bool,
+                token: rumoca_core::Token {
+                    text: value.to_string().into(),
+                    ..Default::default()
+                },
+                span: expr.span(),
             },
-            span: expr.span(),
-        });
+            value_scope,
+        ));
     }
 
     // Resolve string-valued modifiers in the parent scope so nested conditional
     // components can evaluate against concrete values (e.g. "D"/"Y").
     if allow_string_eval && let Some(value) = try_eval_string_expr(&eval_ctx, expr) {
-        return Ok(ast::Expression::Terminal {
-            terminal_type: rumoca_ir_ast::TerminalType::String,
-            token: rumoca_core::Token {
-                text: format!("\"{value}\"").into(),
-                ..Default::default()
+        return Ok((
+            ast::Expression::Terminal {
+                terminal_type: rumoca_ir_ast::TerminalType::String,
+                token: rumoca_core::Token {
+                    text: format!("\"{value}\"").into(),
+                    ..Default::default()
+                },
+                span: expr.span(),
             },
-            span: expr.span(),
-        });
+            value_scope,
+        ));
     }
 
     // Try to evaluate as an integer (common for array dimension parameters).
     if let Some(value) = try_eval_integer_expr(&eval_ctx, expr) {
-        return Ok(ast::Expression::Terminal {
-            terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-            token: rumoca_core::Token {
-                text: value.to_string().into(),
-                ..Default::default()
+        return Ok((
+            ast::Expression::Terminal {
+                terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
+                token: rumoca_core::Token {
+                    text: value.to_string().into(),
+                    ..Default::default()
+                },
+                span: expr.span(),
             },
-            span: expr.span(),
-        });
+            value_scope,
+        ));
     }
 
     // Resolve direct references in current scope (e.g. resolveInFrame=resolveInFrame).
     if mode == ModificationResolveMode::Modifier
-        && let Some(resolved_ref) =
-            resolve_single_part_ref_expr(expr, mod_env, effective_components, tree)
+        && let Some((resolved_ref, resolved_scope)) = resolve_single_part_ref_expr(
+            expr,
+            mod_env,
+            effective_components,
+            tree,
+            value_scope.as_ref(),
+        )
     {
         return resolve_modification_expr_with_depth(
             &resolved_ref,
             scope,
             allow_string_eval,
             mode,
+            resolved_scope,
             depth + 1,
         );
     }
@@ -712,11 +758,12 @@ fn resolve_modification_expr_with_depth(
             scope,
             allow_string_eval,
             mode,
+            value_scope,
             depth + 1,
         );
     }
 
-    Ok(expr.clone())
+    Ok((expr.clone(), value_scope))
 }
 
 fn resolve_single_part_ref_expr(
@@ -724,7 +771,8 @@ fn resolve_single_part_ref_expr(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-) -> Option<ast::Expression> {
+    current_scope: Option<&ast::QualifiedName>,
+) -> Option<(ast::Expression, Option<ast::QualifiedName>)> {
     let ast::Expression::ComponentReference(comp_ref) = expr else {
         return None;
     };
@@ -737,13 +785,14 @@ fn resolve_single_part_ref_expr(
 
     if let Some(subscripts) = comp_ref.parts[0].subs.as_ref() {
         let mod_value = mod_env.get(&qn)?;
-        return select_array_value(&mod_value.value, subscripts);
+        return select_array_value(&mod_value.value, subscripts)
+            .map(|value| (value, mod_value.value_scope.clone()));
     }
 
     if let Some(mod_value) = mod_env.get(&qn)
         && mod_value.value != *expr
     {
-        return Some(mod_value.value.clone());
+        return Some((mod_value.value.clone(), mod_value.value_scope.clone()));
     }
 
     // A modifier is evaluated in the scope where it is written (MLS §7.2.4).
@@ -765,7 +814,10 @@ fn resolve_single_part_ref_expr(
     if !type_table_proves_enum && !declaration_proves_enum {
         return None;
     }
-    component.binding.clone()
+    component
+        .binding
+        .clone()
+        .map(|value| (value, current_scope.cloned()))
 }
 
 fn select_array_value(
@@ -852,8 +904,8 @@ fn process_nested_modifications_recursive(
                 let preserve_source = preserves_source_scoped_attribute(attr_name.as_str());
                 let mut qn = prefix.clone();
                 qn.push(attr_name, Vec::new());
-                let stored_expr = if preserve_source {
-                    value.as_ref().clone()
+                let (stored_expr, value_scope) = if preserve_source {
+                    (value.as_ref().clone(), nested_ctx.source_scope.clone())
                 } else {
                     resolve_modification_expr(
                         value,
@@ -864,6 +916,7 @@ fn process_nested_modifications_recursive(
                             imports: nested_ctx.imports,
                         },
                         false,
+                        nested_ctx.source_scope.as_ref(),
                     )?
                 };
                 ctx.mod_env_mut().add(
@@ -874,7 +927,8 @@ fn process_nested_modifications_recursive(
                         nested_ctx.source_scope.clone(),
                         nested_prefixes.each,
                         nested_prefixes.final_,
-                    ),
+                    )
+                    .with_value_scope(value_scope),
                 );
             }
             ast::Expression::ClassModification {

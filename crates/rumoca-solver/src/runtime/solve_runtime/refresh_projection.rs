@@ -342,6 +342,18 @@ impl<'a> ProjectionJacobian<'a> {
 }
 
 impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
+    fn lease_affine_jacobian(
+        &self,
+        structure: &solve::JacobianStructure,
+        coordinates: (&[usize], &[usize]),
+        y_len: usize,
+    ) -> Result<
+        Option<std::cell::RefMut<'_, crate::runtime::projection::JacobianStorage>>,
+        RuntimeSolveError,
+    > {
+        self.lease_affine_storage(structure, coordinates, y_len)
+    }
+
     fn eval_prepared_implicit_jacobian(
         &self,
         structure: &solve::JacobianStructure,
@@ -659,9 +671,10 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         })
     }
 
-    fn solve_affine_torn_delta(
+    fn solve_affine_torn_candidate(
         &self,
         block_index: usize,
+        candidate: solve::TearingCandidate,
         system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
         let block_index = self.block_indices.get(block_index).copied()?;
@@ -670,11 +683,12 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .continuous_structural
             .algebraic_projection()
             .get(block_index)?
-            .affine_elimination()?;
+            .affine_elimination_candidate(candidate)?;
         let cache = self.runtime.algebraic_newton_caches.get(block_index)?;
         crate::runtime::projection::scaled_newton_delta_with_tearing(
             system,
             &mut cache.borrow_mut(),
+            candidate,
             layout,
         )
     }
@@ -791,9 +805,10 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         #[cfg(debug_assertions)]
         let entry_y = y.to_vec();
         let mut raw = Vec::with_capacity(tearing.residual_rows.len());
-        let compiled_status = entry.compiled.as_ref().and_then(|compiled| {
-            self.eval_compiled_torn_sweep(compiled, tearing, y, p, t, &mut raw)
-        });
+        let compiled_status = match entry.compiled.as_ref() {
+            Some(compiled) => self.eval_compiled_torn_sweep(compiled, y, p, t, &mut raw)?,
+            None => None,
+        };
         let status = match compiled_status {
             Some(status) => status,
             None => self
@@ -923,40 +938,34 @@ impl RefreshProjectionModel<'_> {
         Ok(())
     }
 
-    /// Run one compiled torn sweep, or `None` to fall back to the interpreted
-    /// batch. A failed compiled call may leave causal targets partially
-    /// written; that needs no restore, because the fallback rewrites every
-    /// causal target in order from the untouched tear values before anything
-    /// reads them.
+    /// None declines admission before execution. An admitted call either
+    /// completes, stops at the first numeric decline, or propagates its error.
     fn eval_compiled_torn_sweep(
         &self,
         compiled: &CompiledTornSweep,
-        tearing: &solve::BlockTearing,
         y: &mut [f64],
         p: &[f64],
         t: f64,
         raw: &mut Vec<Option<f64>>,
-    ) -> Option<TornSweepStatus> {
+    ) -> Result<Option<TornSweepStatus>, RuntimeSolveError> {
         let tables = self.runtime.model.external_tables.as_slice();
-        compiled.schedule.call(y, p, t, tables).ok()?;
-        // Mirror the per-row decline decision in causal order: the isolator
-        // programs poison a singular step to a non-finite value, so the first
-        // non-finite target is exactly where the per-row path declines.
-        for step in &tearing.causal_steps {
-            if !y.get(step.y_index).copied().unwrap_or(f64::NAN).is_finite() {
-                return Some(TornSweepStatus::Declined);
-            }
+        let status = compiled
+            .schedule
+            .call_torn(y, p, t, tables)
+            .map_err(RuntimeSolveError::solve_ir)?;
+        if status != Some(TornSweepStatus::Completed) {
+            return Ok(status);
         }
         let mut out = vec![0.0; compiled.residual_len];
         compiled
             .residual_block
             .call(y, p, t, tables, &mut out)
-            .ok()?;
+            .map_err(RuntimeSolveError::solve_ir)?;
         raw.clear();
         for position in compiled.residual_outputs.iter() {
             raw.push(position.and_then(|index| out.get(index).copied()));
         }
-        Some(TornSweepStatus::Completed)
+        Ok(Some(TornSweepStatus::Completed))
     }
 
     /// One residual row's sweep value under the per-row policy: report the
@@ -1053,10 +1062,11 @@ impl SolveRuntime {
 
     pub(super) fn refresh_slots_with_stages(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &PreparedRefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
         incoming: &[f64],
     ) -> Result<(), RuntimeSolveError> {
+        plan.validated_for(self.state_count, self.solver_count, args.solver_y.len())?;
         self.prepare_static_refresh_cache(args.params, args.solver_y.len());
         for stage in &plan.value_stages {
             if !self.execute_refresh_stage(stage, plan, args, incoming)? {
@@ -1069,7 +1079,7 @@ impl SolveRuntime {
     fn execute_refresh_stage(
         &self,
         stage: &solve::RefreshStage,
-        complete_plan: &solve::RefreshPlan,
+        complete_plan: &PreparedRefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
         incoming: &[f64],
     ) -> Result<bool, RuntimeSolveError> {
@@ -1128,7 +1138,7 @@ impl SolveRuntime {
     fn continue_or_project_complete(
         &self,
         seeded: bool,
-        complete_plan: &solve::RefreshPlan,
+        complete_plan: &PreparedRefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
     ) -> Result<bool, RuntimeSolveError> {
         if seeded {
@@ -1143,18 +1153,34 @@ impl SolveRuntime {
         seed: ProjectionStageSeed<'_>,
         block_index: usize,
         plan: &solve::AlgebraicProjectionPlan,
-        complete_plan: &solve::RefreshPlan,
+        complete_plan: &PreparedRefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
         incoming: &[f64],
     ) -> Result<bool, RuntimeSolveError> {
+        if seed.rows.is_empty() {
+            self.project_refresh_stage(block_index, plan, args)?;
+            return Ok(true);
+        }
+        let stage_entry = copy_runtime_values(args.solver_y, "projection stage seed snapshot")?;
         let result =
             self.refresh_slots_once(seed.rows, seed.sequence, args.t, args.solver_y, args.params);
+        let seed_failed = result.is_err();
         if let Err(error) = result {
-            restore_after_causal_seed_error(error, args.solver_y, incoming)?;
+            // A failed optional seed may poison several coordinates. Restore
+            // the whole stage entry, retaining all settled upstream stages.
+            restore_after_causal_seed_error(error, args.solver_y, &stage_entry)?;
+        }
+        if let Err(error) = self.project_refresh_stage(block_index, plan, args) {
+            if !seed_failed
+                || !(seed_error_allows_projection(&error)
+                    || matches!(error, RuntimeSolveError::ProjectionNonConvergence { .. }))
+            {
+                return Err(error);
+            }
+            args.solver_y.copy_from_slice(incoming);
             self.project_refresh_slots(complete_plan, args, true)?;
             return Ok(false);
         }
-        self.project_refresh_stage(block_index, plan, args)?;
         Ok(true)
     }
 
@@ -1425,3 +1451,6 @@ fn unit_binding_row(
     binding
         .ok_or_else(|| RuntimeSolveError::solve_ir("state coordinate has no identity residual row"))
 }
+
+#[cfg(test)]
+mod native_torn_tests;

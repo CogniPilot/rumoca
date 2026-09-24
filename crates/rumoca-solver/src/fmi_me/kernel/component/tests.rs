@@ -104,6 +104,7 @@ fn steep_algebraic_time_event_model() -> solve::SolveModel {
                         rows: vec![1],
                         y_indices: vec![1],
                         tearing: None,
+                        guarded_tearing: None,
                         alternate_charts: Vec::new(),
                     }],
                 },

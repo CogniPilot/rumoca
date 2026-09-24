@@ -278,7 +278,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let mut compiler = self.guarded_region_compiler(clock, path);
         for target in targets {
             let branch = compiler.dynamic_guarded_branches(target)[ordinal];
-            compiler.store_guarded_assignment_value(branch.2, target.width, target.span)?;
+            compiler.store_guarded_assignment_value(
+                target.target_base,
+                branch.2,
+                target.width,
+                target.span,
+            )?;
         }
         Ok(compiler.ops)
     }
@@ -300,9 +305,20 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<(), LowerError> {
         for target in targets {
             if let Some((_, _, value, _)) = self.guarded_unconditional_branch(target) {
-                self.store_guarded_assignment_value(value, target.width, target.span)?;
+                self.store_guarded_assignment_value(
+                    target.target_base,
+                    value,
+                    target.width,
+                    target.span,
+                )?;
             } else {
                 let start = self.load_guarded_target_range(target)?;
+                self.bind_guarded_output_registers(
+                    target.target_base,
+                    start,
+                    target.width,
+                    target.span,
+                )?;
                 self.ops.push(solve::LinearOp::StoreOutputRange {
                     start,
                     count: target.width,
@@ -347,6 +363,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 
     fn store_guarded_assignment_value(
         &mut self,
+        target_base: solve::ScalarSlot,
         value: dae::ExprId<'dae>,
         width: usize,
         span: Span,
@@ -358,11 +375,37 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             ));
         }
         let start = self.pack_expression(value)?;
+        self.bind_guarded_output_registers(target_base, start, width, span)?;
         self.ops.push(solve::LinearOp::StoreOutputRange {
             start,
             count: width,
             stride: 1,
         });
+        Ok(())
+    }
+
+    fn bind_guarded_output_registers(
+        &mut self,
+        target_base: solve::ScalarSlot,
+        start: solve::Reg,
+        width: usize,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let solve::ScalarSlot::P { index, .. } = target_base else {
+            return Ok(());
+        };
+        for offset in 0..width {
+            let target = index.checked_add(offset).ok_or_else(|| {
+                LowerError::contract("guarded output parameter range overflow", span)
+            })?;
+            let offset = solve::Reg::try_from(offset).map_err(|_| {
+                LowerError::contract("guarded output register range overflow", span)
+            })?;
+            let register = start
+                .checked_add(offset)
+                .ok_or_else(|| LowerError::contract("guarded output register overflow", span))?;
+            self.guarded_output_registers.insert(target, register);
+        }
         Ok(())
     }
 

@@ -256,6 +256,7 @@ fn block_report<'dae>(view: dae::DaeView<'dae>, block: &BltBlock<'dae>) -> Block
             equations,
             unknowns,
             tearing,
+            ..
         } => BlockReport::Coupled {
             equations: equations
                 .iter()

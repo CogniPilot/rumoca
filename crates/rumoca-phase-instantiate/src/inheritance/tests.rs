@@ -1,4 +1,5 @@
 use super::*;
+use crate::instantiate_model;
 use rumoca_core::DefId;
 use std::sync::Arc;
 
@@ -78,6 +79,13 @@ fn make_resolved_name(text: &str, def_id: DefId) -> rumoca_ir_ast::Name {
             .collect(),
         def_id: Some(def_id),
     }
+}
+
+fn resolve_source(source: &str, file_name: &str) -> rumoca_phase_resolve::ResolvedTree {
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source should parse");
+    let mut tree = ast::ClassTree::from_parsed(parsed);
+    tree.source_map.add(file_name, source);
+    rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source should resolve")
 }
 
 fn register_predefined_external_object(tree: &mut ast::ClassTree) {
@@ -426,6 +434,176 @@ fn test_class_redeclare_constraint_resolves_relative_to_declaration_scope() {
         Span::DUMMY,
     );
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_short_replaceable_class_alias_satisfies_constrainedby() {
+    let source = r#"
+package P
+  partial model PartialFlow
+  end PartialFlow;
+
+  partial model PartialPipe
+    extends PartialFlow;
+  end PartialPipe;
+
+  model Local
+    extends PartialPipe;
+  end Local;
+
+  model Pipe
+    replaceable model HeatTransfer = Local constrainedby PartialFlow;
+  end Pipe;
+
+  model Owner
+    replaceable model HeatTransfer_1 = Local constrainedby PartialFlow;
+    Pipe p(redeclare model HeatTransfer = HeatTransfer_1);
+  end Owner;
+end P;
+"#;
+    let resolved = resolve_source(source, "short_class_alias.mo");
+
+    assert!(!is_type_subtype(
+        &resolved,
+        "P.Owner.HeatTransfer_1",
+        "P.PartialFlow"
+    ));
+    assert!(is_type_subtype_for_redeclaration(
+        &resolved,
+        "P.Owner.HeatTransfer_1",
+        "P.PartialFlow",
+        true,
+    ));
+
+    instantiate_model(&resolved, "P.Owner")
+        .expect("a short class alias extending Local must satisfy PartialFlow");
+}
+
+#[test]
+fn test_long_replaceable_class_definition_satisfies_constrainedby() {
+    let source = r#"
+package P
+  partial model PartialFlow
+  end PartialFlow;
+
+  model Local
+    extends PartialFlow;
+  end Local;
+
+  model Pipe
+    replaceable model HeatTransfer = Local constrainedby PartialFlow;
+  end Pipe;
+
+  model Owner
+    replaceable model HeatTransfer_1
+      extends Local;
+      parameter Integer marker = 1;
+    end HeatTransfer_1;
+    Pipe p(redeclare model HeatTransfer = HeatTransfer_1);
+  end Owner;
+end P;
+"#;
+    let resolved = resolve_source(source, "long_class_definition.mo");
+
+    instantiate_model(&resolved, "P.Owner")
+        .expect("a long replaceable class definition extending Local must satisfy PartialFlow");
+}
+
+#[test]
+fn test_replaceable_class_with_nested_extra_member_is_allowed() {
+    let source = r#"
+package P
+  partial model PartialFlow
+  end PartialFlow;
+
+  model Local
+    extends PartialFlow;
+  end Local;
+
+  model Pipe
+    replaceable model HeatTransfer = Local constrainedby PartialFlow;
+  end Pipe;
+
+  model Owner
+    replaceable model HeatTransfer_1
+      extends Local;
+      replaceable model Nested = Local constrainedby Local;
+    end HeatTransfer_1;
+    Pipe p(redeclare model HeatTransfer = HeatTransfer_1);
+  end Owner;
+end P;
+"#;
+    let resolved = resolve_source(source, "nested_replaceable_class.mo");
+
+    instantiate_model(&resolved, "P.Owner")
+        .expect("a replaceable top-level slot may expose an additional nested class");
+}
+
+#[test]
+fn test_model_block_interface_compatibility_is_allowed() {
+    let source = r#"
+package P
+  partial model PartialFlow
+  end PartialFlow;
+
+  block Wrong
+    extends PartialFlow;
+  end Wrong;
+
+  model Local
+    extends PartialFlow;
+  end Local;
+
+  model Pipe
+    replaceable model HeatTransfer = Local constrainedby PartialFlow;
+  end Pipe;
+
+  model Owner
+    replaceable block HeatTransfer_1 = Wrong;
+    Pipe p(redeclare model HeatTransfer = HeatTransfer_1);
+  end Owner;
+end P;
+"#;
+    let resolved = resolve_source(source, "model_block_compatibility.mo");
+
+    instantiate_model(&resolved, "P.Owner")
+        .expect("MLS model/block compatibility must allow this redeclaration");
+}
+
+#[test]
+fn test_incompatible_nested_replaceable_class_is_rejected() {
+    let source = r#"
+package P
+  partial model PartialFlow
+  end PartialFlow;
+
+  function Wrong
+    input Real x;
+    output Real y;
+  algorithm
+    y := x;
+  end Wrong;
+
+  model Local
+    extends PartialFlow;
+  end Local;
+
+  model Pipe
+    replaceable model HeatTransfer = Local constrainedby PartialFlow;
+    HeatTransfer heatTransfer;
+  end Pipe;
+
+  model Owner
+    replaceable function HeatTransfer_1 = Wrong;
+    Pipe p(redeclare model HeatTransfer = HeatTransfer_1);
+  end Owner;
+end P;
+"#;
+    let resolved = resolve_source(source, "incompatible_class_kind.mo");
+
+    let error = instantiate_model(&resolved, "P.Owner")
+        .expect_err("a function replacement must violate a model constrainedby");
+    assert!(error.to_string().contains("violates constrainedby"));
 }
 
 fn relative_class_redeclare_constraint_tree() -> (ast::ClassTree, DefId) {

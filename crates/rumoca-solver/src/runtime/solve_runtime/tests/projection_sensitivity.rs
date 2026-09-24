@@ -47,6 +47,7 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
             rows: vec![1],
             y_indices: vec![1],
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         }],
     };
@@ -262,6 +263,7 @@ fn parameter_projection_model() -> solve::SolveModel {
             rows: vec![1],
             y_indices: vec![1],
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         }],
     };
@@ -349,6 +351,7 @@ fn linear_algebraic_loop_state_model() -> solve::SolveModel {
             rows: vec![1, 2],
             y_indices: vec![1, 2],
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         }],
     };

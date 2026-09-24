@@ -73,6 +73,7 @@ fn flow_characteristic_fixture() -> FlowCharacteristicFixture {
         "flowCharacteristic".to_string(),
         OverrideTarget {
             alias: "flowCharacteristic".to_string(),
+            alias_def_id: None,
             name: "quadraticFlow".to_string(),
             def_id: quadratic_def,
             class_type: ClassType::Function,

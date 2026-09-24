@@ -4,8 +4,69 @@
 
 use super::*;
 
-pub(crate) type ComponentOverrideMap =
-    rustc_hash::FxHashMap<ComponentPath, rustc_hash::FxHashMap<String, OverrideTarget>>;
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OverrideEntries {
+    pub(super) by_alias: rustc_hash::FxHashMap<String, OverrideTarget>,
+    pub(super) exact_packages: Vec<OverrideTarget>,
+}
+
+impl OverrideEntries {
+    pub(super) fn from_alias_map(aliases: rustc_hash::FxHashMap<String, OverrideTarget>) -> Self {
+        Self {
+            by_alias: aliases,
+            exact_packages: Vec::new(),
+        }
+    }
+
+    pub(super) fn insert_package(&mut self, target: OverrideTarget) {
+        let Some(alias_def_id) = target.alias_def_id else {
+            self.exact_packages.push(target);
+            return;
+        };
+        if let Some(existing) = self
+            .exact_packages
+            .iter_mut()
+            .find(|existing| existing.alias_def_id == Some(alias_def_id))
+        {
+            *existing = target;
+            return;
+        }
+        self.exact_packages.push(target);
+    }
+
+    pub(super) fn insert_target(&mut self, target: OverrideTarget) {
+        if target.is_package() {
+            self.insert_package(target);
+        } else {
+            self.by_alias.insert(target.alias.clone(), target);
+        }
+    }
+
+    pub(super) fn exact_package_default(
+        &self,
+        alias_def_id: rumoca_core::DefId,
+    ) -> Option<&OverrideTarget> {
+        self.exact_packages
+            .iter()
+            .find(|target| target.alias_def_id == Some(alias_def_id))
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.by_alias.len() + self.exact_packages.len()
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.by_alias.is_empty() && self.exact_packages.is_empty()
+    }
+}
+
+impl FromIterator<(String, OverrideTarget)> for OverrideEntries {
+    fn from_iter<T: IntoIterator<Item = (String, OverrideTarget)>>(iter: T) -> Self {
+        Self::from_alias_map(iter.into_iter().collect())
+    }
+}
+
+pub(crate) type ComponentOverrideMap = rustc_hash::FxHashMap<ComponentPath, OverrideEntries>;
 pub(super) type OverrideFunctionMap = rustc_hash::FxHashMap<String, OverrideTarget>;
 pub(super) type OverrideContext = (Vec<OverrideTarget>, OverrideFunctionMap);
 
@@ -45,6 +106,10 @@ pub(super) enum FunctionSlot {
 #[derive(Clone, Debug)]
 pub(crate) struct OverrideTarget {
     pub(super) alias: String,
+    /// Exact replaceable declaration slot selected by this override, when the
+    /// producer had the slot identity available. Rendered aliases are display
+    /// data and must not recover this identity.
+    pub(super) alias_def_id: Option<rumoca_core::DefId>,
     pub(crate) name: String,
     pub(super) def_id: rumoca_core::DefId,
     pub(super) class_type: rumoca_core::ClassType,
@@ -70,6 +135,7 @@ impl OverrideTarget {
     ) -> Self {
         Self {
             alias: alias.into(),
+            alias_def_id: None,
             name: target.name,
             def_id: target.def_id,
             class_type: target.class_def.class_type.clone(),
@@ -81,6 +147,11 @@ impl OverrideTarget {
 
     pub(super) fn with_function_slot(mut self, function_slot: FunctionSlot) -> Self {
         self.function_slot = function_slot;
+        self
+    }
+
+    pub(super) fn with_alias_def_id(mut self, alias_def_id: rumoca_core::DefId) -> Self {
+        self.alias_def_id = Some(alias_def_id);
         self
     }
 

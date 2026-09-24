@@ -1,0 +1,9 @@
+# Seed layout metadata reduction: narrow delta review
+
+Reviewed the clean two-file HEAD `d3fff34e5e8be86ef7f7d4d655d9ab0e5245eadf` (superseding the relayed `597bfe333` identifier; final frozen hash pending). **Accept this source/candidate-binding delta, subject to exact final hash check.** `SeedBlockLinearization::build` passes the original borrowed `JacobianStructure` to dense-J assembly, then clones only `(TearingCandidate, AffineEliminationLayout)` from that same structure. The construction-time `layout.pattern() == structure.pattern()` filter preserves the earlier source-pattern comparison before the solve path uses `Some(layout.pattern())`. `AlgebraicProjectionBlock::tearing_candidates()` still supplies Guarded→Primary order; candidate eligibility, unit scales, torn kernel, zero-RHS exit, dense LU fallback, and cache policy are unchanged. The new test checks a no-candidate dense fallback and an issued layout retained after the source model is dropped.
+
+This removes a definite full-`JacobianStructure` clone per seed owner, including output-evaluation/application/coloring payloads. It does **not** establish why the unchanged 739c5a513 Thyristor run timed out. That run remains a failed 4/5-raw gate until a changed-source focus restores the fifth trace; no exclusion or performance attribution follows from this review.
+
+## Frozen disposition
+
+Final HEAD is the same reviewed `d3fff34e5e8be86ef7f7d4d655d9ab0e5245eadf`, clean. `git show --format= --binary HEAD` SHA-256: `c4dd1474ad5d0960d0b31e2545c5874f00df1a1e915923517d78e20f5c0ac054`. The final line is the construction-time `layout.pattern() == structure.pattern()` check, not a documentation change. Worker evidence `target/seed-issued-layout-followup/evidence.md` reports 584 solver library tests plus clean clippy/fmt; no new timing/profile. **Accept d3fff for main's changed-source focused gate.** The prior 739 timeout and missing fifth raw trace remain open until that gate passes.

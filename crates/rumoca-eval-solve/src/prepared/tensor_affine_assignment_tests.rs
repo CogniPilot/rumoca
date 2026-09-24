@@ -83,6 +83,11 @@ fn tensor_affine_materialization_preserves_output_identity_and_prefix_errors() {
     assert!(matches!(shape, TargetAssignmentShape::TensorAffine { .. }));
     assert_eq!(shape.expr_eval_len(), program.len() - 1);
     assert!(!assignment_shape_reads_y_index(&program, shape, 1));
+    assert!(!assignment_shape_reads_y_index(&program, shape, 2));
+    assert!(
+        rumoca_ir_solve::ScalarProgramYDependency::new(&[]).assignment_depends_on(shape, 2),
+        "unknown dependency must remain conservative"
+    );
     assert!(assignment_shape_reads_y_index(&program, shape, 0));
     assert!(assignment_shape_reads_y_index(&program, shape, 3));
     let materialized = prepare(
@@ -129,26 +134,38 @@ fn tensor_affine_materialization_preserves_output_identity_and_prefix_errors() {
 
 #[test]
 fn tensor_affine_zero_and_nonfinite_coefficients_decline_isolation() {
-    let prepared = prepare(force_moment_program());
-    for coefficient in [0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
-        let result = prepared.eval_target_assignment_row_with_context(
-            0,
-            1,
-            &[4.0, 1.0, 7.0, 18.0],
-            &[coefficient, 3.0, 5.0],
-            0.0,
-            RowEvalContext::default(),
-        );
-        assert!(
-            matches!(
-                result,
-                Err(EvalSolveError::SingularTargetAssignment {
-                    target_y_index: 1,
-                    ..
-                })
-            ),
-            "{result:?}"
-        );
+    for input in [TensorInputKind::P, TensorInputKind::Y] {
+        let mut program = force_moment_program();
+        if let LinearOp::TensorLoad {
+            input: kind,
+            input_start,
+            ..
+        } = &mut program[0]
+        {
+            *kind = input;
+            *input_start = if input == TensorInputKind::Y { 4 } else { 0 };
+        }
+        let prepared = prepare(program);
+        for coefficient in [0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let result = prepared.eval_target_assignment_row_with_context(
+                0,
+                1,
+                &[4.0, 1.0, 7.0, 18.0, coefficient, 3.0, 5.0],
+                &[coefficient, 3.0, 5.0],
+                0.0,
+                RowEvalContext::default(),
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(EvalSolveError::SingularTargetAssignment {
+                        target_y_index: 1,
+                        ..
+                    })
+                ),
+                "{result:?}"
+            );
+        }
     }
 }
 
@@ -448,4 +465,94 @@ fn materialized_affine_projection_declines_an_overflowed_coefficient() {
         !result.is_finite(),
         "overflowed coefficient must decline, got {result}"
     );
+}
+
+#[test]
+fn tensor_lane_dependency_retains_coefficient_and_branch_guard() {
+    let program = vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: TensorInputKind::Y,
+            input_start: 0,
+            count: 3,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::LoadY { dst: 3, index: 3 },
+        LinearOp::Const { dst: 4, value: 0.0 },
+        LinearOp::Compare {
+            dst: 5,
+            op: rumoca_ir_solve::CompareOp::Gt,
+            lhs: 3,
+            rhs: 4,
+        },
+        LinearOp::LoadY { dst: 6, index: 4 },
+        LinearOp::LoadY { dst: 7, index: 5 },
+        LinearOp::Select {
+            dst: 8,
+            cond: 5,
+            if_true: 6,
+            if_false: 7,
+        },
+        LinearOp::TensorBinary {
+            dst_start: 9,
+            op: BinaryOp::Mul,
+            lhs_start: 0,
+            rhs_start: 8,
+            count: 3,
+            lhs_stride: 1,
+            rhs_stride: 0,
+            lanes: 1,
+        },
+        LinearOp::Const {
+            dst: 12,
+            value: 1.0,
+        },
+        LinearOp::TensorBinary {
+            dst_start: 13,
+            op: BinaryOp::Sub,
+            lhs_start: 9,
+            rhs_start: 12,
+            count: 3,
+            lhs_stride: 1,
+            rhs_stride: 0,
+            lanes: 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: 13,
+            count: 3,
+            stride: 1,
+        },
+    ];
+    let prepared = prepare(program.clone());
+    let shape = prepared.assignment_shape_for_output(0, 1, 1).unwrap();
+    assert!(matches!(shape, TargetAssignmentShape::TensorAffine { .. }));
+    for (index, expected) in [
+        (0, false),
+        (1, false),
+        (2, false),
+        (3, true),
+        (4, true),
+        (5, true),
+    ] {
+        assert_eq!(
+            assignment_shape_reads_y_index(&program, shape, index),
+            expected,
+            "Y{index}"
+        );
+    }
+    for (branch, expected) in [(1.0, 0.5), (-1.0, 0.25)] {
+        let actual = prepared
+            .eval_target_assignment_output_unchecked_with_context(TargetAssignmentOutputRequest {
+                row_idx: 0,
+                output_offset: 1,
+                target_y_index: 1,
+                y: &[f64::NAN, 99.0, f64::NAN, branch, 2.0, 4.0],
+                p: &[],
+                t: 0.0,
+                context: RowEvalContext::default(),
+            })
+            .unwrap();
+        assert_eq!(actual, Some(expected));
+    }
 }

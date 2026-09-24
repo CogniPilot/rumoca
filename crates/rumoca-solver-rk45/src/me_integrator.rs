@@ -14,7 +14,6 @@ use rumoca_solver::fmi_me::{
 use crate::dense_output::Dopri5DenseOutput;
 
 const METHOD: &str = "rk45";
-const MIN_STEP: f64 = 1.0e-12;
 const CONTINUOUS_EXTENSION_ORDER: u32 = 4;
 
 /// Build the RK45 numerical plugin accepted by the common FMI ME host.
@@ -188,28 +187,26 @@ impl Rk45Integrator {
             ],
             &mut y[6],
         )?;
-        error_norm(
+        let error_norm = error_norm(
             state,
             &y[5],
             &y[6],
             &self.state_absolute_tolerances,
             self.relative_tolerance,
-        )
+        )?;
+        let observable_error = observable_error(derivatives, time + step, &y[5], &y[6])?;
+        Ok(error_norm.max(observable_error))
     }
 
     fn proposed_step(&self, request: &MeAdvanceRequest) -> Result<f64, MeIntegrationError> {
         let now = request.current().time();
         let latest = request.latest_accepted_time();
         let remaining = latest - now;
-        let step = self.next_step.min(remaining);
+        let step = self
+            .next_step
+            .max(request.minimum_step_duration())
+            .min(remaining);
         if !step.is_finite() || step <= 0.0 || now + step == now {
-            return Err(MeIntegrationError::StepSizeUnderflow {
-                method: METHOD,
-                from_time: now,
-                to_time: latest,
-            });
-        }
-        if step < MIN_STEP && step < remaining {
             return Err(MeIntegrationError::StepSizeUnderflow {
                 method: METHOD,
                 from_time: now,
@@ -293,7 +290,7 @@ impl MeIntegratorBackend for Rk45Integrator {
                 return self.retain_interval(request.current(), step, error_norm);
             }
             self.fsal_time = None;
-            if step <= MIN_STEP {
+            if step <= request.minimum_step_duration() {
                 return Err(MeIntegrationError::StepSizeUnderflow {
                     method: METHOD,
                     from_time: request.current().time(),
@@ -301,6 +298,7 @@ impl MeIntegratorBackend for Rk45Integrator {
                 });
             }
             step = adapt_step(step, error_norm)
+                .max(request.minimum_step_duration())
                 .min(request.latest_accepted_time() - request.current().time());
         }
     }
@@ -389,6 +387,22 @@ fn combine_stage_into(
     Ok(())
 }
 
+fn observable_error(
+    derivatives: &MeDerivativeHandle,
+    time: f64,
+    high: &[f64],
+    low: &[f64],
+) -> Result<f64, MeIntegrationError> {
+    let estimated_delta = high
+        .iter()
+        .zip(low)
+        .map(|(high, low)| low - high)
+        .collect::<Vec<_>>();
+    derivatives
+        .observable_error(time, high, &estimated_delta)
+        .map_err(MeIntegrationError::from)
+}
+
 fn error_norm(
     state: &[f64],
     high: &[f64],
@@ -419,10 +433,10 @@ fn error_norm(
 
 fn adapt_step(step: f64, error_norm: f64) -> f64 {
     if error_norm <= 0.0 {
-        return (step * 5.0).max(MIN_STEP);
+        return step * 5.0;
     }
     let factor = (0.9 * error_norm.powf(-0.2)).clamp(0.2, 5.0);
-    (step * factor).max(MIN_STEP)
+    step * factor
 }
 
 fn try_vec<T>(capacity: usize, context: &'static str) -> Result<Vec<T>, MeIntegrationError> {
@@ -492,7 +506,7 @@ mod tests {
         let old = 0.01;
         let adapted = adapt_step(old, 2.0);
         assert!(adapted < old);
-        assert!(adapted >= MIN_STEP);
+        assert!(adapted > 0.0);
     }
 
     #[test]

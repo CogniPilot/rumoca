@@ -93,6 +93,178 @@ fn replaceable_package_function_prefers_concrete_override_chain() {
     assert_eq!(name.target_def_id(), Some(ids.concrete_density));
 }
 
+#[test]
+fn selected_package_owner_exposes_function_kept_under_source_alias() {
+    let (tree, ids) = concrete_override_chain_tree();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let selected = override_target("ConcreteMedium", ids.concrete_pkg, ClassType::Package);
+    let override_packages = vec![OverrideTarget {
+        alias: "Medium".to_string(),
+        ..selected
+    }];
+    let override_functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    );
+    let reference = rumoca_core::Reference::with_component_reference(
+        "Medium.setState_phX",
+        core_comp_ref(&[
+            ("Medium", ids.partial_pkg),
+            ("setState_phX", ids.concrete_fn),
+        ]),
+    );
+    let prefix = reference
+        .component_ref()
+        .expect("structured reference")
+        .component_scope()
+        .prefix_parts()
+        .last()
+        .expect("package prefix");
+    assert_eq!(prefix.def_id, ids.partial_pkg);
+    assert_eq!(
+        exact_override_package_for_source_package(&reference, prefix.def_id, &ctx, test_span())
+            .expect("source package query")
+            .map(|package| package.def_id),
+        Some(override_packages[0].def_id)
+    );
+
+    let rewrite = resolve_exact_function_rewrite(&reference, false, &ctx, test_span())
+        .expect("selected package owner has an exact exposure")
+        .expect("selected implementation requires a rewrite");
+    assert_eq!(rewrite.selection.exposure, ids.concrete_fn);
+    assert_eq!(rewrite.selection.implementation, ids.concrete_fn);
+
+    let same_display = rumoca_core::Reference::with_component_reference(
+        "ConcreteMedium.setState_phX",
+        core_comp_ref(&[
+            ("Medium", ids.partial_pkg),
+            ("setState_phX", ids.concrete_fn),
+        ]),
+    );
+    let rewrite = resolve_exact_function_rewrite(&same_display, false, &ctx, test_span())
+        .expect("structured source owner controls function selection")
+        .expect("same display text cannot suppress a missing selected owner");
+    assert_eq!(
+        rewrite.exposed_package.as_ref().map(|owner| owner.1),
+        Some(ids.concrete_pkg)
+    );
+}
+
+#[test]
+fn unrelated_selected_package_does_not_supply_function_exposure() {
+    let (tree, ids) = concrete_override_chain_tree();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let override_packages = vec![OverrideTarget {
+        alias: "Medium".to_string(),
+        ..override_target("PartialMedium", ids.partial_pkg, ClassType::Package)
+    }];
+    let override_functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    );
+    let reference = rumoca_core::Reference::with_component_reference(
+        "Medium.setState_phX",
+        core_comp_ref(&[
+            ("Medium", ids.partial_pkg),
+            ("setState_phX", ids.concrete_fn),
+        ]),
+    );
+
+    let error = resolve_exact_function_rewrite(&reference, false, &ctx, test_span())
+        .expect_err("the selected package must not be recovered by name");
+    assert!(matches!(
+        error,
+        FlattenError::MissingFunctionSelectionIdentity { .. }
+    ));
+}
+
+#[test]
+fn exact_alias_slot_skips_ambiguous_source_package_fallback() {
+    let (tree, ids) = concrete_override_chain_tree();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let selected = OverrideTarget {
+        alias: "Medium".to_string(),
+        alias_def_id: Some(ids.partial_pkg),
+        ..override_target("ConcreteMedium", ids.concrete_pkg, ClassType::Package)
+    };
+    let other_selection = OverrideTarget {
+        alias: "OtherMedium".to_string(),
+        alias_def_id: Some(ids.alias_pkg),
+        ..override_target("AliasMedium", ids.alias_pkg, ClassType::Package)
+    };
+    let override_packages = vec![selected, other_selection];
+    let override_functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    );
+    let reference = rumoca_core::Reference::with_component_reference(
+        "Medium.setState_phX",
+        core_comp_ref(&[
+            ("Medium", ids.partial_pkg),
+            ("setState_phX", ids.concrete_fn),
+        ]),
+    );
+
+    assert_eq!(
+        exact_override_package_for_alias_def_id(&reference, ids.partial_pkg, &ctx, test_span())
+            .expect("exact slot query")
+            .map(|package| package.def_id),
+        Some(ids.concrete_pkg)
+    );
+    let rewrite = resolve_exact_function_rewrite(&reference, false, &ctx, test_span())
+        .expect("the exact alias slot must avoid the ambiguous source fallback")
+        .expect("selected implementation requires a rewrite");
+    assert_eq!(rewrite.selection.implementation, ids.concrete_fn);
+}
+
+#[test]
+fn component_override_producer_preserves_same_named_inherited_alias_slots() {
+    let (tree, ids) = concrete_override_chain_tree();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let mut instance = rumoca_ir_ast::InstanceData::default();
+    instance.class_overrides.insert(
+        ids.partial_pkg,
+        rumoca_ir_ast::ClassOverride::new("Medium", ids.partial_pkg, ids.concrete_pkg, None),
+    );
+    instance.class_overrides.insert(
+        ids.alias_pkg,
+        rumoca_ir_ast::ClassOverride::new("Medium", ids.alias_pkg, ids.alias_pkg, None),
+    );
+
+    let entries = component_override_entries(&instance, &tree, &class_index);
+    let mut component_overrides = ComponentOverrideMap::default();
+    component_overrides.insert(ComponentPath::root(), entries);
+    let (packages, functions) = override_context_for_scope("", &component_overrides);
+    let selected_slots = packages
+        .iter()
+        .filter_map(|target| target.alias_def_id)
+        .collect::<Vec<_>>();
+    assert_eq!(packages.len(), 2, "both exact package slots must survive");
+    assert!(selected_slots.contains(&ids.partial_pkg));
+    assert!(selected_slots.contains(&ids.alias_pkg));
+
+    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &packages, &functions);
+    for source_prefix in [ids.partial_pkg, ids.alias_pkg] {
+        let reference = rumoca_core::Reference::with_component_reference(
+            "Medium.setState_phX",
+            core_comp_ref(&[("Medium", source_prefix), ("setState_phX", ids.concrete_fn)]),
+        );
+        let rewrite = resolve_exact_function_rewrite(&reference, false, &ctx, test_span())
+            .expect("each inherited alias slot has an exact selection")
+            .expect("selected implementation requires a rewrite");
+        assert_eq!(rewrite.selection.implementation, ids.concrete_fn);
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ConcreteOverrideChainIds {
     partial_pkg: DefId,
@@ -237,12 +409,9 @@ fn flat_with_partial_density_function(ids: ConcreteOverrideChainIds) -> rumoca_i
 
 fn root_component_override_map(alias_target: &OverrideTarget) -> ComponentOverrideMap {
     let mut component_override_map = ComponentOverrideMap::default();
-    component_override_map.insert(
-        ComponentPath::root(),
-        [("Medium".to_string(), alias_target.clone())]
-            .into_iter()
-            .collect(),
-    );
+    let mut alias_target = alias_target.clone();
+    alias_target.alias = "Medium".to_string();
+    component_override_map.insert(ComponentPath::root(), override_entries([alias_target]));
     component_override_map
 }
 

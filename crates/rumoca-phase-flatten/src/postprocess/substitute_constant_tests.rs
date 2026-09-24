@@ -473,6 +473,45 @@ fn exact_source_constants_ignore_same_spelling_generated_lookup() {
 }
 
 #[test]
+fn package_constant_folding_ignores_unrelated_modified_occurrence() {
+    let declaration = rumoca_core::DefId::new(91_003);
+    let package_a = fixture_def_id("HeatA");
+    let package_b = fixture_def_id("HeatB");
+    let mut ctx = Context::new();
+    ctx.constant_values_by_package
+        .insert((package_a, declaration), int_literal(4184));
+    ctx.constant_values_by_package
+        .insert((package_b, declaration), int_literal(1000));
+    let occurrence = ConstantOccurrenceId::new(rumoca_core::InstanceId::new(12), declaration);
+    ctx.constant_values_by_occurrence
+        .insert(occurrence, int_literal(900));
+    ctx.constant_values_by_package_occurrence
+        .insert((package_b, occurrence), int_literal(900));
+
+    let fold = |name| {
+        substitute_known_constants_expr(
+            source_var_ref_with_target(name, declaration),
+            &ctx,
+            &rustc_hash::FxHashSet::default(),
+            &HashSet::new(),
+            "",
+        )
+    };
+    assert!(matches!(
+        fold("HeatA.cp_const").expect("unrelated selected package still folds"),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(4184),
+            ..
+        }
+    ));
+    assert!(matches!(
+        fold("HeatB.cp_const"),
+        Err(FlattenError::MissingSourceContext { reason })
+            if reason.contains("conflicting occurrence values")
+    ));
+}
+
+#[test]
 fn unstructured_non_generated_constant_reference_is_rejected() {
     let mut ctx = Context::new();
     ctx.constant_values

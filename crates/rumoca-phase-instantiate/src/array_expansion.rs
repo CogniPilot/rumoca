@@ -56,6 +56,7 @@ struct SourceScopedModifierProjection {
     original: ast::ModificationValue,
     value: ast::Expression,
     source: Option<ast::Expression>,
+    value_components: IndexMap<String, ast::Component>,
     source_components: IndexMap<String, ast::Component>,
 }
 
@@ -292,7 +293,7 @@ fn projected_source_scoped_modifiers(
     for projection in projections {
         let projected_value = index_array_expression_for_element(
             scope.tree,
-            &projection.source_components,
+            &projection.value_components,
             &projection.value,
             indices,
         )?
@@ -319,7 +320,8 @@ fn projected_source_scoped_modifiers(
                 projection.original.source_scope.clone(),
                 projection.original.each,
                 projection.original.final_,
-            ),
+            )
+            .with_value_scope(projection.original.value_scope.clone()),
         ));
     }
     Ok(projected)
@@ -365,14 +367,21 @@ fn source_scoped_modifier_projections(
         let Some(source_scope) = value.source_scope.as_ref() else {
             continue;
         };
-        let Some(source_components) = source_scope_components(scope.tree, ctx, source_scope)?
+        let Some(value_scope) = value.value_scope.as_ref() else {
+            continue;
+        };
+        let Some(value_components) = occurrence_scope_components(scope.tree, ctx, value_scope)?
+        else {
+            continue;
+        };
+        let Some(source_components) = occurrence_scope_components(scope.tree, ctx, source_scope)?
         else {
             continue;
         };
         let Some(projected_value) = projection_source_expression(
             scope.tree,
             ctx.mod_env(),
-            &source_components,
+            &value_components,
             &value.value,
             &probe,
         )?
@@ -398,6 +407,7 @@ fn source_scoped_modifier_projections(
             original: value.clone(),
             value: projected_value,
             source: projected_source,
+            value_components,
             source_components,
         });
     }
@@ -407,26 +417,27 @@ fn source_scoped_modifier_projections(
 fn projection_source_expression(
     tree: &ast::ClassTree,
     mod_env: &ast::ModificationEnvironment,
-    source_components: &IndexMap<String, ast::Component>,
+    occurrence_components: &IndexMap<String, ast::Component>,
     expression: &ast::Expression,
     probe: &[i64],
 ) -> InstantiateResult<Option<ast::Expression>> {
-    if index_array_expression_for_element(tree, source_components, expression, probe)?.is_some() {
+    if index_array_expression_for_element(tree, occurrence_components, expression, probe)?.is_some()
+    {
         return Ok(Some(expression.clone()));
     }
-    let resolved = resolve_mod_to_array(expression, mod_env, source_components, tree);
+    let resolved = resolve_mod_to_array(expression, mod_env, occurrence_components, tree);
     Ok(
-        index_array_expression_for_element(tree, source_components, &resolved, probe)?
+        index_array_expression_for_element(tree, occurrence_components, &resolved, probe)?
             .map(|_| resolved),
     )
 }
 
-fn source_scope_components(
+fn occurrence_scope_components(
     tree: &ast::ClassTree,
     ctx: &InstantiateContext,
-    source_scope: &ast::QualifiedName,
+    occurrence_scope: &ast::QualifiedName,
 ) -> InstantiateResult<Option<IndexMap<String, ast::Component>>> {
-    let rendered = source_scope.to_flat_string();
+    let rendered = occurrence_scope.to_flat_string();
     let Some(frame) = ctx
         .active_instantiations
         .iter()
@@ -589,11 +600,10 @@ fn array_element_binding_modification(
         .transpose()?
         .or_else(|| Some(binding_expr.clone()));
     let source_scope = parent_mod.source_scope.clone().or(binding_source_scope);
-    Ok(ast::ModificationValue::with_source_scope(
-        binding_expr.clone(),
-        source,
-        source_scope,
-    ))
+    Ok(
+        ast::ModificationValue::with_source_scope(binding_expr.clone(), source, source_scope)
+            .with_value_scope(parent_mod.value_scope.clone()),
+    )
 }
 
 /// Pre-resolve non-`each` modifications that have array values.

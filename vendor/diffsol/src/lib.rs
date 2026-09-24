@@ -413,7 +413,7 @@ use nonlinear_solver::{
 pub use nonlinear_solver::{
     line_search::{BacktrackingLineSearch, LineSearch, NoLineSearch},
     newton::NewtonNonlinearSolver,
-    NonLinearSolver,
+    NonLinearSolver, SupplementalErrorNorm,
 };
 pub use ode_equations::{
     adjoint_equations::AdjointContext, adjoint_equations::AdjointEquations,

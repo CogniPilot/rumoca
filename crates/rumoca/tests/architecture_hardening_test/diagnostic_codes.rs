@@ -414,7 +414,7 @@ fn registry_files(root: &Path, registry: &DiagnosticRegistry) -> Vec<PathBuf> {
     for rel in registry.paths {
         let path = root.join(rel);
         if path.is_dir() {
-            collect_rs_files(&path, &mut files);
+            files.extend(production_source_files_under(&path));
         } else {
             files.push(path);
         }
@@ -436,6 +436,32 @@ fn registry_codes(root: &Path, registry: &DiagnosticRegistry) -> BTreeSet<String
         registry.owner
     );
     codes
+}
+
+#[test]
+fn registry_ownership_follows_production_module_reachability() {
+    let fixture = tempfile::tempdir().expect("create registry fixture");
+    let src = fixture.path().join("src");
+    fs::create_dir(&src).expect("create source directory");
+    fs::write(
+        src.join("lib.rs"),
+        "mod tests;\n#[cfg(test)]\nmod checks;\n",
+    )
+    .expect("write module declarations");
+    // The filename does not determine whether a module ships.
+    fs::write(src.join("tests.rs"), "const OWNED: &str = \"ET001\";\n")
+        .expect("write production registry");
+    fs::write(src.join("checks.rs"), "const EXPECTED: &str = \"ER002\";\n")
+        .expect("write test-only reference to another phase's code");
+    let registry = DiagnosticRegistry {
+        owner: "fixture",
+        paths: &["src"],
+    };
+
+    assert_eq!(
+        registry_codes(fixture.path(), &registry),
+        BTreeSet::from(["ET001".to_string()]),
+    );
 }
 
 #[test]

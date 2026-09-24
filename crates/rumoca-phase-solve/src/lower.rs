@@ -113,6 +113,7 @@ struct StructuralMatching<'dae> {
 struct AlgebraicBlockMatch<'dae> {
     matches: Vec<(usize, UnknownId<'dae>)>,
     tearing: Option<structural::TearingResult>,
+    guarded_tearing: Option<structural::TearingResult>,
 }
 
 fn structural_matching<'dae>(
@@ -166,10 +167,14 @@ fn algebraic_projection_blocks<'dae>(
                 algebraic_blocks.push(AlgebraicBlockMatch {
                     matches: vec![(equation.0, *unknown)],
                     tearing: None,
+                    guarded_tearing: None,
                 });
             }
             BltBlock::AlgebraicLoop {
-                equations, tearing, ..
+                equations,
+                tearing,
+                guarded_tearing,
+                ..
             } => {
                 let algebraic = equations
                     .iter()
@@ -189,6 +194,9 @@ fn algebraic_projection_blocks<'dae>(
                         .clone()
                         .filter(|_| algebraic.len() == equations.len());
                     algebraic_blocks.push(AlgebraicBlockMatch {
+                        guarded_tearing: guarded_tearing
+                            .clone()
+                            .filter(|_| equations.len() == algebraic.len()),
                         matches: algebraic,
                         tearing,
                     });
@@ -250,6 +258,7 @@ fn append_structured_algebraic_blocks<'dae>(
         blocks.push(AlgebraicBlockMatch {
             matches: vec![(equation, *unknown)],
             tearing: None,
+            guarded_tearing: None,
         });
     }
     Ok(())
@@ -889,10 +898,15 @@ fn lower_algebraic_projection<'dae>(
                 .tearing
                 .as_ref()
                 .map(|tearing| solve_block_tearing(tearing, &rows, &indices));
+            let guarded_tearing = block
+                .guarded_tearing
+                .as_ref()
+                .map(|plan| solve_block_tearing(plan, &rows, &indices));
             Ok(solve::AlgebraicProjectionBlock {
                 rows,
                 y_indices: indices,
                 tearing,
+                guarded_tearing,
                 alternate_charts: Vec::new(),
             })
         })
@@ -1055,6 +1069,7 @@ fn manifold_projection_plan(
             rows,
             y_indices: states.into_iter().collect(),
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         });
     }

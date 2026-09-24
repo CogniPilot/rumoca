@@ -85,6 +85,28 @@ fn make_named_arg(name: &str, value: ast::Expression) -> ast::Expression {
     }
 }
 
+fn make_function_call(
+    name: &str,
+    def_id: rumoca_core::DefId,
+    args: Vec<ast::Expression>,
+) -> ast::Expression {
+    ast::Expression::FunctionCall {
+        comp: ast::ComponentReference {
+            local: false,
+            parts: vec![ast::ComponentRefPart {
+                ident: make_token(name),
+                subs: None,
+                def_id: Some(def_id),
+            }],
+            span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
+        },
+        args,
+        is_partial_application: false,
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn active_mod_env_keys(ctx: &InstantiateContext) -> Vec<String> {
     ctx.mod_env()
         .active
@@ -185,7 +207,7 @@ fn test_resolve_sibling_modification_keeps_class_modification_reference() {
     effective_components.insert("aimcData".to_string(), data);
 
     let expr = make_comp_ref_expr(&["aimcData", "statorCoreParameters"]);
-    let resolved = resolve_modification_expr(
+    let (resolved, _) = resolve_modification_expr(
         &expr,
         ModifierResolveScope {
             mod_env: &ast::ModificationEnvironment::default(),
@@ -194,6 +216,7 @@ fn test_resolve_sibling_modification_keeps_class_modification_reference() {
             imports: &[],
         },
         false,
+        None,
     )
     .expect("resolution should succeed");
 
@@ -215,7 +238,7 @@ fn test_resolve_sibling_modification_still_resolves_scalar_field_override() {
     effective_components.insert("stackData".to_string(), data);
 
     let expr = make_comp_ref_expr(&["stackData", "mSystems"]);
-    let resolved = resolve_modification_expr(
+    let (resolved, _) = resolve_modification_expr(
         &expr,
         ModifierResolveScope {
             mod_env: &ast::ModificationEnvironment::default(),
@@ -224,6 +247,7 @@ fn test_resolve_sibling_modification_still_resolves_scalar_field_override() {
             imports: &[],
         },
         false,
+        None,
     )
     .expect("resolution should succeed");
 
@@ -311,7 +335,7 @@ fn test_resolve_sibling_modification_keeps_function_call_record_like_binding() {
     effective_components.insert("aimcData".to_string(), data);
 
     let expr = make_comp_ref_expr(&["aimcData", "statorCoreParameters"]);
-    let resolved = resolve_modification_expr(
+    let (resolved, _) = resolve_modification_expr(
         &expr,
         ModifierResolveScope {
             mod_env: &ast::ModificationEnvironment::default(),
@@ -320,6 +344,7 @@ fn test_resolve_sibling_modification_keeps_function_call_record_like_binding() {
             imports: &[],
         },
         false,
+        None,
     )
     .expect("resolution should succeed");
 
@@ -360,6 +385,7 @@ fn test_insert_scoped_modifier_binding_reorders_non_shifted_parent_key() {
             key: key.clone(),
             value: make_int_expr(9),
             source: None,
+            value_scope: None,
             source_scope: None,
             prefixes: ModifierPrefixes::default(),
         },
@@ -413,6 +439,7 @@ fn test_insert_scoped_modifier_binding_keeps_shifted_parent_key_position() {
             key: key.clone(),
             value: make_int_expr(11),
             source: None,
+            value_scope: None,
             source_scope: None,
             prefixes: ModifierPrefixes::default(),
         },
@@ -457,6 +484,7 @@ fn test_insert_scoped_modifier_binding_keeps_shifted_final_parent_key() {
             key: key.clone(),
             value: make_int_expr(20),
             source: None,
+            value_scope: None,
             source_scope: None,
             prefixes: ModifierPrefixes::default(),
         },
@@ -604,6 +632,7 @@ fn test_insert_scoped_modifier_binding_reports_final_collision_at_source() {
             key,
             value: make_int_expr_with_span(2, test_span()),
             source: Some(make_int_expr_with_span(3, test_span())),
+            value_scope: None,
             source_scope: None,
             prefixes: ModifierPrefixes::default(),
         },
@@ -630,6 +659,7 @@ fn test_insert_scoped_modifier_binding_requires_span_for_final_collision() {
             key,
             value: make_int_expr(2),
             source: None,
+            value_scope: None,
             source_scope: None,
             prefixes: ModifierPrefixes::default(),
         },
@@ -642,6 +672,124 @@ fn test_insert_scoped_modifier_binding_requires_span_for_final_collision() {
         *err,
         InstantiateError::MissingSourceContext { .. }
     ));
+}
+
+#[test]
+fn nested_modifier_keeps_evaluated_and_written_occurrence_scopes() {
+    let root_scope = ast::QualifiedName::new();
+    let machine_scope = ast::QualifiedName::from_ident("machine");
+    let mut selected_member = make_comp_ref_expr(&["driveData", "motorData", "wNominal"]);
+    let ast::Expression::ComponentReference(reference) = &mut selected_member else {
+        unreachable!()
+    };
+    reference.set_root_def_id(Some(rumoca_core::DefId::new(42)));
+
+    let mut ctx = InstantiateContext::new();
+    ctx.mod_env_mut().add(
+        ast::QualifiedName::from_ident("wNominal"),
+        ast::ModificationValue::with_source_scope(
+            selected_member.clone(),
+            Some(selected_member.clone()),
+            Some(root_scope.clone()),
+        ),
+    );
+    let ast::Expression::ComponentReference(target) = make_comp_ref_expr(&["wRef"]) else {
+        unreachable!()
+    };
+    let written_value = make_resolved_comp_ref_expr(&[("wNominal", 901)]);
+    let modifier = ast::Expression::Modification {
+        target,
+        value: Arc::new(written_value.clone()),
+        span: test_span(),
+    };
+    let components = IndexMap::default();
+    let tree = ast::ClassTree::default();
+    process_nested_modifications_recursive(
+        &mut ctx,
+        &ast::QualifiedName::from_ident("coreParameters"),
+        &[modifier],
+        &NestedModificationContext {
+            effective_components: &components,
+            tree: &tree,
+            source_scope: Some(machine_scope.clone()),
+            imports: &[],
+        },
+        NestedModificationFlags {
+            prefixes: ModifierPrefixes::default(),
+            each_flags: &[],
+            final_flags: &[],
+        },
+    )
+    .expect("nested modifier must retain both occurrence scopes");
+
+    let stored = ctx
+        .mod_env()
+        .get(&ast::QualifiedName::from_dotted("coreParameters.wRef"))
+        .expect("nested field modifier");
+    assert_eq!(stored.value, selected_member);
+    assert_eq!(stored.source.as_ref(), Some(&written_value));
+    let ast::Expression::ComponentReference(value_ref) = &stored.value else {
+        panic!("substituted binding must keep the selected member reference")
+    };
+    let ast::Expression::ComponentReference(source_ref) = stored.source.as_ref().unwrap() else {
+        panic!("written source must keep the default member reference")
+    };
+    assert_eq!(value_ref.root_def_id(), Some(rumoca_core::DefId::new(42)));
+    assert_eq!(source_ref.root_def_id(), Some(rumoca_core::DefId::new(901)));
+    assert_eq!(stored.value_scope.as_ref(), Some(&root_scope));
+    assert_eq!(stored.source_scope.as_ref(), Some(&machine_scope));
+}
+
+#[test]
+fn record_projection_keeps_evaluated_and_written_occurrence_scopes() {
+    let root_scope = ast::QualifiedName::new();
+    let machine_scope = ast::QualifiedName::from_ident("machine");
+    let value = make_resolved_comp_ref_expr(&[
+        ("driveData", 42),
+        ("motorData", 503),
+        ("coreParameters", 504),
+    ]);
+    let source = make_resolved_comp_ref_expr(&[("coreParameters", 601)]);
+    let mut record = ast::ClassDef {
+        class_type: rumoca_core::ClassType::Record,
+        ..Default::default()
+    };
+    record
+        .components
+        .insert("wRef".to_string(), resolved_component(700));
+    let mut ctx = InstantiateContext::new();
+    propagate_record_binding_to_fields(
+        &ast::ClassTree::default(),
+        &mut ctx,
+        RecordBindingProjection {
+            value: &value,
+            source: Some(&source),
+            value_scope: Some(root_scope.clone()),
+            source_scope: Some(machine_scope.clone()),
+            each: false,
+        },
+        &record,
+        &IndexMap::default(),
+    )
+    .expect("record projection must preserve both occurrence scopes");
+    let stored = ctx
+        .mod_env()
+        .get(&ast::QualifiedName::from_ident("wRef"))
+        .expect("projected record field");
+    assert_eq!(stored.value_scope.as_ref(), Some(&root_scope));
+    assert_eq!(stored.source_scope.as_ref(), Some(&machine_scope));
+    let ast::Expression::FieldAccess {
+        base, field_def_id, ..
+    } = &stored.value
+    else {
+        panic!("evaluated record field must retain its structured base")
+    };
+    assert_eq!(base.as_ref(), &value);
+    assert_eq!(*field_def_id, Some(rumoca_core::DefId::new(700)));
+    let ast::Expression::FieldAccess { base, .. } = stored.source.as_ref().unwrap() else {
+        panic!("written record field must retain its structured base")
+    };
+    assert_eq!(base.as_ref(), &source);
 }
 
 #[test]
@@ -827,6 +975,7 @@ fn test_propagate_record_binding_overrides_non_targeted_field_values() {
         RecordBindingProjection {
             value: &binding_expr,
             source: None,
+            value_scope: None,
             source_scope: None,
             each: false,
         },
@@ -861,6 +1010,241 @@ fn test_propagate_record_binding_overrides_non_targeted_field_values() {
     }
 }
 
+#[derive(Clone, Copy)]
+struct RecordProjectionIds {
+    state: rumoca_core::DefId,
+    phase: rumoca_core::DefId,
+    pressure: rumoca_core::DefId,
+    make_state: rumoca_core::DefId,
+    make_state_p: rumoca_core::DefId,
+}
+
+struct RecordProjectionFixture {
+    tree: ast::ClassTree,
+    state: ast::ClassDef,
+    constructor: ast::Expression,
+    ordinary_function: ast::Expression,
+}
+
+fn record_projection_fixture() -> RecordProjectionFixture {
+    let ids = RecordProjectionIds {
+        state: rumoca_core::DefId::new(1500),
+        phase: rumoca_core::DefId::new(1501),
+        pressure: rumoca_core::DefId::new(1502),
+        make_state: rumoca_core::DefId::new(1503),
+        make_state_p: rumoca_core::DefId::new(1504),
+    };
+    let state = record_projection_state(ids);
+    let make_state = record_projection_function(ids);
+    let tree = record_projection_tree(&state, make_state, ids);
+    let pressure = make_comp_ref_expr(&["pressure"]);
+
+    RecordProjectionFixture {
+        tree,
+        state,
+        constructor: make_function_call("State", ids.state, vec![pressure.clone()]),
+        ordinary_function: make_function_call("makeState", ids.make_state, vec![pressure]),
+    }
+}
+
+fn record_projection_state(ids: RecordProjectionIds) -> ast::ClassDef {
+    let mut state = ast::ClassDef {
+        name: make_token("State"),
+        class_type: rumoca_core::ClassType::Record,
+        def_id: Some(ids.state),
+        ..Default::default()
+    };
+    state
+        .components
+        .insert("phase".to_string(), resolved_component(ids.phase.index()));
+    state
+        .components
+        .insert("p".to_string(), resolved_component(ids.pressure.index()));
+    state
+}
+
+fn record_projection_function(ids: RecordProjectionIds) -> ast::ClassDef {
+    let mut function = ast::ClassDef {
+        name: make_token("makeState"),
+        class_type: rumoca_core::ClassType::Function,
+        def_id: Some(ids.make_state),
+        ..Default::default()
+    };
+    function.components.insert(
+        "phase".to_string(),
+        ast::Component {
+            def_id: Some(rumoca_core::DefId::new(1505)),
+            ..ast::Component::empty_with_span(test_span())
+        },
+    );
+    function.components.insert(
+        "p".to_string(),
+        ast::Component {
+            def_id: Some(ids.make_state_p),
+            ..ast::Component::empty_with_span(test_span())
+        },
+    );
+    function.components.insert(
+        "state".to_string(),
+        ast::Component {
+            type_name: make_name("State"),
+            type_def_id: Some(ids.state),
+            ..ast::Component::empty_with_span(test_span())
+        },
+    );
+    function
+}
+
+fn record_projection_tree(
+    state: &ast::ClassDef,
+    make_state: ast::ClassDef,
+    ids: RecordProjectionIds,
+) -> ast::ClassTree {
+    let mut tree = ast::ClassTree::default();
+    tree.definitions
+        .classes
+        .insert("State".to_string(), state.clone());
+    tree.definitions
+        .classes
+        .insert("makeState".to_string(), make_state);
+
+    let mut package = ast::ClassDef {
+        name: make_token("Pkg"),
+        class_type: rumoca_core::ClassType::Package,
+        def_id: Some(rumoca_core::DefId::new(1506)),
+        ..Default::default()
+    };
+    let mut scoped_record = state.clone();
+    scoped_record.name = make_token("makeState");
+    scoped_record.def_id = Some(rumoca_core::DefId::new(1507));
+    package
+        .classes
+        .insert("makeState".to_string(), scoped_record);
+    tree.definitions.classes.insert("Pkg".to_string(), package);
+
+    for (def_id, name) in [
+        (ids.state, "State"),
+        (ids.make_state, "makeState"),
+        (rumoca_core::DefId::new(1506), "Pkg"),
+        (rumoca_core::DefId::new(1507), "Pkg.makeState"),
+    ] {
+        tree.def_map.insert(def_id, name.to_string());
+    }
+    tree
+}
+
+#[test]
+fn test_record_projection_only_positional_maps_actuals_for_record_constructors() {
+    let fixture = record_projection_fixture();
+    let targeted_keys = IndexMap::default();
+
+    let mut constructor_ctx = InstantiateContext::new();
+    propagate_record_binding_to_fields(
+        &fixture.tree,
+        &mut constructor_ctx,
+        RecordBindingProjection {
+            value: &fixture.constructor,
+            source: None,
+            value_scope: None,
+            source_scope: None,
+            each: false,
+        },
+        &fixture.state,
+        &targeted_keys,
+    )
+    .expect("record constructor projection should succeed");
+    let phase_binding = &constructor_ctx
+        .mod_env()
+        .active
+        .get(&ast::QualifiedName::from_ident("phase"))
+        .expect("record constructor should project the phase field")
+        .value;
+    let ast::Expression::ComponentReference(phase_reference) = phase_binding else {
+        panic!("record constructor positional input should bind the matching field");
+    };
+    assert_eq!(phase_reference.to_string(), "pressure");
+
+    let mut function_ctx = InstantiateContext::new();
+    propagate_record_binding_to_fields(
+        &fixture.tree,
+        &mut function_ctx,
+        RecordBindingProjection {
+            value: &fixture.ordinary_function,
+            source: None,
+            value_scope: Some(ast::QualifiedName::from_ident("Pkg")),
+            source_scope: Some(ast::QualifiedName::from_ident("Pkg")),
+            each: false,
+        },
+        &fixture.state,
+        &IndexMap::default(),
+    )
+    .expect("ordinary record-returning function projection should succeed");
+    let phase_binding = &function_ctx
+        .mod_env()
+        .active
+        .get(&ast::QualifiedName::from_ident("phase"))
+        .expect("ordinary function result should still project the result field")
+        .value;
+    assert!(
+        matches!(phase_binding, ast::Expression::FieldAccess { base, field, .. }
+            if field == "phase" && base.as_ref() == &fixture.ordinary_function),
+        "ordinary function result must remain a field access of the call"
+    );
+}
+
+#[test]
+fn source_record_returning_function_keeps_call_as_field_access() {
+    let source = r#"
+package P
+  record State
+    Integer phase;
+    Real p;
+  end State;
+
+  function makeState
+    input Integer phase;
+    input Real p;
+    output State state;
+  algorithm
+    state.phase := phase + 1;
+    state.p := p;
+  end makeState;
+
+  model Use
+    Real pressure;
+    State state = makeState(2, pressure);
+  end Use;
+end P;
+"#;
+    let file_name = "record_returning_function_projection.mo";
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source should parse");
+    let mut tree = ast::ClassTree::from_parsed(parsed);
+    tree.source_map.add(file_name, source);
+    let resolved =
+        rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source should resolve");
+    let instanced = crate::instantiate(resolved, "P.Use")
+        .expect("record-returning function binding should instantiate");
+
+    let phase = instanced
+        .overlay
+        .components
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "state.phase")
+        .expect("record projection should materialize state.phase");
+    let binding = phase
+        .binding
+        .as_ref()
+        .expect("state.phase should retain a binding");
+    let ast::Expression::FieldAccess { base, field, .. } = binding else {
+        panic!("record-returning function must not be treated as a constructor");
+    };
+    assert_eq!(field, "phase");
+    assert!(
+        matches!(base.as_ref(), ast::Expression::FunctionCall { .. }),
+        "state.phase must project from the function call result"
+    );
+}
+
 #[test]
 fn test_record_projection_preserves_written_source_and_exact_field_identity() {
     let mut core_parameters = ast::ClassDef {
@@ -884,6 +1268,7 @@ fn test_record_projection_preserves_written_source_and_exact_field_identity() {
         RecordBindingProjection {
             value: &resolved,
             source: Some(&written),
+            value_scope: Some(source_scope.clone()),
             source_scope: Some(source_scope.clone()),
             each: false,
         },
@@ -958,6 +1343,7 @@ fn test_propagate_record_binding_preserves_each_prefix_for_fields() {
         RecordBindingProjection {
             value: &make_comp_ref_expr(&["R"]),
             source: None,
+            value_scope: None,
             source_scope: None,
             each: true,
         },
@@ -999,6 +1385,7 @@ fn test_propagate_record_binding_does_not_treat_start_as_field_default() {
         RecordBindingProjection {
             value: &binding_expr,
             source: None,
+            value_scope: None,
             source_scope: None,
             each: false,
         },
@@ -1054,6 +1441,7 @@ fn test_propagate_record_binding_preserves_targeted_field_modifiers() {
         RecordBindingProjection {
             value: &binding_expr,
             source: None,
+            value_scope: None,
             source_scope: None,
             each: true,
         },
@@ -1105,6 +1493,7 @@ fn test_propagate_record_binding_projects_if_expression_branches_per_field() {
         RecordBindingProjection {
             value: &binding_expr,
             source: None,
+            value_scope: None,
             source_scope: None,
             each: false,
         },
@@ -1182,6 +1571,7 @@ fn test_record_alias_from_outer_scope_projects_declared_default_field() {
         RecordBindingProjection {
             value: &binding_expr,
             source: None,
+            value_scope: Some(ast::QualifiedName::new()),
             source_scope: Some(ast::QualifiedName::new()),
             each: false,
         },
@@ -1250,6 +1640,7 @@ fn test_propagate_record_binding_preserves_matching_default_record_constructor()
         RecordBindingProjection {
             value: &binding_expr,
             source: None,
+            value_scope: None,
             source_scope: None,
             each: false,
         },
@@ -1305,6 +1696,7 @@ fn test_propagate_record_binding_projects_subtype_default_record_constructor_fie
         RecordBindingProjection {
             value: &binding_expr,
             source: None,
+            value_scope: None,
             source_scope: None,
             each: false,
         },
@@ -1360,10 +1752,17 @@ fn test_propagate_record_binding_projects_through_unique_constructor_record_fiel
         },
     );
 
-    let mut tree = ast::ClassTree::default();
-    tree.definitions
+    let mut package = ast::ClassDef {
+        name: make_token("Pkg"),
+        class_type: rumoca_core::ClassType::Package,
+        ..Default::default()
+    };
+    package
         .classes
-        .insert("Pkg.Outer".to_string(), outer_record);
+        .insert("Inner".to_string(), inner_record.clone());
+    package.classes.insert("Outer".to_string(), outer_record);
+    let mut tree = ast::ClassTree::default();
+    tree.definitions.classes.insert("Pkg".to_string(), package);
     tree.def_map.insert(inner_def_id, "Pkg.Inner".to_string());
     tree.def_map.insert(outer_def_id, "Pkg.Outer".to_string());
 
@@ -1390,6 +1789,7 @@ fn test_propagate_record_binding_projects_through_unique_constructor_record_fiel
         RecordBindingProjection {
             value: &binding_expr,
             source: None,
+            value_scope: Some(ast::QualifiedName::from_ident("Pkg")),
             source_scope: Some(ast::QualifiedName::from_ident("Pkg")),
             each: false,
         },
@@ -1449,6 +1849,7 @@ fn test_propagate_record_binding_skips_non_record_classes() {
         RecordBindingProjection {
             value: &binding_expr,
             source: None,
+            value_scope: None,
             source_scope: None,
             each: false,
         },

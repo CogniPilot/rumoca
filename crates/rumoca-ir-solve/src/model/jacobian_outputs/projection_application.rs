@@ -23,10 +23,11 @@ impl<'source> ProjectionJacobianSource<'source> {
 /// Complete colored forward application bound to one immutable source owner.
 #[derive(Clone, Debug)]
 pub struct ProjectionJacobianApplication {
+    identity: Arc<()>,
     block_index: usize,
     rows: Box<[usize]>,
     y_indices: Box<[usize]>,
-    output_len: usize,
+    value_layout: Arc<JacobianValueLayout>,
     source: ScalarProgramBlock,
     canonical_source: ScalarProgramBlock,
     primal_source: Option<ScalarProgramBlock>,
@@ -63,14 +64,15 @@ impl ProjectionJacobianApplication {
         {
             return None;
         }
-        let output_len = block.rows.len().checked_mul(block.y_indices.len())?;
+        let value_layout = Arc::clone(structure.value_layout()?);
+        let output_len = value_layout.len();
         let column_rows = structure.pattern.column_rows();
         let colors = structure
             .coloring
             .groups()
             .iter()
             .map(|group| {
-                let placements = color_placements(group, &column_rows, block);
+                let placements = color_placements(group, &column_rows, block, &value_layout)?;
                 Some(ProjectionJacobianColor {
                     seed_indices: group
                         .iter()
@@ -80,11 +82,13 @@ impl ProjectionJacobianApplication {
                 })
             })
             .collect::<Option<Box<[_]>>>()?;
+        complete_writers(&colors, output_len)?;
         Some(Self {
+            identity: Arc::new(()),
             block_index,
             rows: block.rows.clone().into_boxed_slice(),
             y_indices: block.y_indices.clone().into_boxed_slice(),
-            output_len,
+            value_layout,
             source: source.source.clone(),
             canonical_source: source.source.clone(),
             primal_source: None,
@@ -114,20 +118,21 @@ impl ProjectionJacobianApplication {
                     .outputs()
                     .programs()
                     .iter()
-                    .flat_map(|program| {
-                        program
-                            .placements()
-                            .iter()
-                            .map(|&(_, target)| (self.rows[target % self.rows.len()], target))
+                    .flat_map(|program| program.placements().iter())
+                    .map(|&(_, target)| {
+                        let (row, _) = self.value_layout.coordinate(target)?;
+                        Some((*self.rows.get(row)?, target))
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Option<Vec<_>>>()?;
                 Some(ProjectionJacobianColor {
                     seed_indices: color.seed_indices.clone(),
-                    outputs: catalog.selection(&placements, self.output_len)?,
+                    outputs: catalog.selection(&placements, self.output_len())?,
                 })
             })
             .collect::<Option<Box<[_]>>>()?;
+        complete_writers(&colors, self.output_len())?;
         self.colors = colors;
+        self.identity = Arc::new(());
         self.invariant_operations = derive_invariant_operations(&source)?.into();
         self.source = source;
         self.primal_source = Some(primal.clone());
@@ -143,8 +148,14 @@ impl ProjectionJacobianApplication {
     pub fn y_indices(&self) -> &[usize] {
         &self.y_indices
     }
-    pub const fn output_len(&self) -> usize {
-        self.output_len
+    pub fn output_len(&self) -> usize {
+        self.value_layout.len()
+    }
+    pub fn value_layout(&self) -> &Arc<JacobianValueLayout> {
+        &self.value_layout
+    }
+    pub fn identity(&self) -> &Arc<()> {
+        &self.identity
     }
     pub const fn source(&self) -> &ScalarProgramBlock {
         &self.source
@@ -158,6 +169,20 @@ impl ProjectionJacobianApplication {
     pub fn invariant_operations(&self, program: usize) -> &[bool] {
         &self.invariant_operations[program]
     }
+}
+
+fn complete_writers(colors: &[ProjectionJacobianColor], output_len: usize) -> Option<()> {
+    let mut writers = vec![false; output_len];
+    let slots = colors
+        .iter()
+        .flat_map(|color| color.outputs.programs())
+        .flat_map(|program| program.placements().iter().map(|&(_, slot)| slot));
+    for slot in slots {
+        if std::mem::replace(writers.get_mut(slot)?, true) {
+            return None;
+        }
+    }
+    writers.iter().all(|written| *written).then_some(())
 }
 
 fn derive_invariant_operations(source: &ScalarProgramBlock) -> Option<Box<[Box<[bool]>]>> {
@@ -182,13 +207,15 @@ fn color_placements(
     group: &[u32],
     column_rows: &[Vec<usize>],
     block: &AlgebraicProjectionBlock,
-) -> Vec<(usize, usize)> {
+    layout: &JacobianValueLayout,
+) -> Option<Vec<(usize, usize)>> {
     group
         .iter()
         .flat_map(|&column| {
             column_rows[column as usize]
                 .iter()
-                .map(move |&row| (block.rows[row], column as usize * block.rows.len() + row))
+                .map(move |&row| (row, column as usize))
         })
+        .map(|(row, column)| Some((block.rows[row], layout.locate(row, column)??)))
         .collect()
 }

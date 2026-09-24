@@ -269,7 +269,7 @@ fn collect_clocked_definitions<'dae>(
     view: dae::DaeView<'dae>,
     clocks: &LoweredClocks<'dae>,
 ) -> Result<Vec<ClockedDefinition<'dae>>, LowerError> {
-    let real_definitions = super::events::resolve_discrete_real_definitions(view)?;
+    let (real_definitions, _) = super::events::resolve_discrete_real_definitions(view)?;
     let mut rows = Vec::new();
     for (definition, equation) in real_definitions
         .into_iter()

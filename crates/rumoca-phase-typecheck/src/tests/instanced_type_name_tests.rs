@@ -3,6 +3,18 @@
 
 use super::*;
 
+fn add_root_class_instance(overlay: &mut InstanceOverlay, class: &ClassDef) {
+    let instance_id = overlay.alloc_id();
+    overlay.add_class(rumoca_ir_ast::ClassInstanceData {
+        instance_id,
+        class_def_id: class.def_id,
+        qualified_name: QualifiedName::new(),
+        source_scope: Some(QualifiedName::new()),
+        source_scope_id: class.scope_id,
+        ..Default::default()
+    });
+}
+
 #[test]
 fn test_typecheck_instanced_rejects_missing_type_identity_even_for_unique_suffix() {
     let source = r#"
@@ -258,6 +270,7 @@ fn test_typecheck_instanced_uses_effective_projected_field_type() {
     let extra = extended.components.get("extra").expect("extra field");
 
     let mut overlay = InstanceOverlay::new();
+    add_root_class_instance(&mut overlay, test);
     add_instanced_component(
         &mut overlay,
         "holder",
@@ -301,9 +314,47 @@ fn test_typecheck_instanced_uses_effective_projected_field_type() {
         .expect("effective projected record type should be preserved");
 }
 
-#[test]
-fn test_typecheck_instanced_uses_modifier_source_scope_for_bindings() {
-    let source = r#"
+fn add_owned_class_instance(
+    overlay: &mut InstanceOverlay,
+    class: &rumoca_ir_ast::ClassDef,
+    component_name: &str,
+) -> rumoca_core::InstanceId {
+    let owner_component_id = overlay
+        .components
+        .values()
+        .find(|data| data.qualified_name.to_flat_string() == component_name)
+        .map(|data| data.instance_id)
+        .expect("owner component instance");
+    let instance_id = overlay.alloc_id();
+    overlay.add_class(rumoca_ir_ast::ClassInstanceData {
+        instance_id,
+        owner_component_id: Some(owner_component_id),
+        class_def_id: class.def_id,
+        qualified_name: QualifiedName::from_ident(component_name),
+        source_scope: Some(QualifiedName::new()),
+        source_scope_id: class.scope_id,
+        ..Default::default()
+    });
+    instance_id
+}
+
+fn instanced_reference_with_root(
+    path: &str,
+    component: &Component,
+    root: rumoca_core::DefId,
+) -> rumoca_core::ComponentReference {
+    let reference = test_instance_component_reference(&QualifiedName::from_dotted(path), component)
+        .expect("resolved component reference");
+    let mut parts = reference.parts().to_vec();
+    parts[0].def_id = root;
+    reference.with_replaced_parts(parts).expect("resolved root")
+}
+
+fn modifier_source_scope_fixture(
+    holder_payload_type: &str,
+) -> Result<(), rumoca_core::Diagnostics> {
+    let source = format!(
+        r#"
         record LeftPayload
             Real x;
         end LeftPayload;
@@ -311,14 +362,15 @@ fn test_typecheck_instanced_uses_modifier_source_scope_for_bindings() {
             Real x;
         end RightPayload;
         model Holder
-            LeftPayload payload;
+            {holder_payload_type} payload;
         end Holder;
         model Test
             RightPayload payload;
             Holder holder;
         end Test;
-    "#;
-    let parsed = parse(source);
+    "#
+    );
+    let parsed = parse(&source);
     let resolved = resolve(parsed).expect("resolve should succeed");
     let tree = resolved.into_inner();
     let test = tree
@@ -329,6 +381,7 @@ fn test_typecheck_instanced_uses_modifier_source_scope_for_bindings() {
         .expect("Holder class");
 
     let mut overlay = InstanceOverlay::new();
+    add_root_class_instance(&mut overlay, test);
     add_instanced_component(
         &mut overlay,
         "payload",
@@ -341,12 +394,37 @@ fn test_typecheck_instanced_uses_modifier_source_scope_for_bindings() {
         test.components.get("holder").expect("holder component"),
         false,
     );
+    let holder_class_id = add_owned_class_instance(&mut overlay, holder, "holder");
+    let root_class_id = overlay
+        .classes
+        .values()
+        .find(|class| class.qualified_name.parts.is_empty())
+        .map(|class| class.instance_id)
+        .expect("root class instance");
+    assert_ne!(
+        root_class_id, holder_class_id,
+        "root source scope must not equal the modified Holder owner"
+    );
     let nested = holder.components.get("payload").expect("nested payload");
     let mut outer_payload_ref = make_comp_ref("payload");
+    outer_payload_ref.parts[0].def_id = test
+        .components
+        .get("payload")
+        .and_then(|component| component.def_id);
     outer_payload_ref.parts[0].ident.location = nested.location.clone();
+    let nested_component_ref = instanced_reference_with_root(
+        "holder.payload",
+        nested,
+        test.components
+            .get("holder")
+            .and_then(|component| component.def_id)
+            .expect("resolved holder declaration"),
+    );
     let nested_id = overlay.alloc_id();
     overlay.add_component(InstanceData {
         instance_id: nested_id,
+        owner_class_id: Some(holder_class_id),
+        component_ref: Some(nested_component_ref),
         qualified_name: QualifiedName::from_dotted("holder.payload"),
         source_location: nested.location.clone(),
         type_name: nested.type_name.to_string(),
@@ -358,13 +436,254 @@ fn test_typecheck_instanced_uses_modifier_source_scope_for_bindings() {
         ..Default::default()
     });
 
-    let diagnostics = typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced(&tree, &mut overlay, "Test")
+}
+
+#[test]
+fn test_typecheck_instanced_accepts_fully_resolved_modifier_source_scope() {
+    modifier_source_scope_fixture("RightPayload")
+        .expect("matching fully resolved source-scoped binding should succeed");
+}
+
+#[test]
+fn test_typecheck_instanced_rejects_fully_resolved_modifier_source_scope_mismatch() {
+    let diagnostics = modifier_source_scope_fixture("LeftPayload")
         .expect_err("outer RightPayload must not capture nested LeftPayload");
     assert!(
         diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code.as_deref() == Some("ET002")),
         "expected source-scoped binding mismatch, got: {diagnostics:?}"
+    );
+}
+
+fn occurrence_specialized_modifier_fixture(
+    oil_binding: &str,
+) -> Result<(), rumoca_core::Diagnostics> {
+    let source = format!(
+        r#"
+        partial package PartialMedium
+            replaceable record ThermodynamicState
+                Real p;
+            end ThermodynamicState;
+        end PartialMedium;
+        package WaterMedium
+            extends PartialMedium;
+            redeclare record extends ThermodynamicState
+                Real T;
+            end ThermodynamicState;
+        end WaterMedium;
+        package OilMedium
+            extends PartialMedium;
+            redeclare record extends ThermodynamicState
+                Real h;
+            end ThermodynamicState;
+        end OilMedium;
+        model Holder
+            replaceable package Medium = PartialMedium
+                constrainedby PartialMedium;
+            Medium.ThermodynamicState state;
+            Medium.ThermodynamicState copy;
+        end Holder;
+        model Test
+            Holder water(
+                redeclare package Medium = WaterMedium,
+                copy = water.state);
+            Holder oil(
+                redeclare package Medium = OilMedium,
+                copy = {oil_binding});
+        end Test;
+    "#
+    );
+    let parsed = parse(&source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let tree = resolved.into_inner();
+    let mut overlay = rumoca_phase_instantiate::instantiate_model(&tree, "Test")
+        .expect("two selected medium occurrences should instantiate");
+    let (water_declaration, oil_declaration, both_are_modifications) = {
+        let water_copy = overlay
+            .components
+            .values()
+            .find(|data| data.qualified_name.to_flat_string() == "water.copy")
+            .expect("water.copy occurrence");
+        let oil_copy = overlay
+            .components
+            .values()
+            .find(|data| data.qualified_name.to_flat_string() == "oil.copy")
+            .expect("oil.copy occurrence");
+        (
+            water_copy
+                .component_ref
+                .as_ref()
+                .map(|reference| reference.target_def_id()),
+            oil_copy
+                .component_ref
+                .as_ref()
+                .map(|reference| reference.target_def_id()),
+            water_copy.binding_from_modification && oil_copy.binding_from_modification,
+        )
+    };
+    assert_eq!(
+        water_declaration, oil_declaration,
+        "both occurrences must retain Holder.copy's generic declaration identity"
+    );
+    assert!(
+        both_are_modifications,
+        "the selected record bindings must exercise modifier source scope"
+    );
+    typecheck_instanced(&tree, &mut overlay, "Test")?;
+    let water_type = overlay
+        .components
+        .values()
+        .find(|data| data.qualified_name.to_flat_string() == "water.copy")
+        .expect("water.copy after typecheck")
+        .type_id;
+    let oil_type = overlay
+        .components
+        .values()
+        .find(|data| data.qualified_name.to_flat_string() == "oil.copy")
+        .expect("oil.copy after typecheck")
+        .type_id;
+    assert_ne!(
+        water_type, oil_type,
+        "one generic declaration must retain distinct effective record types per occurrence"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_typecheck_instanced_uses_occurrence_specialized_record_for_modifier_binding() {
+    occurrence_specialized_modifier_fixture("oil.state")
+        .expect("each selected medium must resolve its own specialized state");
+}
+
+#[test]
+fn test_typecheck_instanced_rejects_cross_occurrence_specialized_record_binding() {
+    let diagnostics = occurrence_specialized_modifier_fixture("water.state")
+        .expect_err("an OilMedium copy must not consume the WaterMedium state");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ET002")),
+        "expected a cross-occurrence record mismatch, got: {diagnostics:?}"
+    );
+}
+
+fn binding_source_scope_diagnostics(
+    source_scope: Option<QualifiedName>,
+    ambiguous_scope: bool,
+) -> rumoca_core::Diagnostics {
+    let source = r#"
+        model Holder
+            parameter Integer n = 0;
+        end Holder;
+        model Test
+            parameter Integer n = 2;
+            Holder holder;
+        end Test;
+    "#;
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let tree = resolved.into_inner();
+    let test = tree
+        .get_class_by_qualified_name("Test")
+        .expect("Test class");
+    let holder = tree
+        .get_class_by_qualified_name("Holder")
+        .expect("Holder class");
+    let nested_n = holder.components.get("n").expect("nested n");
+
+    let mut overlay = InstanceOverlay::new();
+    add_root_class_instance(&mut overlay, test);
+    if ambiguous_scope {
+        add_root_class_instance(&mut overlay, test);
+    }
+    add_instanced_component(
+        &mut overlay,
+        "n",
+        test.components.get("n").expect("outer n"),
+        true,
+    );
+    add_instanced_component(
+        &mut overlay,
+        "holder",
+        test.components.get("holder").expect("holder"),
+        false,
+    );
+    let nested_n_id = overlay.alloc_id();
+    overlay.add_component(InstanceData {
+        instance_id: nested_n_id,
+        qualified_name: QualifiedName::from_dotted("holder.n"),
+        source_location: nested_n.location.clone(),
+        type_name: nested_n.type_name.to_string(),
+        type_def_id: nested_n.type_def_id,
+        variability: nested_n.variability.clone(),
+        binding: Some(Expression::ComponentReference(make_comp_ref("n"))),
+        binding_source_scope: source_scope,
+        binding_from_modification: true,
+        is_primitive: true,
+        ..Default::default()
+    });
+
+    typecheck_instanced(&tree, &mut overlay, "Test")
+        .expect_err("invalid lexical source identity must be rejected")
+}
+
+#[test]
+fn modification_binding_rejects_unresolved_source_scope_without_name_fallback() {
+    let diagnostics =
+        binding_source_scope_diagnostics(Some(QualifiedName::from_dotted("MissingScope")), false);
+    let messages = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        messages
+            .iter()
+            .any(|message| { message.contains("unresolved lexical source scope") })
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.contains("unknown component"))
+    );
+}
+
+#[test]
+fn modification_binding_rejects_ambiguous_source_scope_without_name_fallback() {
+    let diagnostics = binding_source_scope_diagnostics(Some(QualifiedName::new()), true);
+    let messages = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        messages
+            .iter()
+            .any(|message| { message.contains("ambiguous lexical source scope") })
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.contains("unknown component"))
+    );
+}
+
+#[test]
+fn modification_binding_rejects_missing_source_scope_without_name_fallback() {
+    let diagnostics = binding_source_scope_diagnostics(None, false);
+    let messages = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        messages
+            .iter()
+            .any(|message| { message.contains("missing lexical source scope") })
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.contains("unknown component"))
     );
 }
 
@@ -391,6 +710,7 @@ fn test_typecheck_instanced_uses_modifier_source_scope_for_structural_values() {
         .expect("Holder class");
 
     let mut overlay = InstanceOverlay::new();
+    add_root_class_instance(&mut overlay, test);
     add_instanced_component(
         &mut overlay,
         "n",
@@ -403,17 +723,34 @@ fn test_typecheck_instanced_uses_modifier_source_scope_for_structural_values() {
         test.components.get("holder").expect("holder component"),
         false,
     );
+    let holder_class_id = add_owned_class_instance(&mut overlay, holder, "holder");
 
     let nested_n = holder.components.get("n").expect("nested n");
+    let mut outer_n_ref = make_comp_ref("n");
+    outer_n_ref.parts[0].def_id = test
+        .components
+        .get("n")
+        .and_then(|component| component.def_id);
+    outer_n_ref.parts[0].ident.location = nested_n.location.clone();
+    let nested_n_component_ref = instanced_reference_with_root(
+        "holder.n",
+        nested_n,
+        test.components
+            .get("holder")
+            .and_then(|component| component.def_id)
+            .expect("resolved holder declaration"),
+    );
     let nested_n_id = overlay.alloc_id();
     overlay.add_component(InstanceData {
         instance_id: nested_n_id,
+        owner_class_id: Some(holder_class_id),
+        component_ref: Some(nested_n_component_ref),
         qualified_name: QualifiedName::from_dotted("holder.n"),
         source_location: nested_n.location.clone(),
         type_name: nested_n.type_name.to_string(),
         type_def_id: nested_n.type_def_id,
         variability: nested_n.variability.clone(),
-        binding: Some(Expression::ComponentReference(make_comp_ref("n"))),
+        binding: Some(Expression::ComponentReference(outer_n_ref)),
         binding_source_scope: Some(QualifiedName::new()),
         binding_from_modification: true,
         start: Some(Expression::Terminal {
@@ -432,6 +769,7 @@ fn test_typecheck_instanced_uses_modifier_source_scope_for_structural_values() {
     let nested_x_id = overlay.alloc_id();
     overlay.add_component(InstanceData {
         instance_id: nested_x_id,
+        owner_class_id: Some(holder_class_id),
         qualified_name: QualifiedName::from_dotted("holder.x"),
         source_location: nested_x.location.clone(),
         type_name: nested_x.type_name.to_string(),

@@ -199,6 +199,7 @@ fn runtime(backend: Rc<Backend>) -> SolveRuntime {
             rows: vec![0],
             y_indices: vec![0],
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         }],
     };
@@ -309,12 +310,14 @@ fn independent_runtime(backend: Rc<Backend>) -> SolveRuntime {
                 rows: vec![1],
                 y_indices: vec![0],
                 tearing: None,
+                guarded_tearing: None,
                 alternate_charts: Vec::new(),
             },
             solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![1],
                 tearing: None,
+                guarded_tearing: None,
                 alternate_charts: Vec::new(),
             },
         ],

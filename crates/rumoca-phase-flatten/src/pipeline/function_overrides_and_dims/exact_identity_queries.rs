@@ -194,6 +194,7 @@ pub(super) fn exact_package_function_exposure(
 
 pub(super) fn function_alias_requires_exact_selection(class_def: &rumoca_ir_ast::ClassDef) -> bool {
     class_def.class_type == rumoca_core::ClassType::Function
+        && !class_def.partial
         && class_def.algorithms.is_empty()
         && class_def.external.is_none()
         && !class_def.extends.is_empty()

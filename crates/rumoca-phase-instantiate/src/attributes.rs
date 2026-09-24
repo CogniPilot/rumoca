@@ -8,6 +8,7 @@ pub(super) struct ComponentAttrsAndBinding {
     pub(super) attrs: ExtractedAttributes,
     pub(super) binding: Option<ast::Expression>,
     pub(super) binding_source: Option<ast::Expression>,
+    pub(super) binding_value_scope: Option<ast::QualifiedName>,
     pub(super) binding_source_scope: Option<ast::QualifiedName>,
     pub(super) binding_from_modification: bool,
     pub(super) binding_is_each: bool,
@@ -21,7 +22,8 @@ pub(super) fn extract_component_attrs_and_binding(
 ) -> InstantiateResult<ComponentAttrsAndBinding> {
     // Pass component name so mod_env can be checked for outer modifications.
     let mut attrs = extract_attributes(comp, mod_env, &comp.name, eval_ctx, imports)?;
-    let (binding, binding_from_modification, binding_source_scope) = extract_binding(comp, mod_env);
+    let (binding, binding_from_modification, binding_value_scope, binding_source_scope) =
+        extract_binding(comp, mod_env);
     let binding_path = ast::QualifiedName::from_ident(&comp.name);
     let binding_modification = binding_from_modification
         .then(|| mod_env.get(&binding_path))
@@ -42,6 +44,7 @@ pub(super) fn extract_component_attrs_and_binding(
         attrs,
         binding,
         binding_source,
+        binding_value_scope,
         binding_source_scope,
         binding_from_modification,
         binding_is_each,

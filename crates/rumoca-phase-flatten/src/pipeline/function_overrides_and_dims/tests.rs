@@ -64,6 +64,7 @@ fn override_target_with_active(
 ) -> OverrideTarget {
     OverrideTarget {
         alias: leaf_segment(name).to_string(),
+        alias_def_id: None,
         name: name.to_string(),
         def_id,
         class_type,
@@ -71,6 +72,15 @@ fn override_target_with_active(
         modifier_args: Vec::new(),
         function_slot: FunctionSlot::Unrelated,
     }
+}
+
+fn override_entries(targets: impl IntoIterator<Item = OverrideTarget>) -> OverrideEntries {
+    targets
+        .into_iter()
+        .fold(OverrideEntries::default(), |mut entries, target| {
+            entries.insert_target(target);
+            entries
+        })
 }
 
 fn comp_ref(parts: &[&str]) -> ComponentReference {

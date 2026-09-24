@@ -33,6 +33,13 @@ impl<'a, V: Vector> Convergence<'a, V> {
     pub fn eta(&self) -> V::T {
         self.eta
     }
+
+    /// The configured nonlinear convergence fraction used by the existing
+    /// state criterion. Supplemental checks must use this same budget without
+    /// changing the correction history or eta estimate.
+    pub fn tolerance(&self) -> V::T {
+        self.tol
+    }
     pub fn reset_eta(&mut self) {
         self.eta = V::T::from_f64(20.0.pow(1.25)).unwrap();
     }

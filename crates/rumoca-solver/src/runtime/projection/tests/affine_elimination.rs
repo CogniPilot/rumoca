@@ -1,3 +1,4 @@
+mod admission;
 mod controls;
 
 use super::*;
@@ -14,35 +15,44 @@ struct CyclicAffine {
     cache: std::cell::RefCell<SparseNewtonCache>,
     residual_override: Option<ResidualOverride>,
     invalid_torn_correction: bool,
+    invalid_guarded_correction: bool,
+    candidate_calls: std::cell::RefCell<Vec<(solve::TearingCandidate, Vec<f64>)>>,
+    origin_evaluations: Cell<usize>,
+    certificate_evaluations: Cell<usize>,
+    residual_error_at_origin: Option<bool>,
+    storage: Option<std::cell::RefCell<JacobianStorage>>,
+    prepared: bool,
 }
 
 impl CyclicAffine {
     fn new(zero_pivots: &[usize], expected: &DVector<f64>) -> Self {
-        let mut matrix = DMatrix::zeros(DIMENSION, DIMENSION);
-        for row in 0..DIMENSION - 1 {
+        let dimension = expected.len();
+        let mut matrix = DMatrix::zeros(dimension, dimension);
+        for row in 0..dimension - 1 {
             matrix[(row, row)] = if zero_pivots.contains(&row) { 0.0 } else { 1.0 };
             matrix[(row, row + 1)] = -1.0;
         }
-        matrix[(DIMENSION - 1, 0)] = 1.0;
-        matrix[(DIMENSION - 1, DIMENSION - 1)] = 1.0;
+        matrix[(dimension - 1, 0)] = 1.0;
+        matrix[(dimension - 1, dimension - 1)] = 1.0;
         let rhs = &matrix * expected;
         let plan = solve::AlgebraicProjectionPlan {
             blocks: vec![solve::AlgebraicProjectionBlock {
-                rows: (0..DIMENSION).collect(),
-                y_indices: (0..DIMENSION).collect(),
+                rows: (0..dimension).collect(),
+                y_indices: (0..dimension).collect(),
                 tearing: Some(solve::BlockTearing {
-                    tear_y_indices: vec![DIMENSION - 1],
-                    residual_rows: vec![DIMENSION - 1],
-                    causal_steps: (0..DIMENSION - 1)
+                    tear_y_indices: vec![dimension - 1],
+                    residual_rows: vec![dimension - 1],
+                    causal_steps: (0..dimension - 1)
                         .rev()
                         .map(|row| solve::CausalStep { row, y_index: row })
                         .collect(),
                 }),
+                guarded_tearing: None,
                 alternate_charts: Vec::new(),
             }],
         };
-        let dependencies = (0..DIMENSION)
-            .map(|row| vec![row, (row + 1) % DIMENSION])
+        let dependencies = (0..dimension)
+            .map(|row| vec![row, (row + 1) % dimension])
             .collect::<Vec<_>>();
         Self::from_system(matrix, rhs, plan, dependencies)
     }
@@ -59,8 +69,8 @@ impl CyclicAffine {
             1,
         );
         let pattern = solve::StructuralPattern::from_row_dependencies(
-            DIMENSION,
-            DIMENSION,
+            matrix.nrows(),
+            matrix.ncols(),
             &dependencies,
             solve::PatternProvenance::derived(
                 solve::PatternDerivation::DependencyPropagation,
@@ -89,24 +99,31 @@ impl CyclicAffine {
             cache: Default::default(),
             residual_override: None,
             invalid_torn_correction: false,
+            invalid_guarded_correction: false,
+            candidate_calls: Default::default(),
+            origin_evaluations: Cell::new(0),
+            certificate_evaluations: Cell::new(0),
+            residual_error_at_origin: None,
+            storage: None,
+            prepared: false,
         }
     }
 }
 
-fn source_programs(
+pub(super) fn source_programs(
     matrix: &DMatrix<f64>,
     rhs: &DVector<f64>,
     directional: bool,
     span: rumoca_core::Span,
 ) -> solve::ScalarProgramBlock {
-    let rows = (0..DIMENSION)
+    let rows = (0..matrix.nrows())
         .map(|row| {
             let mut ops = vec![solve::LinearOp::Const {
                 dst: 0,
                 value: if directional { 0.0 } else { -rhs[row] },
             }];
             let mut sum = 0;
-            for column in (0..DIMENSION).filter(|&column| matrix[(row, column)] != 0.0) {
+            for column in (0..matrix.ncols()).filter(|&column| matrix[(row, column)] != 0.0) {
                 let base = ops.len() as u32;
                 ops.push(if directional {
                     solve::LinearOp::LoadSeed {
@@ -141,10 +158,41 @@ fn source_programs(
             ops
         })
         .collect();
-    solve::ScalarProgramBlock::with_program_spans(rows, vec![span; DIMENSION]).unwrap()
+    solve::ScalarProgramBlock::with_program_spans(rows, vec![span; matrix.nrows()]).unwrap()
 }
 
 impl ImplicitProjectionModel for CyclicAffine {
+    fn lease_affine_jacobian(
+        &self,
+        _: &solve::JacobianStructure,
+        _: (&[usize], &[usize]),
+        _: usize,
+    ) -> Result<Option<std::cell::RefMut<'_, JacobianStorage>>, RuntimeSolveError> {
+        Ok(self.storage.as_ref().map(|storage| storage.borrow_mut()))
+    }
+
+    fn eval_prepared_implicit_jacobian(
+        &self,
+        structure: &solve::JacobianStructure,
+        _: (&[usize], &[usize]),
+        _: &[f64],
+        _: &[f64],
+        _: f64,
+        out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        if self.prepared {
+            let layout = structure.jacobian_application().unwrap().value_layout();
+            assert_eq!(out.len(), layout.len());
+            for (slot, value) in out.iter_mut().enumerate() {
+                *value = self.matrix[layout.coordinate(slot).unwrap()];
+            }
+            return Ok(true);
+        }
+        // A declined partial fill must not survive sparse interpreted assembly.
+        out.fill(f64::NAN);
+        Ok(false)
+    }
+
     fn eval_residual(
         &self,
         y: &[f64],
@@ -152,6 +200,23 @@ impl ImplicitProjectionModel for CyclicAffine {
         _: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        let at_origin = y.iter().all(|&value| value == 0.0);
+        if at_origin {
+            self.origin_evaluations
+                .set(self.origin_evaluations.get() + 1);
+        } else {
+            self.certificate_evaluations
+                .set(self.certificate_evaluations.get() + 1);
+        }
+        if self.residual_error_at_origin == Some(at_origin) {
+            return Err(RuntimeSolveError::solve_ir("affine residual witness"));
+        }
+        if let Some(storage) = &self.storage {
+            assert!(
+                storage.try_borrow_mut().is_err(),
+                "lease spans residual certification"
+            );
+        }
         let residual = &self.matrix * DVector::from_column_slice(y) - &self.rhs;
         out.copy_from_slice(residual.as_slice());
         if let Some(evaluate) = self.residual_override {
@@ -190,8 +255,34 @@ impl ImplicitProjectionModel for CyclicAffine {
         _: usize,
         system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
+        if let Some(storage) = &self.storage {
+            assert!(storage.try_borrow_mut().is_err(), "lease spans full solve");
+        }
         self.full_solves.set(self.full_solves.get() + 1);
         scaled_newton_delta(system)
+    }
+
+    fn solve_affine_torn_candidate(
+        &self,
+        block: usize,
+        candidate: solve::TearingCandidate,
+        system: ScaledNewtonSystem<'_>,
+    ) -> Option<DVector<f64>> {
+        self.candidate_calls
+            .borrow_mut()
+            .push((candidate, system.residual.to_vec()));
+        if candidate == solve::TearingCandidate::Primary {
+            return self.solve_affine_torn_delta(block, system);
+        }
+        if self.invalid_guarded_correction {
+            return Some(DVector::zeros(self.matrix.ncols()));
+        }
+        scaled_newton_delta_with_tearing(
+            system,
+            &mut self.cache.borrow_mut(),
+            candidate,
+            self.structures.algebraic_projection()[0].affine_elimination_candidate(candidate)?,
+        )
     }
 
     fn solve_affine_torn_delta(
@@ -200,11 +291,12 @@ impl ImplicitProjectionModel for CyclicAffine {
         system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
         if self.invalid_torn_correction {
-            return Some(DVector::zeros(DIMENSION));
+            return Some(DVector::zeros(self.matrix.ncols()));
         }
         scaled_newton_delta_with_tearing(
             system,
             &mut self.cache.borrow_mut(),
+            solve::TearingCandidate::Primary,
             self.structures.algebraic_projection()[0].affine_elimination()?,
         )
     }

@@ -1,3 +1,4 @@
+use super::JacobianMatrix;
 use faer::{
     Col,
     prelude::Solve,
@@ -9,8 +10,21 @@ use rumoca_ir_solve as solve;
 
 use super::{
     AlgebraicProjectionModel, ImplicitProjectionModel, RuntimeSolveError, SparseNewtonCache,
-    algebraic_block_jacobian, initial_block_jacobian, y_index_for_slot,
+    algebraic_block_jacobian_storage, initial_block_jacobian, y_index_for_slot,
 };
+
+#[cfg(test)]
+mod dense_ownership_tests;
+
+#[cfg(test)]
+thread_local! {
+    static SCALED_DENSE_ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn scaled_dense_allocation_count() -> usize {
+    SCALED_DENSE_ALLOCATIONS.get()
+}
 
 pub(super) fn scaled_residual_converged(residual: &[f64], scales: &[f64], tol: f64) -> bool {
     residual.len() == scales.len()
@@ -79,9 +93,9 @@ pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
     model: &M,
     y: &[f64],
     block: &solve::AlgebraicProjectionBlock,
-    jacobian: &DMatrix<f64>,
+    jacobian: &dyn JacobianMatrix,
     structure: Option<&solve::StructuralPattern>,
-) -> (Vec<f64>, Vec<f64>) {
+) -> Result<(Vec<f64>, Vec<f64>), RuntimeSolveError> {
     let variable_scales = block
         .y_indices
         .iter()
@@ -101,25 +115,25 @@ pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
                 )
         })
         .collect::<Vec<_>>();
-    let row_scales = jacobian_row_scales(jacobian, &variable_scales, &fallback_scales, structure);
-    (row_scales, variable_scales)
+    let row_scales = jacobian_row_scales(jacobian, &variable_scales, &fallback_scales, structure)?;
+    Ok((row_scales, variable_scales))
 }
 
 fn initial_block_scales<M: AlgebraicProjectionModel + ?Sized>(
     model: &M,
     y: &[f64],
     block: &solve::AlgebraicProjectionBlock,
-    jacobian: &DMatrix<f64>,
+    jacobian: &dyn JacobianMatrix,
     structure: Option<&solve::StructuralPattern>,
-) -> (Vec<f64>, Vec<f64>) {
+) -> Result<(Vec<f64>, Vec<f64>), RuntimeSolveError> {
     let variable_scales = block
         .y_indices
         .iter()
         .map(|&index| model_variable_scale(model, index, y[index]))
         .collect::<Vec<_>>();
     let fallback_scales = initial_block_fallback_scales(model, y, block, &variable_scales);
-    let row_scales = jacobian_row_scales(jacobian, &variable_scales, &fallback_scales, structure);
-    (row_scales, variable_scales)
+    let row_scales = jacobian_row_scales(jacobian, &variable_scales, &fallback_scales, structure)?;
+    Ok((row_scales, variable_scales))
 }
 
 pub(super) fn initial_block_fallback_scales<M: AlgebraicProjectionModel + ?Sized>(
@@ -145,22 +159,37 @@ pub(super) fn initial_block_fallback_scales<M: AlgebraicProjectionModel + ?Sized
 }
 
 pub(super) fn jacobian_row_scales(
-    jacobian: &DMatrix<f64>,
+    jacobian: &dyn JacobianMatrix,
     variable_scales: &[f64],
     fallback_scales: &[f64],
     structure: Option<&solve::StructuralPattern>,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, RuntimeSolveError> {
+    if let Some(layout) = jacobian.value_layout()
+        && structure.is_some_and(|pattern| pattern != layout.pattern())
+    {
+        return Err(RuntimeSolveError::solve_ir(
+            "Jacobian scaling pattern differs from stored source",
+        ));
+    }
+    if let Some(layout) = jacobian.value_layout() {
+        return sparse_jacobian_row_scales(
+            jacobian,
+            variable_scales,
+            fallback_scales,
+            layout.pattern(),
+        );
+    }
     if let Some(pattern) = structure.filter(|pattern| {
         pattern.rows() as usize == jacobian.nrows()
             && pattern.columns() as usize == jacobian.ncols()
     }) {
         return sparse_jacobian_row_scales(jacobian, variable_scales, fallback_scales, pattern);
     }
-    (0..jacobian.nrows())
+    Ok((0..jacobian.nrows())
         .map(|row| {
             let derivative_scale = (0..jacobian.ncols()).fold(0.0_f64, |scale, column| {
-                let contribution =
-                    jacobian[(row, column)].abs() * valid_variable_scale(variable_scales[column]);
+                let contribution = jacobian.as_slice()[column * jacobian.nrows() + row].abs()
+                    * valid_variable_scale(variable_scales[column]);
                 if contribution.is_finite() {
                     scale.max(contribution)
                 } else {
@@ -173,29 +202,77 @@ pub(super) fn jacobian_row_scales(
                 fallback_scales.get(row).copied().unwrap_or(1.0)
             }
         })
-        .collect()
+        .collect())
 }
 
 fn sparse_jacobian_row_scales(
-    jacobian: &DMatrix<f64>,
+    jacobian: &dyn JacobianMatrix,
     variable_scales: &[f64],
     fallback_scales: &[f64],
     pattern: &solve::StructuralPattern,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, RuntimeSolveError> {
     let mut scales = vec![0.0_f64; jacobian.nrows()];
     for (row, scale) in scales.iter_mut().enumerate() {
-        pattern.visit_row_columns(row, |column| {
-            let contribution =
-                jacobian[(row, column)].abs() * valid_variable_scale(variable_scales[column]);
-            if contribution.is_finite() {
-                *scale = scale.max(contribution);
-            }
-        });
-        if *scale == 0.0 {
-            *scale = fallback_scales.get(row).copied().unwrap_or(1.0);
-        }
+        let derivative = if let Some(layout) = jacobian.value_layout() {
+            compact_row_scale(jacobian.as_slice(), layout, row, variable_scales)?
+        } else {
+            dense_sparse_row_scale(jacobian, pattern, row, variable_scales)
+        };
+        *scale = if derivative == 0.0 {
+            fallback_scales.get(row).copied().unwrap_or(1.0)
+        } else {
+            derivative
+        };
     }
-    scales
+    Ok(scales)
+}
+
+fn finite_scale_max(scale: f64, contribution: f64) -> f64 {
+    if contribution.is_finite() {
+        scale.max(contribution)
+    } else {
+        scale
+    }
+}
+
+fn compact_row_scale(
+    values: &[f64],
+    layout: &solve::JacobianValueLayout,
+    row: usize,
+    variable_scales: &[f64],
+) -> Result<f64, RuntimeSolveError> {
+    let slots = layout
+        .row_slots(row)
+        .ok_or_else(|| RuntimeSolveError::solve_ir("compact Jacobian row outside owner"))?;
+    let mut scale = 0.0_f64;
+    for slot in slots {
+        let (_, column) = layout
+            .coordinate(slot)
+            .ok_or_else(|| RuntimeSolveError::solve_ir("compact Jacobian slot outside owner"))?;
+        let value = values
+            .get(slot)
+            .ok_or_else(|| RuntimeSolveError::solve_ir("compact Jacobian value missing"))?;
+        let variable = variable_scales
+            .get(column)
+            .ok_or_else(|| RuntimeSolveError::solve_ir("compact Jacobian scale missing"))?;
+        scale = finite_scale_max(scale, value.abs() * valid_variable_scale(*variable));
+    }
+    Ok(scale)
+}
+
+fn dense_sparse_row_scale(
+    jacobian: &dyn JacobianMatrix,
+    pattern: &solve::StructuralPattern,
+    row: usize,
+    variable_scales: &[f64],
+) -> f64 {
+    let mut scale = 0.0_f64;
+    pattern.visit_row_columns(row, |column| {
+        let contribution = jacobian.as_slice()[column * jacobian.nrows() + row].abs()
+            * valid_variable_scale(variable_scales[column]);
+        scale = finite_scale_max(scale, contribution);
+    });
+    scale
 }
 
 pub(super) fn algebraic_plan_row_scales<M: ImplicitProjectionModel>(
@@ -208,8 +285,12 @@ pub(super) fn algebraic_plan_row_scales<M: ImplicitProjectionModel>(
     let mut scales = Vec::new();
     for (block_index, block) in plan.blocks.iter().enumerate() {
         let structure = model.algebraic_projection_block_structure(block_index);
-        let jacobian =
-            algebraic_block_jacobian(model, y, p, t, &block.rows, &block.y_indices, structure)?;
+        let jacobian = algebraic_block_jacobian_storage(
+            model,
+            (y, p, t),
+            (&block.rows, &block.y_indices),
+            structure,
+        )?;
         scales.extend(
             algebraic_block_scales(
                 model,
@@ -217,7 +298,7 @@ pub(super) fn algebraic_plan_row_scales<M: ImplicitProjectionModel>(
                 block,
                 &jacobian,
                 structure.map(solve::JacobianStructure::pattern),
-            )
+            )?
             .0,
         );
     }
@@ -255,7 +336,7 @@ pub(super) fn initial_residual_scales<M: AlgebraicProjectionModel>(
         let structure = model
             .initial_projection_block_structure(block_index)
             .map(solve::JacobianStructure::pattern);
-        let block_scales = initial_block_scales(model, y, block, &jacobian, structure).0;
+        let block_scales = initial_block_scales(model, y, block, &jacobian, structure)?.0;
         for (&row, scale) in block.rows.iter().zip(block_scales) {
             let Some(slot) = scales.get_mut(row) else {
                 return Err(RuntimeSolveError::solve_ir(format!(
@@ -279,7 +360,7 @@ pub(super) fn initial_residual_scales<M: AlgebraicProjectionModel>(
 /// Jacobian was formed with is not a Newton step for this block.
 #[derive(Clone, Copy)]
 pub(crate) struct ScaledNewtonSystem<'a> {
-    pub(crate) jacobian: &'a DMatrix<f64>,
+    pub(crate) jacobian: &'a dyn JacobianMatrix,
     pub(crate) residual: &'a [f64],
     pub(crate) row_scales: &'a [f64],
     pub(crate) variable_scales: &'a [f64],
@@ -301,16 +382,13 @@ pub(crate) fn scaled_newton_delta_with_cache(
 pub(crate) fn scaled_newton_delta_with_tearing(
     system: ScaledNewtonSystem<'_>,
     cache: &mut SparseNewtonCache,
+    candidate: solve::TearingCandidate,
     layout: &solve::AffineEliminationLayout,
 ) -> Option<DVector<f64>> {
     if system.structure != Some(layout.pattern())
         || system.jacobian.nrows() != system.residual.len()
         || system.jacobian.nrows() != system.row_scales.len()
         || system.jacobian.ncols() != system.variable_scales.len()
-        || !matches!(
-            select_linear_solve_kernel(system.jacobian.nrows(), layout.pattern()).ok(),
-            Some(LinearSolveKernel::SparseCandidate)
-        )
         || !matches!(
             select_linear_solve_kernel(layout.tears().len(), layout.reduced_pattern()).ok(),
             Some(LinearSolveKernel::SmallDense)
@@ -324,6 +402,7 @@ pub(crate) fn scaled_newton_delta_with_tearing(
         &rhs,
         system.row_scales,
         system.variable_scales,
+        candidate,
         layout,
     )?;
     Some(unscale_newton_delta(&delta, system.variable_scales))
@@ -355,6 +434,9 @@ fn scaled_newton_delta_impl(
     if jacobian.nrows() != residual.len()
         || jacobian.nrows() != row_scales.len()
         || jacobian.ncols() != variable_scales.len()
+        || jacobian
+            .value_layout()
+            .is_some_and(|layout| structure != Some(layout.pattern()))
     {
         return None;
     }
@@ -372,32 +454,116 @@ fn scaled_newton_delta_impl(
     if let Some(scaled_delta) = sparse {
         return Some(unscale_newton_delta(&scaled_delta, variable_scales));
     }
-    let scaled_jacobian = scaled_jacobian(jacobian, row_scales, variable_scales);
-    let direct = solve_square_newton_system(&scaled_jacobian, &rhs);
+    let matrix = scaled_jacobian(jacobian, row_scales, variable_scales)?;
+    let direct = solve_square_newton_system(matrix, &rhs);
     let scaled_delta = if allow_rank_deficient_fallback {
-        direct.or_else(|| scaled_jacobian.svd(true, true).solve(&rhs, tolerance).ok())?
+        direct.or_else(|| {
+            // LU consumes its local matrix. Rebuild the identical SVD input
+            // only when the existing direct solve declined or failed.
+            scaled_jacobian(jacobian, row_scales, variable_scales)?
+                .svd(true, true)
+                .solve(&rhs, tolerance)
+                .ok()
+        })?
     } else {
         direct?
     };
     Some(unscale_newton_delta(&scaled_delta, variable_scales))
 }
 
-fn solve_square_newton_system(matrix: &DMatrix<f64>, rhs: &DVector<f64>) -> Option<DVector<f64>> {
+fn solve_square_newton_system(matrix: DMatrix<f64>, rhs: &DVector<f64>) -> Option<DVector<f64>> {
     if matrix.nrows() != matrix.ncols() {
         return None;
     }
-    matrix.clone().lu().solve(rhs)
+    #[cfg(test)]
+    let input_storage = matrix.as_ptr();
+    let factor = matrix.lu();
+    #[cfg(test)]
+    dense_ownership_tests::observe_lu_storage(input_storage, factor.lu_internal().as_ptr());
+    factor.solve(rhs)
 }
 
 fn scaled_jacobian(
-    jacobian: &DMatrix<f64>,
+    jacobian: &dyn JacobianMatrix,
     row_scales: &[f64],
     variable_scales: &[f64],
-) -> DMatrix<f64> {
-    DMatrix::from_fn(jacobian.nrows(), jacobian.ncols(), |row, column| {
-        jacobian[(row, column)] * valid_variable_scale(variable_scales[column])
-            / valid_variable_scale(row_scales[row])
-    })
+) -> Option<DMatrix<f64>> {
+    let (rows, columns) = jacobian.shape();
+    if row_scales.len() != rows || variable_scales.len() != columns {
+        return None;
+    }
+    if jacobian.value_layout().is_some_and(|layout| {
+        layout.shape() != (rows, columns) || layout.len() != jacobian.as_slice().len()
+    }) {
+        return None;
+    }
+    #[cfg(test)]
+    SCALED_DENSE_ALLOCATIONS.set(SCALED_DENSE_ALLOCATIONS.get() + 1);
+    let mut scaled = DMatrix::zeros(rows, columns);
+    if let Some(layout) = jacobian.value_layout() {
+        fill_scaled_compact(
+            &mut scaled,
+            jacobian.as_slice(),
+            layout,
+            row_scales,
+            variable_scales,
+        )?;
+    } else {
+        for column in 0..columns {
+            for row in 0..rows {
+                let value = *jacobian
+                    .as_slice()
+                    .get(column.checked_mul(rows)?.checked_add(row)?)?;
+                scaled[(row, column)] = value * valid_variable_scale(variable_scales[column])
+                    / valid_variable_scale(row_scales[row]);
+            }
+        }
+    }
+    Some(scaled)
+}
+
+fn fill_scaled_compact(
+    scaled: &mut DMatrix<f64>,
+    values: &[f64],
+    layout: &solve::JacobianValueLayout,
+    row_scales: &[f64],
+    variable_scales: &[f64],
+) -> Option<()> {
+    for row in 0..scaled.nrows() {
+        let mut slots = layout.row_slots(row)?;
+        let mut next = slots.next();
+        for column in 0..scaled.ncols() {
+            let value = compact_cell(values, layout, row, column, &mut slots, &mut next)?;
+            scaled[(row, column)] = value * valid_variable_scale(variable_scales[column])
+                / valid_variable_scale(row_scales[row]);
+        }
+        if next.is_some() {
+            return None;
+        }
+    }
+    Some(())
+}
+
+fn compact_cell(
+    values: &[f64],
+    layout: &solve::JacobianValueLayout,
+    row: usize,
+    column: usize,
+    slots: &mut std::ops::Range<usize>,
+    next: &mut Option<usize>,
+) -> Option<f64> {
+    let Some(slot) = *next else {
+        return Some(0.0);
+    };
+    let (slot_row, slot_column) = layout.coordinate(slot)?;
+    if slot_row != row || slot_column < column {
+        return None;
+    }
+    if slot_column != column {
+        return Some(0.0);
+    }
+    *next = slots.next();
+    values.get(slot).copied()
 }
 
 fn unscale_newton_delta(scaled_delta: &DVector<f64>, variable_scales: &[f64]) -> DVector<f64> {
@@ -412,7 +578,7 @@ fn unscale_newton_delta(scaled_delta: &DVector<f64>, variable_scales: &[f64]) ->
 }
 
 fn sparse_scaled_newton_delta(
-    matrix: &DMatrix<f64>,
+    matrix: &dyn JacobianMatrix,
     rhs: &DVector<f64>,
     row_scales: &[f64],
     variable_scales: &[f64],
@@ -426,15 +592,32 @@ fn sparse_scaled_newton_delta(
     if let Some(cache) = cache {
         return cache.solve_scaled(matrix, rhs, row_scales, variable_scales, structure);
     }
+    if matrix
+        .value_layout()
+        .is_some_and(|layout| layout.pattern() != structure)
+    {
+        return None;
+    }
     let triplets = structure
         .nonzero_coordinates()
         .into_iter()
-        .map(|(row, column)| {
-            let value = matrix[(row, column)] * valid_variable_scale(variable_scales[column])
+        .enumerate()
+        .map(|(slot, (row, column))| {
+            let raw = if let Some(layout) = matrix.value_layout() {
+                if layout.coordinate(slot)? != (row, column) {
+                    return None;
+                }
+                *matrix.as_slice().get(slot)?
+            } else {
+                *matrix
+                    .as_slice()
+                    .get(column.checked_mul(dimension)?.checked_add(row)?)?
+            };
+            let value = raw * valid_variable_scale(variable_scales[column])
                 / valid_variable_scale(row_scales[row]);
-            Triplet::new(row, column, value)
+            Some(Triplet::new(row, column, value))
         })
-        .collect::<Vec<_>>();
+        .collect::<Option<Vec<_>>>()?;
     solve_sparse_triplets(dimension, rhs, &triplets)
 }
 

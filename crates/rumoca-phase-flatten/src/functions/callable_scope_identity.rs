@@ -73,12 +73,20 @@ pub(super) fn scope_qualified_path(
     // The path as written needs at least one enclosing scope to change; the
     // import-alias restatement already changes the root segment's spelling, so
     // it also has to be tried unqualified.
-    let mut spellings = vec![(component_ref.parts().to_vec(), 1)];
+    let original_parts = component_ref.parts().to_vec();
+    let mut spellings = Vec::new();
+    if original_parts.iter().all(|part| {
+        class_index
+            .local_name(part.def_id)
+            .is_none_or(|declared| declared == part.ident)
+    }) {
+        spellings.push((original_parts.clone(), 1));
+    }
     if let Some(declared) = class_index
         .local_name(root.def_id)
         .filter(|declared| *declared != root.ident)
     {
-        let mut parts = component_ref.parts().to_vec();
+        let mut parts = original_parts;
         parts[0].ident = declared.to_string();
         spellings.push((parts, 0));
     }

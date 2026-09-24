@@ -189,3 +189,93 @@ fn canonicalize_collected_function_calls_does_not_replace_unknown_exact_instance
     assert_eq!(comp.as_str(), "Generators.Xorshift64star.random");
     assert_eq!(comp.resolved_function(), Some(unknown));
 }
+
+#[test]
+fn canonicalize_collected_function_calls_accepts_exact_exposed_callable_identity() {
+    let package_def = rumoca_core::DefId::new(44);
+    let function_def = rumoca_core::DefId::new(45);
+    let mut package = class("P", rumoca_core::ClassType::Package, package_def);
+    package.classes.insert(
+        "f".to_string(),
+        class("f", rumoca_core::ClassType::Function, function_def),
+    );
+    let mut tree = ast::ClassTree::new();
+    tree.definitions.classes.insert("P".to_string(), package);
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+
+    let mut flat = flat::Model::new();
+    let mut function = rumoca_core::Function::new("P.f", test_span());
+    function.def_id = Some(function_def);
+    function
+        .body
+        .push(rumoca_core::Statement::Return { span: test_span() });
+    flat.add_function(function);
+    flat.add_equation(flat::Equation::new(
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::with_component_reference(
+                "P.f",
+                core_structured_comp_ref(&[("f", function_def)]),
+            ),
+            args: vec![],
+            is_constructor: false,
+            span: test_span(),
+        },
+        test_span(),
+        rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    canonicalize_collected_function_calls(&mut flat, &class_index)
+        .expect("exact exposed callable identity should reconcile");
+    let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
+        panic!("expected function call residual");
+    };
+    assert_eq!(name.as_str(), "P.f");
+    assert!(name.resolved_function().is_some());
+}
+
+#[test]
+fn canonicalize_collected_function_calls_rejects_text_only_exposed_identity() {
+    let package_def = rumoca_core::DefId::new(46);
+    let function_def = rumoca_core::DefId::new(47);
+    let mut package = class("P", rumoca_core::ClassType::Package, package_def);
+    package.classes.insert(
+        "actual".to_string(),
+        class("actual", rumoca_core::ClassType::Function, function_def),
+    );
+    let mut tree = ast::ClassTree::new();
+    tree.definitions.classes.insert("P".to_string(), package);
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+
+    let mut flat = flat::Model::new();
+    let mut function = rumoca_core::Function::new("P.claimed", test_span());
+    function.def_id = Some(function_def);
+    function
+        .body
+        .push(rumoca_core::Statement::Return { span: test_span() });
+    flat.add_function(function);
+    flat.add_equation(flat::Equation::new(
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::with_component_reference(
+                "P.claimed",
+                core_structured_comp_ref(&[("claimed", function_def)]),
+            ),
+            args: vec![],
+            is_constructor: false,
+            span: test_span(),
+        },
+        test_span(),
+        rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    let error = canonicalize_collected_function_calls(&mut flat, &class_index)
+        .expect_err("unproved rendered identity must remain rejected");
+    assert!(matches!(
+        error,
+        FlattenError::InconsistentFunctionReference { rendered, structured, .. }
+            if rendered == "P.claimed" && structured == "claimed"
+    ));
+}

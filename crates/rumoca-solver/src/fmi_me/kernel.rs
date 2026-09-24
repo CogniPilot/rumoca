@@ -191,6 +191,10 @@ pub struct SolveMeKernel {
     last_projection_changed: bool,
     termination: Option<SimTermination>,
     output_meta: Vec<SimVariableMeta>,
+    /// Construction-issued typed channels used by the host observable-error
+    /// capability. The kernel owns the mapping; the opaque handle sees only
+    /// scalar values and nominal scales.
+    observable_channels: Vec<super::MeObservableChannel>,
     /// The settled full solver vector `exit_initialization_mode` produced, so
     /// the initial `update_discrete_states` continues from the same vector
     /// instead of rebuilding one.
@@ -275,6 +279,10 @@ impl SolveMeKernel {
             input_names: self.runtime.model.problem.solve_layout.input_scalar_names(),
             output_meta: &self.output_meta,
         }
+    }
+
+    pub(crate) fn observable_channels(&self) -> &[super::MeObservableChannel] {
+        &self.observable_channels
     }
 
     pub(crate) fn get_nominals_of_continuous_states(

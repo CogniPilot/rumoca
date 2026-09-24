@@ -63,6 +63,8 @@ pub enum NonLinearSolverError {
     LuSolveFailed,
     #[error("Jacobian not reset before calling solve")]
     JacobianNotReset,
+    #[error("supplemental error observer is unsupported by this nonlinear solver")]
+    SupplementalErrorUnsupported,
     #[error("State has wrong length: expected {expected}, got {found}")]
     WrongStateLength { expected: usize, found: usize },
     #[error("Error: {0}")]

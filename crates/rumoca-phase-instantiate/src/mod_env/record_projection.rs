@@ -20,11 +20,12 @@ type ProjectionBaseCache = HashMap<usize, Arc<ast::Expression>>;
 /// The resolved value and written source of a record modifier.
 ///
 /// These expressions can differ when one record parameter forwards another:
-/// the value is resolved for instantiation, while the source remains relative
-/// to `source_scope` for exact occurrence resolution in Flat.
+/// the value is resolved for instantiation in `value_scope`, while the source
+/// remains relative to `source_scope` for exact occurrence resolution in Flat.
 pub(crate) struct RecordBindingProjection<'a> {
     pub(crate) value: &'a ast::Expression,
     pub(crate) source: Option<&'a ast::Expression>,
+    pub(crate) value_scope: Option<ast::QualifiedName>,
     pub(crate) source_scope: Option<ast::QualifiedName>,
     pub(crate) each: bool,
 }
@@ -106,7 +107,7 @@ pub(crate) fn propagate_record_binding_to_fields(
             project_record_field_binding(
                 tree,
                 binding.value,
-                binding.source_scope.as_ref(),
+                binding.value_scope.as_ref(),
                 nested_class,
                 field_name,
                 field_def_id,
@@ -126,15 +127,21 @@ pub(crate) fn propagate_record_binding_to_fields(
             _ => field_access.clone(),
         };
 
+        let projected_source_scope = if binding.source.is_some() {
+            binding.source_scope.clone()
+        } else {
+            binding.value_scope.clone()
+        };
         ctx.mod_env_mut().active.insert(
             field_qn.clone(),
             ast::ModificationValue::with_source_scope_and_prefixes(
                 field_access,
                 Some(field_source),
-                binding.source_scope.clone(),
+                projected_source_scope,
                 binding.each,
                 false,
-            ),
+            )
+            .with_value_scope(binding.value_scope.clone()),
         );
         projected_keys.insert(field_qn, ());
     }
@@ -453,9 +460,13 @@ fn constructor_class_for_call<'a>(
     // exact *target* segment. `root_def_id` is the first segment, which for a
     // dotted constructor such as `P.Concrete.Element(...)` identifies the
     // enclosing package rather than the record (MLS §5.3, §12.6).
-    comp.target_def_id()
-        .and_then(|def_id| tree.get_class_by_def_id(def_id))
-        .or_else(|| find_class_in_tree(tree, &comp.to_string()))
+    if let Some(target_def_id) = comp.target_def_id() {
+        return tree
+            .get_class_by_def_id(target_def_id)
+            .filter(|class| class.class_type == rumoca_core::ClassType::Record);
+    }
+    find_class_in_tree(tree, &comp.to_string())
+        .filter(|class| class.class_type == rumoca_core::ClassType::Record)
         .or_else(|| resolve_scoped_constructor_class(tree, comp, binding_source_scope))
 }
 
@@ -477,7 +488,9 @@ fn resolve_scoped_constructor_class<'a>(
         } else {
             format!("{prefix}.{name}")
         };
-        if let Some(class_def) = find_class_in_tree(tree, &candidate) {
+        if let Some(class_def) = find_class_in_tree(tree, &candidate)
+            .filter(|class| class.class_type == rumoca_core::ClassType::Record)
+        {
             return Some(class_def);
         }
     }

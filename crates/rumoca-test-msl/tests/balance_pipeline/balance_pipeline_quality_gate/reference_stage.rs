@@ -7,6 +7,16 @@
 
 use super::*;
 
+/// The explicit all-OMC diagnostic lane must reach the reference stage even
+/// when Rumoca attempted no simulations. Normal runs remain unmeasured when
+/// no simulation was attempted.
+pub(crate) fn should_run_msl_parity_reference(
+    sim_attempted: usize,
+    all_omc_targets: Option<bool>,
+) -> bool {
+    sim_attempted > 0 || all_omc_targets == Some(true)
+}
+
 fn load_sim_parity_targets() -> io::Result<(PathBuf, Vec<String>)> {
     let sim_targets_path = msl_simulation_targets_path();
     let sim_targets = load_target_model_names(&sim_targets_path).map_err(|error| {
@@ -134,12 +144,18 @@ fn ensure_simulation_parity_reference(
 /// there is no `Ok(())` that means "nothing happened, carry on". Rejected
 /// (i.e. reported as `DidNotRun`, never swallowed): `omc` missing from PATH, a
 /// missing `rumoca-msl-tools` binary, an unreadable simulation-target list, and
-/// a comparator command that exits nonzero. Accepted: a run with zero
-/// simulations attempted, which has nothing to compare and says so.
+/// a comparator command that exits nonzero. A normal run with zero simulations
+/// attempted remains unmeasured without invoking OMC. The explicit
+/// `all_omc_targets` diagnostic lane still invokes OMC for its selected roster,
+/// even when Rumoca produced no simulation attempts; its zero-comparison result
+/// remains unmeasured at the comparator-evidence boundary.
 /// Owner: this function; the consumer that turns the outcome into a verdict is
 /// [`measure_msl_parity`].
-pub(crate) fn ensure_required_msl_parity_references(summary: &MslSummary) -> MslParityStageOutcome {
-    if summary.sim_attempted == 0 {
+pub(crate) fn ensure_required_msl_parity_references(
+    summary: &MslSummary,
+    all_omc_targets: Option<bool>,
+) -> MslParityStageOutcome {
+    if !should_run_msl_parity_reference(summary.sim_attempted, all_omc_targets) {
         return MslParityStageOutcome::DidNotRun(MslParityUnmeasuredReason::NoSimulationsAttempted);
     }
     match run_msl_parity_reference_stage(summary) {
@@ -297,8 +313,19 @@ mod tests {
         summary.total_models = 1;
         summary.sim_attempted = 0;
         assert_eq!(
-            ensure_required_msl_parity_references(&summary),
+            ensure_required_msl_parity_references(&summary, None),
             MslParityStageOutcome::DidNotRun(MslParityUnmeasuredReason::NoSimulationsAttempted)
         );
+        assert!(!should_run_msl_parity_reference(
+            summary.sim_attempted,
+            None
+        ));
+    }
+
+    #[test]
+    fn all_omc_targets_runs_reference_stage_without_rumoca_simulation_attempts() {
+        assert!(should_run_msl_parity_reference(0, Some(true)));
+        assert!(should_run_msl_parity_reference(1, Some(true)));
+        assert!(!should_run_msl_parity_reference(0, Some(false)));
     }
 }

@@ -58,6 +58,91 @@ fn inherited_function_body_keeps_identity_for_synthesized_exposed_name() {
     );
 }
 
+#[test]
+fn inherited_function_body_rewrites_exact_package_constant_to_exposed_package() {
+    let (tree, mut function) = inherited_function_alias_rewrite_fixture();
+    let ids = InheritedAliasIds::new();
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: core_comp_ref(&[("h", ids.output_h)]),
+        value: Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                "PartialMedium.cp_const",
+                core_comp_ref(&[
+                    ("PartialMedium", ids.partial_pkg),
+                    ("cp_const", ids.cp_const),
+                ]),
+            ),
+            subscripts: Vec::new(),
+            span: test_span(),
+        },
+        span: test_span(),
+    });
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+
+    rewrite_function_extends_aliases_in_function(&mut function, &tree, &class_index)
+        .expect("function alias rewrite");
+
+    let rumoca_core::Statement::Assignment { value, .. } = &function.body[1] else {
+        panic!("expected constant assignment");
+    };
+    let Expression::VarRef { name, .. } = value else {
+        panic!("expected package constant reference");
+    };
+    assert_eq!(name.as_str(), "ConcreteMedium.cp_const");
+    assert_eq!(name.target_def_id(), Some(ids.cp_const));
+}
+
+#[test]
+fn inherited_constant_with_lexical_component_ref_uses_selected_package_owner() {
+    let (mut tree, function) = inherited_function_alias_rewrite_fixture();
+    let ids = InheritedAliasIds::new();
+    let mut second = class("OtherMedium", ClassType::Package);
+    second.def_id = Some(DefId::new(11));
+    second.extends.push(Extend {
+        base_name: Name {
+            def_id: Some(ids.base_pkg),
+            ..Name::from_string("BaseMedium")
+        },
+        base_def_id: Some(ids.base_pkg),
+        ..Extend::default()
+    });
+    tree.definitions
+        .classes
+        .insert("OtherMedium".to_string(), second);
+    tree.def_map
+        .insert(DefId::new(11), "OtherMedium".to_string());
+    tree.name_map
+        .insert("OtherMedium".to_string(), DefId::new(11));
+
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    for selected in ["ConcreteMedium", "OtherMedium"] {
+        let mut function = function.clone();
+        function.name = rumoca_core::VarName::new(format!("{selected}.specificEnthalpy_pTX"));
+        function.body.push(rumoca_core::Statement::Assignment {
+            comp: core_comp_ref(&[("h", ids.output_h)]),
+            value: Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "PartialMedium.cp_const",
+                    core_comp_ref(&[("cp_const", ids.cp_const)]),
+                ),
+                subscripts: Vec::new(),
+                span: test_span(),
+            },
+            span: test_span(),
+        });
+        rewrite_function_extends_aliases_in_function(&mut function, &tree, &class_index)
+            .expect("function alias rewrite");
+        let rumoca_core::Statement::Assignment { value, .. } = &function.body[1] else {
+            panic!("expected constant assignment");
+        };
+        let Expression::VarRef { name, .. } = value else {
+            panic!("expected package constant reference");
+        };
+        assert_eq!(name.as_str(), format!("{selected}.cp_const"));
+        assert_eq!(name.target_def_id(), Some(ids.cp_const));
+    }
+}
+
 fn inherited_function_alias_rewrite_fixture() -> (ClassTree, rumoca_core::Function) {
     let ids = InheritedAliasIds::new();
     (
@@ -77,6 +162,7 @@ struct InheritedAliasIds {
     base_set_state: DefId,
     output_h: DefId,
     input_p: DefId,
+    cp_const: DefId,
 }
 
 impl InheritedAliasIds {
@@ -91,6 +177,7 @@ impl InheritedAliasIds {
             base_set_state: DefId::new(7),
             output_h: DefId::new(8),
             input_p: DefId::new(9),
+            cp_const: DefId::new(10),
         }
     }
 }
@@ -102,6 +189,11 @@ fn inherited_alias_tree(ids: InheritedAliasIds) -> ClassTree {
     partial_set_state.def_id = Some(ids.partial_set_state);
     let mut partial_pkg = class("PartialMedium", ClassType::Package);
     partial_pkg.def_id = Some(ids.partial_pkg);
+    let mut cp_const = component("cp_const", "Real", ids.cp_const);
+    cp_const.def_id = Some(ids.cp_const);
+    partial_pkg
+        .components
+        .insert("cp_const".to_string(), cp_const);
     partial_pkg
         .classes
         .insert("specificEnthalpy".to_string(), partial_specific);

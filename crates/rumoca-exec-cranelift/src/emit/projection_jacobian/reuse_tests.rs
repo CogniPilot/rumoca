@@ -6,18 +6,24 @@ use rumoca_ir_solve::{
 };
 
 fn application(source: &ScalarProgramBlock) -> ProjectionJacobianApplication {
+    application_with_dependencies(source, &[vec![0, 1], vec![0, 1]])
+}
+
+fn application_with_dependencies(
+    source: &ScalarProgramBlock,
+    dependencies: &[Vec<usize>],
+) -> ProjectionJacobianApplication {
     let span =
         rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("reuse.mo"), 0, 1);
     let provenance =
         PatternProvenance::derived(PatternDerivation::DependencyPropagation, span).unwrap();
-    let pattern =
-        StructuralPattern::from_row_dependencies(2, 2, &[vec![0, 1], vec![0, 1]], provenance)
-            .unwrap();
+    let pattern = StructuralPattern::from_row_dependencies(2, 2, dependencies, provenance).unwrap();
     let plan = AlgebraicProjectionPlan {
         blocks: vec![AlgebraicProjectionBlock {
             rows: vec![0, 1],
             y_indices: vec![0, 1],
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         }],
     };
@@ -34,6 +40,60 @@ fn application(source: &ScalarProgramBlock) -> ProjectionJacobianApplication {
         .jacobian_application()
         .unwrap()
         .clone()
+}
+
+#[test]
+fn projection_sparse_scratch_preserves_fresh_values_without_dense_storage() {
+    use LinearOp as L;
+    let rows = (0..2)
+        .map(|index| {
+            vec![
+                L::LoadY { dst: 0, index },
+                L::LoadSeed { dst: 1, index },
+                L::Binary {
+                    dst: 2,
+                    op: BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                L::StoreOutput { src: 2 },
+            ]
+        })
+        .collect();
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("compact_scratch.mo"),
+        0,
+        1,
+    );
+    let source = ScalarProgramBlock::with_output_indices(rows, vec![span; 2], vec![0, 1]).unwrap();
+    let issued = application_with_dependencies(&source, &[vec![0], vec![1]]);
+    assert_eq!(issued.colors().len(), 1);
+    assert_eq!(issued.output_len(), 2);
+    let compiled = crate::compile_jacobian_scalar_program_block(&source).unwrap();
+    let mut prepared = compiled.prepare_projection(&issued).unwrap();
+    // The analytic y oracle checks fresh native writes without interpreter prefill.
+    prepared.validate = false;
+    let matrix_ptr = prepared.scratch.borrow().matrix.as_ptr();
+    let mut out = [99.0; 2];
+    {
+        let _lease = prepared.scratch.borrow_mut();
+        assert!(prepared.call(&[1.0, 2.0], &[], 0.0, &[], &mut out).is_err());
+    }
+    assert_eq!(out, [99.0; 2]);
+    for y in [[3.0, 0.0], [f64::NAN, f64::INFINITY], [-0.0, -7.0]] {
+        prepared.scratch.borrow_mut().matrix.fill(99.0);
+        out.fill(99.0);
+        prepared.call(&y, &[], 0.0, &[], &mut out).unwrap();
+        for (&actual, expected) in out.iter().zip(y) {
+            assert!(
+                actual.to_bits() == expected.to_bits() || (actual.is_nan() && expected.is_nan())
+            );
+        }
+        let scratch = prepared.scratch.borrow();
+        assert_eq!(scratch.matrix.len(), 2);
+        assert_eq!(scratch.matrix.capacity(), 2);
+        assert_eq!(scratch.matrix.as_ptr(), matrix_ptr);
+    }
 }
 
 #[test]

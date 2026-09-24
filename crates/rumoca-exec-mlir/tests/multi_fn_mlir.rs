@@ -81,6 +81,7 @@ fn decay_solve_problem() -> SolveProblem {
                     rows: vec![0],
                     y_indices: vec![0],
                     tearing: None,
+                    guarded_tearing: None,
                     alternate_charts: Vec::new(),
                 }],
             },

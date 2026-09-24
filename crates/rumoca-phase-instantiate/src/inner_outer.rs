@@ -78,7 +78,8 @@ pub(crate) fn retry_with_synthetic_inners(
     let plan = plan_synthetic_inners(tree, missing)?;
 
     let mut ctx = InstantiateContext::with_options(options);
-    ctx.index_source_scopes(tree);
+    ctx.index_source_scopes(tree)
+        .map_err(SyntheticInnerError::SourceContext)?;
     let mut overlay = ast::InstanceOverlay::new();
     ctx.set_allow_partial_instantiation(model.partial);
     overlay.is_partial = model.partial;

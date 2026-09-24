@@ -33,7 +33,9 @@ use crate::traversal_adapter::{
 };
 use crate::type_overrides::find_nested_class_in_hierarchy;
 use duplicate_identity::{
-    inherited_components_are_identical, merged_declared_names, merged_element_names,
+    compose_def_id_remaps, inherited_component_def_id_remaps, inherited_components_are_identical,
+    merged_declared_names, merged_element_names, record_def_id_remaps, remap_component_references,
+    remap_inherited_components,
 };
 use redeclaration::*;
 
@@ -83,6 +85,11 @@ pub struct InheritedContent {
     pub initial_algorithms: Vec<Vec<ast::Statement>>,
     /// Nested classes inherited from all base classes.
     pub classes: IndexMap<String, ast::ClassDef>,
+    /// Source declaration identities that became one declaration in this
+    /// class's inherited scope. The map is local to this content and is later
+    /// attached to one concrete class occurrence; it is never a compilation
+    /// wide DefId alias table.
+    pub(crate) reference_def_id_remaps: IndexMap<DefId, DefId>,
 }
 
 /// Apply protected visibility to a component if the extend is protected.
@@ -218,7 +225,12 @@ pub(super) fn validate_redeclaration(
         // This handles cases like GearType1 in the same package as GearType2
         let resolved_new_type = resolve_type_in_context(tree, new_type_name, constraint_type);
 
-        if !is_type_subtype(tree, &resolved_new_type, constraint_type) {
+        if !is_type_subtype_for_redeclaration(
+            tree,
+            &resolved_new_type,
+            constraint_type,
+            component.is_replaceable,
+        ) {
             return Err(Box::new(InstantiateError::redeclare_constraint_violation(
                 target_name,
                 &resolved_new_type,
@@ -325,7 +337,12 @@ fn validate_class_redeclaration(
                     function_reference_compatible(tree, replacement, constraint, modifiers)
                 })
         } else {
-            is_type_subtype(tree, &resolved_new_type, &constraint_type)
+            is_type_subtype_for_redeclaration(
+                tree,
+                &resolved_new_type,
+                &constraint_type,
+                class.is_replaceable,
+            )
         };
         if !compatible {
             return Err(Box::new(InstantiateError::redeclare_constraint_violation(
@@ -415,7 +432,32 @@ fn redeclare_target_span(
 /// `is_type_subtype_cached` instead.
 pub fn is_type_subtype(tree: &ast::ClassTree, subtype: &str, supertype: &str) -> bool {
     let mut cache = SubtypeCache::default();
-    is_type_subtype_cached(tree, subtype, supertype, &mut cache)
+    is_type_subtype_cached_with_context(tree, subtype, supertype, None, &mut cache)
+}
+
+/// Check a replacement against the constraining interface of a replaceable
+/// declaration.
+///
+/// The constraining class name is not the whole interface of the slot: MLS
+/// §6.3 also carries the slot's replaceability. Keep that context at the
+/// redeclaration boundary instead of asking the bare constraint `ClassDef` to
+/// stand in for the declaration. This entry point owns a fresh cache, so the
+/// pair-keyed cache used by bare subtype queries cannot reuse a result proved
+/// under a different slot context.
+pub(crate) fn is_type_subtype_for_redeclaration(
+    tree: &ast::ClassTree,
+    subtype: &str,
+    supertype: &str,
+    supertype_is_replaceable: bool,
+) -> bool {
+    let mut cache = SubtypeCache::default();
+    is_type_subtype_cached_with_context(
+        tree,
+        subtype,
+        supertype,
+        Some(supertype_is_replaceable),
+        &mut cache,
+    )
 }
 
 /// Check if `subtype` is a subtype of `supertype` with caching.
@@ -432,6 +474,16 @@ pub fn is_type_subtype_cached(
     tree: &ast::ClassTree,
     subtype: &str,
     supertype: &str,
+    cache: &mut SubtypeCache,
+) -> bool {
+    is_type_subtype_cached_with_context(tree, subtype, supertype, None, cache)
+}
+
+fn is_type_subtype_cached_with_context(
+    tree: &ast::ClassTree,
+    subtype: &str,
+    supertype: &str,
+    supertype_is_replaceable: Option<bool>,
     cache: &mut SubtypeCache,
 ) -> bool {
     // Exact match is always a subtype
@@ -488,10 +540,11 @@ pub fn is_type_subtype_cached(
             false
         };
         accepted
-            && crate::plug_compat::class_flags_compatible(
+            && crate::plug_compat::class_flags_compatible_for_context(
                 tree,
                 subtype_class,
                 find_class_in_tree(tree, supertype),
+                supertype_is_replaceable,
             )
     } else {
         false
@@ -1120,13 +1173,17 @@ fn nested_class_existing_redeclaration_shadows_inherited(
 /// Merge inherited content from a base class.
 fn merge_inherited(
     target: &mut InheritedContent,
-    base: InheritedContent,
+    mut base: InheritedContent,
     extend: &ast::Extend,
     source_map: &SourceMap,
 ) -> InstantiateResult<()> {
     // MLS §5.6.1.4 collapses same-named elements from several bases into one,
     // so identity is decided on the merged class, not on each base in isolation.
     let merged = merged_element_names(target, &base);
+    let incoming_remaps = inherited_component_def_id_remaps(target, &base.components, &merged);
+    let content_remaps = compose_def_id_remaps(&base.reference_def_id_remaps, &incoming_remaps);
+    remap_inherited_components(&mut base.components, &content_remaps);
+    record_def_id_remaps(target, &content_remaps);
 
     // Merge components, checking for conflicts
     for (name, comp) in base.components {
@@ -1431,6 +1488,8 @@ fn merge_class_content(
     // MLS §5.6.1.4: same-named elements from several bases become one element,
     // so identity is decided on the merged class rather than on each base.
     let merged = merged_declared_names(target, class);
+    let incoming_remaps = inherited_component_def_id_remaps(target, &class.components, &merged);
+    record_def_id_remaps(target, &incoming_remaps);
 
     // Merge components
     for (name, comp) in &class.components {
@@ -1456,6 +1515,7 @@ fn merge_class_content(
             // Compatible - diamond inheritance is OK, keep existing
         } else {
             let mut inherited_comp = comp.clone();
+            remap_component_references(&mut inherited_comp, &incoming_remaps);
             apply_protected_visibility(&mut inherited_comp, extend.is_protected);
             target.components.insert(name.clone(), inherited_comp);
         }

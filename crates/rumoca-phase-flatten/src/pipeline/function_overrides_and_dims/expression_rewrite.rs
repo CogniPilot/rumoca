@@ -121,6 +121,8 @@ impl<'a> FunctionOverrideExpressionRewriter<'a> {
             || reference_targets_function_local_def(name, self.ctx)
         {
             name.clone()
+        } else if let Some(selected) = resolve_lexical_package_member_reference(name, self.ctx) {
+            selected
         } else {
             resolve_override_member_name(name, self.ctx).map_or_else(
                 || name.clone(),

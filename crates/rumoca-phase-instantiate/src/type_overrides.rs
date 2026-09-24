@@ -30,17 +30,21 @@ mod selected_class_members;
 #[cfg(test)]
 mod tests;
 
-pub(super) use class_hierarchy::find_nested_class_in_hierarchy;
+pub(super) use class_hierarchy::{
+    find_nested_class_def_ids_in_hierarchy, find_nested_class_in_hierarchy,
+};
 pub(super) use component_class_overrides::extract_component_class_overrides;
 pub(super) use component_redeclare_validation::validate_component_class_redeclare_target;
 pub(super) use component_type_selection::apply_type_override;
 pub(super) use deferred_references::{
-    SelectedComponentTypes, resolve_dynamic_equation_targets, resolve_dynamic_expression_targets,
-    resolve_dynamic_statement_targets,
+    ComponentTypeIndex, SelectedComponentTypes, resolve_dynamic_equation_targets,
+    resolve_dynamic_expression_targets, resolve_dynamic_statement_targets,
 };
 pub(super) use override_collection::build_type_override_map;
 pub(super) use override_map::TypeOverrideMap;
 pub(super) use post_materialization::resolve_post_materialization_component_targets;
 pub(super) use redeclare_modifiers::class_redeclare_modifier_args;
 pub(super) use redeclare_values::resolve_redeclare_value_def_id;
-pub(super) use selected_class_members::resolve_class_override_modifier_targets;
+pub(crate) use selected_class_members::{
+    MemberResolutionCache, resolve_class_override_modifier_targets,
+};

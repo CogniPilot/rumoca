@@ -760,6 +760,7 @@ pub(super) fn function_package_override_chain(
     })?;
     Ok(vec![OverrideTarget {
         alias: leaf_segment(package_name).to_string(),
+        alias_def_id: None,
         name: name.to_string(),
         def_id,
         class_type: class_def.class_type.clone(),

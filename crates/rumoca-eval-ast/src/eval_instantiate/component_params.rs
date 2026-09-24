@@ -176,7 +176,12 @@ fn state_select_from_modelica_literal(value: &str) -> Option<rumoca_core::StateS
 pub fn extract_binding(
     comp: &ast::Component,
     mod_env: &ast::ModificationEnvironment,
-) -> (Option<ast::Expression>, bool, Option<ast::QualifiedName>) {
+) -> (
+    Option<ast::Expression>,
+    bool,
+    Option<ast::QualifiedName>,
+    Option<ast::QualifiedName>,
+) {
     // Check mod_env for binding override (outer modification takes precedence)
     // The binding modification is stored under just the component name
     let binding_path = ast::QualifiedName::from_ident(&comp.name);
@@ -186,6 +191,7 @@ pub fn extract_binding(
         return (
             Some(binding_value.clone()),
             true,
+            mod_value.value_scope.clone(),
             mod_value.source_scope.clone(),
         );
     }
@@ -198,10 +204,10 @@ pub fn extract_binding(
     // so there is deliberately no fallback to it here — a component without a
     // binding contributes no binding equation.
     if let Some(binding) = &comp.binding {
-        return (Some(binding.clone()), false, None);
+        return (Some(binding.clone()), false, None, None);
     }
 
-    (None, false, None)
+    (None, false, None, None)
 }
 
 /// Extract boolean parameter values from components for conditional equation evaluation.

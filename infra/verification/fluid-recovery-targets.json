@@ -1,0 +1,9 @@
+[
+  "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_YD",
+  "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_VoltageSource",
+  "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_DOL",
+  "Modelica.Mechanics.MultiBody.Examples.Constraints.UniversalConstraint",
+  "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b",
+  "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1",
+  "Modelica.Mechanics.MultiBody.Examples.Loops.PlanarFourbar"
+]

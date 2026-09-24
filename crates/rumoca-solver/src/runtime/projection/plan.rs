@@ -2,16 +2,33 @@ use rumoca_ir_solve as solve;
 
 use super::RuntimeSolveError;
 
-pub(super) fn validate_algebraic_projection_plan(
+#[cfg(test)]
+thread_local! {
+    static ALGEBRAIC_PLAN_VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn algebraic_plan_validation_count() -> usize {
+    ALGEBRAIC_PLAN_VALIDATIONS.get()
+}
+
+pub(crate) fn validate_algebraic_projection_plan(
     plan: &solve::AlgebraicProjectionPlan,
     state_count: usize,
     solver_count: usize,
 ) -> Result<(), RuntimeSolveError> {
+    #[cfg(test)]
+    ALGEBRAIC_PLAN_VALIDATIONS.set(ALGEBRAIC_PLAN_VALIDATIONS.get() + 1);
     let algebraic_count =
         algebraic_tail_len(solver_count, state_count, "algebraic projection plan")?;
     let mut row_seen = vec![false; solver_count];
     let mut y_seen = vec![false; algebraic_count];
     for block in &plan.blocks {
+        if !block.has_valid_tearing_partitions() {
+            return Err(RuntimeSolveError::solve_ir(
+                "invalid algebraic tearing partition",
+            ));
+        }
         require_square_projection_block(block.rows.len(), block.y_indices.len(), "algebraic")?;
         mark_projection_indices(
             &block.rows,

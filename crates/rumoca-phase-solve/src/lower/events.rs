@@ -671,7 +671,13 @@ impl<'dae> DiscreteRows<'dae> {
                 .map(|target| (target.target_base, target.width))
                 .collect(),
             role,
-            pre_mode: first.pre_mode,
+            // An unclocked causal group may combine a producer that reads
+            // fixed pre-state with a consumer that follows current values.
+            // The group event must retain the strongest checked history mode
+            // for every output in the shared program.
+            pre_mode: targets.iter().fold(first.pre_mode, |mode, target| {
+                merge_pre_mode(mode, target.pre_mode)
+            }),
             clock_owner: first.clock.map(|(_, clock)| clock),
         };
         if role == solve::DiscreteRowRole::Equation {
@@ -948,14 +954,19 @@ struct RootRefreshCandidate {
     target: solve::ScalarSlot,
 }
 
+type ResolvedDiscreteRealDefinitions<'dae> = (
+    Vec<Option<(dae::DiscreteRealId<'dae>, dae::ExprId<'dae>)>>,
+    Vec<dae::DiscreteRealId<'dae>>,
+);
+
 fn lower_discrete_real_equations<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
-    let definitions = resolve_discrete_real_definitions(view)?;
-    let mut conditional = Vec::new();
+    let (definitions, causal_order) = resolve_discrete_real_definitions(view)?;
+    let mut conditional = BTreeMap::<_, Vec<_>>::new();
     for (definition, equation) in definitions.into_iter().zip(view.discrete_real_equations()) {
         let Some((target, value)) = definition else {
             continue;
@@ -969,25 +980,40 @@ fn lower_discrete_real_equations<'dae>(
                 )?;
             }
             dae::DiscreteRealActivation::When { trigger, guard } => {
-                conditional.push(EventUpdate {
-                    trigger,
-                    guard,
-                    variable,
-                    value,
-                    span,
-                    clock: checked_discrete_real_activation_clock(
-                        view, clocks, variable, guard, span,
-                    )?,
-                });
+                conditional
+                    .entry(target.index())
+                    .or_default()
+                    .push(EventUpdate {
+                        trigger,
+                        guard,
+                        variable,
+                        value,
+                        span,
+                        clock: checked_discrete_real_activation_clock(
+                            view, clocks, variable, guard, span,
+                        )?,
+                    });
             }
         }
+    }
+    let mut ordered = Vec::new();
+    for target in causal_order {
+        if let Some(updates) = conditional.remove(&target.index()) {
+            ordered.extend(updates);
+        }
+    }
+    if let Some(update) = conditional.values().flatten().next() {
+        return Err(LowerError::contract(
+            "guarded discrete Real target is absent from the checked causal schedule",
+            update.span,
+        ));
     }
     lower_guarded_updates(
         view,
         layout,
         clocks,
         rows,
-        &conditional,
+        &ordered,
         solve::DiscreteRowRole::Equation,
     )
 }
@@ -1129,7 +1155,7 @@ fn lower_unconditional_discrete_real<'dae>(
 /// reported at its own span, never guessed.
 pub(super) fn resolve_discrete_real_definitions<'dae>(
     view: dae::DaeView<'dae>,
-) -> Result<Vec<Option<(dae::DiscreteRealId<'dae>, dae::ExprId<'dae>)>>, LowerError> {
+) -> Result<ResolvedDiscreteRealDefinitions<'dae>, LowerError> {
     let plan = rumoca_phase_structural::CausalDiscretePlan::derive(view).map_err(|error| {
         let rumoca_phase_structural::CausalDiscreteError::NonComputable { span } = error;
         LowerError::non_computable(
@@ -1137,12 +1163,13 @@ pub(super) fn resolve_discrete_real_definitions<'dae>(
             span,
         )
     })?;
-    Ok((0..view.discrete_real_equation_count())
+    let definitions = (0..view.discrete_real_equation_count())
         .map(|index| {
             plan.discrete_real_definition(index)
                 .map(|definition| (definition.target(), definition.value()))
         })
-        .collect())
+        .collect();
+    Ok((definitions, plan.discrete_real_order().to_vec()))
 }
 
 fn lower_event_actions<'dae>(
@@ -1315,7 +1342,7 @@ fn lower_guarded_targets<'dae>(
         // grouping is untouched.
         while end < targets.len()
             && targets[end].clock == clock
-            && targets[end].pre_mode == pre_mode
+            && (clock.is_none() || targets[end].pre_mode == pre_mode)
             && same_guarded_control(&targets[first], &targets[end])
             && (clock.is_none() || exchange.fusable_with_range(first, end))
         {

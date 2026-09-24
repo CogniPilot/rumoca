@@ -20,6 +20,7 @@ fn fixture() -> (AlgebraicProjectionBlock, StructuralPattern) {
                 },
             ],
         }),
+        guarded_tearing: None,
         alternate_charts: Vec::new(),
     };
     let pattern = StructuralPattern::from_row_dependencies(

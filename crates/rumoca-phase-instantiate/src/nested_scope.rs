@@ -1,7 +1,8 @@
 use super::type_overrides::{
     TypeOverrideMap, build_type_override_map, class_redeclare_modifier_args,
-    extract_component_class_overrides, find_nested_class_in_hierarchy,
-    resolve_class_override_modifier_targets, validate_component_class_redeclare_target,
+    extract_component_class_overrides, find_nested_class_def_ids_in_hierarchy,
+    find_nested_class_in_hierarchy, resolve_class_override_modifier_targets,
+    validate_component_class_redeclare_target,
 };
 use super::{InstantiateContext, InstantiateError, InstantiateResult, location_to_span};
 use rumoca_ir_ast as ast;
@@ -241,8 +242,13 @@ pub(super) fn resolve_component_nested_type_overrides(
     mod_env: &ast::ModificationEnvironment,
     type_overrides: &TypeOverrideMap,
 ) -> InstantiateResult<NestedTypeOverrides> {
-    let mut class_overrides =
-        extract_component_class_overrides(tree, comp, class_def, Some(mod_env))?;
+    let mut class_overrides = extract_component_class_overrides(
+        tree,
+        comp,
+        class_def,
+        Some(mod_env),
+        Some(type_overrides),
+    )?;
     let mut has_forwarding_class_redeclare = false;
 
     if let Some(target_class) = class_def {
@@ -267,10 +273,12 @@ pub(super) fn resolve_component_nested_type_overrides(
                     )?,
                 )));
             };
-            if let Some(effective_def_id) = type_overrides
-                .target_for_alias_def_id(alias_def_id)
-                .or_else(|| type_overrides.target_for_alias_name(target_name))
-            {
+            let target_ref = class_redeclare_target_ref(mod_expr);
+            let effective_def_id = target_ref
+                .as_ref()
+                .and_then(|target| type_overrides.target_for_reference(target))
+                .or_else(|| type_overrides.target_for_alias_def_id(alias_def_id));
+            if let Some(effective_def_id) = effective_def_id {
                 validate_component_class_redeclare_target(
                     tree,
                     target_name,
@@ -298,27 +306,63 @@ pub(super) fn resolve_component_nested_type_overrides(
         }
     }
 
+    // A component class can inherit several declarations with the same
+    // replaceable name. Resolve keeps each declaration's DefId, so preserve
+    // the selected target under every inherited alias identity in the
+    // instance payload. Downstream record specialization uses that identity
+    // (MLS §5.3, §7.3); a single spelling based entry would select whichever
+    // sibling happened to be found first.
+    expand_inherited_class_overrides(tree, class_def, &mut class_overrides);
+
     let mut nested_type_overrides = type_overrides.clone();
     if let Some(exposed_package) = exposed_type_package(tree, comp) {
         let exposure_overrides = build_type_override_map(tree, exposed_package, Some(mod_env));
         nested_type_overrides.extend_from(&exposure_overrides);
     }
-    if let Some(type_prefix) = comp.type_name.name.first()
-        && comp.type_name.name.len() > 1
+    for class_override in class_overrides.values() {
+        nested_type_overrides.insert_class_override(class_override);
+    }
+    if comp.type_name.name.len() > 1
+        && let Some(root_def_id) = comp.type_name.def_id
         && let Some(effective_package_def_id) =
-            type_overrides.target_for_alias_name(type_prefix.text.as_ref())
+            nested_type_overrides.target_for_alias_def_id(root_def_id)
     {
         nested_type_overrides.specialize_inherited_nested_types(tree, effective_package_def_id);
     }
     for class_override in class_overrides.values() {
         nested_type_overrides.insert_class_override(class_override);
     }
-
     Ok((
         class_overrides,
         has_forwarding_class_redeclare,
         nested_type_overrides,
     ))
+}
+
+fn expand_inherited_class_overrides(
+    tree: &ast::ClassTree,
+    class_def: Option<&ast::ClassDef>,
+    class_overrides: &mut ast::ClassOverrideMap,
+) {
+    let Some(target_class) = class_def else {
+        return;
+    };
+    let overrides_to_expand: Vec<_> = class_overrides.values().cloned().collect();
+    for class_override in overrides_to_expand {
+        for alias_def_id in
+            find_nested_class_def_ids_in_hierarchy(tree, target_class, &class_override.alias)
+        {
+            class_overrides.entry(alias_def_id).or_insert_with(|| {
+                ast::ClassOverride::new(
+                    class_override.alias.clone(),
+                    alias_def_id,
+                    class_override.target_def_id,
+                    class_override.target_ref.clone(),
+                )
+                .with_modifier_args(class_override.modifier_args.clone())
+            });
+        }
+    }
 }
 
 fn exposed_type_package<'a>(

@@ -87,6 +87,7 @@ pub(super) fn inject_referenced_qualified_class_constants(
                 &resolve_context,
                 ctx,
             );
+            seed_selected_package_extends_values(tree, class_index, class_def, ctx);
             extract_referenced_nested_class_constants_with_prefix(
                 tree,
                 class_index,
@@ -101,6 +102,7 @@ pub(super) fn inject_referenced_qualified_class_constants(
                     tree,
                     class_index,
                     scope,
+                    class_def,
                     ext,
                     &resolve_context,
                     ctx,
@@ -647,6 +649,7 @@ pub(super) fn inject_model_extends_redeclare_constants(
                     tree,
                     class_index,
                     alias_name,
+                    package_class,
                     pkg_ext,
                     package_context,
                     ctx,
@@ -804,6 +807,7 @@ pub(super) fn extract_nested_class_constants_with_prefix(
                 tree,
                 class_index,
                 &nested_prefix,
+                nested_class,
                 ext,
                 nested_context,
                 ctx,
@@ -812,6 +816,7 @@ pub(super) fn extract_nested_class_constants_with_prefix(
                 tree,
                 class_index,
                 nested_name,
+                nested_class,
                 ext,
                 nested_context,
                 ctx,
@@ -909,6 +914,7 @@ pub(super) fn inject_referenced_nested_class_constants(
             tree,
             class_index,
             nested_prefix,
+            nested_class,
             ext,
             nested_context,
             ctx,
@@ -1016,7 +1022,15 @@ pub(super) fn extract_extends_chain_constants_inner(
     }
     extract_constants_from_class_with_prefix(class_index, alias, base_class, ctx);
     for ext in &base_class.extends {
-        extract_extends_modification_constants(tree, class_index, alias, ext, &qname, ctx);
+        extract_extends_modification_constants(
+            tree,
+            class_index,
+            alias,
+            base_class,
+            ext,
+            &qname,
+            ctx,
+        );
         if let Some(base_qname) =
             resolve_extends_base_qname(class_index, &ext.base_name.to_string(), &qname)
             && base_qname != alias
@@ -1025,6 +1039,7 @@ pub(super) fn extract_extends_chain_constants_inner(
                 tree,
                 class_index,
                 &base_qname,
+                base_class,
                 ext,
                 &base_qname,
                 ctx,
@@ -1050,23 +1065,129 @@ pub(super) fn extract_extends_modification_constants(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     prefix: &str,
+    source_class: &ast::ClassDef,
     ext: &rumoca_ir_ast::Extend,
     resolve_context: &str,
     ctx: &mut Context,
 ) {
-    for ext_mod in &ext.modifications {
-        if ext_mod.redeclare {
-            continue;
-        }
-        let _ = extract_extends_modification_expr(
+    extract_extends_modifications_for_owner(
+        ExtendsConstantSite {
             tree,
             class_index,
             prefix,
+            source_class,
+            ext,
+            resolve_context,
+        },
+        None,
+        ctx,
+    );
+}
+
+struct ExtendsConstantSite<'a, 'tree> {
+    tree: &'a ast::ClassTree,
+    class_index: &'a ast::ClassDefIndex<'tree>,
+    prefix: &'a str,
+    source_class: &'a ast::ClassDef,
+    ext: &'a rumoca_ir_ast::Extend,
+    resolve_context: &'a str,
+}
+
+fn extract_extends_modifications_for_owner(
+    site: ExtendsConstantSite<'_, '_>,
+    selected_package: Option<rumoca_core::DefId>,
+    ctx: &mut Context,
+) {
+    for ext_mod in &site.ext.modifications {
+        if ext_mod.redeclare {
+            continue;
+        }
+        let selected = extract_extends_modification_expr(
+            site.tree,
+            site.class_index,
+            site.prefix,
             &ext_mod.expr,
+            site.resolve_context,
+            ctx,
+        );
+        if let (Some(package), Some((declaration, value))) = (selected_package, selected)
+            && site.source_class.class_type == rumoca_core::ClassType::Package
+        {
+            ctx.constant_values_by_package
+                .insert((package, declaration), value);
+        }
+    }
+}
+
+/// Build the shared package value only in that package's own class context.
+/// Component aliases may evaluate the same extends expression under a modified
+/// occurrence, but those values belong only in occurrence-keyed storage.
+fn seed_selected_package_extends_values(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    selected: &ast::ClassDef,
+    ctx: &mut Context,
+) {
+    let Some(package) = selected
+        .def_id
+        .filter(|_| selected.class_type == rumoca_core::ClassType::Package)
+    else {
+        return;
+    };
+    let Some(prefix) = class_index.qualified_name(package) else {
+        return;
+    };
+    let mut visited = HashSet::new();
+    let mut ancestors = Vec::new();
+    collect_package_ancestors(class_index, package, &mut visited, &mut ancestors);
+    for ancestor in ancestors {
+        let Some(class_def) = class_index.get(ancestor) else {
+            continue;
+        };
+        let resolve_context = class_index.qualified_name(ancestor).unwrap_or(prefix);
+        extract_constants_from_class_with_prefix_and_imports(
+            tree,
+            class_index,
+            prefix,
+            class_def,
             resolve_context,
             ctx,
         );
+        for ext in &class_def.extends {
+            extract_extends_modifications_for_owner(
+                ExtendsConstantSite {
+                    tree,
+                    class_index,
+                    prefix,
+                    source_class: class_def,
+                    ext,
+                    resolve_context,
+                },
+                Some(package),
+                ctx,
+            );
+        }
     }
+}
+
+fn collect_package_ancestors(
+    class_index: &ast::ClassDefIndex<'_>,
+    package: rumoca_core::DefId,
+    visited: &mut HashSet<rumoca_core::DefId>,
+    ancestors: &mut Vec<rumoca_core::DefId>,
+) {
+    if !visited.insert(package) {
+        return;
+    }
+    let Some(class_def) = class_index.get(package) else {
+        return;
+    };
+    for ext in &class_def.extends {
+        if let Some(base) = ext.base_def_id {
+            collect_package_ancestors(class_index, base, visited, ancestors);
+        }
+    }
+    ancestors.push(package);
 }
 
 /// Apply `redeclare package Alias = SomePackage` extends modifiers by injecting
@@ -1121,6 +1242,7 @@ pub(super) fn extract_extends_redeclare_package_constants(
                 tree,
                 class_index,
                 &alias_scope,
+                package_class,
                 pkg_ext,
                 resolve_context,
                 ctx,
@@ -1138,6 +1260,7 @@ pub(super) fn extract_extends_redeclare_package_constants(
                 tree,
                 class_index,
                 prefix,
+                package_class,
                 pkg_ext,
                 resolve_context,
                 ctx,
@@ -1225,6 +1348,10 @@ pub(super) fn extract_class_occurrence_modifiers(
     ctx: &mut Context,
 ) {
     let classes = collect_ancestor_classes_with_index(tree, class_index, class_name);
+    let selected_package = classes
+        .first()
+        .filter(|class| class.class_type == rumoca_core::ClassType::Package)
+        .and_then(|class| class.def_id);
     for class in classes.into_iter().rev() {
         let resolve_context = class
             .def_id
@@ -1244,8 +1371,8 @@ pub(super) fn extract_class_occurrence_modifiers(
                 resolve_context,
                 ctx,
             ) {
-                ctx.constant_values_by_occurrence
-                    .insert(ConstantOccurrenceId::new(owner, declaration), value);
+                let occurrence = ConstantOccurrenceId::new(owner, declaration);
+                ctx.record_modified_constant_occurrence(selected_package, occurrence, value);
             }
         }
     }

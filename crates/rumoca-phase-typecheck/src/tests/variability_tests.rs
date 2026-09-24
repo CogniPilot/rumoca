@@ -153,3 +153,211 @@ fn instanced_variability_uses_projected_member_variability() {
     typecheck_instanced(&tree, &mut overlay, "Test")
         .expect("parameter projected from a parameter member should typecheck");
 }
+
+#[test]
+fn instanced_outer_parameter_member_binding_does_not_become_continuous() {
+    let source = r#"
+        model SystemLike
+            parameter Boolean allowFlowReversal = true;
+            parameter Real T_ambient = 293.15;
+        end SystemLike;
+
+        model Child
+            outer SystemLike system;
+            parameter Boolean allowFlowReversal = system.allowFlowReversal;
+            parameter Real T_ambient = system.T_ambient;
+        end Child;
+
+        model Test
+            inner SystemLike system;
+            Child child;
+        end Test;
+        "#;
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let tree = resolved.into_inner();
+    let mut overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(&tree, "Test")
+    {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        other => panic!("instantiation should succeed: {other:?}"),
+    };
+    let outer_redirects = overlay
+        .outer_prefix_to_inner
+        .iter()
+        .map(|(outer, inner)| (outer.to_flat_string(), inner.to_flat_string()))
+        .collect::<Vec<_>>();
+    assert!(
+        outer_redirects
+            .iter()
+            .any(|(outer, inner)| outer == "child.system" && inner == "system"),
+        "instantiate must preserve the outer-to-inner identity: {outer_redirects:?}"
+    );
+    let component_metadata = overlay
+        .components
+        .values()
+        .filter(|data| {
+            let name = data.qualified_name.to_flat_string();
+            name == "system"
+                || name == "system.allowFlowReversal"
+                || name == "system.T_ambient"
+                || name == "child.allowFlowReversal"
+                || name == "child.T_ambient"
+        })
+        .map(|data| {
+            (
+                data.qualified_name.to_flat_string(),
+                format!("{:?}", data.variability),
+                data.owner_class_id,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut checker = TypeChecker::new();
+    checker.check_instanced(&tree, &mut overlay, "Test");
+    let diagnostics = checker.take_diagnostics();
+    let variability_diagnostics = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some("WT003"))
+        .collect::<Vec<_>>();
+    assert!(
+        variability_diagnostics.is_empty(),
+        "outer parameter members must retain parameter variability: \
+         {variability_diagnostics:?}; redirects={outer_redirects:?}, \
+         components={component_metadata:?}"
+    );
+}
+
+#[test]
+fn instanced_duplicate_outer_parameter_members_use_retained_identity() {
+    let source = r#"
+        model Sys
+            parameter Boolean allowFlowReversal = true;
+        end Sys;
+
+        partial model TransportBase
+            outer Sys system;
+            parameter Boolean allowFlowReversal = system.allowFlowReversal;
+        end TransportBase;
+
+        partial model LumpedFlowBase
+            outer Sys system;
+            parameter Boolean allowFlowReversal = system.allowFlowReversal;
+        end LumpedFlowBase;
+
+        model Orifice
+            extends TransportBase;
+            extends LumpedFlowBase;
+        end Orifice;
+
+        model Test
+            inner Sys system;
+            Orifice child;
+        end Test;
+        "#;
+    let tree = resolve(parse(source))
+        .expect("resolve should succeed")
+        .into_inner();
+    let mut overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(&tree, "Test")
+    {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        other => panic!("instantiation should succeed: {other:?}"),
+    };
+    let remaps = overlay
+        .inherited_def_id_remaps
+        .values()
+        .flat_map(|remaps| remaps.iter())
+        .collect::<Vec<_>>();
+    assert!(
+        !remaps.is_empty(),
+        "duplicate inherited declarations need a remap"
+    );
+
+    let mut checker = TypeChecker::new();
+    checker.check_instanced(&tree, &mut overlay, "Test");
+    let diagnostics = checker.take_diagnostics();
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some("WT003")),
+        "retained duplicate outer identity must preserve parameter variability: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn instanced_opposite_order_diamond_preserves_outer_parameter_identity() {
+    let source = r#"
+        model Sys
+            parameter Boolean allowFlowReversal = true;
+        end Sys;
+
+        partial model A
+            outer Sys system;
+            parameter Boolean fromA = system.allowFlowReversal;
+        end A;
+
+        partial model B
+            outer Sys system;
+            parameter Boolean fromB = system.allowFlowReversal;
+        end B;
+
+        partial model RightFirst
+            extends B;
+            extends A;
+        end RightFirst;
+
+        model Derived
+            extends A;
+            extends RightFirst;
+        end Derived;
+
+        model Test
+            inner Sys system;
+            Derived child;
+        end Test;
+        "#;
+    let tree = resolve(parse(source))
+        .expect("resolve should succeed")
+        .into_inner();
+    let mut overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(&tree, "Test")
+    {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        other => panic!("instantiation should succeed: {other:?}"),
+    };
+    let a_system = tree
+        .definitions
+        .classes
+        .get("A")
+        .and_then(|class| class.components.get("system"))
+        .and_then(|component| component.def_id)
+        .expect("A system identity");
+    let b_system = tree
+        .definitions
+        .classes
+        .get("B")
+        .and_then(|class| class.components.get("system"))
+        .and_then(|component| component.def_id)
+        .expect("B system identity");
+    assert!(
+        overlay
+            .inherited_def_id_remaps
+            .values()
+            .any(|remaps| remaps.get(&b_system) == Some(&a_system)),
+        "the opposite-order branch must map B's source declaration to A's retained declaration"
+    );
+    assert!(
+        overlay
+            .inherited_def_id_remaps
+            .values()
+            .all(|remaps| !remaps.contains_key(&a_system)),
+        "the retained A declaration must not be remapped back into the branch"
+    );
+
+    let mut checker = TypeChecker::new();
+    checker.check_instanced(&tree, &mut overlay, "Test");
+    let diagnostics = checker.take_diagnostics();
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some("WT003")),
+        "valid opposite-order diamond should retain parameter variability: {diagnostics:?}"
+    );
+}

@@ -27,6 +27,10 @@ pub struct ClassTemplate {
     pub algorithms: Vec<Vec<ast::Statement>>,
     /// Initial algorithm sections (inherited + own).
     pub initial_algorithms: Vec<Vec<ast::Statement>>,
+    /// Exact declaration remaps for duplicate inherited elements in this
+    /// class's lexical scope. Instantiation attaches these to one class
+    /// occurrence before downstream identity checks run.
+    pub reference_def_id_remaps: IndexMap<DefId, DefId>,
     /// Resolved import map: short name → FQN, from class + inheritance chain.
     pub resolved_imports: Vec<(String, String)>,
 }
@@ -89,6 +93,7 @@ pub(crate) fn get_or_compute_template(
         initial_equations,
         algorithms,
         initial_algorithms,
+        reference_def_id_remaps: inherited.reference_def_id_remaps,
         resolved_imports,
     });
 
@@ -227,6 +232,7 @@ mod tests {
             initial_equations: Vec::new(),
             algorithms: Vec::new(),
             initial_algorithms: Vec::new(),
+            reference_def_id_remaps: IndexMap::default(),
             resolved_imports: Vec::new(),
         })
     }

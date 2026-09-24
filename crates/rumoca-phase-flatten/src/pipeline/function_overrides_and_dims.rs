@@ -46,17 +46,21 @@ use expression_rewrite::{
 };
 pub(crate) use flat_rewrite::*;
 #[cfg(test)]
+use function_selection::exact_override_package_for_alias_def_id;
+#[cfg(test)]
 use function_selection::exact_override_package_for_source_package;
 use function_selection::{
     CallOccurrenceIdentity, FunctionSelection, ResolvedFunctionRewrite,
     resolve_exact_function_rewrite,
 };
 pub(crate) use member_calls::*;
-use member_references::resolve_override_member_name;
+use member_references::{resolve_lexical_package_member_reference, resolve_override_member_name};
 use named_args::{named_function_arg, named_function_arg_names};
 pub(crate) use override_map::build_component_override_map;
 #[cfg(test)]
 use override_map::component_class_override_is_active;
+#[cfg(test)]
+pub(crate) use override_map::component_override_entries;
 #[cfg(test)]
 pub(crate) use override_map::component_overrides;
 use override_scope::override_context_cache_key;
@@ -65,7 +69,7 @@ pub(crate) use override_scope::{
     override_context_for_scope, override_package_names,
     override_package_names_with_preferred_aliases,
 };
-pub(crate) use override_target::{ComponentOverrideMap, OverrideTarget};
+pub(crate) use override_target::{ComponentOverrideMap, OverrideEntries, OverrideTarget};
 use override_target::{
     FunctionModifierArg, FunctionSlot, OverrideContext, OverrideFunctionMap, ResolvedClassRef,
     function_modifier_arg_from_ast, is_receiver_alias_type, resolved_class_ref_for_def_id,

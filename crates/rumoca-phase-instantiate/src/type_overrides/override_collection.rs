@@ -33,21 +33,26 @@ pub(crate) fn build_type_override_map(
     let mut overrides = TypeOverrideMap::new();
 
     // 1. Collect from the class's own nested classes
-    walk_nested_classes(class, |name, nested| {
-        if let Some(def_id) = nested.def_id {
-            overrides.insert_alias(ast::QualifiedName::from_ident(name), Some(def_id), def_id);
-        }
-    });
+    insert_nested_class_overrides(class, &mut overrides);
 
-    // 2. Collect from the enclosing class's nested classes.
+    // 2. Collect inherited nested declarations from the class's resolved
+    // extends chain. This includes default short replaceable package aliases
+    // such as WallFriction when the effective class only inherits the slot.
+    for base in extends_base_classes(tree, class) {
+        collect_nested_overrides_in_extends_chain(tree, base, mod_env, &mut overrides);
+    }
+
+    // 3. Collect from the enclosing class's nested classes.
     // This handles the pattern where a record type (like ThermodynamicState)
     // is redeclared in the enclosing package, and components in the model
     // reference it by its short name.
     collect_enclosing_type_overrides(tree, class, mod_env, &mut overrides);
 
-    // 3. Collect package/type redeclarations from extends-modifications
+    // 4. Collect package/type redeclarations from extends-modifications
     // (e.g., extends Base(redeclare replaceable package Medium = ...)).
     collect_extends_redeclare_overrides(tree, class, mod_env, &mut overrides);
+
+    overrides.specialize_package_targets(tree);
 
     overrides
 }
@@ -150,10 +155,34 @@ fn insert_nested_class_overrides(class: &ast::ClassDef, overrides: &mut TypeOver
     walk_nested_classes(class, |name, nested| {
         if let Some(def_id) = nested.def_id {
             let alias_path = ast::QualifiedName::from_ident(name);
-            let target_def_id = overrides.target_for_path(&alias_path).unwrap_or(def_id);
+            let target_def_id = overrides
+                .target_for_path(&alias_path)
+                .or_else(|| short_replaceable_class_target(nested))
+                .unwrap_or(def_id);
             overrides.insert_alias_if_absent(alias_path, Some(def_id), target_def_id);
         }
     });
+}
+
+fn short_replaceable_class_target(class: &ast::ClassDef) -> Option<DefId> {
+    if class.end_name_token.is_some()
+        || !class.is_replaceable
+        || !class.classes.is_empty()
+        || !class.components.is_empty()
+        || !class.equations.is_empty()
+        || !class.initial_equations.is_empty()
+        || !class.algorithms.is_empty()
+        || !class.initial_algorithms.is_empty()
+    {
+        return None;
+    }
+    let [extend] = class.extends.as_slice() else {
+        return None;
+    };
+    if !extend.modifications.is_empty() || !extend.break_names.is_empty() {
+        return None;
+    }
+    extend.base_def_id
 }
 
 /// Collect redeclared type/package overrides from extends clause modifications.

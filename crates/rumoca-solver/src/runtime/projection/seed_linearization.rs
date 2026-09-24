@@ -1,9 +1,63 @@
 //! One immutable block matrix shared by its directional right-hand sides.
 
 use super::*;
+#[cfg(test)]
+use std::cell::Cell;
+use std::cell::{OnceCell, RefCell};
+
+type DenseFactor = nalgebra::linalg::LU<f64, nalgebra::Dyn, nalgebra::Dyn>;
+
+#[cfg(test)]
+thread_local! {
+    static DENSE_FACTORIZATIONS: Cell<usize> = const { Cell::new(0) };
+    static TORN_ATTEMPTS: RefCell<Vec<solve::TearingCandidate>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn seed_dense_factorization_count() -> usize {
+    DENSE_FACTORIZATIONS.get()
+}
+
+#[cfg(test)]
+pub(super) fn seed_torn_attempts() -> Vec<solve::TearingCandidate> {
+    TORN_ATTEMPTS.with(|attempts| attempts.borrow().clone())
+}
+
+struct SeedTornFactor {
+    // Capture only layouts issued by the structure that assembled this J.
+    candidates: Box<[(solve::TearingCandidate, solve::AffineEliminationLayout)]>,
+    unit_scales: Box<[f64]>,
+    cache: RefCell<SparseNewtonCache>,
+}
+
+impl SeedTornFactor {
+    fn solve(&self, jacobian: &DMatrix<f64>, rhs: &DVector<f64>) -> Option<DVector<f64>> {
+        let mut cache = self.cache.try_borrow_mut().ok()?;
+        let residual = -rhs;
+        for (candidate, layout) in &self.candidates {
+            #[cfg(test)]
+            TORN_ATTEMPTS.with(|attempts| attempts.borrow_mut().push(*candidate));
+            let system = ScaledNewtonSystem {
+                jacobian,
+                residual: residual.as_slice(),
+                row_scales: &self.unit_scales,
+                variable_scales: &self.unit_scales,
+                structure: Some(layout.pattern()),
+                tolerance: 0.0,
+            };
+            if let Some(solution) =
+                scaled_newton_delta_with_tearing(system, &mut cache, *candidate, layout)
+            {
+                return Some(solution);
+            }
+        }
+        None
+    }
+}
 
 pub(crate) struct SeedBlockLinearization {
-    factor: nalgebra::linalg::LU<f64, nalgebra::Dyn, nalgebra::Dyn>,
+    factor: OnceCell<DenseFactor>,
+    torn: Option<SeedTornFactor>,
     jacobian: DMatrix<f64>,
 }
 
@@ -25,8 +79,25 @@ impl SeedBlockLinearization {
             &block.y_indices,
             structure,
         )?;
+        let torn = structure.and_then(|structure| {
+            let candidates = block
+                .tearing_candidates()
+                .filter_map(|(candidate, _)| {
+                    structure
+                        .affine_elimination_candidate(candidate)
+                        .filter(|layout| layout.pattern() == structure.pattern())
+                        .map(|layout| (candidate, layout.clone()))
+                })
+                .collect::<Vec<_>>();
+            (!candidates.is_empty()).then(|| SeedTornFactor {
+                candidates: candidates.into_boxed_slice(),
+                unit_scales: vec![1.0; jacobian.nrows()].into_boxed_slice(),
+                cache: RefCell::new(SparseNewtonCache::default()),
+            })
+        });
         Ok(Self {
-            factor: jacobian.clone().lu(),
+            factor: OnceCell::new(),
+            torn,
             jacobian,
         })
     }
@@ -37,7 +108,7 @@ impl SeedBlockLinearization {
         block_index: usize,
         block: &solve::AlgebraicProjectionBlock,
         seed: &[f64],
-    ) -> Vec<f64> {
+    ) -> Result<Vec<f64>, RuntimeSolveError> {
         let structure = model.algebraic_projection_block_structure(block_index);
         algebraic_block_scales(
             model,
@@ -46,11 +117,33 @@ impl SeedBlockLinearization {
             &self.jacobian,
             structure.map(solve::JacobianStructure::pattern),
         )
-        .0
+        .map(|scales| scales.0)
     }
 
     pub(super) fn solve(&self, rhs: &DVector<f64>) -> Option<DVector<f64>> {
-        self.factor.solve(rhs)
+        if rhs.iter().all(|&value| value == 0.0) {
+            return Some(DVector::zeros(rhs.len()));
+        }
+        if let Some(solution) = self
+            .torn
+            .as_ref()
+            .and_then(|torn| torn.solve(&self.jacobian, rhs))
+        {
+            return Some(solution);
+        }
+        self.factor
+            .get_or_init(|| {
+                #[cfg(test)]
+                DENSE_FACTORIZATIONS.set(DENSE_FACTORIZATIONS.get() + 1);
+                self.jacobian.clone().lu()
+            })
+            .solve(rhs)
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_busy_torn_cache<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _busy = self.torn.as_ref().unwrap().cache.borrow_mut();
+        f()
     }
 
     pub(super) fn trace_singular(
@@ -111,20 +204,20 @@ pub(super) fn certify_with_refinement<M: ImplicitProjectionModel>(
             return Ok(());
         }
         if iteration == 2 {
-            return Err(projection_error_for_rows(
+            return Err(RuntimeSolveError::solve_ir(projection_failure_message(
                 model,
                 "algebraic projection sensitivity did not satisfy the selected residual system",
                 &rows,
                 &residual,
                 &row_scales,
                 args.tolerance,
-            ));
+            )));
         }
         row_scales.clear();
         for (index, block) in plan.blocks.iter().enumerate() {
             let linearization = model.algebraic_seed_linearization(index, block, y, args)?;
             refine_direction(model, block, &linearization, y, args, seed)?;
-            row_scales.extend(linearization.row_scales(model, index, block, seed));
+            row_scales.extend(linearization.row_scales(model, index, block, seed)?);
         }
     }
     unreachable!("bounded refinement returns its final residual check")

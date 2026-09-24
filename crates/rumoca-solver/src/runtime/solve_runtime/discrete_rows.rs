@@ -1068,6 +1068,7 @@ impl SolveRuntime {
             let settle_snapshot = DiscretePreSnapshot {
                 row_filter: snapshot.row_filter,
                 root_relation_overrides: snapshot.root_relation_overrides,
+                condition_memory_pre: snapshot.condition_memory_pre,
                 event_iteration: snapshot.event_iteration.max(settle_iteration),
             };
             let mut pass_changed = self.apply_discrete_rows_for_pre_snapshot(
@@ -1147,7 +1148,16 @@ impl SolveRuntime {
     ) -> Result<bool, RuntimeSolveError> {
         self.validate_discrete_row_eval_scope(scope)?;
         let eval_y = copy_runtime_values(y, "discrete row eval y snapshot")?;
-        let eval_p = copy_runtime_values(p, "discrete row eval p snapshot")?;
+        let mut eval_p = copy_runtime_values(p, "discrete row eval p snapshot")?;
+        for &(index, value) in snapshot.condition_memory_pre {
+            let parameter_len = eval_p.len();
+            let slot = eval_p.get_mut(index).ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "condition-memory snapshot index {index} is outside {parameter_len} parameters"
+                ))
+            })?;
+            *slot = value;
+        }
         let mut eval_p_cache = EventEvalParamCache::default();
         let mut evaluated_transactions = self.evaluate_event_transactions_for_snapshot(
             snapshot,
@@ -1489,6 +1499,7 @@ impl SolveRuntime {
             let snapshot = DiscretePreSnapshot {
                 row_filter: EventUpdateRowFilter::All,
                 root_relation_overrides: &[],
+                condition_memory_pre: &[],
                 // Preserve the existing observation-refresh policy: fixed
                 // rows keep the observation-entry pre snapshot for the whole
                 // refresh loop.
@@ -1550,6 +1561,7 @@ impl SolveRuntime {
             let snapshot = DiscretePreSnapshot {
                 row_filter: EventUpdateRowFilter::All,
                 root_relation_overrides: &[],
+                condition_memory_pre: &[],
                 event_iteration,
             };
             let mut eval_p_cache = EventEvalParamCache::default();

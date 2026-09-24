@@ -333,6 +333,17 @@ pub struct CompiledAssignmentSchedule {
 }
 
 impl CompiledAssignmentSchedule {
+    /// None declines admission before execution; false is an ordered singular/nonfinite step.
+    pub fn call_torn(
+        &self,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        tables: &[ExternalTableData],
+    ) -> Result<Option<bool>, CompileError> {
+        self.jit.call_torn(y, p, t, tables)
+    }
+
     pub fn call(&self, y: &mut [f64], p: &[f64], t: f64) -> Result<(), CompileError> {
         self.jit.call(y, p, t)
     }
@@ -353,6 +364,21 @@ impl CompiledAssignmentSchedule {
 }
 
 impl CompiledExpressionRows {
+    /// Execute an ordered residual selection, committing output on success.
+    /// Non-selectable products decline before any source program executes.
+    pub fn call_projection_outputs(
+        &self,
+        selection: &rumoca_ir_solve::ProjectionOutputSelection,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<bool, CompileError> {
+        self.jit
+            .call_projection_outputs(selection, y, p, t, external_tables, out)
+    }
+
     /// Execute one retained source program and return all its local outputs.
     /// Products without independent program entries decline before execution.
     pub fn call_program_outputs(
@@ -470,25 +496,27 @@ pub fn compile_jacobian_scalar_program_block_with_pure_calls(
     })
 }
 
+/// Compile exact scalar isolators with an early numeric decline before each target write.
+pub fn compile_torn_assignment_schedule(
+    rows: &[Vec<LinearOp>],
+    targets: &[usize],
+    pure_calls: Option<&CompiledPureCallTable>,
+) -> Result<CompiledAssignmentSchedule, CompileError> {
+    emit::compile_assignment_schedule_attached(
+        rows,
+        targets,
+        pure_calls.map(|p| p.jit.clone()),
+        true,
+    )
+    .map(|jit| CompiledAssignmentSchedule { jit })
+}
+
 pub fn compile_assignment_schedule(
     rows: &[Vec<LinearOp>],
     target_y_indices: &[usize],
 ) -> Result<CompiledAssignmentSchedule, CompileError> {
     emit::compile_assignment_schedule(rows, target_y_indices)
         .map(|jit| CompiledAssignmentSchedule { jit })
-}
-
-pub fn compile_assignment_schedule_with_pure_calls(
-    rows: &[Vec<LinearOp>],
-    target_y_indices: &[usize],
-    pure_calls: &CompiledPureCallTable,
-) -> Result<CompiledAssignmentSchedule, CompileError> {
-    emit::compile_assignment_schedule_with_pure_calls(
-        rows,
-        target_y_indices,
-        pure_calls.jit.clone(),
-    )
-    .map(|jit| CompiledAssignmentSchedule { jit })
 }
 
 pub fn compile_exact_assignment_schedule(
@@ -1204,3 +1232,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod torn_assignment_tests;

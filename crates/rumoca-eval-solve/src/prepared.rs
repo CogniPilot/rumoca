@@ -1078,9 +1078,8 @@ pub(crate) fn assignment_shape_reads_y_index(
     let Some(expression_prefix) = row.get(..shape.expr_eval_len()) else {
         return true;
     };
-    shape
-        .value_registers()
-        .any(|register| dependency::reg_depends_on_y_index(expression_prefix, register, y_index))
+    rumoca_ir_solve::ScalarProgramYDependency::new(expression_prefix)
+        .assignment_depends_on(shape, y_index)
 }
 
 impl<'a> AssignmentProgramBuilder<'a> {

@@ -70,3 +70,38 @@ pub(crate) fn find_nested_class_in_hierarchy<'a>(
 
     None
 }
+
+/// Find every declaration of a nested class in an extends hierarchy.
+pub(crate) fn find_nested_class_def_ids_in_hierarchy(
+    tree: &ast::ClassTree,
+    root: &ast::ClassDef,
+    nested_name: &str,
+) -> Vec<DefId> {
+    const MAX_DEPTH: usize = 32;
+    let mut to_visit = vec![root];
+    let mut visited_def_ids = std::collections::HashSet::<DefId>::new();
+    let mut result = Vec::new();
+
+    for _ in 0..MAX_DEPTH {
+        if to_visit.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for class in to_visit.drain(..) {
+            let Some(def_id) = class.def_id else {
+                continue;
+            };
+            if !visited_def_ids.insert(def_id) {
+                continue;
+            }
+            if let Some(nested) = class.classes.get(nested_name)
+                && let Some(nested_def_id) = nested.def_id
+            {
+                result.push(nested_def_id);
+            }
+            next.extend(extends_base_classes(tree, class));
+        }
+        to_visit = next;
+    }
+    result
+}

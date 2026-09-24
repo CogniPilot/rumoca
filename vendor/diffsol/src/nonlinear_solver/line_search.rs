@@ -38,6 +38,17 @@ pub trait LineSearch<V: Vector>: Default {
 
     /// Reset the line search state
     fn reset(&mut self);
+
+    /// Rebind cached line-search state to a freshly solved correction after a
+    /// supplemental observer rejects an otherwise state-converged iterate.
+    /// Stateless line searches do not need to do anything here.
+    fn refresh_pending_correction(
+        &mut self,
+        _delta: &V,
+        _error_y: &V,
+        _convergence: &Convergence<V>,
+    ) {
+    }
 }
 
 #[derive(Default)]
@@ -111,6 +122,10 @@ impl<V: Vector> Default for BacktrackingLineSearch<V> {
 impl<V: Vector> LineSearch<V> for BacktrackingLineSearch<V> {
     fn reset(&mut self) {
         self.n_iters = 0;
+    }
+
+    fn refresh_pending_correction(&mut self, delta: &V, error_y: &V, convergence: &Convergence<V>) {
+        self.norm = convergence.norm(delta, error_y);
     }
     fn take_optimal_step(
         &mut self,
@@ -206,5 +221,84 @@ impl<V: Vector> LineSearch<V> for BacktrackingLineSearch<V> {
             self.max_iter
         );
         Err(non_linear_solver_error!(LinesearchFailedMaxIterations))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ConvergenceStatus, NalgebraVec};
+
+    fn run_history_fixture(refresh: bool) -> (ConvergenceStatus, f64) {
+        let mut line_search = BacktrackingLineSearch::<NalgebraVec<f64>>::default();
+        let error_y = NalgebraVec::from_vec(vec![1.0], Default::default());
+        let mut convergence = Convergence::with_tolerance(0.0, &error_y, 0.02);
+        convergence.set_max_iter(3);
+        let fun = |x: &NalgebraVec<f64>, residual: &mut NalgebraVec<f64>| {
+            residual.set_index(0, 9.0 * x.get_index(0) - 8.2);
+        };
+        let chord_solve = |residual: &mut NalgebraVec<f64>| -> Result<(), DiffsolError> {
+            residual.set_index(0, residual.get_index(0) / 10.0);
+            Ok(())
+        };
+        let mut x = NalgebraVec::from_vec(vec![1.8], Default::default());
+        let mut delta = NalgebraVec::zeros(1, Default::default());
+
+        let status = line_search
+            .take_optimal_step(
+                &mut x,
+                &mut delta,
+                &error_y,
+                &fun,
+                &chord_solve,
+                &mut convergence,
+            )
+            .unwrap();
+        assert!(matches!(status, ConvergenceStatus::Continue));
+        assert!((x.get_index(0) - 1.0).abs() < 1e-12);
+        assert!((delta.get_index(0) - 0.08).abs() < 1e-12);
+
+        let status = line_search
+            .take_optimal_step(
+                &mut x,
+                &mut delta,
+                &error_y,
+                &fun,
+                &chord_solve,
+                &mut convergence,
+            )
+            .unwrap();
+        assert!(matches!(status, ConvergenceStatus::Converged));
+        assert!((x.get_index(0) - 0.92).abs() < 1e-12);
+
+        fun(&x, &mut delta);
+        chord_solve(&mut delta).unwrap();
+        assert!((delta.get_index(0) - 0.008).abs() < 1e-12);
+        if refresh {
+            line_search.refresh_pending_correction(&delta, &error_y, &convergence);
+        }
+
+        let status = line_search
+            .take_optimal_step(
+                &mut x,
+                &mut delta,
+                &error_y,
+                &fun,
+                &chord_solve,
+                &mut convergence,
+            )
+            .unwrap();
+        (status, x.get_index(0))
+    }
+
+    #[test]
+    fn observer_refresh_rebinds_backtracking_norm_history() {
+        let (refreshed_status, refreshed_x) = run_history_fixture(true);
+        assert!(matches!(refreshed_status, ConvergenceStatus::Converged));
+        assert!((refreshed_x - 0.912).abs() < 1e-12);
+
+        let (stale_status, stale_x) = run_history_fixture(false);
+        assert!(matches!(stale_status, ConvergenceStatus::Diverged));
+        assert!((stale_x - 0.92).abs() < 1e-12);
     }
 }

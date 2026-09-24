@@ -88,6 +88,31 @@ fn variable_is_state(result: &SimResult, name: &str) -> bool {
         .is_some_and(|meta| meta.is_state)
 }
 
+fn assert_switched_rlc_analytic_trace(result: &SimResult, voltage: &[f64], current: &[f64]) {
+    // The example's R=100, L=1, C=1e-3 give V'' + 10 V' + 1000 V = 24000
+    // after the step, from zero voltage/current. This oracle is independent
+    // of either Modelica representation and its adaptive integration mesh.
+    assert_eq!(result.times.last(), Some(&0.75));
+    assert_eq!(voltage.len(), result.times.len());
+    assert_eq!(current.len(), result.times.len());
+    let omega = 975.0_f64.sqrt();
+    for ((&time, &v), &i) in result.times.iter().zip(voltage).zip(current) {
+        let tau = (time - 0.5).max(0.0);
+        let decay = (-5.0 * tau).exp();
+        let angle = omega * tau;
+        let expected_v = 24.0 * (1.0 - decay * (angle.cos() + 5.0 / omega * angle.sin()));
+        let expected_i = 24.0 / omega * decay * angle.sin() + expected_v / 100.0;
+        assert!(
+            (v - expected_v).abs() <= 1.0e-9,
+            "capacitor voltage disagrees with analytic circuit at {time}: {v} vs {expected_v}"
+        );
+        assert!(
+            (i - expected_i).abs() <= 1.0e-9,
+            "inductor current disagrees with analytic circuit at {time}: {i} vs {expected_i}"
+        );
+    }
+}
+
 #[test]
 fn switched_rlc_msl_retains_storage_states_through_step() {
     let msl_compiler = require_msl_compiler();
@@ -110,6 +135,11 @@ fn switched_rlc_msl_retains_storage_states_through_step() {
 
     let opts = SimOptions {
         t_end: 0.75,
+        // The equivalence assertion below requires 1e-9 accuracy. Different
+        // observable inventories can select different adaptive steps, so
+        // request enough precision for both traces to meet that assertion.
+        rtol: 1.0e-12,
+        atol: 1.0e-12,
         solver_mode: SimSolverMode::RkLike,
         ..SimOptions::default()
     };
@@ -140,8 +170,12 @@ fn switched_rlc_msl_retains_storage_states_through_step() {
     let msl_v_series = result_series(&msl_result, &["capacitor.v", "capacitor.p.v"]);
     let simple_i_series = result_series(&simple_result, &["i_L"]);
     let msl_i_series = result_series(&msl_result, &["inductor.i"]);
+    assert_eq!(simple_result.times, msl_result.times);
     let max_v_delta = max_abs_series_delta(simple_v_series, msl_v_series);
     let max_i_delta = max_abs_series_delta(simple_i_series, msl_i_series);
+
+    assert_switched_rlc_analytic_trace(&simple_result, simple_v_series, simple_i_series);
+    assert_switched_rlc_analytic_trace(&msl_result, msl_v_series, msl_i_series);
 
     assert!(
         max_v_delta <= 1.0e-9,

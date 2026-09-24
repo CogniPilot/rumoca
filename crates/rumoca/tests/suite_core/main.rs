@@ -24,8 +24,12 @@
 //! libtest filters are substring matches over the full path, so filtering by
 //! bare test name still works, and `<file_stem>::` selects one member file.
 
+mod finite_conductance_startup;
 mod history_operator_checked;
 mod initial_boolean_parameter;
+mod initial_fixed_boundary;
+mod initial_output_precision;
+mod prepared_projection_execution;
 
 mod additive_torque;
 mod affine_switching_circuit;

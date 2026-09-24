@@ -62,6 +62,16 @@ enum CandidateSet {
     Ambiguous,
 }
 
+#[derive(Debug, Clone)]
+struct OuterRedirect {
+    // Paths select the longest structured prefix; IDs are the resolved
+    // endpoints that make the bridge semantic rather than name based.
+    outer_path: ComponentPath,
+    inner_path: ComponentPath,
+    outer_ids: SemanticLookup<Vec<InstanceId>>,
+    inner_ids: SemanticLookup<Vec<InstanceId>>,
+}
+
 impl CandidateSet {
     fn one(instance_id: InstanceId) -> Self {
         Self::Resolved(vec![instance_id])
@@ -112,6 +122,9 @@ pub(crate) struct InstanceSemanticScope {
     children_by_name: HashMap<InstanceId, BTreeMap<UnresolvedMemberSegment, Vec<InstanceId>>>,
     array_extents_by_owner_def: HashMap<(InstanceId, DefId), Vec<usize>>,
     class_path_ids: HashMap<ComponentPath, CandidateSet>,
+    outer_redirects: Vec<OuterRedirect>,
+    outer_instance_to_inner: HashMap<InstanceId, SemanticLookup<Vec<InstanceId>>>,
+    inherited_def_id_remaps: HashMap<(InstanceId, DefId), DefId>,
 }
 
 impl InstanceSemanticScope {
@@ -119,6 +132,8 @@ impl InstanceSemanticScope {
         let mut scope = Self::default();
         scope.index_classes(overlay);
         scope.index_components(overlay);
+        scope.index_outer_redirects(overlay);
+        scope.index_inherited_def_id_remaps(overlay);
         scope.index_relationships(overlay);
         scope.index_array_extents(overlay);
         scope
@@ -141,12 +156,36 @@ impl InstanceSemanticScope {
         class_instance_id: InstanceId,
         declaration: DefId,
     ) -> SemanticLookup<ComponentSemantics> {
+        let declaration = self
+            .inherited_def_id_remaps
+            .get(&(class_instance_id, declaration))
+            .copied()
+            .unwrap_or(declaration);
         self.consensus(
             self.class_children
                 .get(&(class_instance_id, declaration))
                 .cloned()
                 .map_or(SemanticLookup::Missing, SemanticLookup::Found),
         )
+    }
+
+    /// Resolve a recorded lexical class path to its concrete class instance.
+    ///
+    /// A modification source path is metadata, not a rendered-name lookup
+    /// hint.  The path is accepted only when the overlay's identity index has
+    /// exactly one class occurrence for it; callers must reject missing or
+    /// ambiguous paths before attempting component lookup.
+    pub(crate) fn lookup_class_instance(
+        &self,
+        scope: &ComponentPath,
+    ) -> SemanticLookup<InstanceId> {
+        match self.class_path_ids.get(scope) {
+            Some(CandidateSet::Resolved(ids)) if ids.len() == 1 => SemanticLookup::Found(ids[0]),
+            Some(CandidateSet::Resolved(_)) | Some(CandidateSet::Ambiguous) => {
+                SemanticLookup::Ambiguous
+            }
+            None => SemanticLookup::Missing,
+        }
     }
 
     pub(crate) fn lookup_expression(
@@ -198,7 +237,8 @@ impl InstanceSemanticScope {
         class_instance_id: Option<InstanceId>,
         current_scope: Option<&ComponentPath>,
     ) -> SemanticLookup<Option<Vec<usize>>> {
-        match self.resolve_reference_by_identity(reference, prefix_len, class_instance_id) {
+        let identity = self.resolve_reference_by_identity(reference, prefix_len, class_instance_id);
+        match identity {
             SemanticLookup::Found(ids) => {
                 let shape = self.identity_shape(&ids);
                 if !matches!(shape, SemanticLookup::Missing) {
@@ -283,6 +323,63 @@ impl InstanceSemanticScope {
                 self.by_source_def.entry(def_id).or_default().push(map_id);
             }
         }
+    }
+
+    fn index_outer_redirects(&mut self, overlay: &InstanceOverlay) {
+        // The instantiate contract is path-shaped, so resolve both endpoints
+        // into the overlay's candidate sets before typecheck uses the bridge.
+        self.outer_redirects = overlay
+            .outer_prefix_to_inner
+            .iter()
+            .map(|(outer_path, inner_path)| OuterRedirect {
+                outer_path: outer_path.clone(),
+                inner_path: inner_path.clone(),
+                outer_ids: self.lookup_exact_path(outer_path),
+                inner_ids: self.lookup_exact_path(inner_path),
+            })
+            .collect();
+        self.outer_instance_to_inner.clear();
+        for redirect in self.outer_redirects.clone() {
+            let SemanticLookup::Found(outer_ids) = &redirect.outer_ids else {
+                continue;
+            };
+            for outer_id in outer_ids {
+                self.insert_outer_redirect(*outer_id, redirect.inner_ids.clone());
+            }
+        }
+    }
+
+    fn index_inherited_def_id_remaps(&mut self, overlay: &InstanceOverlay) {
+        self.inherited_def_id_remaps.clear();
+        for (&class_instance_id, remaps) in &overlay.inherited_def_id_remaps {
+            for (&old_def_id, &retained_def_id) in remaps {
+                self.inherited_def_id_remaps
+                    .insert((class_instance_id, old_def_id), retained_def_id);
+            }
+        }
+    }
+
+    fn insert_outer_redirect(
+        &mut self,
+        outer_id: InstanceId,
+        candidate: SemanticLookup<Vec<InstanceId>>,
+    ) {
+        let mapped = self
+            .outer_instance_to_inner
+            .entry(outer_id)
+            .or_insert(candidate.clone());
+        if mapped != &candidate {
+            *mapped = SemanticLookup::Ambiguous;
+        }
+    }
+
+    fn lookup_exact_path(&self, path: &ComponentPath) -> SemanticLookup<Vec<InstanceId>> {
+        self.exact_paths
+            .get(path)
+            .map(CandidateSet::ids)
+            .map_or(SemanticLookup::Missing, |result| {
+                result.map(|ids| ids.to_vec())
+            })
     }
 
     fn index_relationships(&mut self, overlay: &InstanceOverlay) {
@@ -480,7 +577,12 @@ impl InstanceSemanticScope {
         }
         if matches!(candidates, SemanticLookup::Missing) {
             let path = component_reference_prefix_path(reference, prefix_len, true);
-            return self.lookup_scoped_path(&path, current_scope);
+            return self.lookup_scoped_path(
+                &path,
+                current_scope,
+                reference.root_def_id(),
+                class_instance_id,
+            );
         }
         candidates
     }
@@ -500,7 +602,15 @@ impl InstanceSemanticScope {
         let Some(class_instance_id) = class_instance_id else {
             return SemanticLookup::Missing;
         };
-        let Some(root) = self.class_children.get(&(class_instance_id, root_def_id)) else {
+        let canonical_root_def_id = self
+            .inherited_def_id_remaps
+            .get(&(class_instance_id, root_def_id))
+            .copied()
+            .unwrap_or(root_def_id);
+        let Some(root) = self
+            .class_children
+            .get(&(class_instance_id, canonical_root_def_id))
+        else {
             return SemanticLookup::Missing;
         };
         let roots = filter_candidates_by_part(
@@ -508,6 +618,10 @@ impl InstanceSemanticScope {
             &reference.parts[0],
             &self.terminal_subscripts_by_id,
         );
+        let SemanticLookup::Found(roots) = roots else {
+            return roots;
+        };
+        let roots = self.redirect_outer_roots(roots, &reference.parts[0]);
         let SemanticLookup::Found(roots) = roots else {
             return roots;
         };
@@ -526,6 +640,36 @@ impl InstanceSemanticScope {
             candidates = filter_candidates_by_part(ids, part, &self.terminal_subscripts_by_id);
         }
         candidates
+    }
+
+    fn redirect_outer_roots(
+        &self,
+        roots: Vec<InstanceId>,
+        root_part: &ComponentRefPart,
+    ) -> SemanticLookup<Vec<InstanceId>> {
+        let mut redirected = false;
+        let mut candidates = Vec::new();
+        for root in roots {
+            match self.outer_instance_to_inner.get(&root) {
+                Some(SemanticLookup::Found(inner)) => {
+                    redirected = true;
+                    candidates.extend(inner.iter().copied());
+                }
+                Some(SemanticLookup::Missing) => return SemanticLookup::Missing,
+                Some(SemanticLookup::Ambiguous) => return SemanticLookup::Ambiguous,
+                None => candidates.push(root),
+            }
+        }
+        if !redirected {
+            return SemanticLookup::Found(candidates);
+        }
+        let mut unique = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            if !unique.contains(&candidate) {
+                unique.push(candidate);
+            }
+        }
+        filter_candidates_by_part(unique, root_part, &self.terminal_subscripts_by_id)
     }
 
     fn resolve_children_by_def(
@@ -596,10 +740,10 @@ impl InstanceSemanticScope {
             return filter_candidates_by_part(nearest, part, &self.terminal_subscripts_by_id);
         }
         let path = ComponentPath::from_parts([part.to_string()]);
-        match self.lookup_scoped_path(&path, current_scope) {
+        match self.lookup_scoped_path(&path, current_scope, def_id, class_instance_id) {
             SemanticLookup::Missing if part.subs.is_some() => {
                 let owner_path = ComponentPath::from_parts([part.ident.text.to_string()]);
-                self.lookup_scoped_path(&owner_path, current_scope)
+                self.lookup_scoped_path(&owner_path, current_scope, def_id, class_instance_id)
             }
             result => result,
         }
@@ -668,20 +812,80 @@ impl InstanceSemanticScope {
         &self,
         path: &ComponentPath,
         current_scope: Option<&ComponentPath>,
+        expected_root_def_id: Option<DefId>,
+        owner_class_id: Option<InstanceId>,
     ) -> SemanticLookup<Vec<InstanceId>> {
         for candidate in scoped_path_candidates(path, current_scope) {
-            match self.exact_paths.get(&candidate).map(CandidateSet::ids) {
-                Some(SemanticLookup::Found(ids)) => {
+            if let Some(result) =
+                self.redirected_lookup(&candidate, expected_root_def_id, owner_class_id)
+            {
+                return result;
+            }
+            match self.lookup_path(&candidate) {
+                SemanticLookup::Found(ids) => {
                     return SemanticLookup::Found(ids.to_vec());
                 }
-                Some(SemanticLookup::Ambiguous) => return SemanticLookup::Ambiguous,
-                _ => {}
-            }
-            if let Some(ids) = self.family_paths.get(&candidate) {
-                return SemanticLookup::Found(ids.clone());
+                SemanticLookup::Ambiguous => return SemanticLookup::Ambiguous,
+                SemanticLookup::Missing => {}
             }
         }
         SemanticLookup::Missing
+    }
+
+    fn lookup_path(&self, path: &ComponentPath) -> SemanticLookup<&[InstanceId]> {
+        match self.exact_paths.get(path).map(CandidateSet::ids) {
+            Some(SemanticLookup::Found(ids)) => SemanticLookup::Found(ids),
+            Some(SemanticLookup::Ambiguous) => SemanticLookup::Ambiguous,
+            _ => self
+                .family_paths
+                .get(path)
+                .map_or(SemanticLookup::Missing, |ids| SemanticLookup::Found(ids)),
+        }
+    }
+
+    fn redirected_lookup(
+        &self,
+        path: &ComponentPath,
+        expected_root_def_id: Option<DefId>,
+        owner_class_id: Option<InstanceId>,
+    ) -> Option<SemanticLookup<Vec<InstanceId>>> {
+        let redirect = self
+            .outer_redirects
+            .iter()
+            .filter(|redirect| path.strip_prefix(&redirect.outer_path).is_some())
+            .max_by_key(|redirect| redirect.outer_path.parts().len())?;
+        let relative = path.strip_prefix(&redirect.outer_path)?;
+        let expected_root_def_id = expected_root_def_id?;
+        let Some(owner_class_id) = owner_class_id else {
+            return Some(SemanticLookup::Missing);
+        };
+        let outer_ids = match &redirect.outer_ids {
+            SemanticLookup::Found(ids) => ids
+                .iter()
+                .filter(|instance_id| {
+                    self.source_def_by_id.get(instance_id) == Some(&expected_root_def_id)
+                        && self.owner_class_by_id.get(instance_id) == Some(&owner_class_id)
+                })
+                .copied()
+                .collect::<Vec<_>>(),
+            SemanticLookup::Missing => return Some(SemanticLookup::Missing),
+            SemanticLookup::Ambiguous => return Some(SemanticLookup::Ambiguous),
+        };
+        if outer_ids.is_empty() {
+            return Some(SemanticLookup::Missing);
+        }
+        let SemanticLookup::Found(inner_ids) = &redirect.inner_ids else {
+            return Some(redirect.inner_ids.clone());
+        };
+        if relative.is_root() {
+            return Some(SemanticLookup::Found(inner_ids.clone()));
+        }
+        let redirected = redirect.inner_path.join(&relative);
+        Some(match self.lookup_path(&redirected) {
+            SemanticLookup::Found(ids) => SemanticLookup::Found(ids.to_vec()),
+            SemanticLookup::Ambiguous => SemanticLookup::Ambiguous,
+            SemanticLookup::Missing => SemanticLookup::Missing,
+        })
     }
 
     fn consensus(

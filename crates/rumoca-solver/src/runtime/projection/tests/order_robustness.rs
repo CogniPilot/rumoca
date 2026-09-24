@@ -77,6 +77,7 @@ impl PermutedReluctance {
                     },
                 ],
             }),
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         };
         Self {
@@ -135,6 +136,7 @@ impl PermutedReluctance {
                 rows: self.rows.to_vec(),
                 y_indices: self.slots.to_vec(),
                 tearing: None,
+                guarded_tearing: None,
                 alternate_charts: Vec::new(),
             }],
         }

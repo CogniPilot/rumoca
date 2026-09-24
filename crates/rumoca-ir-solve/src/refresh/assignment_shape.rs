@@ -2,9 +2,13 @@ mod additive;
 mod producers;
 pub(super) mod tensor_affine;
 
+#[cfg(test)]
+mod tests;
+
 use super::dependency::{ScalarProgramYDependency, y_load_indices};
 use crate::{BinaryOp, LinearOp, StridedOperand, TargetAssignmentShape, UnaryOp};
 use producers::{ProgramPrefix, UniqueProgram};
+use std::cell::OnceCell;
 
 pub(super) fn canonical_assignment_shape_for_output(
     program: &[LinearOp],
@@ -13,49 +17,73 @@ pub(super) fn canonical_assignment_shape_for_output(
 ) -> Option<TargetAssignmentShape> {
     let (output, store_position) = store_output_registers(program).nth(output_offset)?;
     let prefix = program.get(..store_position)?;
-    let producers = UniqueProgram::new(prefix)?;
-    let dependencies = ScalarProgramYDependency::new(prefix);
-    canonical_assignment_shape(producers.view(), output, target_y_index, &dependencies)
+    OutputAssignmentDerivation::new(prefix, output)?.for_target(target_y_index)
 }
 
-fn canonical_assignment_shape(
-    prefix: ProgramPrefix<'_>,
+/// Construction-local analysis bound to one exact store prefix and output.
+struct OutputAssignmentDerivation<'a> {
+    producers: UniqueProgram<'a>,
     output: u32,
-    target_y_index: usize,
-    dependencies: &ScalarProgramYDependency<'_>,
-) -> Option<TargetAssignmentShape> {
-    let direct = assignment_expression_registers(prefix, output)
-        .into_iter()
-        .flatten()
-        .find_map(|(target, expression, target_scale)| {
-            let load = target_load(prefix, target)?;
-            if load.index != target_y_index || dependencies.depends_on(expression, target_y_index) {
-                return None;
-            }
-            Some(TargetAssignmentShape::Direct {
-                target_y_index,
-                expr_reg: expression,
-                target_scale,
-                expr_eval_len: producer_position(prefix, expression)?
-                    .checked_add(1)?
-                    .max(load.required_eval_len),
-            })
-        });
-    direct
-        .or_else(|| zero_assignment_shape(prefix, output, target_y_index))
-        .or_else(|| {
-            affine_assignment_shapes(prefix, output, dependencies)
-                .into_iter()
-                .find(|shape| shape.target_y_index() == target_y_index)
+    dependencies: ScalarProgramYDependency<'a>,
+    affine_shapes: OnceCell<Vec<TargetAssignmentShape>>,
+}
+
+impl<'a> OutputAssignmentDerivation<'a> {
+    fn new(prefix: &'a [LinearOp], output: u32) -> Option<Self> {
+        Some(Self {
+            producers: UniqueProgram::new(prefix)?,
+            output,
+            dependencies: ScalarProgramYDependency::new(prefix),
+            affine_shapes: OnceCell::new(),
         })
-        .or_else(|| additive::derive(prefix, output, target_y_index, dependencies))
-        .or_else(|| {
-            Some(TargetAssignmentShape::TensorAffine {
-                target_y_index,
-                projection: tensor_affine::derive(prefix, output, target_y_index, dependencies)?,
-                expr_eval_len: prefix.len(),
+    }
+
+    fn for_target(&self, target_y_index: usize) -> Option<TargetAssignmentShape> {
+        let prefix = self.producers.view();
+        let output = self.output;
+        let dependencies = &self.dependencies;
+        let direct = assignment_expression_registers(prefix, output)
+            .into_iter()
+            .flatten()
+            .find_map(|(target, expression, target_scale)| {
+                let load = target_load(prefix, target)?;
+                if load.index != target_y_index
+                    || dependencies.depends_on(expression, target_y_index)
+                {
+                    return None;
+                }
+                Some(TargetAssignmentShape::Direct {
+                    target_y_index,
+                    expr_reg: expression,
+                    target_scale,
+                    expr_eval_len: producer_position(prefix, expression)?
+                        .checked_add(1)?
+                        .max(load.required_eval_len),
+                })
+            });
+        direct
+            .or_else(|| zero_assignment_shape(prefix, output, target_y_index))
+            .or_else(|| {
+                self.affine_shapes
+                    .get_or_init(|| affine_assignment_shapes(prefix, output, dependencies))
+                    .iter()
+                    .find(|shape| shape.target_y_index() == target_y_index)
+                    .cloned()
             })
-        })
+            .or_else(|| additive::derive(prefix, output, target_y_index, dependencies))
+            .or_else(|| {
+                Some(TargetAssignmentShape::TensorAffine {
+                    target_y_index,
+                    projection: tensor_affine::derive(
+                        prefix,
+                        output,
+                        target_y_index,
+                        dependencies,
+                    )?,
+                    expr_eval_len: prefix.len(),
+                })
+            })
+    }
 }
 
 fn zero_assignment_shape(
@@ -86,14 +114,11 @@ pub fn derive_target_assignment_shapes(
         let Some(prefix) = program.get(..store_position) else {
             continue;
         };
-        let Some(producers) = UniqueProgram::new(prefix) else {
+        let Some(derivation) = OutputAssignmentDerivation::new(prefix, output) else {
             continue;
         };
-        let dependencies = ScalarProgramYDependency::new(prefix);
         for target in y_load_indices(prefix) {
-            let Some(shape) =
-                canonical_assignment_shape(producers.view(), output, target, &dependencies)
-            else {
+            let Some(shape) = derivation.for_target(target) else {
                 continue;
             };
             if shapes.iter().all(
@@ -123,6 +148,8 @@ fn affine_assignment_shapes(
     output: u32,
     dependencies: &ScalarProgramYDependency<'_>,
 ) -> Vec<TargetAssignmentShape> {
+    #[cfg(test)]
+    tests::record_affine_derivation();
     let (output, output_scale) = strip_affine_output_wrappers(program, output);
     let Some((op, lhs, rhs)) = binary_operands(program, output) else {
         return Vec::new();

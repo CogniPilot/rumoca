@@ -140,6 +140,46 @@ fn division_and_nonlinear_functions_require_independent_arguments() {
     );
 }
 
+#[test]
+fn identity_tensor_preserves_separate_rotation_and_velocity_affinity() {
+    let scalar = SolveValueType::scalar(SolveScalarType::real(profile()));
+    let matrix = SolveValueType::tensor(SolveScalarType::real(profile()), vec![2, 2]).unwrap();
+    let table = SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1),
+            vec![scalar.clone(), scalar.clone()],
+            vec![
+                SolvePureCallOutput::result(matrix),
+                SolvePureCallOutput::result(scalar),
+            ],
+            span(0),
+            |builder, inputs, outputs| {
+                let angle = builder.load(inputs[0], span(1))?;
+                let rate = builder.load(inputs[1], span(2))?;
+                let identity = builder.identity(SolveScalarType::real(profile()), 2, span(3))?;
+                let cosine = builder.unary(SolveUnaryOperator::Cos, angle, span(4))?;
+                let rotation = builder.scale(identity, cosine, span(5))?;
+                builder.store(outputs[0], rotation, span(6))?;
+                builder.store(outputs[1], rate, span(7))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let site = table.owners()[0].call_site();
+    assert_eq!(
+        site.output_degrees(&[Independent, Affine]),
+        Some(vec![Independent, Affine])
+    );
+    assert_eq!(
+        site.output_degrees(&[Affine, Affine]),
+        Some(vec![Nonlinear, Affine])
+    );
+    let restored: SolvePureCallTable =
+        serde_json::from_value(serde_json::to_value(&table).unwrap()).unwrap();
+    assert!(restored.matches_site(&site));
+}
+
 fn alternate_coefficient<'program>(
     builder: &mut crate::TypedProgramBuilder<'program>,
     rate: crate::ProgramSlot<'program>,

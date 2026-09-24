@@ -1,8 +1,47 @@
 use faer::{Col, prelude::Solve};
+use nalgebra::DMatrix;
 use rumoca_core::{SourceId, Span};
 use rumoca_ir_solve::{PatternDerivation, PatternProvenance};
 
 use super::*;
+use crate::runtime::projection::jacobian_values::{CompactFixture, read_preparation_count};
+
+#[test]
+fn cached_csc_compact_reads_bind_once_and_reject_foreign_pattern() {
+    let owner = pattern(8, true);
+    let foreign = pattern(8, false);
+    let dense = matrix(&owner, 4.0);
+    let compact = CompactFixture::from_dense(owner.clone(), &dense);
+    assert!(compact.stored_len() < 8 * 8);
+    let rhs = DVector::from_element(8, 1.0);
+    let scales = [1.0; 8];
+    let mut cache = SparseNewtonCache::default();
+    let before = read_preparation_count();
+    let allocations = crate::runtime::projection::jacobian_allocation_count();
+    let first = cache
+        .solve_scaled(&compact, &rhs, &scales, &scales, &owner)
+        .unwrap();
+    let second = cache
+        .solve_scaled(&compact, &rhs, &scales, &scales, &owner)
+        .unwrap();
+    assert_eq!(first.as_slice(), second.as_slice());
+    assert_eq!(read_preparation_count(), before + 1);
+    assert_eq!(
+        crate::runtime::projection::jacobian_allocation_count(),
+        allocations
+    );
+    assert!(
+        cache
+            .solve_scaled(&compact, &rhs, &scales, &scales, &foreign)
+            .is_none()
+    );
+    assert_eq!(read_preparation_count(), before + 1);
+    let after_reject = cache
+        .solve_scaled(&compact, &rhs, &scales, &scales, &owner)
+        .unwrap();
+    assert_eq!(first.as_slice(), after_reject.as_slice());
+    assert_eq!(read_preparation_count(), before + 1);
+}
 
 fn pattern(dimension: usize, upper: bool) -> StructuralPattern {
     let rows = (0..dimension)

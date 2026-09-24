@@ -117,29 +117,235 @@ fn root_class_scope_inherits_member_function_receiver_types() {
 }
 
 #[test]
-fn active_redeclare_overrides_inherited_default_alias_for_same_name() {
-    let concrete_medium = override_target("ConcreteMedium", DefId::new(1), ClassType::Package);
-    let inherited_default =
+fn inherited_same_named_package_defaults_keep_class_def_id_identity() {
+    let base_a_def = DefId::new(30);
+    let base_b_def = DefId::new(31);
+    let medium_a_def = DefId::new(32);
+    let medium_b_def = DefId::new(33);
+    let target_a_def = DefId::new(34);
+    let target_b_def = DefId::new(35);
+    let derived_def = DefId::new(36);
+
+    let mut target_a = class("TargetA", ClassType::Package);
+    target_a.def_id = Some(target_a_def);
+    let mut target_b = class("TargetB", ClassType::Package);
+    target_b.def_id = Some(target_b_def);
+    let mut medium_a = class("Medium", ClassType::Package);
+    medium_a.def_id = Some(medium_a_def);
+    medium_a.extends.push(Extend {
+        base_name: Name::from_string("TargetA"),
+        base_def_id: Some(target_a_def),
+        ..Extend::default()
+    });
+    let mut medium_b = class("Medium", ClassType::Package);
+    medium_b.def_id = Some(medium_b_def);
+    medium_b.extends.push(Extend {
+        base_name: Name::from_string("TargetB"),
+        base_def_id: Some(target_b_def),
+        ..Extend::default()
+    });
+    let mut base_a = class("BaseA", ClassType::Model);
+    base_a.def_id = Some(base_a_def);
+    base_a.classes.insert("Medium".to_string(), medium_a);
+    let mut base_b = class("BaseB", ClassType::Model);
+    base_b.def_id = Some(base_b_def);
+    base_b.classes.insert("Medium".to_string(), medium_b);
+    let mut derived = class("Derived", ClassType::Model);
+    derived.def_id = Some(derived_def);
+    derived.extends.extend([
+        Extend {
+            base_name: Name::from_string("BaseA"),
+            base_def_id: Some(base_a_def),
+            ..Extend::default()
+        },
+        Extend {
+            base_name: Name::from_string("BaseB"),
+            base_def_id: Some(base_b_def),
+            ..Extend::default()
+        },
+    ]);
+
+    let mut tree = ClassTree::new();
+    for (name, class_def) in [
+        ("TargetA", target_a),
+        ("TargetB", target_b),
+        ("BaseA", base_a),
+        ("BaseB", base_b),
+        ("Derived", derived),
+    ] {
+        tree.definitions.classes.insert(name.to_string(), class_def);
+    }
+    for (def_id, name) in [
+        (base_a_def, "BaseA"),
+        (base_b_def, "BaseB"),
+        (medium_a_def, "BaseA.Medium"),
+        (medium_b_def, "BaseB.Medium"),
+        (target_a_def, "TargetA"),
+        (target_b_def, "TargetB"),
+        (derived_def, "Derived"),
+    ] {
+        tree.def_map.insert(def_id, name.to_string());
+    }
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let derived = class_index.get(derived_def).expect("derived class");
+    let mut overrides = OverrideEntries::default();
+    collect_component_constructor_aliases_for_class(
+        &tree,
+        &class_index,
+        derived,
+        "Derived",
+        false,
+        &mut FxHashSet::default(),
+        &mut overrides,
+    );
+
+    let slots = overrides
+        .exact_packages
+        .iter()
+        .filter_map(|target| target.alias_def_id)
+        .collect::<Vec<_>>();
+    assert_eq!(slots.len(), 2);
+    assert!(slots.contains(&medium_a_def));
+    assert!(slots.contains(&medium_b_def));
+}
+
+#[test]
+fn package_default_without_resolved_base_does_not_mint_exact_slot() {
+    let target_def = DefId::new(40);
+    let alias_def = DefId::new(41);
+    let holder_def = DefId::new(42);
+
+    let mut target = class("Target", ClassType::Package);
+    target.def_id = Some(target_def);
+    let mut alias = class("Medium", ClassType::Package);
+    alias.def_id = Some(alias_def);
+    alias.extends.push(Extend {
+        base_name: Name::from_string("Target"),
+        base_def_id: None,
+        ..Extend::default()
+    });
+    let mut holder = class("Holder", ClassType::Model);
+    holder.def_id = Some(holder_def);
+    holder.classes.insert("Medium".to_string(), alias);
+
+    let mut tree = ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("Target".to_string(), target);
+    tree.definitions
+        .classes
+        .insert("Holder".to_string(), holder);
+    for (def_id, name) in [
+        (target_def, "Target"),
+        (holder_def, "Holder"),
+        (alias_def, "Holder.Medium"),
+    ] {
+        tree.def_map.insert(def_id, name.to_string());
+    }
+
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let holder = class_index.get(holder_def).expect("holder class");
+    let mut overrides = OverrideEntries::default();
+    collect_component_constructor_aliases_for_class(
+        &tree,
+        &class_index,
+        holder,
+        "Holder",
+        false,
+        &mut FxHashSet::default(),
+        &mut overrides,
+    );
+
+    assert!(overrides.exact_packages.is_empty());
+    assert!(overrides.by_alias.is_empty());
+}
+
+#[test]
+fn same_named_exact_package_slots_remain_distinct_across_scopes() {
+    let mut concrete_medium = override_target("ConcreteMedium", DefId::new(1), ClassType::Package);
+    concrete_medium.alias = "Medium".to_string();
+    concrete_medium.alias_def_id = Some(DefId::new(3));
+    let mut inherited_default =
         override_target_with_active("BaseClass.Medium", DefId::new(2), ClassType::Package, false);
+    inherited_default.alias = "Medium".to_string();
+    inherited_default.alias_def_id = Some(DefId::new(4));
     let mut component_override_map = ComponentOverrideMap::default();
     component_override_map.insert(
         ComponentPath::root(),
-        [("Medium".to_string(), concrete_medium.clone())]
-            .into_iter()
-            .collect(),
+        override_entries([concrete_medium.clone()]),
     );
     component_override_map.insert(
         ComponentPath::from_flat_path("pipe"),
-        [("Medium".to_string(), inherited_default)]
-            .into_iter()
-            .collect(),
+        override_entries([inherited_default.clone()]),
     );
 
     let (override_packages, _) = override_context_for_scope("pipe", &component_override_map);
 
-    assert_eq!(override_packages.len(), 1);
-    assert_eq!(override_packages[0].name, concrete_medium.name);
-    assert!(override_packages[0].active);
+    assert_eq!(override_packages.len(), 2);
+    assert!(override_packages.iter().any(|target| {
+        target.alias_def_id == concrete_medium.alias_def_id
+            && target.name == concrete_medium.name
+            && target.active
+    }));
+    assert!(override_packages.iter().any(|target| {
+        target.alias_def_id == inherited_default.alias_def_id
+            && target.name == inherited_default.name
+            && !target.active
+    }));
+}
+
+#[test]
+fn unknown_package_defaults_with_different_targets_remain_ambiguous() {
+    let mut first = override_target("FirstMedium", DefId::new(11), ClassType::Package);
+    first.alias = "Medium".to_string();
+    let mut second = override_target("SecondMedium", DefId::new(12), ClassType::Package);
+    second.alias = "Medium".to_string();
+    let mut component_override_map = ComponentOverrideMap::default();
+    component_override_map.insert(ComponentPath::root(), override_entries([first.clone()]));
+    component_override_map.insert(
+        ComponentPath::from_flat_path("pipe"),
+        override_entries([second.clone()]),
+    );
+
+    let (override_packages, _) = override_context_for_scope("pipe", &component_override_map);
+
+    assert_eq!(override_packages.len(), 2);
+    assert!(
+        override_packages
+            .iter()
+            .any(|target| target.def_id == first.def_id)
+    );
+    assert!(
+        override_packages
+            .iter()
+            .any(|target| target.def_id == second.def_id)
+    );
+}
+
+#[test]
+fn unknown_default_survives_same_named_exact_package_slot() {
+    let mut unknown_default =
+        override_target_with_active("DefaultMedium", DefId::new(21), ClassType::Package, false);
+    unknown_default.alias = "Medium".to_string();
+    let mut exact_override =
+        override_target_with_active("SelectedMedium", DefId::new(22), ClassType::Package, true);
+    exact_override.alias = "Medium".to_string();
+    exact_override.alias_def_id = Some(DefId::new(23));
+    let mut component_override_map = ComponentOverrideMap::default();
+    component_override_map.insert(
+        ComponentPath::root(),
+        override_entries([unknown_default.clone(), exact_override.clone()]),
+    );
+
+    let (override_packages, _) = override_context_for_scope("", &component_override_map);
+
+    assert_eq!(override_packages.len(), 2);
+    assert!(override_packages.iter().any(|target| {
+        target.def_id == unknown_default.def_id && target.alias_def_id.is_none()
+    }));
+    assert!(override_packages.iter().any(|target| {
+        target.def_id == exact_override.def_id && target.alias_def_id == exact_override.alias_def_id
+    }));
 }
 
 #[test]

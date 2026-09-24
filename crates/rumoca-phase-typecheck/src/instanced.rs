@@ -674,57 +674,119 @@ impl TypeChecker {
         type_table: &TypeTable,
     ) {
         for data in overlay.components.values() {
-            let Some(binding) = data.binding.as_ref() else {
-                continue;
-            };
-            // A modification-derived binding carries two intentional forms:
-            // `binding` is the resolved semantic value used by later IR stages,
-            // while `binding_source` is the expression as written in its
-            // lexical source scope. Type checking must keep expression and
-            // scope paired; checking a resolved outer value in the inner
-            // source scope can capture a same-named scalar component.
-            let binding_to_check = if data.binding_from_modification {
-                data.binding_source.as_ref().unwrap_or(binding)
-            } else {
-                binding
-            };
-            // MLS §7.2.4: a modification binding is evaluated in the lexical
-            // scope where the modifier was written, not in the modified
-            // component's scope. Instantiation records that source scope so
-            // type lookup cannot accidentally capture a same-named nested
-            // component (for example `stack(stackData=stackData)`).
-            let binding_scope = if data.binding_from_modification {
-                data.binding_source_scope
-                    .as_ref()
-                    .map(|scope| scope.to_component_path())
-                    .or_else(|| data.qualified_name.to_component_path().parent())
-            } else {
-                data.qualified_name.to_component_path().parent()
-            };
-            let previous_scope = std::mem::replace(&mut self.current_instance_scope, binding_scope);
-            let previous_class_instance_id =
-                std::mem::replace(&mut self.current_class_instance_id, data.owner_class_id);
-            let previous_call_type_overrides =
-                std::mem::take(&mut self.current_call_type_overrides);
-            self.current_call_type_overrides =
-                call_type_overrides_for_instance_scope(tree, overlay, &self.current_instance_scope);
-            walk_expression(self, binding_to_check, type_table);
-            if let Some(found) = self.infer_expression_type(binding_to_check, type_table) {
-                self.check_expected_expression_type(
-                    data.type_id,
-                    found,
-                    binding_to_check
-                        .get_location()
-                        .or(Some(&data.source_location)),
-                    "component binding type compatibility",
-                    "component binding here",
-                    type_table,
-                );
-            }
-            self.current_instance_scope = previous_scope;
-            self.current_class_instance_id = previous_class_instance_id;
-            self.current_call_type_overrides = previous_call_type_overrides;
+            self.check_instanced_binding(tree, overlay, data, type_table);
         }
+    }
+
+    fn check_instanced_binding(
+        &mut self,
+        tree: &ClassTree,
+        overlay: &InstanceOverlay,
+        data: &rumoca_ir_ast::InstanceData,
+        type_table: &TypeTable,
+    ) {
+        let Some(binding) = data.binding.as_ref() else {
+            return;
+        };
+        // A modification-derived binding carries two intentional forms:
+        // `binding` is the resolved semantic value used by later IR stages,
+        // while `binding_source` is the expression as written in its
+        // lexical source scope. Type checking must keep expression and
+        // scope paired; checking a resolved outer value in the inner
+        // source scope can capture a same-named scalar component.
+        let binding_to_check = if data.binding_from_modification {
+            data.binding_source.as_ref().unwrap_or(binding)
+        } else {
+            binding
+        };
+        // MLS §7.2.4: a modification binding is evaluated in the lexical
+        // scope where the modifier was written, not in the modified
+        // component's scope. Instantiation records that source scope so
+        // type lookup cannot accidentally capture a same-named nested
+        // component (for example `stack(stackData=stackData)`).
+        let (binding_scope, binding_class_instance_id) = if data.binding_from_modification {
+            let Some((binding_scope, binding_class_instance_id)) =
+                self.resolve_modification_binding_scope(data)
+            else {
+                return;
+            };
+            (Some(binding_scope), Some(binding_class_instance_id))
+        } else {
+            (
+                data.qualified_name.to_component_path().parent(),
+                data.owner_class_id,
+            )
+        };
+        let previous_scope = std::mem::replace(&mut self.current_instance_scope, binding_scope);
+        let previous_class_instance_id = std::mem::replace(
+            &mut self.current_class_instance_id,
+            binding_class_instance_id,
+        );
+        let previous_call_type_overrides = std::mem::take(&mut self.current_call_type_overrides);
+        self.current_call_type_overrides =
+            call_type_overrides_for_instance_scope(tree, overlay, &self.current_instance_scope);
+        walk_expression(self, binding_to_check, type_table);
+        if let Some(found) = self.infer_expression_type(binding_to_check, type_table) {
+            self.check_expected_expression_type(
+                data.type_id,
+                found,
+                binding_to_check
+                    .get_location()
+                    .or(Some(&data.source_location)),
+                "component binding type compatibility",
+                "component binding here",
+                type_table,
+            );
+        }
+        self.current_instance_scope = previous_scope;
+        self.current_class_instance_id = previous_class_instance_id;
+        self.current_call_type_overrides = previous_call_type_overrides;
+    }
+
+    fn resolve_modification_binding_scope(
+        &mut self,
+        data: &rumoca_ir_ast::InstanceData,
+    ) -> Option<(ComponentPath, InstanceId)> {
+        let Some(source_scope) = data.binding_source_scope.as_ref() else {
+            self.reject_missing_binding_source_scope(data, "missing");
+            return None;
+        };
+        let binding_scope = source_scope.to_component_path();
+        match self
+            .current_instance_semantics
+            .lookup_class_instance(&binding_scope)
+        {
+            SemanticLookup::Found(instance_id) => Some((binding_scope, instance_id)),
+            SemanticLookup::Missing => {
+                self.reject_missing_binding_source_scope(data, "unresolved");
+                None
+            }
+            SemanticLookup::Ambiguous => {
+                self.reject_missing_binding_source_scope(data, "ambiguous");
+                None
+            }
+        }
+    }
+
+    fn reject_missing_binding_source_scope(
+        &mut self,
+        data: &rumoca_ir_ast::InstanceData,
+        state: &str,
+    ) {
+        let Some(span) = self
+            .diagnostic_location_span(&data.source_location, "modification binding source scope")
+        else {
+            return;
+        };
+        self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+            "ET000",
+            format!(
+                "cannot resolve {state} lexical source scope for modification binding on `{}`",
+                data.qualified_name.to_flat_string()
+            ),
+            "binding source scope must identify one class instance",
+            span,
+        ));
     }
 }
 

@@ -603,6 +603,7 @@ mod tests {
         let first = super::super::event_update::DiscretePreSnapshot {
             row_filter: super::super::event_update::EventUpdateRowFilter::All,
             root_relation_overrides: &[],
+            condition_memory_pre: &[],
             event_iteration: 0,
         };
         assert!(

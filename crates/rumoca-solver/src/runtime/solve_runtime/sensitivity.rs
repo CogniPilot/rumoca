@@ -578,11 +578,13 @@ impl SolveRuntime {
     /// their seed filled).
     pub(super) fn seed_refresh_with_plan(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &PreparedRefreshPlan,
         lin: AlgebraicLinearization<'_>,
         solver_y: &[f64],
         seed: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        let plan_validated =
+            plan.validated_for(self.state_count, self.solver_count, solver_y.len())?;
         let projection_model = RefreshProjectionModel {
             runtime: self,
             seed_linearizations: Some(RefCell::new(SeedProjectionCache::at_point(
@@ -594,7 +596,7 @@ impl SolveRuntime {
             #[cfg(test)]
             plan: &plan.simultaneous_plan,
             block_indices: &plan.simultaneous_block_indices,
-            plan_validated: false,
+            plan_validated,
             jacobian_v: ProjectionJacobian::SolverYAndParameters(&self.implicit_jacobian_v),
         };
         let result = project_algebraic_seed_with_plan(

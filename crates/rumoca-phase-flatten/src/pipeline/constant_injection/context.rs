@@ -10,6 +10,10 @@ impl ConstantOccurrenceId {
     pub(crate) fn new(owner: rumoca_core::InstanceId, declaration: rumoca_core::DefId) -> Self {
         Self { owner, declaration }
     }
+
+    pub(crate) fn declaration(self) -> rumoca_core::DefId {
+        self.declaration
+    }
 }
 
 /// Context for flattening.
@@ -33,6 +37,15 @@ pub(crate) struct Context {
     /// exact Resolve declaration identity.
     pub(crate) constant_values_by_occurrence:
         rustc_hash::FxHashMap<ConstantOccurrenceId, rumoca_core::Expression>,
+    /// Modified constant values keyed by both the selected package and the
+    /// concrete occurrence, so another package cannot veto this owner's value.
+    pub(crate) constant_values_by_package_occurrence:
+        rustc_hash::FxHashMap<(rumoca_core::DefId, ConstantOccurrenceId), rumoca_core::Expression>,
+    /// Extends-modified package members selected by exact package and
+    /// declaration identities. One inherited declaration can have several
+    /// values under distinct concrete packages.
+    pub(crate) constant_values_by_package:
+        rustc_hash::FxHashMap<(rumoca_core::DefId, rumoca_core::DefId), rumoca_core::Expression>,
     /// Owning component occurrence for each instantiated class occurrence.
     pub(crate) class_owner_components:
         rustc_hash::FxHashMap<rumoca_core::InstanceId, rumoca_core::InstanceId>,
@@ -123,4 +136,19 @@ pub(crate) struct Context {
     /// private representation prevents equation lowering from manufacturing a proof
     /// from display names.
     pub param_variability_families: crate::param_variability::ParameterVariabilityFamilies,
+}
+
+impl Context {
+    pub(crate) fn record_modified_constant_occurrence(
+        &mut self,
+        package: Option<rumoca_core::DefId>,
+        occurrence: ConstantOccurrenceId,
+        value: rumoca_core::Expression,
+    ) {
+        if let Some(package) = package {
+            self.constant_values_by_package_occurrence
+                .insert((package, occurrence), value.clone());
+        }
+        self.constant_values_by_occurrence.insert(occurrence, value);
+    }
 }

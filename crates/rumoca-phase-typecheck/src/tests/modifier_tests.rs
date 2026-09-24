@@ -3,6 +3,181 @@
 
 use super::*;
 
+fn inherited_replaceable_port_source(member: &str) -> String {
+    format!(
+        r#"
+        package P
+            package Types
+                type AbsolutePressure = Real;
+            end Types;
+
+            partial package BaseMedium
+                extends Types;
+            end BaseMedium;
+
+            connector FluidPort
+                replaceable package Medium = BaseMedium;
+                Medium.AbsolutePressure p;
+            end FluidPort;
+
+            model Test
+                FluidPort port;
+            equation
+                port.{member} = 1;
+            end Test;
+        end P;
+    "#
+    )
+}
+
+#[test]
+fn inherited_replaceable_package_type_is_available_to_connector_members() {
+    let resolved =
+        resolve(parse(&inherited_replaceable_port_source("p"))).expect("resolve should succeed");
+    let mut instanced = rumoca_phase_instantiate::instantiate(resolved, "P.Test")
+        .expect("instantiation should succeed");
+    typecheck_instanced(&instanced.tree, &mut instanced.overlay, "P.Test")
+        .expect("inherited connector member type should resolve");
+}
+
+#[test]
+fn inherited_replaceable_package_unknown_connector_member_is_rejected() {
+    let diagnostics = resolve(parse(&inherited_replaceable_port_source("missing")))
+        .expect_err("an unknown connector member must remain rejected");
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("ER002")
+                && diagnostic.message.contains("port.missing")
+        }),
+        "expected unknown member diagnostic, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn dotted_member_without_anchor_is_rejected_by_identity_resolver() {
+    let resolved = resolve(parse(&inherited_replaceable_port_source("p")))
+        .expect("resolve should succeed")
+        .into_inner();
+    let name = rumoca_ir_ast::Name::from_string("Medium.AbsolutePressure");
+    assert_eq!(
+        crate::modifier_targets::resolve_dotted_member_def_id(&resolved, None, &name,),
+        None
+    );
+}
+
+#[test]
+fn dotted_member_without_member_is_rejected_by_identity_resolver() {
+    let resolved = resolve(parse(&inherited_replaceable_port_source("p")))
+        .expect("resolve should succeed")
+        .into_inner();
+    let anchor = resolved
+        .name_map
+        .get("P.FluidPort.Medium")
+        .copied()
+        .expect("replaceable package anchor should have an identity");
+    let name = rumoca_ir_ast::Name::from_string("Medium.Missing");
+    assert_eq!(
+        crate::modifier_targets::resolve_dotted_member_def_id(&resolved, Some(anchor), &name),
+        None
+    );
+}
+
+#[test]
+fn ambiguous_inherited_member_is_rejected_by_identity_resolver() {
+    let source = r#"
+        package P
+            package Left
+                type Pressure = Real;
+            end Left;
+
+            package Right
+                type Pressure = Integer;
+            end Right;
+
+            package AmbiguousMedium
+                extends Left;
+                extends Right;
+            end AmbiguousMedium;
+
+            connector FluidPort
+                replaceable package Medium = AmbiguousMedium;
+            end FluidPort;
+        end P;
+    "#;
+    let resolved = resolve(parse(source))
+        .expect("the unused ambiguous package should resolve")
+        .into_inner();
+    let anchor = resolved
+        .name_map
+        .get("P.FluidPort.Medium")
+        .copied()
+        .expect("replaceable package anchor should have an identity");
+    let name = rumoca_ir_ast::Name::from_string("Medium.Pressure");
+    assert_eq!(
+        crate::modifier_targets::resolve_dotted_member_def_id(&resolved, Some(anchor), &name),
+        None
+    );
+}
+
+#[test]
+fn missing_anchor_does_not_fall_through_to_qualified_type_table_entry() {
+    let source = r#"
+        package P
+            package Types
+                type AbsolutePressure = Real;
+            end Types;
+
+            partial package BaseMedium
+                extends Types;
+            end BaseMedium;
+
+            connector FluidPort
+                P.BaseMedium.AbsolutePressure p;
+            end FluidPort;
+        end P;
+    "#;
+    let mut tree = resolve(parse(source))
+        .expect("resolve should succeed")
+        .into_inner();
+    let (fluid_port_def_id, display_name) = {
+        let fluid_port = tree
+            .definitions
+            .classes
+            .get_mut("P")
+            .expect("package P")
+            .classes
+            .get_mut("FluidPort")
+            .expect("FluidPort");
+        let component = fluid_port.components.get_mut("p").expect("pressure member");
+        let display_name = component.type_name.to_string();
+        assert_eq!(display_name, "P.BaseMedium.AbsolutePressure");
+        component.type_name.def_id = None;
+        component.type_def_id = None;
+        (fluid_port.def_id.expect("FluidPort identity"), display_name)
+    };
+
+    tree.type_table
+        .add_type(rumoca_ir_ast::Type::Alias(rumoca_ir_ast::TypeAlias {
+            name: display_name,
+            aliased: tree.type_table.real(),
+        }));
+    let members = crate::modifier_targets::build_component_modifier_member_types_for_def_ids(
+        &tree,
+        &tree.type_table,
+        &std::collections::HashMap::new(),
+        &tree.source_map,
+        [fluid_port_def_id],
+    )
+    .expect("member catalog should build");
+    assert!(
+        !members
+            .get(&fluid_port_def_id)
+            .expect("FluidPort member catalog")
+            .contains_key("p"),
+        "missing anchor must not use the qualified display-name table entry"
+    );
+}
+
 #[test]
 fn test_unknown_builtin_modifier_reports_error() {
     let source = r#"

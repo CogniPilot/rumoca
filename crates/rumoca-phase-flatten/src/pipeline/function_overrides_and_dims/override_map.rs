@@ -3,8 +3,7 @@
 
 use super::*;
 
-type ConstructorOverrideCache =
-    rustc_hash::FxHashMap<rumoca_core::DefId, rustc_hash::FxHashMap<String, OverrideTarget>>;
+type ConstructorOverrideCache = rustc_hash::FxHashMap<rumoca_core::DefId, OverrideEntries>;
 
 #[cfg(test)]
 pub(crate) fn component_overrides(
@@ -13,7 +12,13 @@ pub(crate) fn component_overrides(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
 ) -> rustc_hash::FxHashMap<String, OverrideTarget> {
     let mut cache = ConstructorOverrideCache::default();
-    component_overrides_with_cache(instance, tree, class_index, &mut cache)
+    let overrides = component_overrides_with_cache(instance, tree, class_index, &mut cache);
+    overrides
+        .by_alias
+        .into_values()
+        .chain(overrides.exact_packages)
+        .map(|target| (target.alias.clone(), target))
+        .collect()
 }
 
 fn component_overrides_with_cache(
@@ -21,7 +26,7 @@ fn component_overrides_with_cache(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     constructor_cache: &mut ConstructorOverrideCache,
-) -> rustc_hash::FxHashMap<String, OverrideTarget> {
+) -> OverrideEntries {
     let mut overrides =
         cached_component_constructor_aliases(instance, tree, class_index, constructor_cache);
     for class_override in instance.class_overrides.values() {
@@ -30,7 +35,7 @@ fn component_overrides_with_cache(
         {
             let active = component_class_override_is_active(
                 class_override,
-                overrides.get(&class_override.alias),
+                overrides.exact_package_default(class_override.alias_def_id),
                 &target_ref,
             );
             let function_slot =
@@ -39,19 +44,28 @@ fn component_overrides_with_cache(
                 } else {
                     FunctionSlot::Unrelated
                 };
-            overrides.insert(
+            let target = OverrideTarget::from_resolved_with_modifier_args(
                 class_override.alias.clone(),
-                OverrideTarget::from_resolved_with_modifier_args(
-                    class_override.alias.clone(),
-                    target_ref,
-                    active,
-                    class_override_modifier_args(&class_override.modifier_args, instance),
-                )
-                .with_function_slot(function_slot),
-            );
+                target_ref,
+                active,
+                class_override_modifier_args(&class_override.modifier_args, instance),
+            )
+            .with_alias_def_id(class_override.alias_def_id)
+            .with_function_slot(function_slot);
+            overrides.insert_target(target);
         }
     }
     overrides
+}
+
+#[cfg(test)]
+pub(crate) fn component_override_entries(
+    instance: &rumoca_ir_ast::InstanceData,
+    tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+) -> OverrideEntries {
+    let mut cache = ConstructorOverrideCache::default();
+    component_overrides_with_cache(instance, tree, class_index, &mut cache)
 }
 
 fn class_override_modifier_args(
@@ -78,14 +92,14 @@ fn cached_component_constructor_aliases(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     constructor_cache: &mut ConstructorOverrideCache,
-) -> rustc_hash::FxHashMap<String, OverrideTarget> {
+) -> OverrideEntries {
     let Some(type_def_id) = instance.type_def_id else {
-        return rustc_hash::FxHashMap::default();
+        return OverrideEntries::default();
     };
     if let Some(cached) = constructor_cache.get(&type_def_id) {
         return cached.clone();
     }
-    let mut overrides = rustc_hash::FxHashMap::default();
+    let mut overrides = OverrideEntries::default();
     collect_component_constructor_aliases(instance, tree, class_index, &mut overrides);
     constructor_cache.insert(type_def_id, overrides.clone());
     overrides
@@ -113,8 +127,8 @@ pub(crate) fn class_instance_component_overrides(
     class_data: &rumoca_ir_ast::ClassInstanceData,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) -> Result<rustc_hash::FxHashMap<String, OverrideTarget>, FlattenError> {
-    let mut overrides = rustc_hash::FxHashMap::default();
+) -> Result<OverrideEntries, FlattenError> {
+    let mut overrides = OverrideEntries::default();
     let class_scope = class_data.source_scope.as_ref().ok_or_else(|| {
         missing_class_instance_override_scope_error(class_data, tree, "class function overrides")
     })?;
@@ -152,13 +166,13 @@ pub(crate) fn build_component_override_map(
     model_name: &str,
 ) -> Result<ComponentOverrideMap, FlattenError> {
     let mut map = ComponentOverrideMap::default();
-    insert_component_overrides(
+    insert_component_override_entries(
         &mut map,
         ComponentPath::root(),
         root_class_component_overrides(tree, class_index, model_name),
     );
     for class_data in overlay.classes.values() {
-        insert_component_overrides(
+        insert_component_override_entries(
             &mut map,
             class_data.qualified_name.to_component_path(),
             class_instance_component_overrides(class_data, tree, class_index)?,
@@ -166,7 +180,7 @@ pub(crate) fn build_component_override_map(
     }
     let mut constructor_cache = ConstructorOverrideCache::default();
     for instance in overlay.components.values() {
-        insert_component_overrides(
+        insert_component_override_entries(
             &mut map,
             instance.qualified_name.to_component_path(),
             component_overrides_with_cache(instance, tree, class_index, &mut constructor_cache),
@@ -228,10 +242,10 @@ fn class_index_span(tree: &ClassTree, def_id: rumoca_core::DefId) -> Option<rumo
     .ok()
 }
 
-fn insert_component_overrides(
+fn insert_component_override_entries(
     map: &mut ComponentOverrideMap,
     path: ComponentPath,
-    overrides: rustc_hash::FxHashMap<String, OverrideTarget>,
+    overrides: OverrideEntries,
 ) {
     if !overrides.is_empty() {
         map.insert(path, overrides);
@@ -242,8 +256,8 @@ fn root_class_component_overrides(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     model_name: &str,
-) -> rustc_hash::FxHashMap<String, OverrideTarget> {
-    let mut overrides = rustc_hash::FxHashMap::default();
+) -> OverrideEntries {
+    let mut overrides = OverrideEntries::default();
     let Some(class_def) = class_index.get_by_qualified_name(model_name) else {
         return overrides;
     };

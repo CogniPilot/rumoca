@@ -35,6 +35,36 @@ pub(super) fn resolve_override_member_name(
         .filter(|resolved| resolved != reference.as_str())
 }
 
+pub(super) fn resolve_lexical_package_member_reference(
+    reference: &rumoca_core::Reference,
+    ctx: &FunctionOverrideRewriteContext<'_>,
+) -> Option<rumoca_core::Reference> {
+    if reference.instance_id().is_some() || !ctx.active_scope.is_root() {
+        return None;
+    }
+    let component_ref = reference.component_ref()?;
+    let [member] = component_ref.parts() else {
+        return None;
+    };
+    let source_package = ctx.class_index.parent_def_id(member.def_id)?;
+    if ctx.class_index.get(source_package)?.class_type != rumoca_core::ClassType::Package {
+        return None;
+    }
+    let package = ctx.concrete_override_package_for_source_package(source_package)?;
+    let name =
+        resolve_member_in_package_chain_exposed(ctx.tree, ctx.class_index, package, &member.ident)?;
+    Some(
+        super::expression_rewrite::retarget_exposed_function_reference(
+            reference,
+            name,
+            &package.name,
+            package.def_id,
+            member.def_id,
+            ctx.class_index,
+        ),
+    )
+}
+
 /// Whether the reference already names a class/package-owned member.
 ///
 /// A missing terminal `DefId` does not make a qualified reference relative:

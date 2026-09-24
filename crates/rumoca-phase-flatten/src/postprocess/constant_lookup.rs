@@ -295,9 +295,50 @@ pub(super) fn resolve_source_constant<'a>(
     {
         return Some((SemanticConstantId::Occurrence(occurrence), value));
     }
+    if let Some(package) = name
+        .component_ref()
+        .and_then(|path| path.parts().iter().rev().nth(1))
+        .map(|part| part.def_id)
+        && let Some(value) = ctx.constant_values_by_package.get(&(package, declaration))
+    {
+        // A modified component occurrence needs its own callable exposure.
+        // Until that identity is present, leave the reference unresolved rather
+        // than folding a package default over a different component value.
+        if conflicting_package_constant_occurrence(name, ctx) {
+            return None;
+        }
+        return Some((
+            SemanticConstantId::PackageMember(package, declaration),
+            value,
+        ));
+    }
     ctx.constant_values_by_def_id
         .get(&declaration)
         .map(|value| (SemanticConstantId::Declaration(declaration), value))
+}
+
+pub(super) fn conflicting_package_constant_occurrence(
+    name: &rumoca_core::Reference,
+    ctx: &Context,
+) -> bool {
+    let Some(declaration) = name.target_def_id() else {
+        return false;
+    };
+    let Some(package) = name
+        .component_ref()
+        .and_then(|path| path.parts().iter().rev().nth(1))
+        .map(|part| part.def_id)
+    else {
+        return false;
+    };
+    let Some(value) = ctx.constant_values_by_package.get(&(package, declaration)) else {
+        return false;
+    };
+    ctx.constant_values_by_package_occurrence
+        .iter()
+        .any(|((selected, identity), other)| {
+            *selected == package && identity.declaration() == declaration && other != value
+        })
 }
 
 pub(super) fn generated_constant_candidate_exists(name: &str, ctx: &Context, scope: &str) -> bool {

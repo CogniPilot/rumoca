@@ -699,6 +699,7 @@ fn inject_component_declared_class_override(
                 request.tree,
                 request.class_index,
                 &lowered_alias_scope,
+                alias_class,
                 ext,
                 alias_resolve_context,
                 ctx,
@@ -710,6 +711,7 @@ fn inject_component_declared_class_override(
             request.tree,
             request.class_index,
             &alias_scope,
+            alias_class,
             ext,
             alias_resolve_context,
             ctx,
@@ -782,6 +784,7 @@ fn inject_active_component_class_override(
             request.tree,
             request.class_index,
             request.comp_scope,
+            alias_class,
             ext,
             alias_resolve_context,
             ctx,
@@ -834,11 +837,13 @@ fn apply_class_override_constant_modifiers(
             modifier_context,
             ctx,
         ) {
-            ctx.constant_values_by_occurrence.insert(
-                super::constant_injection::ConstantOccurrenceId::new(
-                    component_instance_id,
-                    declaration,
-                ),
+            let occurrence = super::constant_injection::ConstantOccurrenceId::new(
+                component_instance_id,
+                declaration,
+            );
+            ctx.record_modified_constant_occurrence(
+                Some(class_override.target_def_id),
+                occurrence,
                 value,
             );
         }
@@ -892,6 +897,7 @@ pub(crate) fn inject_component_enclosing_class_constants(
                     tree,
                     class_index,
                     comp_scope,
+                    ancestor,
                     ext,
                     &resolve_context,
                     ctx,
@@ -1068,6 +1074,7 @@ fn inject_alias_package_constants(
                 request.tree,
                 request.class_index,
                 scope,
+                package_class,
                 ext,
                 request.package_context,
                 &mut *request.ctx,
@@ -1200,6 +1207,62 @@ model ComponentModifierUse
   Inner b(redeclare package Medium = Good(k = 30.0));
   Inner unmodified(redeclare package Medium = Good);
 end ComponentModifierUse;
+
+package HeatBase
+  constant Real cp_const = 1.0;
+  function enthalpy
+    input Real T;
+    output Real h;
+  algorithm
+    h := cp_const*(T - 298.15);
+  end enthalpy;
+end HeatBase;
+
+package HeatA
+  extends HeatBase(cp_const = 4184.0);
+end HeatA;
+
+package HeatB
+  extends HeatBase(cp_const = 1000.0);
+end HeatB;
+
+package HeatP
+  constant Real k = 4184.0;
+  extends HeatBase(cp_const = k);
+end HeatP;
+
+package HeatSub
+  extends HeatA;
+end HeatSub;
+
+package HeatOuter
+  extends HeatA(cp_const = 2500.0);
+end HeatOuter;
+
+package HeatDerived
+  extends HeatP(k = 2500.0);
+end HeatDerived;
+
+model HeatCell
+  replaceable package Medium = HeatP;
+  parameter Real selected_k = Medium.k;
+end HeatCell;
+
+model HeatOwnerIsolation
+  HeatCell modified(redeclare package Medium = HeatP(k = 900.0));
+  parameter Real h_default = HeatP.enthalpy(300.0);
+  parameter Real h_inherited = HeatSub.enthalpy(300.0);
+  parameter Real h_outer = HeatOuter.enthalpy(300.0);
+end HeatOwnerIsolation;
+
+model HeatDerivedOnly
+  parameter Real h = HeatDerived.enthalpy(1.0);
+end HeatDerivedOnly;
+
+model TwoHeatCells
+  parameter Real h_a = HeatA.enthalpy(300.0);
+  parameter Real h_b = HeatB.enthalpy(300.0);
+end TwoHeatCells;
 ";
 
     fn flatten_source(model: &str) -> flat::Model {
@@ -1304,5 +1367,139 @@ end ComponentModifierUse;
         assert_eq!(real_binding(&model, "a.y"), 25.0);
         assert_eq!(real_binding(&model, "b.y"), 30.0);
         assert_eq!(real_binding(&model, "unmodified.y"), 20.0);
+    }
+
+    #[test]
+    fn inherited_function_constant_uses_each_selected_package_owner() {
+        let model = flatten_source("TwoHeatCells");
+        let inherited_def_id = model.functions[&VarName::new("HeatA.enthalpy")].def_id;
+        assert!(inherited_def_id.is_some());
+        for (variable_name, package, heat_capacity) in
+            [("h_a", "HeatA", 4184.0), ("h_b", "HeatB", 1000.0)]
+        {
+            let variable = &model.variables[&VarName::new(variable_name)];
+            let Some(Expression::FunctionCall { name, .. }) = &variable.binding else {
+                panic!("expected selected medium function call for {variable_name}");
+            };
+            assert_eq!(name.as_str(), format!("{package}.enthalpy"));
+            let function = &model.functions[&VarName::new(format!("{package}.enthalpy"))];
+            assert_eq!(function.def_id, inherited_def_id);
+            let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
+                panic!("expected inherited function assignment");
+            };
+            let Expression::Binary { lhs, .. } = value else {
+                panic!("expected constant multiplication");
+            };
+            let Expression::Literal {
+                value: Literal::Real(value),
+                ..
+            } = lhs.as_ref()
+            else {
+                panic!("expected selected package constant value, got {lhs:?}");
+            };
+            assert_eq!(*value, heat_capacity);
+        }
+    }
+
+    #[test]
+    fn package_default_does_not_capture_modified_component_occurrence() {
+        let model = flatten_source("HeatOwnerIsolation");
+        assert_eq!(real_binding(&model, "modified.selected_k"), 900.0);
+        for (variable_name, package, heat_capacity) in [
+            ("h_default", "HeatP", 4184.0),
+            ("h_inherited", "HeatSub", 4184.0),
+            ("h_outer", "HeatOuter", 2500.0),
+        ] {
+            let variable = &model.variables[&VarName::new(variable_name)];
+            let Some(Expression::FunctionCall { name, .. }) = &variable.binding else {
+                panic!("expected selected package call for {variable_name}");
+            };
+            assert_eq!(name.as_str(), format!("{package}.enthalpy"));
+            let function = &model.functions[&VarName::new(format!("{package}.enthalpy"))];
+            let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
+                panic!("expected inherited function assignment");
+            };
+            let Expression::Binary { lhs, .. } = value else {
+                panic!("expected constant multiplication");
+            };
+            assert!(
+                matches!(lhs.as_ref(), Expression::Literal { value: Literal::Real(value), .. } if *value == heat_capacity),
+                "{package} must retain its canonical cp_const value, got {lhs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inherited_constant_dependency_uses_outer_package_modification() {
+        let model = flatten_source("HeatDerivedOnly");
+        let variable = &model.variables[&VarName::new("h")];
+        let Some(Expression::FunctionCall { name, .. }) = &variable.binding else {
+            panic!("expected inherited package function call");
+        };
+        assert_eq!(name.as_str(), "HeatDerived.enthalpy");
+        let function = &model.functions[&VarName::new("HeatDerived.enthalpy")];
+        let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
+            panic!("expected inherited function assignment");
+        };
+        let Expression::Binary { lhs, .. } = value else {
+            panic!("expected constant multiplication");
+        };
+        assert!(
+            matches!(
+                lhs.as_ref(),
+                Expression::Literal {
+                    value: Literal::Real(2500.0),
+                    ..
+                }
+            ),
+            "the outer k modification must determine inherited cp_const, got {lhs:?}"
+        );
+    }
+
+    #[test]
+    fn component_revisit_cannot_write_its_value_to_shared_package_owner() {
+        let ast::InstancedTree { tree, overlay } = instantiate_source("HeatOwnerIsolation");
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        let modified = overlay
+            .components
+            .values()
+            .find(|component| component.qualified_name.to_flat_string() == "modified")
+            .expect("modified component occurrence");
+        let selected = modified
+            .class_overrides
+            .values()
+            .find(|class_override| class_override.alias == "Medium")
+            .expect("selected package override");
+        let heat_base = class_index
+            .get_by_qualified_name("HeatBase")
+            .expect("source fixture package");
+        let declaration = heat_base.components["cp_const"]
+            .def_id
+            .expect("source fixture constant declaration");
+        let request = super::ComponentClassOverrideInject {
+            tree: &tree,
+            class_index: &class_index,
+            comp_scope: "modified",
+            component_instance_id: modified.instance_id,
+            active_alias: Some("Medium"),
+            modifier_context: "HeatOwnerIsolation",
+        };
+        let mut ctx = super::Context::new();
+        super::inject_component_declared_class_override(&request, selected, &mut ctx);
+        super::inject_component_declared_class_override(&request, selected, &mut ctx);
+        let occurrence = crate::ConstantOccurrenceId::new(modified.instance_id, declaration);
+        assert!(matches!(
+            ctx.constant_values_by_package_occurrence
+                .get(&(selected.target_def_id, occurrence)),
+            Some(Expression::Literal {
+                value: Literal::Real(900.0),
+                ..
+            })
+        ));
+        assert!(
+            !ctx.constant_values_by_package
+                .contains_key(&(selected.target_def_id, declaration)),
+            "a component occurrence must not publish its cp_const to the shared package"
+        );
     }
 }

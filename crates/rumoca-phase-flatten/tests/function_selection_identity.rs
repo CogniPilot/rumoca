@@ -64,8 +64,86 @@ equation
 end UsesUniqueAlias;
 "#;
 
+const SOURCE_ALIAS_REDECLARES: &str = r#"
+package P
+  partial package PartialMedium
+    function f
+      input Real x;
+      output Real y;
+    algorithm
+      y := x;
+    end f;
+  end PartialMedium;
+
+  package MediumA
+    extends PartialMedium;
+    function f
+      input Real x;
+      output Real y;
+    algorithm
+      y := 2*x;
+    end f;
+  end MediumA;
+
+  package MediumB
+    extends PartialMedium;
+    function f
+      input Real x;
+      output Real y;
+    algorithm
+      y := 3*x;
+    end f;
+  end MediumB;
+
+  model Holder
+    replaceable package Medium = PartialMedium constrainedby PartialMedium;
+    Real y;
+  equation
+    y = Medium.f(1);
+  end Holder;
+
+  model Siblings
+    Holder first(redeclare package Medium = MediumA);
+    Holder second(redeclare package Medium = MediumB);
+  end Siblings;
+end P;
+"#;
+
 const AMBIGUOUS_FILE: &str = "<function_selection_identity_ambiguous>";
 const UNIQUE_FILE: &str = "<function_selection_identity_unique>";
+
+fn required_def_id(tree: &ast::ClassTree, name: &str) -> rumoca_core::DefId {
+    tree.get_def_id_by_name(name)
+        .unwrap_or_else(|| panic!("missing DefId for {name}"))
+}
+
+fn source_alias_function_calls(overlay: &ast::InstanceOverlay) -> Vec<ast::ComponentReference> {
+    overlay
+        .classes
+        .values()
+        .flat_map(|class| class.equations.iter())
+        .filter_map(|equation| {
+            let ast::Equation::Simple { lhs, rhs } = &equation.equation else {
+                return None;
+            };
+            Some([lhs, rhs])
+        })
+        .flatten()
+        .flat_map(ast::collect_component_refs)
+        .filter(|reference| reference.to_string() == "Medium.f")
+        .collect()
+}
+
+fn source_alias_override(
+    component: &ast::InstanceData,
+    alias_def_id: rumoca_core::DefId,
+) -> &ast::ClassOverride {
+    component
+        .class_overrides
+        .values()
+        .find(|class_override| class_override.alias_def_id == alias_def_id)
+        .expect("exact package slot selection")
+}
 
 /// One source carried through parse, resolve, instantiate and typecheck, so
 /// flattening runs on the same tree the compiler builds rather than on a
@@ -197,6 +275,7 @@ exposed function has no unique exact extends implementation"
 #[test]
 fn unique_alias_keeps_its_inherited_function_selection_identity() {
     let fixture = Fixture::prepare(UNIQUE_ALIAS, UNIQUE_FILE, "UsesUniqueAlias");
+    let exposed_alias = required_def_id(&fixture.tree, "aliasA");
     let model = fixture
         .flatten()
         .expect("a single-base alias has an exact selection");
@@ -215,6 +294,11 @@ fn unique_alias_keeps_its_inherited_function_selection_identity() {
         call.as_str(),
         "aliasA",
         "the call keeps the exposed alias as its display spelling"
+    );
+    assert_eq!(
+        call.target_def_id(),
+        Some(exposed_alias),
+        "the call occurrence keeps the exposed alias identity while its collected body uses the inherited implementation"
     );
 
     let selected = call
@@ -239,5 +323,82 @@ fn unique_alias_keeps_its_inherited_function_selection_identity() {
     assert!(
         !implementation.body.is_empty(),
         "selection must reach the inherited algorithm body, not the empty alias shell"
+    );
+}
+
+#[test]
+fn parsed_source_aliases_keep_sibling_package_selections_exact() {
+    let fixture = Fixture::prepare(
+        SOURCE_ALIAS_REDECLARES,
+        "<function_selection_identity_source_aliases>",
+        "P.Siblings",
+    );
+    let source_alias = required_def_id(&fixture.tree, "P.Holder.Medium");
+    let medium_a = required_def_id(&fixture.tree, "P.MediumA");
+    let medium_b = required_def_id(&fixture.tree, "P.MediumB");
+    let function_a = required_def_id(&fixture.tree, "P.MediumA.f");
+    let function_b = required_def_id(&fixture.tree, "P.MediumB.f");
+    assert_ne!(source_alias, medium_a);
+    assert_ne!(source_alias, medium_b);
+    assert_ne!(medium_a, medium_b);
+    assert_ne!(function_a, function_b);
+
+    let first = fixture
+        .overlay
+        .components
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "first")
+        .expect("first sibling instance");
+    let second = fixture
+        .overlay
+        .components
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "second")
+        .expect("second sibling instance");
+    let first_override = source_alias_override(first, source_alias);
+    let second_override = source_alias_override(second, source_alias);
+    assert_eq!(first_override.alias_def_id, source_alias);
+    assert_eq!(second_override.alias_def_id, source_alias);
+    assert_eq!(first_override.target_def_id, medium_a);
+    assert_eq!(second_override.target_def_id, medium_b);
+
+    let source_calls = source_alias_function_calls(&fixture.overlay);
+    assert_eq!(
+        source_calls.len(),
+        2,
+        "both sibling calls retain source spelling"
+    );
+    assert!(source_calls.iter().all(|reference| {
+        reference.root_def_id() == Some(source_alias)
+            && reference.target_def_id() != Some(source_alias)
+    }));
+    assert_eq!(
+        source_calls
+            .iter()
+            .filter_map(|reference| reference.target_def_id())
+            .collect::<Vec<_>>(),
+        vec![function_a, function_b],
+        "instantiation selects each sibling's concrete function while preserving the source alias prefix"
+    );
+
+    let model = fixture
+        .flatten()
+        .expect("sibling source aliases select exact function implementations");
+    let mut flat_calls = CallReferences::default();
+    for equation in &model.equations {
+        flat_calls.visit_expression(&equation.residual);
+    }
+    let selected = flat_calls
+        .references
+        .iter()
+        .filter_map(|reference| reference.target_def_id())
+        .collect::<Vec<_>>();
+    assert!(
+        selected.contains(&function_a),
+        "first selected implementation survives"
+    );
+    assert!(
+        selected.contains(&function_b),
+        "second selected implementation survives"
     );
 }

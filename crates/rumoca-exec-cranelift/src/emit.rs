@@ -203,6 +203,7 @@ pub(crate) struct CompiledResidualRows {
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
     output_scratch: RefCell<Vec<f64>>,
+    projection_scratch: RefCell<Vec<f64>>,
     jit_call_count: Cell<usize>,
     _module: OwnedJitModule,
 }
@@ -213,6 +214,7 @@ pub(crate) struct CompiledAssignmentSchedule {
     input_requirements: InputRequirements,
     required_y_len: usize,
     rows: usize,
+    stop_on_nonfinite: bool,
     _module: OwnedJitModule,
 }
 
@@ -242,6 +244,29 @@ impl CompiledAssignmentSchedule {
             unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t) }
         });
         status::check(status)
+    }
+
+    pub(crate) fn call_torn(
+        &self,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[ExternalTableData],
+    ) -> Result<Option<bool>, CompileError> {
+        if !self.stop_on_nonfinite {
+            return Ok(None);
+        }
+        validate_input_requirements(self.input_requirements, y, p, None)?;
+        if y.len() < self.required_y_len {
+            return Err(CompileError::Input(
+                "torn assignment target storage is too short".into(),
+            ));
+        }
+        let status = with_active_external_tables(external_tables, || {
+            // SAFETY: exact input and target extents were checked above.
+            unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t) }
+        });
+        status::check_torn(status).map(Some)
     }
 
     pub(crate) fn rows(&self) -> usize {
@@ -606,6 +631,7 @@ fn compile_residual_rows_attached(
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
         output_scratch: RefCell::new(Vec::new()),
+        projection_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
         _module: emitter.module,
     })
@@ -745,24 +771,17 @@ pub(crate) fn compile_assignment_schedule(
     rows: &[Vec<LinearOp>],
     target_y_indices: &[usize],
 ) -> Result<CompiledAssignmentSchedule, CompileError> {
-    compile_assignment_schedule_attached(rows, target_y_indices, None)
+    compile_assignment_schedule_attached(rows, target_y_indices, None, false)
 }
 
-pub(crate) fn compile_assignment_schedule_with_pure_calls(
-    rows: &[Vec<LinearOp>],
-    target_y_indices: &[usize],
-    pure_calls: Rc<typed_program::CompiledPureCallTable>,
-) -> Result<CompiledAssignmentSchedule, CompileError> {
-    compile_assignment_schedule_attached(rows, target_y_indices, Some(pure_calls))
-}
-
-fn compile_assignment_schedule_attached(
+pub(crate) fn compile_assignment_schedule_attached(
     rows: &[Vec<LinearOp>],
     target_y_indices: &[usize],
     pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
+    stop_on_nonfinite: bool,
 ) -> Result<CompiledAssignmentSchedule, CompileError> {
     let row_refs = rows.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    compile_assignment_schedule_slices(&row_refs, target_y_indices, pure_calls)
+    compile_assignment_schedule_slices(&row_refs, target_y_indices, pure_calls, stop_on_nonfinite)
 }
 
 pub(crate) fn compile_exact_assignment_schedule(
@@ -800,13 +819,14 @@ pub(crate) fn compile_exact_assignment_schedule(
         .iter()
         .map(|block| block.programs()[0].as_slice())
         .collect::<Vec<_>>();
-    compile_assignment_schedule_slices(&rows, &targets, pure_calls)
+    compile_assignment_schedule_slices(&rows, &targets, pure_calls, false)
 }
 
 fn compile_assignment_schedule_slices(
     rows: &[&[LinearOp]],
     target_y_indices: &[usize],
     pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
+    stop_on_nonfinite: bool,
 ) -> Result<CompiledAssignmentSchedule, CompileError> {
     let output_count = rows.iter().try_fold(0usize, |count, row| {
         count.checked_add(ScalarProgramBlock::program_output_count(row))
@@ -818,10 +838,15 @@ fn compile_assignment_schedule_slices(
             target_y_indices.len()
         )));
     }
+    if stop_on_nonfinite && rows.iter().any(|row| !torn_row_has_typed_failures(row)) {
+        return Err(CompileError::Backend(
+            "torn schedule contains an operation without typed native failure propagation".into(),
+        ));
+    }
     let plans = plan_rows(rows)?;
     for (row, plan) in rows.iter().zip(&plans) {
         validate_row_supported_by_jit(row, RowKind::Residual)?;
-        if plan.output_count() == 0 {
+        if plan.output_count() == 0 || (stop_on_nonfinite && plan.output_count() != 1) {
             return Err(CompileError::Input(
                 "assignment schedule programs must have at least one output".to_string(),
             ));
@@ -834,7 +859,7 @@ fn compile_assignment_schedule_slices(
         .max()
         .map_or(0, |index| index.saturating_add(1));
     let mut emitter = CraneliftEmitter::new(pure_calls.as_deref())?;
-    let func_id = emitter.compile_assignment_schedule(rows, target_y_indices)?;
+    let func_id = emitter.compile_assignment_schedule(rows, target_y_indices, stop_on_nonfinite)?;
     finalize_jit_module(&mut emitter.module)?;
     let jit = finalized_assignment_schedule_fn(&emitter.module, func_id)?;
     Ok(CompiledAssignmentSchedule {
@@ -843,6 +868,7 @@ fn compile_assignment_schedule_slices(
         input_requirements,
         required_y_len,
         rows: rows.len(),
+        stop_on_nonfinite,
         _module: emitter.module,
     })
 }
@@ -1077,6 +1103,36 @@ fn validate_row_supported_by_jit(row: &[LinearOp], kind: RowKind) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// Refuse admission where the legacy scalar ABI turns execution errors into
+/// NaN. No runtime retry can distinguish such an error from numeric decline.
+fn torn_row_has_typed_failures(row: &[LinearOp]) -> bool {
+    row.iter().all(|op| {
+        matches!(
+            op,
+            LinearOp::Const { .. }
+                | LinearOp::LoadTime { .. }
+                | LinearOp::LoadY { .. }
+                | LinearOp::LoadP { .. }
+                | LinearOp::Move { .. }
+                | LinearOp::Unary { .. }
+                | LinearOp::Binary { .. }
+                | LinearOp::Compare { .. }
+                | LinearOp::Select { .. }
+                | LinearOp::DotProduct { .. }
+                | LinearOp::MatrixMultiply { .. }
+                | LinearOp::TensorBinary { .. }
+                | LinearOp::TensorCross { .. }
+                | LinearOp::TensorTranspose { .. }
+                | LinearOp::TensorConcatenate { .. }
+                | LinearOp::TensorFill { .. }
+                | LinearOp::TensorIdentity { .. }
+                | LinearOp::TensorLoad { .. }
+                | LinearOp::PureCall { .. }
+                | LinearOp::StoreOutput { .. }
+        )
+    })
 }
 
 fn row_uses_table_ops(row: &[LinearOp]) -> bool {
@@ -1735,6 +1791,7 @@ impl CraneliftEmitter {
         &mut self,
         rows: &[R],
         target_y_indices: &[usize],
+        stop_on_nonfinite: bool,
     ) -> Result<FuncId, CompileError> {
         for row in rows {
             self.ensure_fold_programs(row.as_ref(), RowKind::Residual)?;
@@ -1810,7 +1867,7 @@ impl CraneliftEmitter {
                     fold_carried_versions: Vec::new(),
                     known_constants: HashMap::new(),
                 };
-                row_lower.lower_assignments(row, targets)?;
+                row_lower.lower_assignments(row, targets, stop_on_nonfinite)?;
                 target_offset += output_count;
             }
             status::succeed(&mut fb);
@@ -2163,6 +2220,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         &mut self,
         row: &[LinearOp],
         targets: &[usize],
+        stop_on_nonfinite: bool,
     ) -> Result<(), CompileError> {
         let mut outputs = Vec::with_capacity(targets.len());
         for op in row.iter().cloned() {
@@ -2174,6 +2232,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 outputs.len(),
                 targets.len()
             )));
+        }
+        if stop_on_nonfinite {
+            for &value in &outputs {
+                status::require_finite_assignment(self.fb, value);
+            }
         }
         for (value, &target) in outputs.into_iter().zip(targets) {
             let offset = target

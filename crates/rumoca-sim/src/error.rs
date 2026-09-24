@@ -175,6 +175,7 @@ impl SimError {
 impl From<RuntimeSolveError> for SimError {
     fn from(value: RuntimeSolveError) -> Self {
         match value {
+            RuntimeSolveError::ProjectionNonConvergence { message } => Self::SolveIr(message),
             RuntimeSolveError::SolveIr { message, span } => {
                 let message = match span {
                     Some(span) => format!("{message} @ {span:?}"),

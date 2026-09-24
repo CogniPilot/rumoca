@@ -82,6 +82,7 @@ fn application(source: &ScalarProgramBlock, rows: Vec<usize>) -> ProjectionJacob
             rows,
             y_indices: vec![1, 0],
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         }],
     };
@@ -106,7 +107,21 @@ fn prepared_projection_matches_selected_jvp_at_fresh_points_and_keeps_code_alive
     let application = application(&source, vec![3, 7]);
     let compiled = compile_jacobian_scalar_program_block(&source).unwrap();
     let prepared = compiled.prepare_projection(&application).unwrap();
-    for (y, p, t) in [([3.0, 4.0], 2.0, 0.5), ([-1.0, 9.0], 8.0, 2.0)] {
+    assert_eq!(application.output_len(), 3);
+    assert_eq!(application.value_layout().locate(0, 1), Some(None));
+    let mut dense_sized = [99.0; 4];
+    assert!(
+        prepared
+            .call(&[3.0, 4.0], &[2.0], 0.5, &[], &mut dense_sized)
+            .is_err()
+    );
+    assert_eq!(dense_sized, [99.0; 4]);
+    let mut out = [f64::NAN, 99.0, -37.0];
+    for (y, p, t) in [
+        ([3.0, 4.0], 2.0, 0.5),
+        ([-1.0, 9.0], 8.0, 2.0),
+        ([0.0, -2.0], 0.0, 0.0),
+    ] {
         let mut expected = [0.0; 4];
         for (column, seed) in [[0.0, 1.0], [1.0, 0.0]].iter().enumerate() {
             expected[2 * column + 1] = compiled
@@ -119,18 +134,20 @@ fn prepared_projection_matches_selected_jvp_at_fresh_points_and_keeps_code_alive
             }
         }
         let before = compiled.jit.program_call_count();
-        let mut out = [99.0; 4];
         prepared.call(&y, &[p], t, &[], &mut out).unwrap();
-        assert_eq!(out.map(f64::to_bits), expected.map(f64::to_bits));
+        assert_eq!(
+            out.map(f64::to_bits),
+            [expected[0], expected[1], expected[3]].map(f64::to_bits)
+        );
         assert_eq!(compiled.jit.program_call_count() - before, 3);
     }
     drop(compiled);
     drop(source);
-    let mut out = [99.0; 4];
+    let mut out = [99.0; 3];
     prepared
         .call(&[3.0, 4.0], &[2.0], 0.5, &[], &mut out)
         .unwrap();
-    assert_eq!(out, [0.5, 2.0, 0.0, 3.0]);
+    assert_eq!(out, [0.5, 2.0, 3.0]);
 }
 
 #[test]
@@ -175,7 +192,7 @@ fn prepared_projection_preserves_output_on_failure_and_clears_seeds_before_reuse
     prepared
         .call(&[3.0, 4.0], &[2.0], 1.0, &tables, &mut out)
         .unwrap();
-    assert_eq!(out, [2.0, 12.0, 3.0, 12.0]);
+    assert_eq!(out, [2.0, 3.0, 12.0, 12.0]);
 }
 
 fn domain_primal() -> ScalarProgramBlock {
@@ -258,8 +275,8 @@ fn prepared_projection_compiles_a_source_bound_selected_seed_kernel() {
     let prepared = compiled.prepare_projection(&specialized).unwrap();
     drop(compiled);
     for (y, p, t) in [([3.0, 4.0], 2.0, 0.5), ([-1.0, 9.0], 8.0, 2.0)] {
-        let mut expected = [0.0; 4];
-        let mut actual = [0.0; 4];
+        let mut expected = [0.0; 3];
+        let mut actual = [0.0; 3];
         general.call(&y, &[p], t, &[], &mut expected).unwrap();
         prepared.call(&y, &[p], t, &[], &mut actual).unwrap();
         assert_eq!(actual.map(f64::to_bits), expected.map(f64::to_bits));
@@ -278,4 +295,68 @@ fn projection_domain_rejects_even_an_unused_seed_outside_its_unknowns() {
         ScalarProgramBlock::with_output_indices(vec![program], vec![fixture_span()], vec![7, 3])
             .unwrap();
     assert!(domain.with_lowered_derivative(derivative).is_none());
+}
+
+#[test]
+fn prepared_mixed_projection_matches_reverse_and_forward_at_fresh_coordinates() {
+    use rumoca_eval_solve::{PreparedScalarProgramBlock, reverse};
+    let original = domain_primal();
+    let mut forward = original.programs()[0].clone();
+    *forward.last_mut().unwrap() = LinearOp::StoreOutputRange {
+        start: 8,
+        count: 1,
+        stride: 1,
+    };
+    let mut scalar = original.programs()[0].clone();
+    *scalar.last_mut().unwrap() = LinearOp::StoreOutput { src: 9 };
+    let primal = ScalarProgramBlock::with_output_indices(
+        vec![forward, scalar],
+        vec![fixture_span(); 2],
+        vec![7, 3],
+    )
+    .unwrap();
+    let primal = PreparedScalarProgramBlock::new(primal).unwrap();
+    assert!(!primal.reverse_row_y_gradient_supported(0));
+    assert!(primal.reverse_row_y_gradient_supported(1));
+    let source = source();
+    let compiled = compile_jacobian_scalar_program_block(&source).unwrap();
+    let prepared = compiled
+        .prepare_projection(&application(&source, vec![3, 7]))
+        .unwrap();
+    let mut scratch = reverse::ReverseScratch::default();
+    for (y, p, t) in [
+        ([3.0, 4.0], 2.0, 0.5),
+        ([-1.0, 9.0], -8.0, 2.0),
+        ([0.0, 2.0], 0.0, 0.0),
+    ] {
+        let mut actual = [99.0; 3];
+        prepared.call(&y, &[p], t, &[], &mut actual).unwrap();
+        // Rows [3, 7], columns [y1, y0]; (0, 1) is structurally absent.
+        assert_eq!(actual, [t, p, y[0]]);
+        let mut gradient = [99.0; 2];
+        assert!(
+            primal
+                .reverse_row_y_gradient(
+                    1,
+                    &reverse::ReverseInputs {
+                        y: &y,
+                        p: &[p],
+                        t,
+                        context: Default::default()
+                    },
+                    &mut gradient,
+                    &mut scratch,
+                )
+                .unwrap()
+        );
+        assert_eq!([0.0, actual[0]], gradient);
+        for (column, seed) in [[0.0, 1.0], [1.0, 0.0]].iter().enumerate() {
+            assert_eq!(
+                actual[column + 1],
+                compiled
+                    .call_program_output((0, 0), &y, &[p], t, seed, &[])
+                    .unwrap()
+            );
+        }
+    }
 }

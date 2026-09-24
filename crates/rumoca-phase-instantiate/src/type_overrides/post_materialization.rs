@@ -5,8 +5,11 @@
 //! root overlay is complete, this pass uses structured occurrence scopes to
 //! re-prove those deferred member tails without rendered-name recovery.
 
-use super::deferred_references::{DynamicExpressionTargetBatch, SelectedComponentTypes};
+use super::deferred_references::{
+    ComponentTypeIndex, DynamicExpressionTargetBatch, SelectedComponentTypes,
+};
 use super::override_map::TypeOverrideMap;
+use super::selected_class_members::MemberResolutionCache;
 use crate::{InstantiateError, InstantiateResult};
 use indexmap::IndexMap;
 use rumoca_core::{ComponentPath, DefId, InstanceId};
@@ -46,10 +49,11 @@ enum ComponentExpressionSurface {
 pub(crate) fn resolve_post_materialization_component_targets(
     tree: &ast::ClassTree,
     overlay: &mut ast::InstanceOverlay,
+    component_type_index: &ComponentTypeIndex,
 ) -> InstantiateResult<()> {
     let index = build_scope_proofs(tree, overlay)?;
     for component in overlay.components.values_mut() {
-        resolve_component_surfaces(component, &index, tree)?;
+        resolve_component_surfaces(component, &index, tree, component_type_index)?;
     }
     Ok(())
 }
@@ -115,6 +119,7 @@ fn resolve_component_surfaces(
     component: &mut ast::InstanceData,
     index: &ProofIndex,
     tree: &ast::ClassTree,
+    component_type_index: &ComponentTypeIndex,
 ) -> InstantiateResult<()> {
     let owner = component.owner_class_id.ok_or_else(|| {
         Box::new(InstantiateError::missing_source_context(format!(
@@ -124,31 +129,32 @@ fn resolve_component_surfaces(
     })?;
     let mut grouped = IndexMap::<InstanceId, Vec<ComponentExpressionSurface>>::new();
 
-    if component.binding.is_some() {
-        let scope = binding_scope(
-            component,
+    for (expression, written_scope, label, surface) in [
+        (
             component.binding.as_ref(),
-            owner,
-            &index.scope_ids,
-            &index.selected_roots,
+            component.binding_value_scope.as_ref(),
             "binding",
-        )?;
-        push_surface(&mut grouped, scope, ComponentExpressionSurface::Binding);
-    }
-    if component.binding_source.is_some() {
-        let scope = binding_scope(
-            component,
+            ComponentExpressionSurface::Binding,
+        ),
+        (
             component.binding_source.as_ref(),
-            owner,
-            &index.scope_ids,
-            &index.selected_roots,
+            component.binding_source_scope.as_ref(),
             "binding source",
-        )?;
-        push_surface(
-            &mut grouped,
-            scope,
             ComponentExpressionSurface::BindingSource,
-        );
+        ),
+    ] {
+        if expression.is_some() {
+            let scope = binding_scope(
+                component,
+                expression,
+                owner,
+                written_scope,
+                &index.scope_ids,
+                &index.selected_roots,
+                label,
+            )?;
+            push_surface(&mut grouped, scope, surface);
+        }
     }
     for (name, expression, surface) in [
         (
@@ -203,10 +209,13 @@ fn resolve_component_surfaces(
         if proof.overrides.is_empty() && proof.selected_component_types.is_empty() {
             continue;
         }
+        let mut member_cache = MemberResolutionCache::default();
         let mut batch = DynamicExpressionTargetBatch::new(
             tree,
             &proof.overrides,
             &proof.selected_component_types,
+            component_type_index,
+            &mut member_cache,
         );
         for surface in surfaces {
             transform_surface(&mut batch, component, surface);
@@ -220,6 +229,7 @@ fn binding_scope(
     component: &ast::InstanceData,
     expression: Option<&ast::Expression>,
     owner: InstanceId,
+    written_scope: Option<&ast::QualifiedName>,
     scope_ids: &FxHashMap<ComponentPath, InstanceId>,
     selected_roots: &FxHashSet<DefId>,
     surface: &str,
@@ -229,7 +239,7 @@ fn binding_scope(
     }
     source_scope(
         component,
-        component.binding_source_scope.as_ref(),
+        written_scope,
         expression,
         scope_ids,
         selected_roots,
@@ -300,7 +310,7 @@ fn push_surface(
 }
 
 fn transform_surface(
-    batch: &mut DynamicExpressionTargetBatch<'_>,
+    batch: &mut DynamicExpressionTargetBatch<'_, '_>,
     component: &mut ast::InstanceData,
     surface: ComponentExpressionSurface,
 ) {

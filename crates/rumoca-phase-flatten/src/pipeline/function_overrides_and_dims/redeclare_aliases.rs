@@ -8,14 +8,16 @@ pub(super) fn collect_extends_redeclare_aliases_for_class(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     class_def: &rumoca_ir_ast::ClassDef,
     class_scope: &str,
-    overrides: &mut rustc_hash::FxHashMap<String, OverrideTarget>,
+    overrides: &mut OverrideEntries,
 ) {
     for ext in &class_def.extends {
         for modification in &ext.modifications {
             if !modification.redeclare {
                 continue;
             }
-            let Some((alias, value)) = redeclare_alias_and_value(&modification.expr) else {
+            let Some((alias, value, slot_ref_def_id)) =
+                redeclare_alias_and_value(&modification.expr)
+            else {
                 continue;
             };
             let Some(target_ref) = redeclare_value_type_ref(tree, class_index, class_scope, value)
@@ -23,20 +25,43 @@ pub(super) fn collect_extends_redeclare_aliases_for_class(
                 continue;
             };
             if is_receiver_alias_type(&target_ref.class_def.class_type) {
-                let function_slot =
-                    extends_function_slot(class_index, class_scope, ext, &alias, &target_ref);
+                let function_slot = extends_function_slot(class_index, ext, &alias, &target_ref);
                 let active_redeclare = leaf_segment(&target_ref.name) != alias;
-                overrides.insert(
+                let target = OverrideTarget::from_resolved_with_modifier_args(
                     alias.clone(),
-                    OverrideTarget::from_resolved_with_modifier_args(
-                        alias,
-                        target_ref,
-                        active_redeclare,
-                        redeclare_value_modifier_args(value),
-                    )
-                    .with_function_slot(function_slot),
+                    target_ref,
+                    active_redeclare,
+                    redeclare_value_modifier_args(value),
+                )
+                .with_function_slot(function_slot);
+                let alias_def_id = redeclare_alias_def_id(
+                    class_index,
+                    ext,
+                    slot_ref_def_id,
+                    &alias,
+                    function_slot,
                 );
+                let target = match alias_def_id {
+                    Some(alias_def_id) => target.with_alias_def_id(alias_def_id),
+                    None => target,
+                };
+                overrides.insert_target(target);
             }
+        }
+    }
+}
+
+fn redeclare_alias_def_id(
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    ext: &rumoca_ir_ast::Extend,
+    slot_ref_def_id: Option<rumoca_core::DefId>,
+    alias: &str,
+    function_slot: FunctionSlot,
+) -> Option<rumoca_core::DefId> {
+    match function_slot {
+        FunctionSlot::Exact(alias_def_id) => Some(alias_def_id),
+        FunctionSlot::Unrelated | FunctionSlot::Unresolved => {
+            slot_ref_def_id.or_else(|| extends_alias_def_id(class_index, ext, alias))
         }
     }
 }
@@ -47,7 +72,6 @@ pub(super) fn collect_extends_redeclare_aliases_for_class(
 /// whose target is not a function carry no function slot.
 fn extends_function_slot(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-    class_scope: &str,
     ext: &rumoca_ir_ast::Extend,
     alias: &str,
     target_ref: &ResolvedClassRef<'_>,
@@ -55,11 +79,7 @@ fn extends_function_slot(
     if target_ref.class_def.class_type != rumoca_core::ClassType::Function {
         return FunctionSlot::Unrelated;
     }
-    let base_def_id = ext.base_def_id.or(ext.base_name.def_id).or_else(|| {
-        resolve_class_in_scope_indexed(class_index, &ext.base_name.to_string(), class_scope)
-            .0
-            .and_then(|class_def| class_def.def_id)
-    });
+    let base_def_id = ext.base_def_id;
     let Some(base_def_id) = base_def_id else {
         return FunctionSlot::Unresolved;
     };
@@ -81,7 +101,7 @@ pub(super) fn collect_element_redeclare_aliases_for_class(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     class_def: &rumoca_ir_ast::ClassDef,
-    overrides: &mut rustc_hash::FxHashMap<String, OverrideTarget>,
+    overrides: &mut OverrideEntries,
 ) {
     for (alias, nested) in &class_def.classes {
         if !nested.is_redeclare || nested.class_type != rumoca_core::ClassType::Function {
@@ -98,11 +118,57 @@ pub(super) fn collect_element_redeclare_aliases_for_class(
             Some(slot_def_id) => FunctionSlot::Exact(slot_def_id),
             None => FunctionSlot::Unresolved,
         };
-        overrides.insert(
-            alias.clone(),
-            OverrideTarget::from_resolved(alias.clone(), target_ref, true)
-                .with_function_slot(function_slot),
-        );
+        let target = OverrideTarget::from_resolved(alias.clone(), target_ref, true)
+            .with_function_slot(function_slot);
+        let target = match function_slot {
+            FunctionSlot::Exact(alias_def_id) => target.with_alias_def_id(alias_def_id),
+            FunctionSlot::Unresolved | FunctionSlot::Unrelated => target,
+        };
+        overrides.insert_target(target);
+    }
+}
+
+fn extends_alias_def_id(
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    ext: &rumoca_ir_ast::Extend,
+    alias: &str,
+) -> Option<rumoca_core::DefId> {
+    let base_def_id = ext.base_def_id?;
+    let base = class_index.get(base_def_id)?;
+    let mut visited = FxHashSet::default();
+    let mut candidates = FxHashSet::default();
+    collect_nested_alias_def_ids_into(class_index, base, alias, &mut visited, &mut candidates);
+    let mut candidates = candidates.into_iter();
+    let candidate = candidates.next()?;
+    candidates.next().is_none().then_some(candidate)
+}
+
+fn collect_nested_alias_def_ids_into(
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    class_def: &rumoca_ir_ast::ClassDef,
+    alias: &str,
+    visited: &mut FxHashSet<rumoca_core::DefId>,
+    candidates: &mut FxHashSet<rumoca_core::DefId>,
+) {
+    let Some(class_def_id) = class_def.def_id else {
+        return;
+    };
+    if !visited.insert(class_def_id) {
+        return;
+    }
+    if let Some(nested) = class_def.classes.get(alias)
+        && let Some(def_id) = nested.def_id
+    {
+        candidates.insert(def_id);
+    }
+    for ext in &class_def.extends {
+        let Some(base_def_id) = ext.base_def_id else {
+            continue;
+        };
+        let Some(base) = class_index.get(base_def_id) else {
+            continue;
+        };
+        collect_nested_alias_def_ids_into(class_index, base, alias, visited, candidates);
     }
 }
 
@@ -121,7 +187,7 @@ pub(crate) fn extends_class_redeclare_target<'a>(
             if !modification.redeclare {
                 continue;
             }
-            let Some((alias, value)) = redeclare_alias_and_value(&modification.expr) else {
+            let Some((alias, value, _)) = redeclare_alias_and_value(&modification.expr) else {
                 continue;
             };
             if alias != member {
@@ -136,17 +202,27 @@ pub(crate) fn extends_class_redeclare_target<'a>(
 
 fn redeclare_alias_and_value(
     expr: &rumoca_ir_ast::Expression,
-) -> Option<(String, &rumoca_ir_ast::Expression)> {
+) -> Option<(
+    String,
+    &rumoca_ir_ast::Expression,
+    Option<rumoca_core::DefId>,
+)> {
     match expr {
-        rumoca_ir_ast::Expression::Modification { target, value, .. } => {
-            Some((single_component_ref_name(target)?, value.as_ref()))
-        }
+        rumoca_ir_ast::Expression::Modification { target, value, .. } => Some((
+            single_component_ref_name(target)?,
+            value.as_ref(),
+            target.target_def_id(),
+        )),
         rumoca_ir_ast::Expression::Binary {
             op: rumoca_core::OpBinary::Assign,
             lhs,
             rhs,
             ..
-        } => Some((redeclare_lhs_alias(lhs)?, rhs.as_ref())),
+        } => Some((
+            redeclare_lhs_alias(lhs)?,
+            rhs.as_ref(),
+            redeclare_lhs_def_id(lhs),
+        )),
         _ => None,
     }
 }
@@ -157,6 +233,14 @@ fn redeclare_lhs_alias(expr: &rumoca_ir_ast::Expression) -> Option<String> {
         rumoca_ir_ast::Expression::ClassModification { target, .. } => {
             single_component_ref_name(target)
         }
+        _ => None,
+    }
+}
+
+fn redeclare_lhs_def_id(expr: &rumoca_ir_ast::Expression) -> Option<rumoca_core::DefId> {
+    match expr {
+        rumoca_ir_ast::Expression::ComponentReference(target)
+        | rumoca_ir_ast::Expression::ClassModification { target, .. } => target.target_def_id(),
         _ => None,
     }
 }

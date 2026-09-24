@@ -341,12 +341,14 @@ fn affine_profiles_follow_output_indices_and_refuse_conflicting_block_ids() {
                     rows: vec![0, 2],
                     y_indices: vec![0, 1],
                     tearing: None,
+                    guarded_tearing: None,
                     alternate_charts: Vec::new(),
                 },
                 crate::AlgebraicProjectionBlock {
                     rows: vec![1, 2],
                     y_indices: vec![0, 1],
                     tearing: None,
+                    guarded_tearing: None,
                     alternate_charts: Vec::new(),
                 },
             ],
@@ -400,6 +402,7 @@ fn affinity_uses_compute_block_output_identity_across_program_nodes() {
                     rows: vec![index],
                     y_indices: vec![index],
                     tearing: None,
+                    guarded_tearing: None,
                     alternate_charts: Vec::new(),
                 })
                 .collect(),

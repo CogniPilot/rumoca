@@ -51,7 +51,9 @@ pub fn instantiate_model_with_outcome_options(
     // `options` is still needed below for the missing-inner retry, so clone it
     // into the context (the inner Vec is empty on the common path).
     let mut ctx = InstantiateContext::with_options(options.clone());
-    ctx.index_source_scopes(tree);
+    if let Err(error) = ctx.index_source_scopes(tree) {
+        return InstantiationOutcome::Error(error);
+    }
 
     // Seed the root modification environment with any synthetic structural
     // overrides. These flow down to nested components exactly like source-level
@@ -96,7 +98,7 @@ pub fn instantiate_model_with_outcome_options(
                     .collect::<std::collections::BTreeSet<_>>()
                     .into_iter()
                     .collect();
-                successful_instantiation_outcome(tree, retry_overlay)
+                successful_instantiation_outcome(tree, retry_overlay, &ctx.component_type_index)
             }
             Err(SyntheticInnerError::StillMissing { names }) => {
                 let span_by_name: std::collections::HashMap<_, _> = missing
@@ -125,15 +127,16 @@ pub fn instantiate_model_with_outcome_options(
             Err(SyntheticInnerError::Rejected(error)) => InstantiationOutcome::Error(error),
         }
     } else {
-        successful_instantiation_outcome(tree, overlay)
+        successful_instantiation_outcome(tree, overlay, &ctx.component_type_index)
     }
 }
 
 fn successful_instantiation_outcome(
     tree: &ast::ClassTree,
     mut overlay: ast::InstanceOverlay,
+    component_type_index: &ComponentTypeIndex,
 ) -> InstantiationOutcome {
-    match resolve_post_materialization_component_targets(tree, &mut overlay) {
+    match resolve_post_materialization_component_targets(tree, &mut overlay, component_type_index) {
         Ok(()) => InstantiationOutcome::Success(overlay),
         Err(error) => InstantiationOutcome::Error(error),
     }

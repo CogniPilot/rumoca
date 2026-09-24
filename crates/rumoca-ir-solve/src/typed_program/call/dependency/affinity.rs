@@ -175,6 +175,7 @@ fn operation_interactions(
 ) -> Option<InputInteractions> {
     let read = |register: &SolveRegisterId| registers[register.index()].clone();
     Some(match operation {
+        SolveOperation::Identity { .. } => InputInteractions::default(),
         SolveOperation::Constant { value, .. } if finite_constant(value.kind()) => {
             InputInteractions::default()
         }

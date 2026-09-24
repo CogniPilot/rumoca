@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::projection::{JacobianMatrix, JacobianStorage};
 
 pub(crate) fn projection_jacobian_source(
     canonical: &solve::ComputeBlock,
@@ -18,7 +19,6 @@ pub(crate) fn projection_jacobian_source(
 
 pub(crate) fn prepare_projection_jacobians(
     structures: &solve::ContinuousStructuralArtifacts,
-    primal: &PreparedScalarProgramBlock,
     source: &solve::ScalarProgramBlock,
     compiled: Option<&dyn CompiledSolveJacobianExpression>,
 ) -> Result<Vec<Option<Rc<dyn CompiledSolveProjectionJacobian>>>, EvalSolveError> {
@@ -33,14 +33,6 @@ pub(crate) fn prepare_projection_jacobians(
             if !source.shares_program_owner(application.canonical_source()) {
                 return Ok(None);
             }
-            let all_forward = application.rows().iter().all(|&row| {
-                primal
-                    .row_output_position(row)
-                    .is_some_and(|(program, _)| !primal.reverse_row_y_gradient_supported(program))
-            });
-            if !all_forward {
-                return Ok(None);
-            }
             compiled
                 .prepare_projection(application)
                 .map_err(|message| EvalSolveError::InvalidRow {
@@ -52,6 +44,55 @@ pub(crate) fn prepare_projection_jacobians(
 }
 
 impl RefreshProjectionModel<'_> {
+    pub(super) fn lease_affine_storage(
+        &self,
+        structure: &solve::JacobianStructure,
+        (rows, y_indices): (&[usize], &[usize]),
+        y_len: usize,
+    ) -> Result<
+        Option<std::cell::RefMut<'_, crate::runtime::projection::JacobianStorage>>,
+        RuntimeSolveError,
+    > {
+        let Some(application) = structure.jacobian_application() else {
+            return Ok(None);
+        };
+        self.runtime.algebraic_refresh.validated_for(
+            self.runtime.state_count,
+            self.runtime.solver_count,
+            y_len,
+        )?;
+        let index = application.block_index();
+        let owns_structure = self
+            .runtime
+            .continuous_structural
+            .algebraic_projection()
+            .get(index)
+            .is_some_and(|owned| std::ptr::eq(owned, structure));
+        if !owns_structure || application.rows() != rows || application.y_indices() != y_indices {
+            return Err(RuntimeSolveError::solve_ir(
+                "affine Jacobian storage source coordinates differ",
+            ));
+        }
+        let slot = self
+            .runtime
+            .affine_jacobian_storage
+            .get(index)
+            .ok_or_else(|| RuntimeSolveError::solve_ir("affine Jacobian storage owner missing"))?;
+        let mut storage = slot.try_borrow_mut().map_err(|_| {
+            RuntimeSolveError::solve_ir("affine Jacobian storage is already leased")
+        })?;
+        let matrix = storage
+            .get_or_insert_with(|| JacobianStorage::new(structure, rows.len(), y_indices.len()));
+        if matrix.shape() != (rows.len(), y_indices.len()) {
+            return Err(RuntimeSolveError::solve_ir(
+                "affine Jacobian storage dimensions differ",
+            ));
+        }
+        Ok(Some(std::cell::RefMut::map(storage, |matrix| {
+            matrix.as_mut().expect("initialized affine matrix storage")
+        })))
+    }
+
     pub(super) fn eval_prepared_jacobian(
         &self,
         structure: &solve::JacobianStructure,

@@ -87,11 +87,22 @@ impl CompiledResidualRows {
         output: &mut [f64],
     ) -> Result<(), CompileError> {
         let mut regs = self.regs_scratch.borrow_mut();
+        self.call_selected_with_registers(program, row, inputs, output, &mut regs)
+    }
+
+    fn call_selected_with_registers(
+        &self,
+        program: usize,
+        row: &CompiledResidualRow,
+        inputs: RowInputs<'_>,
+        output: &mut [f64],
+        regs: &mut Vec<f64>,
+    ) -> Result<(), CompileError> {
         let expected = if row.interpreter_supported
             && should_validate_jit_row(row.validate_with_interpreter)
         {
             let mut expected = vec![0.0; output.len()];
-            execute_row(&row.plan, &mut regs, inputs, &mut expected)?;
+            execute_row(&row.plan, regs, inputs, &mut expected)?;
             Some(expected)
         } else {
             None
@@ -103,7 +114,7 @@ impl CompiledResidualRows {
             call_residual_jit(
                 &compiled.jit,
                 compiled.register_count,
-                &mut regs,
+                regs,
                 inputs.y,
                 inputs.p,
                 inputs.t,
@@ -117,4 +128,84 @@ impl CompiledResidualRows {
         }
         Ok(())
     }
+}
+
+impl CompiledResidualRows {
+    pub(crate) fn call_projection_outputs(
+        &self,
+        selection: &rumoca_ir_solve::ProjectionOutputSelection,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<bool, CompileError> {
+        if out.len() != selection.output_len() {
+            return Err(CompileError::Input(
+                "projection output extent mismatch".into(),
+            ));
+        }
+        if !self.selectable {
+            return Ok(false);
+        }
+        let mut values = self.output_scratch.borrow_mut();
+        let mut projected = self.projection_scratch.borrow_mut();
+        let mut registers = self.regs_scratch.borrow_mut();
+        projected.resize(out.len(), 0.0);
+        projected.copy_from_slice(out);
+        let inputs = RowInputs {
+            y,
+            p,
+            t,
+            seed: None,
+            external_tables,
+        };
+        with_active_external_tables(external_tables, || {
+            for program in selection.programs() {
+                self.call_projection_program(program, inputs, &mut registers, &mut values)?;
+                scatter_projection_outputs(program, &values, &mut projected)?;
+            }
+            Ok::<_, CompileError>(())
+        })?;
+        out.copy_from_slice(&projected);
+        Ok(true)
+    }
+
+    fn call_projection_program(
+        &self,
+        program: &rumoca_ir_solve::ProjectionProgramOutputs,
+        inputs: RowInputs<'_>,
+        registers: &mut Vec<f64>,
+        values: &mut Vec<f64>,
+    ) -> Result<(), CompileError> {
+        let index = program.program();
+        let row = self.rows.get(index).ok_or_else(|| {
+            CompileError::Input(format!("residual program {index} is outside compiled rows"))
+        })?;
+        validate_input_requirements(row_input_requirements(&row.plan), inputs.y, inputs.p, None)?;
+        if row.plan.output_count() != program.output_count() {
+            return Err(CompileError::Input(
+                "projection program output count mismatch".into(),
+            ));
+        }
+        values.resize(program.output_count(), 0.0);
+        self.call_selected_with_registers(index, row, inputs, values, registers)
+    }
+}
+
+fn scatter_projection_outputs(
+    program: &rumoca_ir_solve::ProjectionProgramOutputs,
+    values: &[f64],
+    projected: &mut [f64],
+) -> Result<(), CompileError> {
+    for &(offset, target) in program.placements() {
+        let value = values
+            .get(offset)
+            .ok_or_else(|| CompileError::Input("projection program output is absent".into()))?;
+        let target = projected.get_mut(target).ok_or_else(|| {
+            CompileError::Input("projection output placement is outside buffer".into())
+        })?;
+        *target = *value;
+    }
+    Ok(())
 }

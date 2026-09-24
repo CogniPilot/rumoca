@@ -173,7 +173,11 @@ fn build_host_state(
     let terminated = outcome.termination.is_some();
     let mut states = outcome.states;
     states.resize(state_count, 0.0);
-    let derivatives = MeDerivativeController::over_kernel(Rc::clone(&kernel));
+    let derivatives = MeDerivativeController::over_kernel(
+        Rc::clone(&kernel),
+        options.relative_tolerance(),
+        options.absolute_tolerance(),
+    )?;
     Ok(MeHostState {
         kernel,
         max_step_duration_reference,

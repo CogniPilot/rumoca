@@ -234,11 +234,12 @@ fn scc_to_block<'dae>(
         .iter()
         .filter_map(|&i| match_eq[i].map(|v| incidence.unknowns[v]))
         .collect();
-    let tearing = tear_scc(scc, incidence, match_eq);
+    let (tearing, guarded_tearing) = tear_scc(scc, incidence, match_eq).unwrap_or_default();
     BltBlock::AlgebraicLoop {
         equations,
         unknowns,
         tearing,
+        guarded_tearing,
     }
 }
 
@@ -250,7 +251,10 @@ fn tear_scc(
     scc: &[usize],
     incidence: &Incidence<'_>,
     match_eq: &[Option<usize>],
-) -> Option<crate::tearing::TearingResult> {
+) -> Option<(
+    Option<crate::tearing::TearingResult>,
+    Option<crate::tearing::TearingResult>,
+)> {
     // Local position of each SCC unknown, keyed by its global unknown index.
     // Only equations that are themselves matched contribute an unknown, so a
     // partially matched SCC yields fewer unknowns than equations and cannot be
@@ -279,5 +283,24 @@ fn tear_scc(
                 .collect()
         })
         .collect();
-    crate::tearing::tear_algebraic_loop(scc.len(), &eq_unknowns)
+    let guarded = crate::tearing::tear_algebraic_loop(scc.len(), &eq_unknowns);
+    let proven = incidence.causal_candidates.as_ref().and_then(|proofs| {
+        let candidates = scc
+            .iter()
+            .map(|&eq| {
+                proofs
+                    .row(eq)
+                    .iter()
+                    .filter_map(|global| var_local.get(global).copied())
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        crate::tearing::tear_algebraic_loop_with_causal_candidates(
+            scc.len(),
+            &eq_unknowns,
+            &candidates,
+        )
+    });
+    let guarded = guarded.filter(|plan| Some(plan) != proven.as_ref());
+    Some((proven, guarded))
 }

@@ -46,9 +46,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return Ok(None);
         };
         let key = (self.context_id, expression);
-        if let Some(&(start, _)) = self.tensor_load_cache.get(&key) {
-            return Ok(Some(start));
-        }
         let count = scalar_count(self.view, expression);
         if count <= 1 {
             return Ok(None);
@@ -61,6 +58,21 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .flatten()
         });
         let sampled_base = sampled_base.flatten();
+        if !pre_variable
+            && sampled_base.is_none()
+            && let Some(start) =
+                self.pack_guarded_coordinate(expression, coordinate, variable, span)?
+        {
+            return Ok(Some(start));
+        }
+        // A TensorLoad cache entry is valid only for the storage-backed
+        // coordinate.  A preceding guarded assignment may have installed
+        // same-event registers for this range, so that decision must precede
+        // the cache lookup; otherwise the aggregate read silently bypasses
+        // the scalar guarded-output map.
+        if let Some(&(start, _)) = self.tensor_load_cache.get(&key) {
+            return Ok(Some(start));
+        }
         let first = match (pre_variable, sampled_base) {
             (true, _) => pre_variable_scalar_slot(self.layout, variable, 0, span)?,
             (false, Some(index)) => solve::scalar_slot_p(index),
@@ -104,6 +116,44 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         });
         self.tensor_load_cache.insert(key, (dst_start, count));
         Ok(Some(dst_start))
+    }
+
+    fn pack_guarded_coordinate(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        coordinate: dae::CoordinateView<'dae>,
+        variable: u32,
+        span: Span,
+    ) -> Result<Option<solve::Reg>, LowerError> {
+        let count = scalar_count(self.view, expression);
+        if !self.has_guarded_coordinate(variable, count, span)? {
+            return Ok(None);
+        }
+        let mut registers = Vec::with_capacity(count);
+        for scalar in 0..count {
+            registers.push(self.coordinate(coordinate, scalar, span)?);
+        }
+        let start = self.pack_registers(&registers, span)?;
+        self.tensor_load_cache
+            .insert((self.context_id, expression), (start, count));
+        Ok(Some(start))
+    }
+
+    fn has_guarded_coordinate(
+        &self,
+        variable: u32,
+        count: usize,
+        span: Span,
+    ) -> Result<bool, LowerError> {
+        for scalar in 0..count {
+            let slot = self.coordinate_scalar_slot(variable, scalar, false, None, span)?;
+            if let solve::ScalarSlot::P { index, .. } = slot
+                && self.guarded_output_registers.contains_key(&index)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn coordinate_scalar_slot(
@@ -242,6 +292,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         {
             return self.substituted_parameter_value(parameter.index(), binding, scalar, span);
         }
+        let pre_variable = pre_coordinate_variable(coordinate).is_some();
         let slot = if self.sampled_source
             && let Some(variable) = coordinate_variable(coordinate)
             && let Some(base) = self
@@ -287,6 +338,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             })?;
             variable_scalar_slot(self.layout, variable, scalar, span)?
         };
+        if !pre_variable
+            && let solve::ScalarSlot::P { index, .. } = slot
+            && let Some(&register) = self.guarded_output_registers.get(&index)
+        {
+            return Ok(register);
+        }
         let dst = self.register(span)?;
         match slot {
             solve::ScalarSlot::Y { index, .. } => {

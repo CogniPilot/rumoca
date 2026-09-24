@@ -1,10 +1,11 @@
 //! Unit tests for array component expansion.
 
 use super::{
-    ArrayExpansionScope, array_element_binding_modification,
+    ArrayExpansionScope, SourceScopedModifierProjection, array_element_binding_modification,
     distribute_component_ref_mods_for_element, distribute_mods_for_element,
     index_array_expression_for_element, index_binding_for_element, pre_resolve_array_modifications,
-    project_array_selection_for_element, resolve_mod_to_array,
+    project_array_selection_for_element, projected_source_scoped_modifiers, resolve_mod_to_array,
+    source_scoped_modifier_projections,
 };
 use crate::type_overrides::TypeOverrideMap;
 use rumoca_core::DefId;
@@ -133,10 +134,11 @@ fn test_array_element_binding_preserves_modifier_source_scope() {
     };
     let source = make_comp_ref_expr(&["outer", "x"]);
     let parent_mod = ast::ModificationValue::with_source_scope(
-        source.clone(),
+        make_comp_ref_expr(&["selected", "x"]),
         Some(source),
         Some(ast::QualifiedName::from_dotted("outerScope")),
-    );
+    )
+    .with_value_scope(Some(ast::QualifiedName::from_dotted("selectedScope")));
 
     let value = array_element_binding_modification(
         &scope,
@@ -150,6 +152,10 @@ fn test_array_element_binding_preserves_modifier_source_scope() {
     assert_eq!(
         value.source_scope.map(|scope| scope.to_flat_string()),
         Some("outerScope".to_string())
+    );
+    assert_eq!(
+        value.value_scope.map(|scope| scope.to_flat_string()),
+        Some("selectedScope".to_string())
     );
     let ast::Expression::ArrayIndex { base, .. } =
         value.source.expect("indexed source should be preserved")
@@ -194,6 +200,165 @@ fn test_array_element_binding_preserves_declaration_source_scope() {
         Some("Model.Source".to_string())
     );
     assert_eq!(value.source, Some(binding));
+}
+
+#[test]
+fn test_projected_modifier_preserves_distinct_value_scope() {
+    let tree = ast::ClassTree::new();
+    let effective_components = IndexMap::default();
+    let type_overrides = TypeOverrideMap::new();
+    let imports = Vec::new();
+    let scope = ArrayExpansionScope {
+        tree: &tree,
+        effective_components: &effective_components,
+        type_overrides: &type_overrides,
+        owner_class_id: rumoca_core::InstanceId::new(1),
+        imports: crate::ComponentImports {
+            qualification: &imports,
+            attributes: &[],
+        },
+    };
+    let array = ast::Expression::Array {
+        elements: vec![make_int_expr(1), make_int_expr(2)],
+        kind: rumoca_core::ArrayConstructor::Array,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let original = ast::ModificationValue::with_source_scope(
+        array.clone(),
+        Some(array.clone()),
+        Some(ast::QualifiedName::from_ident("writtenScope")),
+    )
+    .with_value_scope(Some(ast::QualifiedName::from_ident("selectedScope")));
+    let projections = vec![SourceScopedModifierProjection {
+        key: ast::QualifiedName::from_ident("x"),
+        original,
+        value: array.clone(),
+        source: Some(array),
+        value_components: IndexMap::default(),
+        source_components: IndexMap::default(),
+    }];
+
+    let projected = projected_source_scoped_modifiers(&scope, &projections, &[2])
+        .expect("array modifier must project its second member");
+    let value = &projected[0].1;
+    assert_eq!(value.value, make_int_expr(2));
+    assert_eq!(value.source.as_ref(), Some(&make_int_expr(2)));
+    assert_eq!(
+        value
+            .value_scope
+            .as_ref()
+            .map(ast::QualifiedName::to_flat_string),
+        Some("selectedScope".to_string())
+    );
+    assert_eq!(
+        value
+            .source_scope
+            .as_ref()
+            .map(ast::QualifiedName::to_flat_string),
+        Some("writtenScope".to_string())
+    );
+}
+
+#[test]
+fn test_reference_modifier_projects_value_and_source_in_their_own_occurrences() {
+    let root_id = DefId::new(100);
+    let machine_id = DefId::new(101);
+    let mut tree = ast::ClassTree::new();
+    // Each occurrence shadows the other's array root with a scalar.
+    for (name, id, array_member, scalar_shadow) in [
+        ("Root", root_id, "driveData", "wNominal"),
+        ("Machine", machine_id, "wNominal", "driveData"),
+    ] {
+        let mut class = ast::ClassDef {
+            name: make_token(name),
+            def_id: Some(id),
+            ..Default::default()
+        };
+        class.components.insert(
+            array_member.to_string(),
+            ast::Component {
+                name: array_member.to_string(),
+                shape: vec![3],
+                ..ast::Component::empty_with_span(test_span())
+            },
+        );
+        class.components.insert(
+            scalar_shadow.to_string(),
+            ast::Component {
+                name: scalar_shadow.to_string(),
+                ..ast::Component::empty_with_span(test_span())
+            },
+        );
+        tree.definitions.classes.insert(name.to_string(), class);
+        tree.def_map.insert(id, name.to_string());
+        tree.name_map.insert(name.to_string(), id);
+    }
+
+    let mut ctx = crate::InstantiateContext::new();
+    for (id, name, path) in [(root_id, "Root", ""), (machine_id, "Machine", "dcpm")] {
+        ctx.active_instantiations.push(crate::InstantiationFrame {
+            key: crate::InstantiationFrameKey::Def(id),
+            class_name: name.to_string(),
+            instance_path: path.to_string(),
+        });
+    }
+    let value = make_comp_ref_expr(&["driveData", "motorData", "wNominal"]);
+    let source = make_comp_ref_expr(&["wNominal"]);
+    ctx.mod_env_mut().add(
+        ast::QualifiedName::from_dotted("motor.wRef"),
+        ast::ModificationValue::with_source_scope(
+            value,
+            Some(source),
+            Some(ast::QualifiedName::from_ident("dcpm")),
+        )
+        .with_value_scope(Some(ast::QualifiedName::new())),
+    );
+    let effective_components = IndexMap::default();
+    let type_overrides = TypeOverrideMap::new();
+    let imports = Vec::new();
+    let scope = ArrayExpansionScope {
+        tree: &tree,
+        effective_components: &effective_components,
+        type_overrides: &type_overrides,
+        owner_class_id: rumoca_core::InstanceId::new(1),
+        imports: crate::ComponentImports {
+            qualification: &imports,
+            attributes: &[],
+        },
+    };
+
+    let planned = source_scoped_modifier_projections(&scope, "motor", 1, &ctx)
+        .expect("both source occurrences must be available");
+    assert_eq!(
+        planned.len(),
+        1,
+        "selected root must not be looked up in dcpm"
+    );
+    let projected = projected_source_scoped_modifiers(&scope, &planned, &[2])
+        .expect("both reference-valued surfaces must project");
+    let modification = &projected[0].1;
+    let ast::Expression::ComponentReference(value_ref) = &modification.value else {
+        panic!("selected value must remain a component reference")
+    };
+    let ast::Expression::ComponentReference(source_ref) = modification.source.as_ref().unwrap()
+    else {
+        panic!("written source must remain a component reference")
+    };
+    assert_eq!(value_ref.parts.len(), 3);
+    assert_eq!(source_ref.parts.len(), 1);
+    for part in [&value_ref.parts[0], &source_ref.parts[0]] {
+        let Some([ast::Subscript::Expression(ast::Expression::Terminal { token, .. })]) =
+            part.subs.as_deref()
+        else {
+            panic!("the array root must be indexed for the second member")
+        };
+        assert_eq!(token.text.as_ref(), "2");
+    }
+    assert_eq!(modification.value_scope, Some(ast::QualifiedName::new()));
+    assert_eq!(
+        modification.source_scope,
+        Some(ast::QualifiedName::from_ident("dcpm"))
+    );
 }
 
 fn real_lit_value(expr: &ast::Expression) -> f64 {

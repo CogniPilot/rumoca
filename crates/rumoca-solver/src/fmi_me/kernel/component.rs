@@ -4,6 +4,14 @@ use super::event_boundary::event_boundary_horizon;
 use super::indicator_plan::{IndicatorPlanInputs, IndicatorReading, IndicatorZeroSide};
 use super::*;
 
+fn checked_source_parts<'a>(
+    source: MeModelSource<'a>,
+) -> Result<super::super::MeModelParts<'a>, MeError> {
+    source
+        .into_parts()
+        .map_err(|error| contract(error.to_string()))
+}
+
 impl SolveMeKernel {
     pub(crate) fn continuous_state_derivatives_into(
         &self,
@@ -522,10 +530,13 @@ impl SolveMeKernel {
         config: &MeInstanceConfig,
         execution_backend: Option<Rc<dyn crate::SolveExecutionBackend>>,
     ) -> Result<Self, MeError> {
-        let (model, event_indicator_sources, max_step_duration_value_reference, configuration) =
-            source
-                .into_parts()
-                .map_err(|error| contract(error.to_string()))?;
+        let (
+            model,
+            event_indicator_sources,
+            max_step_duration_value_reference,
+            configuration,
+            observable_channels,
+        ) = checked_source_parts(source)?;
         let delay_bearing = !model.problem.events.delays.delay_time_rhs.is_empty();
         if max_step_duration_value_reference.is_some() != delay_bearing {
             return Err(contract(if delay_bearing {
@@ -615,6 +626,7 @@ impl SolveMeKernel {
             last_projection_changed: false,
             termination: None,
             output_meta,
+            observable_channels,
             settled_initialization_y: None,
         })
     }
@@ -1159,7 +1171,7 @@ impl SolveMeKernel {
             &mut solver_y,
             &mut self.params,
             self.time,
-            self.tolerance,
+            settle.tol,
             settle.max_iters,
         )?;
         project_algebraics(

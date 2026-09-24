@@ -279,6 +279,8 @@ pub fn family_member_component(
         reindex.optional_qualified_name(template.declaration_source_scope.as_ref());
     member.binding_source_scope =
         reindex.optional_qualified_name(template.binding_source_scope.as_ref());
+    member.binding_value_scope =
+        reindex.optional_qualified_name(template.binding_value_scope.as_ref());
     member.attribute_source_scopes = template
         .attribute_source_scopes
         .iter()

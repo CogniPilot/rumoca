@@ -626,7 +626,10 @@ fn tearing_normalization_promotes_only_the_inexact_causal_step() {
             solve::CausalStep { row: 1, y_index: 3 },
         ],
     };
-    promote_inexact_causal_steps(&mut tearing, &implicit_scalar_rhs);
+    promote_inexact_causal_steps(
+        &mut tearing,
+        &mut TearingDependencies::new(&implicit_scalar_rhs),
+    );
 
     // The exact step is retained; the inexact step is promoted into the reduced
     // Newton, keeping `tear_y_indices.len() == residual_rows.len()`.
@@ -688,11 +691,182 @@ fn tearing_normalization_promotes_every_step_when_none_are_exact() {
         residual_rows: vec![6],
         causal_steps: vec![solve::CausalStep { row: 0, y_index: 0 }],
     };
-    promote_inexact_causal_steps(&mut tearing, &implicit_scalar_rhs);
+    promote_inexact_causal_steps(
+        &mut tearing,
+        &mut TearingDependencies::new(&implicit_scalar_rhs),
+    );
 
     // With no exact step to retain, back-substitution degenerates to a no-op and
     // the reduced Newton solves every unknown of the block.
     assert!(tearing.causal_steps.is_empty());
     assert_eq!(tearing.tear_y_indices, vec![5, 0]);
     assert_eq!(tearing.residual_rows, vec![6, 0]);
+}
+
+#[test]
+fn tearing_normalization_promotes_forward_dependent_exact_steps() {
+    use solve::LinearOp::{Binary, LoadP, LoadY, StoreOutput};
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("forward-tearing.mo"),
+        0,
+        1,
+    )
+    .require_provenance("forward tearing")
+    .unwrap();
+    let programs = vec![
+        vec![
+            LoadY { dst: 0, index: 0 },
+            LoadY { dst: 1, index: 1 },
+            LoadP { dst: 2, index: 0 },
+            Binary {
+                dst: 3,
+                op: solve::BinaryOp::Mul,
+                lhs: 1,
+                rhs: 2,
+            },
+            Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 3,
+            },
+            StoreOutput { src: 4 },
+        ],
+        vec![
+            LoadY { dst: 0, index: 1 },
+            LoadY { dst: 1, index: 2 },
+            Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            StoreOutput { src: 2 },
+        ],
+        vec![LoadY { dst: 0, index: 2 }, StoreOutput { src: 0 }],
+    ];
+    let prepared = PreparedScalarProgramBlock::new(
+        solve::ScalarProgramBlock::with_source_span(programs, span).unwrap(),
+    )
+    .unwrap();
+    let original = solve::BlockTearing {
+        tear_y_indices: vec![2],
+        residual_rows: vec![2],
+        causal_steps: vec![
+            solve::CausalStep { row: 0, y_index: 0 },
+            solve::CausalStep { row: 1, y_index: 1 },
+        ],
+    };
+    assert!(causal_step_certifies_exact_assignment(&prepared, 0, 0));
+    let mut dependencies = TearingDependencies::new(&prepared);
+    let mut forward = original.clone();
+    promote_inexact_causal_steps(&mut forward, &mut dependencies);
+    assert_eq!(forward.tear_y_indices, vec![2, 0]);
+    assert_eq!(forward.residual_rows, vec![2, 0]);
+    assert_eq!(
+        forward.causal_steps,
+        vec![solve::CausalStep { row: 1, y_index: 1 }]
+    );
+    let block = solve::AlgebraicProjectionBlock {
+        rows: vec![0, 1, 2],
+        y_indices: vec![0, 1, 2],
+        alternate_charts: vec![],
+        guarded_tearing: Some(forward.clone()),
+        tearing: None,
+    };
+    assert!(block.has_valid_tearing_partitions());
+    promote_inexact_causal_steps(&mut forward, &mut dependencies);
+    assert_eq!(
+        block.guarded_tearing.as_ref(),
+        Some(&forward),
+        "normalization is idempotent"
+    );
+    let mut ordered = original;
+    ordered.causal_steps.reverse();
+    let unchanged = ordered.clone();
+    promote_inexact_causal_steps(&mut ordered, &mut dependencies);
+    assert_eq!(ordered, unchanged, "valid supplied order is preserved");
+    assert_eq!(
+        dependencies.analyses, 2,
+        "five causal visits share two prefixes"
+    );
+}
+
+#[test]
+fn tearing_dependencies_bind_program_prefix_and_source() {
+    use solve::LinearOp::{Binary, LoadY, StoreOutput};
+    let residual = |target, input, register| {
+        vec![
+            LoadY {
+                dst: register,
+                index: target,
+            },
+            LoadY {
+                dst: register + 1,
+                index: input,
+            },
+            Binary {
+                dst: register + 2,
+                op: solve::BinaryOp::Sub,
+                lhs: register,
+                rhs: register + 1,
+            },
+            StoreOutput { src: register + 2 },
+        ]
+    };
+    let prepare = |programs| {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("prefix-sharing.mo"),
+            0,
+            1,
+        )
+        .require_provenance("prefix sharing")
+        .unwrap();
+        PreparedScalarProgramBlock::new(
+            solve::ScalarProgramBlock::with_source_span(programs, span).unwrap(),
+        )
+        .unwrap()
+    };
+    let mut multi_output = residual(0, 1, 0);
+    multi_output.extend(residual(2, 3, 3));
+    let prepared = prepare(vec![multi_output, residual(0, 4, 0)]);
+    let mut dependencies = TearingDependencies::new(&prepared);
+    let owned = BTreeSet::from([0, 1, 2, 3, 4]);
+    let first = solve::CausalStep { row: 0, y_index: 0 };
+    let known = BTreeSet::from([1]);
+    assert!(dependencies.inputs_ready(&first, &owned, &known));
+    assert!(!dependencies.inputs_ready(&first, &owned, &BTreeSet::new()));
+    assert_eq!(dependencies.analyses, 1, "readiness is not cached");
+    // Opposite isolators of one output can have different certified prefixes.
+    assert_ne!(
+        prepared
+            .assignment_shape_for_output(0, 0, 0)
+            .unwrap()
+            .expr_eval_len(),
+        prepared
+            .assignment_shape_for_output(0, 0, 1)
+            .unwrap()
+            .expr_eval_len(),
+    );
+    assert!(dependencies.inputs_ready(
+        &solve::CausalStep { row: 0, y_index: 1 },
+        &owned,
+        &BTreeSet::from([0]),
+    ));
+    assert_eq!(dependencies.analyses, 2);
+    // Same program, later output: its exact longer prefix reads Y3, not Y1.
+    let later = solve::CausalStep { row: 1, y_index: 2 };
+    assert!(!dependencies.inputs_ready(&later, &owned, &known));
+    assert!(dependencies.inputs_ready(&later, &owned, &BTreeSet::from([3])));
+    // Same prefix length in another program reads Y4, not Y1.
+    let other = solve::CausalStep { row: 2, y_index: 0 };
+    assert!(!dependencies.inputs_ready(&other, &owned, &known));
+    assert!(dependencies.inputs_ready(&other, &owned, &BTreeSet::from([4])));
+    assert_eq!(dependencies.analyses, 4);
+    // A new prepared source cannot reuse an earlier owner's prefix entry.
+    let different_source = prepare(vec![residual(0, 4, 0)]);
+    let mut independent = TearingDependencies::new(&different_source);
+    assert!(!independent.inputs_ready(&first, &owned, &known));
+    assert!(independent.inputs_ready(&first, &owned, &BTreeSet::from([4])));
+    assert_eq!(independent.analyses, 1);
 }

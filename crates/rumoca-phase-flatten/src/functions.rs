@@ -1106,9 +1106,8 @@ fn convert_function<'tree>(
     // instantiated, so the member tails Resolve deferred across replaceable
     // class edges are proved here before lowering demands exact identity.
     deferred_members::prove_deferred_members_in_algorithms(
-        tree,
         class_index,
-        qualified_name,
+        class_def.def_id,
         &context.components,
         &mut context.algorithms,
     );

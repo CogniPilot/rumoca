@@ -15,20 +15,16 @@ pub(crate) fn override_context_for_component_path(
     scope_path: &ComponentPath,
     component_override_map: &ComponentOverrideMap,
 ) -> (Vec<OverrideTarget>, OverrideFunctionMap) {
-    fn apply_scope_override<'a>(
-        alias: &'a str,
+    fn apply_scope_override(
+        alias: &str,
         target: &OverrideTarget,
         packages: &mut Vec<OverrideTarget>,
-        package_aliases: &mut rustc_hash::FxHashMap<&'a str, usize>,
         function_overrides: &mut OverrideFunctionMap,
     ) {
         if target.is_package() {
-            if let Some(index) = package_aliases.get(alias).copied() {
-                update_package_override_slot(packages, index, target);
-            } else {
-                package_aliases.insert(alias, packages.len());
-                packages.push(target.clone());
-            }
+            let mut package_target = target.clone();
+            package_target.alias = alias.to_string();
+            update_package_override_slot(packages, &package_target);
         }
         update_function_override_entry(function_overrides, alias, target);
     }
@@ -38,31 +34,33 @@ pub(crate) fn override_context_for_component_path(
     }
     let estimated_overrides = override_scope_entry_count(scope_path, component_override_map);
     let mut packages = Vec::new();
-    let mut package_aliases = rustc_hash::FxHashMap::default();
     let mut function_overrides = OverrideFunctionMap::default();
     packages.reserve(estimated_overrides);
-    package_aliases.reserve(estimated_overrides);
     function_overrides.reserve(estimated_overrides);
     for path in scope_chain_inner_to_outer(scope_path) {
         if let Some(path_overrides) = component_override_map.get(&path) {
-            for (alias, target) in path_overrides {
+            for (alias, target) in &path_overrides.by_alias {
+                apply_scope_override(alias, target, &mut packages, &mut function_overrides);
+            }
+            for target in &path_overrides.exact_packages {
                 apply_scope_override(
-                    alias,
+                    &target.alias,
                     target,
                     &mut packages,
-                    &mut package_aliases,
                     &mut function_overrides,
                 );
             }
         }
     }
     if let Some(path_overrides) = root_override_entries(component_override_map) {
-        for (alias, target) in path_overrides {
+        for (alias, target) in &path_overrides.by_alias {
+            apply_scope_override(alias, target, &mut packages, &mut function_overrides);
+        }
+        for target in &path_overrides.exact_packages {
             apply_scope_override(
-                alias,
+                &target.alias,
                 target,
                 &mut packages,
-                &mut package_aliases,
                 &mut function_overrides,
             );
         }
@@ -86,14 +84,17 @@ fn update_function_override_entry(
     }
 }
 
-fn update_package_override_slot(
-    packages: &mut [OverrideTarget],
-    index: usize,
-    target: &OverrideTarget,
-) {
-    if target.active && !packages[index].active {
-        packages[index] = target.clone();
+fn update_package_override_slot(packages: &mut Vec<OverrideTarget>, target: &OverrideTarget) {
+    if let Some(existing) = packages.iter_mut().find(|existing| {
+        existing.alias_def_id == target.alias_def_id
+            && (target.alias_def_id.is_some() || existing.def_id == target.def_id)
+    }) {
+        if target.active && !existing.active {
+            *existing = target.clone();
+        }
+        return;
     }
+    packages.push(target.clone());
 }
 
 pub(crate) fn override_aliases_for_component_path(
@@ -148,7 +149,7 @@ fn scope_chain_inner_to_outer(
 
 fn root_override_entries(
     component_override_map: &ComponentOverrideMap,
-) -> Option<&rustc_hash::FxHashMap<String, OverrideTarget>> {
+) -> Option<&OverrideEntries> {
     component_override_map.get(&ComponentPath::root())
 }
 
@@ -161,11 +162,11 @@ fn override_scope_entry_count(
     }
     let scoped_count = scope_chain_inner_to_outer(scope_path)
         .filter_map(|path| component_override_map.get(&path))
-        .map(rustc_hash::FxHashMap::len)
+        .map(OverrideEntries::len)
         .sum::<usize>();
     scoped_count
         + root_override_entries(component_override_map)
-            .map(rustc_hash::FxHashMap::len)
+            .map(OverrideEntries::len)
             .unwrap_or(0)
 }
 

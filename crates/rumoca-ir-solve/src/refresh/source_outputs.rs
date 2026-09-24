@@ -6,6 +6,9 @@ use super::{
 };
 use std::ops::Range;
 
+pub(super) type ScalarSourceRows<'a> =
+    std::collections::BTreeMap<usize, (&'a [crate::LinearOp], usize)>;
+
 pub(super) struct SourceOutputs<'source> {
     nodes: Vec<Option<ScalarOutputs<'source>>>,
 }
@@ -33,6 +36,44 @@ impl<'source> SourceOutputs<'source> {
             nodes.push(outputs);
         }
         Ok(Self { nodes })
+    }
+
+    /// Invert issued output identities without constructing another scalar program.
+    pub(super) fn scalar_rows<'a>(
+        &self,
+        source: &'a ComputeBlock,
+    ) -> Result<ScalarSourceRows<'a>, ContinuousRefreshConstructionError> {
+        let mut rows = std::collections::BTreeMap::new();
+        for (node, item) in source.nodes.iter().enumerate() {
+            let ComputeNode::ScalarPrograms(block) = item else {
+                continue;
+            };
+            for (program, operations) in block.programs().iter().enumerate() {
+                let identity = RefreshScalarProgramSource {
+                    node: node as u32,
+                    program: program as u32,
+                };
+                self.append_scalar_outputs(identity, operations, &mut rows)?;
+            }
+        }
+        Ok(rows)
+    }
+
+    fn append_scalar_outputs<'a>(
+        &self,
+        identity: RefreshScalarProgramSource,
+        operations: &'a [crate::LinearOp],
+        rows: &mut ScalarSourceRows<'a>,
+    ) -> Result<(), ContinuousRefreshConstructionError> {
+        for offset in 0..ScalarProgramBlock::program_output_count(operations) {
+            let row = self
+                .get(identity, offset)
+                .ok_or_else(|| refresh_source_overflow("tearing output identity"))?;
+            if rows.insert(row, (operations, offset)).is_some() {
+                return super::refresh_error("duplicate tearing source output".to_string());
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn get(&self, source: RefreshScalarProgramSource, offset: usize) -> Option<usize> {

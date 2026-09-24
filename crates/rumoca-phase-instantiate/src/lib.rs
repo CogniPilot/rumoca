@@ -123,9 +123,10 @@ use type_lookup::{
     TypeInfo, is_type_compatible_with_def_id, lookup_type_info, resolve_primitive_type_id,
 };
 use type_overrides::{
-    SelectedComponentTypes, TypeOverrideMap, apply_type_override, build_type_override_map,
-    resolve_dynamic_equation_targets, resolve_dynamic_expression_targets,
-    resolve_dynamic_statement_targets, resolve_post_materialization_component_targets,
+    ComponentTypeIndex, MemberResolutionCache, SelectedComponentTypes, TypeOverrideMap,
+    apply_type_override, build_type_override_map, resolve_dynamic_equation_targets,
+    resolve_dynamic_expression_targets, resolve_dynamic_statement_targets,
+    resolve_post_materialization_component_targets,
 };
 
 pub use connections::{ConnectionParams, extract_connections, filter_out_connections};
@@ -347,6 +348,8 @@ pub struct InstantiateContext {
     active_instantiations: Vec<InstantiationFrame>,
     /// Source declaration scopes keyed by resolved DefId.
     source_scope_index: SourceScopeIndex,
+    /// Resolved declared types keyed by exact source component identity.
+    component_type_index: ComponentTypeIndex,
     /// Active package/type redeclarations inherited from enclosing component scopes.
     active_type_overrides: Vec<TypeOverrideMap>,
     active_package_constant_aliases: Vec<(String, DefId)>,
@@ -407,14 +410,17 @@ impl InstantiateContext {
             options,
             active_instantiations: Vec::new(),
             source_scope_index: SourceScopeIndex::default(),
+            component_type_index: ComponentTypeIndex::default(),
             active_type_overrides: Vec::new(),
             active_package_constant_aliases: Vec::new(),
             inner_outer_events: 0,
         }
     }
 
-    fn index_source_scopes(&mut self, tree: &ast::ClassTree) {
+    fn index_source_scopes(&mut self, tree: &ast::ClassTree) -> InstantiateResult<()> {
         self.source_scope_index = SourceScopeIndex::from_tree(tree);
+        self.component_type_index = ComponentTypeIndex::from_tree(tree)?;
+        Ok(())
     }
 
     fn class_frame_key(class: &ast::ClassDef) -> Option<InstantiationFrameKey> {
@@ -519,7 +525,7 @@ impl InstantiateContext {
             return;
         };
         let declared_scope = if data.binding_from_modification {
-            data.binding_source_scope
+            data.binding_value_scope
                 .as_ref()
                 .map(ast::QualifiedName::to_flat_string)
         } else {
@@ -880,6 +886,11 @@ fn instantiate_class(
         // For example, if we have `Resistor r[100]`, we compute the template once and
         // reuse it for all 100 instances, only applying per-instance modifications.
         let template = get_or_compute_template(tree, class, &mut ctx.template_cache)?;
+        if !template.reference_def_id_remaps.is_empty() {
+            overlay
+                .inherited_def_id_remaps
+                .insert(instance_id, template.reference_def_id_remaps.clone());
+        }
         // Borrow cached template structures directly to avoid per-instance deep clones.
         let effective_components = ctx
             .component_redeclarations
@@ -982,6 +993,7 @@ fn instantiate_class(
             &qualified_name,
             &type_overrides,
             &selected_component_types,
+            &ctx.component_type_index,
         )?;
 
         let class_data = ast::ClassInstanceData {
@@ -1047,6 +1059,7 @@ fn class_instance_sections(
     qualified_name: &ast::QualifiedName,
     type_overrides: &TypeOverrideMap,
     selected_component_types: &SelectedComponentTypes,
+    component_type_index: &ComponentTypeIndex,
 ) -> InstantiateResult<ClassSections> {
     let source_map = &tree.source_map;
     let eval_ctx = InstantiateEvalCtx {
@@ -1083,6 +1096,7 @@ fn class_instance_sections(
         tree,
         type_overrides,
         selected_component_types,
+        component_type_index,
         &mut sections,
     )?;
     Ok(sections)
@@ -1092,8 +1106,10 @@ fn resolve_dynamic_section_targets(
     tree: &ast::ClassTree,
     type_overrides: &TypeOverrideMap,
     selected_component_types: &SelectedComponentTypes,
+    component_type_index: &ComponentTypeIndex,
     sections: &mut ClassSections,
 ) -> InstantiateResult<()> {
+    let mut member_cache = MemberResolutionCache::default();
     for equation in sections
         .equations
         .iter_mut()
@@ -1103,6 +1119,8 @@ fn resolve_dynamic_section_targets(
             tree,
             type_overrides,
             selected_component_types,
+            component_type_index,
+            &mut member_cache,
             std::mem::take(&mut equation.equation),
         )?;
     }
@@ -1116,6 +1134,8 @@ fn resolve_dynamic_section_targets(
             tree,
             type_overrides,
             selected_component_types,
+            component_type_index,
+            &mut member_cache,
             std::mem::take(&mut statement.statement),
         )?;
     }
@@ -1141,6 +1161,7 @@ struct InstanceDataBuild<'a> {
     attrs: ExtractedAttributes,
     binding: Option<ast::Expression>,
     binding_source: Option<ast::Expression>,
+    binding_value_scope: Option<ast::QualifiedName>,
     binding_source_scope: Option<ast::QualifiedName>,
     binding_from_modification: bool,
     type_id: TypeId,
@@ -1218,6 +1239,7 @@ fn build_instance_data(
         state_select: args.attrs.state_select,
         binding: args.binding,
         binding_source: args.binding_source,
+        binding_value_scope: args.binding_value_scope,
         binding_source_scope: args.binding_source_scope,
         attribute_source_scopes: args.attrs.source_scopes,
         binding_from_modification: args.binding_from_modification,
@@ -1363,6 +1385,7 @@ fn instantiate_component(
         mut attrs,
         binding,
         binding_source,
+        binding_value_scope,
         binding_source_scope,
         binding_from_modification,
         binding_is_each,
@@ -1388,7 +1411,12 @@ fn instantiate_component(
     )?;
     let type_id = component_type_id(tree, &type_name, class_def, is_primitive);
     let declaration_source_scope = component_declaration_source_scope(ctx, comp);
-    let binding_scope_for_record_expansion = binding_scope_for_record_expansion(
+    let binding_value_scope_for_record_expansion = binding_scope_for_record_expansion(
+        &qualified_name,
+        binding_from_modification,
+        binding_value_scope.as_ref(),
+    );
+    let binding_source_scope_for_record_expansion = binding_scope_for_record_expansion(
         &qualified_name,
         binding_from_modification,
         binding_source_scope.as_ref(),
@@ -1434,6 +1462,7 @@ fn instantiate_component(
             attrs,
             binding,
             binding_source,
+            binding_value_scope: binding_value_scope.clone(),
             binding_source_scope: binding_source_scope.clone(),
             binding_from_modification,
             type_id,
@@ -1472,7 +1501,9 @@ fn instantiate_component(
             stream,
             binding_for_record_expansion: binding_for_record_expansion.as_ref(),
             binding_source_for_record_expansion: binding_source_for_record_expansion.as_ref(),
-            binding_scope_for_record_expansion: binding_scope_for_record_expansion.as_ref(),
+            binding_scope_for_record_expansion: binding_value_scope_for_record_expansion.as_ref(),
+            binding_source_scope_for_record_expansion: binding_source_scope_for_record_expansion
+                .as_ref(),
             binding_is_each,
             effective_components: scope.effective_components,
             type_overrides: &nested_type_overrides,
@@ -1526,6 +1557,7 @@ struct ComponentBindingInfo {
     attrs: ExtractedAttributes,
     binding: Option<ast::Expression>,
     binding_source: Option<ast::Expression>,
+    binding_value_scope: Option<ast::QualifiedName>,
     binding_source_scope: Option<ast::QualifiedName>,
     binding_from_modification: bool,
     binding_is_each: bool,
@@ -1550,6 +1582,7 @@ fn prepare_component_binding_info(
         mut attrs,
         mut binding,
         mut binding_source,
+        binding_value_scope,
         binding_source_scope,
         binding_from_modification,
         binding_is_each,
@@ -1559,6 +1592,7 @@ fn prepare_component_binding_info(
     // expressions here. A member that stays unproven keeps its absent identity
     // and is reported at the Flat boundary rather than guessed.
     let selected_component_types = SelectedComponentTypes::default();
+    let mut member_cache = MemberResolutionCache::default();
     for expression in [
         &mut binding,
         &mut binding_source,
@@ -1572,6 +1606,8 @@ fn prepare_component_binding_info(
                 tree,
                 type_overrides,
                 &selected_component_types,
+                &ctx.component_type_index,
+                &mut member_cache,
                 value,
             )?);
         }
@@ -1601,6 +1637,7 @@ fn prepare_component_binding_info(
         attrs,
         binding,
         binding_source,
+        binding_value_scope,
         binding_source_scope,
         binding_from_modification,
         binding_is_each,
@@ -1632,6 +1669,7 @@ struct NestedComponentRequest<'a> {
     binding_for_record_expansion: Option<&'a ast::Expression>,
     binding_source_for_record_expansion: Option<&'a ast::Expression>,
     binding_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
+    binding_source_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
     binding_is_each: bool,
     effective_components: &'a IndexMap<String, ast::Component>,
     type_overrides: &'a TypeOverrideMap,
@@ -1669,6 +1707,8 @@ fn instantiate_nested_component_if_needed(
             binding_for_record_expansion: request.binding_for_record_expansion,
             binding_source_for_record_expansion: request.binding_source_for_record_expansion,
             binding_scope_for_record_expansion: request.binding_scope_for_record_expansion,
+            binding_source_scope_for_record_expansion: request
+                .binding_source_scope_for_record_expansion,
             binding_is_each: request.binding_is_each,
             effective_components: request.effective_components,
             type_overrides: request.type_overrides,
@@ -1680,10 +1720,10 @@ fn instantiate_nested_component_if_needed(
 fn binding_scope_for_record_expansion(
     qualified_name: &ast::QualifiedName,
     binding_from_modification: bool,
-    binding_source_scope: Option<&ast::QualifiedName>,
+    binding_occurrence_scope: Option<&ast::QualifiedName>,
 ) -> Option<ast::QualifiedName> {
     if binding_from_modification {
-        return binding_source_scope.cloned();
+        return binding_occurrence_scope.cloned();
     }
 
     Some(parent_instance_scope(qualified_name))
@@ -1714,6 +1754,7 @@ struct NestedInstantiationInput<'a> {
     binding_for_record_expansion: Option<&'a ast::Expression>,
     binding_source_for_record_expansion: Option<&'a ast::Expression>,
     binding_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
+    binding_source_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
     binding_is_each: bool,
     effective_components: &'a IndexMap<String, ast::Component>,
     type_overrides: &'a TypeOverrideMap,
@@ -1740,6 +1781,7 @@ fn instantiate_nested_class(
         binding_for_record_expansion,
         binding_source_for_record_expansion,
         binding_scope_for_record_expansion,
+        binding_source_scope_for_record_expansion,
         binding_is_each,
         effective_components,
         type_overrides,
@@ -1788,7 +1830,8 @@ fn instantiate_nested_class(
             RecordBindingProjection {
                 value: binding_expr,
                 source: binding_source_for_record_expansion,
-                source_scope: binding_scope_for_record_expansion.cloned(),
+                value_scope: binding_scope_for_record_expansion.cloned(),
+                source_scope: binding_source_scope_for_record_expansion.cloned(),
                 each: binding_is_each,
             },
             nested_class,
@@ -1812,8 +1855,6 @@ fn instantiate_nested_class(
         || key_matches_referenced_root(key, &referenced_mod_roots)
     });
 
-    let eq_size = inheritance::equality_constraint_output_size(nested_class);
-
     ctx.push_scope_frame(ScopeFrameInput {
         variability: effective_variability,
         evaluate,
@@ -1822,7 +1863,7 @@ fn instantiate_nested_class(
         flow,
         stream,
         expandable: nested_class.expandable,
-        overconstrained_eq_size: eq_size,
+        overconstrained_eq_size: inheritance::equality_constraint_output_size(nested_class),
         protected: comp.is_protected,
     });
 

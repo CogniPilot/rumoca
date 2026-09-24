@@ -230,6 +230,7 @@ fn family_member_component_reindexes_instance_paths() {
     template.component_ref = Some(component_reference(&template.qualified_name));
     template.declaration_source_scope = Some(qualified(&[("Package", &[]), ("Cell", &[])]));
     template.binding_source_scope = Some(qualified(&[("c", &[1])]));
+    template.binding_value_scope = Some(qualified(&[("c", &[1]), ("selected", &[])]));
     template
         .attribute_source_scopes
         .insert("start".to_string(), qualified(&[("c", &[1])]));
@@ -258,6 +259,10 @@ fn family_member_component_reindexes_instance_paths() {
     assert_eq!(
         member.binding_source_scope.map(|s| s.to_flat_string()),
         Some("c[2]".to_string())
+    );
+    assert_eq!(
+        member.binding_value_scope.map(|s| s.to_flat_string()),
+        Some("c[2].selected".to_string())
     );
     assert_eq!(
         member.attribute_source_scopes["start"].to_flat_string(),

@@ -99,6 +99,8 @@ pub enum BltBlock<'dae> {
         /// Greedy tearing of the loop, when one reduces the solve dimension.
         /// Local indices address `equations` and `unknowns` by position.
         tearing: Option<crate::tearing::TearingResult>,
+        /// Incidence-only candidate; every numerical use remains guarded.
+        guarded_tearing: Option<crate::tearing::TearingResult>,
     },
     StructuredScalar(StructuredScalarBlock),
 }

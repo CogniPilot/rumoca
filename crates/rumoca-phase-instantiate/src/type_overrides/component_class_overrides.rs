@@ -8,6 +8,7 @@ use super::component_redeclare_validation::{
     reject_unmarked_component_class_replacement, validate_component_class_redeclare_target,
     validate_component_source_modifier_metadata,
 };
+use super::override_map::TypeOverrideMap;
 use super::redeclare_modifiers::{
     class_redeclare_modifier_args, class_redeclare_target_ref,
     component_source_modifier_target_name, is_forwarding_component_redeclare,
@@ -26,6 +27,7 @@ pub(crate) fn extract_component_class_overrides(
     comp: &ast::Component,
     target_class: Option<&ast::ClassDef>,
     mod_env: Option<&ast::ModificationEnvironment>,
+    active_overrides: Option<&TypeOverrideMap>,
 ) -> InstantiateResult<ast::ClassOverrideMap> {
     let mut overrides = IndexMap::default();
     let Some(target_class) = target_class else {
@@ -76,7 +78,13 @@ pub(crate) fn extract_component_class_overrides(
             // lexical alias itself would compare the wrong class identity.
             continue;
         }
-        let Some(def_id) = resolve_redeclare_value_def_id(tree, resolved_mod_expr, mod_env)
+        let resolved_target_ref = class_redeclare_target_ref(resolved_mod_expr);
+        let Some(def_id) = resolved_target_ref
+            .as_ref()
+            .and_then(|target| {
+                active_overrides.and_then(|overrides| overrides.target_for_reference(target))
+            })
+            .or_else(|| resolve_redeclare_value_def_id(tree, resolved_mod_expr, mod_env))
             .or_else(|| {
                 class_redeclare_target_ref(resolved_mod_expr)
                     .and_then(|target| resolve_cref_def_id(&target))
@@ -96,23 +104,18 @@ pub(crate) fn extract_component_class_overrides(
             tree,
             &target_name,
             nested_class,
-            mod_expr,
+            resolved_mod_expr,
             def_id,
         )?;
         let modifier_args = resolve_class_override_modifier_targets(
             tree,
             def_id,
-            class_redeclare_modifier_args(mod_expr),
+            class_redeclare_modifier_args(resolved_mod_expr),
         )?;
         overrides.insert(
             alias_def_id,
-            ast::ClassOverride::new(
-                target_name,
-                alias_def_id,
-                def_id,
-                class_redeclare_target_ref(mod_expr),
-            )
-            .with_modifier_args(modifier_args),
+            ast::ClassOverride::new(target_name, alias_def_id, def_id, resolved_target_ref)
+                .with_modifier_args(modifier_args),
         );
     }
 

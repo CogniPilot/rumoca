@@ -329,7 +329,10 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         p: &[f64],
         t: f64,
     ) -> Result<Option<f64>, RuntimeSolveError> {
-        if self.refreshes_algebraic_reads {
+        // A different initialization row may need algebraic reconstruction;
+        // that does not invalidate a direct target assignment for this row.
+        // The caller still certifies the complete settled residual afterward.
+        if self.initial_row_role(output_index) != Some(solve::InitializationRowRole::Solved) {
             return Ok(None);
         }
         let Some(row_idx) = self
@@ -923,6 +926,7 @@ mod tests {
                             rows: vec![0],
                             y_indices: vec![0],
                             tearing: None,
+                            guarded_tearing: None,
                             alternate_charts: Vec::new(),
                         }],
                     },

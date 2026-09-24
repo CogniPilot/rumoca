@@ -12,11 +12,11 @@ use super::constant_expansion::{
     ConstantExpansion, ConstantExpansionId, ConstantSubstitutionEnv, SemanticConstantId,
 };
 use super::constant_lookup::{
-    constant_expr_preserves_array_shape, generated_constant_candidate_exists,
-    named_constructor_arg, reference_key_has_array_shape, resolve_constant_field_access,
-    resolve_constant_value_expr, resolve_constant_value_expr_for_ref,
-    resolve_indexed_constant_field_access, resolve_inline_indexed_constant,
-    resolve_projected_constant_path, resolve_source_constant,
+    conflicting_package_constant_occurrence, constant_expr_preserves_array_shape,
+    generated_constant_candidate_exists, named_constructor_arg, reference_key_has_array_shape,
+    resolve_constant_field_access, resolve_constant_value_expr,
+    resolve_constant_value_expr_for_ref, resolve_indexed_constant_field_access,
+    resolve_inline_indexed_constant, resolve_projected_constant_path, resolve_source_constant,
     resolve_varref_through_constant_aliases, scalar_parameter_literal,
 };
 use super::*;
@@ -288,6 +288,12 @@ fn substitute_indexed_constant_var_ref(
     } else if let Some((identity, value)) = resolve_source_constant(name, env.ctx) {
         substitute_resolved_source_constant(name.as_str(), identity, value, span, env)?
     } else {
+        if conflicting_package_constant_occurrence(name, env.ctx) {
+            return Err(FlattenError::missing_source_context(format!(
+                "indexed package constant `{}` has conflicting occurrence values without a selected callable occurrence",
+                name.as_str()
+            )));
+        }
         if name.target_def_id().is_none()
             && generated_constant_candidate_exists(name.as_str(), env.ctx, env.scope)
         {
@@ -340,6 +346,12 @@ fn substitute_source_scalar_var_ref(
     env: ConstantSubstitutionEnv<'_>,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
     let Some((identity, value)) = resolve_source_constant(name, env.ctx) else {
+        if conflicting_package_constant_occurrence(name, env.ctx) {
+            return Err(FlattenError::missing_source_context(format!(
+                "package constant `{}` has conflicting occurrence values without a selected callable occurrence",
+                name.as_str()
+            )));
+        }
         return Ok(None);
     };
     Ok(Some(substitute_resolved_source_constant(

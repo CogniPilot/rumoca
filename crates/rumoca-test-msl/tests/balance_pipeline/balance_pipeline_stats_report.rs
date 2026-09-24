@@ -498,7 +498,7 @@ fn run_simulation_parity_stages(
     let _parity_watchdog = StageAbortWatchdog::new("parity_stage", 7200);
     println!("MSL parity stage: ensuring OMC references + trace comparison...");
     let stage_start = Instant::now();
-    let outcome = ensure_required_msl_parity_references(summary);
+    let outcome = ensure_required_msl_parity_references(summary, parity_config().all_omc_targets);
     let status = match &outcome {
         MslParityStageOutcome::Ran | MslParityStageOutcome::MergedShardArtifacts => "pass",
         MslParityStageOutcome::DidNotRun(reason) => {
@@ -606,7 +606,8 @@ fn print_simulatable_compilation_rate(summary: &MslSummary) {
 }
 
 fn run_comparator_before_quality_gate<State, Compare, Gate>(
-    simulations_attempted: bool,
+    sim_attempted: usize,
+    all_omc_targets: Option<bool>,
     state: &mut State,
     compare: Compare,
     gate: Gate,
@@ -614,7 +615,7 @@ fn run_comparator_before_quality_gate<State, Compare, Gate>(
     Compare: FnOnce(&mut State) -> MslParityStageOutcome,
     Gate: FnOnce(&MslParityStageOutcome, &mut State),
 {
-    let parity_stage = if simulations_attempted {
+    let parity_stage = if should_run_msl_parity_reference(sim_attempted, all_omc_targets) {
         compare(state)
     } else {
         MslParityStageOutcome::DidNotRun(MslParityUnmeasuredReason::NoSimulationsAttempted)
@@ -643,7 +644,8 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
     // stage, so no gate can abort before every surviving trace is measured.
     assert_msl_run_is_measurable(summary);
     run_comparator_before_quality_gate(
-        summary.sim_attempted > 0,
+        summary.sim_attempted,
+        parity_config().all_omc_targets,
         &mut timing_report,
         |report| {
             let stage = run_simulation_parity_stages(summary, report);
@@ -1000,7 +1002,25 @@ mod tests {
     fn explicit_selected_target_failure_gate_runs_after_comparator() {
         let mut stages = Vec::new();
         run_comparator_before_quality_gate(
-            true,
+            1,
+            None,
+            &mut stages,
+            |stages| {
+                stages.push("comparator");
+                MslParityStageOutcome::Ran
+            },
+            |_stage, stages| stages.push("selected_target_success_gate"),
+        );
+
+        assert_eq!(stages, ["comparator", "selected_target_success_gate"]);
+    }
+
+    #[test]
+    fn all_omc_targets_runs_comparator_before_quality_gate_without_simulation_attempts() {
+        let mut stages = Vec::new();
+        run_comparator_before_quality_gate(
+            0,
+            Some(true),
             &mut stages,
             |stages| {
                 stages.push("comparator");

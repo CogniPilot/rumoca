@@ -13,6 +13,7 @@ use super::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SemanticConstantId {
     Occurrence(ConstantOccurrenceId),
+    PackageMember(rumoca_core::DefId, rumoca_core::DefId),
     Declaration(rumoca_core::DefId),
 }
 

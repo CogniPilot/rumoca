@@ -216,6 +216,7 @@ impl SolveRuntime {
         // execution filter and cannot stand in for these expression leaves.
         write_clock_activation_params(&self.model, p, t);
         for event_iteration in 0..max_iters {
+            let condition_memory_pre = self.condition_memory_snapshot(p)?;
             // Appendix B fixes `pre` for one complete equation pass, then
             // advances ordinary event history atomically from that pass before
             // starting the next one.  Capture the source before any runtime
@@ -268,6 +269,7 @@ impl SolveRuntime {
                 row_filter,
                 event_iteration,
                 root_relation_overrides,
+                &condition_memory_pre,
                 &mut project_algebraics,
             )?;
             if !changed && event_iteration_plan_settled(&self.model, y, p)? {
@@ -285,6 +287,7 @@ impl SolveRuntime {
         row_filter: EventUpdateRowFilter,
         event_iteration: usize,
         root_relation_overrides: &mut Vec<(usize, f64)>,
+        condition_memory_pre: &[(usize, f64)],
         project_algebraics: &mut P,
     ) -> Result<bool, RuntimeSolveError>
     where
@@ -295,6 +298,7 @@ impl SolveRuntime {
             let snapshot = DiscretePreSnapshot {
                 row_filter,
                 root_relation_overrides,
+                condition_memory_pre,
                 event_iteration: event_iteration.max(relation_iteration),
             };
             changed_any |=
@@ -326,6 +330,22 @@ impl SolveRuntime {
             "event condition equations did not converge with fixed pre at t={}",
             input.t
         )))
+    }
+
+    fn condition_memory_snapshot(&self, p: &[f64]) -> Result<Vec<(usize, f64)>, RuntimeSolveError> {
+        let indices = &self.model.problem.events.condition_memory_parameter_indices;
+        let mut snapshot = Vec::new();
+        reserve_runtime_vec_capacity(&mut snapshot, indices.len(), "condition memory snapshot")?;
+        for &index in indices {
+            let value = p.get(index).copied().ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "condition-memory parameter index {index} is outside {} parameters",
+                    p.len()
+                ))
+            })?;
+            snapshot.push((index, value));
+        }
+        Ok(snapshot)
     }
 
     pub(super) fn validate_discrete_event_rows(&self) -> Result<(), RuntimeSolveError> {

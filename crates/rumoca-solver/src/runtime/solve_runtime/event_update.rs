@@ -47,6 +47,10 @@ pub struct ProjectedEventUpdateInput<'a> {
 pub(super) struct DiscretePreSnapshot<'a> {
     pub(super) row_filter: EventUpdateRowFilter,
     pub(super) root_relation_overrides: &'a [(usize, f64)],
+    /// Condition-memory values captured at the start of this outer event pass.
+    /// Inner fixed-pre iterations read these values while current condition
+    /// rows continue writing the live P slots for the next pass.
+    pub(super) condition_memory_pre: &'a [(usize, f64)],
     pub(super) event_iteration: usize,
 }
 

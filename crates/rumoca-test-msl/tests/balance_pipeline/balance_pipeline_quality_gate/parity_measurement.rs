@@ -743,15 +743,14 @@ mod tests {
     }
 
     #[test]
-    fn measured_rejects_a_reference_that_compared_no_models() {
+    fn all_omc_targets_zero_comparison_remains_unmeasured() {
         let measurement = measured_with(gate_input_with(Some("omc 1.0"), Some(stats_with(0, 0))));
         assert!(!measurement.is_measured());
-        assert!(
-            measurement
-                .unmeasured_reason()
-                .expect("zero compared models must demote to unmeasured")
-                .detail()
-                .contains("compared 0 models")
+        assert_eq!(
+            measurement.unmeasured_reason(),
+            Some(&MslParityUnmeasuredReason::ReferenceIncomplete {
+                detail: "reference compared 0 models".to_string()
+            })
         );
     }
 

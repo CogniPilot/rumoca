@@ -140,6 +140,7 @@ fn saturating_reluctance_model(total_flux: f64) -> SaturatingReluctanceModel {
                 rows: vec![0, 1, 2, 3, 4],
                 y_indices: vec![0, 1, 2, 3, 4],
                 tearing: None,
+                guarded_tearing: None,
                 alternate_charts: Vec::new(),
             }],
         },
@@ -259,6 +260,7 @@ impl PartlySolvableProjectionModel {
             rows: vec![0],
             y_indices: vec![0],
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         }
     }
@@ -268,6 +270,7 @@ impl PartlySolvableProjectionModel {
             rows: vec![1],
             y_indices: vec![1],
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         }
     }

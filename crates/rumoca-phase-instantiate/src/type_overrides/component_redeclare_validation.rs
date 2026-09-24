@@ -127,7 +127,12 @@ fn validate_component_redeclare_constraint(
             &super::redeclare_modifiers::class_redeclare_modifier_args(mod_expr),
         )
     } else {
-        crate::inheritance::is_type_subtype(tree, &replacement_name, &constraint_name)
+        crate::inheritance::is_type_subtype_for_redeclaration(
+            tree,
+            &replacement_name,
+            &constraint_name,
+            nested_class.is_replaceable,
+        )
     };
     if !compatible {
         return Err(Box::new(InstantiateError::redeclare_constraint_violation(

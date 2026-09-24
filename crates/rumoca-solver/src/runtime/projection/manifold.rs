@@ -357,7 +357,7 @@ fn evaluate_manifold_block<M: ManifoldProjectionModel>(
     let structure = model
         .manifold_projection_block_structure(block_index)
         .map(solve::JacobianStructure::pattern);
-    let (row_scales, variable_scales) = manifold_block_scales(model, block, &jacobian, structure);
+    let (row_scales, variable_scales) = manifold_block_scales(model, block, &jacobian, structure)?;
     Ok(ManifoldBlockEvaluation {
         full_residual,
         residual,
@@ -552,7 +552,7 @@ fn manifold_block_scales<M: ManifoldProjectionModel>(
     block: &solve::AlgebraicProjectionBlock,
     jacobian: &DMatrix<f64>,
     structure: Option<&solve::StructuralPattern>,
-) -> (Vec<f64>, Vec<f64>) {
+) -> Result<(Vec<f64>, Vec<f64>), RuntimeSolveError> {
     let variable_scales = block
         .y_indices
         .iter()
@@ -563,8 +563,8 @@ fn manifold_block_scales<M: ManifoldProjectionModel>(
         &variable_scales,
         &vec![1.0; block.rows.len()],
         structure,
-    );
-    (row_scales, variable_scales)
+    )?;
+    Ok((row_scales, variable_scales))
 }
 
 #[cfg(test)]
@@ -635,6 +635,7 @@ mod conditioning_tests {
             rows: vec![0],
             y_indices: vec![0, 1],
             tearing: Some(chart_reconstructing_q1()),
+            guarded_tearing: None,
             alternate_charts: vec![chart_reconstructing_q2()],
         }
     }

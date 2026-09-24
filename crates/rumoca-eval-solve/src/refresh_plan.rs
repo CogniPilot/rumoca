@@ -639,10 +639,15 @@ fn normalize_algebraic_projection_tearing(
     let implicit_scalar_rhs = PreparedScalarProgramBlock::new(
         crate::to_scalar_program_projection(&problem.continuous.implicit_rhs)?.into_block(),
     )?;
+    let mut dependencies = TearingDependencies::new(&implicit_scalar_rhs);
     for block in &mut problem.continuous.algebraic_projection_plan.blocks {
         if let Some(tearing) = block.tearing.as_mut() {
-            promote_inexact_causal_steps(tearing, &implicit_scalar_rhs);
+            promote_inexact_causal_steps(tearing, &mut dependencies);
         }
+        if let Some(tearing) = block.guarded_tearing.as_mut() {
+            promote_inexact_causal_steps(tearing, &mut dependencies);
+        }
+        block.deduplicate_tearing();
     }
     Ok(())
 }
@@ -652,17 +657,17 @@ fn normalize_algebraic_projection_tearing(
 ///
 /// A promotion appends the step's unknown to `tear_y_indices` and its row to
 /// `residual_rows` (one of each). Retained causal steps keep their original
-/// relative order and stay valid, because a promoted unknown is fixed as a tear
-/// variable before back-substitution runs. When every step is promoted the
+/// relative order. A second pass promotes exact steps whose inputs are not
+/// available yet; all promoted unknowns are fixed as tears before a sweep. When every step is promoted the
 /// block degenerates to a dense reduced Newton over all its unknowns, which is
 /// exactly what an empty `causal_steps` drives.
 fn promote_inexact_causal_steps(
     tearing: &mut solve::BlockTearing,
-    implicit_scalar_rhs: &PreparedScalarProgramBlock,
+    dependencies: &mut TearingDependencies<'_>,
 ) {
     let mut retained = Vec::with_capacity(tearing.causal_steps.len());
     for step in std::mem::take(&mut tearing.causal_steps) {
-        if causal_step_certifies_exact_assignment(implicit_scalar_rhs, step.row, step.y_index) {
+        if causal_step_certifies_exact_assignment(dependencies.source, step.row, step.y_index) {
             retained.push(step);
         } else {
             tearing.tear_y_indices.push(step.y_index);
@@ -670,6 +675,89 @@ fn promote_inexact_causal_steps(
         }
     }
     tearing.causal_steps = retained;
+    promote_unready_causal_steps(tearing, dependencies);
+}
+
+/// Exact isolation does not prove that its inputs are available in this sweep.
+/// Promote an unready row/target together; the reduced solve supplies that
+/// coordinate before every remaining causal step, preserving the partition.
+fn promote_unready_causal_steps(
+    tearing: &mut solve::BlockTearing,
+    dependencies: &mut TearingDependencies<'_>,
+) {
+    let owned = tearing
+        .tear_y_indices
+        .iter()
+        .copied()
+        .chain(tearing.causal_steps.iter().map(|step| step.y_index))
+        .collect::<BTreeSet<_>>();
+    let mut known = tearing
+        .tear_y_indices
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut retained = Vec::with_capacity(tearing.causal_steps.len());
+    for step in std::mem::take(&mut tearing.causal_steps) {
+        if dependencies.inputs_ready(&step, &owned, &known) {
+            retained.push(step);
+        } else {
+            tearing.tear_y_indices.push(step.y_index);
+            tearing.residual_rows.push(step.row);
+        }
+        known.insert(step.y_index);
+    }
+    tearing.causal_steps = retained;
+}
+
+/// Shares immutable prefix analysis within one normalization invocation. Candidate
+/// readiness is queried afresh against its own evolving known coordinates.
+struct TearingDependencies<'a> {
+    source: &'a PreparedScalarProgramBlock,
+    prefixes: BTreeMap<(usize, usize), solve::ScalarProgramYDependency<'a>>,
+    #[cfg(test)]
+    analyses: usize,
+}
+
+impl<'a> TearingDependencies<'a> {
+    fn new(source: &'a PreparedScalarProgramBlock) -> Self {
+        Self {
+            source,
+            prefixes: BTreeMap::new(),
+            #[cfg(test)]
+            analyses: 0,
+        }
+    }
+
+    fn inputs_ready(
+        &mut self,
+        step: &solve::CausalStep,
+        owned: &BTreeSet<usize>,
+        known: &BTreeSet<usize>,
+    ) -> bool {
+        let Some((program, output)) = self.source.row_output_position(step.row) else {
+            return false;
+        };
+        let Some(shape) = self
+            .source
+            .assignment_shape_for_output(program, output, step.y_index)
+        else {
+            return false;
+        };
+        let eval_len = shape.expr_eval_len();
+        let Some(prefix) = self.source.block().programs()[program].get(..eval_len) else {
+            return false;
+        };
+        let dependencies = self.prefixes.entry((program, eval_len)).or_insert_with(|| {
+            #[cfg(test)]
+            {
+                self.analyses += 1;
+            }
+            solve::ScalarProgramYDependency::new(prefix)
+        });
+        owned
+            .difference(known)
+            .all(|index| !dependencies.assignment_depends_on(shape, *index))
+    }
 }
 
 /// Whether evaluating `row`'s target isolator and writing its value satisfies

@@ -20,22 +20,39 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         candidate[index] = 0.0;
     }
     let structure = model.algebraic_projection_block_structure(block_index);
-    let jacobian = algebraic_block_jacobian(
-        model,
-        &candidate,
-        p,
-        t,
-        &block.rows,
-        &block.y_indices,
-        structure,
-    )?;
+    let storage = structure
+        .map(|owner| {
+            model.lease_affine_jacobian(owner, (&block.rows, &block.y_indices), candidate.len())
+        })
+        .transpose()?
+        .flatten();
+    let jacobian = if let Some(mut matrix) = storage {
+        fill_affine_jacobian(
+            model,
+            (&candidate, p, t),
+            (&block.rows, &block.y_indices),
+            structure,
+            &mut matrix,
+        )?;
+        AffineJacobian::Leased(matrix)
+    } else {
+        AffineJacobian::Owned(JacobianStorage::Dense(algebraic_block_jacobian(
+            model,
+            &candidate,
+            p,
+            t,
+            &block.rows,
+            &block.y_indices,
+            structure,
+        )?))
+    };
     let (row_scales, variable_scales) = algebraic_block_scales(
         model,
         &candidate,
         block,
-        &jacobian,
+        &*jacobian,
         structure.map(solve::JacobianStructure::pattern),
-    );
+    )?;
     let mut system = AffineBlockSystem {
         model,
         parameters: p,
@@ -47,16 +64,24 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         variable_scales,
         structure,
         tolerance: tol,
-        prefer_torn: true,
-        used_torn: std::cell::Cell::new(false),
+        candidate: None,
     };
-    let mut settled = system.project(&mut candidate)?;
-    if !settled && system.used_torn.get() {
-        system.prefer_torn = false;
+    let origin_residual = system.residual(&candidate)?;
+    let mut settled = false;
+    for candidate_kind in block
+        .tearing_candidates()
+        .map(|(kind, _)| Some(kind))
+        .chain(std::iter::once(None))
+    {
+        system.candidate = candidate_kind;
+        candidate.copy_from_slice(y);
         for &index in &block.y_indices {
             candidate[index] = 0.0;
         }
-        settled = system.project(&mut candidate)?;
+        if system.project(&mut candidate, &origin_residual)? {
+            settled = true;
+            break;
+        }
     }
     if !settled {
         return Ok(ProjectionBlockUpdate {
@@ -75,25 +100,39 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
     })
 }
 
+enum AffineJacobian<'a> {
+    Owned(JacobianStorage),
+    Leased(std::cell::RefMut<'a, JacobianStorage>),
+}
+
+impl std::ops::Deref for AffineJacobian<'_> {
+    type Target = JacobianStorage;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(matrix) => matrix,
+            Self::Leased(matrix) => matrix,
+        }
+    }
+}
+
 struct AffineBlockSystem<'a, M> {
     model: &'a M,
     parameters: &'a [f64],
     time: f64,
     block: &'a solve::AlgebraicProjectionBlock,
     block_index: usize,
-    jacobian: DMatrix<f64>,
+    jacobian: AffineJacobian<'a>,
     row_scales: Vec<f64>,
     variable_scales: Vec<f64>,
     structure: Option<&'a solve::JacobianStructure>,
     tolerance: f64,
-    prefer_torn: bool,
-    used_torn: std::cell::Cell<bool>,
+    candidate: Option<solve::TearingCandidate>,
 }
 
 impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
-    fn project(&self, y: &mut [f64]) -> Result<bool, RuntimeSolveError> {
-        let residual = self.residual(y)?;
-        let Some(solution) = self.solve(&residual) else {
+    fn project(&self, y: &mut [f64], origin_residual: &[f64]) -> Result<bool, RuntimeSolveError> {
+        let Some(solution) = self.solve(origin_residual) else {
             return Ok(false);
         };
         for (&index, &value) in self.block.y_indices.iter().zip(solution.iter()) {
@@ -128,12 +167,12 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
         )
     }
 
-    fn scales(&self, y: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    fn scales(&self, y: &[f64]) -> Result<(Vec<f64>, Vec<f64>), RuntimeSolveError> {
         algebraic_block_scales(
             self.model,
             y,
             self.block,
-            &self.jacobian,
+            &*self.jacobian,
             self.structure.map(solve::JacobianStructure::pattern),
         )
     }
@@ -142,7 +181,7 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
         // Conditioning belongs to this fixed matrix. Candidate-dependent
         // scales still certify the fresh source residual in `refine`.
         let system = ScaledNewtonSystem {
-            jacobian: &self.jacobian,
+            jacobian: &*self.jacobian,
             residual,
             row_scales: &self.row_scales,
             variable_scales: &self.variable_scales,
@@ -152,14 +191,11 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
         let finite = |v: &DVector<f64>| {
             v.len() == self.block.y_indices.len() && v.iter().all(|x| x.is_finite())
         };
-        if self.prefer_torn
-            && let Some(delta) = self
+        if let Some(candidate) = self.candidate {
+            return self
                 .model
-                .solve_affine_torn_delta(self.block_index, system)
-                .filter(finite)
-        {
-            self.used_torn.set(true);
-            return Some(delta);
+                .solve_affine_torn_candidate(self.block_index, candidate, system)
+                .filter(finite);
         }
         self.model
             .solve_algebraic_newton_delta(self.block_index, system)
@@ -171,7 +207,7 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             let residual = self.residual(y)?;
             // Zero was only the arithmetic origin used to extract b. The
             // residual certificate uses this candidate's coordinate scales.
-            let row_scales = self.scales(y).0;
+            let row_scales = self.scales(y)?.0;
             let converged = scaled_residual_converged(&residual, &row_scales, self.tolerance);
             // One correction recovers small coordinates lost while solving
             // beside large offsets, even when the residual already fits tol.

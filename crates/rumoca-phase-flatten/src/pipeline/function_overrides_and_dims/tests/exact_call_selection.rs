@@ -89,6 +89,7 @@ fn fully_qualified_sibling_package_call_is_not_aliased_to_self() {
         panic!("expected function call");
     };
     assert_eq!(name.as_str(), "B.Quat.inverse");
+    assert_eq!(name.target_def_id(), Some(b_inverse_def));
 }
 
 #[test]
@@ -253,6 +254,218 @@ fn unqualified_partial_package_call_uses_active_component_override_scope() {
     };
     assert_eq!(name.as_str(), "ConcreteMedium.specificEnthalpy");
     assert_eq!(name.target_def_id(), Some(concrete_function_def));
+}
+
+#[derive(Clone, Copy)]
+struct PartialFunctionFixtureIds {
+    modelica: DefId,
+    icons: DefId,
+    icons_function: DefId,
+    media: DefId,
+    interfaces: DefId,
+    partial_medium: DefId,
+    partial_function: DefId,
+    concrete_medium: DefId,
+    concrete_function: DefId,
+}
+
+impl PartialFunctionFixtureIds {
+    fn new() -> Self {
+        Self {
+            modelica: DefId::new(1),
+            icons: DefId::new(2),
+            icons_function: DefId::new(31),
+            media: DefId::new(3),
+            interfaces: DefId::new(4),
+            partial_medium: DefId::new(5),
+            partial_function: DefId::new(32),
+            concrete_medium: DefId::new(6),
+            concrete_function: DefId::new(33),
+        }
+    }
+}
+
+fn partial_function_fixture_classes(
+    ids: PartialFunctionFixtureIds,
+) -> (ClassDef, ClassDef, ClassDef) {
+    let mut icons_function = class("Function", ClassType::Function);
+    icons_function.def_id = Some(ids.icons_function);
+
+    let mut partial_function = class("setState_pTX", ClassType::Function);
+    partial_function.def_id = Some(ids.partial_function);
+    partial_function.partial = true;
+    partial_function.extends.push(Extend {
+        base_name: Name::from_string("Modelica.Icons.Function"),
+        base_def_id: Some(ids.icons_function),
+        ..Extend::default()
+    });
+    partial_function
+        .components
+        .insert("p".to_string(), component("p", "Real", DefId::new(34)));
+    partial_function
+        .components
+        .insert("T".to_string(), component("T", "Real", DefId::new(35)));
+    partial_function
+        .components
+        .insert("X".to_string(), component("X", "Real[:]", DefId::new(36)));
+
+    let mut concrete_function = class("setState_pTX", ClassType::Function);
+    concrete_function.def_id = Some(ids.concrete_function);
+    concrete_function.extends.push(Extend {
+        base_name: Name::from_string("PartialMedium.setState_pTX"),
+        base_def_id: Some(ids.partial_function),
+        ..Extend::default()
+    });
+    concrete_function.algorithms.push(Vec::new());
+
+    (icons_function, partial_function, concrete_function)
+}
+
+fn partial_function_fixture_tree(
+    ids: PartialFunctionFixtureIds,
+    icons_function: ClassDef,
+    partial_function: ClassDef,
+    concrete_function: ClassDef,
+) -> ClassTree {
+    let mut icons = class("Icons", ClassType::Package);
+    icons.def_id = Some(ids.icons);
+    icons.classes.insert("Function".to_string(), icons_function);
+
+    let mut partial_medium = class("PartialMedium", ClassType::Package);
+    partial_medium.def_id = Some(ids.partial_medium);
+    partial_medium
+        .classes
+        .insert("setState_pTX".to_string(), partial_function);
+    let mut concrete_medium = class("ConcreteMedium", ClassType::Package);
+    concrete_medium.def_id = Some(ids.concrete_medium);
+    concrete_medium
+        .classes
+        .insert("setState_pTX".to_string(), concrete_function);
+    let mut interfaces = class("Interfaces", ClassType::Package);
+    interfaces.def_id = Some(ids.interfaces);
+    interfaces
+        .classes
+        .insert("PartialMedium".to_string(), partial_medium);
+    interfaces
+        .classes
+        .insert("ConcreteMedium".to_string(), concrete_medium);
+    let mut media = class("Media", ClassType::Package);
+    media.def_id = Some(ids.media);
+    media.classes.insert("Interfaces".to_string(), interfaces);
+    let mut modelica = class("Modelica", ClassType::Package);
+    modelica.def_id = Some(ids.modelica);
+    modelica.classes.insert("Icons".to_string(), icons);
+    modelica.classes.insert("Media".to_string(), media);
+
+    let mut tree = ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("Modelica".to_string(), modelica);
+    for (def_id, name) in [
+        (ids.modelica, "Modelica"),
+        (ids.icons, "Modelica.Icons"),
+        (ids.icons_function, "Modelica.Icons.Function"),
+        (ids.media, "Modelica.Media"),
+        (ids.interfaces, "Modelica.Media.Interfaces"),
+        (
+            ids.partial_medium,
+            "Modelica.Media.Interfaces.PartialMedium",
+        ),
+        (
+            ids.partial_function,
+            "Modelica.Media.Interfaces.PartialMedium.setState_pTX",
+        ),
+        (
+            ids.concrete_medium,
+            "Modelica.Media.Interfaces.ConcreteMedium",
+        ),
+        (
+            ids.concrete_function,
+            "Modelica.Media.Interfaces.ConcreteMedium.setState_pTX",
+        ),
+    ] {
+        tree.def_map.insert(def_id, name.to_string());
+    }
+    tree
+}
+
+struct PartialFunctionFixture {
+    ids: PartialFunctionFixtureIds,
+    tree: ClassTree,
+}
+
+impl PartialFunctionFixture {
+    fn new() -> Self {
+        let ids = PartialFunctionFixtureIds::new();
+        let (icons_function, partial_function, concrete_function) =
+            partial_function_fixture_classes(ids);
+        let tree =
+            partial_function_fixture_tree(ids, icons_function, partial_function, concrete_function);
+        Self { ids, tree }
+    }
+
+    fn reference(&self, concrete: bool) -> rumoca_core::Reference {
+        let (owner, owner_def, function_def) = if concrete {
+            (
+                "ConcreteMedium",
+                self.ids.concrete_medium,
+                self.ids.concrete_function,
+            )
+        } else {
+            (
+                "PartialMedium",
+                self.ids.partial_medium,
+                self.ids.partial_function,
+            )
+        };
+        let display = format!("Modelica.Media.Interfaces.{owner}.setState_pTX");
+        rumoca_core::Reference::with_component_reference(
+            &display,
+            core_comp_ref(&[
+                ("Modelica", self.ids.modelica),
+                ("Media", self.ids.media),
+                ("Interfaces", self.ids.interfaces),
+                (owner, owner_def),
+                ("setState_pTX", function_def),
+            ]),
+        )
+    }
+}
+
+#[test]
+fn partial_function_extends_icon_is_not_resolved_as_its_marker_base() {
+    let fixture = PartialFunctionFixture::new();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&fixture.tree);
+    let override_packages = Vec::new();
+    let override_functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(
+        &fixture.tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    );
+
+    let partial_selection =
+        resolve_exact_function_rewrite(&fixture.reference(false), false, &ctx, test_span())
+            .expect("partial function selection")
+            .expect("partial function is a callable occurrence")
+            .selection;
+    assert_eq!(partial_selection.exposure, fixture.ids.partial_function);
+    assert_eq!(
+        partial_selection.implementation,
+        fixture.ids.partial_function
+    );
+
+    let concrete_selection =
+        resolve_exact_function_rewrite(&fixture.reference(true), false, &ctx, test_span())
+            .expect("redeclared function selection")
+            .expect("concrete function is a callable occurrence")
+            .selection;
+    assert_eq!(concrete_selection.exposure, fixture.ids.concrete_function);
+    assert_eq!(
+        concrete_selection.implementation,
+        fixture.ids.concrete_function
+    );
 }
 
 #[test]

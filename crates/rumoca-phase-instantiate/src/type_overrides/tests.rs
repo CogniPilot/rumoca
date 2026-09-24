@@ -1,6 +1,7 @@
 //! Unit tests for redeclaration and virtual-class selection.
 
 use super::component_type_selection::apply_type_override;
+use super::deferred_references::ComponentTypeIndex;
 use super::override_collection::build_type_override_map;
 use super::override_map::TypeOverrideMap;
 use super::redeclare_values::resolve_cref_def_id;
@@ -28,6 +29,169 @@ fn test_span() -> rumoca_core::Span {
         1,
         2,
     )
+}
+
+fn component_type_index_fixture(type_def_id: DefId) -> ast::Component {
+    ast::Component {
+        name: "slot".to_string(),
+        def_id: Some(DefId::new(10)),
+        type_def_id: Some(type_def_id),
+        ..ast::Component::empty_with_span(test_span())
+    }
+}
+
+#[test]
+fn selected_member_identity_keeps_quoted_path_boundaries() {
+    let selected_package = DefId::new(41);
+    let dotted_identifier = ast::QualifiedName {
+        parts: vec![("a.b".to_string(), Vec::new())],
+    };
+    let two_segments = ast::QualifiedName {
+        parts: vec![("a".to_string(), Vec::new()), ("b".to_string(), Vec::new())],
+    };
+    let mut overrides = TypeOverrideMap::new();
+    overrides.reject_selected_member(selected_package, dotted_identifier.clone());
+
+    assert!(overrides.selected_member_is_rejected(selected_package, &dotted_identifier));
+    assert!(!overrides.selected_member_is_rejected(selected_package, &two_segments));
+}
+
+#[test]
+fn rejected_selected_member_does_not_fall_back_when_location_is_missing() {
+    let alias_def_id = DefId::new(50);
+    let selected_package_def_id = DefId::new(51);
+    let mut tree = ast::ClassTree::default();
+    tree.definitions.classes.insert(
+        "Selected".to_string(),
+        ast::ClassDef {
+            name: make_token("Selected"),
+            class_type: rumoca_core::ClassType::Package,
+            def_id: Some(selected_package_def_id),
+            ..Default::default()
+        },
+    );
+    tree.def_map
+        .insert(selected_package_def_id, "Selected".to_string());
+    tree.name_map
+        .insert("Selected".to_string(), selected_package_def_id);
+
+    let mut type_name = make_name("Medium.R");
+    type_name.def_id = Some(alias_def_id);
+    let mut component = ast::Component {
+        name: "value".to_string(),
+        type_name,
+        ..ast::Component::empty_with_span(test_span())
+    };
+    component.location = rumoca_core::Location::default();
+
+    let mut overrides = TypeOverrideMap::new();
+    overrides.insert_alias(
+        ast::QualifiedName::from_ident("Medium"),
+        Some(alias_def_id),
+        selected_package_def_id,
+    );
+    overrides.reject_selected_member(selected_package_def_id, ast::QualifiedName::from_ident("R"));
+
+    let error = apply_type_override(&tree, &component, &overrides)
+        .expect_err("rejected selection must remain an error without a diagnostic span");
+    assert!(matches!(
+        *error,
+        crate::InstantiateError::MissingSourceContext { .. }
+    ));
+}
+
+#[test]
+fn component_type_index_rejects_conflicting_duplicate_declarations() {
+    let mut first = ast::ClassDef {
+        name: make_token("First"),
+        def_id: Some(DefId::new(1)),
+        ..Default::default()
+    };
+    first.components.insert(
+        "slot".to_string(),
+        component_type_index_fixture(DefId::new(20)),
+    );
+    let mut second = ast::ClassDef {
+        name: make_token("Second"),
+        def_id: Some(DefId::new(2)),
+        ..Default::default()
+    };
+    second.components.insert(
+        "slot".to_string(),
+        component_type_index_fixture(DefId::new(21)),
+    );
+    let mut tree = ast::ClassTree::default();
+    tree.definitions.classes.insert("First".to_string(), first);
+    tree.definitions
+        .classes
+        .insert("Second".to_string(), second);
+
+    let error = match ComponentTypeIndex::from_tree(&tree) {
+        Ok(_) => panic!("one source component identity cannot select two declared types"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("conflicting declared type identities")
+    );
+}
+
+#[test]
+fn component_type_index_accepts_identical_duplicate_declarations() {
+    let mut first = ast::ClassDef {
+        name: make_token("First"),
+        def_id: Some(DefId::new(1)),
+        ..Default::default()
+    };
+    first.components.insert(
+        "slot".to_string(),
+        component_type_index_fixture(DefId::new(20)),
+    );
+    let mut second = ast::ClassDef {
+        name: make_token("Second"),
+        def_id: Some(DefId::new(2)),
+        ..Default::default()
+    };
+    second.components.insert(
+        "slot".to_string(),
+        component_type_index_fixture(DefId::new(20)),
+    );
+    let mut tree = ast::ClassTree::default();
+    tree.definitions.classes.insert("First".to_string(), first);
+    tree.definitions
+        .classes
+        .insert("Second".to_string(), second);
+
+    ComponentTypeIndex::from_tree(&tree)
+        .expect("repeated inherited declarations with one exact type are legal");
+}
+
+#[test]
+fn component_type_index_rejects_conflicting_duplicate_replaceability() {
+    let fixed = component_type_index_fixture(DefId::new(20));
+    let mut replaceable = fixed.clone();
+    replaceable.is_replaceable = true;
+    let mut tree = ast::ClassTree::default();
+    for (name, component) in [("Fixed", fixed), ("Replaceable", replaceable)] {
+        tree.definitions.classes.insert(
+            name.to_string(),
+            ast::ClassDef {
+                name: make_token(name),
+                components: [("slot".to_string(), component)].into_iter().collect(),
+                ..Default::default()
+            },
+        );
+    }
+
+    let error = ComponentTypeIndex::from_tree(&tree)
+        .err()
+        .expect("one declaration identity must have one replaceability");
+    assert!(
+        error
+            .to_string()
+            .contains("conflicting declared type identities or replaceability")
+    );
 }
 
 const COMPONENT_REDECLARE_SOURCE: &str = r"
@@ -419,6 +583,77 @@ end P;
 }
 
 #[test]
+fn inherited_short_package_default_resolves_through_flow_model_occurrence() {
+    let source = r"
+package P
+  partial package PartialWallFriction
+  end PartialWallFriction;
+  package DefaultWallFriction
+    extends PartialWallFriction;
+    constant Boolean use_mu = true;
+  end DefaultWallFriction;
+  partial model PartialFlowModel
+    replaceable package WallFriction = DefaultWallFriction
+      constrainedby PartialWallFriction;
+    Real x;
+  equation
+    x = if WallFriction.use_mu then 1 else 0;
+  end PartialFlowModel;
+  model ConcreteFlowModel
+    extends PartialFlowModel;
+  end ConcreteFlowModel;
+  package SelectedWallFriction
+    extends PartialWallFriction;
+    constant Boolean other = false;
+  end SelectedWallFriction;
+  model ExplicitFlowModel
+    extends PartialFlowModel(redeclare package WallFriction = SelectedWallFriction);
+  end ExplicitFlowModel;
+  model Pipe
+    replaceable model FlowModel = ConcreteFlowModel
+      constrainedby PartialFlowModel;
+    FlowModel flowModel;
+  end Pipe;
+  model ExplicitPipe
+    replaceable model FlowModel = ExplicitFlowModel
+      constrainedby PartialFlowModel;
+    FlowModel flowModel;
+  end ExplicitPipe;
+  model Test
+    Pipe pipe;
+  end Test;
+  model ExplicitTest
+    ExplicitPipe pipe;
+  end ExplicitTest;
+end P;
+";
+    let tree = resolved_tree(source);
+    let expected = tree
+        .get_class_by_qualified_name("P.DefaultWallFriction")
+        .and_then(|class| class.components.get("use_mu"))
+        .and_then(|component| component.def_id)
+        .expect("partial friction constant declaration identity");
+    let overlay = crate::instantiate_model(&tree, "P.Test")
+        .expect("inherited flow-model default should instantiate");
+    let flow_model = overlay
+        .classes
+        .values()
+        .find(|class| class.qualified_name.to_flat_string() == "pipe.flowModel")
+        .expect("specialized flow-model class occurrence");
+    let ast::Equation::Simple { rhs, .. } = &flow_model.equations[0].equation else {
+        panic!("expected inherited flow-model equation");
+    };
+    assert_reference_target(rhs, "WallFriction.use_mu", expected);
+
+    let error = crate::instantiate_model(&tree, "P.ExplicitTest")
+        .expect_err("inherited explicit package redeclare must select its own member set");
+    assert!(matches!(
+        *error,
+        crate::InstantiateError::RedeclareError { ref name, .. } if name == "use_mu"
+    ));
+}
+
+#[test]
 fn enclosing_selected_component_reproves_nested_modifier_bindings() {
     let source = r"
 record DriveData
@@ -592,6 +827,90 @@ end Test;
 }
 
 #[test]
+fn redeclared_component_member_waits_for_its_selected_occurrence() {
+    let source = r"
+record BaseData
+  parameter Real base = 1;
+end BaseData;
+record TransientData
+  extends BaseData;
+  parameter Real rcData = 2;
+end TransientData;
+model Res
+  parameter Real R;
+end Res;
+partial model Base
+  replaceable parameter BaseData cellData constrainedby BaseData;
+end Base;
+model Test
+  extends Base(redeclare parameter TransientData cellData);
+  Res resistor(R = cellData.rcData);
+end Test;
+";
+    let tree = resolved_tree(source);
+    let test = tree
+        .get_class_by_qualified_name("Test")
+        .expect("derived model");
+    let expression = test.components["resistor"].modifications["R"].clone();
+    let unresolved = ast::collect_component_refs(&expression)
+        .into_iter()
+        .find(|reference| reference.to_string() == "cellData.rcData")
+        .expect("source member reference");
+    assert_eq!(unresolved.target_def_id(), None);
+    let root = unresolved.root_def_id().expect("replaceable declaration");
+    assert_eq!(
+        Some(root),
+        tree.get_class_by_qualified_name("Base")
+            .and_then(|class| class.components.get("cellData"))
+            .and_then(|component| component.def_id),
+        "the deferred root retains the replaceable source declaration identity"
+    );
+
+    let component_types = ComponentTypeIndex::from_tree(&tree).expect("component type index");
+    let mut cache = super::selected_class_members::MemberResolutionCache::default();
+    let deferred = super::deferred_references::resolve_dynamic_expression_targets(
+        &tree,
+        &TypeOverrideMap::default(),
+        &Default::default(),
+        &component_types,
+        &mut cache,
+        expression,
+    )
+    .expect("an unselected replaceable component must remain deferred");
+    assert_reference_target_is_unresolved(&deferred, "cellData.rcData");
+
+    let selected = tree
+        .get_class_by_qualified_name("TransientData")
+        .and_then(|class| class.def_id)
+        .expect("selected record identity");
+    let mut selected_components = super::deferred_references::SelectedComponentTypes::default();
+    selected_components.insert(root, selected);
+    let resolved = super::deferred_references::resolve_dynamic_expression_targets(
+        &tree,
+        &TypeOverrideMap::default(),
+        &selected_components,
+        &component_types,
+        &mut cache,
+        deferred,
+    )
+    .expect("the selected record owns its additional member");
+    let member = tree
+        .get_class_by_qualified_name("TransientData")
+        .and_then(|class| class.components.get("rcData"))
+        .and_then(|component| component.def_id)
+        .expect("selected member identity");
+    assert_reference_target(&resolved, "cellData.rcData", member);
+}
+
+fn assert_reference_target_is_unresolved(expression: &ast::Expression, name: &str) {
+    let reference = ast::collect_component_refs(expression)
+        .into_iter()
+        .find(|reference| reference.to_string() == name)
+        .expect("member reference");
+    assert_eq!(reference.target_def_id(), None);
+}
+
+#[test]
 fn selected_component_missing_member_fails_post_materialization_without_name_fallback() {
     let source = r"
 record DefaultData
@@ -633,9 +952,12 @@ end Base;
     };
     reference.set_target_def_id(None);
 
+    let component_type_index =
+        ComponentTypeIndex::from_tree(&tree).expect("fixture component identities index");
     let error = super::post_materialization::resolve_post_materialization_component_targets(
         &tree,
         &mut overlay,
+        &component_type_index,
     )
     .expect_err("a selected type without JL must fail post-materialization");
     assert_eq!(
@@ -1012,7 +1334,10 @@ fn test_apply_type_override_uses_dotted_member_not_partial_name_def_id() {
     let comp = ast::Component {
         name: "medium".to_string(),
         type_name,
-        type_def_id: None,
+        // This is the identity shape produced by the MSL failure: Resolve
+        // retained the default partial member while the package root remains
+        // the redeclaration anchor.
+        type_def_id: Some(DefId::new(23)),
         ..ast::Component::empty_with_span(test_span())
     };
     let mut type_overrides = TypeOverrideMap::new();
@@ -1126,6 +1451,154 @@ fn test_selected_package_specializes_types_in_inherited_member_models() {
         overridden.type_def_id,
         Some(concrete_state_id),
         "an inherited BaseProperties model must use the selected medium's state type"
+    );
+}
+
+#[test]
+fn test_selected_package_specializes_nested_types_through_multilevel_extends() {
+    let root_medium_id = DefId::new(50);
+    let root_state_id = DefId::new(51);
+    let middle_medium_id = DefId::new(52);
+    let middle_state_id = DefId::new(53);
+    let concrete_medium_id = DefId::new(54);
+
+    let root_state = ast::ClassDef {
+        name: make_token("ThermodynamicState"),
+        class_type: rumoca_core::ClassType::Record,
+        def_id: Some(root_state_id),
+        ..Default::default()
+    };
+    let mut root_medium = ast::ClassDef {
+        name: make_token("RootMedium"),
+        class_type: rumoca_core::ClassType::Package,
+        def_id: Some(root_medium_id),
+        ..Default::default()
+    };
+    root_medium
+        .classes
+        .insert("ThermodynamicState".to_string(), root_state);
+
+    let middle_state = ast::ClassDef {
+        name: make_token("ThermodynamicState"),
+        class_type: rumoca_core::ClassType::Record,
+        def_id: Some(middle_state_id),
+        is_redeclare: true,
+        redeclare_target_def_id: Some(root_state_id),
+        ..Default::default()
+    };
+    let mut middle_medium = ast::ClassDef {
+        name: make_token("MiddleMedium"),
+        class_type: rumoca_core::ClassType::Package,
+        def_id: Some(middle_medium_id),
+        extends: vec![ast::Extend {
+            base_name: make_name("RootMedium"),
+            base_def_id: Some(root_medium_id),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    middle_medium
+        .classes
+        .insert("ThermodynamicState".to_string(), middle_state);
+
+    let concrete_medium = ast::ClassDef {
+        name: make_token("ConcreteMedium"),
+        class_type: rumoca_core::ClassType::Package,
+        def_id: Some(concrete_medium_id),
+        extends: vec![ast::Extend {
+            base_name: make_name("MiddleMedium"),
+            base_def_id: Some(middle_medium_id),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut tree = ast::ClassTree::default();
+    for (name, class) in [
+        ("RootMedium", root_medium),
+        ("MiddleMedium", middle_medium),
+        ("ConcreteMedium", concrete_medium),
+    ] {
+        tree.definitions.classes.insert(name.to_string(), class);
+    }
+    for (name, def_id) in [
+        ("RootMedium", root_medium_id),
+        ("RootMedium.ThermodynamicState", root_state_id),
+        ("MiddleMedium", middle_medium_id),
+        ("MiddleMedium.ThermodynamicState", middle_state_id),
+        ("ConcreteMedium", concrete_medium_id),
+    ] {
+        tree.name_map.insert(name.to_string(), def_id);
+        tree.def_map.insert(def_id, name.to_string());
+    }
+
+    let inherited_state_component = ast::Component {
+        name: "state".to_string(),
+        type_name: make_name("ThermodynamicState"),
+        type_def_id: Some(root_state_id),
+        ..ast::Component::empty_with_span(test_span())
+    };
+    let mut type_overrides = TypeOverrideMap::new();
+    type_overrides.insert_alias(
+        ast::QualifiedName::from_ident("Medium"),
+        None,
+        concrete_medium_id,
+    );
+    type_overrides.specialize_inherited_nested_types(&tree, concrete_medium_id);
+
+    let overridden = apply_type_override(&tree, &inherited_state_component, &type_overrides)
+        .expect("selected package should specialize all inherited member types");
+    assert_eq!(overridden.type_def_id, Some(middle_state_id));
+}
+
+#[test]
+fn test_short_replaceable_package_uses_resolved_default_target() {
+    let tree = resolved_tree(
+        r#"
+partial package PartialMedium
+end PartialMedium;
+
+package ConcreteMedium
+  extends PartialMedium;
+end ConcreteMedium;
+
+model Root
+  replaceable package ShortMedium = ConcreteMedium;
+  replaceable package LongMedium
+    extends ConcreteMedium;
+  end LongMedium;
+end Root;
+"#,
+    );
+    let root = tree
+        .get_class_by_qualified_name("Root")
+        .expect("root class");
+    let short_medium_alias = root
+        .classes
+        .get("ShortMedium")
+        .and_then(|class| class.def_id)
+        .expect("short replaceable package DefId");
+    let long_medium_alias = root
+        .classes
+        .get("LongMedium")
+        .and_then(|class| class.def_id)
+        .expect("long replaceable package DefId");
+    let concrete_medium = tree
+        .get_class_by_qualified_name("ConcreteMedium")
+        .and_then(|class| class.def_id)
+        .expect("ConcreteMedium DefId");
+
+    let overrides = build_type_override_map(&tree, root, None);
+
+    assert_eq!(
+        overrides.target_for_alias_def_id(short_medium_alias),
+        Some(concrete_medium),
+        "the short replaceable declaration must retain its resolved default target"
+    );
+    assert_eq!(
+        overrides.target_for_alias_def_id(long_medium_alias),
+        Some(long_medium_alias),
+        "a long replaceable package must retain its own declaration identity"
     );
 }
 

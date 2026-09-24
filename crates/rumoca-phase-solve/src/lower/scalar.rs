@@ -10,7 +10,7 @@ mod operators;
 mod selector;
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::*;
@@ -463,6 +463,11 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     context_stack: Vec<u64>,
     context_id: u64,
     next_context_id: u64,
+    /// Registers already produced by earlier targets in one guarded event
+    /// equation.  Discrete equation dependencies are causal, so a later RHS
+    /// must consume the same-instant value rather than reload its pass-entry
+    /// storage slot.
+    guarded_output_registers: HashMap<usize, solve::Reg>,
 }
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
@@ -522,6 +527,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             context_stack: Vec::new(),
             context_id: 0,
             next_context_id: 1,
+            guarded_output_registers: HashMap::new(),
         }
     }
 

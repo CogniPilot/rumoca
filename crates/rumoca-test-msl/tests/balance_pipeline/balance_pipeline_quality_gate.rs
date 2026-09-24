@@ -71,6 +71,7 @@ pub(super) fn omc_sim_reference_timeout_secs() -> u64 {
         (sim_timeout_secs().ceil().max(0.0) as u64).saturating_mul(OMC_SIM_REFERENCE_BUDGET_RATIO);
     OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS.max(scaled)
 }
+
 /// Force low-impact OpenMP/BLAS threading in OMC child processes.
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
 /// Version 7 records a reviewed non-identifiable discrete-flag and internal-node

@@ -71,6 +71,7 @@ mod tests {
             state_select: rumoca_core::StateSelect::default(),
             binding: None,
             binding_source: None,
+            binding_value_scope: None,
             binding_source_scope: None,
             attribute_source_scopes: ast::AstIndexMap::default(),
             binding_from_modification: false,

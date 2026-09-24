@@ -69,6 +69,7 @@ pub(super) fn combined_initial_projection_plan(
             rows: block.rows.clone(),
             y_indices: indices,
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         });
     }
@@ -164,14 +165,14 @@ pub(super) fn seed_nonfinite_projection_unknowns(
     }
 }
 
-pub(super) fn projection_error_for_rows<M: ImplicitProjectionModel>(
+pub(super) fn projection_failure_message<M: ImplicitProjectionModel>(
     model: &M,
     message: &str,
     rows: &[usize],
     residual: &[f64],
     row_scales: &[f64],
     tolerance: f64,
-) -> RuntimeSolveError {
+) -> String {
     let worst =
         residual
             .iter()
@@ -193,14 +194,14 @@ pub(super) fn projection_error_for_rows<M: ImplicitProjectionModel>(
             let scale = row_scales.get(offset).copied().unwrap_or(1.0);
             let scaled_tolerance = scaled_tolerance(tolerance, scale);
             let ratio = value.abs() / scaled_tolerance;
-            RuntimeSolveError::solve_ir(format!(
+            format!(
                 "{message}: worst scaled residual row={row}{target} value={value:.6e} \
                  ratio={ratio:.6e} norm={:.6e} row_scale={scale:.6e} \
                  scaled_tolerance={scaled_tolerance:.6e}",
                 residual_norm(residual),
-            ))
+            )
         }
-        None => RuntimeSolveError::solve_ir(message),
+        None => message.to_owned(),
     }
 }
 
@@ -377,11 +378,16 @@ pub(super) fn project_initial_block<M: AlgebraicProjectionModel>(
     let structure = model
         .initial_projection_block_structure(block_index)
         .map(solve::JacobianStructure::pattern);
-    let row_scales = jacobian_row_scales(&jacobian, &variable_scales, &fallback_scales, structure);
+    let row_scales = jacobian_row_scales(&jacobian, &variable_scales, &fallback_scales, structure)?;
     let context = InitialBlockDeltaCtx {
         row_scales: &row_scales,
         ..assignment_context
     };
+    if let Some(update) =
+        project_initial_full_residual_singleton_assignment(&context, y, &selected, changed)?
+    {
+        return Ok(update);
+    }
     if scaled_residual_converged(&selected, &row_scales, tol) {
         return Ok(ProjectionBlockUpdate {
             changed: false,
@@ -395,11 +401,6 @@ pub(super) fn project_initial_block<M: AlgebraicProjectionModel>(
         residual_norm = residual_norm(&selected),
         "solving coupled initial projection block"
     );
-    if let Some(update) =
-        project_initial_full_residual_singleton_assignment(&context, y, &selected, changed)?
-    {
-        return Ok(update);
-    }
     trace_initial_projection_block(model, rows, y_indices, &selected, &jacobian, tol);
     if rows.len() == 1 && relax_initial_block_from_row_targets(context, y, &selected, &jacobian)? {
         return Ok(ProjectionBlockUpdate {
@@ -627,7 +628,13 @@ fn project_initial_full_residual_singleton_assignment<M: AlgebraicProjectionMode
     )?;
     let row_tol = scaled_tolerance(ctx.tol, ctx.row_scales[0]);
     let variable_tol = scaled_tolerance(ctx.tol, ctx.variable_scales[0]);
-    if after.is_finite() && after.abs() + row_tol < before.abs() {
+    if singleton_assignment_improves(SingletonAssignmentStep {
+        before: *before,
+        after,
+        step: previous - value,
+        row_tol,
+        variable_tol,
+    }) {
         return Ok(Some(ProjectionBlockUpdate {
             changed: changed || (previous - value).abs() > variable_tol,
             settled: after.abs() <= row_tol,
@@ -860,19 +867,103 @@ pub(super) fn algebraic_block_jacobian(
             "algebraic",
         )?;
     }
-    let mut jacobian = DMatrix::<f64>::zeros(rows.len(), y_indices.len());
-    if let Some(structure) = structure
-        && model.eval_prepared_implicit_jacobian(
-            structure,
-            (rows, y_indices),
-            y,
-            p,
-            t,
-            jacobian.as_mut_slice(),
-        )?
-    {
-        return Ok(jacobian);
+    let storage = algebraic_block_jacobian_storage(model, (y, p, t), (rows, y_indices), structure)?;
+    match storage {
+        JacobianStorage::Dense(matrix) => Ok(matrix),
+        compact => compact
+            .to_dense()
+            .ok_or_else(|| RuntimeSolveError::solve_ir("compact Jacobian materialization failed")),
     }
+}
+
+pub(super) fn algebraic_block_jacobian_storage(
+    model: &dyn ImplicitProjectionModel,
+    (y, p, t): (&[f64], &[f64], f64),
+    (rows, y_indices): (&[usize], &[usize]),
+    structure: Option<&solve::JacobianStructure>,
+) -> Result<JacobianStorage, RuntimeSolveError> {
+    let mut storage = structure.map_or_else(
+        || JacobianStorage::Dense(allocate_projection_jacobian(rows.len(), y_indices.len())),
+        |owner| JacobianStorage::new(owner, rows.len(), y_indices.len()),
+    );
+    fill_affine_jacobian(model, (y, p, t), (rows, y_indices), structure, &mut storage)?;
+    Ok(storage)
+}
+
+pub(super) fn fill_affine_jacobian(
+    model: &dyn ImplicitProjectionModel,
+    (y, p, t): (&[f64], &[f64], f64),
+    (rows, y_indices): (&[usize], &[usize]),
+    structure: Option<&solve::JacobianStructure>,
+    storage: &mut JacobianStorage,
+) -> Result<(), RuntimeSolveError> {
+    if let Some(structure) = structure {
+        validate_projection_structure(
+            structure.pattern(),
+            rows.len(),
+            y_indices.len(),
+            "algebraic",
+        )?;
+    }
+    if storage.shape() != (rows.len(), y_indices.len()) {
+        return Err(RuntimeSolveError::solve_ir(
+            "algebraic Jacobian destination dimensions differ",
+        ));
+    }
+    if let Some(structure) = structure
+        && let Some(application) = structure.jacobian_application()
+    {
+        if storage.value_layout().is_some() {
+            if !storage.owns(application) {
+                return Err(RuntimeSolveError::solve_ir(
+                    "algebraic Jacobian storage source differs",
+                ));
+            }
+            if model.eval_prepared_implicit_jacobian(
+                structure,
+                (rows, y_indices),
+                y,
+                p,
+                t,
+                storage.as_mut_slice(),
+            )? {
+                return Ok(());
+            }
+        } else {
+            // Preserve the reusable dense fallback until a complete prepared call succeeds.
+            let mut prepared = JacobianStorage::new(structure, rows.len(), y_indices.len());
+            if model.eval_prepared_implicit_jacobian(
+                structure,
+                (rows, y_indices),
+                y,
+                p,
+                t,
+                prepared.as_mut_slice(),
+            )? {
+                *storage = prepared;
+                return Ok(());
+            }
+        }
+    }
+    if !matches!(storage, JacobianStorage::Dense(_)) {
+        *storage =
+            JacobianStorage::Dense(allocate_projection_jacobian(rows.len(), y_indices.len()));
+    }
+    let JacobianStorage::Dense(jacobian) = storage else {
+        unreachable!()
+    };
+    fill_interpreted_algebraic_jacobian(model, (y, p, t), (rows, y_indices), structure, jacobian)
+}
+
+fn fill_interpreted_algebraic_jacobian(
+    model: &dyn ImplicitProjectionModel,
+    (y, p, t): (&[f64], &[f64], f64),
+    (rows, y_indices): (&[usize], &[usize]),
+    structure: Option<&solve::JacobianStructure>,
+    jacobian: &mut DMatrix<f64>,
+) -> Result<(), RuntimeSolveError> {
+    // A declined provider may have written scratch values. Sparse fills require all zeros.
+    jacobian.as_mut_slice().fill(0.0);
     let mut reverse_gradient = vec![0.0; y.len()];
     let mut needs_forward_jvp = vec![true; rows.len()];
     for (row, residual_idx) in rows.iter().copied().enumerate() {
@@ -881,7 +972,7 @@ pub(super) fn algebraic_block_jacobian(
         }
         needs_forward_jvp[row] = false;
         fill_reverse_projection_row(
-            &mut jacobian,
+            jacobian,
             ReverseProjectionRowInput {
                 row,
                 residual_idx,
@@ -893,11 +984,11 @@ pub(super) fn algebraic_block_jacobian(
         );
     }
     if needs_forward_jvp.iter().all(|needs_forward| !needs_forward) {
-        return Ok(jacobian);
+        return Ok(());
     }
     if let Some(structure) = structure {
         fill_colored_algebraic_rows(
-            &mut jacobian,
+            jacobian,
             AlgebraicBlockPoint {
                 model,
                 y,
@@ -909,7 +1000,7 @@ pub(super) fn algebraic_block_jacobian(
             &needs_forward_jvp,
             structure,
         )?;
-        return Ok(jacobian);
+        return Ok(());
     }
 
     // The tensor JVP certificate uses the canonical `[solver-y | parameter]`
@@ -939,7 +1030,7 @@ pub(super) fn algebraic_block_jacobian(
             let mut jv = vec![0.0; y.len()];
             model.eval_jacobian_v(y, p, t, &seed, &mut jv)?;
             fill_jacobian_column_from_jvp(
-                &mut jacobian,
+                jacobian,
                 col,
                 rows,
                 &jv,
@@ -949,7 +1040,7 @@ pub(super) fn algebraic_block_jacobian(
         }
         seed[y_idx] = 0.0;
     }
-    Ok(jacobian)
+    Ok(())
 }
 
 /// One algebraic projection block and the point its Jacobian is formed at.

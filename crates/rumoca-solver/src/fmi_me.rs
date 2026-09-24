@@ -120,7 +120,18 @@ type MeModelParts<'a> = (
     Vec<rumoca_ir_solve::fmi::FmiEventIndicatorSource>,
     Option<u32>,
     lifecycle::MeConfigurationCapability,
+    Vec<MeObservableChannel>,
 );
+
+/// One typed, construction-issued published Real channel retained by the ME
+/// kernel. The runtime stores only the visible-value slot and its checked
+/// nominal; names and FMI metadata never cross into the opaque derivative
+/// handle.
+#[derive(Clone, Debug)]
+pub(crate) struct MeObservableChannel {
+    pub(crate) visible_index: usize,
+    pub(crate) nominal: f64,
+}
 
 impl<'a> MeModelSource<'a> {
     #[must_use]
@@ -185,6 +196,7 @@ impl<'a> MeModelSource<'a> {
                     }
                 };
                 let (model, metadata, inventory) = view.into_parts();
+                let observable_channels = observable_channels(model, metadata)?;
                 Ok((
                     model,
                     inventory.sources().to_vec(),
@@ -192,6 +204,7 @@ impl<'a> MeModelSource<'a> {
                         .max_step_duration()
                         .map(rumoca_ir_solve::fmi::FmiVariable::value_reference_fmi3),
                     configuration,
+                    observable_channels,
                 ))
             }
             #[cfg(test)]
@@ -206,9 +219,64 @@ impl<'a> MeModelSource<'a> {
                     .to_vec(),
                 max_step_duration_value_reference,
                 configuration,
+                Vec::new(),
             )),
         }
     }
+}
+
+fn observable_channels(
+    model: &rumoca_ir_solve::SolveModel,
+    metadata: &rumoca_ir_solve::fmi::FmiMetadata,
+) -> Result<Vec<MeObservableChannel>, rumoca_ir_solve::fmi::FmiComponentError> {
+    use rumoca_ir_solve::SolveVariableValueKind;
+    use rumoca_ir_solve::fmi::FmiVariability;
+
+    let mut channels = Vec::new();
+    for (visible_index, visible_name) in model.visible_names.iter().enumerate() {
+        let mut match_found = None;
+        for variable in metadata.variables() {
+            if variable.value_kind() != SolveVariableValueKind::Real
+                || variable.variability() != FmiVariability::Continuous
+            {
+                continue;
+            }
+            let Some(scalar_index) = variable
+                .scalar_names()
+                .iter()
+                .position(|name| name == visible_name)
+            else {
+                continue;
+            };
+            if match_found.is_some() {
+                return Err(rumoca_ir_solve::fmi::FmiComponentError::InvalidSolve(
+                    "observable channel metadata maps one visible Real to multiple owners"
+                        .to_owned(),
+                ));
+            }
+            // FMI 3.0.2 §2.4.4, Table 15: an omitted nominal with no other
+            // information has the standard default 1.0, including every
+            // scalar of an array. An explicitly supplied invalid value stays
+            // a checked metadata error.
+            let nominal = variable
+                .nominal()
+                .map(|values| values.get(scalar_index).copied())
+                .unwrap_or(Some(1.0));
+            let Some(nominal) = nominal.filter(|value| value.is_finite() && *value > 0.0) else {
+                return Err(rumoca_ir_solve::fmi::FmiComponentError::InvalidSolve(
+                    "published continuous Real observable has an invalid nominal".to_owned(),
+                ));
+            };
+            match_found = Some(nominal);
+        }
+        if let Some(nominal) = match_found {
+            channels.push(MeObservableChannel {
+                visible_index,
+                nominal,
+            });
+        }
+    }
+    Ok(channels)
 }
 
 impl<'a> From<&'a rumoca_ir_solve::fmi::FmiComponent> for MeModelSource<'a> {
@@ -469,6 +537,7 @@ impl From<crate::runtime::solve_ops::RuntimeSolveError> for MeError {
     fn from(value: crate::runtime::solve_ops::RuntimeSolveError) -> Self {
         use crate::runtime::solve_ops::RuntimeSolveError as Runtime;
         match value {
+            Runtime::ProjectionNonConvergence { message } => Self::Evaluation { message },
             Runtime::SolveIr { message, span } => Self::Evaluation {
                 message: match span {
                     Some(span) => format!("{message} @ {span:?}"),

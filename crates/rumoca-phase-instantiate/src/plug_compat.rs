@@ -18,15 +18,31 @@ use rustc_hash::FxHashSet;
 /// - finality: a final constraint requires a final replacement (TYPE-026)
 /// - transitively non-replaceable constraints require a transitively
 ///   non-replaceable replacement (TYPE-022)
+#[cfg(test)]
 pub(crate) fn class_flags_compatible(
     tree: &ast::ClassTree,
     subtype: &ast::ClassDef,
     supertype: Option<&ast::ClassDef>,
 ) -> bool {
+    class_flags_compatible_for_context(tree, subtype, supertype, None)
+}
+
+/// Check class-level compatibility with optional declaration context for the
+/// constraining side of a redeclaration.
+///
+/// A constraint name alone is not the complete interface of a replaceable
+/// slot. When supplied, `supertype_is_replaceable` describes that slot and
+/// takes precedence over the declaration flag on the bare constraining class.
+pub(crate) fn class_flags_compatible_for_context(
+    tree: &ast::ClassTree,
+    subtype: &ast::ClassDef,
+    supertype: Option<&ast::ClassDef>,
+    supertype_is_replaceable: Option<bool>,
+) -> bool {
     let Some(supertype) = supertype else {
         return true;
     };
-    if subtype.class_type != supertype.class_type {
+    if !class_types_compatible(&subtype.class_type, &supertype.class_type) {
         return false;
     }
     if subtype.operator_record != supertype.operator_record {
@@ -50,27 +66,75 @@ pub(crate) fn class_flags_compatible(
     if supertype.is_final && !subtype.is_final {
         return false;
     }
-    if is_transitively_non_replaceable(supertype) && !is_transitively_non_replaceable(subtype) {
+
+    // A known replaceable slot has no transitive-non-replaceability
+    // obligation. All class-level compatibility checks above are independent
+    // of declaration ancestry, so avoid indexing the entire tree here.
+    if supertype_is_replaceable == Some(true) {
+        return true;
+    }
+
+    let class_index = ast::ClassDefIndex::from_tree(tree);
+    let subtype_is_replaceable = class_reference_is_replaceable(&class_index, subtype);
+    let supertype_is_replaceable = supertype_is_replaceable
+        .unwrap_or_else(|| class_reference_is_replaceable(&class_index, supertype));
+    // MLS §6.4: a non-replaceable interface cannot be replaced by a
+    // replaceable one.
+    if !supertype_is_replaceable && subtype_is_replaceable {
+        return false;
+    }
+
+    // MLS §6.3.1/§6.4: only a non-replaceable constraining interface imposes
+    // the transitive non-replaceability and no-additional-elements rules.
+    if !supertype_is_replaceable
+        && class_is_transitively_non_replaceable(&class_index, supertype)
+        && !class_is_transitively_non_replaceable(&class_index, subtype)
+    {
         return false;
     }
     true
 }
 
-/// MLS §6.4: a class is transitively non-replaceable when neither it nor any
-/// of its elements are replaceable (shallow walk over local elements; extends
-/// targets are not followed because the resolved tree is not available here —
-/// this is the conservative direction for a constraint check).
-fn is_transitively_non_replaceable(class: &ast::ClassDef) -> bool {
-    if class.is_replaceable {
-        return false;
+/// MLS §6.4 permits model/block interchangeability, and type/record
+/// interchangeability, while the other specialized class kinds must match.
+fn class_types_compatible(
+    subtype: &rumoca_core::ClassType,
+    supertype: &rumoca_core::ClassType,
+) -> bool {
+    match (subtype, supertype) {
+        (
+            rumoca_core::ClassType::Model | rumoca_core::ClassType::Block,
+            rumoca_core::ClassType::Model | rumoca_core::ClassType::Block,
+        )
+        | (
+            rumoca_core::ClassType::Type | rumoca_core::ClassType::Record,
+            rumoca_core::ClassType::Type | rumoca_core::ClassType::Record,
+        ) => true,
+        (subtype, supertype) => subtype == supertype,
     }
-    if class.components.iter().any(|(_, comp)| comp.is_replaceable) {
-        return false;
-    }
-    !class
-        .classes
-        .iter()
-        .any(|(_, nested)| nested.is_replaceable)
+}
+
+fn class_reference_is_replaceable(
+    class_index: &ast::ClassDefIndex<'_>,
+    class: &ast::ClassDef,
+) -> bool {
+    let Some(def_id) = class.def_id else {
+        return class.is_replaceable;
+    };
+    class_index.def_ancestry(def_id).into_iter().any(|part| {
+        class_index
+            .get(part)
+            .is_some_and(|class| class.is_replaceable)
+    })
+}
+
+fn class_is_transitively_non_replaceable(
+    class_index: &ast::ClassDefIndex<'_>,
+    class: &ast::ClassDef,
+) -> bool {
+    class
+        .def_id
+        .is_some_and(|def_id| class_index.proves_transitively_non_replaceable_path([def_id]))
 }
 
 /// MLS §6.5 plug compatibility for sibling-based acceptance: every public

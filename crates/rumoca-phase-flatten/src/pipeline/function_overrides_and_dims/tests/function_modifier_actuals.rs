@@ -192,7 +192,10 @@ fn structured_template_and_scalar_row_keep_the_same_bound_function_inputs() {
     flat.add_structured_equation(family(call.clone()));
     flat.add_initial_structured_equation(family(call));
     let mut component_overrides = ComponentOverrideMap::default();
-    component_overrides.insert(ComponentPath::root(), fixture.override_functions);
+    component_overrides.insert(
+        ComponentPath::root(),
+        override_entries(fixture.override_functions.into_values()),
+    );
 
     rewrite_function_overrides_in_flat_model(
         &mut flat,
@@ -467,6 +470,7 @@ fn inherited_exposure_and_explicit_redeclare_use_exact_precedence() {
         "gravity".to_string(),
         OverrideTarget {
             alias: "gravity".to_string(),
+            alias_def_id: None,
             name: "Standard".to_string(),
             def_id: implementation,
             class_type: ClassType::Function,

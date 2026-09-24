@@ -1,5 +1,5 @@
 use crate::{TypeCheckError, TypeCheckResult};
-use rumoca_core::{DefId, SourceMap, TypeId};
+use rumoca_core::{ComponentPath, DefId, SourceMap, TypeId};
 use rumoca_ir_ast::{ClassTree, Component, TypeTable};
 use std::collections::{HashMap, HashSet};
 
@@ -138,12 +138,7 @@ fn collect_component_modifier_member_types(
     }
 
     for (member_name, member_comp) in &class.components {
-        let member_type_id = resolve_component_type_for_modifier_members(
-            member_comp,
-            ctx.type_table,
-            ctx.type_ids_by_def_id,
-            ctx.source_map,
-        )?;
+        let member_type_id = resolve_component_type_for_modifier_members(member_comp, ctx)?;
         if let Some(member_type_id) = member_type_id {
             member_types.insert(member_name.clone(), member_type_id);
         }
@@ -156,28 +151,50 @@ fn collect_component_modifier_member_types(
 
 fn resolve_component_type_for_modifier_members(
     component: &Component,
-    type_table: &TypeTable,
-    type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    source_map: &SourceMap,
+    ctx: &ComponentModifierMemberTypeContext<'_>,
 ) -> TypeCheckResult<Option<TypeId>> {
     if let Some(type_def_id) = component.type_def_id
-        && let Some(type_id) = type_ids_by_def_id.get(&type_def_id)
+        && let Some(type_id) = ctx.type_ids_by_def_id.get(&type_def_id)
     {
         return Ok(Some(*type_id));
     }
-    if component.type_def_id.is_none()
-        && component.type_name.name.len() > 1
-        && component.type_name.def_id.is_some()
-    {
+    if component.type_def_id.is_none() && component.type_name.name.len() > 1 {
+        if let Some(member_def_id) =
+            resolve_dotted_member_def_id(ctx.tree, component.type_name.def_id, &component.type_name)
+        {
+            return Ok(ctx.type_ids_by_def_id.get(&member_def_id).copied());
+        }
         return Ok(None);
     }
 
     let type_name = component.type_name.to_string();
-    let span = name_span(source_map, &component.type_name)?;
-    type_table
+    let span = name_span(ctx.source_map, &component.type_name)?;
+    ctx.type_table
         .lookup(&type_name)
         .map(Some)
         .ok_or_else(|| Box::new(TypeCheckError::undefined_type(type_name, span)))
+}
+
+/// Resolve a dotted member identity through class scopes and inherited members.
+/// A replaceable package such as `FluidPort.Medium` exposes types inherited from
+/// its constraining package, including types inherited by that package through
+/// `Types`. Resolve records the first segment's `DefId`, while later segments
+/// must be resolved from each class scope. Scope lookup returns no identity for
+/// an ambiguous inherited member, so this cannot select the first base visited.
+pub(crate) fn resolve_dotted_member_def_id(
+    tree: &ClassTree,
+    anchor_def_id: Option<DefId>,
+    name: &rumoca_ir_ast::Name,
+) -> Option<DefId> {
+    let mut current_def_id = anchor_def_id?;
+    for part in name.name.iter().skip(1) {
+        let class = tree.get_class_by_def_id(current_def_id)?;
+        let scope_id = class.scope_id?;
+        current_def_id = tree
+            .scope_tree
+            .lookup_member(scope_id, &ComponentPath::from_parts([part.text.as_ref()]))?;
+    }
+    (name.name.len() > 1).then_some(current_def_id)
 }
 
 fn name_span(

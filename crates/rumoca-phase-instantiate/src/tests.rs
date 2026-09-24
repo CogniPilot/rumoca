@@ -209,7 +209,8 @@ fn context_with_source_scope_tree(classes: Vec<ast::ClassDef>) -> InstantiateCon
             .insert(class.name.text.to_string(), class);
     }
     let mut ctx = InstantiateContext::new();
-    ctx.index_source_scopes(&tree);
+    ctx.index_source_scopes(&tree)
+        .expect("test source scope tree has resolvable component identities");
     ctx
 }
 

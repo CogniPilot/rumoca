@@ -57,3 +57,22 @@ fn require(builder: &mut FunctionBuilder<'_>, valid: Value, failure: i64) {
     builder.switch_to_block(continuation);
     builder.seal_block(continuation);
 }
+
+/// Only the torn-assignment ABI uses status 3 as an ordered numeric decline.
+pub(super) fn check_torn(status: u8) -> Result<bool, CompileError> {
+    if status == 3 {
+        return Ok(false);
+    }
+    check(status).map(|()| true)
+}
+
+pub(super) fn require_finite_assignment(builder: &mut FunctionBuilder<'_>, value: Value) {
+    let absolute = builder.ins().fabs(value);
+    let maximum = builder.ins().f64const(f64::MAX);
+    let finite = builder.ins().fcmp(
+        cranelift_codegen::ir::condcodes::FloatCC::LessThanOrEqual,
+        absolute,
+        maximum,
+    );
+    require(builder, finite, 3);
+}

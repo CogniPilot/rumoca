@@ -1,14 +1,18 @@
 use super::*;
 use std::sync::Arc;
+mod jacobian_values;
+pub use jacobian_values::JacobianValueLayout;
 
 mod affine_elimination;
 mod clock_partition;
 mod event_transaction;
 mod jacobian_outputs;
+mod tearing_pair;
 
 pub use affine_elimination::AffineEliminationLayout;
 pub use event_transaction::*;
 pub use jacobian_outputs::*;
+pub use tearing_pair::TearingCandidate;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct ContinuousSolveSystem {
@@ -209,6 +213,10 @@ pub struct AlgebraicProjectionBlock {
     /// block Newton over every unknown.
     #[serde(default)]
     pub tearing: Option<BlockTearing>,
+    /// Conditional incidence-only candidate, attempted before `tearing`.
+    /// Exact isolators and fresh numerical guards govern every execution.
+    #[serde(default)]
+    pub guarded_tearing: Option<BlockTearing>,
     /// Additional admissible reconstruction charts for this block. Each chart
     /// re-partitions the block's `y_indices` into dependent (reconstructed) and
     /// independent (integrated) coordinates over the same `manifold_residual`
@@ -237,11 +245,15 @@ impl Serialize for AlgebraicProjectionBlock {
         // while non-self-describing formats (bincode) retain every field so a
         // positional round-trip reads back the same layout.
         let omit_alternate = serializer.is_human_readable() && self.alternate_charts.is_empty();
-        let field_count = if omit_alternate { 3 } else { 4 };
+        let omit_guarded = serializer.is_human_readable() && self.guarded_tearing.is_none();
+        let field_count = 3 + usize::from(!omit_alternate) + usize::from(!omit_guarded);
         let mut state = serializer.serialize_struct("AlgebraicProjectionBlock", field_count)?;
         state.serialize_field("rows", &self.rows)?;
         state.serialize_field("y_indices", &self.y_indices)?;
         state.serialize_field("tearing", &self.tearing)?;
+        if !omit_guarded {
+            state.serialize_field("guarded_tearing", &self.guarded_tearing)?;
+        }
         if !omit_alternate {
             state.serialize_field("alternate_charts", &self.alternate_charts)?;
         }
@@ -299,25 +311,33 @@ pub struct SolveArtifacts {
 
 #[derive(Clone, Debug)]
 pub struct JacobianStructure {
+    value_layout: Option<Arc<JacobianValueLayout>>,
     pattern: StructuralPattern,
     coloring: ColumnColoring,
     output_evaluations: Box<[ProjectionJacobianOutputs]>,
     residual_output_evaluation: Option<ProjectionOutputSelection>,
     jacobian_application: Option<ProjectionJacobianApplication>,
     affine_elimination: Option<AffineEliminationLayout>,
+    guarded_affine_elimination: Option<AffineEliminationLayout>,
     linearization_repeatable: bool,
 }
 
 impl JacobianStructure {
+    pub fn value_layout(&self) -> Option<&Arc<JacobianValueLayout>> {
+        self.value_layout.as_ref()
+    }
     pub fn derived(pattern: StructuralPattern) -> Self {
         let coloring = pattern.column_coloring();
+        let value_layout = JacobianValueLayout::derive(&pattern).map(Arc::new);
         Self {
+            value_layout,
             pattern,
             coloring,
             output_evaluations: Box::default(),
             residual_output_evaluation: None,
             jacobian_application: None,
             affine_elimination: None,
+            guarded_affine_elimination: None,
             linearization_repeatable: false,
         }
     }

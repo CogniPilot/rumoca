@@ -68,7 +68,7 @@ pub use visitor::{
 
 pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 70;
+pub const SOLVE_SCHEMA_VERSION: u16 = 71;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -1898,9 +1898,10 @@ fn validate_continuous_system_shape(
         .refresh_owners
         .validate_against(&system.implicit_rhs)
         .and_then(|()| {
-            system
-                .refresh_owners
-                .validate_projection_ownership(&system.algebraic_projection_plan)
+            system.refresh_owners.validate_projection_ownership(
+                &system.algebraic_projection_plan,
+                &system.implicit_rhs,
+            )
         })
         .map_err(
             |error| SolveProblemShapeContractError::ContinuousRefreshOwner {
@@ -2670,6 +2671,12 @@ fn validate_projection_plan(
     let mut rows_seen = BTreeSet::new();
     let mut unknowns_seen = BTreeSet::new();
     for block in &plan.blocks {
+        if !block.has_valid_tearing_partitions() {
+            return Err(SolveProblemShapeContractError::ProjectionTearing {
+                context,
+                span: None,
+            });
+        }
         validate_projection_block_shape(context, block.rows.len(), block.y_indices.len())?;
         validate_indices(context, &block.rows, row_upper_bound)?;
         validate_indices(context, &block.y_indices, y_upper_bound)?;

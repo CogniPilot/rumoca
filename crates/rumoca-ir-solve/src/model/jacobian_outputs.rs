@@ -91,6 +91,7 @@ impl ContinuousStructuralArtifacts {
             .shares_program_owner(application.canonical_source())
             || original.rows() != application.rows()
             || original.y_indices() != application.y_indices()
+            || !Arc::ptr_eq(original.value_layout(), application.value_layout())
         {
             return Err("projection specialization belongs to a different source or block");
         }
@@ -153,8 +154,11 @@ impl ContinuousStructuralArtifacts {
                 .enumerate()
                 .map(|(local, source)| (source, local))
                 .collect::<Vec<_>>();
-            structure.residual_output_evaluation =
-                primal_outputs.shared_selection(&residual_rows, block.rows.len());
+            structure.residual_output_evaluation = if residual_rows.len() > 1 {
+                primal_outputs.selection(&residual_rows, block.rows.len())
+            } else {
+                None
+            };
             structure.output_evaluations =
                 color_output_evaluations(structure, block, &y_outputs, &full_outputs);
             structure.jacobian_application = application_source.as_ref().and_then(|source| {
@@ -162,6 +166,10 @@ impl ContinuousStructuralArtifacts {
             });
             structure.affine_elimination =
                 AffineEliminationLayout::derive(block, &structure.pattern);
+            structure.guarded_affine_elimination =
+                block.guarded_tearing.as_ref().and_then(|plan| {
+                    AffineEliminationLayout::derive_for_tearing(block, &structure.pattern, plan)
+                });
         }
         self
     }

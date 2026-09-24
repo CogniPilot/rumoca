@@ -11,6 +11,8 @@ mod on_demand_derivatives;
 
 use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
+use std::cell::Cell;
+use std::rc::Rc;
 
 use super::kernel::{
     StateTimeCoincidence, continuous_state_values_changed, event_right_limit_state_derivatives,
@@ -327,6 +329,7 @@ fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
                         rows: vec![1],
                         y_indices: vec![1],
                         tearing: None,
+                        guarded_tearing: None,
                         alternate_charts: Vec::new(),
                     }],
                 },
@@ -385,6 +388,192 @@ fn event_right_limit_derivative_retains_the_full_algebraic_seed() {
         event_right_limit_state_derivatives(&runtime, &[4.0, 0.0], 0.0, &[4.0], &[], settle)
             .expect("a zeroed algebraic seed advances off the singular point");
     assert_eq!(recovered, vec![2.0]);
+}
+
+#[test]
+fn observable_kernel_projection_uses_default_nominal_and_restores_trial_state() {
+    use solve::fmi::{FmiCausality, FmiComponent, FmiVariability, FmiVariableInput};
+    use solve::{
+        SolveVariableDeclaration, SolveVariableStorageRole, SolveVariableStorageRun,
+        SolveVariableValueKind,
+    };
+
+    let mut model = harmonic_oscillator();
+    model.problem.layout = solve::VarLayout::from_parts(IndexMap::new(), 2, 0);
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::default();
+    model.problem.continuous.implicit_row_targets.clear();
+    model = refresh_owned(model);
+    model.problem.solve_layout.variable_storage_runs = vec![
+        SolveVariableStorageRun {
+            base: solve::scalar_slot_y(0),
+            scalar_count: 1,
+            role: SolveVariableStorageRole::State,
+            value_kind: SolveVariableValueKind::Real,
+        },
+        SolveVariableStorageRun {
+            base: solve::scalar_slot_y(1),
+            scalar_count: 1,
+            role: SolveVariableStorageRole::State,
+            value_kind: SolveVariableValueKind::Real,
+        },
+    ];
+    model.problem.solve_layout.variable_declarations = vec![
+        SolveVariableDeclaration::new(
+            SolveVariableStorageRole::State,
+            SolveVariableValueKind::Real,
+        ),
+        SolveVariableDeclaration::new(
+            SolveVariableStorageRole::State,
+            SolveVariableValueKind::Real,
+        ),
+    ];
+    let input = |name: &str, role| FmiVariableInput {
+        name: name.to_owned(),
+        scalar_names: vec![name.to_owned()],
+        role,
+        value_kind: SolveVariableValueKind::Real,
+        dimensions: Vec::new(),
+        start: vec![if name == "x" { 4.0 } else { 2.0 }],
+        minimum: None,
+        maximum: None,
+        // FMI 3.0.2 §2.4.4 Table 15 makes absent nominal default to 1.
+        nominal: None,
+        unit: None,
+        description: None,
+        causality: FmiCausality::Local,
+        variability: FmiVariability::Continuous,
+        tunable: false,
+        declaration: rumoca_core::Span::DUMMY,
+    };
+    let component = FmiComponent::construct(
+        model,
+        vec![
+            input("x", SolveVariableStorageRole::State),
+            input("v", SolveVariableStorageRole::State),
+        ],
+    )
+    .expect("the typed observable fixture constructs");
+    let retained = MeRetainedComponent::instantiate(
+        MeModelSource::new(&component),
+        &fixture_instance_config(),
+        None,
+    )
+    .expect("the typed observable component instantiates");
+    let options = live_session_options(0.0, 1.0e-6, 1.0e-6, 1.0e-10, None)
+        .expect("observable fixture options construct");
+    let observed = Rc::new(Cell::new(None));
+    let session = retained
+        .into_lease(options)
+        .expect("the observable fixture leases")
+        .into_session(Some(Box::new(ObservableProbe {
+            observed: Rc::clone(&observed),
+        })))
+        .expect("the observable fixture initializes");
+    let norm = observed.get().expect("initialize evaluated the observable");
+    assert!(
+        norm > 1.0,
+        "the default-nominal channel must be checked: {norm}"
+    );
+    assert_eq!(
+        session.verification_component_point(),
+        session.verification_session_point(),
+        "observable trial projection restores the accepted component point"
+    );
+}
+
+#[test]
+fn observable_kernel_transaction_restores_after_error_and_unwind() {
+    let mut kernel = instantiate(&harmonic_oscillator());
+    kernel
+        .enter_initialization_mode()
+        .expect("kernel initialization starts");
+    kernel
+        .exit_initialization_mode()
+        .expect("kernel initialization settles");
+    kernel
+        .update_discrete_states()
+        .expect("kernel initial event settles");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("kernel enters continuous time");
+
+    let before = kernel.verification_observable_state();
+    let error = super::integrator::with_observable_transaction(
+        &mut kernel,
+        0.25,
+        &[1.25, 0.0],
+        None,
+        |kernel| -> Result<(), MeError> {
+            kernel.set_time(MeTime::at(0.5))?;
+            Err(MeError::Contract {
+                reason: "injected observable projection failure".to_owned(),
+            })
+        },
+    )
+    .expect_err("the injected projection error is retained");
+    assert!(matches!(error, MeError::Contract { .. }));
+    assert_eq!(kernel.verification_observable_state(), before);
+
+    let before_unwind = kernel.verification_observable_state();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        super::integrator::with_observable_transaction(
+            &mut kernel,
+            0.75,
+            &[1.75, 0.0],
+            None,
+            |_kernel| -> Result<(), MeError> { panic!("injected observable unwind") },
+        )
+    }));
+    let unwind_error = unwound
+        .expect("the transaction converts a projection panic to a typed error")
+        .expect_err("the injected unwind is refused");
+    assert!(matches!(unwind_error, MeError::Contract { .. }));
+    assert_eq!(kernel.verification_observable_state(), before_unwind);
+}
+
+struct ObservableProbe {
+    observed: Rc<Cell<Option<f64>>>,
+}
+
+impl super::integrator::MeIntegratorBackend for ObservableProbe {
+    fn initialize(
+        &mut self,
+        point: &super::integrator::MeContinuousPoint,
+        derivatives: super::integrator::MeDerivativeHandle,
+    ) -> Result<(), super::integrator::MeIntegrationError> {
+        let norm = derivatives
+            .observable_error(point.time(), point.states(), &[0.1, 0.0])
+            .map_err(super::integrator::MeIntegrationError::from)?;
+        self.observed.set(Some(norm));
+        Ok(())
+    }
+
+    fn advance(
+        &mut self,
+        request: &super::integrator::MeAdvanceRequest,
+    ) -> Result<super::integrator::MeStepCandidate, super::integrator::MeIntegrationError> {
+        Ok(super::integrator::MeStepCandidate::new(
+            request.latest_accepted_time(),
+            request.current().states().to_vec(),
+            1,
+        ))
+    }
+
+    fn sample(
+        &self,
+        _time: f64,
+        states: &mut [f64],
+    ) -> Result<(), super::integrator::MeIntegrationError> {
+        states.fill(0.0);
+        Ok(())
+    }
+
+    fn truncate_reset(
+        &mut self,
+        _point: &super::integrator::MeContinuousPoint,
+    ) -> Result<(), super::integrator::MeIntegrationError> {
+        Ok(())
+    }
 }
 
 fn strict_root_relation_memory() -> solve::SolveModel {

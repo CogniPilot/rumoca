@@ -33,6 +33,7 @@ fn projection_blocks_derive_shared_source_invariance_once() {
                 rows: vec![index],
                 y_indices: vec![index],
                 tearing: None,
+                guarded_tearing: None,
                 alternate_charts: Vec::new(),
             })
             .collect(),
@@ -127,24 +128,56 @@ fn source(indices: Vec<usize>, aggregate_first: bool) -> ScalarProgramBlock {
 }
 
 fn outputs(y: &ScalarProgramBlock, full: &ScalarProgramBlock) -> ContinuousStructuralArtifacts {
-    outputs_with_primal(y, y, full)
+    outputs_with_primal(y, y, full, vec![3, 7])
+}
+
+#[test]
+fn application_binding_requires_the_issued_value_layout_owner() {
+    let source = source(vec![3, 7, 11], true);
+    let mut issued = outputs(&source, &source);
+    let original = issued.algebraic_projection()[0]
+        .jacobian_application()
+        .unwrap()
+        .clone();
+    let specialized = original
+        .clone()
+        .with_specialized_source(&source, source.clone())
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        original.value_layout(),
+        specialized.value_layout()
+    ));
+    assert!(!Arc::ptr_eq(original.identity(), specialized.identity()));
+    assert!(
+        issued
+            .bind_algebraic_jacobian_application(specialized)
+            .is_ok()
+    );
+    let foreign = outputs(&source, &source).algebraic_projection()[0]
+        .jacobian_application()
+        .unwrap()
+        .clone();
+    assert!(issued.bind_algebraic_jacobian_application(foreign).is_err());
 }
 
 fn outputs_with_primal(
     primal: &ScalarProgramBlock,
     y: &ScalarProgramBlock,
     full: &ScalarProgramBlock,
+    rows: Vec<usize>,
 ) -> ContinuousStructuralArtifacts {
+    let n = rows.len();
     let provenance =
         PatternProvenance::derived(PatternDerivation::DependencyPropagation, span()).unwrap();
     let pattern =
-        StructuralPattern::from_row_dependencies(2, 2, &[vec![0, 1], vec![0, 1]], provenance)
+        StructuralPattern::from_row_dependencies(n, n, &vec![(0..n).collect(); n], provenance)
             .unwrap();
     let plan = AlgebraicProjectionPlan {
         blocks: vec![AlgebraicProjectionBlock {
-            rows: vec![3, 7],
-            y_indices: vec![1, 0],
+            rows,
+            y_indices: (0..n).rev().collect(),
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         }],
     };
@@ -163,6 +196,7 @@ fn manifold_outputs(source: &ScalarProgramBlock) -> ContinuousStructuralArtifact
             rows: vec![3, 7],
             y_indices: vec![1, 0],
             tearing: None,
+            guarded_tearing: None,
             alternate_charts: Vec::new(),
         }],
     };
@@ -219,7 +253,7 @@ fn retained_linearizations_require_repeatable_primal_and_both_directional_owners
     let pure = source(vec![7, 3, 11], true);
     let full = source(vec![11, 3, 7], false);
     assert!(
-        outputs_with_primal(&pure, &pure, &full).algebraic_projection()[0]
+        outputs_with_primal(&pure, &pure, &full, vec![3, 7]).algebraic_projection()[0]
             .linearization_is_repeatable()
     );
     let mut programs = pure.programs().to_vec();
@@ -242,13 +276,13 @@ fn retained_linearizations_require_repeatable_primal_and_both_directional_owners
         (&pure, &pure, &impure),
     ] {
         assert!(
-            !outputs_with_primal(primal, y, full).algebraic_projection()[0]
+            !outputs_with_primal(primal, y, full, vec![3, 7]).algebraic_projection()[0]
                 .linearization_is_repeatable()
         );
     }
     for missing in [source(vec![3, 3, 11], true), source(vec![3, 8, 11], true)] {
         assert!(
-            !outputs_with_primal(&missing, &pure, &full).algebraic_projection()[0]
+            !outputs_with_primal(&missing, &pure, &full, vec![3, 7]).algebraic_projection()[0]
                 .linearization_is_repeatable()
         );
     }
@@ -285,51 +319,58 @@ fn projections_preserve_distinct_program_and_output_maps_in_both_seed_spaces() {
 
 #[test]
 fn ambiguous_or_missing_output_ownership_cannot_issue_a_batch() {
-    for indices in [vec![3, 3, 11], vec![3, 8, 11]] {
-        let artifacts = outputs(&source(indices, true), &ScalarProgramBlock::default());
-        assert!(
-            artifacts.algebraic_projection()[0]
-                .residual_output_evaluation()
-                .is_none()
-        );
-        let evaluation = artifacts.algebraic_projection()[0]
-            .output_evaluation(0)
-            .unwrap();
-        assert!(evaluation.solver_y().is_none());
-        assert!(evaluation.solver_y_and_parameters().is_none());
+    for aggregate_first in [true, false] {
+        for indices in [vec![3, 3, 11], vec![3, 8, 11]] {
+            let artifacts = outputs(
+                &source(indices, aggregate_first),
+                &ScalarProgramBlock::default(),
+            );
+            assert!(
+                artifacts.algebraic_projection()[0]
+                    .residual_output_evaluation()
+                    .is_none()
+            );
+            let evaluation = artifacts.algebraic_projection()[0]
+                .output_evaluation(0)
+                .unwrap();
+            assert!(evaluation.solver_y().is_none());
+            assert!(evaluation.solver_y_and_parameters().is_none());
+        }
     }
 }
 
 #[test]
 fn unused_impure_operations_cannot_be_reused_through_output_grouping() {
-    let base = source(vec![3, 7, 11], true);
-    let mut programs = base.programs().to_vec();
-    programs[0].extend([
-        LinearOp::Const {
-            dst: 8,
-            value: 42.0,
-        },
-        LinearOp::ImpureRandomInit { dst: 9, seed: 8 },
-    ]);
-    let impure = ScalarProgramBlock::with_output_indices(
-        programs,
-        base.program_spans().to_vec(),
-        base.output_indices().to_vec(),
-    )
-    .unwrap();
-    let artifacts = outputs(&impure, &ScalarProgramBlock::default());
-    assert!(
-        artifacts.algebraic_projection()[0]
-            .residual_output_evaluation()
-            .is_none()
-    );
-    assert!(
-        artifacts.algebraic_projection()[0]
-            .output_evaluation(0)
-            .unwrap()
-            .solver_y()
-            .is_none()
-    );
+    for aggregate_first in [true, false] {
+        let base = source(vec![3, 7, 11], aggregate_first);
+        let mut programs = base.programs().to_vec();
+        programs[0].extend([
+            LinearOp::Const {
+                dst: 8,
+                value: 42.0,
+            },
+            LinearOp::ImpureRandomInit { dst: 9, seed: 8 },
+        ]);
+        let impure = ScalarProgramBlock::with_output_indices(
+            programs,
+            base.program_spans().to_vec(),
+            base.output_indices().to_vec(),
+        )
+        .unwrap();
+        let artifacts = outputs(&impure, &ScalarProgramBlock::default());
+        assert!(
+            artifacts.algebraic_projection()[0]
+                .residual_output_evaluation()
+                .is_none()
+        );
+        assert!(
+            artifacts.algebraic_projection()[0]
+                .output_evaluation(0)
+                .unwrap()
+                .solver_y()
+                .is_none()
+        );
+    }
 }
 
 #[test]
@@ -355,4 +396,64 @@ fn repeatability_checks_discarded_effects_inside_conditional_regions() {
     assert!(!super::program_effects::program_is_repeatable(&[
         conditional(impure)
     ]));
+}
+
+#[test]
+fn distinct_primal_programs_preserve_order_without_expanding_color_admission() {
+    let source = source(vec![7, 3, 11], false);
+    let artifacts = outputs(&source, &source);
+    let structure = &artifacts.algebraic_projection()[0];
+    let selection = structure
+        .residual_output_evaluation()
+        .expect("distinct programs batch");
+    assert_eq!(selection.output_len(), 2);
+    assert_eq!(
+        selection
+            .programs()
+            .iter()
+            .map(|p| p.program())
+            .collect::<Vec<_>>(),
+        [1, 0]
+    );
+    assert_eq!(selection.programs()[0].placements(), [(0, 0)]);
+    assert_eq!(
+        selection.programs()[0].output_count(),
+        2,
+        "retain the whole aggregate program"
+    );
+    assert_eq!(selection.programs()[1].placements(), [(0, 1)]);
+    let manifold = manifold_outputs(&source);
+    for color in 0..2 {
+        let selection = structure.output_evaluation(color).unwrap();
+        assert!(selection.solver_y().is_none());
+        assert!(selection.solver_y_and_parameters().is_none());
+        // Manifold colors already admit distinct programs through selection().
+        let selection = manifold.manifold_projection()[0]
+            .output_evaluation(color)
+            .unwrap();
+        assert_eq!(
+            selection
+                .solver_y()
+                .unwrap()
+                .programs()
+                .iter()
+                .map(|p| p.program())
+                .collect::<Vec<_>>(),
+            [1, 0]
+        );
+        assert!(selection.solver_y_and_parameters().is_none());
+    }
+}
+
+#[test]
+fn one_requested_primal_placement_does_not_issue_a_batch() {
+    let source = source(vec![7, 3, 11], false);
+    for row in [3, 7] {
+        let artifacts = outputs_with_primal(&source, &source, &source, vec![row]);
+        assert!(
+            artifacts.algebraic_projection()[0]
+                .residual_output_evaluation()
+                .is_none()
+        );
+    }
 }

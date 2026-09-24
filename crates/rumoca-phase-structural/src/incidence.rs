@@ -1,5 +1,6 @@
 //! Exact scalar incidence derived from checked DAE expression views.
 
+mod causal;
 pub(crate) mod projection;
 pub mod rows;
 
@@ -11,12 +12,30 @@ use rumoca_ir_dae as dae;
 use crate::incidence::rows::{IncidenceRows, IncidenceRowsBuilder};
 use crate::types::{EquationRef, StructuralError, UnknownId};
 
+/// Unit-coefficient admission issued only while projecting a complete DAE residual.
+/// The row storage is private; graph-only incidence cannot manufacture this proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CausalCandidates {
+    rows: Box<IncidenceRows>,
+}
+
+impl CausalCandidates {
+    pub(crate) fn row(&self, index: usize) -> &[usize] {
+        self.rows.row(index)
+    }
+
+    fn get(&self, index: usize) -> Option<&[usize]> {
+        self.rows.get(index)
+    }
+}
+
 /// Incidence data branded to the inspected DAE.
 #[derive(Debug)]
 pub struct Incidence<'dae> {
     pub n_eq: usize,
     pub n_var: usize,
     pub eq_unknowns: IncidenceRows,
+    pub(crate) causal_candidates: Option<CausalCandidates>,
     pub unknowns: Vec<UnknownId<'dae>>,
     pub unknown_spans: Vec<rumoca_core::Span>,
     pub equation_refs: Vec<EquationRef>,
@@ -42,6 +61,7 @@ pub struct Incidence<'dae> {
 #[derive(Clone, Debug)]
 pub(crate) struct ReusableIncidence {
     rows: IncidenceRows,
+    causal_candidates: CausalCandidates,
     equation_spans: Vec<rumoca_core::Span>,
     owner_first_row: Vec<usize>,
 }
@@ -50,6 +70,10 @@ impl ReusableIncidence {
     pub(crate) fn from_incidence(incidence: &Incidence<'_>) -> Self {
         Self {
             rows: incidence.eq_unknowns.clone(),
+            causal_candidates: incidence
+                .causal_candidates
+                .clone()
+                .expect("DAE incidence owns causal proofs"),
             equation_spans: incidence.equation_spans.clone(),
             owner_first_row: incidence.owner_first_row.clone(),
         }
@@ -171,6 +195,7 @@ fn build_incidence_inner<'dae>(
         view,
         unknown_map: &unknowns.map,
         rows: IncidenceRowsBuilder::default(),
+        causal_candidates: IncidenceRowsBuilder::default(),
         equation_refs: Vec::new(),
         equation_spans: Vec::new(),
         structured_matching: Vec::new(),
@@ -222,6 +247,9 @@ fn build_incidence_inner<'dae>(
         n_eq,
         n_var: unknowns.ids.len(),
         eq_unknowns,
+        causal_candidates: Some(CausalCandidates {
+            rows: Box::new(builder.causal_candidates.finish()),
+        }),
         unknowns: unknowns.ids,
         unknown_spans: unknowns.spans,
         equation_refs: builder.equation_refs,
@@ -244,6 +272,10 @@ fn assert_reuse_matches_fresh(view: dae::DaeView<'_>, reused: &Incidence<'_>) {
     debug_assert!(
         reused.eq_unknowns == fresh.eq_unknowns,
         "incremental incidence rows diverged from the full projection"
+    );
+    debug_assert!(
+        reused.causal_candidates == fresh.causal_candidates,
+        "incremental causal proofs diverged from the full projection"
     );
     debug_assert!(
         reused.equation_spans == fresh.equation_spans,
@@ -349,6 +381,7 @@ struct IncidenceBuilder<'map, 'dae> {
     view: dae::DaeView<'dae>,
     unknown_map: &'map HashMap<UnknownKey, usize>,
     rows: IncidenceRowsBuilder,
+    causal_candidates: IncidenceRowsBuilder,
     equation_refs: Vec<EquationRef>,
     equation_spans: Vec<rumoca_core::Span>,
     structured_matching: Vec<StructuredMatchingFamily>,
@@ -363,21 +396,9 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
         domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
         owner: dae::DaeProvenance,
     ) -> Result<(), StructuralError> {
-        let mut occurrences = Vec::new();
-        let unknown_map = self.unknown_map;
-        for_each_scalar_coordinate_cached(
-            self.view,
-            expression,
-            scalar,
-            domain_point,
-            &mut self.projection_cache,
-            |coordinate, scalar| {
-                if let Some(unknown) = resolve_coordinate(unknown_map, coordinate, scalar) {
-                    occurrences.push(unknown);
-                }
-            },
-        )
-        .map_err(projection::projection_error)?;
+        let occurrences = self.unknown_dependencies(expression, scalar, domain_point)?;
+        let candidates = self.unit_candidates(expression, scalar, domain_point)?;
+        self.causal_candidates.push_occurrences(&candidates);
         self.rows.push_occurrences(&occurrences);
         self.equation_refs
             .push(EquationRef(self.equation_refs.len()));
@@ -395,7 +416,9 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
         for row in range {
             let occurrences = prev.rows.get(row)?;
             let span = *prev.equation_spans.get(row)?;
+            let candidates = prev.causal_candidates.get(row)?;
             self.rows.push_canonical_row(occurrences);
+            self.causal_candidates.push_canonical_row(candidates);
             self.equation_refs
                 .push(EquationRef(self.equation_refs.len()));
             self.equation_spans.push(span);
@@ -581,6 +604,8 @@ pub fn solver_incidence(
         n_eq,
         n_var: unknown_count,
         eq_unknowns,
+        // Graph-only callers supply no DAE expression or coefficient claim.
+        causal_candidates: None,
         unknowns: (0..unknown_count).map(UnknownId::Solver).collect(),
         unknown_spans: Vec::new(),
         equation_refs: (0..n_eq).map(EquationRef).collect(),
@@ -715,6 +740,7 @@ mod reuse_tests {
                     reused.equation_spans, fresh.equation_spans,
                     "spans diverged for touched pattern {pattern:b}"
                 );
+                assert_eq!(reused.causal_candidates, fresh.causal_candidates);
                 assert_eq!(reused.owner_first_row, fresh.owner_first_row);
             }
         });

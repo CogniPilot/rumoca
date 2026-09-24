@@ -130,7 +130,7 @@ impl SolveRuntime {
                 .ok_or_else(|| RuntimeSolveError::solve_ir("invalid event refresh clock"))?;
             if self.periodic_clock_active(owner, t, "event refresh")? {
                 self.refresh_slots_with_plan(
-                    relation.remainder(),
+                    relation,
                     RefreshSlotArgs {
                         t,
                         solver_y: &mut *solver_y,
@@ -168,9 +168,10 @@ impl SolveRuntime {
 
     pub(super) fn refresh_slots_with_plan(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &PreparedRefreshPlan,
         mut args: RefreshSlotArgs<'_>,
     ) -> Result<(), RuntimeSolveError> {
+        plan.validated_for(self.state_count, self.solver_count, args.solver_y.len())?;
         if plan.rows.is_empty() && plan.simultaneous_plan.is_empty() {
             return Ok(());
         }
@@ -315,10 +316,12 @@ impl SolveRuntime {
 
     pub(super) fn project_refresh_slots(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &PreparedRefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
         use_complete_plan: bool,
     ) -> Result<(), RuntimeSolveError> {
+        let plan_validated =
+            plan.validated_for(self.state_count, self.solver_count, args.solver_y.len())?;
         let projection_plan = if use_complete_plan {
             &plan.simultaneous_plan
         } else {
@@ -330,7 +333,7 @@ impl SolveRuntime {
             #[cfg(test)]
             plan: projection_plan,
             block_indices: &plan.simultaneous_block_indices,
-            plan_validated: false,
+            plan_validated,
             jacobian_v: ProjectionJacobian::SolverY {
                 block: &self.implicit_projection_jacobian_v,
                 scalar: &self.implicit_projection_scalar_jacobian_v,

@@ -49,6 +49,8 @@ mod native_projection_assignments;
 mod native_specialization;
 use native_specialization::{RowEvalPoint, SpecializedRows};
 mod plans;
+mod prepared_refresh;
+use prepared_refresh::PreparedRefreshPlan;
 mod refresh_batch;
 mod refresh_execution;
 mod refresh_projection;
@@ -88,6 +90,20 @@ use support::{
 /// block. Native execution adapters implement this contract; the runtime
 /// retains the prepared evaluator as the correctness fallback.
 pub trait CompiledSolveExpression {
+    /// Execute the issued ordered selection. Decline before execution; errors
+    /// must propagate without replay. Commit output only after the batch succeeds.
+    fn call_projection_outputs(
+        &self,
+        _selection: &solve::ProjectionOutputSelection,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        _external_tables: &[rumoca_core::ExternalTableData],
+        _out: &mut [f64],
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
     /// Execute all local outputs of one retained source program. A decline
     /// occurs before execution; admitted execution errors must propagate.
     fn call_program_outputs(
@@ -174,6 +190,12 @@ pub trait CompiledSolveJacobianExpression {
 }
 
 /// Complete application of an issued colored Jacobian at fresh coordinates.
+/// `out` has one value per stored slot in the application's row-major layout.
+/// Success overwrites every slot with its fresh numerical value, including
+/// zero, NaN, or infinity, independently of prior contents. Absent coordinates
+/// are implicit structural +0 in the Jacobian view. Checked slot coverage is
+/// metadata, not proof that a native provider executed correctly. Errors
+/// propagate without fallback or replay; partial output is never published.
 pub trait CompiledSolveProjectionJacobian {
     fn call(
         &self,
@@ -190,6 +212,18 @@ pub trait CompiledSolveProjectionJacobian {
 /// subsequent programs observe earlier assignments while multiple outputs of
 /// one source program commit together.
 pub trait CompiledSolveAssignmentSchedule {
+    /// None refuses this protocol before execution. Numeric decline is ordered;
+    /// execution errors propagate and must never be replayed.
+    fn call_torn(
+        &self,
+        _y: &mut [f64],
+        _p: &[f64],
+        _t: f64,
+        _tables: &[rumoca_core::ExternalTableData],
+    ) -> Result<Option<solve_eval::TornSweepStatus>, String> {
+        Ok(None)
+    }
+
     fn call(
         &self,
         y: &mut [f64],
@@ -365,13 +399,17 @@ pub struct SolveRuntime {
     continuous_structural: solve::ContinuousStructuralArtifacts,
     initialization_structural: solve::InitializationStructuralArtifacts,
     algebraic_newton_caches: Vec<RefCell<crate::runtime::projection::SparseNewtonCache>>,
+    // Storage only: affine projection overwrites every stored slot or dense cell
+    // at each fresh point.
+    // Kept separate from factorization and retained seed-linearization ownership.
+    affine_jacobian_storage: Vec<RefCell<Option<crate::runtime::projection::JacobianStorage>>>,
     seed_projection_cache: RefCell<SeedProjectionCache>,
-    algebraic_refresh: solve::RefreshPlan,
-    derivative_refresh: solve::RefreshPlan,
-    root_refresh: solve::RefreshPlan,
-    event_refresh: solve::RefreshPlan,
-    root_refresh_after_derivative: Option<solve::RefreshRemainderRelation>,
-    clock_event_refresh_after_event: Vec<solve::RefreshRemainderRelation>,
+    algebraic_refresh: PreparedRefreshPlan,
+    derivative_refresh: PreparedRefreshPlan,
+    root_refresh: PreparedRefreshPlan,
+    event_refresh: PreparedRefreshPlan,
+    root_refresh_after_derivative: Option<PreparedRefreshPlan>,
+    clock_event_refresh_after_event: Vec<PreparedRefreshPlan>,
     /// Certified coverage for the initialization homotopy continuation; the
     /// single source of truth shared by the sweep driver and the acceptance
     /// check in [`InitialContinuationCoverage::certify`].
@@ -489,6 +527,9 @@ impl SolveRuntime {
         let algebraic_newton_caches = (0..continuous_structural.algebraic_projection().len())
             .map(|_| RefCell::new(crate::runtime::projection::SparseNewtonCache::default()))
             .collect();
+        let affine_jacobian_storage = (0..continuous_structural.algebraic_projection().len())
+            .map(|_| RefCell::new(None))
+            .collect();
         let implicit_scalar_projection =
             solve_eval::to_scalar_program_projection(&model.problem.continuous.implicit_rhs)?;
         let mut refresh_program_rows = FxHashMap::default();
@@ -544,7 +585,6 @@ impl SolveRuntime {
         let implicit_scalar_rhs = PreparedScalarProgramBlock::new(implicit_scalar_programs)?;
         let compiled_algebraic_jacobians = refresh_projection::prepare_projection_jacobians(
             &continuous_structural,
-            &implicit_scalar_rhs,
             &implicit_projection_scalar_jacobian,
             compiled_implicit_projection_jacobian_v.as_deref(),
         )?;
@@ -604,11 +644,22 @@ impl SolveRuntime {
             )
         });
         let refresh_owners = &model.problem.continuous.refresh_owners;
-        let algebraic_refresh = refresh_owners.algebraic().clone();
-        let derivative_refresh = refresh_owners.derivative().clone();
-        let root_refresh = refresh_owners.root().clone();
-        let event_refresh = refresh_owners.event().clone();
-        let clock_event_refresh = refresh_owners.clock_events().to_vec();
+        let prepare_refresh = |plan: &solve::RefreshPlan| {
+            PreparedRefreshPlan::new(
+                plan.clone(),
+                model.state_scalar_count(),
+                model.solver_scalar_count(),
+            )
+        };
+        let algebraic_refresh = prepare_refresh(refresh_owners.algebraic())?;
+        let derivative_refresh = prepare_refresh(refresh_owners.derivative())?;
+        let root_refresh = prepare_refresh(refresh_owners.root())?;
+        let event_refresh = prepare_refresh(refresh_owners.event())?;
+        let clock_event_refresh = refresh_owners
+            .clock_events()
+            .iter()
+            .map(prepare_refresh)
+            .collect::<Result<Vec<_>, _>>()?;
         for row in [
             &algebraic_refresh,
             &derivative_refresh,
@@ -643,11 +694,18 @@ impl SolveRuntime {
         refresh_plans.extend(clock_event_refresh.iter());
         let static_refresh_parameter_indices = static_refresh_parameter_indices(
             &implicit_scalar_rhs,
-            refresh_plans,
+            refresh_plans.into_iter().map(|plan| &**plan),
             &refresh_program_rows,
         );
-        let root_refresh_after_derivative = refresh_owners.root_after_derivative().cloned();
-        let clock_event_refresh_after_event = refresh_owners.clock_events_after_event().to_vec();
+        let root_refresh_after_derivative = refresh_owners
+            .root_after_derivative()
+            .map(|relation| prepare_refresh(relation.remainder()))
+            .transpose()?;
+        let clock_event_refresh_after_event = refresh_owners
+            .clock_events_after_event()
+            .iter()
+            .map(|relation| prepare_refresh(relation.remainder()))
+            .collect::<Result<Vec<_>, _>>()?;
         if clock_event_refresh_after_event.len() != clock_event_refresh.len() {
             return Err(EvalSolveError::InvalidRow {
                 message: "clock refresh remainder inventory does not match clock owners"
@@ -740,6 +798,7 @@ impl SolveRuntime {
             continuous_structural,
             initialization_structural,
             algebraic_newton_caches,
+            affine_jacobian_storage,
             seed_projection_cache: RefCell::new(SeedProjectionCache::default()),
             algebraic_refresh,
             derivative_refresh,
@@ -1445,7 +1504,7 @@ impl SolveRuntime {
                 "root refresh derivative-settled remainder disappeared".to_string(),
             )
         })?;
-        let remainder = relation.remainder();
+        let remainder = relation;
         if !remainder.value_stages.is_empty() {
             self.refresh_slots_with_plan(
                 remainder,

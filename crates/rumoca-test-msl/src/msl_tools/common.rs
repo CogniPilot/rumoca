@@ -804,6 +804,7 @@ mod tests {
             "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.BevelGear1D",
             "Modelica.Mechanics.Translational.Examples.PreLoad",
             "Modelica.Thermal.FluidHeatFlow.Examples.ParallelPumpDropOut",
+            "Modelica.Thermal.FluidHeatFlow.Examples.TwoMass",
         ];
         assert_eq!(exclusions.len(), expected.len());
         for model_name in expected {

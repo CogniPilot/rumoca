@@ -144,12 +144,34 @@ pub(super) fn coupled_model() -> solve::SolveModel {
 
 #[derive(Default)]
 struct GroupedResidual {
+    batch: bool,
+    batch_calls: Cell<usize>,
     single_calls: Cell<usize>,
     grouped_calls: Cell<usize>,
     fail: bool,
 }
 
 impl CompiledSolveExpression for GroupedResidual {
+    fn call_projection_outputs(
+        &self,
+        _selection: &solve::ProjectionOutputSelection,
+        y: &[f64],
+        p: &[f64],
+        _t: f64,
+        _tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<bool, String> {
+        if !self.batch {
+            return Ok(false);
+        }
+        self.batch_calls.set(self.batch_calls.get() + 1);
+        if self.fail {
+            return Err("batch native residual failed".into());
+        }
+        out.copy_from_slice(&[y[0] + p[0] * y[1] - 2.0, p[0] * y[0] - y[1] - 1.0]);
+        Ok(true)
+    }
+
     fn call(
         &self,
         _y: &[f64],
@@ -335,4 +357,46 @@ fn grouped_projection_jvp_preserves_reverse_completed_rows_and_full_seed_space()
         1,
         "settled rows need no invocation"
     );
+}
+
+#[test]
+fn batched_projection_residual_failure_is_not_replayed_or_committed() {
+    let mut runtime = SolveRuntime::new_fixture(&coupled_model()).unwrap();
+    let native = Rc::new(GroupedResidual {
+        batch: true,
+        fail: true,
+        ..Default::default()
+    });
+    runtime.compiled_implicit_rhs = Some(native.clone());
+    let mut y = [8.0, -5.0];
+    let error = runtime
+        .refresh_algebraic_and_output_slots_certified(1.0, &mut y, &[2.0], 1e-10, 4)
+        .unwrap_err();
+    assert_eq!(y, [8.0, -5.0]);
+    assert!(error.to_string().contains("batch native residual failed"));
+    assert_eq!(native.batch_calls.get(), 1);
+    assert_eq!(native.grouped_calls.get(), 0);
+    assert_eq!(native.single_calls.get(), 0);
+}
+
+#[test]
+fn batched_projection_residual_preserves_fresh_parameter_certificates() {
+    let mut runtime = SolveRuntime::new_fixture(&coupled_model()).unwrap();
+    let native = Rc::new(GroupedResidual {
+        batch: true,
+        ..Default::default()
+    });
+    runtime.compiled_implicit_rhs = Some(native.clone());
+    for k in [2.0, -3.0, 0.0] {
+        let mut y = [8.0, -5.0];
+        let before = native.batch_calls.get();
+        runtime
+            .refresh_algebraic_and_output_slots_certified(1.0, &mut y, &[k], 1e-10, 4)
+            .unwrap();
+        assert!((y[0] + k * y[1] - 2.0).abs() < 1e-10);
+        assert!((k * y[0] - y[1] - 1.0).abs() < 1e-10);
+        assert!(native.batch_calls.get() > before);
+    }
+    assert_eq!(native.grouped_calls.get(), 0);
+    assert_eq!(native.single_calls.get(), 0);
 }

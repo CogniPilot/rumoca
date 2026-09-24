@@ -78,6 +78,7 @@ fn redeclare_override(
         "F".to_string(),
         OverrideTarget {
             alias: "F".to_string(),
+            alias_def_id: None,
             name: name.to_string(),
             def_id,
             class_type: ClassType::Function,
@@ -167,6 +168,14 @@ fn redeclare_of_a_different_slot_keeps_the_declared_default() {
     );
 
     let (mut expr, _) = slot_call();
+    let Expression::FunctionCall { name, .. } = &expr else {
+        panic!("expected function call");
+    };
+    let rewrite = resolve_exact_function_rewrite(name, false, &ctx, test_span())
+        .expect("unrelated redeclare must preserve exact selection")
+        .expect("the source call selects a function");
+    assert_eq!(rewrite.selection.exposure, ids.slot_def);
+    assert_eq!(rewrite.selection.implementation, ids.double_def);
     rewrite_function_overrides_in_expression_with_ctx(&mut expr, &ctx)
         .expect("unrelated redeclare must not fail the call");
 
@@ -174,7 +183,7 @@ fn redeclare_of_a_different_slot_keeps_the_declared_default() {
         panic!("expected function call");
     };
     assert_eq!(name.as_str(), "F");
-    assert_eq!(name.target_def_id(), Some(ids.double_def));
+    assert_eq!(name.target_def_id(), Some(ids.slot_def));
 }
 
 #[test]
@@ -240,7 +249,7 @@ fn element_redeclare_collection_records_exact_slot_identity() {
     let uses_triple = class_index
         .get(uses_triple_def)
         .expect("fixture derived block");
-    let mut overrides = rustc_hash::FxHashMap::default();
+    let mut overrides = OverrideEntries::default();
     let mut visited = FxHashSet::default();
     collect_component_constructor_aliases_for_class(
         &tree,
@@ -253,6 +262,7 @@ fn element_redeclare_collection_records_exact_slot_identity() {
     );
 
     let target = overrides
+        .by_alias
         .get("F")
         .expect("element redeclare must contribute an override");
     assert_eq!(target.def_id, redeclared_def);
@@ -271,6 +281,63 @@ fn extends_modification_redeclare_collection_records_exact_slot_identity() {
     uses_triple.extends.push(Extend {
         base_name: Name::from_string("Consumer"),
         base_def_id: Some(ids.consumer_def),
+        modifications: vec![rumoca_ir_ast::ExtendModification {
+            expr: rumoca_ir_ast::Expression::Modification {
+                target: resolved_comp_ref(&[("F", ids.slot_def)]),
+                value: std::sync::Arc::new(resolved_ast_var(&[("Triple", ids.triple_def)])),
+                span: test_span(),
+            },
+            each: false,
+            final_: false,
+            redeclare: true,
+        }],
+        ..Extend::default()
+    });
+    tree.def_map
+        .insert(uses_triple_def, "Pkg.UsesTriple".to_string());
+    let pkg = tree
+        .definitions
+        .classes
+        .get_mut("Pkg")
+        .expect("fixture package");
+    pkg.classes.insert("UsesTriple".to_string(), uses_triple);
+
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let uses_triple = class_index
+        .get(uses_triple_def)
+        .expect("fixture derived block");
+    let mut overrides = OverrideEntries::default();
+    let mut visited = FxHashSet::default();
+    collect_component_constructor_aliases_for_class(
+        &tree,
+        &class_index,
+        uses_triple,
+        "Pkg.UsesTriple",
+        true,
+        &mut visited,
+        &mut overrides,
+    );
+
+    let target = overrides
+        .by_alias
+        .get("F")
+        .expect("extends-modification redeclare must contribute an override");
+    assert_eq!(target.def_id, ids.triple_def);
+    assert_eq!(target.class_type, ClassType::Function);
+    assert!(target.active);
+    assert_eq!(target.function_slot, FunctionSlot::Exact(ids.slot_def));
+    assert_eq!(target.alias_def_id, Some(ids.slot_def));
+}
+
+#[test]
+fn extends_redeclare_without_resolved_base_does_not_mint_slot_from_name() {
+    let (mut tree, ids) = redeclare_fixture_tree();
+    let uses_triple_def = DefId::new(6);
+
+    let mut uses_triple = class("UsesTriple", ClassType::Block);
+    uses_triple.def_id = Some(uses_triple_def);
+    uses_triple.extends.push(Extend {
+        base_name: Name::from_string("Consumer"),
         modifications: vec![rumoca_ir_ast::ExtendModification {
             expr: rumoca_ir_ast::Expression::Modification {
                 target: comp_ref(&["F"]),
@@ -296,23 +363,19 @@ fn extends_modification_redeclare_collection_records_exact_slot_identity() {
     let uses_triple = class_index
         .get(uses_triple_def)
         .expect("fixture derived block");
-    let mut overrides = rustc_hash::FxHashMap::default();
-    let mut visited = FxHashSet::default();
-    collect_component_constructor_aliases_for_class(
+    let mut overrides = OverrideEntries::default();
+    collect_extends_redeclare_aliases_for_class(
         &tree,
         &class_index,
         uses_triple,
         "Pkg.UsesTriple",
-        true,
-        &mut visited,
         &mut overrides,
     );
 
     let target = overrides
+        .by_alias
         .get("F")
-        .expect("extends-modification redeclare must contribute an override");
-    assert_eq!(target.def_id, ids.triple_def);
-    assert_eq!(target.class_type, ClassType::Function);
-    assert!(target.active);
-    assert_eq!(target.function_slot, FunctionSlot::Exact(ids.slot_def));
+        .expect("unresolved base redeclare remains visible for diagnostics");
+    assert_eq!(target.function_slot, FunctionSlot::Unresolved);
+    assert_eq!(target.alias_def_id, None);
 }

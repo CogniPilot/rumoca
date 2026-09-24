@@ -1,0 +1,9 @@
+# Seed factor frozen review — db9e8d109f15396b82e0491fabd3c5eb26f9cdcf
+
+**Disposition: ACCEPT for main's timed comparison gate; no source blocker found.** The reviewed worktree was clean. `git show --format= --binary HEAD` SHA-256 was `d987a8a4925a1d0f8ec25ad7efee48ddcf69f39530a92879ffef7c01895995bf`.
+
+The six-file diff implements the accepted torn-only boundary. `SeedBlockLinearization::build` clones the same issued `JacobianStructure` that assembles its retained dense J, then admits only block-issued guarded/primary candidates with matching structure layouts. `SeedTornFactor::solve` uses the existing checked torn kernel with unit scales and residual `-rhs`; that kernel checks fresh zero guards and causal pivots and requires invertible reduced LU before returning. No sparse or SVD solve is admitted. Exact-zero RHS exits before factor/cache access. A torn decline, nonfinite torn solution, or `RefCell::try_borrow_mut` conflict reaches the same per-owner `OnceCell<LU>` dense fallback. The original dense J still supplies row scales, `J·v` refinement, singular trace, and selected-JVP certificate. No point-key or owner-lifetime policy changed.
+
+Focused tests cover issued singular J with zero success and consistent/inconsistent nonzero typed refusal plus seed rollback; a nonsingular selected-JVP certificate; guarded decline→primary on two RHS, two prepared read maps, and a busy-cache dense fallback factored once; adjacent-point fresh owner; existing y/p/t bit-key, clone, and fallback reuse controls. Worker logs report 583/583 solver library tests, final owner control, strict clippy, and fmt passing. No build/profile was run in this review.
+
+Limit: this acceptance is source and focused-control review, not evidence of timing improvement or bitwise identity over the model cohort. Main's timed/preservation gate remains the next check.

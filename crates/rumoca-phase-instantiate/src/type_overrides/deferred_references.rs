@@ -6,7 +6,9 @@
 //! statements, and expressions without rewriting source aliases.
 
 use super::override_map::TypeOverrideMap;
-use super::selected_class_members::resolve_member_reference_in_class;
+use super::selected_class_members::{
+    MemberResolutionCache, resolve_member_reference_in_class_with_cache,
+};
 use crate::{InstantiateError, InstantiateResult};
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
@@ -20,6 +22,75 @@ use rustc_hash::FxHashMap;
 /// occurrences.
 pub(crate) type SelectedComponentTypes = FxHashMap<DefId, DefId>;
 
+/// Exact source component declarations and their resolved declared types.
+///
+/// The index is built once per resolved tree. Deferred callable references can
+/// then cross an enclosing component declaration without scanning unrelated
+/// classes for every reference.
+#[derive(Default)]
+pub(crate) struct ComponentTypeIndex {
+    declared_types: FxHashMap<DefId, (Option<DefId>, bool)>,
+}
+
+fn collect_component_declarations(
+    class: &ast::ClassDef,
+    declarations: &mut Vec<(DefId, Option<DefId>, Option<DefId>, bool)>,
+) {
+    for component in class.components.values() {
+        if let Some(component_def_id) = component.def_id {
+            declarations.push((
+                component_def_id,
+                class.def_id,
+                component.type_def_id,
+                component.is_replaceable,
+            ));
+        }
+    }
+    for nested in class.classes.values() {
+        collect_component_declarations(nested, declarations);
+    }
+}
+
+impl ComponentTypeIndex {
+    pub(crate) fn from_tree(tree: &ast::ClassTree) -> InstantiateResult<Self> {
+        let mut declarations = Vec::new();
+        for class in tree.definitions.classes.values() {
+            collect_component_declarations(class, &mut declarations);
+        }
+        declarations.sort_by_key(
+            |(component_def_id, owner_def_id, type_def_id, is_replaceable)| {
+                (
+                    component_def_id.index(),
+                    owner_def_id.map_or(u32::MAX, |def_id| def_id.index()),
+                    type_def_id.map_or(u32::MAX, |def_id| def_id.index()),
+                    *is_replaceable,
+                )
+            },
+        );
+
+        let mut index = Self::default();
+        for (component_def_id, owner_def_id, type_def_id, is_replaceable) in declarations {
+            if let Some(previous) = index
+                .declared_types
+                .insert(component_def_id, (type_def_id, is_replaceable))
+                && previous != (type_def_id, is_replaceable)
+            {
+                return Err(Box::new(InstantiateError::missing_source_context(format!(
+                    "component declaration {component_def_id:?} has conflicting declared type identities or replaceability: {previous:?} and {type_def_id:?}/{is_replaceable} (owner {owner_def_id:?})"
+                ))));
+            }
+        }
+        Ok(index)
+    }
+
+    fn fixed_declared_type(&self, component_def_id: DefId) -> Option<DefId> {
+        self.declared_types
+            .get(&component_def_id)
+            .and_then(|(type_def_id, is_replaceable)| (!*is_replaceable).then_some(*type_def_id))
+            .flatten()
+    }
+}
+
 /// Resolve a reference deferred by Resolve across a replaceable class edge.
 ///
 /// Resolve deliberately retains the replaceable declaration in `def_id`.
@@ -29,9 +100,17 @@ pub(crate) fn resolve_dynamic_expression_targets(
     tree: &ast::ClassTree,
     overrides: &TypeOverrideMap,
     selected_component_types: &SelectedComponentTypes,
+    component_type_index: &ComponentTypeIndex,
+    member_cache: &mut MemberResolutionCache,
     expression: ast::Expression,
 ) -> InstantiateResult<ast::Expression> {
-    let mut batch = DynamicExpressionTargetBatch::new(tree, overrides, selected_component_types);
+    let mut batch = DynamicExpressionTargetBatch::new(
+        tree,
+        overrides,
+        selected_component_types,
+        component_type_index,
+        member_cache,
+    );
     let expression = batch.transform_expression(expression);
     batch.finish(expression)
 }
@@ -40,9 +119,17 @@ pub(crate) fn resolve_dynamic_equation_targets(
     tree: &ast::ClassTree,
     overrides: &TypeOverrideMap,
     selected_component_types: &SelectedComponentTypes,
+    component_type_index: &ComponentTypeIndex,
+    member_cache: &mut MemberResolutionCache,
     equation: ast::Equation,
 ) -> InstantiateResult<ast::Equation> {
-    let mut batch = DynamicExpressionTargetBatch::new(tree, overrides, selected_component_types);
+    let mut batch = DynamicExpressionTargetBatch::new(
+        tree,
+        overrides,
+        selected_component_types,
+        component_type_index,
+        member_cache,
+    );
     let equation = batch.transform_equation(equation);
     batch.finish(equation)
 }
@@ -51,9 +138,17 @@ pub(crate) fn resolve_dynamic_statement_targets(
     tree: &ast::ClassTree,
     overrides: &TypeOverrideMap,
     selected_component_types: &SelectedComponentTypes,
+    component_type_index: &ComponentTypeIndex,
+    member_cache: &mut MemberResolutionCache,
     statement: ast::Statement,
 ) -> InstantiateResult<ast::Statement> {
-    let mut batch = DynamicExpressionTargetBatch::new(tree, overrides, selected_component_types);
+    let mut batch = DynamicExpressionTargetBatch::new(
+        tree,
+        overrides,
+        selected_component_types,
+        component_type_index,
+        member_cache,
+    );
     let statement = batch.transform_statement(statement);
     batch.finish(statement)
 }
@@ -65,21 +160,25 @@ pub(crate) fn resolve_dynamic_statement_targets(
 /// dimensions by their structured source scope. Reusing the resolver avoids a
 /// fresh traversal owner for every optional field while preserving the first
 /// exact member-proof error.
-pub(crate) struct DynamicExpressionTargetBatch<'a> {
-    resolver: DynamicExpressionTargetResolver<'a>,
+pub(crate) struct DynamicExpressionTargetBatch<'a, 'cache> {
+    resolver: DynamicExpressionTargetResolver<'a, 'cache>,
 }
 
-impl<'a> DynamicExpressionTargetBatch<'a> {
+impl<'a, 'cache> DynamicExpressionTargetBatch<'a, 'cache> {
     pub(crate) fn new(
         tree: &'a ast::ClassTree,
         overrides: &'a TypeOverrideMap,
         selected_component_types: &'a SelectedComponentTypes,
+        component_type_index: &'a ComponentTypeIndex,
+        member_cache: &'cache mut MemberResolutionCache,
     ) -> Self {
         Self {
             resolver: DynamicExpressionTargetResolver::new(
                 tree,
                 overrides,
                 selected_component_types,
+                component_type_index,
+                member_cache,
             ),
         }
     }
@@ -117,14 +216,16 @@ impl<'a> DynamicExpressionTargetBatch<'a> {
     }
 }
 
-struct DynamicExpressionTargetResolver<'a> {
+struct DynamicExpressionTargetResolver<'a, 'cache> {
     tree: &'a ast::ClassTree,
     overrides: &'a TypeOverrideMap,
     selected_component_types: &'a SelectedComponentTypes,
+    component_type_index: &'a ComponentTypeIndex,
+    member_cache: &'cache mut MemberResolutionCache,
     error: Option<Box<InstantiateError>>,
 }
 
-impl ExpressionTransformer for DynamicExpressionTargetResolver<'_> {
+impl ExpressionTransformer for DynamicExpressionTargetResolver<'_, '_> {
     fn transform_component_ref_inner(
         &mut self,
         mut reference: ast::ComponentReference,
@@ -142,10 +243,30 @@ impl ExpressionTransformer for DynamicExpressionTargetResolver<'_> {
             .overrides
             .target_for_alias_def_id(root_def_id)
             .or_else(|| self.selected_component_types.get(&root_def_id).copied())
+            .or_else(|| {
+                // The declared type does not establish the final selection for
+                // a replaceable component during binding preparation. Its
+                // selected occurrence may own new members, and sibling
+                // occurrences are not available yet. Defer the member tail.
+                self.component_type_index
+                    .fixed_declared_type(root_def_id)
+                    .and_then(|declared_type_def_id| {
+                        self.overrides
+                            .target_for_alias_def_id(declared_type_def_id)
+                            .or(Some(declared_type_def_id))
+                    })
+            })
         else {
             return reference;
         };
-        match resolve_member_reference_in_class(self.tree, target_class_def_id, &reference, 1) {
+        match resolve_member_reference_in_class_with_cache(
+            self.tree,
+            target_class_def_id,
+            &reference,
+            1,
+            Some(self.overrides),
+            self.member_cache,
+        ) {
             Ok(identities) => {
                 for (part, def_id) in reference.parts.iter_mut().skip(1).zip(identities) {
                     part.def_id = Some(def_id);
@@ -157,16 +278,20 @@ impl ExpressionTransformer for DynamicExpressionTargetResolver<'_> {
     }
 }
 
-impl DynamicExpressionTargetResolver<'_> {
-    fn new<'a>(
+impl DynamicExpressionTargetResolver<'_, '_> {
+    fn new<'a, 'cache>(
         tree: &'a ast::ClassTree,
         overrides: &'a TypeOverrideMap,
         selected_component_types: &'a SelectedComponentTypes,
-    ) -> DynamicExpressionTargetResolver<'a> {
+        component_type_index: &'a ComponentTypeIndex,
+        member_cache: &'cache mut MemberResolutionCache,
+    ) -> DynamicExpressionTargetResolver<'a, 'cache> {
         DynamicExpressionTargetResolver {
             tree,
             overrides,
             selected_component_types,
+            component_type_index,
+            member_cache,
             error: None,
         }
     }
