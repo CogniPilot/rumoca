@@ -50,21 +50,18 @@ preserve source evaluation and checked wire replay under
 [SPEC_0043 §6a](SPEC_0043_CONSTRUCTION_CATALOG.md#6a-continuous-refresh-construction).
 Within one projection-Jacobian call, construction may certify reuse of complete
 operation results across colors from invariant input register versions and
-repeatable operations. Within one structural-artifact construction, these facts
-derive once per immutable source and are shared across block applications; specialization derives
-fresh facts bound to its new source. The first execution remains ordered and complete;
-coordinate changes, failure, or a new call invalidate every retained result.
-Native constant facts belong to register versions: each complete source write
-invalidates prior destination facts after reading its input versions.
-An affine elimination layout derives its row/coordinate permutations and
-triangular dependencies from the exact block's tearing and sparsity owners;
-each later dependency issues a guard naming the causal step that solves its
-column, and every solve checks the fresh, unconditioned coefficients. A
-nonzero guard or a weak pivot promotes the step it names to a tear in place,
-up to the capacity of `projection_policy`; beyond it the reduction declines.
-Promotions are re-derived from each factorization's coefficients, and cached
-reduced factors keep the coefficient validity and rejection discipline of
-full sparse factors.
+repeatable operations. Such facts derive once per immutable source, are shared
+across its block applications, and are rederived on specialization. The first
+execution remains ordered and complete; coordinate changes, failure, or a new
+call invalidate every retained result. Native constant facts belong to register
+versions: a complete source write invalidates prior destination facts after
+reading its inputs.
+An affine elimination layout derives its permutations and triangular
+dependencies from the exact block's tearing and sparsity owners; later
+dependencies issue guards, checked against fresh coefficients on every solve.
+A nonzero guard or a weak pivot promotes the step it names to a tear in place,
+up to the `projection_policy` capacity; beyond it the reduction declines, per
+the SPEC_0043 affine elimination row.
 
 For target `x`, the first true `(a_k, v_k)` gives `x' = v_k`; otherwise
 `x' = x`. Activations are shared per iteration; inactive values are skipped.
@@ -79,16 +76,15 @@ evidence constructs `Restart` instead.
 [SPEC_0043 §9](SPEC_0043_CONSTRUCTION_CATALOG.md#9-solve-algorithm-block-construction-catalog).
 Construction consumes one checked `AlgorithmCodePackage` and one explicit
 arithmetic profile; failure exposes no partial root. A template view may borrow
-the completed root but cannot select an operation, storage class, local scope,
+the completed root but selects nothing: no operation, storage class, scope,
 shape, alias rule, call ABI, or failure behavior.
 
 Shared causal-discrete analysis derives target identity, current-value
-dependencies, and deterministic orientation from one branded DAE view. Solve
-and GALEC may restrict it, never reinterpret unresolved rows.
-The same causal-definition owner derives whether a complete algebraic/output
-declaration is event-held. Solve stores that fact as one typed declaration
-domain; scalar trace metadata is only a final presentation projection of the
-declaration proof.
+dependencies, and deterministic orientation from one branded DAE view; Solve
+and GALEC may restrict it, never reinterpret unresolved rows. The same owner
+derives whether a complete algebraic/output declaration is event-held; Solve
+stores that as one typed declaration domain, and scalar trace metadata is only
+a presentation projection of that proof.
 
 ### Flat Aggregate Construction
 
