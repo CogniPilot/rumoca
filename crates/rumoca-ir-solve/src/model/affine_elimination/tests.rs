@@ -51,6 +51,29 @@ fn reversing_a_causal_dependency_requires_an_exact_zero_guard() {
     block.tearing.as_mut().unwrap().causal_steps.reverse();
     let layout = AffineEliminationLayout::derive(&block, &pattern).unwrap();
     assert_eq!(layout.zero_guards(), &[(1, 0)]);
+    // Row 1 holds the guard at position 0; column 0 is solved at position 1.
+    assert_eq!(layout.guard_steps(), &[(0, 1)]);
+}
+
+#[test]
+fn every_guard_names_its_holding_step_and_the_later_step_solving_its_column() {
+    let (mut block, _) = fixture();
+    let pattern = StructuralPattern::from_row_dependencies(
+        3,
+        3,
+        &[vec![0, 1, 2], vec![0, 1, 2], vec![1, 2]],
+        fixture().1.provenance(),
+    )
+    .unwrap();
+    let layout = AffineEliminationLayout::derive(&block, &pattern).unwrap();
+    assert_eq!(layout.zero_guards(), &[(0, 1)]);
+    assert_eq!(layout.guard_steps(), &[(0, 1)]);
+    block.tearing.as_mut().unwrap().causal_steps.reverse();
+    let layout = AffineEliminationLayout::derive(&block, &pattern).unwrap();
+    assert_eq!(layout.causal(), &[(1, 1), (0, 0)]);
+    assert_eq!(layout.zero_guards(), &[(1, 0)]);
+    assert_eq!(layout.guard_steps(), &[(0, 1)]);
+    assert_eq!(layout.zero_guards().len(), layout.guard_steps().len());
 }
 
 #[test]

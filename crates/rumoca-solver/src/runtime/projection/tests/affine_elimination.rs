@@ -1,4 +1,5 @@
 mod controls;
+mod promotion;
 
 use super::*;
 
@@ -239,8 +240,8 @@ fn affine_cycle_eliminates_causal_coordinates_before_factorization() {
 }
 
 #[test]
-fn zero_causal_pivot_preserves_the_full_implicit_solve() {
-    assert!(project_cycle(&[7]).full_solves.get() > 0);
+fn a_zero_causal_pivot_is_promoted_in_place_without_the_full_solve() {
+    assert_eq!(project_cycle(&[7]).full_solves.get(), 0);
 }
 
 #[test]

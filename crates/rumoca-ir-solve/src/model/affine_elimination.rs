@@ -13,6 +13,7 @@ pub struct AffineEliminationLayout {
     reduced_pattern: StructuralPattern,
     row_columns: Box<[Box<[usize]>]>,
     zero_guards: Box<[(usize, usize)]>,
+    guard_steps: Box<[(usize, usize)]>,
     causal: Box<[(usize, usize)]>,
     residuals: Box<[usize]>,
     tears: Box<[usize]>,
@@ -69,6 +70,7 @@ impl AffineEliminationLayout {
         if !seen_rows.iter().chain(&known_columns).all(|seen| *seen) {
             return None;
         }
+        let guard_steps = guard_steps(&causal, &zero_guards, n)?;
         let row_columns = (0..n)
             .map(|row| {
                 let mut columns = Vec::new();
@@ -86,6 +88,7 @@ impl AffineEliminationLayout {
             .ok()?,
             row_columns,
             zero_guards: zero_guards.into_boxed_slice(),
+            guard_steps,
             causal,
             residuals,
             tears,
@@ -103,9 +106,19 @@ impl AffineEliminationLayout {
         &self.row_columns[row]
     }
 
-    /// Coefficients that must be exactly zero before this order is triangular.
+    /// Coefficients that must be exactly zero before this order is triangular
+    /// without promoting the step that solves their column.
     pub fn zero_guards(&self) -> &[(usize, usize)] {
         &self.zero_guards
+    }
+
+    /// For each zero guard, in the same order, the causal position of the
+    /// step whose row holds it and the later causal position that solves its
+    /// column. A nonzero guard promotes that solving step to a tear unless the
+    /// holding step was itself promoted; guards are ordered by holding
+    /// position, so every promotion of a holding step is decided first.
+    pub fn guard_steps(&self) -> &[(usize, usize)] {
+        &self.guard_steps
     }
 
     pub fn causal(&self) -> &[(usize, usize)] {
@@ -132,6 +145,27 @@ fn local_positions(indices: &[usize]) -> Option<BTreeMap<usize, usize>> {
 fn claim(seen: &mut [bool], index: usize) -> Option<()> {
     let previous = std::mem::replace(seen.get_mut(index)?, true);
     (!previous).then_some(())
+}
+
+fn guard_steps(
+    causal: &[(usize, usize)],
+    guards: &[(usize, usize)],
+    n: usize,
+) -> Option<Box<[(usize, usize)]>> {
+    let mut row_position = vec![None; n];
+    let mut column_position = vec![None; n];
+    for (position, &(row, column)) in causal.iter().enumerate() {
+        row_position[row] = Some(position);
+        column_position[column] = Some(position);
+    }
+    guards
+        .iter()
+        .map(|&(row, column)| {
+            let holder = row_position[row]?;
+            let solver = column_position[column]?;
+            (solver > holder).then_some((holder, solver))
+        })
+        .collect()
 }
 
 fn append_zero_guards(

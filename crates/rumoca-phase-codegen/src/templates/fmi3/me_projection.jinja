@@ -72,7 +72,7 @@ typedef struct {
     size_t ncausal; const size_t* causal; const size_t* causal_target; const size_t* causal_col;
     bool elimination; size_t nelim; const size_t* elim_row; const size_t* elim_col;
     size_t nelim_tear; const size_t* elim_residual; const size_t* elim_tear;
-    size_t nguards; const size_t* guards;
+    size_t nguards; const size_t* guards; const size_t* guard_step; size_t elim_capacity;
     const size_t* iso_default; const size_t* iso_start; const size_t* iso_entries;
 } RmcBlock;
 {%- for program in me.table.rows.programs %}
@@ -109,7 +109,7 @@ static const size_t rmc_pool[{{ me.table.pool|length }}] = {
 #define RMC_P(offset) (rmc_pool + (offset))
 static const RmcBlock rmc_blocks[{{ me.blocks|length }}] = {
 {%- for b in me.blocks %}
-    { {{ b.canonical }}, {{ b.n }}, RMC_P({{ b.y }}), RMC_P({{ b.row_target }}), RMC_P({{ b.row_program }}), RMC_P({{ b.row_offset }}), {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, RMC_P({{ b.row_ptr }}), RMC_P({{ b.col_idx }}), {{ b.nnz }}, {{ b.ncolors }}, RMC_P({{ b.colors }}), RMC_P({{ b.color_seeds }}), RMC_P({{ b.color_calls }}), RMC_P({{ b.placements }}), {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, RMC_P({{ b.tear_col }}), RMC_P({{ b.residual_row }}), {{ b.ncausal }}, RMC_P({{ b.causal }}), RMC_P({{ b.causal_target }}), RMC_P({{ b.causal_col }}), {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, RMC_P({{ b.elim_row }}), RMC_P({{ b.elim_col }}), {{ b.nelim_tear }}, RMC_P({{ b.elim_residual }}), RMC_P({{ b.elim_tear }}), {{ b.nguards }}, RMC_P({{ b.guards }}), RMC_P({{ b.iso_default }}), RMC_P({{ b.iso_start }}), RMC_P({{ b.iso_entries }}) },
+    { {{ b.canonical }}, {{ b.n }}, RMC_P({{ b.y }}), RMC_P({{ b.row_target }}), RMC_P({{ b.row_program }}), RMC_P({{ b.row_offset }}), {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, RMC_P({{ b.row_ptr }}), RMC_P({{ b.col_idx }}), {{ b.nnz }}, {{ b.ncolors }}, RMC_P({{ b.colors }}), RMC_P({{ b.color_seeds }}), RMC_P({{ b.color_calls }}), RMC_P({{ b.placements }}), {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, RMC_P({{ b.tear_col }}), RMC_P({{ b.residual_row }}), {{ b.ncausal }}, RMC_P({{ b.causal }}), RMC_P({{ b.causal_target }}), RMC_P({{ b.causal_col }}), {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, RMC_P({{ b.elim_row }}), RMC_P({{ b.elim_col }}), {{ b.nelim_tear }}, RMC_P({{ b.elim_residual }}), RMC_P({{ b.elim_tear }}), {{ b.nguards }}, RMC_P({{ b.guards }}), RMC_P({{ b.guard_step }}), {{ b.elim_capacity }}, RMC_P({{ b.iso_default }}), RMC_P({{ b.iso_start }}), RMC_P({{ b.iso_entries }}) },
 {%- endfor %}
 };
 /* ── workspace: one per-instance arena, released on every return ─────── */
@@ -554,19 +554,57 @@ static int rmc_project_torn(ModelInstance* m, const RmcBlock* b, RmcUpdate* upda
 
 /* sparse_newton/torn.rs: TornNewtonCache over the affine elimination layout.
    The factorization is prepared once per fixed matrix and scales and reused
-   for every right-hand side, as the linked cache reuses it. */
-typedef struct { int state; double* values; double* recovery; double* reduced; size_t* ipiv; } RmcElimination;
+   for every right-hand side, as the linked cache reuses it. The recovery
+   matrix has one column per tear the capacity (`elim_capacity`, from
+   projection_policy::torn_promotion_capacity) allows; `k` counts the issued
+   tears plus the causal steps promoted to tears, whose rows extend the
+   reduced system in promotion order. */
+typedef struct {
+    int state; size_t k; double* values; double* recovery; double* reduced; size_t* ipiv;
+    size_t* promoted; size_t* residual; size_t* tear;
+} RmcElimination;
+/* TornSystem::promote; false once the capacity is exhausted */
+static bool rmc_eliminate_promote(const RmcBlock* b, RmcElimination* e, size_t step) {
+    if (e->k >= b->elim_capacity) return false;
+    size_t target = b->elim_col[step];
+    e->promoted[step] = 1;
+    e->recovery[target * b->elim_capacity + e->k] = 1.0;
+    e->tear[e->k] = target; e->residual[e->k] = b->elim_row[step]; e->k += 1;
+    return true;
+}
+/* TornSystem::preflight_guards and initialize_tears over unconditioned
+   coefficients; false once the capacity is exhausted */
+static bool rmc_eliminate_initialize(const RmcBlock* b, const double* jac, RmcElimination* e) {
+    size_t cap = b->elim_capacity;
+    for (size_t g = 0; g < b->nguards; ++g) {
+        size_t holder = b->guard_step[2 * g], solver = b->guard_step[2 * g + 1];
+        if (!e->promoted[holder] && jac[b->guards[g]] != 0.0) e->promoted[solver] = 1;
+    }
+    for (size_t c = 0; c < b->nelim_tear; ++c) {
+        e->tear[c] = b->elim_tear[c]; e->residual[c] = b->elim_residual[c];
+        e->recovery[b->elim_tear[c] * cap + c] = 1.0;
+    }
+    e->k = b->nelim_tear;
+    for (size_t s = 0; s < b->nelim; ++s) {
+        if (!e->promoted[s]) continue;
+        e->promoted[s] = 0;
+        if (!rmc_eliminate_promote(b, e, s)) return false;
+    }
+    return true;
+}
 /* TornSystem::update and refactor; -1 error, 0 rejected, 1 ready */
 static int rmc_eliminate_prepare(ModelInstance* m, const RmcBlock* b, const double* jac, const double* rscale, const double* vscale, RmcElimination* e) {
-    size_t n = b->n, k = b->nelim_tear; size_t* columns = NULL;
-    e->values = rmc_dalloc(m, b->nnz + 1); e->recovery = rmc_dalloc(m, n * k + 1); e->reduced = rmc_dalloc(m, k * k + 1);
-    e->ipiv = rmc_salloc(m, k + 1); columns = rmc_salloc(m, k + 1);
-    if (!e->values || !e->recovery || !e->reduced || !e->ipiv || !columns) return rmc_exhausted(m);
+    size_t n = b->n, cap = b->elim_capacity; size_t* columns = NULL;
+    e->values = rmc_dalloc(m, b->nnz + 1); e->recovery = rmc_dalloc(m, n * cap + 1); e->reduced = rmc_dalloc(m, cap * cap + 1);
+    e->ipiv = rmc_salloc(m, cap + 1); columns = rmc_salloc(m, cap + 1);
+    e->promoted = rmc_salloc(m, b->nelim + 1); e->residual = rmc_salloc(m, cap + 1); e->tear = rmc_salloc(m, cap + 1);
+    if (!e->values || !e->recovery || !e->reduced || !e->ipiv || !columns || !e->promoted || !e->residual || !e->tear) return rmc_exhausted(m);
     for (size_t row = 0; row < n; ++row)
         for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p)
             e->values[p] = jac[p] * rmc_valid_scale(vscale[b->col_idx[p]]) / rmc_valid_scale(rscale[row]);
-    for (size_t c = 0; c < k; ++c) e->recovery[b->elim_tear[c] * k + c] = 1.0;
+    if (!rmc_eliminate_initialize(b, jac, e)) return 0;
     for (size_t s = 0; s < b->nelim; ++s) {
+        if (e->promoted[s]) continue;
         size_t row = b->elim_row[s], target = b->elim_col[s];
         double magnitude = 0.0, pivot = 0.0;
         for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p) {
@@ -574,32 +612,37 @@ static int rmc_eliminate_prepare(ModelInstance* m, const RmcBlock* b, const doub
             magnitude = fmax(magnitude, fabs(e->values[p]));
             if (b->col_idx[p] == target) pivot = e->values[p];
         }
-        if (!(fabs(pivot) > sqrt(DBL_EPSILON) * magnitude)) return 0;
-        for (size_t c = 0; c < k; ++c) {
+        if (!(fabs(pivot) > sqrt(DBL_EPSILON) * magnitude)) {
+            if (!rmc_eliminate_promote(b, e, s)) return 0;
+            continue;
+        }
+        for (size_t c = 0; c < e->k; ++c) {
             double sum = 0.0;
-            for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p) if (b->col_idx[p] != target) sum -= e->values[p] * e->recovery[b->col_idx[p] * k + c];
-            e->recovery[target * k + c] = sum / pivot;
+            for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p) if (b->col_idx[p] != target) sum -= e->values[p] * e->recovery[b->col_idx[p] * cap + c];
+            e->recovery[target * cap + c] = sum / pivot;
         }
     }
+    size_t k = e->k;
     for (size_t r = 0; r < k; ++r) {
-        size_t source = b->elim_residual[r];
+        size_t source = e->residual[r];
         for (size_t c = 0; c < k; ++c) {
             double sum = -0.0;
-            for (size_t p = b->row_ptr[source]; p < b->row_ptr[source + 1]; ++p) sum += e->values[p] * e->recovery[b->col_idx[p] * k + c];
+            for (size_t p = b->row_ptr[source]; p < b->row_ptr[source + 1]; ++p) sum += e->values[p] * e->recovery[b->col_idx[p] * cap + c];
             e->reduced[r * k + c] = sum;
         }
     }
-    if (!rmc_all_finite(e->recovery, n * k) || !rmc_all_finite(e->reduced, k * k)) return 0;
+    if (!rmc_all_finite(e->recovery, n * cap) || !rmc_all_finite(e->reduced, k * k)) return 0;
     rmc_lu(e->reduced, k, e->ipiv, columns);
     return rmc_lu_invertible(e->reduced, k) ? 1 : 0;
 }
 /* TornSystem::solve; -1 error, 0 no solution, 1 solved */
 static int rmc_eliminate_solve(ModelInstance* m, const RmcBlock* b, const RmcElimination* e, const double* residual, const double* rscale, const double* vscale, double* delta) {
-    RMC_MARK; size_t n = b->n, k = b->nelim_tear; int result = 1;
+    RMC_MARK; size_t n = b->n, k = e->k, cap = b->elim_capacity; int result = 1;
     double* work = rmc_dalloc(m, n); double* rhs = rmc_dalloc(m, n); double* reduced_rhs = rmc_dalloc(m, k + 1);
     if (!work || !rhs || !reduced_rhs) { RMC_RELEASE; return rmc_exhausted(m); }
     for (size_t row = 0; row < n; ++row) rhs[row] = -residual[row] / rmc_valid_scale(rscale[row]);
     for (size_t s = 0; s < b->nelim; ++s) {
+        if (e->promoted[s]) continue;
         size_t row = b->elim_row[s], target = b->elim_col[s]; double value = rhs[row], pivot = 0.0;
         for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p) {
             if (b->col_idx[p] == target) pivot = e->values[p]; else value -= e->values[p] * work[b->col_idx[p]];
@@ -607,18 +650,19 @@ static int rmc_eliminate_solve(ModelInstance* m, const RmcBlock* b, const RmcEli
         work[target] = value / pivot;
     }
     for (size_t r = 0; r < k; ++r) {
-        size_t source = b->elim_residual[r]; double value = rhs[source];
+        size_t source = e->residual[r]; double value = rhs[source];
         for (size_t p = b->row_ptr[source]; p < b->row_ptr[source + 1]; ++p) value -= e->values[p] * work[b->col_idx[p]];
         reduced_rhs[r] = value;
     }
     if (!rmc_lu_solve(e->reduced, k, e->ipiv, reduced_rhs)) result = 0;
     if (result == 1) {
         for (size_t s = 0; s < b->nelim; ++s) {
+            if (e->promoted[s]) continue;
             size_t target = b->elim_col[s]; double correction = -0.0;
-            for (size_t c = 0; c < k; ++c) correction += e->recovery[target * k + c] * reduced_rhs[c];
+            for (size_t c = 0; c < k; ++c) correction += e->recovery[target * cap + c] * reduced_rhs[c];
             work[target] += correction;
         }
-        for (size_t c = 0; c < k; ++c) work[b->elim_tear[c]] = reduced_rhs[c];
+        for (size_t c = 0; c < k; ++c) work[e->tear[c]] = reduced_rhs[c];
         if (!rmc_all_finite(work, n)) result = 0;
         else for (size_t col = 0; col < n; ++col) delta[col] = work[col] * rmc_valid_scale(vscale[col]);
     }
@@ -629,12 +673,12 @@ typedef struct {
     bool prefer_torn; bool used_torn; RmcElimination elimination; bool factored; RmcDenseFactor dense;
 } RmcAffineSystem;
 /* affine.rs: AffineBlockSystem::solve with the block's cached factors; the
-   caches live in the arena frame of the enclosing affine projection. -1
-   error, 0 no solution, 1 solved */
+   caches live in the arena frame of the enclosing affine projection. A
+   nonzero guard promotes its solving step inside the preparation rather than
+   declining. -1 error, 0 no solution, 1 solved */
 static int rmc_affine_solve(ModelInstance* m, RmcAffineSystem* s, const double* residual, double* delta) {
     const RmcBlock* b = s->block;
     if (s->prefer_torn && b->elimination) {
-        for (size_t g = 0; g < b->nguards; ++g) if (s->jac[b->guards[g]] != 0.0) { s->elimination.state = 0; goto dense; }
         if (s->elimination.state == -1) {
             int prepared = rmc_eliminate_prepare(m, b, s->jac, s->rscale, s->vscale, &s->elimination);
             if (prepared < 0) return -1;
@@ -646,7 +690,6 @@ static int rmc_affine_solve(ModelInstance* m, RmcAffineSystem* s, const double* 
             if (solved == 1 && rmc_all_finite(delta, b->n)) { s->used_torn = true; return 1; }
         }
     }
-dense:
     if (!s->factored) {
         double* dense = rmc_dalloc(m, b->n * b->n);
         if (!dense) return rmc_exhausted(m);
@@ -699,7 +742,7 @@ static int rmc_project_affine(ModelInstance* m, const RmcBlock* b, RmcUpdate* up
     result = rmc_jacobian(m, b, jac);
     if (result == 0) result = rmc_block_scales(m, b, jac, rscale, vscale);
     if (result == 0) {
-        RmcAffineSystem system = { b, jac, rscale, vscale, true, false, { -1, NULL, NULL, NULL, NULL }, false, { 0, NULL, NULL, NULL, NULL, NULL } };
+        RmcAffineSystem system = { b, jac, rscale, vscale, true, false, { -1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL }, false, { 0, NULL, NULL, NULL, NULL, NULL } };
         result = rmc_affine_project(m, &system);
         if (result == 0 && system.used_torn) {
             system.prefer_torn = false;

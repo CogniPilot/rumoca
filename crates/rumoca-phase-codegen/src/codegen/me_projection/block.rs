@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use rumoca_core::Span;
-use rumoca_eval_solve::tensor_policy::{LinearSolveKernel, select_linear_solve_kernel};
+use rumoca_eval_solve::projection_policy::affine_elimination_capacity;
 use rumoca_eval_solve::{PreparedScalarProgramBlock, TargetIsolationProgram};
 use rumoca_ir_solve as solve;
 use serde::Serialize;
@@ -74,6 +74,8 @@ pub(super) struct BlockRecord {
     elim_tear: usize,
     nguards: usize,
     guards: usize,
+    guard_step: usize,
+    elim_capacity: usize,
     iso_default: usize,
     iso_start: usize,
     iso_entries: usize,
@@ -425,8 +427,10 @@ fn record_torn(
     Ok(())
 }
 
-/// The affine elimination layout, when the linked kernel selects it: the
-/// block is a sparse candidate and its reduced tear system is small and dense.
+/// The affine elimination layout, when the linked kernel selects it under the
+/// shared admission rule (`projection_policy::affine_elimination_capacity`),
+/// with each guard's holding and solving causal positions and the tear
+/// capacity up to which the kernel promotes steps in place.
 fn record_elimination(
     table: &mut ProgramTable,
     canonical: usize,
@@ -439,14 +443,10 @@ fn record_elimination(
         return Ok(());
     };
     let n = block.rows.len();
-    let selected = matches!(
-        select_linear_solve_kernel(n, layout.pattern()),
-        Ok(LinearSolveKernel::SparseCandidate)
-    ) && matches!(
-        select_linear_solve_kernel(layout.tears().len(), layout.reduced_pattern()),
-        Ok(LinearSolveKernel::SmallDense)
-    );
-    if !selected || layout.pattern() != structure.pattern() {
+    let Some(capacity) = affine_elimination_capacity(layout) else {
+        return Ok(());
+    };
+    if layout.pattern() != structure.pattern() || layout.pattern().rows() as usize != n {
         return Ok(());
     }
     for row in 0..n {
@@ -472,6 +472,13 @@ fn record_elimination(
     record.elim_tear = table.push(layout.tears().iter().copied());
     record.nguards = guards.len();
     record.guards = table.push(guards);
+    record.guard_step = table.push(
+        layout
+            .guard_steps()
+            .iter()
+            .flat_map(|&(holder, solver)| [holder, solver]),
+    );
+    record.elim_capacity = capacity;
     Ok(())
 }
 
@@ -566,10 +573,12 @@ impl BlockRecord {
     /// vectors, the pattern values, three dense square matrices (the
     /// expanded Jacobian, its scaled copy, and its LU) plus the two SVD
     /// factors, the torn reduced system and recovered derivatives, the affine
-    /// elimination's recovery matrix, and one program's outputs and seeds.
+    /// elimination's recovery matrix at its promotion capacity with its step
+    /// flags and reduced row and tear lists, and one program's outputs and
+    /// seeds.
     pub(super) fn workspace(&self, seed_len: usize) -> (usize, usize) {
         let n = self.n;
-        let k = self.k.max(self.nelim_tear);
+        let k = self.k.max(self.nelim_tear).max(self.elim_capacity);
         let doubles = 24 * n
             + 3 * (self.nnz + 1)
             + 5 * n * n
@@ -581,7 +590,7 @@ impl BlockRecord {
             + self.jvp_max_outputs
             + seed_len
             + 64;
-        let sizes = 8 * n + 4 * (k + 1) + 16;
+        let sizes = 9 * n + 6 * (k + 1) + 16;
         (doubles, sizes)
     }
 }

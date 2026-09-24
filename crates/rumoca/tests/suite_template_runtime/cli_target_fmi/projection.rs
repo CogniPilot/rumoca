@@ -202,7 +202,10 @@ fn packaged_fmi_projection_paths_match_the_linked_me_kernel() {
 }
 
 /// In-process ME-kernel trace on the FMU output grid, one row per time.
-fn in_process_trace(compiled: &rumoca::CompilationResult, outputs: &[&str]) -> Vec<Vec<f64>> {
+pub(super) fn in_process_trace(
+    compiled: &rumoca::CompilationResult,
+    outputs: &[&str],
+) -> Vec<Vec<f64>> {
     let result = rumoca_sim::simulate_dae_with_diagnostics(
         &compiled.dae,
         &rumoca_sim::SimOptions {
@@ -236,7 +239,7 @@ fn in_process_trace(compiled: &rumoca::CompilationResult, outputs: &[&str]) -> V
         .collect()
 }
 
-fn assert_projection_trace(model: &str, csv: &Path, reference: &[Vec<f64>]) {
+pub(super) fn assert_projection_trace(model: &str, csv: &Path, reference: &[Vec<f64>]) {
     let text = fs::read_to_string(csv).expect("read projection trace");
     let rows = text
         .lines()
@@ -260,7 +263,7 @@ fn assert_projection_trace(model: &str, csv: &Path, reference: &[Vec<f64>]) {
     }
 }
 
-const DRIVER: &str = r#"
+pub(super) const DRIVER: &str = r#"
 import sys
 from fmpy import simulate_fmu
 
@@ -366,7 +369,7 @@ for message in messages:
 "#;
 
 /// Build a packaged source FMU's platform binary with warnings as errors.
-fn compile_packaged_sources(fmu: &BuiltFmu) {
+pub(super) fn compile_packaged_sources(fmu: &BuiltFmu) {
     checked_output(
         Command::new("fmpy")
             .arg("compile")
@@ -496,7 +499,7 @@ fn assert_fixed_state_values(
     }
 }
 
-const FIXED_STATE_DRIVER: &str = r#"
+pub(super) const FIXED_STATE_DRIVER: &str = r#"
 import ctypes, sys
 from fmpy import extract, read_model_description
 

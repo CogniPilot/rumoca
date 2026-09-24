@@ -55,6 +55,13 @@ impl SparseNewtonCache {
             .solve_scaled(source, rhs, row_scales, variable_scales, layout)
     }
 
+    /// Size of the current ready torn reduced system: issued plus promoted
+    /// tears.
+    #[cfg(test)]
+    pub(crate) fn torn_reduced_size(&self) -> Option<usize> {
+        self.torn.reduced_size()
+    }
+
     pub(super) fn solve_scaled(
         &mut self,
         source: &DMatrix<f64>,

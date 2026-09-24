@@ -307,14 +307,7 @@ pub(crate) fn scaled_newton_delta_with_tearing(
         || system.jacobian.nrows() != system.residual.len()
         || system.jacobian.nrows() != system.row_scales.len()
         || system.jacobian.ncols() != system.variable_scales.len()
-        || !matches!(
-            select_linear_solve_kernel(system.jacobian.nrows(), layout.pattern()).ok(),
-            Some(LinearSolveKernel::SparseCandidate)
-        )
-        || !matches!(
-            select_linear_solve_kernel(layout.tears().len(), layout.reduced_pattern()).ok(),
-            Some(LinearSolveKernel::SmallDense)
-        )
+        || rumoca_eval_solve::projection_policy::affine_elimination_capacity(layout).is_none()
     {
         return None;
     }

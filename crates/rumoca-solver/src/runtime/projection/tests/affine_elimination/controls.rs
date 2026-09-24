@@ -22,6 +22,9 @@ fn a_large_reduced_system_retains_the_existing_sparse_policy() {
     assert!(y.iter().all(|x| (x - 2.0).abs() < 1e-10));
 }
 
+/// A nonzero raw guard, even one conditioning underflows to zero, promotes
+/// the step solving its column instead of declining; a nonfinite one still
+/// declines, and a later zero guard restores the issued reduction.
 #[test]
 fn future_dependency_guards_recheck_raw_coefficients_before_cached_solve() {
     let expected = DVector::from_element(DIMENSION, 2.0);
@@ -58,9 +61,15 @@ fn future_dependency_guards_recheck_raw_coefficients_before_cached_solve() {
             &mut model.cache.borrow_mut(),
             layout,
         );
-        assert_eq!(delta.is_some(), coefficient == 0.0);
+        assert_eq!(delta.is_some(), coefficient.is_finite(), "{coefficient}");
         if let Some(delta) = delta {
             assert!(delta.iter().all(|x| (x - 2.0).abs() < 1e-10));
+            let promoted = usize::from(coefficient != 0.0);
+            assert_eq!(
+                model.cache.borrow().torn_reduced_size(),
+                Some(1 + promoted),
+                "{coefficient}"
+            );
         }
     }
 }
@@ -127,9 +136,10 @@ fn cached_reduction_tracks_coefficients_scaling_rhs_and_rejected_factors() {
             &mut model.cache.borrow_mut(),
             layout,
         );
-        if diagonal == 0.0 || !diagonal.is_finite() {
+        if !diagonal.is_finite() {
             assert!(delta.is_none());
         } else {
+            // A zero diagonal promotes the last causal step to a tear.
             let delta =
                 delta.expect("fresh nonsingular coefficients must replace rejected factors");
             assert!(
