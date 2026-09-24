@@ -7,6 +7,7 @@
 mod algebraic;
 mod assertions;
 mod lifecycle;
+mod projection;
 mod reported_models;
 mod tensor_algebra;
 mod typed_functions;

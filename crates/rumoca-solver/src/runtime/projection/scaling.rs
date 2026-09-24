@@ -341,7 +341,7 @@ fn scaled_newton_rhs(residual: &[f64], row_scales: &[f64]) -> DVector<f64> {
 
 fn scaled_newton_delta_impl(
     system: ScaledNewtonSystem<'_>,
-    cache: Option<&mut SparseNewtonCache>,
+    mut cache: Option<&mut SparseNewtonCache>,
     allow_rank_deficient_fallback: bool,
 ) -> Option<DVector<f64>> {
     let ScaledNewtonSystem {
@@ -365,11 +365,31 @@ fn scaled_newton_delta_impl(
             Some(LinearSolveKernel::SparseCandidate)
         )
         .then(|| {
-            sparse_scaled_newton_delta(jacobian, &rhs, row_scales, variable_scales, pattern, cache)
+            sparse_scaled_newton_delta(
+                jacobian,
+                &rhs,
+                row_scales,
+                variable_scales,
+                pattern,
+                cache.as_deref_mut(),
+            )
         })
         .flatten()
     });
     if let Some(scaled_delta) = sparse {
+        return Some(unscale_newton_delta(&scaled_delta, variable_scales));
+    }
+    if let Some(cache) = cache {
+        // The block cache keys its dense factorization on the exact Jacobian
+        // and scale bits, so a fixed system (the affine solve and its
+        // refinement) factors once and solves every residual bit-identically.
+        let scaled_delta = cache.solve_dense_scaled(
+            jacobian,
+            &rhs,
+            (row_scales, variable_scales),
+            tolerance,
+            allow_rank_deficient_fallback,
+        )?;
         return Some(unscale_newton_delta(&scaled_delta, variable_scales));
     }
     let scaled_jacobian = scaled_jacobian(jacobian, row_scales, variable_scales);
@@ -389,7 +409,7 @@ fn solve_square_newton_system(matrix: &DMatrix<f64>, rhs: &DVector<f64>) -> Opti
     matrix.clone().lu().solve(rhs)
 }
 
-fn scaled_jacobian(
+pub(super) fn scaled_jacobian(
     jacobian: &DMatrix<f64>,
     row_scales: &[f64],
     variable_scales: &[f64],

@@ -230,3 +230,62 @@ fn the_fmi_render_context_exposes_no_dae() {
         "true|1"
     );
 }
+
+/// A retained state-manifold projection is a runtime shape the shared ME
+/// projection does not execute. The Solve admissibility gate refuses it, and
+/// a checked component cannot even reach the renderer: the retained manifold
+/// rows are initialization residuals, which the C profile narrowing refuses
+/// first. The renderer's own refusal of the same shape is therefore a second,
+/// independent guard behind a typed input it can no longer receive.
+#[test]
+fn a_state_manifold_projection_is_refused_before_any_byte() {
+    let plain = model_with_one_state_run(false);
+    assert!(super::me_projection::me_refresh_admissible(&plain.problem));
+
+    let mut model = plain;
+    let manifold = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span()
+                .require_provenance("FMI manifold fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture manifold residual is computable"),
+    );
+    let mut initialization = model.problem.initialization.clone().into_input();
+    initialization.residual = manifold.clone();
+    initialization.row_roles = vec![solve::InitializationRowRole::SurplusCheck];
+    initialization.manifold_row_count = 1;
+    model.problem.initialization = solve::InitializationSolveSystem::construct(initialization)
+        .expect("the retained manifold row closes the initialization residual");
+    model.problem.continuous.manifold_residual = manifold;
+    model.problem.continuous.manifold_projection_plan = solve::AlgebraicProjectionPlan {
+        blocks: vec![solve::AlgebraicProjectionBlock {
+            rows: vec![0],
+            y_indices: vec![0],
+            tearing: None,
+            alternate_charts: Vec::new(),
+        }],
+    };
+    model
+        .problem
+        .validate()
+        .expect("the manifold-bearing fixture is a valid Solve problem");
+    assert!(!super::me_projection::me_refresh_admissible(&model.problem));
+
+    let component = solve::fmi::FmiComponent::construct(model, vec![state_input()])
+        .expect("the manifold-bearing fixture is a checked component");
+    let error = component
+        .into_codegen_view()
+        .try_c()
+        .expect_err("the C profile refuses the retained manifold initialization rows");
+    assert!(
+        error
+            .to_string()
+            .contains("C initialization requires parameter assignments without residuals"),
+        "{error}"
+    );
+}

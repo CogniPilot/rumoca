@@ -167,6 +167,7 @@ fn builtin_template_targets_render_or_are_explicit_readiness_zero_manifests() {
         vec![
             "embedded-c-galec:scratch.jinja".to_string(),
             "embedded-c-galec:symbols.jinja".to_string(),
+            "fmi3:me_projection.jinja".to_string(),
             "fmi3:scalar_kernel.jinja".to_string(),
             "fmi3:typed_arithmetic.jinja".to_string(),
             "fmi3:typed_functions.jinja".to_string(),
@@ -649,6 +650,7 @@ fn shared_template_names_are_globally_unique_and_target_owned() {
             "algorithm-code-manifest.jinja <- galec/manifest.xml.jinja".to_string(),
             "algorithm-code-source.jinja <- galec/model.alg.jinja".to_string(),
             "fmi-c-kernel.jinja <- fmi3/scalar_kernel.jinja".to_string(),
+            "fmi-me-projection.jinja <- fmi3/me_projection.jinja".to_string(),
             "fmi-typed-arithmetic.jinja <- fmi3/typed_arithmetic.jinja".to_string(),
             "fmi-typed-functions.jinja <- fmi3/typed_functions.jinja".to_string(),
             "fmi-typed-tensors.jinja <- fmi3/typed_tensors.jinja".to_string(),

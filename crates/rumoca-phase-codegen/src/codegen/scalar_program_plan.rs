@@ -303,6 +303,13 @@ fn op_field(op: &solve::LinearOp, output_targets: Option<&[usize]>, key: &str) -
                 "owner" => Some(Value::from(site.owner().index())),
                 _ => None,
             },
+            solve::LinearOp::PureCallDirectional {
+                input_starts, site, ..
+            } => match key {
+                "input_starts" => Some(Value::from_serialize(input_starts)),
+                "owner" => Some(Value::from(site.owner().index())),
+                _ => None,
+            },
             _ => None,
         })
         .or_else(|| stateful_field(op, key))

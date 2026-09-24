@@ -23,6 +23,7 @@ root = "flat"
 continuous_states = true
 residual_equations = false
 exact_algebraic_assignments = true
+algebraic_projection = true
 scalar_fallback = true
 external_functions = false
 external_tables = false
@@ -67,6 +68,10 @@ template = "model.c.jinja"
 [[partials]]
 template = "scalar_kernel.jinja"
 name = "fmi-c-kernel.jinja"
+
+[[partials]]
+template = "me_projection.jinja"
+name = "fmi-me-projection.jinja"
 
 [[partials]]
 template = "typed_functions.jinja"

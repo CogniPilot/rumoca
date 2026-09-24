@@ -1,7 +1,8 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- from "fmi-c-kernel.jinja" import scalar_op, refresh_algebraics, assertions, assertion_lifecycle %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle %}
+{%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields %}
 {%- from "fmi-typed-functions.jinja" import functions %}
-{%- if not solve.continuous.algebraic_assignment_complete %}{{ fail("unsupported-feature:fmi2.coupled-or-non-isolable-algebraic-projection") }}{% endif %}
+#include <float.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -26,8 +27,9 @@ typedef struct {
     enum ModelState state;
     fmi2Type type;
     fmi2CallbackFunctions callbacks;
+   {{ workspace_fields(me_refresh) }}
 } ModelInstance;
-{{ functions(typed_pure_calls) }}
+{{ functions(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 else []) }}
 
 static void initialize_values(ModelInstance* m) {
     m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true;
@@ -45,12 +47,13 @@ static void initialize_values(ModelInstance* m) {
 {% if fmi.assertions %}
 static void log_assertion(ModelInstance* m, const char* message) { if (m->callbacks.logger) m->callbacks.logger(m->callbacks.componentEnvironment, "Rumoca", fmi2Error, "assertion", "%s", message); }
 {% endif %}
+#define RMC_LOG(m, message) do { if ((m)->callbacks.logger) (m)->callbacks.logger((m)->callbacks.componentEnvironment, "Rumoca", fmi2Error, "error", "%s", (message)); } while (0)
 {{ assertions(solve, fmi, fmi_assertion_messages, "fmi2") }}
-{{ refresh_algebraics(solve, "fmi2") }}
+{{ refresh_values(solve, me_refresh, "fmi2") }}
 {{ assertion_lifecycle("fmi2") }}
 
 static fmi2Status evaluate_derivatives(ModelInstance* m) {
-    if (settle_values(m) != fmi2OK) return fmi2Error;
+    if (settle_derivative_values(m) != fmi2OK) return fmi2Error;
 {%- set plan = solve_blocks.continuous.derivative_rhs.scalar_plan %}
 {%- for program in plan.programs %}
     {

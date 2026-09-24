@@ -9,6 +9,20 @@ if (r{{ index }}[0]<1 || r{{ index }}[0]>{{ extent }}) return 1;
 {% if op.operation in ["scale", "matrix_multiply", "cross"] and (ty.scalar.kind != "real" or ty.scalar.profile.format != "binary64") %}{{ fail("unsupported-feature:fmi.c.pure-call: non-Real tensor arithmetic") }}{% endif %}
 {% if op.operation == "fill" %}
 for (size_t k=0; k<{{ ty.scalar_count }}; ++k) {{ dst }}[k]=r{{ op.value }}[0];
+{% elif op.operation == "identity" %}
+{% set size = ty.dimensions[0] %}
+for (size_t i=0; i<{{ size }}; ++i) for (size_t j=0; j<{{ size }}; ++j) {{ dst }}[i*{{ size }}+j]=(i==j)?1.0:0.0;
+{% elif op.operation == "diagonal" %}
+{% set size = program.register_types[op.operand].dimensions[0] %}
+for (size_t i=0; i<{{ size }}; ++i) for (size_t j=0; j<{{ size }}; ++j) {{ dst }}[i*{{ size }}+j]=(i==j)?r{{ op.operand }}[i]:0.0;
+{% elif op.operation == "concatenate" %}
+{% set inner = ty.dimensions[op.axis + 1:]|product %}{% set outer = ty.dimensions[:op.axis]|product %}
+{ size_t cursor=0;
+for (size_t outer=0; outer<{{ outer }}; ++outer) {
+{% for operand in op.operands %}{% set operand_dims = program.register_types[operand].dimensions %}{% set width = (operand_dims[op.axis] if operand_dims|length > op.axis else 1) * inner %}
+for (size_t k=0; k<{{ width }}; ++k) {{ dst }}[cursor++]=r{{ operand }}[outer*{{ width }}+k];
+{% endfor %}
+} }
 {% elif op.operation == "construct_aggregate" %}
 {% for element in op.elements %}
 memcpy(&{{ dst }}[{{ loop.index0 * program.register_types[element].scalar_count }}], r{{ element }}, sizeof(r{{ element }}));

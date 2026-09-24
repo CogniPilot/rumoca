@@ -16,6 +16,7 @@ required_files = ["Cargo.toml", "src/lib.rs", "src/model.rs", "wit/world.wit", "
 [capabilities]
 continuous_states = true
 residual_equations = false
+algebraic_projection = false
 scalar_fallback = true
 external_functions = false
 external_tables = false

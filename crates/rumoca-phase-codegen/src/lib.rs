@@ -64,8 +64,9 @@ pub(crate) mod views;
 
 pub use codegen::{
     AlgorithmCodeTemplateRenderer, CodegenInput, SolveTemplateRenderer, dae_template_json,
-    explicit_algebraic_assignment_complete, render_algorithm_code_template_with_artifact,
-    render_ast_template_with_name, render_checked_algorithm_block_template_with_artifact,
+    explicit_algebraic_assignment_complete, me_refresh_admissible,
+    render_algorithm_code_template_with_artifact, render_ast_template_with_name,
+    render_checked_algorithm_block_template_with_artifact,
     render_checked_algorithm_block_template_with_sources, render_flat_template_with_name,
     render_solve_template_with_name, render_template, render_template_for_input,
     render_template_with_name, render_template_with_name_for_input,

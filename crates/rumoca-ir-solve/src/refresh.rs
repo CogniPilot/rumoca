@@ -9,6 +9,7 @@ mod dependency;
 mod materialization;
 mod projection;
 mod source_outputs;
+mod staged_execution;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -26,6 +27,9 @@ pub use assignment_shape::{
 pub use dependency::ScalarProgramYDependency;
 use dependency::assignment_y_dependencies_for_shapes;
 pub use materialization::materialize_target_assignment;
+pub use staged_execution::{
+    RefreshStageSchedule, StagedRefreshRefusal, StagedRefreshStep, projection_seed_rescue_targets,
+};
 
 use crate::{
     AlgebraicProjectionPlan, ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock,
@@ -366,6 +370,33 @@ impl RefreshPlan {
         self.value_stages
             .iter()
             .any(|stage| matches!(stage, RefreshStage::ProjectionBlock { .. }))
+    }
+
+    /// Whether the ordered value stages alone settle this plan.
+    ///
+    /// Construction binds each projection stage to its complete BLT block, and
+    /// no later block may invalidate a residual row of an earlier one. Its
+    /// seeds are optional guesses; Newton solves every block coordinate even
+    /// when a particular residual cannot be isolated as an assignment. Every
+    /// executor of the staged schedule (the linked ME kernel and generated
+    /// components) reads this one certificate.
+    #[must_use]
+    pub fn value_stage_schedule_is_certified(
+        &self,
+        structural: &crate::ContinuousStructuralArtifacts,
+    ) -> bool {
+        let blocks = structural.algebraic_projection();
+        self.simultaneous_block_indices.len() == self.simultaneous_plan.blocks.len()
+            && !self.value_stages.is_empty()
+            && self
+                .simultaneous_block_indices
+                .iter()
+                .all(|&index| blocks.get(index).is_some())
+            && self
+                .simultaneous_block_indices
+                .iter()
+                .skip(1)
+                .all(|&index| structural.algebraic_invalidates_earlier(index) == Some(false))
     }
 }
 

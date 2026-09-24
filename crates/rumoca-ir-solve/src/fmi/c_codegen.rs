@@ -92,6 +92,11 @@ impl FmiCCodegenView {
             Profile::StaticAssertions(v) => &v.model.artifacts,
         }
     }
+    /// The retained kernel's finite positive characteristic scale of one
+    /// solver variable, the same scale its linked algebraic projection uses.
+    pub fn solver_variable_scale(&self, index: usize) -> f64 {
+        self.model().solver_variable_scale(index)
+    }
     pub fn pure_calls(&self) -> &crate::SolvePureCallTable {
         match &self.0 {
             Profile::EventFree(v) => v.pure_calls(),

@@ -11,6 +11,8 @@ use rumoca_ir_dae::{
 };
 use std::path::Path;
 
+mod projection_refusals;
+
 fn dae_with_placeholder_family() -> Dae {
     let source_text = "for i in 1:4 loop 0.0 = 0.0; end for;";
     let mut source_map = SourceMap::new();
@@ -454,8 +456,7 @@ fn dependent_algebraic_fixture_row(
 fn solve_with_dependent_algebraic_assignments() -> rumoca_ir_solve::SolveProblem {
     use rumoca_ir_solve as solve;
 
-    let implicit_rhs = dependent_algebraic_fixture_source();
-    let projection = solve::AlgebraicProjectionPlan {
+    solve_with_dependent_algebraic_projection(solve::AlgebraicProjectionPlan {
         blocks: vec![
             solve::AlgebraicProjectionBlock {
                 rows: vec![0],
@@ -470,7 +471,15 @@ fn solve_with_dependent_algebraic_assignments() -> rumoca_ir_solve::SolveProblem
                 alternate_charts: Vec::new(),
             },
         ],
-    };
+    })
+}
+
+fn solve_with_dependent_algebraic_projection(
+    projection: rumoca_ir_solve::AlgebraicProjectionPlan,
+) -> rumoca_ir_solve::SolveProblem {
+    use rumoca_ir_solve as solve;
+
+    let implicit_rhs = dependent_algebraic_fixture_source();
     let algebraic = solve::RefreshPlan {
         simultaneous_plan: projection.clone(),
         simultaneous_block_indices: vec![0, 1],

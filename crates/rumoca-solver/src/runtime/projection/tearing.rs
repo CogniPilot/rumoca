@@ -38,10 +38,9 @@ use super::scaling::{
 };
 use super::{ImplicitProjectionModel, ProjectionBlockUpdate, RuntimeSolveError};
 
-/// Maximum reduced Newton iterations over the tear variables.
-const TORN_OUTER_MAX_ITERS: usize = 64;
-/// Maximum step halvings in the reduced Newton line search.
-const TORN_BACKTRACK_STEPS: usize = 24;
+use rumoca_eval_solve::projection_policy::{
+    TORN_BACKTRACK_STEPS, TORN_OUTER_MAX_ITERS, finite_difference_perturbation,
+};
 
 /// Attempt the torn solve of one coupled block.
 ///
@@ -331,7 +330,7 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
     let mut perturbed = Vec::with_capacity(rows);
     for (column, &tear_index) in tearing.tear_y_indices.iter().enumerate() {
         y.copy_from_slice(base);
-        let h = perturbation(base[tear_index], variable_scales[column]);
+        let h = finite_difference_perturbation(base[tear_index], variable_scales[column]);
         y[tear_index] = base[tear_index] + h;
         if !model.torn_block_sweep(tearing, y, p, t, &mut perturbed)? || !all_finite(&perturbed) {
             y.copy_from_slice(base);
@@ -490,12 +489,4 @@ fn residual_row<M: ImplicitProjectionModel + ?Sized>(
 
 fn slices_differ(a: &[f64], b: &[f64]) -> bool {
     a != b
-}
-
-/// A finite, sign-stable perturbation for finite differencing, scaled to the
-/// variable's magnitude.
-fn perturbation(value: f64, scale: f64) -> f64 {
-    let magnitude = value.abs().max(scale.abs()).max(1.0);
-    let step = magnitude * 1.0e-7;
-    if value < 0.0 { -step } else { step }
 }

@@ -1,3 +1,4 @@
+mod dense;
 #[cfg(test)]
 mod tests;
 mod torn;
@@ -19,9 +20,29 @@ use super::scaling::valid_variable_scale;
 pub(crate) struct SparseNewtonCache {
     system: Option<PreparedSparseSystem>,
     torn: torn::TornNewtonCache,
+    dense: dense::DenseNewtonFactor,
 }
 
 impl SparseNewtonCache {
+    /// Dense scaled Newton solve reusing this block's factorization while
+    /// its Jacobian and scales are bitwise unchanged.
+    pub(super) fn solve_dense_scaled(
+        &mut self,
+        source: &DMatrix<f64>,
+        rhs: &DVector<f64>,
+        scales: (&[f64], &[f64]),
+        tolerance: f64,
+        allow_rank_deficient_fallback: bool,
+    ) -> Option<DVector<f64>> {
+        self.dense.solve(
+            source,
+            rhs,
+            scales,
+            tolerance,
+            allow_rank_deficient_fallback,
+        )
+    }
+
     pub(super) fn solve_torn_scaled(
         &mut self,
         source: &DMatrix<f64>,

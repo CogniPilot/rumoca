@@ -1,7 +1,8 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- if not solve.continuous.algebraic_assignment_complete %}{{ fail("unsupported-feature:fmi3.coupled-or-non-isolable-algebraic-projection") }}{% endif %}
-{%- from "fmi-c-kernel.jinja" import scalar_op, refresh_algebraics, assertions, assertion_lifecycle %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle %}
+{%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields %}
 {%- from "fmi-typed-functions.jinja" import functions %}
+#include <float.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -16,8 +17,8 @@ enum InterfaceType { INTERFACE_ME, INTERFACE_CS };
 #define Y_LEN {{ solve.layout.y_scalars if solve.layout.y_scalars > 0 else 1 }}
 #define P_LEN {{ solve.layout.p_scalars if solve.layout.p_scalars > 0 else 1 }}
 #define STATE_LEN {{ solve.solve_layout.state_scalar_count if solve.solve_layout.state_scalar_count > 0 else 1 }}
-typedef struct { bool assertions_initialized; bool assertion_failed; bool parameters_dirty; fmi3InstanceEnvironment environment; fmi3LogMessageCallback logger; double time; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type; } ModelInstance;
-{{ functions(typed_pure_calls) }}
+typedef struct { bool assertions_initialized; bool assertion_failed; bool parameters_dirty; fmi3InstanceEnvironment environment; fmi3LogMessageCallback logger; double time; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type;{{ workspace_fields(me_refresh) }} } ModelInstance;
+{{ functions(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 else []) }}
 
 static void initialize_values(ModelInstance* m) {
     m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true;
@@ -32,11 +33,12 @@ static void initialize_values(ModelInstance* m) {
 {% if fmi.assertions %}
 static void log_assertion(ModelInstance* m, const char* message) { if (m->logger) m->logger(m->environment, fmi3Error, "assertion", message); }
 {% endif %}
+#define RMC_LOG(m, message) do { if ((m)->logger) (m)->logger((m)->environment, fmi3Error, "error", (message)); } while (0)
 {{ assertions(solve, fmi, fmi_assertion_messages, "fmi3") }}
-{{ refresh_algebraics(solve, "fmi3") }}
+{{ refresh_values(solve, me_refresh, "fmi3") }}
 {{ assertion_lifecycle("fmi3") }}
 static fmi3Status evaluate_derivatives(ModelInstance* m) {
-    if (settle_values(m) != fmi3OK) return fmi3Error;
+    if (settle_derivative_values(m) != fmi3OK) return fmi3Error;
 {% set plan = solve_blocks.continuous.derivative_rhs.scalar_plan %}
 {% for program in plan.programs %}{% for op in program.ops %}
 {% if loop.first %}    {

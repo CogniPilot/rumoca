@@ -539,3 +539,157 @@ fn runtime_rejects_missing_algebraic_implicit_row() {
         "error should identify the missing implicit row: {err}"
     );
 }
+
+#[test]
+fn unavailable_projection_seed_projects_its_own_block_from_the_incoming_coordinate() {
+    // x - 0.5*y - 1 = 0 and y - sqrt(x) = 0 form one nonlinear block whose
+    // stage seeds x = 0.5*y + 1, then y = sqrt(x). Below y = -2 the seeded x
+    // is negative and the seed of y is NaN, while the residuals at the
+    // incoming coordinate stay finite: the stage restores the seed targets
+    // and block unknowns, projects only this block, and continues (true)
+    // instead of running the complete plan.
+    let mut model = mode_dependent_repivot_model();
+    model.problem.continuous.implicit_rhs =
+        solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![
+                scale_and_offset_assignment_residual_row(0, 1, 0.5, 1.0),
+                sqrt_assignment_residual_row(1, 0),
+            ],
+            "unavailable_stage_seed.mo",
+        ));
+    model.problem.continuous.implicit_row_targets[0] = Some(solve::scalar_slot_y(0));
+    derive_test_structural_artifacts(&mut model);
+    let runtime = SolveRuntime::new_fixture(&model).unwrap();
+    let plan = &runtime.algebraic_refresh;
+    let stage = plan
+        .value_stages
+        .iter()
+        .find(|stage| {
+            matches!(stage, solve::RefreshStage::ProjectionBlock { seed_rows, .. } if !seed_rows.is_empty())
+        })
+        .expect("the nonlinear block keeps a seeded projection stage");
+    let solve::RefreshStage::ProjectionBlock {
+        seed_rows,
+        plan: block_plan,
+        ..
+    } = stage
+    else {
+        unreachable!()
+    };
+    let seed_targets = plan
+        .selected_rows(seed_rows)
+        .iter()
+        .map(solve::AlgebraicRefreshRow::target_index)
+        .collect::<Vec<_>>();
+    assert_eq!(seed_targets, vec![0, 1], "x is seeded before y = sqrt(x)");
+    assert_eq!(
+        solve::projection_seed_rescue_targets(plan.selected_rows(seed_rows), &block_plan.blocks[0]),
+        vec![0, 1]
+    );
+
+    let incoming = vec![4.0_f64, -6.0];
+    assert!(
+        (0.5 * incoming[1] + 1.0).sqrt().is_nan(),
+        "the seed of y is unavailable"
+    );
+    assert!(
+        (incoming[1] - incoming[0].sqrt()).is_finite(),
+        "the incoming residual is finite"
+    );
+    let args = |solver_y| RefreshSlotArgs {
+        t: 0.0,
+        solver_y,
+        params: &[0.0],
+        tol: 1.0e-12,
+        max_iters: 32,
+        certify_coordinates: true,
+    };
+    let mut rescued = incoming.clone();
+    runtime.prepare_static_refresh_cache(&[0.0], rescued.len());
+    let continued = runtime
+        .execute_refresh_stage(stage, plan, &mut args(&mut rescued), &incoming)
+        .expect("the block projects from its incoming coordinate");
+    assert!(
+        continued,
+        "the stage settled locally without the complete plan"
+    );
+
+    let mut complete = incoming.clone();
+    runtime
+        .project_refresh_slots(plan, &mut args(&mut complete), true)
+        .expect("the complete plan projects from the same coordinate");
+    // y*y - 0.5*y - 1 = 0 on the branch y = sqrt(x) >= 0.
+    let y = 0.25 + (0.0625_f64 + 1.0).sqrt();
+    for solved in [&rescued, &complete] {
+        assert!((solved[0] - (0.5 * y + 1.0)).abs() <= 1.0e-10, "{solved:?}");
+        assert!((solved[1] - y).abs() <= 1.0e-10, "{solved:?}");
+    }
+}
+
+#[test]
+fn failed_seed_rescue_restores_the_incoming_coordinate_and_runs_the_complete_plan() {
+    // The same block as above from an incoming coordinate where x = -1: the
+    // seed of y is NaN and the block residual y - sqrt(x) is NaN as well, so
+    // the local projection fails. The stage must then restore the whole
+    // incoming coordinate and run the complete plan, reporting false. The
+    // complete plan passed here holds no block, so the observed result is the
+    // fallback itself: the restored coordinate, unchanged.
+    let mut model = mode_dependent_repivot_model();
+    model.problem.continuous.implicit_rhs =
+        solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![
+                scale_and_offset_assignment_residual_row(0, 1, 0.5, 1.0),
+                sqrt_assignment_residual_row(1, 0),
+            ],
+            "failed_stage_rescue.mo",
+        ));
+    model.problem.continuous.implicit_row_targets[0] = Some(solve::scalar_slot_y(0));
+    derive_test_structural_artifacts(&mut model);
+    let runtime = SolveRuntime::new_fixture(&model).unwrap();
+    let plan = &runtime.algebraic_refresh;
+    let stage = plan
+        .value_stages
+        .iter()
+        .find(|stage| {
+            matches!(stage, solve::RefreshStage::ProjectionBlock { seed_rows, .. } if !seed_rows.is_empty())
+        })
+        .expect("the nonlinear block keeps a seeded projection stage");
+    let mut complete = plan.clone();
+    complete.simultaneous_plan = solve::AlgebraicProjectionPlan::default();
+    complete.simultaneous_block_indices.clear();
+
+    let incoming = vec![-1.0_f64, -6.0];
+    assert!(
+        (0.5 * incoming[1] + 1.0).sqrt().is_nan(),
+        "the seed of y is unavailable"
+    );
+    assert!(
+        incoming[0].sqrt().is_nan(),
+        "the block residual is unavailable too"
+    );
+    let mut solver_y = incoming.clone();
+    runtime.prepare_static_refresh_cache(&[0.0], solver_y.len());
+    let continued = runtime
+        .execute_refresh_stage(
+            stage,
+            &complete,
+            &mut RefreshSlotArgs {
+                t: 0.0,
+                solver_y: &mut solver_y,
+                params: &[0.0],
+                tol: 1.0e-12,
+                max_iters: 32,
+                certify_coordinates: true,
+            },
+            &incoming,
+        )
+        .expect("the (empty) complete plan projects");
+    assert!(
+        !continued,
+        "a failed rescue hands the refresh to the complete plan"
+    );
+    assert_eq!(
+        solver_y, incoming,
+        "the complete plan starts from the incoming coordinate"
+    );
+}

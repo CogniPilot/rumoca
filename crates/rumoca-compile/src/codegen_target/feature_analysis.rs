@@ -153,18 +153,29 @@ pub(super) fn dae_has_dynamic_derivative_subscripts(model: &dae::Dae) -> bool {
 // capabilities and `rumoca-phase-codegen`, which makes it admissibility rather
 // than an IR query.
 
+/// Whether rendering `problem` needs residual-equation export from a target
+/// declaring these algebraic capabilities.
+///
+/// A target that executes exact assignments renders a model whose algebraic
+/// refresh is fully explicit. A target that executes algebraic projection
+/// stages with the shared ME projection kernel also renders a staged refresh
+/// with coupled blocks; its renderer re-checks the artifact-level stage
+/// certificate before producing any byte.
 pub(super) fn solve_requires_residual_equations(
     problem: &solve::SolveProblem,
     exact_algebraic_assignments: Option<bool>,
+    algebraic_projection: Option<bool>,
 ) -> bool {
     let continuous = &problem.continuous;
     let algebraic_count = problem.solve_layout.algebraic_scalar_count();
     let has_algebraic_system = !continuous.implicit_rhs.is_empty()
         || !continuous.algebraic_projection_plan.is_empty()
         || algebraic_count != 0;
-    has_algebraic_system
-        && (exact_algebraic_assignments != Some(true)
-            || !rumoca_phase_codegen::explicit_algebraic_assignment_complete(problem))
+    let explicit = exact_algebraic_assignments == Some(true)
+        && rumoca_phase_codegen::explicit_algebraic_assignment_complete(problem);
+    let projected =
+        algebraic_projection == Some(true) && rumoca_phase_codegen::me_refresh_admissible(problem);
+    has_algebraic_system && !explicit && !projected
 }
 
 fn dynamic_subscript<'dae>(view: dae::DaeView<'dae>, subscript: dae::SubscriptView<'dae>) -> bool {

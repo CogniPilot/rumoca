@@ -876,7 +876,8 @@ pub(super) fn algebraic_block_jacobian(
     let mut reverse_gradient = vec![0.0; y.len()];
     let mut needs_forward_jvp = vec![true; rows.len()];
     for (row, residual_idx) in rows.iter().copied().enumerate() {
-        if !model.eval_implicit_jacobian_row(residual_idx, y, p, t, &mut reverse_gradient)? {
+        let point = (y, p, t);
+        if !reverse_row(model, point, residual_idx, y_indices, &mut reverse_gradient)? {
             continue;
         }
         needs_forward_jvp[row] = false;
@@ -1212,4 +1213,15 @@ pub(super) fn seed_nonfinite_projection_values(y: &mut [f64], projection_indices
             y[idx] = 0.0;
         }
     }
+}
+
+/// One block row's reverse gradient over the block's own columns.
+fn reverse_row(
+    model: &dyn ImplicitProjectionModel,
+    (y, p, t): (&[f64], &[f64], f64),
+    residual_idx: usize,
+    columns: &[usize],
+    gradient: &mut [f64],
+) -> Result<bool, RuntimeSolveError> {
+    model.eval_implicit_jacobian_row_columns(residual_idx, y, p, t, columns, gradient)
 }

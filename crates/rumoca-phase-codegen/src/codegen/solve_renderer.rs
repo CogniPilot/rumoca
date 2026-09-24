@@ -93,12 +93,14 @@ impl SolveTemplateRenderer {
             .try_into()
             .map_err(|error| CodegenError::template(error.to_string()))?;
         require_builtin_fmi_template_domain(component.problem())?;
+        let me_refresh = super::me_projection::me_refresh_value(&component)?;
         let pure_calls = Value::from_serialize(component.pure_calls());
+        let directional_calls = directional_pure_calls(component.pure_calls());
         let assertion_messages = super::fmi_c_assertions::messages(component.problem())?;
         let handle = super::solve_lazy::SolveRenderHandle::fmi(component);
         let context = solve_render_context_value_with_handles(handle, None, Value::default())?;
         Ok(Self {
-            context: minijinja::context! { typed_pure_calls => pure_calls, fmi_assertion_messages => assertion_messages, ..context },
+            context: minijinja::context! { typed_pure_calls => pure_calls, typed_directional_calls => directional_calls, fmi_assertion_messages => assertion_messages, me_refresh => me_refresh, ..context },
         })
     }
 
@@ -140,19 +142,10 @@ impl SolveTemplateRenderer {
 
 /// Prove the complete current built-in FMI template domain before a renderer
 /// exists. The event/storage inventory is already carried by the input
-/// type-state; this owns the remaining Solve capabilities the C templates do
+/// type-state, and the algebraic refresh is admitted only by its checked ME
+/// refresh view; this owns the remaining Solve capabilities the C templates do
 /// not implement.
 fn require_builtin_fmi_template_domain(problem: &solve::SolveProblem) -> Result<(), CodegenError> {
-    let continuous = &problem.continuous;
-    let has_algebraic_system = !continuous.implicit_rhs.is_empty()
-        || !continuous.algebraic_projection_plan.is_empty()
-        || problem.solve_layout.algebraic_scalar_count() != 0;
-    if has_algebraic_system && !super::solve_lazy::explicit_algebraic_assignment_complete(problem) {
-        return Err(CodegenError::dae_preparation_failed(
-            "built-in FMI templates cannot render residual algebraic systems",
-            None,
-        ));
-    }
     if problem.uses_linear_solve_component()
         || problem
             .initialization
@@ -283,4 +276,33 @@ pub(super) fn c_renderable_derivative_nodes(
     } else {
         Ok(vec![solve::ComputeNode::ScalarPrograms(scalar)])
     }
+}
+
+/// Forward-mode owners of every pure call that has one, in owner order.
+///
+/// Directional scalar programs (`PureCallDirectional`) evaluate these bodies
+/// with adjacent primal and tangent operands, exactly as the typed evaluator's
+/// directional mode does; nested calls inside them dispatch to directional
+/// owners as well.
+fn directional_pure_calls(table: &solve::SolvePureCallTable) -> Value {
+    #[derive(serde::Serialize)]
+    struct DirectionalOwner<'a> {
+        id: solve::SolvePureCallOwnerId,
+        inputs: &'a [solve::SolveValueType],
+        outputs: &'a [solve::SolvePureCallOutput],
+        body: &'a solve::TypedProgram,
+    }
+    let owners = table
+        .owners()
+        .iter()
+        .filter_map(|owner| {
+            owner.directional().map(|directional| DirectionalOwner {
+                id: owner.id(),
+                inputs: directional.inputs(),
+                outputs: directional.outputs(),
+                body: directional.body(),
+            })
+        })
+        .collect::<Vec<_>>();
+    Value::from_serialize(&owners)
 }

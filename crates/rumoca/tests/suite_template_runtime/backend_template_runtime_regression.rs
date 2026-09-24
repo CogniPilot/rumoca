@@ -47,10 +47,21 @@ end ImplicitAlgebraic;
         )
         .expect("the compiler accepts the implicit algebraic model");
 
+    for target in ["fmi2", "fmi3"] {
+        let files = rumoca::render_target_files(&compiled, "ImplicitAlgebraic", target, None)
+            .expect("FMI projects the implicit algebraic block with the shared ME kernel");
+        let model_c = files
+            .iter()
+            .find(|file| file.path == "sources/model.c")
+            .expect("FMI emits its C kernel");
+        assert!(
+            model_c.content.contains("rmc_project_stage"),
+            "the FMI kernel must project the coupled block"
+        );
+    }
     for target in [
-        "fmi2",
-        "fmi3",
         "c-ode",
+        "fmi-ls-wasm",
         "rust-ode",
         "rust-fixed-ode",
         "casadi-ode",
@@ -131,7 +142,7 @@ end ExactAlgebraic;
 }
 
 #[test]
-fn fmi2_and_fmi3_reject_a_tunable_algebraic_coefficient() {
+fn fmi2_and_fmi3_refresh_through_a_tunable_algebraic_coefficient() {
     let compiled = Compiler::new()
         .model("TunableAlgebraicCoefficient")
         .compile_str(
@@ -150,16 +161,22 @@ end TunableAlgebraicCoefficient;
         .expect("the compiler accepts an algebraic model with a tunable coefficient");
 
     for target in ["fmi2", "fmi3"] {
-        let error =
+        let files =
             rumoca::render_target_files(&compiled, "TunableAlgebraicCoefficient", target, None)
-                .expect_err(
-                    "FMI must retain a residual solver for a tunable algebraic coefficient",
-                );
+                .expect("FMI refreshes an algebraic through a tunable coefficient");
+        let model_c = files
+            .iter()
+            .find(|file| file.path == "sources/model.c")
+            .expect("FMI emits its C kernel");
+        let refresh = model_c
+            .content
+            .split("refresh_algebraics(ModelInstance* m) {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("FMI emits the algebraic refresh body");
         assert!(
-            error
-                .to_string()
-                .contains("unsupported-feature:residual_equations"),
-            "FMI returned the wrong diagnostic: {error:#}"
+            refresh.contains("m->p[0]"),
+            "the refresh reads the tunable coefficient at run time instead of a folded value"
         );
     }
 }
@@ -429,6 +446,8 @@ fn execute_emitted_algebraic_refresh(model_c: &str, prefix: &str) {
 #include <math.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <string.h>
+#define Y_LEN 2
 typedef enum {{ {prefix}OK = 0, {prefix}Error = 3 }} {prefix}Status;
 typedef struct {{ bool parameters_dirty; double time; double y[2]; double p[1]; }} ModelInstance;
 {refresh}
@@ -437,6 +456,7 @@ int main(void) {{
     model.y[0] = 3.0;
     if (refresh_algebraics(&model) != {prefix}OK) return 1;
     if (fabs(model.y[1] - 6.0) > 1.0e-12) return 2;
+    if (refresh_derivative_values(&model) != {prefix}OK || fabs(model.y[1] - 6.0) > 1.0e-12) return 4;
     model.y[0] = NAN;
     if (refresh_algebraics(&model) != {prefix}Error) return 3;
     return 0;

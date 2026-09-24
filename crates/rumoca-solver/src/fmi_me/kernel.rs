@@ -33,9 +33,10 @@ use crate::timeline;
 use indicator_plan::FmiIndicatorPlan;
 
 /// Residual tolerance for the component's internal algebraic refresh.
-const ALGEBRAIC_REFRESH_TOL: f64 = 1.0e-10;
+const ALGEBRAIC_REFRESH_TOL: f64 =
+    rumoca_eval_solve::projection_policy::ALGEBRAIC_REFRESH_TOLERANCE;
 /// Iteration ceiling for the component's internal algebraic/event fixed points.
-const UPDATE_MAX_ITERS: usize = 32;
+const UPDATE_MAX_ITERS: usize = rumoca_eval_solve::projection_policy::ALGEBRAIC_REFRESH_MAX_ITERS;
 
 #[derive(Clone)]
 struct CachedDerivative {

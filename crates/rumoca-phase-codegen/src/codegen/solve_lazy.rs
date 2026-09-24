@@ -417,8 +417,6 @@ fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let implicit_rhs = compute_block_value(Arc::new(problem.continuous.implicit_rhs.clone()))?;
     let derivative_rhs = compute_block_value(Arc::new(problem.continuous.derivative_rhs.clone()))?;
     let residual = compute_block_value(Arc::new(problem.continuous.residual.clone()))?;
-    let (algebraic_assignment_plan, algebraic_assignment_complete) =
-        algebraic_assignment_plan(problem)?;
     Ok(lazy_map(
         &[
             "implicit_rhs",
@@ -426,8 +424,6 @@ fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
             "algebraic_projection_plan",
             "residual",
             "derivative_rhs",
-            "algebraic_assignment_plan",
-            "algebraic_assignment_complete",
         ],
         move |k| {
             let c = &handle.problem().continuous;
@@ -435,8 +431,6 @@ fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
                 "implicit_rhs" => Some(implicit_rhs.clone()),
                 "derivative_rhs" => Some(derivative_rhs.clone()),
                 "residual" => Some(residual.clone()),
-                "algebraic_assignment_plan" => Some(algebraic_assignment_plan.clone()),
-                "algebraic_assignment_complete" => Some(Value::from(algebraic_assignment_complete)),
                 "implicit_row_targets" => Some(Value::from_serialize(&c.implicit_row_targets)),
                 "algebraic_projection_plan" => {
                     Some(Value::from_serialize(&c.algebraic_projection_plan))
@@ -445,48 +439,6 @@ fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
             }
         },
     ))
-}
-
-fn algebraic_assignment_plan(problem: &solve::SolveProblem) -> Result<(Value, bool), CodegenError> {
-    let owners = &problem.continuous.refresh_owners;
-    let mut programs = Vec::new();
-    let mut spans = Vec::new();
-    let mut targets = Vec::new();
-    let complete = explicit_algebraic_assignment_complete(problem);
-    for stage in &owners.algebraic().value_stages {
-        match stage {
-            solve::RefreshStage::CausalSeedSweep { .. } => {}
-            solve::RefreshStage::ExactAssignments {
-                static_sequence,
-                dynamic_sequence,
-                ..
-            } => {
-                append_issued_assignment_sequence(
-                    &problem.continuous.implicit_rhs,
-                    owners,
-                    *static_sequence,
-                    &mut programs,
-                    &mut spans,
-                    &mut targets,
-                )?;
-                append_issued_assignment_sequence(
-                    &problem.continuous.implicit_rhs,
-                    owners,
-                    *dynamic_sequence,
-                    &mut programs,
-                    &mut spans,
-                    &mut targets,
-                )?;
-            }
-            solve::RefreshStage::ProjectionBlock { .. } => {}
-        }
-    }
-    let assignments = solve::ScalarProgramBlock::with_output_indices(programs, spans, targets)
-        .map_err(|error| CodegenError::template(error.to_string()))?;
-    let plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
-        Arc::new(assignments),
-    )?);
-    Ok((plan, complete))
 }
 
 /// Target-local explicit algebraic execution profile.
@@ -606,17 +558,16 @@ fn ordered_exact_algebraic_assignments(
     Some(assignments)
 }
 
-fn append_issued_assignment_sequence(
+/// Append the final scalar programs of one issued exact-assignment schedule,
+/// each storing its values into its solver-Y targets.
+pub(super) fn append_issued_assignment_schedule(
     source: &solve::ComputeBlock,
     owners: &solve::ContinuousRefreshOwners,
-    sequence: solve::RefreshSequenceId,
+    schedule: &solve::ExactRefreshAssignmentSchedule,
     programs: &mut Vec<Vec<solve::LinearOp>>,
     spans: &mut Vec<rumoca_core::Span>,
     targets: &mut Vec<usize>,
 ) -> Result<(), CodegenError> {
-    let Some(schedule) = owners.exact_assignment_schedule(sequence) else {
-        return Ok(());
-    };
     for program_id in schedule.program_ids() {
         let program = owners
             .exact_assignment_program(*program_id)

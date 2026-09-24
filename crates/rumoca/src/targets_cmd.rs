@@ -30,7 +30,7 @@ fn render_human_targets(
     let mut output = String::new();
     writeln!(
         output,
-        "{:<target_width$} {:<6} {:<16} {:<12} {:<5} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8}",
+        "{:<target_width$} {:<6} {:<16} {:<12} {:<5} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8}",
         "target",
         "ir",
         "mode",
@@ -46,12 +46,13 @@ fn render_human_targets(
         "events",
         "fwd-ad",
         "rev-ad",
+        "alg-proj",
         target_width = target_width
     )?;
     for entry in matrix {
         writeln!(
             output,
-            "{:<target_width$} {:<6} {:<16} {:<12} {:<5} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8}",
+            "{:<target_width$} {:<6} {:<16} {:<12} {:<5} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8}",
             entry.id,
             format!("{:?}", entry.ir).to_ascii_lowercase(),
             entry.execution_mode.as_deref().unwrap_or("unknown"),
@@ -67,6 +68,7 @@ fn render_human_targets(
             target_support_label(entry.events),
             target_support_label(entry.forward_ad),
             target_support_label(entry.reverse_ad),
+            target_support_label(entry.algebraic_projection),
             target_width = target_width
         )?;
     }
@@ -78,8 +80,9 @@ fn render_human_targets(
          mode     code-gen style (symbolic / compiled / source-transform / packaged)\n  \
          deploy   deployment class (cpu / symbolic / fmu / efmi / browser / modelica)\n  \
          level    readiness 0=experimental .. 2=validated (? = unrated)\n  \
-         (per-feature columns) scalar/matmul/linsolve/elem/stencil/sparse/dyn-ctrl/events/fwd-ad/rev-ad\n           \
-         feature support: native | scalar (scalarized) | no | unknown"
+         (per-feature columns) scalar/matmul/linsolve/elem/stencil/sparse/dyn-ctrl/events/fwd-ad/rev-ad/alg-proj\n           \
+         feature support: native | scalar (scalarized) | no | unknown\n  \
+         alg-proj executes coupled algebraic projection stages in generated code"
     )?;
 
     // IR dumps are not code-gen targets; they live behind `--emit`.
@@ -137,11 +140,12 @@ mod tests {
                 == vec![
                     "target", "ir", "mode", "deploy", "level", "scalar", "matmul", "linsolve",
                     "elem", "stencil", "sparse", "dyn-ctrl", "events", "fwd-ad", "rev-ad",
+                    "alg-proj",
                 ]
         }));
         assert!(
             output.contains(
-                "scalar/matmul/linsolve/elem/stencil/sparse/dyn-ctrl/events/fwd-ad/rev-ad"
+                "scalar/matmul/linsolve/elem/stencil/sparse/dyn-ctrl/events/fwd-ad/rev-ad/alg-proj"
             ),
             "legend should explain elem and stencil columns"
         );
@@ -149,7 +153,7 @@ mod tests {
             wgsl_row.split_whitespace().collect::<Vec<_>>(),
             vec![
                 "wgsl-ode", "solve", "jit", "gpu", "0", "native", "scalar", "unknown", "native",
-                "native", "no", "no", "no", "no", "no",
+                "native", "no", "no", "no", "no", "no", "unknown",
             ]
         );
     }

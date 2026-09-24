@@ -34,12 +34,14 @@
 /// The fraction is a globalization constant, and the root the projection converges to does
 /// not depend on it: sweeping 0.01 to 0.9 reaches the same solution and changes only
 /// the evaluation count.
-pub(super) const ALGEBRAIC_PROJECTION_TRUST_FRACTION: f64 = 0.25;
+pub(super) const ALGEBRAIC_PROJECTION_TRUST_FRACTION: f64 =
+    rumoca_eval_solve::projection_policy::ALGEBRAIC_PROJECTION_TRUST_FRACTION;
 
 /// Iteration-budget multiplier for the step-limited projection: a pass that advances
 /// each unknown by at most [`ALGEBRAIC_PROJECTION_TRUST_FRACTION`] of its own
 /// magnitude needs proportionally more steps to cover the same distance.
-pub(super) const ALGEBRAIC_PROJECTION_ITER_FACTOR: usize = 4;
+pub(super) const ALGEBRAIC_PROJECTION_ITER_FACTOR: usize =
+    rumoca_eval_solve::projection_policy::ALGEBRAIC_PROJECTION_ITER_FACTOR;
 
 /// Per-iteration bound on a block's Newton step.
 #[derive(Clone, Copy, PartialEq)]

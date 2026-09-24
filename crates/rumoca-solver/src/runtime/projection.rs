@@ -46,7 +46,7 @@ use plan::{
     validate_initial_projection_plan,
 };
 
-const ALGEBRAIC_PROJECTION_MAX_ITERS: usize = 32;
+use rumoca_eval_solve::projection_policy::ALGEBRAIC_PROJECTION_MAX_ITERS;
 
 #[derive(Clone, Copy)]
 pub(crate) struct AlgebraicProjectionArgs<'a> {
@@ -188,6 +188,22 @@ pub(crate) trait ImplicitProjectionModel {
         _gradient: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {
         Ok(false)
+    }
+
+    /// Evaluate the gradient of one scalar implicit residual, guaranteeing
+    /// only the entries at `columns`. A model holding a cached complete
+    /// gradient copies just those entries; the default evaluates the complete
+    /// row, which writes every entry.
+    fn eval_implicit_jacobian_row_columns(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        _columns: &[usize],
+        gradient: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        self.eval_implicit_jacobian_row(row_idx, y, p, t, gradient)
     }
 
     /// Report exact structural dependence of one residual JVP row on a seed

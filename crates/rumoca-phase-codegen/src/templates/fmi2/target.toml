@@ -23,6 +23,7 @@ root = "flat"
 continuous_states = true
 residual_equations = false
 exact_algebraic_assignments = true
+algebraic_projection = true
 scalar_fallback = true
 external_functions = false
 external_tables = false

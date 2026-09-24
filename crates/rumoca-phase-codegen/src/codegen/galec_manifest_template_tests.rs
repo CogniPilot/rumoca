@@ -1254,6 +1254,7 @@ fn support_partials_are_shared_and_are_not_artifacts() {
         vec![
             "embedded-c-galec/scratch.jinja".to_string(),
             "embedded-c-galec/symbols.jinja".to_string(),
+            "fmi3/me_projection.jinja".to_string(),
             "fmi3/scalar_kernel.jinja".to_string(),
             "fmi3/typed_arithmetic.jinja".to_string(),
             "fmi3/typed_functions.jinja".to_string(),

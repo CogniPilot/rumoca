@@ -118,6 +118,31 @@ impl ParameterStaticGradientCache {
         true
     }
 
+    /// Copy only the requested columns of a valid cached gradient. A block
+    /// Jacobian reads just its own unknowns, so copying the complete solver-Y
+    /// gradient per row moves memory no consumer reads.
+    fn copy_columns_into(
+        &self,
+        row: usize,
+        parameter_indices: &[usize],
+        params: &[f64],
+        columns: &[usize],
+        gradient: &mut [f64],
+    ) -> bool {
+        let Some(cached) = self.valid_row(row, parameter_indices, params) else {
+            return false;
+        };
+        if cached.gradient.len() != gradient.len()
+            || columns.iter().any(|&column| column >= gradient.len())
+        {
+            return false;
+        }
+        for &column in columns {
+            gradient[column] = cached.gradient[column];
+        }
+        true
+    }
+
     fn valid_row(
         &self,
         row: usize,
@@ -616,6 +641,34 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         Ok(evaluated)
     }
 
+    fn eval_implicit_jacobian_row_columns(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        columns: &[usize],
+        gradient: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        if let Some((program_idx, _)) = self
+            .runtime
+            .implicit_scalar_rhs
+            .row_output_position(row_idx)
+            && let Some(parameter_indices) = self
+                .runtime
+                .implicit_scalar_rhs
+                .parameter_static_y_gradient_params(program_idx)
+            && self
+                .runtime
+                .parameter_static_gradient_cache
+                .borrow()
+                .copy_columns_into(program_idx, parameter_indices, p, columns, gradient)
+        {
+            return Ok(true);
+        }
+        self.eval_implicit_jacobian_row(row_idx, y, p, t, gradient)
+    }
+
     fn implicit_jacobian_v_row_depends_on(&self, row_idx: usize, seed_index: usize) -> bool {
         self.runtime
             .continuous_structural
@@ -1030,25 +1083,7 @@ impl SolveRuntime {
     }
 
     pub(super) fn value_stage_schedule_is_certified(&self, plan: &solve::RefreshPlan) -> bool {
-        let structural = self.continuous_structural.algebraic_projection();
-        // Construction binds each projection stage to its complete BLT block.
-        // Its seeds are optional guesses; Newton solves every block coordinate
-        // even when a particular residual cannot be isolated as an assignment.
-        plan.simultaneous_block_indices.len() == plan.simultaneous_plan.blocks.len()
-            && !plan.value_stages.is_empty()
-            && plan
-                .simultaneous_block_indices
-                .iter()
-                .all(|&index| structural.get(index).is_some())
-            && plan
-                .simultaneous_block_indices
-                .iter()
-                .skip(1)
-                .all(|&index| {
-                    self.continuous_structural
-                        .algebraic_invalidates_earlier(index)
-                        == Some(false)
-                })
+        plan.value_stage_schedule_is_certified(&self.continuous_structural)
     }
 
     pub(super) fn refresh_slots_with_stages(
@@ -1066,7 +1101,7 @@ impl SolveRuntime {
         Ok(())
     }
 
-    fn execute_refresh_stage(
+    pub(super) fn execute_refresh_stage(
         &self,
         stage: &solve::RefreshStage,
         complete_plan: &solve::RefreshPlan,
@@ -1149,13 +1184,34 @@ impl SolveRuntime {
     ) -> Result<bool, RuntimeSolveError> {
         let result =
             self.refresh_slots_once(seed.rows, seed.sequence, args.t, args.solver_y, args.params);
-        if let Err(error) = result {
-            restore_after_causal_seed_error(error, args.solver_y, incoming)?;
-            self.project_refresh_slots(complete_plan, args, true)?;
-            return Ok(false);
+        let Err(error) = result else {
+            self.project_refresh_stage(block_index, plan, args)?;
+            return Ok(true);
+        };
+        if !seed_error_allows_projection(&error) {
+            args.solver_y.copy_from_slice(incoming);
+            return Err(error);
         }
-        self.project_refresh_stage(block_index, plan, args)?;
-        Ok(true)
+        // A seed is only a warm start. Restore the seed targets and the block
+        // unknowns to their pre-stage values and project this block; the
+        // certified earlier stages keep their values. Only when the block's
+        // own projection fails does the complete simultaneous plan run.
+        if let Some(block) = plan.blocks.first() {
+            for index in solve::projection_seed_rescue_targets(seed.rows, block) {
+                args.solver_y[index] = incoming[index];
+            }
+            tracing::debug!(
+                target: "rumoca_eval_solve::refresh",
+                block_index,
+                "projection-stage seed was unavailable; projecting its block from the incoming coordinate: {error}"
+            );
+            if self.project_refresh_stage(block_index, plan, args).is_ok() {
+                return Ok(true);
+            }
+        }
+        restore_after_causal_seed_error(error, args.solver_y, incoming)?;
+        self.project_refresh_slots(complete_plan, args, true)?;
+        Ok(false)
     }
 
     fn refresh_stage_seed_sweep(

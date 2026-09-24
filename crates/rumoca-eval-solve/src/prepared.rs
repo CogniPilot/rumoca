@@ -12,6 +12,7 @@ mod assignment_shape_tests;
 mod capability_tests;
 mod construction;
 mod dependency;
+mod isolation_program;
 #[cfg(test)]
 mod prepared_compute_block_tests;
 mod support;
@@ -49,6 +50,7 @@ use assignment_shape::target_assignment_shapes_with_output_offsets;
 pub use assignment_shape::{target_assignment_shape, target_assignment_shapes};
 use dependency::{parameter_static_y_gradient, row_parameter_indices};
 pub(crate) use dependency::{row_reads_y_index, row_y_input_ranges};
+pub use isolation_program::TargetIsolationProgram;
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::AlgebraicRefreshRow;
 #[cfg(test)]
