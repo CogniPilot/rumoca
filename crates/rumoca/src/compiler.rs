@@ -1277,7 +1277,10 @@ mod tests {
             "Pkg/Sub/Helper.mo",
             "Pkg/Sub/Root.mo",
         ] {
-            let uri = root.join(file).to_string_lossy().to_string();
+            // Documents are keyed by their canonical path, which on Windows
+            // carries the verbatim prefix and native separators, so look the
+            // file up by the same key the session stores.
+            let uri = canonical_path_key(&root.join(file).to_string_lossy());
             assert!(
                 by_file.is_source_root_backed_document(&uri),
                 "{uri} must remain a source-root document"
