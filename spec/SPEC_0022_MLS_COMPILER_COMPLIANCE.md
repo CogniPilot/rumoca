@@ -902,7 +902,7 @@ areas.
 |----------|--------|-------|
 | Lexical | LEX | 13 |
 | Declarations | DECL | 36 |
-| Instantiation | INST | 53 |
+| Instantiation | INST | 54 |
 | Expressions | EXPR | 40 |
 | Equations | EQN | 38 |
 | Algorithms | ALG | 17 |
@@ -918,7 +918,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 15 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **438** |
+| **Total** | | **439** |
 
 ---
 
@@ -1007,5 +1007,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 438 |
+| Total Contracts | 439 |
 | MLS Chapters Referenced | 21 |
