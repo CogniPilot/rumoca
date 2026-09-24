@@ -225,5 +225,4 @@ fn rename_calls(
 }
 
 #[cfg(test)]
-#[path = "pure_call_families_tests.rs"]
 mod tests;

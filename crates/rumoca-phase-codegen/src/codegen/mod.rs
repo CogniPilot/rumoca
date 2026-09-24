@@ -46,6 +46,8 @@ mod solve_template_context_tests;
 mod stencil_codegen_tests;
 mod symbol_alloc;
 #[cfg(test)]
+mod template_function_tests;
+#[cfg(test)]
 mod wgsl_ode_tests;
 
 use crate::templates;

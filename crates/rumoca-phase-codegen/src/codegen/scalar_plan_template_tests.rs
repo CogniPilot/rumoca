@@ -358,3 +358,78 @@ fn indexed_python_targets_keep_indexing_inside_symbolic_array_dialects() {
     assert!(casadi.contains("if_else(__index1 == 0.0, P[0]"));
     assert!(!casadi.contains("int(min(max(round("));
 }
+
+/// Templates may introspect a scalar plan generically: the plan, each program
+/// and each operation are mappings whose enumerated keys all resolve, and the
+/// program and operation lists are sequences of the declared length.
+#[test]
+fn scalar_plan_objects_enumerate_only_keys_they_resolve() {
+    let program = vec![
+        solve::LinearOp::Const { dst: 0, value: 1.5 },
+        solve::LinearOp::LoadY { dst: 1, index: 0 },
+        solve::LinearOp::LoadIndexedP {
+            dst: 2,
+            base: 1,
+            count: 2,
+            index: 0,
+        },
+        solve::LinearOp::Binary {
+            dst: 3,
+            op: solve::BinaryOp::Add,
+            lhs: 1,
+            rhs: 2,
+        },
+        solve::LinearOp::Unary {
+            dst: 4,
+            op: solve::UnaryOp::Neg,
+            arg: 3,
+        },
+        solve::LinearOp::StoreOutput { src: 4 },
+    ];
+    let rendered = render_solve_template_with_name(
+        &derivative_problem(program),
+        &solve::SolveArtifacts::default(),
+        r#"{% set plan = solve_blocks.continuous.derivative_rhs.scalar_plan -%}
+plan:{{ plan is mapping }}:{{ plan|list|join(",") }}
+programs:{{ plan.programs is sequence }}:{{ plan.programs|length }}
+{% for program in plan.programs -%}
+program:{{ program is mapping }}:{{ program|list|join(",") }}
+ops:{{ program.ops is sequence }}:{{ program.ops|length }}
+{% for op in program.ops -%}
+op:{{ op is mapping }}:{% for key in op %}{{ key }}={{ op[key] is defined }},{% endfor %}
+{% endfor %}{% endfor %}"#,
+        "Introspection",
+    )
+    .expect("scalar plan introspection renders");
+    let lines = rendered.lines().collect::<Vec<_>>();
+    assert_eq!(
+        lines[..4],
+        [
+            "plan:true:programs,output_count,stored_output_count,uses_linear_solve_component",
+            "programs:true:1",
+            "program:true:ops,span,output_count,temporary_count",
+            "ops:true:6",
+        ],
+        "{rendered}"
+    );
+    let ops = &lines[4..];
+    assert_eq!(ops.len(), 6, "{rendered}");
+    for (line, kind) in ops.iter().zip([
+        "Const",
+        "LoadY",
+        "LoadIndexedP",
+        "Binary",
+        "Unary",
+        "StoreOutput",
+    ]) {
+        assert!(
+            line.starts_with("op:true:kind=true,") && !line.contains("=false"),
+            "{kind}: every enumerated key resolves: {line}"
+        );
+    }
+    assert!(
+        ops[2].contains("base=true,count=true,index_ref=true"),
+        "{rendered}"
+    );
+    assert!(ops[5].contains("src=true,output_index=true"), "{rendered}");
+}

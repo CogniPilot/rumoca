@@ -1,5 +1,7 @@
 use super::*;
 
+mod staged_execution;
+
 fn source_block() -> ComputeBlock {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("refresh_owner_test.mo"),

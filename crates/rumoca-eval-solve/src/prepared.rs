@@ -14,6 +14,8 @@ mod construction;
 mod dependency;
 mod isolation_program;
 #[cfg(test)]
+mod isolation_program_tests;
+#[cfg(test)]
 mod prepared_compute_block_tests;
 mod support;
 mod tensor_affine_assignment;

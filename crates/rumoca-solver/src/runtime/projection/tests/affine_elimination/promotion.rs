@@ -96,7 +96,9 @@ fn a_roundoff_pivot_promotes_like_an_exact_zero() {
     for pivot in [1e-19, 5.8e-13, -1e-9] {
         let (model, matrix) = cycle_with_diagonal(&[(7, pivot)]);
         let (torn, size) = torn_delta(&model, &matrix);
-        let torn = torn.unwrap_or_else(|| panic!("pivot {pivot:e} must promote"));
+        let Some(torn) = torn else {
+            panic!("pivot {pivot:e} must promote");
+        };
         assert_eq!(size, Some(2), "{pivot:e}");
         assert_matches_fallback(
             &format!("pivot {pivot:e}"),

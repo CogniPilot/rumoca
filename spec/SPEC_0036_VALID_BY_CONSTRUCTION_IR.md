@@ -56,16 +56,15 @@ fresh facts bound to its new source. The first execution remains ordered and com
 coordinate changes, failure, or a new call invalidate every retained result.
 Native constant facts belong to register versions: each complete source write
 invalidates prior destination facts after reading its input versions.
-An affine elimination layout derives complete row/coordinate permutations and
+An affine elimination layout derives its row/coordinate permutations and
 triangular dependencies from the exact block's tearing and sparsity owners;
-later dependencies issue guards, each naming the causal step that solves its
-column, and every solve checks their fresh, unconditioned coefficients. It
-proves no numerical pivot usable: a nonzero guard or a weak pivot promotes the
-step it names to a tear in place, up to the tear capacity of
-`projection_policy`, and the reduction declines beyond it. Promotions are
-re-derived from each factorization's coefficients; cached reduced factors
-retain the same bitwise coefficient validity and rejection discipline as full
-sparse factors.
+each later dependency issues a guard naming the causal step that solves its
+column, and every solve checks the fresh, unconditioned coefficients. A
+nonzero guard or a weak pivot promotes the step it names to a tear in place,
+up to the capacity of `projection_policy`; beyond it the reduction declines.
+Promotions are re-derived from each factorization's coefficients, and cached
+reduced factors keep the coefficient validity and rejection discipline of
+full sparse factors.
 
 For target `x`, the first true `(a_k, v_k)` gives `x' = v_k`; otherwise
 `x' = x`. Activations are shared per iteration; inactive values are skipped.

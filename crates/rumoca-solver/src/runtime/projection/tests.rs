@@ -2,6 +2,7 @@ mod affine_coordinates;
 mod affine_elimination;
 mod certification;
 mod colored_rows;
+mod column_gradient;
 mod manifold;
 mod order_robustness;
 mod saturation;

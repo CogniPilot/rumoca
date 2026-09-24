@@ -14,13 +14,23 @@ use super::block::isolation_kind;
 /// if one ever does.
 #[test]
 fn an_unrepresentable_row_isolation_refuses_its_block() {
-    let mut interned = false;
-    let error = isolation_kind(7, &TargetIsolationProgram::Unrepresentable, || {
-        interned = true;
-        0
-    })
-    .expect_err("an unrepresentable isolation must refuse the block");
-    assert!(!interned);
+    let mut interned = 0;
+    let mut intern = || {
+        interned += 1;
+        3
+    };
+    let error = isolation_kind(7, &TargetIsolationProgram::Unrepresentable, &mut intern)
+        .expect_err("an unrepresentable isolation must refuse the block");
+    assert_eq!(
+        isolation_kind(
+            7,
+            &TargetIsolationProgram::Isolator(Vec::new()),
+            &mut intern
+        )
+        .ok(),
+        Some((2, 3)),
+        "a materialized isolator is interned exactly once"
+    );
     let message = error.to_string();
     assert!(
         message.contains("unsupported-feature:algebraic_projection")
@@ -28,11 +38,17 @@ fn an_unrepresentable_row_isolation_refuses_its_block() {
             && message.contains("row isolation no scalar program reproduces"),
         "{message}"
     );
-    for program in [
-        TargetIsolationProgram::Unavailable,
-        TargetIsolationProgram::OutputValue,
-        TargetIsolationProgram::Isolator(Vec::new()),
+    for (program, kind) in [
+        (TargetIsolationProgram::Unavailable, 0),
+        (TargetIsolationProgram::OutputValue, 1),
     ] {
-        assert!(isolation_kind(7, &program, || 3).is_ok());
+        assert_eq!(
+            isolation_kind(7, &program, &mut intern).ok(),
+            Some((kind, 0))
+        );
     }
+    assert_eq!(
+        interned, 1,
+        "only the materialized isolator is interned; the refused isolation interns nothing"
+    );
 }

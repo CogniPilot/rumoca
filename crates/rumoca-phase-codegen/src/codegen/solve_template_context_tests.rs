@@ -184,3 +184,46 @@ fn test_solve_template_context_exposes_native_implicit_rhs_families() {
     assert!(rendered.contains("u32(i32(1u) + i32((r) % 3u) * 1)"));
     assert!(rendered.contains("y[u32(i32(1u) + i32((r) % 3u) * 1)]"));
 }
+
+/// Templates may walk the lazy Solve context generically: every mapping it
+/// exposes enumerates only keys that resolve, and every row or node list is a
+/// sequence of the declared length.
+#[test]
+fn test_solve_template_context_mappings_enumerate_only_resolvable_keys() {
+    let template = r#"
+{%- macro walk(label, value, depth) -%}
+{%- if value is mapping -%}
+{{ label }}:map
+{% for key in value %}{% if value[key] is not defined %}{{ label }}.{{ key }}:unresolved
+{% elif depth > 0 %}{{ walk(label ~ "." ~ key, value[key], depth - 1) }}{% endif %}{% endfor %}
+{%- elif value is sequence and value is not string -%}
+{{ label }}:seq:{{ value | length }}
+{% if value | length > 0 and depth > 0 %}{{ walk(label ~ "[0]", value[0], depth - 1) }}{% endif %}
+{%- endif -%}
+{%- endmacro -%}
+{{ walk("solve", solve, 3) }}
+{{- walk("solve_artifacts", solve_artifacts, 2) }}
+{{- walk("solve_derivative_nodes", solve_derivative_nodes, 1) }}
+{{- walk("solve_implicit_rows", solve_implicit_rows, 1) }}
+"#;
+    let (problem, artifacts) = implicit_problem_with_artifacts();
+    let rendered = SolveTemplateRenderer::new(&problem, &artifacts, "Introspection")
+        .and_then(|renderer| renderer.render(template))
+        .expect("the lazy Solve context renders generically");
+    assert!(!rendered.contains("unresolved"), "{rendered}");
+    for line in [
+        "solve:map",
+        "solve.continuous.implicit_rhs.nodes:seq:1",
+        "solve.continuous.derivative_rhs.scalar_plan:map",
+        "solve_artifacts.continuous.implicit_jacobian_v:map",
+        "solve_derivative_nodes:seq:1",
+        "solve_derivative_nodes[0]:map",
+        "solve_implicit_rows:seq:1",
+        "solve_implicit_rows[0]:seq:2",
+    ] {
+        assert!(
+            rendered.lines().any(|rendered| rendered == line),
+            "missing `{line}` in:\n{rendered}"
+        );
+    }
+}
