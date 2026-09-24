@@ -6,10 +6,8 @@ use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
     AbiParam, InstBuilder, MemFlags, StackSlot, StackSlotData, StackSlotKind, types,
 };
-use cranelift_codegen::settings;
-use cranelift_codegen::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
 use rumoca_core::ExternalTableData;
 use rumoca_eval_solve::{
@@ -41,7 +39,7 @@ mod selected_residual;
 mod status;
 pub(crate) mod typed_program;
 
-use host_runtime::{register_math_symbols, with_active_external_tables};
+use host_runtime::{host_jit_builder, register_math_symbols, with_active_external_tables};
 pub(crate) use input_validation::InputRequirements as EmitInputRequirements;
 use input_validation::{
     InputRequirements, input_compile_error, input_requirements_for_linear_ops,
@@ -50,6 +48,7 @@ use input_validation::{
 };
 use interpreter::execute_row;
 use owned_jit_module::{OwnedJitModule, declare_far_call_in_func};
+pub(crate) use projection_batch::SharedProjectionModule;
 
 // Each compiled program writes its outputs through the trailing `*mut f64`
 // pointer (one program may emit several outputs via consecutive StoreOutputs).
@@ -1106,6 +1105,10 @@ struct CraneliftEmitter {
     fold_functions: HashMap<usize, FuncId>,
     canonical_fold_functions: Vec<(Arc<rumoca_ir_solve::FunctionFoldProgram>, FuncId)>,
     conditional_functions: HashMap<rumoca_ir_solve::FunctionConditionalOwnerId, FuncId>,
+    /// Symbol namespace of `conditional_functions`. Conditional owner ids are
+    /// local to one scalar-program block, so a module that compiles programs
+    /// of several blocks names each block's conditional helpers apart.
+    conditional_scope: Option<usize>,
     pure_call_functions:
         HashMap<rumoca_ir_solve::SolvePureCallOwnerId, typed_program::PureCallImport>,
 }
@@ -1114,11 +1117,7 @@ impl CraneliftEmitter {
     fn new(
         pure_calls: Option<&typed_program::CompiledPureCallTable>,
     ) -> Result<Self, CompileError> {
-        let mut builder = JITBuilder::with_flags(
-            &[("opt_level", "speed")],
-            cranelift_module::default_libcall_names(),
-        )
-        .map_err(to_backend_err)?;
+        let mut builder = host_jit_builder()?;
         register_math_symbols(&mut builder);
         if let Some(pure_calls) = pure_calls {
             pure_calls.register_symbols(&mut builder);
@@ -1134,6 +1133,7 @@ impl CraneliftEmitter {
             fold_functions: HashMap::new(),
             canonical_fold_functions: Vec::new(),
             conditional_functions: HashMap::new(),
+            conditional_scope: None,
             pure_call_functions,
         })
     }
@@ -1236,13 +1236,13 @@ impl CraneliftEmitter {
         }
         signature.params.push(AbiParam::new(pointer_type)); // captures
         signature.params.push(AbiParam::new(pointer_type)); // results
+        let name = match self.conditional_scope {
+            Some(scope) => format!("rumoca_scope_{scope}_conditional_owner_{}", owner.get()),
+            None => format!("rumoca_conditional_owner_{}", owner.get()),
+        };
         let function = self
             .module
-            .declare_function(
-                &format!("rumoca_conditional_owner_{}", owner.get()),
-                Linkage::Local,
-                &signature,
-            )
+            .declare_function(&name, Linkage::Local, &signature)
             .map_err(to_backend_err)?;
         self.conditional_functions.insert(owner, function);
 
@@ -1309,8 +1309,6 @@ impl CraneliftEmitter {
             drop(lower);
             fb.finalize();
         }
-        let flags = settings::Flags::new(settings::builder());
-        verify_function(&context.func, &flags).map_err(to_backend_err)?;
         self.module
             .define_function(function, &mut context)
             .map_err(to_backend_err)?;
@@ -1415,8 +1413,6 @@ impl CraneliftEmitter {
             drop(lower);
             fb.finalize();
         }
-        let flags = settings::Flags::new(settings::builder());
-        verify_function(&context.func, &flags).map_err(to_backend_err)?;
         self.module
             .define_function(function, &mut context)
             .map_err(to_backend_err)?;
@@ -1527,8 +1523,6 @@ impl CraneliftEmitter {
             fb.finalize();
         }
 
-        let flags = settings::Flags::new(settings::builder());
-        verify_function(&context.func, &flags).map_err(to_backend_err)?;
         self.module
             .define_function(func_id, &mut context)
             .map_err(to_backend_err)?;
@@ -1649,8 +1643,6 @@ impl CraneliftEmitter {
             status::succeed(&mut fb);
             fb.finalize();
         }
-        let flags = settings::Flags::new(settings::builder());
-        verify_function(&context.func, &flags).map_err(to_backend_err)?;
         self.module
             .define_function(func_id, &mut context)
             .map_err(to_backend_err)?;
@@ -1722,8 +1714,6 @@ impl CraneliftEmitter {
             status::succeed(&mut fb);
             fb.finalize();
         }
-        let flags = settings::Flags::new(settings::builder());
-        verify_function(&context.func, &flags).map_err(to_backend_err)?;
         self.module
             .define_function(func_id, &mut context)
             .map_err(to_backend_err)?;
@@ -1816,8 +1806,6 @@ impl CraneliftEmitter {
             status::succeed(&mut fb);
             fb.finalize();
         }
-        let flags = settings::Flags::new(settings::builder());
-        verify_function(&context.func, &flags).map_err(to_backend_err)?;
         self.module
             .define_function(func_id, &mut context)
             .map_err(to_backend_err)?;

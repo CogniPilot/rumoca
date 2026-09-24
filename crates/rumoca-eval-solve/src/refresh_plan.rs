@@ -21,7 +21,7 @@ use std::sync::Arc;
 use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_solve as solve;
 
-use crate::prepared::{assignment_shape_reads_y_index, row_y_input_ranges};
+use crate::prepared::row_y_input_ranges;
 use crate::{EvalSolveError, PreparedScalarProgramBlock};
 
 use capacity::{
@@ -163,6 +163,54 @@ fn construct_refresh_selection(
     })
 }
 
+/// Exact and direct assignment certificates of one program output, given the
+/// assignment shape already derived for it.
+///
+/// Both certificates require the shape and a causal program, and the direct
+/// one also requires the shape to be direct. With the shape known, one of the
+/// two certificates decides both: for a direct shape they coincide, for any
+/// other shape the direct certificate is false. A shapeless output derives
+/// nothing further.
+struct AssignmentCertificates {
+    exact: bool,
+    direct: bool,
+}
+
+impl AssignmentCertificates {
+    fn for_shape(
+        program: &[solve::LinearOp],
+        output_offset: usize,
+        target_index: usize,
+        shape: Option<&solve::TargetAssignmentShape>,
+    ) -> Result<Self, EvalSolveError> {
+        match shape {
+            None => Ok(Self {
+                exact: false,
+                direct: false,
+            }),
+            Some(shape) if shape.is_direct() => {
+                let direct = crate::prepared::program_certifies_direct_target(
+                    program,
+                    output_offset,
+                    target_index,
+                )?;
+                Ok(Self {
+                    exact: direct,
+                    direct,
+                })
+            }
+            Some(_) => Ok(Self {
+                exact: crate::prepared::program_certifies_exact_target(
+                    program,
+                    output_offset,
+                    target_index,
+                )?,
+                direct: false,
+            }),
+        }
+    }
+}
+
 fn build_canonical_algebraic_refresh_plan(
     problem: &solve::SolveProblem,
     catalog: &CanonicalScalarProgramCatalog<'_>,
@@ -204,18 +252,28 @@ fn build_canonical_algebraic_refresh_plan(
         let Some(program) = catalog.program(position.program_index) else {
             continue;
         };
-        if !crate::prepared::program_can_evaluate_declared_target(
-            program.operations,
-            position.output_offset,
-            *target_index,
-        )? || !claimed_targets.insert(*target_index)
-        {
-            continue;
-        }
         let assignment_shape = crate::prepared::assignment_shape_for_program_output(
             program.operations,
             position.output_offset,
             *target_index,
+        )?;
+        // A program with an assignment shape for this output and target can
+        // always evaluate it; only a shapeless one needs the full check.
+        if !(assignment_shape.is_some()
+            || crate::prepared::program_can_evaluate_declared_target(
+                program.operations,
+                position.output_offset,
+                *target_index,
+            )?)
+            || !claimed_targets.insert(*target_index)
+        {
+            continue;
+        }
+        let certificates = AssignmentCertificates::for_shape(
+            program.operations,
+            position.output_offset,
+            *target_index,
+            assignment_shape.as_ref(),
         )?;
         rows.push(construct_refresh_row(
             solve::AlgebraicRefreshRowDraft {
@@ -231,16 +289,8 @@ fn build_canonical_algebraic_refresh_plan(
                 target_index: *target_index,
                 assignment_target: Some(*target_index),
                 assignment_shape,
-                direct_assignment_certified: crate::prepared::program_certifies_direct_target(
-                    program.operations,
-                    position.output_offset,
-                    *target_index,
-                )?,
-                exact_assignment_certified: crate::prepared::program_certifies_exact_target(
-                    program.operations,
-                    position.output_offset,
-                    *target_index,
-                )?,
+                direct_assignment_certified: certificates.direct,
+                exact_assignment_certified: certificates.exact,
             },
             Some(program.span),
         )?);
@@ -951,11 +1001,18 @@ fn append_exact_projection_owners<A: RefreshProgramAccess + ?Sized>(
         let Some(program) = block.program(position.program_index) else {
             continue;
         };
-        if !crate::prepared::program_certifies_exact_target(
+        let assignment_shape = crate::prepared::assignment_shape_for_program_output(
             program,
             position.output_offset,
             *target_index,
-        )? {
+        )?;
+        let certificates = AssignmentCertificates::for_shape(
+            program,
+            position.output_offset,
+            *target_index,
+            assignment_shape.as_ref(),
+        )?;
+        if !certificates.exact {
             continue;
         }
         reserve_refresh_vec_capacity(rows, 1, "dependency exact-owner rows", span)?;
@@ -977,16 +1034,8 @@ fn append_exact_projection_owners<A: RefreshProgramAccess + ?Sized>(
                 output_offset: position.output_offset,
                 target_index: *target_index,
                 assignment_target: Some(*target_index),
-                assignment_shape: crate::prepared::assignment_shape_for_program_output(
-                    program,
-                    position.output_offset,
-                    *target_index,
-                )?,
-                direct_assignment_certified: crate::prepared::program_certifies_direct_target(
-                    program,
-                    position.output_offset,
-                    *target_index,
-                )?,
+                assignment_shape,
+                direct_assignment_certified: certificates.direct,
                 exact_assignment_certified: true,
             },
             span,
@@ -1134,8 +1183,9 @@ fn enqueue_exact_assignment_dependencies<A: RefreshProgramAccess + ?Sized>(
             span,
         });
     };
+    let reads = AssignmentYReads::new(program, shape);
     for dependency in row_y_input_ranges(program).into_iter().flatten() {
-        if dependency >= state_count && assignment_shape_reads_y_index(program, shape, dependency) {
+        if dependency >= state_count && reads.reads(dependency) {
             reserve_refresh_vec_capacity(stack, 1, "exact assignment dependency stack", span)?;
             stack.push(dependency);
         }
@@ -1653,6 +1703,11 @@ fn refresh_row_dependency_positions(
     producer_by_target: &BTreeMap<usize, usize>,
 ) -> Vec<usize> {
     let mut positions = BTreeSet::new();
+    // One register-dependency table of the assignment's expression prefix
+    // answers every candidate producer of this row.
+    let assignment_reads = row
+        .assignment_shape()
+        .map(|shape| AssignmentYReads::new(ops, shape));
     for mut range in row_y_input_ranges(ops) {
         range.start = range.start.max(state_count);
         if range.is_empty() {
@@ -1660,9 +1715,9 @@ fn refresh_row_dependency_positions(
         }
         for (&index, &position) in producer_by_target.range(range) {
             if index == row.target_index()
-                || row
-                    .assignment_shape()
-                    .is_some_and(|shape| !assignment_shape_reads_y_index(ops, shape, index))
+                || assignment_reads
+                    .as_ref()
+                    .is_some_and(|reads| !reads.reads(index))
             {
                 continue;
             }
@@ -1670,6 +1725,33 @@ fn refresh_row_dependency_positions(
         }
     }
     positions.into_iter().collect()
+}
+
+/// Solver-Y reads of one target assignment's value registers, evaluated over
+/// the assignment's expression prefix. A prefix that does not fit the program
+/// reads every index (fail closed).
+struct AssignmentYReads<'a> {
+    shape: &'a solve::TargetAssignmentShape,
+    dependency: Option<solve::ScalarProgramYDependency<'a>>,
+}
+
+impl<'a> AssignmentYReads<'a> {
+    fn new(ops: &'a [solve::LinearOp], shape: &'a solve::TargetAssignmentShape) -> Self {
+        Self {
+            shape,
+            dependency: ops
+                .get(..shape.expr_eval_len())
+                .map(solve::ScalarProgramYDependency::new),
+        }
+    }
+
+    fn reads(&self, y_index: usize) -> bool {
+        self.dependency.as_ref().is_none_or(|dependency| {
+            self.shape
+                .value_registers()
+                .any(|register| dependency.depends_on(register, y_index))
+        })
+    }
 }
 
 fn complete_causal_projection_is_certified<A: RefreshProgramAccess + ?Sized>(
@@ -1705,17 +1787,14 @@ fn complete_causal_projection_is_certified<A: RefreshProgramAccess + ?Sized>(
             })
             || row.target_index() < state_count
             || row.target_index() >= solver_count
+            // Every row reaching this check was issued its exact certificate
+            // from this same source program, output offset, and target.
+            || !row.exact_assignment_certified()
             || block.source_program(row.source()).is_none_or(|program| {
                 row_y_input_ranges(program)
                     .into_iter()
                     .flatten()
                     .any(|index| index >= solver_count)
-                    || !crate::prepared::program_certifies_exact_target(
-                        program,
-                        row.output_offset(),
-                        row.target_index(),
-                    )
-                    .unwrap_or(false)
             })
     }) {
         tracing::debug!(target: "rumoca_eval_solve::refresh", reason = "invalid row", equation = row.equation_index(), source_node = row.source().node(), source_program = row.source().program(), target = row.target_index(), "causal certificate rejected");

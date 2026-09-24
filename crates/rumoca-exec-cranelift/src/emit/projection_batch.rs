@@ -1,32 +1,152 @@
 //! Native execution of the complete construction-issued colored application.
+//!
+//! Every application prepared from one compiled Jacobian source is emitted
+//! into one shared JIT module: host symbols are registered and pure-call
+//! imports declared once, and fold kernels and owned conditional helpers are
+//! defined once and called by every application whose programs carry them.
 
 use super::*;
-use rumoca_ir_solve::ProjectionJacobianApplication;
+use rumoca_ir_solve::{FunctionConditionalOwnerId, ProjectionJacobianApplication};
+
+#[cfg(test)]
+mod shared_module_tests;
+
+/// Lazily created JIT module shared by the projection applications of one
+/// compiled Jacobian source.
+#[derive(Default)]
+pub(crate) struct SharedProjectionModule(RefCell<Option<Rc<ProjectionModule>>>);
+
+impl SharedProjectionModule {
+    fn module(
+        &self,
+        pure_calls: Option<&Rc<typed_program::CompiledPureCallTable>>,
+    ) -> Result<Rc<ProjectionModule>, CompileError> {
+        let mut slot = self.0.borrow_mut();
+        if let Some(module) = slot.as_ref() {
+            return Ok(module.clone());
+        }
+        let module = Rc::new(ProjectionModule::new(pure_calls)?);
+        *slot = Some(module.clone());
+        Ok(module)
+    }
+
+    /// Drop the shared module after a failed emission, which can leave
+    /// declared but undefined functions behind; the next application starts
+    /// a fresh module. Applications already compiled keep theirs alive.
+    fn discard(&self) {
+        self.0.borrow_mut().take();
+    }
+}
+
+struct ProjectionModule {
+    /// Keeps the pure-call table the module's imports resolve to alive for as
+    /// long as any application compiled into the module.
+    _pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
+    state: RefCell<ProjectionModuleState>,
+}
+
+struct ProjectionModuleState {
+    /// Conditional helpers already defined, per scalar-program source block.
+    scopes: Vec<ConditionalScope>,
+    applications: usize,
+    /// Last field: owns the executable memory every compiled application
+    /// points into.
+    emitter: CraneliftEmitter,
+}
+
+struct ConditionalScope {
+    source: ScalarProgramBlock,
+    functions: HashMap<FunctionConditionalOwnerId, FuncId>,
+}
+
+impl ProjectionModule {
+    fn new(
+        pure_calls: Option<&Rc<typed_program::CompiledPureCallTable>>,
+    ) -> Result<Self, CompileError> {
+        Ok(Self {
+            _pure_calls: pure_calls.cloned(),
+            state: RefCell::new(ProjectionModuleState {
+                scopes: Vec::new(),
+                applications: 0,
+                emitter: CraneliftEmitter::new(pure_calls.map(Rc::as_ref))?,
+            }),
+        })
+    }
+
+    fn compile(
+        &self,
+        application: &ProjectionJacobianApplication,
+    ) -> Result<JacobianRowFn, CompileError> {
+        let mut state = self.state.borrow_mut();
+        let state = &mut *state;
+        let scope = match state
+            .scopes
+            .iter()
+            .position(|scope| scope.source.shares_program_owner(application.source()))
+        {
+            Some(scope) => scope,
+            None => {
+                state.scopes.push(ConditionalScope {
+                    source: application.source().clone(),
+                    functions: HashMap::new(),
+                });
+                state.scopes.len() - 1
+            }
+        };
+        let emitter = &mut state.emitter;
+        emitter.conditional_scope = Some(scope);
+        emitter.conditional_functions = std::mem::take(&mut state.scopes[scope].functions);
+        let name = format!(
+            "rumoca_projection_{}_application_{}",
+            application.block_index(),
+            state.applications
+        );
+        state.applications += 1;
+        let compiled = emit_projection_application(emitter, application, &name);
+        state.scopes[scope].functions = std::mem::take(&mut emitter.conditional_functions);
+        compiled
+    }
+}
+
+fn emit_projection_application(
+    emitter: &mut CraneliftEmitter,
+    application: &ProjectionJacobianApplication,
+    name: &str,
+) -> Result<JacobianRowFn, CompileError> {
+    for color in application.colors() {
+        for program in color.outputs().programs() {
+            let row = &application.source().programs()[program.program()];
+            emitter.ensure_fold_programs(row, RowKind::JacobianV)?;
+            emitter.ensure_conditional_programs(row, RowKind::JacobianV)?;
+        }
+    }
+    let id = emitter.compile_projection_application(application, name)?;
+    finalize_jit_module(&mut emitter.module)?;
+    finalized_jacobian_fn(&emitter.module, id)
+}
 
 pub(super) struct ProjectionBatch {
     function: JacobianRowFn,
-    _module: OwnedJitModule,
+    _module: Rc<ProjectionModule>,
 }
 
 impl ProjectionBatch {
     pub(super) fn compile(
         application: &ProjectionJacobianApplication,
-        pure_calls: Option<&typed_program::CompiledPureCallTable>,
+        pure_calls: Option<&Rc<typed_program::CompiledPureCallTable>>,
+        shared: &SharedProjectionModule,
     ) -> Result<Self, CompileError> {
-        let mut emitter = CraneliftEmitter::new(pure_calls)?;
-        for color in application.colors() {
-            for program in color.outputs().programs() {
-                let row = &application.source().programs()[program.program()];
-                emitter.ensure_fold_programs(row, RowKind::JacobianV)?;
-                emitter.ensure_conditional_programs(row, RowKind::JacobianV)?;
+        let module = shared.module(pure_calls)?;
+        match module.compile(application) {
+            Ok(function) => Ok(Self {
+                function,
+                _module: module,
+            }),
+            Err(error) => {
+                shared.discard();
+                Err(error)
             }
         }
-        let id = emitter.compile_projection_application(application)?;
-        finalize_jit_module(&mut emitter.module)?;
-        Ok(Self {
-            function: finalized_jacobian_fn(&emitter.module, id)?,
-            _module: emitter.module,
-        })
     }
 
     pub(super) fn call(
@@ -56,6 +176,7 @@ impl CraneliftEmitter {
     fn compile_projection_application(
         &mut self,
         application: &ProjectionJacobianApplication,
+        name: &str,
     ) -> Result<FuncId, CompileError> {
         let pointer = self.module.target_config().pointer_type();
         let mut signature = self.module.make_signature();
@@ -65,14 +186,7 @@ impl CraneliftEmitter {
         }
         let id = self
             .module
-            .declare_function(
-                &format!(
-                    "rumoca_projection_{}_application",
-                    application.block_index()
-                ),
-                Linkage::Local,
-                &signature,
-            )
+            .declare_function(name, Linkage::Local, &signature)
             .map_err(to_backend_err)?;
         let mut context = self.module.make_context();
         context.func.signature = signature;
@@ -111,8 +225,6 @@ impl CraneliftEmitter {
         }
         status::succeed(&mut builder);
         builder.finalize();
-        verify_function(&context.func, &settings::Flags::new(settings::builder()))
-            .map_err(to_backend_err)?;
         self.module
             .define_function(id, &mut context)
             .map_err(to_backend_err)?;

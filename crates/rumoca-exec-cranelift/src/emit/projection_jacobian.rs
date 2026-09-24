@@ -24,6 +24,7 @@ impl CompiledProjectionJacobian {
     pub(crate) fn new(
         jit: Rc<CompiledJacobianRows>,
         application: ProjectionJacobianApplication,
+        shared: &super::SharedProjectionModule,
     ) -> Result<Self, CompileError> {
         let output_count = program_output_capacity(&jit, &application)?;
         let required_y_len = application
@@ -36,7 +37,8 @@ impl CompiledProjectionJacobian {
         let seed_len = required_y_len.max(jit.input_requirements.seed_len);
         let batch = super::projection_batch::ProjectionBatch::compile(
             &application,
-            jit._pure_calls.as_deref(),
+            jit._pure_calls.as_ref(),
+            shared,
         )?;
         let validate = application.colors().iter().any(|color| {
             color.outputs().programs().iter().any(|program| {

@@ -16,7 +16,7 @@ mod tensor;
 #[cfg(test)]
 mod tensor_product_tests;
 
-use super::host_runtime::register_math_symbols;
+use super::host_runtime::{host_jit_builder, register_math_symbols};
 use super::owned_jit_module::{OwnedJitModule, declare_far_call_in_func};
 use super::status;
 use super::{
@@ -26,8 +26,6 @@ use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
     AbiParam, InstBuilder, MemFlags, StackSlotData, StackSlotKind, Type, Value, types,
 };
-use cranelift_codegen::settings;
-use cranelift_codegen::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
@@ -87,6 +85,18 @@ pub(crate) struct CompiledPureCallTable {
     _module: OwnedJitModule,
 }
 
+#[cfg(test)]
+thread_local! {
+    static IMPORT_DECLARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Number of pure-call import declarations made on this thread since the
+/// last call.
+#[cfg(test)]
+pub(super) fn take_import_declarations() -> usize {
+    IMPORT_DECLARATIONS.with(|count| count.replace(0))
+}
+
 impl CompiledPureCallTable {
     pub(crate) fn compile(table: &solve::SolvePureCallTable) -> Result<Self, CompileError> {
         let table_id = NEXT_TABLE_ID.fetch_add(1, Ordering::Relaxed);
@@ -108,6 +118,8 @@ impl CompiledPureCallTable {
         &self,
         module: &mut JITModule,
     ) -> Result<HashMap<solve::SolvePureCallOwnerId, PureCallImport>, CompileError> {
+        #[cfg(test)]
+        IMPORT_DECLARATIONS.with(|count| count.set(count.get() + 1));
         let pointer_type = module.target_config().pointer_type();
         let mut signature = module.make_signature();
         signature.returns.push(AbiParam::new(types::I8));
@@ -230,11 +242,7 @@ struct TableCompiler {
 
 impl TableCompiler {
     fn new(table_id: usize, table: &solve::SolvePureCallTable) -> Result<Self, CompileError> {
-        let mut builder = JITBuilder::with_flags(
-            &[("opt_level", "speed")],
-            cranelift_module::default_libcall_names(),
-        )
-        .map_err(to_backend_err)?;
+        let mut builder = host_jit_builder()?;
         register_math_symbols(&mut builder);
         let mut module = OwnedJitModule::new(JITModule::new(builder));
         let pointer_type = module.target_config().pointer_type();
@@ -389,8 +397,6 @@ impl TableCompiler {
             status::succeed(&mut builder);
             builder.finalize();
         }
-        let flags = settings::Flags::new(settings::builder());
-        verify_function(&context.func, &flags).map_err(to_backend_err)?;
         self.module
             .define_function(function, &mut context)
             .map_err(to_backend_err)?;

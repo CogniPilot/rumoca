@@ -6,6 +6,27 @@ use rumoca_eval_solve::{
 };
 use std::cell::Cell;
 
+use super::{CompileError, to_backend_err};
+
+/// Whether Cranelift's IR verifier runs on every function a JIT module
+/// defines. The verifier checks IR well-formedness and never changes the
+/// emitted code; debug builds (and so the test suite) run it on every
+/// definition, release builds do not.
+const JIT_VERIFIER: &str = if cfg!(debug_assertions) {
+    "true"
+} else {
+    "false"
+};
+
+/// The single JIT configuration for every module this crate emits.
+pub(super) fn host_jit_builder() -> Result<JITBuilder, CompileError> {
+    JITBuilder::with_flags(
+        &[("opt_level", "speed"), ("enable_verifier", JIT_VERIFIER)],
+        cranelift_module::default_libcall_names(),
+    )
+    .map_err(to_backend_err)
+}
+
 pub(super) fn register_math_symbols(builder: &mut JITBuilder) {
     builder.symbol("rumoca_host_sin", rumoca_host_sin as *const u8);
     builder.symbol("rumoca_host_cos", rumoca_host_cos as *const u8);

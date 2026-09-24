@@ -167,6 +167,9 @@ pub struct CompiledJacobianV {
     jit: Rc<emit::CompiledJacobianRows>,
     source: ScalarProgramBlock,
     output_placement: Option<OutputPlacement>,
+    /// One JIT module for every projection application prepared from this
+    /// source.
+    projections: emit::SharedProjectionModule,
 }
 
 pub use emit::projection_jacobian::CompiledProjectionJacobian;
@@ -193,7 +196,7 @@ impl CompiledJacobianV {
                 application.block_index(),
             )?)
         };
-        CompiledProjectionJacobian::new(jit, application.clone())
+        CompiledProjectionJacobian::new(jit, application.clone(), &self.projections)
     }
     /// Execute one existing program once, retaining all local outputs.
     pub fn call_program_outputs(
@@ -417,6 +420,7 @@ pub fn compile_jacobian_scalar_program_block(
         jit: Rc::new(jit),
         source: rows.clone(),
         output_placement: OutputPlacement::for_block(rows),
+        projections: emit::SharedProjectionModule::default(),
     })
 }
 
@@ -467,6 +471,7 @@ pub fn compile_jacobian_scalar_program_block_with_pure_calls(
         jit: Rc::new(jit),
         source: rows.clone(),
         output_placement: OutputPlacement::for_block(rows),
+        projections: emit::SharedProjectionModule::default(),
     })
 }
 
