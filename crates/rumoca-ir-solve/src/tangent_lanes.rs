@@ -25,8 +25,14 @@
 //! body in each; its primal results are seed-independent and read once.
 
 mod operands;
+mod plan;
 mod regions;
 mod replicate;
+
+pub use plan::{
+    ColoredTangentEntry, ColoredTangentPlan, TangentRowSource, TornTangentPlan,
+    TornTangentResidual, TornTangentStep,
+};
 
 use crate::linear_op::ScalarProgramRegisterFlow;
 use crate::{LinearOp, MAX_TENSOR_LANES, ScalarProgramBlock, ScalarProgramRegisterError};
@@ -52,6 +58,8 @@ pub enum TangentLaneError {
         op_index: usize,
         operation: &'static str,
     },
+    #[error("block entry ({row}, {column}) has no row or no column color")]
+    Coloring { row: usize, column: usize },
     #[error("the program's dual aggregates overlap out of lane phase")]
     DualLayout,
     #[error("the lane program's register file overflows")]

@@ -12,6 +12,7 @@ mod input_batches;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod parameter_bindings;
 mod structure_report;
+mod tangent_jacobian;
 #[cfg(feature = "solver-rk45")]
 mod zero_state_batch;
 
