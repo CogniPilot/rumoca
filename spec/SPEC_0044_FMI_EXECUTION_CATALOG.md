@@ -162,11 +162,14 @@ The initial linearization probe is a capability query over the same initialized
 FMI 3 ME component and the same `fmi3GetDirectionalDerivative` semantics used
 by BDF. It is not a finite-difference heuristic. A model may have a finite ODE
 value at a point where its directional derivative is undefined (for example,
-`atan2(0, 0)`). That is not a compiler-semantic failure and does not make an
-explicit integration result less valid; it makes the derivative-dependent BDF
-host ineligible at that point. A directional derivative that becomes
-unavailable after integration starts remains a visible numerical failure under
-ME-AUTO-001.
+`root^3 = x` at `x = 0`, whose algebraic sensitivity matrix is singular). That
+is not a compiler-semantic failure and does not make an explicit integration
+result less valid; it makes the derivative-dependent BDF host ineligible at
+that point. A local partial that does not exist inside one operation (`atan2`
+at the origin, `sqrt` at zero) is not such a point: every derivative site
+applies the kink rules of `rumoca_eval_solve::reverse` and contributes a finite
+value there. A directional derivative that becomes unavailable after
+integration starts remains a visible numerical failure under ME-AUTO-001.
 
 ### 6. Common ME Host And Integrator Contract
 

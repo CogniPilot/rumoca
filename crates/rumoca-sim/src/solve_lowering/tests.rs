@@ -159,6 +159,9 @@ fn checked_transcendental_builtins_execute_end_to_end() {
     );
 }
 
+/// `root^3 = x` at `x = 0` has a finite value but an infinite sensitivity
+/// `d(root)/dx = 1 / (3 root^2)`: its algebraic sensitivity matrix is singular
+/// (SPEC_0044 ME-AUTO-002).
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 #[test]
 fn auto_selects_explicit_host_for_undefined_initial_directional_derivative() {
@@ -166,10 +169,10 @@ fn auto_selects_explicit_host_for_undefined_initial_directional_derivative() {
         concat!(
             "model UndefinedInitialLinearization\n",
             "  Real x(start=0, fixed=true);\n",
-            "  output Real angle;\n",
+            "  output Real root;\n",
             "equation\n",
-            "  angle = atan2(x, x);\n",
-            "  der(x) = angle;\n",
+            "  root^3 = x;\n",
+            "  der(x) = root;\n",
             "end UndefinedInitialLinearization;\n",
         ),
         "UndefinedInitialLinearization",

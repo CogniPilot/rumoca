@@ -1,5 +1,10 @@
 //! AD lowering from primal linear ops to forward-mode J·v ops.
 //!
+//! Where an operation is not differentiable, the emitted tangent follows the
+//! kink rules stated once in `rumoca_eval_solve::reverse`, so a forward product
+//! certifies a matrix assembled from reverse rows; `kink_rule_tests` pins the
+//! two together with the typed directional owners.
+//!
 //! SPEC_0021 file-size exception: AD lowering still keeps scalar row AD,
 //! tensor-node JVP lowering, and regression tests together while Solve IR
 //! multi-output programs are being stabilized. split plan: move tensor-node JVP
@@ -8,6 +13,8 @@
 #[cfg(test)]
 mod inactive_tangent_tests;
 mod inactive_tangents;
+#[cfg(test)]
+mod kink_rule_tests;
 mod seed_domain;
 #[cfg(test)]
 mod seed_domain_tests;
@@ -724,7 +731,7 @@ struct AdBuilder<'a> {
     cached_zero: Option<Reg>,
     cached_one: Option<Reg>,
     cached_ln10: Option<Reg>,
-    cached_two: Option<Reg>,
+    cached_half: Option<Reg>,
     seed_mode: SeedMode<'a>,
     span: Option<rumoca_core::Span>,
     store_output_mode: StoreOutputMode,
@@ -743,7 +750,7 @@ impl Default for AdBuilder<'_> {
             cached_zero: None,
             cached_one: None,
             cached_ln10: None,
-            cached_two: None,
+            cached_half: None,
             seed_mode: SeedMode::default(),
             span: None,
             store_output_mode: StoreOutputMode::Derivative,
@@ -3019,15 +3026,13 @@ impl<'a> AdBuilder<'a> {
         let x_sq = self.emit_binary(BinaryOp::Mul, x.re, x.re)?;
         let denom_sq = self.emit_binary(BinaryOp::Sub, one, x_sq)?;
         let denom = self.emit_unary(UnaryOp::Sqrt, denom_sq)?;
-        let safe = self.emit_binary(BinaryOp::Div, x.du, denom)?;
-        let signed = if is_acos {
-            self.emit_unary(UnaryOp::Neg, safe)?
+        let reciprocal = self.emit_binary(BinaryOp::Div, one, denom)?;
+        let partial = if is_acos {
+            self.emit_unary(UnaryOp::Neg, reciprocal)?
         } else {
-            safe
+            reciprocal
         };
-        let zero = self.zero_reg()?;
-        let du_zero = self.emit_compare(CompareOp::Eq, x.du, zero)?;
-        let du = self.emit_select(du_zero, zero, signed)?;
+        let du = self.scale_by_finite_partial(x.du, partial)?;
         Ok(DualReg { re, du })
     }
 
@@ -3038,28 +3043,39 @@ impl<'a> AdBuilder<'a> {
             UnaryOp::Log
         };
         let re = self.emit_unary(op, x.re)?;
-        let zero = self.zero_reg()?;
-        let nonzero = self.emit_compare(CompareOp::Ne, x.re, zero)?;
         let denom = if is_log10 {
             let ln10 = self.ln10_reg()?;
             self.emit_binary(BinaryOp::Mul, x.re, ln10)?
         } else {
             x.re
         };
-        let safe = self.emit_binary(BinaryOp::Div, x.du, denom)?;
-        let du = self.emit_select(nonzero, safe, zero)?;
+        let one = self.one_reg()?;
+        let partial = self.emit_binary(BinaryOp::Div, one, denom)?;
+        let du = self.scale_by_finite_partial(x.du, partial)?;
         Ok(DualReg { re, du })
     }
 
     fn lower_sqrt(&mut self, x: DualReg) -> Result<DualReg, LowerError> {
         let re = self.emit_unary(UnaryOp::Sqrt, x.re)?;
-        let zero = self.zero_reg()?;
-        let nonzero = self.emit_compare(CompareOp::Ne, x.re, zero)?;
-        let two = self.two_reg()?;
-        let denom = self.emit_binary(BinaryOp::Mul, two, re)?;
-        let safe = self.emit_binary(BinaryOp::Div, x.du, denom)?;
-        let du = self.emit_select(nonzero, safe, zero)?;
+        let half = self.half_reg()?;
+        let partial = self.emit_binary(BinaryOp::Div, half, re)?;
+        let du = self.scale_by_finite_partial(x.du, partial)?;
         Ok(DualReg { re, du })
+    }
+
+    /// `tangent · partial` when the local partial is finite, and zero where it
+    /// does not exist (the `rumoca_eval_solve::reverse` kink rules). `p - p` is
+    /// `0` exactly for every finite `p` and NaN for an infinite or NaN one.
+    fn scale_by_finite_partial(&mut self, tangent: Reg, partial: Reg) -> Result<Reg, LowerError> {
+        let guarded = self.finite_or_zero(partial)?;
+        self.emit_binary(BinaryOp::Mul, tangent, guarded)
+    }
+
+    fn finite_or_zero(&mut self, value: Reg) -> Result<Reg, LowerError> {
+        let zero = self.zero_reg()?;
+        let difference = self.emit_binary(BinaryOp::Sub, value, value)?;
+        let finite = self.emit_compare(CompareOp::Eq, difference, zero)?;
+        self.emit_select(finite, value, zero)
     }
 
     fn binary_dual(
@@ -3135,30 +3151,36 @@ impl<'a> AdBuilder<'a> {
         Ok(DualReg { re, du })
     }
 
+    /// The `pow` kink rule of `rumoca_eval_solve::reverse`: the base partial
+    /// `r·l^(r-1)` when finite, the exponent partial `l^r·ln(l)` only for
+    /// `l > 0` and when finite. Each partial depends on the primal operands
+    /// alone, so a seeded exponent never changes the base term.
     fn lower_pow_du(&mut self, lhs: DualReg, rhs: DualReg, re: Reg) -> Result<Reg, LowerError> {
-        let zero = self.zero_reg()?;
-        let one = self.one_reg()?;
-        let rhs_du_zero = self.emit_compare(CompareOp::Eq, rhs.du, zero)?;
-
-        let lhs_re_zero = self.emit_compare(CompareOp::Eq, lhs.re, zero)?;
-        let rhs_re_one = self.emit_compare(CompareOp::Eq, rhs.re, one)?;
-        let rhs_minus_one = self.emit_binary(BinaryOp::Sub, rhs.re, one)?;
-        let x_pow_n_minus_1 = self.emit_binary(BinaryOp::Pow, lhs.re, rhs_minus_one)?;
-        let n_times = self.emit_binary(BinaryOp::Mul, rhs.re, x_pow_n_minus_1)?;
-        let const_exp_safe = self.emit_binary(BinaryOp::Mul, n_times, lhs.du)?;
-        let lhs_zero_branch = self.emit_select(rhs_re_one, lhs.du, zero)?;
-        let const_exp_du = self.emit_select(lhs_re_zero, lhs_zero_branch, const_exp_safe)?;
-
-        let lhs_positive = self.emit_compare(CompareOp::Gt, lhs.re, zero)?;
-        let ln_x = self.emit_unary(UnaryOp::Log, lhs.re)?;
-        let term1 = self.emit_binary(BinaryOp::Mul, rhs.du, ln_x)?;
-        let xprime_over_x = self.emit_binary(BinaryOp::Div, lhs.du, lhs.re)?;
-        let term2 = self.emit_binary(BinaryOp::Mul, rhs.re, xprime_over_x)?;
-        let sum = self.emit_binary(BinaryOp::Add, term1, term2)?;
-        let var_exp_safe = self.emit_binary(BinaryOp::Mul, re, sum)?;
-        let var_exp_du = self.emit_select(lhs_positive, var_exp_safe, zero)?;
-
-        self.emit_select(rhs_du_zero, const_exp_du, var_exp_du)
+        let base_term = if self.tangent_is_zero(lhs) {
+            None
+        } else {
+            let one = self.one_reg()?;
+            let rhs_minus_one = self.emit_binary(BinaryOp::Sub, rhs.re, one)?;
+            let x_pow_n_minus_1 = self.emit_binary(BinaryOp::Pow, lhs.re, rhs_minus_one)?;
+            let partial = self.emit_binary(BinaryOp::Mul, rhs.re, x_pow_n_minus_1)?;
+            Some(self.scale_by_finite_partial(lhs.du, partial)?)
+        };
+        let exponent_term = if self.tangent_is_zero(rhs) {
+            None
+        } else {
+            let zero = self.zero_reg()?;
+            let ln_x = self.emit_unary(UnaryOp::Log, lhs.re)?;
+            let partial = self.emit_binary(BinaryOp::Mul, re, ln_x)?;
+            let finite = self.finite_or_zero(partial)?;
+            let lhs_positive = self.emit_compare(CompareOp::Gt, lhs.re, zero)?;
+            let guarded = self.emit_select(lhs_positive, finite, zero)?;
+            Some(self.emit_binary(BinaryOp::Mul, rhs.du, guarded)?)
+        };
+        match (base_term, exponent_term) {
+            (Some(base), Some(exponent)) => self.emit_binary(BinaryOp::Add, base, exponent),
+            (Some(term), None) | (None, Some(term)) => Ok(term),
+            (None, None) => self.zero_reg(),
+        }
     }
 
     fn binary_bool(
@@ -3180,7 +3202,12 @@ impl<'a> AdBuilder<'a> {
         let lhs_sq = self.emit_binary(BinaryOp::Mul, lhs.re, lhs.re)?;
         let rhs_sq = self.emit_binary(BinaryOp::Mul, rhs.re, rhs.re)?;
         let denom = self.emit_binary(BinaryOp::Add, lhs_sq, rhs_sq)?;
-        let du = self.emit_binary(BinaryOp::Div, numer, denom)?;
+        let safe_du = self.emit_binary(BinaryOp::Div, numer, denom)?;
+        // No partial exists where `l² + r² = 0` (the `rumoca_eval_solve::reverse`
+        // kink rules), including the origin, where `safe_du` is `0 / 0`.
+        let zero = self.zero_reg()?;
+        let denom_zero = self.emit_compare(CompareOp::Eq, denom, zero)?;
+        let du = self.emit_select(denom_zero, zero, safe_du)?;
         Ok(DualReg { re, du })
     }
 
@@ -3452,12 +3479,12 @@ impl<'a> AdBuilder<'a> {
         Ok(reg)
     }
 
-    fn two_reg(&mut self) -> Result<Reg, LowerError> {
-        if let Some(reg) = self.cached_two {
+    fn half_reg(&mut self) -> Result<Reg, LowerError> {
+        if let Some(reg) = self.cached_half {
             return Ok(reg);
         }
-        let reg = self.emit_const(2.0)?;
-        self.cached_two = Some(reg);
+        let reg = self.emit_const(0.5)?;
+        self.cached_half = Some(reg);
         Ok(reg)
     }
 }

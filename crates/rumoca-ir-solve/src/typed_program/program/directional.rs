@@ -3,6 +3,12 @@
 //! The transform duplicates differentiable aggregate values, never their
 //! coordinates. Structured regions and tensor operations remain structured;
 //! an unsupported vocabulary item rejects the directional owner as a whole.
+//!
+//! Where an operation is not differentiable, the tangent follows the kink rules
+//! stated once in `rumoca_eval_solve::reverse` (a partial that does not exist
+//! contributes zero, never a non-finite value), so these owners agree with the
+//! forward dual lowering and reverse rows; `rumoca_phase_solve`'s
+//! `kink_rule_tests` pins the three together.
 
 mod linear_solve;
 mod mapped;
@@ -805,23 +811,19 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 let denominator =
                     self.builder
                         .unary(SolveUnaryOperator::Sqrt, denominator, provenance)?;
-                let derivative = self.builder.binary(
+                let reciprocal = self.builder.binary(
                     SolveBinaryOperator::Divide,
-                    tangent,
+                    one,
                     denominator,
                     provenance,
                 )?;
-                let signed = if operator == SolveUnaryOperator::Acos {
+                let partial = if operator == SolveUnaryOperator::Acos {
                     self.builder
-                        .unary(SolveUnaryOperator::Negate, derivative, provenance)?
+                        .unary(SolveUnaryOperator::Negate, reciprocal, provenance)?
                 } else {
-                    derivative
+                    reciprocal
                 };
-                let tangent_is_zero =
-                    self.builder
-                        .compare(SolveCompareOperator::Equal, tangent, zero, provenance)?;
-                self.builder
-                    .select(tangent_is_zero, zero, signed, provenance)?
+                self.scale_by_finite_partial(tangent, partial, zero, provenance)?
             }
             SolveUnaryOperator::Atan => {
                 let one = self.constant_like(value_type, 1.0, provenance)?;
@@ -887,38 +889,21 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 } else {
                     operand.primal
                 };
-                let derivative = self.builder.binary(
+                let one = self.constant_like(value_type, 1.0, provenance)?;
+                let partial = self.builder.binary(
                     SolveBinaryOperator::Divide,
-                    tangent,
+                    one,
                     denominator,
                     provenance,
                 )?;
-                let nonzero = self.builder.compare(
-                    SolveCompareOperator::NotEqual,
-                    operand.primal,
-                    zero,
-                    provenance,
-                )?;
-                self.builder.select(nonzero, derivative, zero, provenance)?
+                self.scale_by_finite_partial(tangent, partial, zero, provenance)?
             }
             SolveUnaryOperator::Sqrt => {
-                let two = self.constant_like(value_type, 2.0, provenance)?;
-                let denominator =
+                let half = self.constant_like(value_type, 0.5, provenance)?;
+                let partial =
                     self.builder
-                        .binary(SolveBinaryOperator::Multiply, two, primal, provenance)?;
-                let derivative = self.builder.binary(
-                    SolveBinaryOperator::Divide,
-                    tangent,
-                    denominator,
-                    provenance,
-                )?;
-                let nonzero = self.builder.compare(
-                    SolveCompareOperator::NotEqual,
-                    operand.primal,
-                    zero,
-                    provenance,
-                )?;
-                self.builder.select(nonzero, derivative, zero, provenance)?
+                        .binary(SolveBinaryOperator::Divide, half, primal, provenance)?;
+                self.scale_by_finite_partial(tangent, partial, zero, provenance)?
             }
         };
         Ok(Directional {
@@ -1031,101 +1016,14 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 self.builder
                     .select(denominator_is_zero, zero, derivative, provenance)?
             }
-            SolveBinaryOperator::Power => {
-                let rhs_constant = self.builder.compare(
-                    SolveCompareOperator::Equal,
-                    rhs_tangent,
-                    zero,
-                    provenance,
-                )?;
-                let one = self.constant_like(value_type, 1.0, provenance)?;
-                let exponent = self.builder.binary(
-                    SolveBinaryOperator::Subtract,
-                    rhs.primal,
-                    one,
-                    provenance,
-                )?;
-                let power = self.builder.binary(
-                    SolveBinaryOperator::Power,
-                    lhs.primal,
-                    exponent,
-                    provenance,
-                )?;
-                let constant = self.builder.binary(
-                    SolveBinaryOperator::Multiply,
-                    rhs.primal,
-                    power,
-                    provenance,
-                )?;
-                let constant_safe = self.builder.binary(
-                    SolveBinaryOperator::Multiply,
-                    constant,
-                    lhs_tangent,
-                    provenance,
-                )?;
-                let lhs_is_zero = self.builder.compare(
-                    SolveCompareOperator::Equal,
-                    lhs.primal,
-                    zero,
-                    provenance,
-                )?;
-                let rhs_is_one = self.builder.compare(
-                    SolveCompareOperator::Equal,
-                    rhs.primal,
-                    one,
-                    provenance,
-                )?;
-                let lhs_zero_derivative =
-                    self.builder
-                        .select(rhs_is_one, lhs_tangent, zero, provenance)?;
-                let constant = self.builder.select(
-                    lhs_is_zero,
-                    lhs_zero_derivative,
-                    constant_safe,
-                    provenance,
-                )?;
-                let log = self
-                    .builder
-                    .unary(SolveUnaryOperator::Log, lhs.primal, provenance)?;
-                let first = self.builder.binary(
-                    SolveBinaryOperator::Multiply,
-                    rhs_tangent,
-                    log,
-                    provenance,
-                )?;
-                let ratio = self.builder.binary(
-                    SolveBinaryOperator::Divide,
-                    lhs_tangent,
-                    lhs.primal,
-                    provenance,
-                )?;
-                let second = self.builder.binary(
-                    SolveBinaryOperator::Multiply,
-                    rhs.primal,
-                    ratio,
-                    provenance,
-                )?;
-                let variable =
-                    self.builder
-                        .binary(SolveBinaryOperator::Add, first, second, provenance)?;
-                let variable_safe = self.builder.binary(
-                    SolveBinaryOperator::Multiply,
-                    primal,
-                    variable,
-                    provenance,
-                )?;
-                let lhs_positive = self.builder.compare(
-                    SolveCompareOperator::Greater,
-                    lhs.primal,
-                    zero,
-                    provenance,
-                )?;
-                let variable =
-                    self.builder
-                        .select(lhs_positive, variable_safe, zero, provenance)?;
-                self.builder
-                    .select(rhs_constant, constant, variable, provenance)?
-            }
+            SolveBinaryOperator::Power => self.derive_power(
+                lhs,
+                rhs,
+                primal,
+                [lhs_tangent, rhs_tangent],
+                (value_type, zero),
+                provenance,
+            )?,
             SolveBinaryOperator::Atan2 => {
                 let first = self.builder.binary(
                     SolveBinaryOperator::Multiply,
@@ -1163,12 +1061,21 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                     rhs_square,
                     provenance,
                 )?;
-                self.builder.binary(
+                let derivative = self.builder.binary(
                     SolveBinaryOperator::Divide,
                     numerator,
                     denominator,
                     provenance,
-                )?
+                )?;
+                // No partial exists where `l² + r² = 0`, including the origin.
+                let denominator_is_zero = self.builder.compare(
+                    SolveCompareOperator::Equal,
+                    denominator,
+                    zero,
+                    provenance,
+                )?;
+                self.builder
+                    .select(denominator_is_zero, zero, derivative, provenance)?
             }
             SolveBinaryOperator::Min | SolveBinaryOperator::Max => {
                 let comparison = if operator == SolveBinaryOperator::Max {
@@ -1190,6 +1097,111 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             primal,
             tangent: Some(tangent),
         })
+    }
+
+    /// The `pow` kink rule of `rumoca_eval_solve::reverse`: the base partial
+    /// `r·l^(r-1)` when finite, the exponent partial `l^r·ln(l)` only for
+    /// `l > 0` and when finite, each a function of the primal operands alone.
+    fn derive_power(
+        &mut self,
+        lhs: Directional<ProgramRegister<'program>>,
+        rhs: Directional<ProgramRegister<'program>>,
+        primal: ProgramRegister<'program>,
+        [lhs_tangent, rhs_tangent]: [ProgramRegister<'program>; 2],
+        (value_type, zero): (&SolveValueType, ProgramRegister<'program>),
+        provenance: Span,
+    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+        let base = match lhs.tangent {
+            None => None,
+            Some(_) => {
+                let one = self.constant_like(value_type, 1.0, provenance)?;
+                let exponent = self.builder.binary(
+                    SolveBinaryOperator::Subtract,
+                    rhs.primal,
+                    one,
+                    provenance,
+                )?;
+                let power = self.builder.binary(
+                    SolveBinaryOperator::Power,
+                    lhs.primal,
+                    exponent,
+                    provenance,
+                )?;
+                let partial = self.builder.binary(
+                    SolveBinaryOperator::Multiply,
+                    rhs.primal,
+                    power,
+                    provenance,
+                )?;
+                Some(self.scale_by_finite_partial(lhs_tangent, partial, zero, provenance)?)
+            }
+        };
+        let exponent = match rhs.tangent {
+            None => None,
+            Some(_) => {
+                let log = self
+                    .builder
+                    .unary(SolveUnaryOperator::Log, lhs.primal, provenance)?;
+                let partial =
+                    self.builder
+                        .binary(SolveBinaryOperator::Multiply, primal, log, provenance)?;
+                let finite = self.finite_or_zero(partial, zero, provenance)?;
+                let lhs_positive = self.builder.compare(
+                    SolveCompareOperator::Greater,
+                    lhs.primal,
+                    zero,
+                    provenance,
+                )?;
+                let partial = self
+                    .builder
+                    .select(lhs_positive, finite, zero, provenance)?;
+                Some(self.builder.binary(
+                    SolveBinaryOperator::Multiply,
+                    rhs_tangent,
+                    partial,
+                    provenance,
+                )?)
+            }
+        };
+        match (base, exponent) {
+            (Some(base), Some(exponent)) => {
+                self.builder
+                    .binary(SolveBinaryOperator::Add, base, exponent, provenance)
+            }
+            (Some(term), None) | (None, Some(term)) => Ok(term),
+            (None, None) => Ok(zero),
+        }
+    }
+
+    /// `tangent · partial` when the local partial is finite, and zero where it
+    /// does not exist (the `rumoca_eval_solve::reverse` kink rules).
+    fn scale_by_finite_partial(
+        &mut self,
+        tangent: ProgramRegister<'program>,
+        partial: ProgramRegister<'program>,
+        zero: ProgramRegister<'program>,
+        provenance: Span,
+    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+        let partial = self.finite_or_zero(partial, zero, provenance)?;
+        self.builder
+            .binary(SolveBinaryOperator::Multiply, tangent, partial, provenance)
+    }
+
+    /// `value` when finite, else zero: `value - value` is `0` exactly for every
+    /// finite value and NaN for an infinite or NaN one.
+    fn finite_or_zero(
+        &mut self,
+        value: ProgramRegister<'program>,
+        zero: ProgramRegister<'program>,
+        provenance: Span,
+    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+        let difference =
+            self.builder
+                .binary(SolveBinaryOperator::Subtract, value, value, provenance)?;
+        let finite =
+            self.builder
+                .compare(SolveCompareOperator::Equal, difference, zero, provenance)?;
+        self.builder.select(finite, value, zero, provenance)
     }
 
     fn expanded_registers(

@@ -17,6 +17,46 @@
 //! The reverse-sweep types are `pub` only so that
 //! `rumoca_solver::runtime::solve_runtime` (the runtime state machine that owns
 //! the scratch buffers) can drive them; they are not a general-purpose API.
+//!
+//! # Kink rules
+//!
+//! Four sites differentiate the same operations: these reverse rows, the
+//! forward dual lowering (`rumoca_phase_solve::ad`), the typed directional
+//! owner of a pure call (`rumoca_ir_solve` `typed_program::program::directional`),
+//! and the generated C kernel, which renders the forward and directional
+//! programs (as the native backend compiles them). The projection solver
+//! assembles a block matrix from reverse rows
+//! and certifies it with forward Jacobian-vector products, so the sites must
+//! agree wherever an operation is not differentiable. This table is the one
+//! statement of those rules; the forward and directional sites implement them
+//! in emitted operations and cite it.
+//!
+//! A partial that does not exist at the primal point (a vertical tangent, a
+//! pole, a point outside the real domain, or an overflow) contributes zero at
+//! every site, never a non-finite value: a NaN or infinite tangent would poison
+//! the certification of every coordinate it reaches. Each rule is a function of
+//! the primal operands alone, never of which operands carry a tangent, so
+//! forward products stay linear in the direction.
+//!
+//! | Operation | Local partials, and the rule where they do not exist |
+//! |---|---|
+//! | `abs(x)` | `+1` when `x >= 0`, including `-0.0`; `-1` otherwise |
+//! | `sign`, `floor`, `ceil`, `trunc`, `not`, `and`, `or`, comparisons | `0` everywhere, including at jumps; `integer`, `div`, `mod`, and `rem` lower through these |
+//! | `min(l, r)` / `max(l, r)` | the operand the comparison `l <= r` / `l >= r` selects; ties select `l`, and a NaN operand selects `r` |
+//! | `if` / `noEvent` / `smooth` | the branch the primal condition selects |
+//! | `sqrt(x)` | `0.5 / sqrt(x)` for `x > 0`; `0` otherwise |
+//! | `asin(x)` / `acos(x)` | `±1 / sqrt(1 - x²)` for `1 - x² > 0`; `0` otherwise |
+//! | `log(x)` / `log10(x)` | `1 / x` / `1 / (x ln 10)` when finite; `0` at `x = 0` and where the reciprocal overflows |
+//! | `tan(x)` | `1 / cos²(x)`; no finite double has `cos(x) = 0`, so the zero rule is never reached |
+//! | `tanh(x)` | `1 / cosh²(x)`, which reaches `0` when `cosh` overflows |
+//! | `l / r` | `(1 / r, -l / r²)`; `(0, 0)` at `r = 0` |
+//! | `atan2(l, r)` | `(r, -l) / (l² + r²)`; `(0, 0)` where `l² + r² = 0`, including the origin |
+//! | `pow(l, r)` | `∂l = r·l^(r-1)` when finite, else `0` (so `l < 0` with a non-integer `r` gives `0`, and `l = 0` gives `1` at `r = 1` and `0` otherwise); `∂r = l^r·ln(l)` when `l > 0` and finite, else `0` |
+//!
+//! `rumoca_phase_solve`'s `kink_rule_tests` pin the reverse, forward, and typed
+//! directional sites together at every row of this table, and the
+//! `derivative_kinks` harness of `suite_template_runtime` pins the generated C
+//! kernel's block Jacobians at the same kinks.
 
 use rumoca_ir_solve::{BinaryOp, LinearOp, Reg, ScalarProgramBlock, UnaryOp};
 
@@ -478,9 +518,11 @@ fn unary_derivative(op: UnaryOp, x: f64) -> f64 {
         UnaryOp::Atan => 1.0 / (1.0 + x * x),
         UnaryOp::Sinh => x.cosh(),
         UnaryOp::Cosh => x.sinh(),
+        // The forward rules divide by `cosh²`; `1 - tanh²` would round to
+        // zero long before `cosh` overflows.
         UnaryOp::Tanh => {
-            let th = x.tanh();
-            1.0 - th * th
+            let c = x.cosh();
+            1.0 / (c * c)
         }
         UnaryOp::Exp => x.exp(),
         UnaryOp::Log => guarded(1.0 / x),
