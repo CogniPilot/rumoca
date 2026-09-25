@@ -116,7 +116,16 @@ impl PreparedScalarProgramBlock {
             .iter()
             .map(|&row| self.row_output_position(row))
             .collect();
-        let (runs, chains) = self.prepare_torn_chains(causal_steps).unwrap_or_default();
+        // Without chain runs the sweep declines grouping and evaluates every
+        // step on its own.
+        let Some((runs, chains)) = self.prepare_torn_chains(causal_steps) else {
+            return Some(PreparedTornSweep {
+                steps,
+                runs: Vec::new(),
+                chains: None,
+                residuals,
+            });
+        };
         Some(PreparedTornSweep {
             steps,
             runs,

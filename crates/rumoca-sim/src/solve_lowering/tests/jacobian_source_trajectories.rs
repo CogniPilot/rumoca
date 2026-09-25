@@ -118,11 +118,24 @@ fn fixture_trajectories_under_each_jacobian_source() {
 /// End time of the MSL runs, long enough to cross many refreshes of every block.
 const MSL_END: f64 = 0.5;
 
-const MSL_MODELS: [&str; 4] = [
-    "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1",
-    "Modelica.Mechanics.MultiBody.Examples.Constraints.RevoluteConstraint",
-    "Modelica.Mechanics.MultiBody.Examples.Elementary.LineForceWithTwoMasses",
-    "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheel",
+/// (label, qualified model name) of each MSL model.
+const MSL_MODELS: [(&str, &str); 4] = [
+    (
+        "Fourbar1",
+        "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1",
+    ),
+    (
+        "RevoluteConstraint",
+        "Modelica.Mechanics.MultiBody.Examples.Constraints.RevoluteConstraint",
+    ),
+    (
+        "LineForceWithTwoMasses",
+        "Modelica.Mechanics.MultiBody.Examples.Elementary.LineForceWithTwoMasses",
+    ),
+    (
+        "RollingWheel",
+        "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheel",
+    ),
 ];
 
 /// The models whose colored applications refuse to widen keep the exact
@@ -134,8 +147,7 @@ fn msl_trajectories_under_each_jacobian_source() {
         return;
     };
     let mut refused_blocks = 0;
-    for name in MSL_MODELS {
-        let short = name.rsplit('.').next().unwrap_or(name);
+    for (short, name) in MSL_MODELS {
         let wrapper = format!("JacobianSources{short}");
         let source = format!("model {wrapper}\n  extends {name};\nend {wrapper};\n");
         let dae = compile_with_roots(&source, &wrapper, std::slice::from_ref(&root));
