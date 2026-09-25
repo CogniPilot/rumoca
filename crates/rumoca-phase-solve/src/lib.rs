@@ -64,6 +64,17 @@ pub fn lower_solve_package(dae: &dae::Dae) -> Result<LoweredSolvePackage, LowerE
     lower_selection(&selection, &std::collections::HashMap::new())
 }
 
+/// Whether Solve lowering executes a reduced state selection instead of the
+/// constrained state manifold that `prepared` retains. `model` is the DAE
+/// `prepared` was prepared from (the alias quotient when there is one), so this
+/// answers the same decision [`lower_solve_package`] takes for it.
+pub fn executes_reduced_state_selection(
+    model: &dae::Dae,
+    prepared: &rumoca_phase_structural::PreparedDae<'_>,
+) -> Result<bool, rumoca_phase_structural::StructuralError> {
+    state_selection::executes_reduced_selection(model, prepared)
+}
+
 /// Lower the primary basis and attach each alternate reduced chart's executable
 /// plan, re-lowered from its own prepared DAE. The primary problem is unchanged;
 /// a model with no alternate charts lowers exactly as before.

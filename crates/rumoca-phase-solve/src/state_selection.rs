@@ -144,21 +144,9 @@ fn reduce_or_retain<'source>(
     prepared: PreparedDae<'source>,
     overrides: &HashMap<String, f64>,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
-    let constrained = prepared.inspect(|system| !system.manifold.is_empty());
-    if !constrained {
+    let Some(formal) = formal_below_retained_dimension(model, &prepared)? else {
         return Ok(PreparedSelection::retained(prepared));
-    }
-    let formal = construct_formal_derivatives(model)?;
-    let dimension = formal.inspect(|formal| formal.formal_dimension());
-    let retained = prepared.as_dae().inspect(|view| {
-        view.variables()
-            .filter(|(_, v)| v.role() == dae::VariableRole::State)
-            .map(|(_, v)| v.scalar_count())
-            .sum::<usize>()
-    });
-    if dimension >= retained {
-        return Ok(PreparedSelection::retained(prepared));
-    }
+    };
     // Construct the reduced candidate first so an infeasible request (an
     // over-constrained `StateSelect.always`, a singular stage Jacobian) still
     // surfaces its exact typed failure rather than being masked by retention.
@@ -180,6 +168,41 @@ fn reduce_or_retain<'source>(
         alternates,
         formal_aliases,
     })
+}
+
+/// Whether Solve lowering replaces the constrained state manifold `prepared`
+/// retains with a reduced state selection built from the formal derivatives of
+/// `model`: exactly when [`reduce_or_retain`] reduces, which is when the manifold
+/// is nonempty, the formal dimension is below the retained state count, and some
+/// manifold constraint is a redundant loop closure. `model` is the system
+/// `prepared` was prepared from.
+pub(crate) fn executes_reduced_selection(
+    model: &dae::Dae,
+    prepared: &PreparedDae<'_>,
+) -> Result<bool, StructuralError> {
+    Ok(prepared.manifold_requires_reduction()
+        && formal_below_retained_dimension(model, prepared)?.is_some())
+}
+
+/// The formal derivatives of `model` when `prepared` retains a constrained
+/// state manifold and the formal dimension is below the retained state count,
+/// the precondition for a reduced selection; `None` retains `prepared`.
+fn formal_below_retained_dimension<'model>(
+    model: &'model dae::Dae,
+    prepared: &PreparedDae<'_>,
+) -> Result<Option<FormalDerivativeSystem<'model>>, StructuralError> {
+    if prepared.inspect(|system| system.manifold.is_empty()) {
+        return Ok(None);
+    }
+    let formal = construct_formal_derivatives(model)?;
+    let dimension = formal.inspect(|formal| formal.formal_dimension());
+    let retained = prepared.as_dae().inspect(|view| {
+        view.variables()
+            .filter(|(_, v)| v.role() == dae::VariableRole::State)
+            .map(|(_, v)| v.scalar_count())
+            .sum::<usize>()
+    });
+    Ok((dimension < retained).then_some(formal))
 }
 
 /// Attempt the formal-derivative reduction for a system the ordinary reducer

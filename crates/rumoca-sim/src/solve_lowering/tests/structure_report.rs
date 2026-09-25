@@ -58,6 +58,54 @@ fn index_three_inspection_agrees_with_simulation_preparation() {
     }
 }
 
+/// The reduced-selection note appears exactly when Solve lowering replaces the
+/// retained manifold: the pendulum's loop closure reduces, while a conserved
+/// unit-norm invariant keeps its source coordinates even though the reducer
+/// retains a manifold for it.
+#[test]
+fn structural_inspection_notes_a_reduced_selection_only_when_lowering_takes_it() {
+    let reduced_note = |report: &rumoca_phase_structural::StructuralReport| {
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("reduced state selection"))
+    };
+    let options = SimOptions::default();
+    let pendulum = compile(PENDULUM, "Pend");
+    let report = match structural_report_for_dae(&pendulum, &options) {
+        Ok(report) => report,
+        Err(error) => panic!("the pendulum inspects: {error}"),
+    };
+    assert!(reduced_note(&report), "the pendulum reduces: {report:?}");
+
+    let rotation = compile(UNIT_ROTATION, "UnitRotation");
+    let retained = match rumoca_phase_structural::prepare_for_solve(&rotation) {
+        Ok(prepared) => prepared.inspect(|system| !system.manifold.is_empty()),
+        Err(error) => panic!("the rotation prepares: {error}"),
+    };
+    assert!(retained, "the reducer retains the unit-norm manifold");
+    let report = match structural_report_for_dae(&rotation, &options) {
+        Ok(report) => report,
+        Err(error) => panic!("the rotation inspects: {error}"),
+    };
+    assert!(
+        !reduced_note(&report),
+        "a conserved invariant is not reduced: {report:?}"
+    );
+}
+
+const UNIT_ROTATION: &str = r#"
+model UnitRotation
+  Real c(start = 1);
+  Real s(start = 0);
+  Real w;
+equation
+  w = 1 + time;
+  w = c*der(s) - s*der(c);
+  c*c + s*s = 1;
+end UnitRotation;
+"#;
+
 #[test]
 fn structural_inspection_retains_a_fixed_initial_value() {
     let source = PENDULUM.replace("start=1", "start=1, fixed=true");

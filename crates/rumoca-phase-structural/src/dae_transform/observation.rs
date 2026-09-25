@@ -409,8 +409,9 @@ impl From<StoppedOutcome<'_>> for ReductionStop {
     }
 }
 
-/// One recorded fact from a traced [`crate::inspect_prepare_for_solve`] call,
-/// the owned twin of `ReductionEvent`.
+/// One recorded fact from a traced [`crate::inspect_prepare_for_solve`] or
+/// [`crate::inspect_quotient_aliases`] call, the owned twin of
+/// `ReductionEvent`.
 #[derive(Clone, Debug)]
 pub enum ReductionRecord {
     Round {
@@ -451,8 +452,9 @@ pub enum ReductionRecord {
     },
 }
 
-/// The owned report [`crate::inspect_prepare_for_solve`] returns: every event
-/// the traced call actually observed, in the order it observed them.
+/// The owned report [`crate::inspect_prepare_for_solve`] and
+/// [`crate::inspect_quotient_aliases`] return: every event the traced call
+/// actually observed, in the order it observed them.
 #[derive(Debug, Default)]
 pub struct ReductionReport {
     pub records: Vec<ReductionRecord>,
