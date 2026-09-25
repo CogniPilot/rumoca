@@ -206,8 +206,6 @@ fn point<'a>(rows: &'a Rows<'a>, y: &'a [f64]) -> TangentPoint<'a> {
         p: &rows.model.parameters,
         t: 0.0,
         context: rows.context(),
-        primal: Some(&rows.primal),
-        fd_step: 1e-7,
     }
 }
 

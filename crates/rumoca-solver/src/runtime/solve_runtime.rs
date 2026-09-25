@@ -1142,8 +1142,6 @@ impl SolveRuntime {
                 p,
                 t,
                 context: self.row_eval_context(),
-                primal: Some(&self.implicit_scalar_rhs),
-                fd_step: rumoca_eval_solve::projection_policy::FINITE_DIFFERENCE_RELATIVE_STEP,
             })
             .map_err(Into::into)
     }

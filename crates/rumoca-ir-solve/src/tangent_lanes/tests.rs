@@ -171,3 +171,57 @@ fn a_one_lane_aggregate_reading_a_dual_region_is_refused() {
         );
     }
 }
+
+/// A conditional selecting `if capture then 2 else 3`, captured at register
+/// `capture`, writing register `dst`.
+fn select_conditional(dst: u32, capture: u32) -> LinearOp {
+    let condition = vec![
+        LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let selected = vec![
+        LinearOp::Const { dst: 0, value: 2.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let fallback = vec![
+        LinearOp::Const { dst: 0, value: 3.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let program =
+        crate::FunctionConditionalProgram::checked(1, [1], [(condition, selected)], fallback)
+            .expect("a checked conditional");
+    LinearOp::FunctionConditional {
+        dst_start: dst,
+        capture_start: capture,
+        program: std::sync::Arc::new(program),
+    }
+}
+
+/// Operations whose operands the lane walk does not enumerate (nested
+/// programs, random streams) run once, verbatim, over seed-independent
+/// scalars, and are refused when they read a seed-dependent register.
+#[test]
+fn a_nested_program_runs_once_verbatim_only_over_seed_independent_scalars() {
+    let mut program = product_jvp();
+    // The conditional reads the primal product `y0 * y1` (register 2).
+    let store = program.pop().expect("the primal store");
+    program.push(select_conditional(8, 2));
+    program.push(LinearOp::StoreOutput { src: 8 });
+    program.push(store);
+    let lanes = TangentLaneProgram::replicate(&program, 3).expect("the program widens");
+    assert_eq!(
+        count(&lanes, "FunctionConditional"),
+        1,
+        "the conditional runs once"
+    );
+    let mut seeded = product_jvp();
+    // Reading the tangent `v0*y1 + y0*v1` (register 7) depends on the seed.
+    seeded.insert(seeded.len() - 2, select_conditional(8, 7));
+    assert!(matches!(
+        TangentLaneProgram::replicate(&seeded, 3),
+        Err(TangentLaneError::Unsupported {
+            operation: "FunctionConditional",
+            ..
+        })
+    ));
+}

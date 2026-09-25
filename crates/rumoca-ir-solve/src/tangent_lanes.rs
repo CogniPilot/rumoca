@@ -66,6 +66,8 @@ pub enum TangentLaneError {
     RegisterOverflow,
     #[error("the lane program is not a checked scalar program: {0:?}")]
     Register(ScalarProgramRegisterError),
+    #[error("row {row} has no widened tangent program or no coefficient in its target")]
+    NoTangent { row: usize },
 }
 
 impl From<ScalarProgramRegisterError> for TangentLaneError {

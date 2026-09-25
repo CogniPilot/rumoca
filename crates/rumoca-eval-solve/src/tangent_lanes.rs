@@ -68,80 +68,13 @@ impl PreparedTangentLaneProgram {
     }
 }
 
-/// The point, context, and primal rows one tangent evaluation reads. The
-/// primal rows evaluate the finite-difference fallback of a row without a
-/// multi-lane JVP; without them such a plan declines.
+/// The point and context one tangent evaluation reads.
 #[derive(Clone, Copy)]
 pub struct TangentPoint<'a> {
     pub y: &'a [f64],
     pub p: &'a [f64],
     pub t: f64,
     pub context: RowEvalContext<'a>,
-    pub primal: Option<&'a crate::PreparedScalarProgramBlock>,
-    /// Relative step of the finite-difference fallback.
-    pub fd_step: f64,
-}
-
-impl TangentPoint<'_> {
-    /// Directional finite difference of implicit row `row` along `direction`
-    /// (`(y index, component)` pairs); `None` without primal rows.
-    fn row_difference(
-        &self,
-        row: usize,
-        direction: &[(usize, f64)],
-        base: f64,
-    ) -> Result<Option<f64>, EvalSolveError> {
-        let Some((primal, (program, offset))) = self
-            .primal
-            .and_then(|primal| Some((primal, primal.row_output_position(row)?)))
-        else {
-            return Ok(None);
-        };
-        let scale = direction
-            .iter()
-            .map(|(index, _)| self.y[*index].abs())
-            .fold(1.0, f64::max);
-        let norm = direction
-            .iter()
-            .map(|(_, component)| component.abs())
-            .fold(0.0, f64::max);
-        if norm == 0.0 {
-            return Ok(Some(0.0));
-        }
-        let step = self.fd_step * scale / norm;
-        let mut perturbed = self.y.to_vec();
-        for &(index, component) in direction {
-            perturbed[index] += step * component;
-        }
-        let value = primal.eval_row_output_unchecked_with_context(
-            program,
-            offset,
-            &perturbed,
-            self.p,
-            self.t,
-            self.context,
-        )?;
-        Ok(Some((value - base) / step))
-    }
-
-    fn row_value(&self, row: usize) -> Result<Option<f64>, EvalSolveError> {
-        let Some((primal, (program, offset))) = self
-            .primal
-            .and_then(|primal| Some((primal, primal.row_output_position(row)?)))
-        else {
-            return Ok(None);
-        };
-        primal
-            .eval_row_output_unchecked_with_context(
-                program,
-                offset,
-                self.y,
-                self.p,
-                self.t,
-                self.context,
-            )
-            .map(Some)
-    }
 }
 
 /// The reduced tear Jacobian and the recovered-coordinate sensitivities of
@@ -177,7 +110,7 @@ impl TornTangentEvaluator {
 
     /// Evaluate the reduced tear Jacobian at `point`, whose causal
     /// coordinates hold the sweep of its tears. `None` when a causal
-    /// coefficient vanishes or a finite-difference row has no primal rows.
+    /// coefficient vanishes.
     pub fn eval(
         &self,
         point: TangentPoint<'_>,
@@ -188,16 +121,11 @@ impl TornTangentEvaluator {
         for (column, &target) in self.plan.tear_targets().iter().enumerate() {
             seed[target * lanes + column] = 1.0;
         }
-        let mut active = self.plan.tear_targets().to_vec();
         let mut recovered = Vec::with_capacity(self.plan.steps().len() * tears);
         let mut out = Vec::new();
         for step in self.plan.steps() {
             seed[step.target * lanes + tears] = 1.0;
-            let Some(tangents) =
-                self.row_tangents(point, &seed, &active, step.row, step.source, &mut out)?
-            else {
-                return Ok(None);
-            };
+            let tangents = self.row_tangents(point, &seed, step.source, &mut out)?;
             let coefficient = tangents[tears];
             if coefficient == 0.0 || !coefficient.is_finite() {
                 return Ok(None);
@@ -208,15 +136,10 @@ impl TornTangentEvaluator {
                 seed[step.target * lanes + lane] = value;
                 recovered.push(value);
             }
-            active.push(step.target);
         }
         let mut residual = vec![0.0; tears * tears];
         for (row, entry) in self.plan.residuals().iter().enumerate() {
-            let Some(tangents) =
-                self.row_tangents(point, &seed, &active, entry.row, entry.source, &mut out)?
-            else {
-                return Ok(None);
-            };
+            let tangents = self.row_tangents(point, &seed, entry.source, &mut out)?;
             residual[row * tears..(row + 1) * tears].copy_from_slice(&tangents[..tears]);
         }
         Ok(Some(TornTangentJacobian {
@@ -225,20 +148,16 @@ impl TornTangentEvaluator {
         }))
     }
 
-    /// Every lane's tangent of implicit row `row` under `seed`.
+    /// Every lane's tangent of the row `source` evaluates, under `seed`.
     fn row_tangents(
         &self,
         point: TangentPoint<'_>,
         seed: &[f64],
-        active: &[usize],
-        row: usize,
         source: TangentRowSource,
         out: &mut Vec<f64>,
-    ) -> Result<Option<Vec<f64>>, EvalSolveError> {
+    ) -> Result<Vec<f64>, EvalSolveError> {
         let lanes = self.plan.lanes();
-        let TangentRowSource::Lanes { program, output } = source else {
-            return self.difference_tangents(point, seed, active, row);
-        };
+        let TangentRowSource { program, output } = source;
         let prepared = &self.programs[program];
         let outputs = prepared.program().lane_outputs();
         out.resize(lanes * outputs, 0.0);
@@ -252,49 +171,9 @@ impl TornTangentEvaluator {
             },
             out,
         )?;
-        Ok(Some(
-            (0..lanes)
-                .map(|lane| out[lane * outputs + output])
-                .collect(),
-        ))
-    }
-
-    /// Finite-difference tangents of a row without a multi-lane JVP: each
-    /// tangent lane along the tangents set so far, the coefficient lane along
-    /// the row's own target.
-    fn difference_tangents(
-        &self,
-        point: TangentPoint<'_>,
-        seed: &[f64],
-        active: &[usize],
-        row: usize,
-    ) -> Result<Option<Vec<f64>>, EvalSolveError> {
-        let lanes = self.plan.lanes();
-        let Some(base) = point.row_value(row)? else {
-            return Ok(None);
-        };
-        let target = self
-            .plan
-            .steps()
-            .iter()
-            .find(|step| step.row == row)
-            .map(|step| step.target);
-        let mut tangents = Vec::with_capacity(lanes);
-        for lane in 0..lanes {
-            let mut direction = active
-                .iter()
-                .map(|&index| (index, seed[index * lanes + lane]))
-                .filter(|(_, component)| *component != 0.0)
-                .collect::<Vec<_>>();
-            if lane + 1 == lanes {
-                direction.extend(target.map(|target| (target, 1.0)));
-            }
-            match point.row_difference(row, &direction, base)? {
-                Some(tangent) => tangents.push(tangent),
-                None => return Ok(None),
-            }
-        }
-        Ok(Some(tangents))
+        Ok((0..lanes)
+            .map(|lane| out[lane * outputs + output])
+            .collect())
     }
 }
 

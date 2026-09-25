@@ -8,14 +8,12 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
-/// Where one row's tangents come from.
+/// Where one row's tangents come from: output `output` of lane program
+/// `program` of the plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TangentRowSource {
-    /// Output `output` of lane program `program` of the plan.
-    Lanes { program: usize, output: usize },
-    /// The row has no multi-lane JVP; its tangent is a finite difference of
-    /// the primal row along the lane directions.
-    FiniteDifference,
+pub struct TangentRowSource {
+    pub program: usize,
+    pub output: usize,
 }
 
 /// One causal step of a torn block's tangent sweep.
@@ -95,35 +93,38 @@ struct LanePrograms<'a> {
     jvp: &'a ScalarProgramBlock,
     lanes: usize,
     positions: BTreeMap<usize, (usize, usize)>,
-    built: BTreeMap<usize, Option<usize>>,
+    built: BTreeMap<usize, usize>,
     programs: Vec<TangentLaneProgram>,
 }
 
 impl LanePrograms<'_> {
-    /// The tangent source of implicit row `row` and the seeds its program reads.
-    fn source(&mut self, row: usize) -> (TangentRowSource, Vec<usize>) {
-        let Some(&(program, output)) = self.positions.get(&row) else {
-            return (TangentRowSource::FiniteDifference, Vec::new());
-        };
+    /// The tangent source of implicit row `row` and the seeds its program
+    /// reads; a row without a JVP program, or whose program does not widen,
+    /// declines the plan.
+    fn source(&mut self, row: usize) -> Result<(TangentRowSource, Vec<usize>), TangentLaneError> {
+        let &(program, output) = self
+            .positions
+            .get(&row)
+            .ok_or(TangentLaneError::NoTangent { row })?;
         let ops = &self.jvp.programs()[program];
         let reads = seed_reads(ops);
         let built = match self.built.get(&program) {
-            Some(built) => *built,
+            Some(&built) => built,
             None => {
-                let built = TangentLaneProgram::replicate(ops, self.lanes)
-                    .ok()
-                    .map(|lanes| {
-                        self.programs.push(lanes);
-                        self.programs.len() - 1
-                    });
+                self.programs
+                    .push(TangentLaneProgram::replicate(ops, self.lanes)?);
+                let built = self.programs.len() - 1;
                 self.built.insert(program, built);
                 built
             }
         };
-        let source = built.map_or(TangentRowSource::FiniteDifference, |program| {
-            TangentRowSource::Lanes { program, output }
-        });
-        (source, reads)
+        Ok((
+            TangentRowSource {
+                program: built,
+                output,
+            },
+            reads,
+        ))
     }
 }
 
@@ -154,10 +155,10 @@ impl TornTangentPlan {
             .collect();
         let mut steps = Vec::with_capacity(tearing.causal_steps.len());
         for step in &tearing.causal_steps {
-            let (mut source, reads) = builder.source(step.row);
+            let (source, reads) = builder.source(step.row)?;
             // A row that does not read its own target has no coefficient.
             if reads.binary_search(&step.y_index).is_err() {
-                source = TangentRowSource::FiniteDifference;
+                return Err(TangentLaneError::NoTangent { row: step.row });
             }
             let mut reached = reads
                 .iter()
@@ -179,11 +180,13 @@ impl TornTangentPlan {
         let residuals = tearing
             .residual_rows
             .iter()
-            .map(|&row| TornTangentResidual {
-                row,
-                source: builder.source(row).0,
+            .map(|&row| {
+                Ok(TornTangentResidual {
+                    row,
+                    source: builder.source(row)?.0,
+                })
             })
-            .collect();
+            .collect::<Result<_, TangentLaneError>>()?;
         Ok(Self {
             tear_targets: tearing.tear_y_indices.clone().into_boxed_slice(),
             lanes,

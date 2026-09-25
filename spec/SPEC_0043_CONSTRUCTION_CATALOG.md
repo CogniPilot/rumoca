@@ -319,7 +319,8 @@ declines. A torn block's tangent plan constructs from its checked
 `BlockTearing` and the solver-Y JVP rows: each causal step names its row, its
 target, its coefficient source (a lane seeded on the target alone), and the
 tear columns its reads reach; each reduced residual row names its tangent
-source; a row without a multi-lane program is marked finite-difference.
+source; a row without a widened program, or a causal row without a
+coefficient in its target, declines the plan.
 Evaluation follows the sweep order and declines at a vanished coefficient. A
 block's colored tangent plan constructs from its issued colored Jacobian
 application: each distinct program runs once with one lane per color that
