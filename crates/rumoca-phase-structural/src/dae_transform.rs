@@ -61,8 +61,10 @@ use crate::{
 };
 
 pub use self::alias_quotient::{
-    AliasClassReport, AliasMemberReport, AliasQuotientReport, AliasRefusal, alias_quotient_report,
-    inspect_quotient_aliases, quotient_aliases, quotient_formal_aliases,
+    AliasClassReport, AliasMemberReport, AliasQuotientReport, AliasRefusal,
+    QuotientScope as AliasQuotientScope, alias_quotient_report, formal_alias_quotient_report,
+    inspect_quotient_aliases, inspect_quotient_formal_aliases, quotient_aliases,
+    quotient_formal_aliases,
 };
 pub use self::formal_derivatives::{
     FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,

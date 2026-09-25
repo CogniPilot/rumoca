@@ -302,3 +302,69 @@ fn a_prolonged_derivative_relation_is_quotiented_after_state_selection() {
         "every source declaration survives both applications"
     );
 }
+
+/// Two seeded copies of the prolonged rate `der(q)` form one formal-scope class
+/// with two anchors, which the second application leaves unchanged and names.
+#[test]
+fn a_formal_scope_refusal_is_reported_by_lowering_and_structure_inspection() {
+    let text = include_str!("../fixtures/index_reduction/RateCancellation.mo")
+        .replace(
+            "Real ax, az;",
+            "Real ax, az;\n      Real u[3](each start=0.1), s[3](each start=0.2);",
+        )
+        .replace(
+            "der(q)=rate;",
+            "der(q)=rate;\n      u=der(q);\n      s=der(q);",
+        );
+    let source = compile(&text, "RateCancellation");
+    let lowered =
+        rumoca_phase_solve::lower_solve_model(&source, &std::collections::HashMap::new(), |_| {})
+            .unwrap();
+    let refused = lowered
+        .formal_alias_report()
+        .classes
+        .iter()
+        .find_map(|class| match class {
+            rumoca_phase_structural::AliasClassReport::Unchanged { members, reason } => {
+                Some((members.clone(), *reason))
+            }
+            rumoca_phase_structural::AliasClassReport::Quotiented { .. } => None,
+        });
+    let Some((members, reason)) = refused else {
+        panic!(
+            "the formal application reports an unchanged class: {:?}",
+            lowered.formal_alias_report()
+        );
+    };
+    assert_eq!(
+        reason,
+        rumoca_phase_structural::AliasRefusal::SeveralAnchors
+    );
+    for name in ["u", "s", "$formal_derivative.1.q"] {
+        assert!(
+            members.iter().any(|member| member == name),
+            "{name}: {members:?}"
+        );
+    }
+}
+
+/// Structure inspection of a reduced system names the formal-scope classes the
+/// Solve lowering of the same model reports.
+#[test]
+fn structure_inspection_reports_the_formal_application() {
+    let source = compile(
+        include_str!("../fixtures/index_reduction/RateCancellation.mo"),
+        "RateCancellation",
+    );
+    let report = rumoca_sim::structural_report_for_dae(&source, &SimOptions::default()).unwrap();
+    let lowered =
+        rumoca_phase_solve::lower_solve_model(&source, &std::collections::HashMap::new(), |_| {})
+            .unwrap();
+    assert!(!report.formal_aliases.classes.is_empty());
+    assert_eq!(&report.formal_aliases, lowered.formal_alias_report());
+    let text = report.to_string();
+    assert!(
+        text.contains("formal-derivative application of the alias quotient"),
+        "{text}"
+    );
+}

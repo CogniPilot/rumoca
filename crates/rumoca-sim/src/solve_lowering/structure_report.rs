@@ -7,7 +7,9 @@ use super::diagnostics::SimulationDiagnosticError;
 
 /// Report the structure Solve lowering analyzes: the STRUCT-T02 alias quotient
 /// of `model` (with every class it left unchanged) followed by the matching and
-/// BLT of the prepared quotient.
+/// BLT of the prepared quotient, and, for a constrained system, the
+/// formal-derivative application of the quotient on the reduced candidate Solve
+/// lowering executes.
 pub fn structural_report_for_dae(
     model: &dae::Dae,
     _: &SimOptions,
@@ -26,6 +28,13 @@ pub fn structural_report_for_dae(
              derivatives, whose blocks differ (inspect the emitted Solve IR for those)"
                 .to_string(),
         );
+        // The reduced candidate is prepared only by Solve lowering; a model that
+        // does not lower still reports its reducer structure above.
+        if let Ok(lowered) =
+            rumoca_phase_solve::lower_solve_model(model, &std::collections::HashMap::new(), |_| {})
+        {
+            report.formal_aliases = lowered.formal_alias_report().clone();
+        }
     }
     Ok(report)
 }

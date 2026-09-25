@@ -8,9 +8,10 @@ use rumoca_core::StateSelect;
 use rumoca_eval_solve::dense_basis::ColumnChoice;
 use rumoca_ir_dae as dae;
 use rumoca_phase_structural::{
-    FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate, FormalStateCoordinate,
-    PreparedDae, ReducedSelectionChart, StateSelection, StructuralError,
-    construct_formal_derivatives, prepare_for_solve, quotient_aliases, quotient_formal_aliases,
+    AliasQuotientReport, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
+    FormalStateCoordinate, PreparedDae, ReducedSelectionChart, StateSelection, StructuralError,
+    construct_formal_derivatives, formal_alias_quotient_report, prepare_for_solve,
+    quotient_aliases, quotient_formal_aliases,
 };
 
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
@@ -30,6 +31,10 @@ use evaluation::TrialPoint;
 pub(crate) struct PreparedSelection<'source> {
     pub primary: PreparedDae<'source>,
     pub alternates: Vec<PreparedDae<'static>>,
+    /// The formal-derivative application of the STRUCT-T02 quotient on the
+    /// primary candidate, with every class it left unchanged; empty when the
+    /// source basis is retained.
+    pub formal_aliases: AliasQuotientReport,
 }
 
 /// Prepare the executable selection of `model` after its STRUCT-T02 alias
@@ -54,6 +59,7 @@ fn prepare_quotient(
     let PreparedSelection {
         primary,
         alternates,
+        formal_aliases,
     } = prepare_source(&quotient, overrides)?;
     let primary = match primary {
         PreparedDae::Borrowed {
@@ -86,6 +92,7 @@ fn prepare_quotient(
     Ok(PreparedSelection {
         primary,
         alternates,
+        formal_aliases,
     })
 }
 
@@ -104,7 +111,7 @@ fn prepare_source<'source>(
         // the reducer already accepts changes: this branch is reached only when
         // it fails.
         Err(error) if matches!(error, StructuralError::Singular { .. }) => {
-            recover_singular_via_formal(model, overrides).ok_or(error)
+            recover_singular_via_formal(model, overrides)?.ok_or(error)
         }
         Err(error) => Err(error),
     }
@@ -167,34 +174,55 @@ fn reduce_or_retain<'source>(
         return Ok(PreparedSelection::retained(prepared));
     }
     let alternates = prepare_alternate_charts(&formal, &alternate_selections)?;
+    let (primary, formal_aliases) = quotient_formal_candidate(candidate.into_prepared()?)?;
     Ok(PreparedSelection {
-        primary: quotient_formal_aliases(candidate.into_prepared()?)?,
+        primary,
         alternates,
+        formal_aliases,
     })
 }
 
 /// Attempt the formal-derivative reduction for a system the ordinary reducer
 /// left structurally singular. Returns `None` when the formal path does not
 /// apply or its selection fails, so the caller reports the reducer's original
-/// singularity unchanged.
+/// singularity unchanged. Once a candidate is prepared, a failure of the
+/// transforms applied to it is its own error, never the reducer's singularity.
 fn recover_singular_via_formal(
     model: &dae::Dae,
     overrides: &HashMap<String, f64>,
-) -> Option<PreparedSelection<'static>> {
-    let formal = construct_formal_derivatives(model).ok()?;
+) -> Result<Option<PreparedSelection<'static>>, StructuralError> {
+    let Ok(formal) = construct_formal_derivatives(model) else {
+        return Ok(None);
+    };
     let mut alternate_selections = Vec::new();
-    let candidate = formal
-        .construct_state_candidate_with_charts(|formal| {
-            let (selection, alternates) = select(formal, overrides)?;
-            alternate_selections = alternates;
-            Ok(selection)
-        })
-        .ok()?;
-    let alternates = prepare_alternate_charts(&formal, &alternate_selections).ok()?;
-    Some(PreparedSelection {
-        primary: quotient_formal_aliases(candidate.into_prepared().ok()?).ok()?,
+    let Ok(candidate) = formal.construct_state_candidate_with_charts(|formal| {
+        let (selection, alternates) = select(formal, overrides)?;
+        alternate_selections = alternates;
+        Ok(selection)
+    }) else {
+        return Ok(None);
+    };
+    let Ok(alternates) = prepare_alternate_charts(&formal, &alternate_selections) else {
+        return Ok(None);
+    };
+    let Ok(candidate) = candidate.into_prepared() else {
+        return Ok(None);
+    };
+    let (primary, formal_aliases) = quotient_formal_candidate(candidate)?;
+    Ok(Some(PreparedSelection {
+        primary,
         alternates,
-    })
+        formal_aliases,
+    }))
+}
+
+/// Report the formal-scope alias classes of a prepared candidate and apply
+/// the formal quotient.
+fn quotient_formal_candidate(
+    candidate: PreparedDae<'_>,
+) -> Result<(PreparedDae<'_>, AliasQuotientReport), StructuralError> {
+    let report = formal_alias_quotient_report(&candidate);
+    Ok((quotient_formal_aliases(candidate)?, report))
 }
 
 impl<'source> PreparedSelection<'source> {
@@ -205,6 +233,7 @@ impl<'source> PreparedSelection<'source> {
         Self {
             primary,
             alternates: Vec::new(),
+            formal_aliases: AliasQuotientReport::default(),
         }
     }
 }

@@ -49,6 +49,7 @@ impl From<LowerError> for SolveModelLoweringError {
 pub struct LoweredSolveModel<'source> {
     model: solve::SolveModel,
     prepared: rumoca_phase_structural::PreparedDae<'source>,
+    formal_aliases: rumoca_phase_structural::AliasQuotientReport,
     program_seconds: f64,
     runtime_value_seconds: f64,
 }
@@ -67,6 +68,14 @@ impl LoweredSolveModel<'_> {
     #[must_use]
     pub fn prepared_dae(&self) -> &dae::Dae {
         self.prepared.as_dae()
+    }
+
+    /// The formal-derivative application of the STRUCT-T02 alias quotient on
+    /// the reduced candidate, with every class it left unchanged; empty when
+    /// the source basis is retained.
+    #[must_use]
+    pub fn formal_alias_report(&self) -> &rumoca_phase_structural::AliasQuotientReport {
+        &self.formal_aliases
     }
 
     #[must_use]
@@ -152,6 +161,7 @@ pub fn lower_solve_model<'source>(
     })?;
     let package = lower_selection(&selection, overrides)?;
     let prepared = selection.primary;
+    let formal_aliases = selection.formal_aliases;
     let problem = package.problem;
     let artifacts = lower_solve_artifacts(&problem)?;
     let program_seconds = rumoca_core::maybe_elapsed_seconds(program_start);
@@ -176,6 +186,7 @@ pub fn lower_solve_model<'source>(
     Ok(LoweredSolveModel {
         model: solve_model,
         prepared,
+        formal_aliases,
         program_seconds,
         runtime_value_seconds,
     })

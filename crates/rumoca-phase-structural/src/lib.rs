@@ -29,14 +29,15 @@ use rumoca_ir_dae as dae;
 pub use causal_definitions::CausalDefinitions;
 pub use causal_discrete::{CausalDiscreteError, CausalDiscretePlan, DiscreteRealDefinition};
 pub use dae_transform::{
-    AliasClassReport, AliasMemberReport, AliasQuotientReport, AliasRefusal, FormalDerivativeStage,
-    FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate, FormalStageEquation,
-    FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate, InitialValuePin,
-    InitialValueRole, PinTerm, PreparedDae, PreparedReducedChart, PreparedStructuralAnalysis,
-    PreparedSystem, ReducedSelectionChart, ReductionCandidateGroup, ReductionIdentity,
-    ReductionLane, ReductionOutcome, ReductionRecord, ReductionReport, ReductionSnapshot,
-    ReductionStop, StateSelection, UnmatchedKind, UnmatchedName, alias_quotient_report,
-    construct_formal_derivatives, inspect_prepare_for_solve, inspect_quotient_aliases,
+    AliasClassReport, AliasMemberReport, AliasQuotientReport, AliasQuotientScope, AliasRefusal,
+    FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
+    FormalStageEquation, FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate,
+    InitialValuePin, InitialValueRole, PinTerm, PreparedDae, PreparedReducedChart,
+    PreparedStructuralAnalysis, PreparedSystem, ReducedSelectionChart, ReductionCandidateGroup,
+    ReductionIdentity, ReductionLane, ReductionOutcome, ReductionRecord, ReductionReport,
+    ReductionSnapshot, ReductionStop, StateSelection, UnmatchedKind, UnmatchedName,
+    alias_quotient_report, construct_formal_derivatives, formal_alias_quotient_report,
+    inspect_prepare_for_solve, inspect_quotient_aliases, inspect_quotient_formal_aliases,
     prepare_for_solve, quotient_aliases, quotient_formal_aliases,
 };
 pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
@@ -246,6 +247,7 @@ fn structural_report_from_sorted<'dae>(
         matching,
         blocks,
         aliases: AliasQuotientReport::default(),
+        formal_aliases: AliasQuotientReport::default(),
         notes: Vec::new(),
     }
 }

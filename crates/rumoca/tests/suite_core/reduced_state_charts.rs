@@ -217,36 +217,27 @@ fn circle_chart_alternate_chart_re_lowers_to_a_regular_mirror_plan() {
         "the alternate reconstructs q[1] from the generated identity row"
     );
 
-    // The alternate derivative kernel advances q[1] by its own formal derivative
-    // ($formal_derivative.1.q[1]); the primary advances q[2] by $formal_derivative.1.q[2].
-    let integrated = &names[alternate.independent_y_indices[0]];
-    let alternate_slot = maps
-        .name_to_idx
-        .get(&format!("$formal_derivative.1.{integrated}"))
-        .copied()
-        .expect("q[1] has a formal derivative slot");
-    let primary_integrated = &names[primary.independent_y_indices[0]];
-    let primary_slot = maps
-        .name_to_idx
-        .get(&format!("$formal_derivative.1.{primary_integrated}"))
-        .copied()
-        .expect("q[2] has a formal derivative slot");
     // STRUCT-T02 quotients the prolonged `der(q) = v` relation after state
-    // selection, so a kernel may read q[i]'s derivative through its
-    // representative v[i] instead of the formal coordinate itself.
-    let derivative_slots = |integrated: &str, formal_slot: usize| {
-        let velocity = integrated.replacen('q', "v", 1);
-        [Some(formal_slot), maps.name_to_idx.get(&velocity).copied()]
+    // selection, so each kernel reads its integrated q[i]'s derivative through
+    // the representative v[i]: the alternate advances q[1] by v[1], the primary
+    // q[2] by v[2].
+    let integrated = &names[alternate.independent_y_indices[0]];
+    let primary_integrated = &names[primary.independent_y_indices[0]];
+    let velocity_slot = |integrated: &str| {
+        maps.name_to_idx
+            .get(&integrated.replacen('q', "v", 1))
+            .copied()
+            .expect("each integrated q[i] has a velocity v[i]")
     };
-    assert!(
-        derivative_slots(integrated, alternate_slot)
-            .contains(&sole_load_y_index(&plan.derivative_rhs)),
-        "the alternate kernel loads q[1]'s derivative slot"
+    assert_eq!(
+        sole_load_y_index(&plan.derivative_rhs),
+        Some(velocity_slot(integrated)),
+        "the alternate kernel loads v[1]"
     );
-    assert!(
-        derivative_slots(primary_integrated, primary_slot)
-            .contains(&sole_load_y_index(&continuous.derivative_rhs)),
-        "the primary kernel loads q[2]'s derivative slot"
+    assert_eq!(
+        sole_load_y_index(&continuous.derivative_rhs),
+        Some(velocity_slot(primary_integrated)),
+        "the primary kernel loads v[2]"
     );
     assert_ne!(
         sole_load_y_index(&plan.derivative_rhs),

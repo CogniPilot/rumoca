@@ -55,6 +55,21 @@ pub fn alias_quotient_report(model: &dae::Dae) -> AliasQuotientReport {
     report_in(model, super::QuotientScope::Source)
 }
 
+/// Report the alias classes the formal-derivative application of the quotient
+/// finds in a prepared candidate; empty for a system that kept its source
+/// basis, which that application never visits.
+#[must_use]
+pub fn formal_alias_quotient_report(
+    prepared: &super::super::PreparedDae<'_>,
+) -> AliasQuotientReport {
+    match prepared {
+        super::super::PreparedDae::Transformed { dae, .. } => {
+            report_in(dae, super::QuotientScope::FormalDerivatives)
+        }
+        super::super::PreparedDae::Borrowed { .. } => AliasQuotientReport::default(),
+    }
+}
+
 /// Report the alias classes one application of the quotient finds in `model`.
 pub(in super::super) fn report_in(
     model: &dae::Dae,

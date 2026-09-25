@@ -170,6 +170,8 @@ pub(super) enum ReductionEvent<'a> {
     /// One STRUCT-T02 alias class the quotient leaves unchanged, with the
     /// declaration ordinals of its members and the refusal that decided it.
     AliasClassUnchanged {
+        /// Which application of the quotient left the class unchanged.
+        scope: super::alias_quotient::QuotientScope,
         members: &'a [u32],
         reason: super::alias_quotient::AliasRefusal,
     },
@@ -443,6 +445,7 @@ pub enum ReductionRecord {
     /// One STRUCT-T02 alias class left unchanged: member declaration
     /// ordinals and the reason.
     AliasClassUnchanged {
+        scope: super::alias_quotient::QuotientScope,
         members: Vec<u32>,
         reason: super::alias_quotient::AliasRefusal,
     },
@@ -592,12 +595,15 @@ impl ReductionObserver for ReductionRecorder {
             ReductionEvent::Stopped { outcome } => ReductionRecord::Stopped {
                 outcome: outcome.into(),
             },
-            ReductionEvent::AliasClassUnchanged { members, reason } => {
-                ReductionRecord::AliasClassUnchanged {
-                    members: members.to_vec(),
-                    reason,
-                }
-            }
+            ReductionEvent::AliasClassUnchanged {
+                scope,
+                members,
+                reason,
+            } => ReductionRecord::AliasClassUnchanged {
+                scope,
+                members: members.to_vec(),
+                reason,
+            },
         };
         self.records.push(record);
     }

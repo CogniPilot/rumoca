@@ -321,7 +321,11 @@ fn unchanged(residuals: &[&[Term]]) -> Vec<(Vec<u32>, AliasRefusal)> {
         .records
         .into_iter()
         .map(|record| match record {
-            crate::ReductionRecord::AliasClassUnchanged { members, reason } => (members, reason),
+            crate::ReductionRecord::AliasClassUnchanged {
+                scope: QuotientScope::Source,
+                members,
+                reason,
+            } => (members, reason),
             other => panic!("the quotient records only unchanged classes, got {other:?}"),
         })
         .collect()
@@ -395,5 +399,76 @@ fn the_formal_application_keeps_source_roles_and_names() {
                 "der(y) = b reads the representative a"
             );
         })
+    });
+}
+
+#[test]
+fn a_formal_scope_refusal_is_recorded_with_its_scope() {
+    // a is a formal coordinate; d and e both carry a seed.
+    let source = fixture_with(&[&[(A, false), (D, true)], &[(A, false), (E, true)]], true);
+    let mut recorder = crate::dae_transform::observation::ReductionRecorder::default();
+    let plan = source.inspect(|view| {
+        derive_plan_observed(view, QuotientScope::FormalDerivatives, &mut recorder)
+    });
+    assert!(plan.is_empty());
+    let records = recorder.finish(false).records;
+    let [
+        crate::ReductionRecord::AliasClassUnchanged {
+            scope,
+            members,
+            reason,
+        },
+    ] = records.as_slice()
+    else {
+        panic!("one formal-scope class stays unchanged: {records:?}");
+    };
+    assert_eq!(*scope, QuotientScope::FormalDerivatives);
+    assert_eq!(members, &[A, D, E]);
+    assert_eq!(*reason, AliasRefusal::SeveralAnchors);
+}
+
+#[test]
+fn a_retained_manifold_expression_is_replayed_onto_the_quotient() {
+    // a = c is formal; the three-term row stands in for a retained manifold
+    // constraint that reads the eliminated c.
+    let source = fixture_with(
+        &[
+            &[(A, false), (C, true)],
+            &[(C, false), (D, false), (E, false)],
+        ],
+        true,
+    );
+    let manifold = source.inspect(|view| {
+        let Some(dae::ContinuousOwnerView::Residual { equation, .. }) =
+            view.continuous_owners().nth(1)
+        else {
+            panic!("the second fixture owner is a scalar residual");
+        };
+        equation.residual().index()
+    });
+    let plan = source
+        .inspect(|view| derive_plan_observed(view, QuotientScope::FormalDerivatives, &mut ()));
+    assert_eq!(plan.substitutions[C as usize], substitution(A, false));
+    let (quotient, replayed) =
+        crate::dae_transform::reconstruction::rebuild_alias_quotient(&source, &plan, &[manifold])
+            .unwrap();
+    let [expression] = replayed.as_slice() else {
+        panic!("one manifold expression is replayed: {replayed:?}");
+    };
+    quotient.inspect(|view| {
+        let Some(id) = view.expression_id(*expression as usize) else {
+            panic!("the replayed manifold expression resolves");
+        };
+        let mut reads = BTreeSet::new();
+        dae::for_each_expression(view, id, |_, node| {
+            if let Some(variable) = node.variable_coordinate() {
+                reads.insert(variable.index());
+            }
+        });
+        assert_eq!(
+            reads,
+            BTreeSet::from([A, D, E]),
+            "the manifold reads the representative a instead of c"
+        );
     });
 }
