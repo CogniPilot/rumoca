@@ -26,7 +26,10 @@ pub use assignment_shape::{
 };
 pub use dependency::ScalarProgramYDependency;
 use dependency::assignment_y_dependencies_for_shapes;
-pub use materialization::materialize_target_assignment;
+pub use materialization::{
+    IsolatedDivisor, IsolatedTerm, IsolatedValue, eval_isolated_value,
+    materialize_target_assignment, register_coefficient,
+};
 pub use staged_execution::{
     RefreshStageSchedule, StagedRefreshRefusal, StagedRefreshStep, projection_seed_rescue_targets,
 };

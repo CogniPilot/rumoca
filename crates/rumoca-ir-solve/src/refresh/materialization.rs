@@ -1,6 +1,11 @@
 use crate::{BinaryOp, LinearOp, TargetAssignmentShape, UnaryOp};
 
+mod isolated_value;
 mod tensor_affine;
+
+pub use isolated_value::{
+    IsolatedDivisor, IsolatedTerm, IsolatedValue, eval_isolated_value, register_coefficient,
+};
 
 /// Append the selected assignment to an already materialized source prefix at
 /// a final scalar backend boundary. Returns its value and, for an affine shape,
@@ -67,131 +72,109 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
             }
             TargetAssignmentShape::Direct { expr_reg, .. } => Some((*expr_reg, None)),
             TargetAssignmentShape::Affine {
-                offset_reg,
                 coefficient_reg,
-                offset_scale,
                 coefficient_scale,
                 ..
-            } => self.affine(
-                *offset_reg,
-                *coefficient_reg,
-                *offset_scale,
-                *coefficient_scale,
-            ),
-            TargetAssignmentShape::Additive {
-                offset_terms,
-                coefficient,
-                ..
-            } => self
-                .additive(offset_terms, *coefficient)
-                .map(|result| (result, None)),
+            } => {
+                let guarded = coefficient_reg.is_some() || !regular(*coefficient_scale);
+                self.isolated(&IsolatedValue::of(shape)?, guarded)
+            }
+            TargetAssignmentShape::Additive { .. } => {
+                self.isolated(&IsolatedValue::of(shape)?, false)
+            }
             TargetAssignmentShape::TensorAffine { projection, .. } => {
                 let (offset, coefficient) = self.tensor_affine(projection)?;
-                self.affine(offset, Some(coefficient), 1.0, 1.0)
+                let value = IsolatedValue {
+                    terms: vec![IsolatedTerm::Register(offset)],
+                    divisor: IsolatedDivisor::DivideRegister {
+                        register: coefficient,
+                        scale: 1.0,
+                    },
+                };
+                self.isolated(&value, true)
             }
         }
     }
 
-    fn affine(
-        &mut self,
-        offset: u32,
-        coefficient: Option<u32>,
-        offset_scale: f64,
-        coefficient_scale: f64,
-    ) -> Option<(u32, Option<u32>)> {
-        let offset_scale_reg = self.allocate()?;
-        let scaled_offset = self.allocate()?;
-        let coefficient_scale_reg = self.allocate()?;
-        let scaled_coefficient = self.allocate()?;
-        let negated_offset = self.allocate()?;
-        let result = self.allocate()?;
-        self.operations.push(LinearOp::Const {
-            dst: offset_scale_reg,
-            value: offset_scale,
-        });
-        self.operations.push(LinearOp::Binary {
-            dst: scaled_offset,
-            op: BinaryOp::Mul,
-            lhs: offset_scale_reg,
-            rhs: offset,
-        });
-        self.operations.push(LinearOp::Const {
-            dst: coefficient_scale_reg,
-            value: coefficient_scale,
-        });
-        self.operations.push(match coefficient {
-            Some(coefficient) => LinearOp::Binary {
-                dst: scaled_coefficient,
-                op: BinaryOp::Mul,
-                lhs: coefficient_scale_reg,
-                rhs: coefficient,
-            },
-            None => LinearOp::Move {
-                dst: scaled_coefficient,
-                src: coefficient_scale_reg,
-            },
-        });
-        self.operations.push(LinearOp::Unary {
-            dst: negated_offset,
-            op: UnaryOp::Neg,
-            arg: scaled_offset,
-        });
-        self.operations.push(LinearOp::Binary {
-            dst: result,
-            op: BinaryOp::Div,
-            lhs: negated_offset,
-            rhs: scaled_coefficient,
-        });
-        Some((result, Some(scaled_coefficient)))
+    /// Emit `value` in the op order [`IsolatedValue::eval`] follows. A
+    /// `guarded` value returns its coefficient register for the non-finite
+    /// poison guard (a constant one included when it is singular).
+    fn isolated(&mut self, value: &IsolatedValue, guarded: bool) -> Option<(u32, Option<u32>)> {
+        let mut sum = None;
+        for term in &value.terms {
+            let term = self.term(*term)?;
+            sum = Some(match sum {
+                None => term,
+                Some(sum) => self.binary(BinaryOp::Add, sum, term)?,
+            });
+        }
+        let sum = match sum {
+            Some(sum) => sum,
+            None => self.constant(0.0)?,
+        };
+        let (result, coefficient) = match value.divisor {
+            IsolatedDivisor::Negate => (self.negate(sum)?, None),
+            IsolatedDivisor::Keep => (sum, None),
+            IsolatedDivisor::Multiply(factor) => {
+                let factor = self.constant(factor)?;
+                (self.binary(BinaryOp::Mul, sum, factor)?, None)
+            }
+            IsolatedDivisor::Divide(coefficient) => {
+                let negated = self.negate(sum)?;
+                let coefficient = self.constant(coefficient)?;
+                (
+                    self.binary(BinaryOp::Div, negated, coefficient)?,
+                    Some(coefficient),
+                )
+            }
+            IsolatedDivisor::DivideRegister { register, scale } => {
+                let coefficient = if scale == 1.0 {
+                    register
+                } else {
+                    let scale = self.constant(scale)?;
+                    self.binary(BinaryOp::Mul, scale, register)?
+                };
+                let negated = self.negate(sum)?;
+                (
+                    self.binary(BinaryOp::Div, negated, coefficient)?,
+                    Some(coefficient),
+                )
+            }
+        };
+        Some((result, coefficient.filter(|_| guarded)))
     }
 
-    fn additive(&mut self, terms: &[(u32, f64)], coefficient: f64) -> Option<u32> {
-        let mut offset = self.allocate()?;
-        self.operations.push(LinearOp::Const {
-            dst: offset,
-            value: 0.0,
-        });
-        for &(register, scale) in terms {
-            let scale_reg = self.allocate()?;
-            let weighted = self.allocate()?;
-            let sum = self.allocate()?;
-            self.operations.push(LinearOp::Const {
-                dst: scale_reg,
-                value: scale,
-            });
-            self.operations.push(LinearOp::Binary {
-                dst: weighted,
-                op: BinaryOp::Mul,
-                lhs: scale_reg,
-                rhs: register,
-            });
-            self.operations.push(LinearOp::Binary {
-                dst: sum,
-                op: BinaryOp::Add,
-                lhs: offset,
-                rhs: weighted,
-            });
-            offset = sum;
+    fn term(&mut self, term: IsolatedTerm) -> Option<u32> {
+        match term {
+            IsolatedTerm::Register(register) => Some(register),
+            IsolatedTerm::Negated(register) => self.negate(register),
+            IsolatedTerm::Scaled(register, scale) => {
+                let scale = self.constant(scale)?;
+                self.binary(BinaryOp::Mul, scale, register)
+            }
         }
-        let negated = self.allocate()?;
-        let divisor = self.allocate()?;
-        let result = self.allocate()?;
+    }
+
+    fn constant(&mut self, value: f64) -> Option<u32> {
+        let dst = self.allocate()?;
+        self.operations.push(LinearOp::Const { dst, value });
+        Some(dst)
+    }
+
+    fn negate(&mut self, arg: u32) -> Option<u32> {
+        let dst = self.allocate()?;
         self.operations.push(LinearOp::Unary {
-            dst: negated,
+            dst,
             op: UnaryOp::Neg,
-            arg: offset,
+            arg,
         });
-        self.operations.push(LinearOp::Const {
-            dst: divisor,
-            value: coefficient,
-        });
-        self.operations.push(LinearOp::Binary {
-            dst: result,
-            op: BinaryOp::Div,
-            lhs: negated,
-            rhs: divisor,
-        });
-        Some(result)
+        Some(dst)
+    }
+
+    fn binary(&mut self, op: BinaryOp, lhs: u32, rhs: u32) -> Option<u32> {
+        let dst = self.allocate()?;
+        self.operations.push(LinearOp::Binary { dst, op, lhs, rhs });
+        Some(dst)
     }
 
     fn allocate(&mut self) -> Option<u32> {
@@ -203,4 +186,9 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
         self.next_register = self.next_register.checked_add(u32::try_from(count).ok()?)?;
         Some(register)
     }
+}
+
+/// A constant coefficient no evaluation rejects as singular.
+fn regular(coefficient: f64) -> bool {
+    coefficient != 0.0 && coefficient.is_finite()
 }
