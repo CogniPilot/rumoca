@@ -36,6 +36,8 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         &jacobian,
         structure.map(solve::JacobianStructure::pattern),
     );
+    let row_magnitudes =
+        jacobian_row_magnitudes(&jacobian, structure.map(solve::JacobianStructure::pattern));
     let mut system = AffineBlockSystem {
         model,
         parameters: p,
@@ -43,6 +45,7 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         block,
         block_index,
         jacobian,
+        row_magnitudes,
         row_scales,
         variable_scales,
         structure,
@@ -82,6 +85,8 @@ struct AffineBlockSystem<'a, M> {
     block: &'a solve::AlgebraicProjectionBlock,
     block_index: usize,
     jacobian: DMatrix<f64>,
+    /// [`jacobian_row_magnitudes`] of `jacobian`.
+    row_magnitudes: Vec<f64>,
     row_scales: Vec<f64>,
     variable_scales: Vec<f64>,
     structure: Option<&'a solve::JacobianStructure>,
@@ -128,13 +133,23 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
         )
     }
 
-    fn scales(&self, y: &[f64]) -> (Vec<f64>, Vec<f64>) {
-        algebraic_block_scales(
+    /// Whether `residual` converges under the row scales at `y`
+    /// ([`origin_bounded_residual_converged`]: the origin scales settle every
+    /// row they can, the rest form their scale at `y`).
+    fn residual_converged(&self, residual: &[f64], y: &[f64]) -> bool {
+        let origin = OriginRowScales {
+            jacobian: &self.jacobian,
+            structure: self.structure.map(solve::JacobianStructure::pattern),
+            scales: &self.row_scales,
+            magnitudes: &self.row_magnitudes,
+        };
+        origin_bounded_residual_converged(
             self.model,
             y,
             self.block,
-            &self.jacobian,
-            self.structure.map(solve::JacobianStructure::pattern),
+            &origin,
+            residual,
+            self.tolerance,
         )
     }
 
@@ -171,8 +186,7 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             let residual = self.residual(y)?;
             // Zero was only the arithmetic origin used to extract b. The
             // residual certificate uses this candidate's coordinate scales.
-            let row_scales = self.scales(y).0;
-            let converged = scaled_residual_converged(&residual, &row_scales, self.tolerance);
+            let converged = self.residual_converged(&residual, y);
             // One correction recovers small coordinates lost while solving
             // beside large offsets, even when the residual already fits tol.
             // Exact zero needs no correction; subsequent passes certify the

@@ -702,7 +702,7 @@ static int rmc_eliminate_solve(ModelInstance* m, const RmcBlock* b, const RmcEli
     RMC_RELEASE; return result;
 }
 typedef struct {
-    const RmcBlock* block; const double* jac; const double* rscale; const double* vscale;
+    const RmcBlock* block; const double* jac; const double* rscale; const double* vscale; const double* magnitudes;
     bool prefer_torn; bool used_torn; RmcElimination elimination; bool factored; RmcDenseFactor dense;
 } RmcAffineSystem;
 /* affine.rs: AffineBlockSystem::solve with the block's cached factors; the
@@ -738,17 +738,45 @@ static int rmc_affine_solve(ModelInstance* m, RmcAffineSystem* s, const double* 
 /* affine.rs: AffineBlockSystem::project and refine; -1 error, 0 unsettled, 1
    settled. Its buffers and the cached factors stay in the enclosing
    project_affine_block frame so a second pass can reuse the factors. */
+/* scaling.rs: jacobian_row_magnitudes, over the block pattern */
+static void rmc_row_magnitudes(const RmcBlock* b, const double* jac, double* magnitudes) {
+    for (size_t row = 0; row < b->n; ++row) {
+        double magnitude = 0.0;
+        for (size_t e = b->row_ptr[row]; e < b->row_ptr[row + 1]; ++e) { double value = fabs(jac[e]); if (isfinite(value)) magnitude = rmc_max(magnitude, value); }
+        magnitudes[row] = magnitude;
+    }
+}
+/* scaling.rs: origin_bounded_residual_converged: a row within tolerance of
+   its origin scale converges under its scale at y (no scale falls below its
+   origin value while no contribution overflows); any other row forms that
+   scale exactly. -1 error */
+static int rmc_origin_converged(ModelInstance* m, const RmcBlock* b, const RmcAffineSystem* s, const double* residual, bool* converged) {
+    RMC_MARK; size_t n = b->n; double largest = 0.0;
+    double* vscale = rmc_dalloc_raw(m, n); double* valid = rmc_dalloc_raw(m, n);
+    if (!vscale || !valid) { RMC_RELEASE; return rmc_exhausted(m); }
+    for (size_t i = 0; i < n; ++i) { vscale[i] = rmc_model_scale(b->y[i], m->y[b->y[i]]); valid[i] = rmc_valid_scale(vscale[i]); largest = rmc_max(largest, valid[i]); }
+    *converged = true;
+    for (size_t row = 0; row < n; ++row) {
+        double value = residual[row];
+        if (isfinite(s->magnitudes[row] * largest) && fabs(value) <= rmc_scaled_tolerance(m->rmc_tol, s->rscale[row])) continue;
+        double scale = 0.0;
+        for (size_t e = b->row_ptr[row]; e < b->row_ptr[row + 1]; ++e) { double contribution = fabs(s->jac[e]) * valid[b->col_idx[e]]; if (isfinite(contribution)) scale = rmc_max(scale, contribution); }
+        if (!(scale > 0.0)) { size_t target = b->row_target[row]; scale = target != 0 ? rmc_model_scale(target - 1, m->y[target - 1]) : vscale[row]; }
+        if (!isfinite(value) || fabs(value) > rmc_scaled_tolerance(m->rmc_tol, scale)) { *converged = false; break; }
+    }
+    RMC_RELEASE; return 0;
+}
 static int rmc_affine_project(ModelInstance* m, RmcAffineSystem* s) {
     const RmcBlock* b = s->block; size_t n = b->n; int result = 0;
-    double* residual = rmc_dalloc_raw(m, n); double* delta = rmc_dalloc_raw(m, n); double* rscale = rmc_dalloc_raw(m, n); double* vscale = rmc_dalloc_raw(m, n);
-    if (!residual || !delta || !rscale || !vscale) return rmc_exhausted(m);
+    double* residual = rmc_dalloc_raw(m, n); double* delta = rmc_dalloc_raw(m, n);
+    if (!residual || !delta) return rmc_exhausted(m);
     if (rmc_rows(m, b, residual) != 0) return -1;
     int solved = rmc_affine_solve(m, s, residual, delta);
     if (solved <= 0) return solved;
     for (size_t i = 0; i < n; ++i) m->y[b->y[i]] = delta[i];
     for (int iteration = 0; iteration < RMC_REFINE_ITERS; ++iteration) {
-        if (rmc_rows(m, b, residual) != 0 || rmc_block_scales(m, b, s->jac, rscale, vscale) != 0) { result = -1; break; }
-        bool converged = rmc_scaled_converged(m->rmc_tol, residual, rscale, n), zero = true;
+        bool converged = false, zero = true;
+        if (rmc_rows(m, b, residual) != 0 || rmc_origin_converged(m, b, s, residual, &converged) != 0) { result = -1; break; }
         for (size_t i = 0; i < n; ++i) if (residual[i] != 0.0) zero = false;
         if (converged && (iteration > 0 || zero)) { result = 1; break; }
         solved = rmc_affine_solve(m, s, residual, delta);
@@ -768,14 +796,15 @@ static int rmc_affine_project(ModelInstance* m, RmcAffineSystem* s) {
 /* affine.rs: project_affine_block; -1 error, 0 otherwise */
 static int rmc_project_affine(ModelInstance* m, const RmcBlock* b, RmcUpdate* update) {
     RMC_MARK; size_t n = b->n; int result = 0;
-    double* original = rmc_dalloc_raw(m, n); double* rscale = rmc_dalloc_raw(m, n); double* vscale = rmc_dalloc_raw(m, n); double* jac = rmc_dalloc_raw(m, b->nnz + 1);
-    if (!original || !rscale || !vscale || !jac) { RMC_RELEASE; return rmc_exhausted(m); }
+    double* original = rmc_dalloc_raw(m, n); double* rscale = rmc_dalloc_raw(m, n); double* vscale = rmc_dalloc_raw(m, n); double* jac = rmc_dalloc_raw(m, b->nnz + 1); double* magnitudes = rmc_dalloc_raw(m, n);
+    if (!original || !rscale || !vscale || !jac || !magnitudes) { RMC_RELEASE; return rmc_exhausted(m); }
     rmc_save(m, b, original);
     for (size_t i = 0; i < n; ++i) m->y[b->y[i]] = 0.0;
     result = rmc_jacobian(m, b, jac);
     if (result == 0) result = rmc_block_scales(m, b, jac, rscale, vscale);
     if (result == 0) {
-        RmcAffineSystem system = { b, jac, rscale, vscale, true, false, { -1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL }, false, { 0, NULL, NULL, NULL, NULL, NULL } };
+        rmc_row_magnitudes(b, jac, magnitudes);
+        RmcAffineSystem system = { b, jac, rscale, vscale, magnitudes, true, false, { -1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL }, false, { 0, NULL, NULL, NULL, NULL, NULL } };
         result = rmc_affine_project(m, &system);
         if (result == 0 && system.used_torn) {
             system.prefer_torn = false;

@@ -500,3 +500,125 @@ fn sparse_triplets(
         .map(|(row, column)| Triplet::new(row, column, matrix[(row, column)]))
         .collect()
 }
+
+/// Largest finite magnitude of each row of `jacobian` over its structural
+/// entries (every column without a pattern).
+pub(super) fn jacobian_row_magnitudes(
+    jacobian: &DMatrix<f64>,
+    structure: Option<&solve::StructuralPattern>,
+) -> Vec<f64> {
+    let pattern = structure.filter(|pattern| {
+        pattern.rows() as usize == jacobian.nrows()
+            && pattern.columns() as usize == jacobian.ncols()
+    });
+    (0..jacobian.nrows())
+        .map(|row| {
+            let mut magnitude = 0.0_f64;
+            let mut visit = |column: usize| {
+                let value = jacobian[(row, column)].abs();
+                if value.is_finite() {
+                    magnitude = magnitude.max(value);
+                }
+            };
+            match pattern {
+                Some(pattern) => pattern.visit_row_columns(row, &mut visit),
+                None => (0..jacobian.ncols()).for_each(visit),
+            }
+            magnitude
+        })
+        .collect()
+}
+
+/// One row's scale exactly as [`jacobian_row_scales`] forms it.
+fn jacobian_row_scale(
+    jacobian: &DMatrix<f64>,
+    row: usize,
+    variable_scales: &[f64],
+    fallback: f64,
+    structure: Option<&solve::StructuralPattern>,
+) -> f64 {
+    let pattern = structure.filter(|pattern| {
+        pattern.rows() as usize == jacobian.nrows()
+            && pattern.columns() as usize == jacobian.ncols()
+    });
+    let mut scale = 0.0_f64;
+    let mut visit = |column: usize| {
+        let contribution =
+            jacobian[(row, column)].abs() * valid_variable_scale(variable_scales[column]);
+        if contribution.is_finite() {
+            scale = scale.max(contribution);
+        }
+    };
+    match pattern {
+        Some(pattern) => pattern.visit_row_columns(row, &mut visit),
+        None => (0..jacobian.ncols()).for_each(visit),
+    }
+    if scale > 0.0 { scale } else { fallback }
+}
+
+/// A fixed block Jacobian with the row scales it had at the arithmetic
+/// origin, where every block unknown is zero.
+pub(super) struct OriginRowScales<'a> {
+    pub(super) jacobian: &'a DMatrix<f64>,
+    pub(super) structure: Option<&'a solve::StructuralPattern>,
+    /// [`algebraic_block_scales`] at the origin.
+    pub(super) scales: &'a [f64],
+    /// [`jacobian_row_magnitudes`] of the same Jacobian.
+    pub(super) magnitudes: &'a [f64],
+}
+
+/// Whether `residual` converges under the row scales [`algebraic_block_scales`]
+/// gives at `y`, decided without forming every row scale.
+///
+/// A block unknown's scale `max(nominal, |y|)` never falls below its origin
+/// value, and a row target outside the block keeps its value, so every
+/// finite contribution `|J| * scale`, and with it every row scale and scaled
+/// tolerance, is at least its origin value while no contribution overflows
+/// (bounded by the row's largest magnitude times the largest unknown scale).
+/// A row within tolerance of its origin scale therefore converges under its
+/// scale at `y`; any other row forms that scale exactly. The decision equals
+/// [`scaled_residual_converged`] over the full scales.
+pub(super) fn origin_bounded_residual_converged<M: ImplicitProjectionModel + ?Sized>(
+    model: &M,
+    y: &[f64],
+    block: &solve::AlgebraicProjectionBlock,
+    origin: &OriginRowScales<'_>,
+    residual: &[f64],
+    tol: f64,
+) -> bool {
+    if residual.len() != origin.scales.len() {
+        return false;
+    }
+    let variable_scales = block
+        .y_indices
+        .iter()
+        .map(|&index| model_variable_scale(model, index, y[index]))
+        .collect::<Vec<_>>();
+    let largest = variable_scales.iter().fold(0.0_f64, |largest, scale| {
+        largest.max(valid_variable_scale(*scale))
+    });
+    residual.iter().enumerate().all(|(row, &value)| {
+        let bounded = (origin.magnitudes[row] * largest).is_finite();
+        if bounded && value.abs() <= scaled_tolerance(tol, origin.scales[row]) {
+            return true;
+        }
+        let fallback = model
+            .implicit_target(block.rows[row])
+            .and_then(y_index_for_slot)
+            .map_or_else(
+                || variable_scales.get(row).copied().unwrap_or(1.0),
+                |index| model_variable_scale(model, index, y[index]),
+            );
+        let scale = jacobian_row_scale(
+            origin.jacobian,
+            row,
+            &variable_scales,
+            fallback,
+            origin.structure,
+        );
+        value.is_finite() && value.abs() <= scaled_tolerance(tol, scale)
+    })
+}
+
+#[cfg(test)]
+mod origin_bounded_tests;
