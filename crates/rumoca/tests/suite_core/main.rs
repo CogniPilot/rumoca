@@ -31,6 +31,7 @@ mod additive_torque;
 mod affine_switching_circuit;
 mod algebraic_observation_accuracy;
 mod algorithm_parameter_range;
+mod alias_quotient;
 mod annotated_function_constraint;
 mod array_constructor_equation_shape;
 mod array_der_coupling_test;

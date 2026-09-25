@@ -666,13 +666,8 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         {
             return self.rebuild_demoted_derivative(candidate);
         }
-        if let dae::CoordinateView::Derivative(state) = coordinate
-            && let Some(alias) = self.variables[state.index() as usize].derivative_alias
-        {
-            return self
-                .target
-                .at(provenance)
-                .coordinate(dae::CoordinateInput::Algebraic(alias));
+        if let Some(rebuilt) = self.rebuild_coordinate_alias(coordinate, provenance) {
+            return rebuilt;
         }
         let coordinate = match coordinate {
             dae::CoordinateView::Parameter(id) => {
@@ -763,6 +758,42 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             }
         };
         self.target.at(provenance).coordinate(coordinate)
+    }
+
+    /// Read a STRUCT-T09 derivative alias, or an eliminated STRUCT-T02 alias
+    /// member through its class representative, keeping the source
+    /// occurrence's provenance.
+    fn rebuild_coordinate_alias(
+        &mut self,
+        coordinate: dae::CoordinateView<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Option<Result<dae::ExprId<'target>, dae::DaeConstructionError>> {
+        if let dae::CoordinateView::Derivative(state) = coordinate
+            && let Some(alias) = self.variables[state.index() as usize].derivative_alias
+        {
+            return Some(
+                self.target
+                    .at(provenance)
+                    .coordinate(dae::CoordinateInput::Algebraic(alias)),
+            );
+        }
+        let dae::CoordinateView::Algebraic(id) = coordinate else {
+            return None;
+        };
+        let alias = self.variables[id.index() as usize].value_alias?;
+        let value = self
+            .target
+            .at(provenance)
+            .coordinate(super::variables::value_alias_coordinate(alias));
+        Some(value.and_then(|value| {
+            if alias.negated {
+                self.target
+                    .at(provenance)
+                    .unary(dae::UnaryOperator::Negate, value)
+            } else {
+                Ok(value)
+            }
+        }))
     }
 
     fn rebuild_demoted_value(

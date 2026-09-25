@@ -4,7 +4,7 @@
 //! ratio (`0 = ratio*ga + gb`), the upstream inertia's state is demoted to a
 //! constrained dummy (`w1 = ratio*w2`), and the remaining torques form a
 //! coupled algebraic block whose unknowns do not correspond positionally to
-//! its rows. The refresh used to pair block rows with unknowns by position
+//! its rows (three rows once the alias `fb + ga = 0` is quotiented). The refresh used to pair block rows with unknowns by position
 //! and silently accept rows that could not determine their paired variable,
 //! converging to a wrong but stable solution (a2 = tau/4 instead of
 //! ratio*tau/(ratio^2*J1 + J2) = 2*tau/5).
@@ -64,8 +64,9 @@ fn gear_torque_loop_converges_to_physical_solution() -> Result<(), Box<dyn std::
             .algebraic_projection_plan
             .blocks
             .iter()
-            .any(|block| block.rows.len() == 4 && block.y_indices.len() == 4),
-        "gear torque projection must remain a 4x4 coupled block: {:?}",
+            .any(|block| block.rows.len() == 3 && block.y_indices.len() == 3),
+        "gear torque projection must remain a coupled block (3x3 after the STRUCT-T02 \
+         quotient of `fb + ga = 0`): {:?}",
         solve_model.problem.continuous.algebraic_projection_plan
     );
     let sim = simulate_dae_with_diagnostics(&compiled.dae, &opts)?;

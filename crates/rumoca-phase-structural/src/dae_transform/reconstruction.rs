@@ -9,6 +9,8 @@
 //! holonomic reduction replaces a residual with its second derivative and
 //! reports the manifold expressions it displaced.
 
+mod alias_quotient;
+pub(super) use alias_quotient::rebuild_alias_quotient;
 mod formal;
 pub(super) use formal::rebuild_formal;
 mod state_candidates;
@@ -72,7 +74,7 @@ pub(super) fn rebuild_derivative_aliases(
                             conditions: context.conditions,
                             clocks: context.clocks,
                         },
-                        None,
+                        &[],
                         quotients,
                     )?;
                     super::derivative_aliases::append_definitions(source, target, variables)
@@ -135,7 +137,7 @@ pub(super) fn rebuild_requested_states(
                                 conditions: context.conditions,
                                 clocks: context.clocks,
                             },
-                            None,
+                            &[],
                             quotients,
                         )
                     },
@@ -206,12 +208,12 @@ pub(super) fn rebuild_holonomic_constraint(
                             conditions: context.conditions,
                             clocks: context.clocks,
                         },
-                        Some(super::semantic_owners::EquationReplacement {
+                        &[super::semantic_owners::EquationReplacement {
                             owner_ordinal: constraint.owner_ordinal,
                             body_ordinal: constraint.body_ordinal,
                             residual: constraint.residual,
                             replacement,
-                        }),
+                        }],
                         quotients,
                     )
                 },
@@ -305,7 +307,7 @@ pub(super) fn rebuild_with_state_demotion_and_manifold(
                             conditions: context.conditions,
                             clocks: context.clocks,
                         },
-                        replacement,
+                        replacement.as_slice(),
                         quotients,
                     )
                 },
@@ -368,6 +370,7 @@ struct RebuildRequest<'a> {
     promoted: &'a [u32],
     derivative_aliases: &'a [u32],
     formal_orders: Option<&'a [u32]>,
+    value_aliases: &'a [Option<super::alias_quotient::AliasSubstitution>],
     source_functions_only: bool,
 }
 
@@ -399,6 +402,7 @@ impl RebuildRequest<'_> {
             &mut variables,
             self.derivative_aliases,
         )?;
+        alias_quotient::reserve_value_aliases(&mut variables, self.value_aliases);
         if let Some(orders) = self.formal_orders {
             super::formal_derivatives::reserve_derivatives(
                 source,

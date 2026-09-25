@@ -49,7 +49,7 @@ pub(in crate::dae_transform) fn rebuild_state_candidate(
                                 conditions: context.conditions,
                                 clocks: context.clocks,
                             },
-                            None,
+                            &[],
                             quotients,
                         )?;
                         state =

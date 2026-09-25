@@ -51,7 +51,7 @@ pub(in crate::dae_transform) fn rebuild_formal(
                         conditions: context.conditions,
                         clocks: context.clocks,
                     },
-                    None,
+                    &[],
                     quotients,
                 )?;
                 equations =

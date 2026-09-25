@@ -35,10 +35,16 @@ pub(super) fn rebuild_semantic_owners<'target>(
     target: &mut dae::DaeConstruction<'target>,
     expressions: &[dae::ExprId<'target>],
     identities: RebuiltOwnerIdentities<'_, 'target>,
-    replacement: Option<EquationReplacement<'target>>,
+    replacements: &[EquationReplacement<'target>],
     quotients: &mut RuntimeQuotientReplayPlan<'target>,
 ) -> Result<(), dae::DaeConstructionError> {
-    rebuild_equations(source, target, expressions, identities.domains, replacement)?;
+    rebuild_equations(
+        source,
+        target,
+        expressions,
+        identities.domains,
+        replacements,
+    )?;
     rebuild_initial_discrete_values(source, target, expressions, identities.variables)?;
     rebuild_initial_parameter_values(source, target, expressions, identities.variables)?;
     let relations = rebuild_relations(source, target, expressions, quotients)?;
@@ -83,14 +89,14 @@ fn rebuild_equations<'target>(
     target: &mut dae::DaeConstruction<'target>,
     expressions: &[dae::ExprId<'target>],
     domains: &[RebuiltDomain<'target>],
-    replacement: Option<EquationReplacement<'target>>,
+    replacements: &[EquationReplacement<'target>],
 ) -> Result<(), dae::DaeConstructionError> {
     target.continuous(|target| {
         for (owner_ordinal, owner) in source.continuous_owners().enumerate() {
             match owner {
                 dae::ContinuousOwnerView::Residual { equation, .. } => {
                     let residual = scalar_equation_replacement(
-                        replacement.as_ref(),
+                        replacements,
                         owner_ordinal,
                         equation.residual().index(),
                     )
@@ -106,7 +112,7 @@ fn rebuild_equations<'target>(
                         family,
                         expressions,
                         domains,
-                        structured_equation_replacement(replacement.as_ref(), owner_ordinal),
+                        structured_equation_replacement(replacements, owner_ordinal),
                     )?;
                 }
             }
@@ -132,11 +138,11 @@ fn rebuild_equations<'target>(
 }
 
 fn scalar_equation_replacement<'a, 'target>(
-    replacement: Option<&'a EquationReplacement<'target>>,
+    replacements: &'a [EquationReplacement<'target>],
     owner_ordinal: usize,
     residual: u32,
 ) -> Option<&'a EquationReplacement<'target>> {
-    replacement.filter(|candidate| {
+    replacements.iter().find(|candidate| {
         candidate.owner_ordinal == owner_ordinal
             && candidate.body_ordinal.is_none()
             && candidate.residual == residual
@@ -144,10 +150,10 @@ fn scalar_equation_replacement<'a, 'target>(
 }
 
 fn structured_equation_replacement<'a, 'target>(
-    replacement: Option<&'a EquationReplacement<'target>>,
+    replacements: &'a [EquationReplacement<'target>],
     owner_ordinal: usize,
 ) -> Option<&'a EquationReplacement<'target>> {
-    replacement.filter(|candidate| {
+    replacements.iter().find(|candidate| {
         candidate.owner_ordinal == owner_ordinal && candidate.body_ordinal.is_some()
     })
 }

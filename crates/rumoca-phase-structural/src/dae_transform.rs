@@ -6,6 +6,7 @@
 //! replacement DAE demotes that state and substitutes the exact symbolic
 //! derivative of its definition at every derivative occurrence.
 
+mod alias_quotient;
 mod auxiliary_blocks;
 mod builtin_profiles;
 mod component_constraint;
@@ -59,6 +60,7 @@ use crate::{
     BltBlock, EquationRef, SortedDae, StructuralError, StructuredScalarBlock, UnknownId, sort,
 };
 
+pub use self::alias_quotient::quotient_aliases;
 pub use self::formal_derivatives::{
     FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
     FormalStageEquation, FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate,

@@ -10,7 +10,7 @@ use rumoca_ir_dae as dae;
 use rumoca_phase_structural::{
     FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate, FormalStateCoordinate,
     PreparedDae, ReducedSelectionChart, StateSelection, StructuralError,
-    construct_formal_derivatives, prepare_for_solve,
+    construct_formal_derivatives, prepare_for_solve, quotient_aliases,
 };
 
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
@@ -32,7 +32,64 @@ pub(crate) struct PreparedSelection<'source> {
     pub alternates: Vec<PreparedDae<'static>>,
 }
 
+/// Prepare the executable selection of `model` after its STRUCT-T02 alias
+/// quotient. A model without an eligible alias class prepares unchanged; a
+/// quotiented model prepares the owned reconstruction, which keeps every
+/// source declaration, so later stages read the same variables and names.
 pub(crate) fn prepare<'source>(
+    model: &'source dae::Dae,
+    overrides: &HashMap<String, f64>,
+) -> Result<PreparedSelection<'source>, StructuralError> {
+    match quotient_aliases(model)? {
+        None => prepare_source(model, overrides),
+        Some(quotient) => prepare_quotient(quotient, overrides),
+    }
+}
+
+/// Prepare an owned alias quotient and detach the result from its borrow.
+fn prepare_quotient(
+    quotient: dae::Dae,
+    overrides: &HashMap<String, f64>,
+) -> Result<PreparedSelection<'static>, StructuralError> {
+    let PreparedSelection {
+        primary,
+        alternates,
+    } = prepare_source(&quotient, overrides)?;
+    let primary = match primary {
+        PreparedDae::Borrowed {
+            pins, structural, ..
+        } => Err((pins, structural)),
+        PreparedDae::Transformed {
+            dae,
+            manifold,
+            manifold_redundant,
+            pins,
+            structural,
+            charts,
+        } => Ok(PreparedDae::Transformed {
+            dae,
+            manifold,
+            manifold_redundant,
+            pins,
+            structural,
+            charts,
+        }),
+    };
+    let primary = primary.unwrap_or_else(|(pins, structural)| PreparedDae::Transformed {
+        dae: Box::new(quotient),
+        manifold: Box::new([]),
+        manifold_redundant: Box::new([]),
+        pins,
+        structural,
+        charts: Box::new([]),
+    });
+    Ok(PreparedSelection {
+        primary,
+        alternates,
+    })
+}
+
+fn prepare_source<'source>(
     model: &'source dae::Dae,
     overrides: &HashMap<String, f64>,
 ) -> Result<PreparedSelection<'source>, StructuralError> {

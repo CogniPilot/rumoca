@@ -39,9 +39,19 @@ impl<'dae> TargetVariable<'dae> {
     }
 }
 
+/// The representative coordinate an eliminated alias member reads through.
+#[derive(Clone, Copy)]
+pub(super) struct ValueAlias<'dae> {
+    pub(super) representative: TargetVariable<'dae>,
+    pub(super) negated: bool,
+}
+
 pub(super) struct ReservedVariable<'dae> {
     pub(super) identity: TargetVariable<'dae>,
     pub(super) derivative_alias: Option<dae::AlgebraicId<'dae>>,
+    /// STRUCT-T02: every read of this coordinate is replaced by its class
+    /// representative, negated when the alias is a negation.
+    pub(super) value_alias: Option<ValueAlias<'dae>>,
     pub(super) formal_derivatives: Vec<dae::AlgebraicId<'dae>>,
     reservation: Option<dae::VariableReservation<'dae>>,
 }
@@ -129,6 +139,7 @@ fn reserve_variable<'target>(
     Ok(ReservedVariable {
         identity,
         derivative_alias: None,
+        value_alias: None,
         formal_derivatives: Vec::new(),
         reservation: Some(reservation),
     })
@@ -221,4 +232,13 @@ fn define_variable<'target>(
         origin: source.origin(),
     };
     target.define(reservation, attributes, source.declaration())
+}
+
+/// The coordinate input that reads an alias representative.
+pub(super) fn value_alias_coordinate(alias: ValueAlias<'_>) -> dae::CoordinateInput<'_> {
+    match alias.representative {
+        TargetVariable::State(id) => dae::CoordinateInput::State(id),
+        TargetVariable::Algebraic(id) => dae::CoordinateInput::Algebraic(id),
+        _ => unreachable!("an alias representative is a continuous state or algebraic"),
+    }
 }
