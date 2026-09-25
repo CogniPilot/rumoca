@@ -52,6 +52,8 @@ pub(super) struct ReservedVariable<'dae> {
     /// STRUCT-T02: every read of this coordinate is replaced by its class
     /// representative, negated when the alias is a negation.
     pub(super) value_alias: Option<ValueAlias<'dae>>,
+    /// STRUCT-T10(a): every read of this parameter is replaced by its value.
+    pub(super) folded: Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>,
     pub(super) formal_derivatives: Vec<dae::AlgebraicId<'dae>>,
     reservation: Option<dae::VariableReservation<'dae>>,
 }
@@ -140,6 +142,7 @@ fn reserve_variable<'target>(
         identity,
         derivative_alias: None,
         value_alias: None,
+        folded: None,
         formal_derivatives: Vec::new(),
         reservation: Some(reservation),
     })
@@ -229,6 +232,7 @@ fn define_variable<'target>(
         causality: source.causality(),
         is_tunable: source.is_tunable(),
         is_held: source.is_held(),
+        evaluable: source.is_evaluable(),
         origin: source.origin(),
     };
     target.define(reservation, attributes, source.declaration())

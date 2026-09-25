@@ -11,6 +11,8 @@
 
 mod alias_quotient;
 pub(super) use alias_quotient::rebuild_alias_quotient;
+mod evaluable_parameters;
+pub(super) use evaluable_parameters::rebuild_folded_parameters;
 mod formal;
 pub(super) use formal::rebuild_formal;
 mod state_candidates;
@@ -371,6 +373,7 @@ struct RebuildRequest<'a> {
     derivative_aliases: &'a [u32],
     formal_orders: Option<&'a [u32]>,
     value_aliases: &'a [Option<super::alias_quotient::AliasSubstitution>],
+    folded_parameters: &'a [Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
     source_functions_only: bool,
 }
 
@@ -403,6 +406,9 @@ impl RebuildRequest<'_> {
             self.derivative_aliases,
         )?;
         alias_quotient::reserve_value_aliases(&mut variables, self.value_aliases);
+        for (variable, folded) in variables.iter_mut().zip(self.folded_parameters) {
+            variable.folded.clone_from(folded);
+        }
         if let Some(orders) = self.formal_orders {
             super::formal_derivatives::reserve_derivatives(
                 source,

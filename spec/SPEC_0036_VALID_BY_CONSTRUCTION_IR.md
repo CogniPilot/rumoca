@@ -132,7 +132,7 @@ The aggregate owns exactly the storage specified by
 | Proven parameter-variable families become calculated parameters atomically | ToDAE analysis/construction | One computable owner |
 | Calculated-parameter bindings require finite shape and acyclic dependency proofs | ToDAE analysis | Reject unsafe promotion |
 | Element type includes shape; shape products use checked multiplication | All constructors | Overflow fails |
-| Attributes are checked on attachment | Variable construction | No drift |
+| Attributes are checked on attachment; evaluability at completion ([SPEC_0043 §4](SPEC_0043_CONSTRUCTION_CATALOG.md#4-equation-contract-catalog-spec_0036-expressions-and-equations)) | Variable construction | No drift |
 
 Coordinates are primitive/enumeration rectangular values; function values may
 include checked aggregates/external objects. Finite, inspectable proofs

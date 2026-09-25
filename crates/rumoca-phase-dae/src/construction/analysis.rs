@@ -177,6 +177,8 @@ pub(super) struct Analysis {
     pub(super) model_algorithm_plans: Vec<ModelAlgorithmPlan>,
     /// `fixed = false` parameters an initial algorithm determines (MLS §8.6).
     pub(super) initial_parameters: HashMap<VarName, Expression>,
+    /// `final` or `Evaluate=true` parameters with evaluable bindings (MLS §18.6).
+    pub(super) evaluable_parameters: HashSet<VarName>,
     /// Discrete coordinates whose initialization-instant value an initial
     /// algorithm determines (MLS §8.6).
     pub(super) initial_discrete_values: HashMap<VarName, InitialDiscreteValue>,
@@ -510,6 +512,11 @@ pub(super) enum RecordEquationFieldValue {
     Coordinate(VarName),
 }
 
+// SPEC_0021: Exception - ToDAE analysis entry point assembling every Analysis field
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ToDAE analysis entry point runs each ordered pass once and assembles its result"
+)]
 pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     validate_source_model(flat)?;
     // Fold the parameter fixed point before shape analysis: MLS §12.2 array
@@ -594,6 +601,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         clocked_coordinate_owners: clock_domains.coordinate_owners,
         model_algorithm_plans,
         initial_parameters: initial.algorithms.parameters,
+        evaluable_parameters: evaluable_parameters(flat),
         initial_discrete_values: initial.algorithms.discrete_values,
         initial_algorithm_assertions: initial.algorithms.assertions,
         function_plans,
@@ -1210,21 +1218,7 @@ fn structured_template_expressions(
 /// `RuntimeDependentReason`. Any other failure proves the model or the
 /// evaluator wrong and is reported at the binding.
 fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
-    let mut context = EvalContext::with_capacity(flat.variables.len(), 0, flat.functions.len() * 2);
-    for function in flat.functions.values() {
-        context.add_function(function.clone());
-    }
-    for (name, variable) in &flat.variables {
-        context.add_array_dimensions(name.to_string(), variable.dims.clone());
-    }
-    // MLS §4.8.5.2: an enumeration literal's semantic identity is its ordinal,
-    // and both `Integer(...)` and the relational operators are defined on that
-    // ordinal. Seeding the constant table with the model's exact ordinals is
-    // what lets a parameter expression over an enumeration — such as the
-    // `resolution < Resolution.s` guard of a periodic clock — evaluate.
-    for (literal, ordinal) in &flat.enum_literal_ordinals {
-        context.add_parameter(literal.clone(), EvalValue::Integer(*ordinal));
-    }
+    let mut context = seeded_eval_context(flat);
     for _ in 0..flat.variables.len() {
         let mut progress = false;
         for (name, variable) in &flat.variables {
@@ -1264,6 +1258,124 @@ fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
     }
     register_deferred_parameters(flat, &mut context);
     Ok(context)
+}
+
+/// An evaluation context holding the model's functions, array dimensions, and
+/// enumeration ordinals, with no variable values yet.
+fn seeded_eval_context(flat: &flat::Model) -> EvalContext {
+    let mut context = EvalContext::with_capacity(flat.variables.len(), 0, flat.functions.len() * 2);
+    for function in flat.functions.values() {
+        context.add_function(function.clone());
+    }
+    for (name, variable) in &flat.variables {
+        context.add_array_dimensions(name.to_string(), variable.dims.clone());
+    }
+    // MLS §4.8.5.2: an enumeration literal's semantic identity is its ordinal,
+    // and both `Integer(...)` and the relational operators are defined on that
+    // ordinal. Seeding the constant table with the model's exact ordinals is
+    // what lets a parameter expression over an enumeration (such as the
+    // `resolution < Resolution.s` guard of a periodic clock) evaluate.
+    for (literal, ordinal) in &flat.enum_literal_ordinals {
+        context.add_parameter(literal.clone(), EvalValue::Integer(*ordinal));
+    }
+    context
+}
+
+/// Parameters STRUCT-T10(a) may fold (MLS §4.5, §18.6).
+///
+/// A parameter qualifies when it is `final` or `Evaluate=true`, keeps the
+/// default `fixed=true`, and its binding evaluates from constants and other
+/// qualifying parameters alone. Ordinary parameters are never admitted to the
+/// context, so a binding that reads one stays unevaluated here and its
+/// parameter keeps its runtime meaning.
+fn evaluable_parameters(flat: &flat::Model) -> HashSet<VarName> {
+    let mut context = seeded_eval_context(flat);
+    let mut evaluable = HashSet::new();
+    for _ in 0..flat.variables.len() {
+        let mut progress = false;
+        for (name, variable) in &flat.variables {
+            let admitted = match variable.variability {
+                Variability::Constant(_) => true,
+                Variability::Parameter(_) => {
+                    variable.evaluate && variable.fixed_uniform() != Some(false)
+                }
+                _ => false,
+            };
+            if !admitted || context.instance_value(variable.instance_id).is_some() {
+                continue;
+            }
+            let Some(binding) = &variable.binding else {
+                continue;
+            };
+            if matches!(variable.variability, Variability::Parameter(_))
+                && !reads_only_evaluable(flat, binding, &evaluable, true)
+            {
+                continue;
+            }
+            let Ok(value) = eval_expr(binding, &context) else {
+                continue;
+            };
+            context.add_instance_parameter(variable.instance_id, name.to_string(), value);
+            if matches!(variable.variability, Variability::Parameter(_)) {
+                evaluable.insert(name.clone());
+            }
+            progress = true;
+        }
+        if !progress {
+            break;
+        }
+    }
+    evaluable
+}
+
+/// Whether every variable `binding` reads by value is a constant or an
+/// evaluable parameter, and, unless `marked` (`final` or `Evaluate=true`), at
+/// least one is an evaluable parameter. A `size(a, k)` argument reads only the
+/// shape of `a`. This mirrors the reads DAE construction checks for the
+/// `evaluable` attribute, so a branch of a conditional binding counts even when
+/// translation would never select it.
+fn reads_only_evaluable(
+    flat: &flat::Model,
+    binding: &Expression,
+    evaluable: &HashSet<VarName>,
+    marked: bool,
+) -> bool {
+    let mut reads = ValueReads::default();
+    rumoca_core::ExpressionVisitor::visit_expression(&mut reads, binding);
+    let mut dependent = marked;
+    for read in &reads.names {
+        match flat.variables.get(read) {
+            Some(variable) if matches!(variable.variability, Variability::Constant(_)) => {}
+            Some(_) if evaluable.contains(read) => dependent = true,
+            Some(_) => return false,
+            None => {}
+        }
+    }
+    dependent
+}
+
+/// Variables an expression reads by value.
+#[derive(Default)]
+struct ValueReads {
+    names: Vec<VarName>,
+}
+
+impl rumoca_core::ExpressionVisitor for ValueReads {
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        self.names.push(name.var_name().clone());
+        self.walk_var_ref(name, subscripts);
+    }
+
+    fn visit_builtin_call(&mut self, function: &rumoca_core::BuiltinFunction, args: &[Expression]) {
+        let shape_only = usize::from(matches!(function, rumoca_core::BuiltinFunction::Size));
+        for arg in args.iter().skip(shape_only) {
+            self.visit_expression(arg);
+        }
+    }
 }
 
 /// Name every `fixed = false` parameter the initialization system settles, and

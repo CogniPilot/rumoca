@@ -66,6 +66,7 @@ pub(super) struct VariableAttributesInput {
     pub(super) causality: VariableCausality,
     pub(super) is_tunable: bool,
     pub(super) is_held: bool,
+    pub(super) evaluable: bool,
     pub(super) origin: VariableOrigin,
 }
 

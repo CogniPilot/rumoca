@@ -6,14 +6,17 @@ use rumoca_solver::SimOptions;
 use super::diagnostics::SimulationDiagnosticError;
 
 /// Report the structure Solve lowering analyzes: the STRUCT-T02 alias quotient
-/// of `model` (with every class it left unchanged) followed by the matching and
-/// BLT of the prepared quotient, and, for a constrained system, the
-/// formal-derivative application of the quotient on the reduced candidate Solve
-/// lowering executes.
+/// of `model` after STRUCT-T10(a) parameter folding (with every class it left
+/// unchanged) followed by the matching and BLT of the prepared quotient, and,
+/// for a constrained system, the formal-derivative application of the quotient
+/// on the reduced candidate Solve lowering executes.
 pub fn structural_report_for_dae(
     model: &dae::Dae,
     _: &SimOptions,
 ) -> Result<rumoca_phase_structural::StructuralReport, SimulationDiagnosticError> {
+    let folded =
+        rumoca_phase_structural::fold_evaluable_parameters(model).map_err(structural_error)?;
+    let model = folded.as_ref().unwrap_or(model);
     let aliases = rumoca_phase_structural::alias_quotient_report(model);
     let quotient = rumoca_phase_structural::quotient_aliases(model).map_err(structural_error)?;
     let analyzed = quotient.as_ref().unwrap_or(model);
@@ -68,6 +71,9 @@ pub fn diagnose_structural_singularity(
     model: &dae::Dae,
     _: &SimOptions,
 ) -> Result<Option<SingularityDiagnosis>, SimulationDiagnosticError> {
+    let folded =
+        rumoca_phase_structural::fold_evaluable_parameters(model).map_err(structural_error)?;
+    let model = folded.as_ref().unwrap_or(model);
     let quotient = rumoca_phase_structural::quotient_aliases(model).map_err(structural_error)?;
     let model = quotient.as_ref().unwrap_or(model);
     let error = match rumoca_phase_structural::prepare_for_solve(model) {

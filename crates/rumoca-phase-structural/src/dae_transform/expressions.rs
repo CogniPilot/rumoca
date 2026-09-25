@@ -760,9 +760,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         self.target.at(provenance).coordinate(coordinate)
     }
 
-    /// Read a STRUCT-T09 derivative alias, or an eliminated STRUCT-T02 alias
-    /// member through its class representative, keeping the source
-    /// occurrence's provenance.
+    /// Read a STRUCT-T09 derivative alias, a STRUCT-T10(a) folded parameter
+    /// as its value, or an eliminated STRUCT-T02 alias member through its
+    /// class representative, keeping the source occurrence's provenance.
     fn rebuild_coordinate_alias(
         &mut self,
         coordinate: dae::CoordinateView<'source>,
@@ -776,6 +776,16 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .at(provenance)
                     .coordinate(dae::CoordinateInput::Algebraic(alias)),
             );
+        }
+        if let dae::CoordinateView::Parameter(parameter) = coordinate {
+            let folded = self.variables[parameter.index() as usize]
+                .folded
+                .as_deref()?;
+            return Some(super::evaluable_parameters::folded_literal(
+                self.target,
+                folded,
+                provenance,
+            ));
         }
         let dae::CoordinateView::Algebraic(id) = coordinate else {
             return None;

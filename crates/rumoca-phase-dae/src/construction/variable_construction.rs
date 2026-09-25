@@ -40,6 +40,7 @@ pub(super) fn insert_variable_identities<'flat, 'dae>(
                     assigned_discrete_targets: &analysis.assigned_discrete_targets,
                     derived_parameters: &analysis.derived_parameters,
                     initial_parameters: &analysis.initial_parameters,
+                    evaluable_parameters: &analysis.evaluable_parameters,
                 },
                 VariableSpec {
                     flat: variable,
@@ -151,6 +152,8 @@ pub(super) struct VariableDefinitionContext<'scope, 'dae> {
     pub(super) derived_parameters: &'scope HashMap<VarName, DerivedParameterPlan>,
     /// `fixed = false` parameters an initial algorithm determines (MLS §8.6).
     pub(super) initial_parameters: &'scope HashMap<VarName, Expression>,
+    /// Parameters STRUCT-T10(a) may fold (MLS §18.6).
+    pub(super) evaluable_parameters: &'scope HashSet<VarName>,
 }
 
 #[derive(Clone, Copy)]
@@ -333,6 +336,9 @@ fn lower_variable_attributes<'dae>(
             && !context
                 .assigned_discrete_targets
                 .contains(&variable.flat.name),
+        evaluable: matches!(variable.role, RuntimeVariableRole::Parameter)
+            && binding.is_some()
+            && context.evaluable_parameters.contains(&variable.flat.name),
         origin: dae::VariableOrigin::Source,
     })
 }

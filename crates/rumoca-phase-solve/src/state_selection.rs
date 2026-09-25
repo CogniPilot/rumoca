@@ -10,8 +10,8 @@ use rumoca_ir_dae as dae;
 use rumoca_phase_structural::{
     AliasQuotientReport, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
     FormalStateCoordinate, PreparedDae, ReducedSelectionChart, StateSelection, StructuralError,
-    construct_formal_derivatives, formal_alias_quotient_report, prepare_for_solve,
-    quotient_aliases, quotient_formal_aliases,
+    construct_formal_derivatives, fold_evaluable_parameters, formal_alias_quotient_report,
+    prepare_for_solve, quotient_aliases, quotient_formal_aliases,
 };
 
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
@@ -37,17 +37,19 @@ pub(crate) struct PreparedSelection<'source> {
     pub formal_aliases: AliasQuotientReport,
 }
 
-/// Prepare the executable selection of `model` after its STRUCT-T02 alias
-/// quotient. A model without an eligible alias class prepares unchanged; a
-/// quotiented model prepares the owned reconstruction, which keeps every
-/// source declaration, so later stages read the same variables and names.
+/// Prepare the executable selection of `model` after its STRUCT-T10(a)
+/// evaluable-parameter folding and STRUCT-T02 alias quotient. A model neither
+/// transform changes prepares unchanged; otherwise the owned reconstruction is
+/// prepared, which keeps every source declaration, so later stages read the
+/// same variables and names.
 pub(crate) fn prepare<'source>(
     model: &'source dae::Dae,
     overrides: &HashMap<String, f64>,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
-    match quotient_aliases(model)? {
-        None => prepare_source(model, overrides),
-        Some(quotient) => prepare_quotient(quotient, overrides),
+    let folded = fold_evaluable_parameters(model)?;
+    match (quotient_aliases(folded.as_ref().unwrap_or(model))?, folded) {
+        (None, None) => prepare_source(model, overrides),
+        (Some(quotient), _) | (None, Some(quotient)) => prepare_quotient(quotient, overrides),
     }
 }
 

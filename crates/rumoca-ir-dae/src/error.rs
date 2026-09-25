@@ -188,6 +188,10 @@ pub enum DaeConstructionError {
         "initialization definition for `{name}` requires an unbound non-Real parameter with fixed=false"
     )]
     InvalidInitialParameter { name: VarName, span: Span },
+    #[error(
+        "`{name}` is marked evaluable but is not a fixed, non-tunable parameter whose binding reads only constants and evaluable parameters"
+    )]
+    InvalidEvaluableParameter { name: VarName, span: Span },
     #[error("variable `{name}` of type {found:?} cannot be a {role:?} DAE coordinate")]
     InvalidVariableType {
         name: VarName,
@@ -371,6 +375,7 @@ impl DaeConstructionError {
             | Self::InvalidRecursiveFunctionGroup { span }
             | Self::InvalidVariableRole { span, .. }
             | Self::InvalidInitialParameter { span, .. }
+            | Self::InvalidEvaluableParameter { span, .. }
             | Self::InvalidVariableType { span, .. }
             | Self::DuplicateDefinition { span, .. }
             | Self::DuplicateKey { span, .. }

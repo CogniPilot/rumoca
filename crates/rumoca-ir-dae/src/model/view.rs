@@ -635,6 +635,7 @@ impl<'dae> VariableView<'dae> {
         fn causality -> VariableCausality = |view| view.attributes().causality;
         fn is_tunable -> bool = |view| view.attributes().is_tunable;
         fn is_held -> bool = |view| view.attributes().is_held;
+        fn is_evaluable -> bool = |view| view.attributes().evaluable;
         fn origin -> VariableOrigin = |view| view.attributes().origin;
     }
 

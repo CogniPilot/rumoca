@@ -1,5 +1,6 @@
 mod construction_checks;
 mod domains;
+mod evaluable;
 mod external_functions;
 mod function_checks;
 mod function_conditionals;
@@ -156,7 +157,8 @@ pub(crate) use construction_checks::{
 /// 36 retains checked non-Real parameter definitions at initialization.
 /// 37 appends the checked aggregate auxiliary `LinearSolve` pure function.
 /// 38 preserves source-call ownership for supplied derivative invocations.
-pub const DAE_SCHEMA_VERSION: u16 = 38;
+/// 39 records checked evaluability of `final` and `Evaluate=true` parameters.
+pub const DAE_SCHEMA_VERSION: u16 = 39;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -214,6 +216,7 @@ pub(crate) struct VariableAttributesWire {
     pub(crate) causality: VariableCausality,
     is_tunable: bool,
     is_held: bool,
+    evaluable: bool,
     origin: VariableOrigin,
 }
 
@@ -304,6 +307,9 @@ pub struct VariableAttributes<'dae> {
     pub causality: VariableCausality,
     pub is_tunable: bool,
     pub is_held: bool,
+    /// A `final` or `Evaluate=true` parameter or constant whose declaration
+    /// binding is evaluable (MLS §4.5, §18.6; SPEC_0040 STRUCT-T10).
+    pub evaluable: bool,
     pub origin: VariableOrigin,
 }
 
@@ -1090,6 +1096,7 @@ impl<'dae> Variables<'_, 'dae> {
                 });
             }
         }
+        self.validate_evaluable(variable, attributes, provenance)?;
         if let Some(binding) = attributes.binding {
             self.storage.expect_closed_expression(binding, provenance)?;
             let found = self
@@ -1162,6 +1169,7 @@ fn erase_variable_attributes(attributes: VariableAttributes<'_>) -> VariableAttr
         causality: attributes.causality,
         is_tunable: attributes.is_tunable,
         is_held: attributes.is_held,
+        evaluable: attributes.evaluable,
         origin: attributes.origin,
     }
 }

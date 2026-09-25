@@ -715,6 +715,7 @@ impl Storage {
         if self.unfilled_variables != 0 {
             return Err(self.incomplete_arena("variable", &self.variables));
         }
+        self.validate_evaluable_dependencies()?;
         if self.unfilled_functions != 0 {
             return Err(self.incomplete_arena("function", &self.functions));
         }

@@ -54,6 +54,7 @@ mod derivative_alias_initial_acceleration;
 mod derivative_kinks;
 mod differential_structure;
 mod enumeration_compact_range_test;
+mod evaluable_parameters;
 mod event_commutation;
 mod event_inductive_commutation;
 mod event_latch_cascade;

@@ -1406,6 +1406,7 @@ fn define_variables<'dae>(
             causality: attributes.causality,
             is_tunable: attributes.is_tunable,
             is_held: attributes.is_held,
+            evaluable: attributes.evaluable,
             origin: attributes.origin,
         };
         dae.variables(|variables| variables.define(reservation, attributes, variable.declaration))?;
