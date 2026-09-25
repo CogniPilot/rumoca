@@ -30,8 +30,8 @@ mod regions;
 mod replicate;
 
 pub use plan::{
-    ColoredTangentEntry, ColoredTangentPlan, TangentRowSource, TornTangentPlan,
-    TornTangentResidual, TornTangentStep,
+    ColoredLaneCall, ColoredTangentPlan, TangentRowSource, TornTangentPlan, TornTangentResidual,
+    TornTangentStep,
 };
 
 use crate::linear_op::ScalarProgramRegisterFlow;

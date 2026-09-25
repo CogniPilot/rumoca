@@ -317,72 +317,47 @@ impl ColoredTangentEvaluator {
         &self.plan
     }
 
-    /// The value of every plan entry at `point`, in entry order; `rows` maps
-    /// block rows to implicit rows. `None` when a finite-difference entry has
-    /// no primal rows.
+    /// Evaluate every placement into the column-major buffer `out` (length
+    /// [`ColoredTangentPlan::output_len`]), leaving other entries untouched.
+    /// `seed_len` is the length of one direction of the application's seed.
     pub fn eval(
         &self,
-        point: TangentPoint<'_>,
-        rows: &[usize],
-    ) -> Result<Option<Vec<f64>>, EvalSolveError> {
-        let lanes = self.plan.lanes();
-        let mut seed = vec![0.0; point.y.len() * lanes];
-        for (&column, &color) in self.plan.columns().iter().zip(self.plan.colors()) {
-            seed[column * lanes + color] = 1.0;
-        }
-        let mut outputs = Vec::with_capacity(self.programs.len());
-        for prepared in &self.programs {
-            let mut out = vec![0.0; lanes * prepared.program().lane_outputs()];
+        (y, p, t): (&[f64], &[f64], f64),
+        context: RowEvalContext<'_>,
+        seed_len: usize,
+        out: &mut [f64],
+    ) -> Result<(), EvalSolveError> {
+        validate_output_len(out, self.plan.output_len())?;
+        let mut values = Vec::new();
+        for call in self.plan.calls() {
+            let prepared = &self.programs[call.program];
+            let lanes = call.colors.len();
+            let mut seed = vec![0.0; seed_len * lanes];
+            let seeded = call.colors.iter().enumerate().flat_map(|(lane, &color)| {
+                self.plan.color_seeds()[color]
+                    .iter()
+                    .map(move |index| index * lanes + lane)
+            });
+            for position in seeded {
+                seed[position] = 1.0;
+            }
+            let outputs = prepared.program().lane_outputs();
+            values.resize(lanes * outputs, 0.0);
             prepared.eval(
-                point.y,
-                point.p,
-                point.t,
+                y,
+                p,
+                t,
                 RowEvalContext {
                     seed: Some(&seed),
-                    ..point.context
+                    ..context
                 },
-                &mut out,
+                &mut values,
             )?;
-            outputs.push(out);
+            for &(lane, offset, destination) in call.placements.iter() {
+                out[destination] = values[lane * outputs + offset];
+            }
         }
-        let mut values = Vec::with_capacity(self.plan.entries().len());
-        for entry in self.plan.entries() {
-            let value = match entry.source {
-                TangentRowSource::Lanes { program, output } => {
-                    let width = self.programs[program].program().lane_outputs();
-                    Some(outputs[program][entry.lane * width + output])
-                }
-                TangentRowSource::FiniteDifference => {
-                    self.difference_entry(point, rows[entry.row], entry.lane)?
-                }
-            };
-            let Some(value) = value else {
-                return Ok(None);
-            };
-            values.push(value);
-        }
-        Ok(Some(values))
-    }
-
-    /// Finite difference of implicit row `row` along every column of color `lane`.
-    fn difference_entry(
-        &self,
-        point: TangentPoint<'_>,
-        row: usize,
-        lane: usize,
-    ) -> Result<Option<f64>, EvalSolveError> {
-        let Some(base) = point.row_value(row)? else {
-            return Ok(None);
-        };
-        let direction = self
-            .plan
-            .columns()
-            .iter()
-            .zip(self.plan.colors())
-            .filter(|(_, color)| **color == lane)
-            .map(|(column, _)| (*column, 1.0))
-            .collect::<Vec<_>>();
-        point.row_difference(row, &direction, base)
+        Ok(())
     }
 }
 

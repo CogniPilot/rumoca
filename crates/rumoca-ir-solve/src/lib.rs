@@ -65,8 +65,8 @@ pub use parameter_reads::read_parameter_slots;
 pub use refresh::*;
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
 pub use tangent_lanes::{
-    ColoredTangentEntry, ColoredTangentPlan, TangentLaneError, TangentLaneProgram,
-    TangentRowSource, TornTangentPlan, TornTangentResidual, TornTangentStep,
+    ColoredLaneCall, ColoredTangentPlan, TangentLaneError, TangentLaneProgram, TangentRowSource,
+    TornTangentPlan, TornTangentResidual, TornTangentStep,
 };
 pub use typed_program::*;
 pub use visitor::{

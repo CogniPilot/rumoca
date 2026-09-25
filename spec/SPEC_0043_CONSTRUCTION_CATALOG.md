@@ -321,9 +321,11 @@ target, its coefficient source (a lane seeded on the target alone), and the
 tear columns its reads reach; each reduced residual row names its tangent
 source; a row without a multi-lane program is marked finite-difference.
 Evaluation follows the sweep order and declines at a vanished coefficient. A
-block's colored tangent plan assigns one lane per color of its checked
-pattern. Plans are derived views, rebuilt by each consumer from the same
-construction, never canonical IR.
+block's colored tangent plan constructs from its issued colored Jacobian
+application: each distinct program runs once with one lane per color that
+calls it, and each placement takes the value that color's call would write.
+Plans are derived views, rebuilt by each consumer from the same construction,
+never canonical IR.
 
 A torn sweep's runs construct from its checked causal steps and the certified
 isolators of their rows (`torn_sweep_runs`): consecutive causal steps of one

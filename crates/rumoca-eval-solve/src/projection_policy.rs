@@ -43,6 +43,13 @@ pub const TORN_BACKTRACK_STEPS: usize = 24;
 /// share one Jacobian source.
 pub const TORN_TANGENT_JACOBIAN: bool = false;
 
+/// Whether a colored projection Jacobian evaluates each application program
+/// once with one tangent lane per color that calls it
+/// (`rumoca_ir_solve::ColoredTangentPlan`) instead of once per color. Each
+/// lane equals the one-direction call it replaces, so the Jacobian is the
+/// same; the primal of every program runs once.
+pub const COLORED_TANGENT_LANES: bool = true;
+
 /// Relative step of the reduced finite-difference Jacobian.
 pub const FINITE_DIFFERENCE_RELATIVE_STEP: f64 = 1.0e-7;
 

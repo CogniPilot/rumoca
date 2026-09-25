@@ -719,7 +719,6 @@ impl SolveRuntime {
             colored_tangents: colored_tangent_evaluators(
                 &model.problem.continuous.algebraic_projection_plan,
                 &continuous_structural,
-                &implicit_projection_scalar_jacobian,
             ),
             implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock::new(
                 implicit_projection_scalar_jacobian,
@@ -1770,25 +1769,23 @@ fn torn_tangent_evaluators(
         .collect()
 }
 
-/// The colored tangent evaluator of each projection block over the solver-Y
-/// JVP rows `jvp`, aligned with `plan.blocks` and their structures.
+/// The colored tangent evaluator of each projection block's issued Jacobian
+/// application, aligned with `plan.blocks` and their structures.
 fn colored_tangent_evaluators(
     plan: &solve::AlgebraicProjectionPlan,
     structures: &solve::ContinuousStructuralArtifacts,
-    jvp: &solve::ScalarProgramBlock,
 ) -> Rc<[Option<rumoca_eval_solve::ColoredTangentEvaluator>]> {
     plan.blocks
         .iter()
         .zip(structures.algebraic_projection())
         .map(|(block, structure)| {
-            let plan = solve::ColoredTangentPlan::derive(
-                &block.rows,
-                &block.y_indices,
-                &structure.pattern().nonzero_coordinates(),
-                structure.coloring().groups(),
-                jvp,
-            )
-            .ok()?;
+            if !rumoca_eval_solve::projection_policy::COLORED_TANGENT_LANES {
+                return None;
+            }
+            let application = structure.jacobian_application().filter(|application| {
+                application.rows() == block.rows && application.y_indices() == block.y_indices
+            })?;
+            let plan = solve::ColoredTangentPlan::derive(application).ok()?;
             Some(rumoca_eval_solve::ColoredTangentEvaluator::new(plan))
         })
         .collect()

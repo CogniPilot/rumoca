@@ -3,7 +3,9 @@
 //! of a block solved whole.
 
 use super::{TangentLaneError, TangentLaneProgram};
-use crate::{BlockTearing, LinearOp, MAX_TENSOR_LANES, ScalarProgramBlock};
+use crate::{
+    BlockTearing, LinearOp, MAX_TENSOR_LANES, ProjectionJacobianApplication, ScalarProgramBlock,
+};
 use std::collections::BTreeMap;
 
 /// Where one row's tangents come from.
@@ -219,95 +221,127 @@ impl TornTangentPlan {
     }
 }
 
-/// One nonzero of a colored block Jacobian.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ColoredTangentEntry {
-    /// Block-local row and column.
-    pub row: usize,
-    pub column: usize,
-    /// Lane (color) that carries the column.
-    pub lane: usize,
-    pub source: TangentRowSource,
+/// One multi-lane evaluation of a colored Jacobian application's program.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColoredLaneCall {
+    /// Lane program of the plan.
+    pub program: usize,
+    /// The color each lane seeds.
+    pub colors: Box<[usize]>,
+    /// `(lane, program output offset, destination offset)` of every value
+    /// this evaluation places.
+    pub placements: Box<[(usize, usize, usize)]>,
 }
 
-/// Colored Jacobian of a block from multi-lane tangents: lane `c` seeds every
-/// column of color `c`, so one evaluation of each row program yields every
-/// structural nonzero.
+/// Every call of one application program, in first-use order: the colors
+/// calling it and their `(lane, offset, destination)` placements.
+struct ProgramUse {
+    program: usize,
+    colors: Vec<usize>,
+    placements: Vec<(usize, usize, usize)>,
+}
+
+fn program_uses(application: &ProjectionJacobianApplication) -> Vec<ProgramUse> {
+    let mut uses: Vec<ProgramUse> = Vec::new();
+    let calls = application
+        .colors()
+        .iter()
+        .enumerate()
+        .flat_map(|(color, entry)| {
+            entry
+                .outputs()
+                .programs()
+                .iter()
+                .map(move |call| (color, call))
+        });
+    for (color, call) in calls {
+        let index = match uses
+            .iter()
+            .position(|entry| entry.program == call.program())
+        {
+            Some(index) => index,
+            None => {
+                uses.push(ProgramUse {
+                    program: call.program(),
+                    colors: Vec::new(),
+                    placements: Vec::new(),
+                });
+                uses.len() - 1
+            }
+        };
+        let entry = &mut uses[index];
+        let lane = entry.colors.len();
+        entry.colors.push(color);
+        let placed = call.placements().iter();
+        entry
+            .placements
+            .extend(placed.map(|&(offset, destination)| (lane, offset, destination)));
+    }
+    uses
+}
+
+/// A colored Jacobian application evaluated with one lane per color: each
+/// distinct program of the application runs once with one lane for every
+/// color that calls it, instead of once per color. Lane `j` of a call seeds
+/// the seed indices of color `colors[j]`; each placement writes the value the
+/// one-direction call of that color would write.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColoredTangentPlan {
-    columns: Box<[usize]>,
-    colors: Box<[usize]>,
-    lanes: usize,
+    color_seeds: Box<[Box<[usize]>]>,
     programs: Vec<TangentLaneProgram>,
-    entries: Vec<ColoredTangentEntry>,
+    calls: Vec<ColoredLaneCall>,
+    output_len: usize,
 }
 
 impl ColoredTangentPlan {
-    /// Build the plan of a block with implicit `rows`, solver-Y `columns`,
-    /// block-local structural nonzeros `pattern`, and column color `groups`.
-    pub fn derive(
-        rows: &[usize],
-        columns: &[usize],
-        pattern: &[(usize, usize)],
-        groups: &[Box<[u32]>],
-        jvp: &ScalarProgramBlock,
-    ) -> Result<Self, TangentLaneError> {
-        let lanes = groups.len();
-        if lanes == 0 || lanes >= MAX_TENSOR_LANES {
-            return Err(TangentLaneError::LaneCount { lanes });
-        }
-        let mut colors = vec![usize::MAX; columns.len()];
-        let colored = groups
-            .iter()
-            .enumerate()
-            .flat_map(|(color, group)| group.iter().map(move |column| (*column as usize, color)));
-        for (column, color) in colored.filter(|(column, _)| *column < columns.len()) {
-            colors[column] = color;
-        }
-        let mut builder = LanePrograms {
-            jvp,
-            lanes,
-            positions: output_positions(jvp),
-            built: BTreeMap::new(),
-            programs: Vec::new(),
-        };
-        let mut entries = Vec::with_capacity(pattern.len());
-        for &(row, column) in pattern {
-            let lane = colors.get(column).copied().filter(|lane| *lane < lanes);
-            let (Some(lane), Some(&implicit_row)) = (lane, rows.get(row)) else {
-                return Err(TangentLaneError::Coloring { row, column });
-            };
-            entries.push(ColoredTangentEntry {
-                row,
-                column,
-                lane,
-                source: builder.source(implicit_row).0,
+    /// Build the plan of an issued colored Jacobian application.
+    pub fn derive(application: &ProjectionJacobianApplication) -> Result<Self, TangentLaneError> {
+        let uses = program_uses(application);
+        let mut programs = Vec::with_capacity(uses.len());
+        let mut calls = Vec::with_capacity(uses.len());
+        for ProgramUse {
+            program,
+            colors,
+            placements,
+        } in uses
+        {
+            if colors.len() >= MAX_TENSOR_LANES {
+                return Err(TangentLaneError::LaneCount {
+                    lanes: colors.len(),
+                });
+            }
+            let ops =
+                application
+                    .source()
+                    .programs()
+                    .get(program)
+                    .ok_or(TangentLaneError::Coloring {
+                        row: program,
+                        column: 0,
+                    })?;
+            programs.push(TangentLaneProgram::replicate(ops, colors.len())?);
+            calls.push(ColoredLaneCall {
+                program: programs.len() - 1,
+                colors: colors.into_boxed_slice(),
+                placements: placements.into_boxed_slice(),
             });
         }
         Ok(Self {
-            columns: columns.into(),
-            colors: colors.into_boxed_slice(),
-            lanes,
-            programs: builder.programs,
-            entries,
+            color_seeds: application
+                .colors()
+                .iter()
+                .map(|color| color.seed_indices().into())
+                .collect(),
+            programs,
+            calls,
+            output_len: application.output_len(),
         })
     }
 
-    /// Solver-Y index of each block column.
+    /// Seed indices of each color.
     #[must_use]
-    pub fn columns(&self) -> &[usize] {
-        &self.columns
-    }
-
-    /// Color (lane) of each block column.
-    #[must_use]
-    pub fn colors(&self) -> &[usize] {
-        &self.colors
-    }
-
-    #[must_use]
-    pub const fn lanes(&self) -> usize {
-        self.lanes
+    pub fn color_seeds(&self) -> &[Box<[usize]>] {
+        &self.color_seeds
     }
 
     #[must_use]
@@ -316,7 +350,13 @@ impl ColoredTangentPlan {
     }
 
     #[must_use]
-    pub fn entries(&self) -> &[ColoredTangentEntry] {
-        &self.entries
+    pub fn calls(&self) -> &[ColoredLaneCall] {
+        &self.calls
+    }
+
+    /// Length of the column-major output buffer the placements address.
+    #[must_use]
+    pub const fn output_len(&self) -> usize {
+        self.output_len
     }
 }

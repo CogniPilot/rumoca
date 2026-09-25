@@ -138,21 +138,22 @@ impl RefreshProjectionModel<'_> {
         if block.rows != rows || block.y_indices != y_indices {
             return Ok(None);
         }
-        let point = rumoca_eval_solve::TangentPoint {
-            y,
-            p,
-            t,
-            context: self.runtime.row_eval_context(),
-            primal: Some(&self.runtime.implicit_scalar_rhs),
-            fd_step: rumoca_eval_solve::projection_policy::FINITE_DIFFERENCE_RELATIVE_STEP,
-        };
-        let Some(values) = evaluator.eval(point, rows)? else {
-            return Ok(None);
-        };
-        let entries = evaluator.plan().entries().iter().zip(values);
+        let n = rows.len();
+        let mut out = vec![0.0; evaluator.plan().output_len()];
+        evaluator.eval(
+            (y, p, t),
+            self.runtime.row_eval_context(),
+            y.len() + p.len(),
+            &mut out,
+        )?;
+        let placed = evaluator
+            .plan()
+            .calls()
+            .iter()
+            .flat_map(|call| call.placements.iter().map(|placement| placement.2));
         Ok(Some(
-            entries
-                .map(|(entry, value)| (entry.row, entry.column, value))
+            placed
+                .map(|destination| (destination % n, destination / n, out[destination]))
                 .collect(),
         ))
     }

@@ -304,109 +304,112 @@ fn has_vanished_pivot(rows: &Rows<'_>, tearing: &solve::BlockTearing, y: &[f64])
     })
 }
 
-/// The one-direction colored JVP of `row` for the columns of color `lane`.
-fn one_direction(
+/// The one-direction values of every placement of `application`: each color's
+/// calls with that color's seed, as the colored application evaluates them.
+fn one_direction_values(
     rows: &Rows<'_>,
-    single: &PreparedScalarProgramBlock,
-    (plan, block): (&ColoredTangentPlan, &solve::AlgebraicProjectionBlock),
-    (row, lane): (usize, usize),
+    application: &solve::ProjectionJacobianApplication,
     y: &[f64],
-) -> f64 {
-    let mut seed = vec![0.0; y.len()];
-    let columns = plan
-        .colors()
-        .iter()
-        .enumerate()
-        .filter(|(_, color)| **color == lane);
-    for (column, _) in columns {
-        seed[block.y_indices[column]] = 1.0;
+) -> Vec<Option<f64>> {
+    let source = PreparedScalarProgramBlock::new(application.source().clone())
+        .expect("prepare the application programs");
+    let mut values = vec![None; application.output_len()];
+    let mut outputs = Vec::new();
+    for color in application.colors() {
+        let mut seed = vec![0.0; y.len() + rows.model.parameters.len()];
+        for &index in color.seed_indices() {
+            seed[index] = 1.0;
+        }
+        for call in color.outputs().programs() {
+            source
+                .eval_row_outputs_unchecked_with_context(
+                    call.program(),
+                    y,
+                    &rows.model.parameters,
+                    0.0,
+                    RowEvalContext {
+                        seed: Some(&seed),
+                        ..rows.context()
+                    },
+                    &mut outputs,
+                )
+                .expect("evaluate the one-direction call");
+            for &(offset, destination) in call.placements() {
+                values[destination] = Some(outputs[offset]);
+            }
+        }
     }
-    let (program, offset) = single.row_output_position(row).expect("a JVP row");
-    single
-        .eval_row_output_unchecked_with_context(
-            program,
-            offset,
-            y,
-            &rows.model.parameters,
-            0.0,
-            RowEvalContext {
-                seed: Some(&seed),
-                ..rows.context()
-            },
-        )
-        .expect("evaluate the one-direction JVP")
+    values
 }
 
 /// Check the colored Jacobian of one block at a random point.
 fn check_colored_block(
     label: &str,
     rows: &Rows<'_>,
-    single: &PreparedScalarProgramBlock,
     block: &solve::AlgebraicProjectionBlock,
-    structure: &solve::JacobianStructure,
+    application: &solve::ProjectionJacobianApplication,
 ) {
-    let pattern = structure.pattern().nonzero_coordinates();
-    let plan = ColoredTangentPlan::derive(
-        &block.rows,
-        &block.y_indices,
-        &pattern,
-        structure.coloring().groups(),
-        &rows.jvp,
-    )
-    .expect("the colored Jacobian plan");
+    let plan = ColoredTangentPlan::derive(application).expect("the colored Jacobian plan");
     let evaluator = ColoredTangentEvaluator::new(plan);
     let y = random_point(rows.model, &mut Random(0x2545_f491_4f6c_dd1d));
-    let values = evaluator
-        .eval(point(rows, &y), &block.rows)
-        .expect("evaluate the colored tangents")
-        .expect("every entry evaluates");
-    let mut difference = Vec::with_capacity(values.len());
-    for (entry, value) in evaluator.plan().entries().iter().zip(&values) {
-        let row = block.rows[entry.row];
-        let dual = one_direction(
-            rows,
-            single,
-            (evaluator.plan(), block),
-            (row, entry.lane),
-            &y,
-        );
+    let mut lanes = vec![f64::NAN; application.output_len()];
+    evaluator
+        .eval(
+            (&y, &rows.model.parameters, 0.0),
+            rows.context(),
+            y.len() + rows.model.parameters.len(),
+            &mut lanes,
+        )
+        .expect("evaluate the colored tangents");
+    let n = block.rows.len();
+    let (mut values, mut difference) = (Vec::new(), Vec::new());
+    for (destination, dual) in one_direction_values(rows, application, &y)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(destination, dual)| Some((destination, dual?)))
+    {
+        let value = lanes[destination];
         assert!(
             (value - dual).abs() <= 1e-12 * dual.abs().max(1.0),
-            "{label} colored ({row}, {}): lanes {value:e} vs one-direction {dual:e}",
-            entry.column
+            "{label} colored entry {destination}: lanes {value:e} vs one-direction {dual:e}"
         );
-        let column = block.y_indices[entry.column];
+        let (row, column) = (
+            block.rows[destination % n],
+            block.y_indices[destination / n],
+        );
         let step = 1e-7 * y[column].abs().max(1.0);
         let mut plus = y.clone();
         plus[column] += step;
         let mut minus = y.clone();
         minus[column] -= step;
+        values.push(value);
         difference.push((rows.value(row, &plus) - rows.value(row, &minus)) / (2.0 * step));
     }
+    assert!(
+        !values.is_empty(),
+        "{label}: the application places entries"
+    );
     assert_close(&format!("{label} colored"), &values, &difference);
 }
 
-/// Check every multi-color block's colored Jacobian of `model`; returns the
-/// blocks checked.
+/// Check every multi-color block application of `model`; returns the blocks
+/// checked.
 fn check_colored_blocks(label: &str, model: &solve::SolveModel) -> usize {
     let rows = prepared_rows(model);
-    let single = PreparedScalarProgramBlock::new(rows.jvp.clone()).expect("prepare the JVP rows");
     let structures = model.artifacts.continuous.structural.algebraic_projection();
     let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
-    let colored = blocks
-        .iter()
-        .zip(structures)
-        .enumerate()
-        .filter(|(_, (_, structure))| structure.coloring().groups().len() >= 2);
+    let applications =
+        blocks
+            .iter()
+            .zip(structures)
+            .enumerate()
+            .filter_map(|(index, (block, structure))| {
+                let application = structure.jacobian_application()?;
+                (application.colors().len() >= 2).then_some((index, block, application))
+            });
     let mut checked = 0;
-    for (index, (block, structure)) in colored {
-        check_colored_block(
-            &format!("{label} block {index}"),
-            &rows,
-            &single,
-            block,
-            structure,
-        );
+    for (index, block, application) in applications {
+        check_colored_block(&format!("{label} block {index}"), &rows, block, application);
         checked += 1;
     }
     checked
