@@ -58,3 +58,56 @@ fn an_explicit_end_time_overrides_the_experiment() {
     assert_eq!(announced, "Simulating StopTimeFixture to t=1...");
     assert!((time - 1.0).abs() < 1e-12, "last sample at {time}");
 }
+
+const WINDOW_SOURCE: &str = "model WindowFixture
+  Real x(start = 1, fixed = true);
+equation
+  der(x) = -x;
+  annotation(experiment(StartTime = 1, StopTime = 2.5));
+end WindowFixture;
+";
+
+#[test]
+fn a_direct_run_starts_at_the_experiment_start_time() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("WindowFixture.mo");
+    std::fs::write(&file, WINDOW_SOURCE).unwrap();
+    let csv = dir.path().join("result.csv");
+    let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .arg("sim")
+        .arg(&file)
+        .args(["--model", "WindowFixture", "--output"])
+        .arg(&csv)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let table = std::fs::read_to_string(&csv).unwrap();
+    let times = table
+        .lines()
+        .skip(1)
+        .filter_map(|row| row.split(',').next()?.parse::<f64>().ok())
+        .collect::<Vec<_>>();
+    assert!(
+        (times[0] - 1.0).abs() < 1e-12,
+        "first sample at {}",
+        times[0]
+    );
+    assert!((times[times.len() - 1] - 2.5).abs() < 1e-12);
+}
+
+#[test]
+fn a_direct_bench_uses_the_experiment_window() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("WindowFixture.mo");
+    std::fs::write(&file, WINDOW_SOURCE).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .args(["sim", "bench"])
+        .arg(&file)
+        .args(["--model", "WindowFixture", "--iterations", "1", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["t_end"], 2.5, "{report}");
+    assert_eq!(report["last_final_time"], 2.5, "{report}");
+}

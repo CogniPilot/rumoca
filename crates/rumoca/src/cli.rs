@@ -16,9 +16,9 @@ mod cli_report_tests;
 mod cli_tests;
 mod compile_selectors;
 mod model_resolution;
-mod sim_defaults;
+pub(crate) mod sim_defaults;
 mod value;
-use sim_defaults::direct_sim_t_end;
+use sim_defaults::{direct_sim_window, sim_window};
 
 pub use compile_selectors::{CompilePhase, EmissionPolicyArg, InlinePolicyArg, ScalarizePolicyArg};
 
@@ -990,7 +990,7 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
         return run_simulation(SimulationRun {
             dae: result.dae.as_ref(),
             model: &compiled_model,
-            t_end: configured_sim_t_end(args.t_end, config.sim.t_end),
+            window: (0.0, configured_sim_t_end(args.t_end, config.sim.t_end)),
             dt: Some(configured_sim_dt(args.dt, config.sim.dt)),
             atol: configured_sim_option(args.atol, config.sim.atol),
             rtol: configured_sim_option(args.rtol, config.sim.rtol),
@@ -1415,7 +1415,7 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
     run_simulation(SimulationRun {
         dae: result.dae.as_ref(),
         model: &model,
-        t_end: direct_sim_t_end(args.t_end, result.experiment_stop_time),
+        window: sim_window(&args, &result),
         dt: args.dt,
         atol: args.atol,
         rtol: args.rtol,
@@ -1874,7 +1874,7 @@ pub(crate) fn simulation_failure_error(
 struct SimulationRun<'a> {
     dae: &'a Dae,
     model: &'a str,
-    t_end: f64,
+    window: (f64, f64),
     dt: Option<f64>,
     atol: Option<f64>,
     rtol: Option<f64>,
@@ -1901,7 +1901,8 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
     // this tree cannot run is reported rather than quietly replaced.
     validate_solver_label(run.solver_label)?;
     let mut opts = SimOptions {
-        t_end: run.t_end,
+        t_start: run.window.0,
+        t_end: run.window.1,
         dt: run.dt,
         solver_mode: run.solver_mode,
         diffsol_method: DiffsolMethod::Bdf,
@@ -1916,7 +1917,7 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         opts.rtol = rtol;
     }
 
-    eprintln!("Simulating {} to t={}...", run.model, run.t_end);
+    eprintln!("Simulating {} to t={}...", run.model, run.window.1);
     // On a non-finite-suggestive failure (e.g. a model divide-by-zero showing up
     // as "step size too small"), this re-runs once with NaN tracing so the
     // offending variable(s) are named for the user.

@@ -43,7 +43,8 @@ pub struct SimBenchArgs {
     #[arg(long, default_value_t = 1)]
     pub(crate) warmups: usize,
 
-    /// Simulation end time. Direct runs default to 1.0; scenario runs use `sim.t_end`.
+    /// Simulation end time. Direct runs default to the model's
+    /// `experiment(StopTime)`, as `rumoca sim` does; scenario runs use `sim.t_end`.
     #[arg(long)]
     pub(crate) t_end: Option<f64>,
 
@@ -95,12 +96,34 @@ impl From<BenchSolverMode> for SimulateSolverMode {
 
 struct BenchInput {
     input: ModelInputArgs,
-    t_end: f64,
+    window: BenchWindow,
     dt: Option<f64>,
     atol: Option<f64>,
     rtol: Option<f64>,
     solver_mode: SimSolverMode,
     solver_label: String,
+}
+
+/// How a bench run finds its time window.
+enum BenchWindow {
+    /// A direct run: `--t-end` if given, otherwise the model's experiment,
+    /// resolved after compilation exactly as `rumoca sim` resolves it.
+    Experiment { t_end: Option<f64> },
+    /// A scenario run: its configured end, starting at 0.
+    Configured { t_end: f64 },
+}
+
+impl BenchWindow {
+    fn resolve(&self, result: &crate::DaeCompilationResult) -> (f64, f64) {
+        match *self {
+            Self::Experiment { t_end } => crate::cli::sim_defaults::direct_sim_window(
+                t_end,
+                result.experiment_start_time,
+                result.experiment_stop_time,
+            ),
+            Self::Configured { t_end } => (0.0, t_end),
+        }
+    }
 }
 
 struct HotRunSummary {
@@ -159,8 +182,10 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
     let (result, model) = compile_dae_with_inferred_model(&bench.input, args.diagnostics.verbose)?;
     let compile_elapsed = compile_start.elapsed();
 
+    let (t_start, t_end) = bench.window.resolve(&result);
     let mut opts = SimOptions {
-        t_end: bench.t_end,
+        t_start,
+        t_end,
         dt: bench.dt,
         solver_mode: bench.solver_mode,
         ..SimOptions::default()
@@ -322,7 +347,7 @@ fn resolve_bench_input(args: &SimBenchArgs) -> Result<BenchInput> {
             model_file,
             options: args.model_options.clone(),
         },
-        t_end: args.t_end.unwrap_or(1.0),
+        window: BenchWindow::Experiment { t_end: args.t_end },
         dt: args.dt,
         atol: args.atol,
         rtol: args.rtol,
@@ -382,7 +407,9 @@ fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<
                 source_roots,
             },
         },
-        t_end: args.t_end.unwrap_or(config.sim.t_end),
+        window: BenchWindow::Configured {
+            t_end: args.t_end.unwrap_or(config.sim.t_end),
+        },
         dt: args.dt.or(Some(config.sim.dt)),
         atol: args.atol.or(config.sim.atol),
         rtol: args.rtol.or(config.sim.rtol),
