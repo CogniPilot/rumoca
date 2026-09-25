@@ -60,7 +60,10 @@ use crate::{
     BltBlock, EquationRef, SortedDae, StructuralError, StructuredScalarBlock, UnknownId, sort,
 };
 
-pub use self::alias_quotient::quotient_aliases;
+pub use self::alias_quotient::{
+    AliasClassReport, AliasMemberReport, AliasQuotientReport, AliasRefusal, alias_quotient_report,
+    quotient_aliases,
+};
 pub use self::formal_derivatives::{
     FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
     FormalStageEquation, FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate,

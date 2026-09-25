@@ -5,12 +5,21 @@ use rumoca_solver::SimOptions;
 
 use super::diagnostics::SimulationDiagnosticError;
 
+/// Report the structure Solve lowering analyzes: the STRUCT-T02 alias quotient
+/// of `model` (with every class it left unchanged) followed by the matching and
+/// BLT of the prepared quotient.
 pub fn structural_report_for_dae(
     model: &dae::Dae,
     _: &SimOptions,
 ) -> Result<rumoca_phase_structural::StructuralReport, SimulationDiagnosticError> {
-    let prepared = rumoca_phase_structural::prepare_for_solve(model).map_err(structural_error)?;
-    Ok(prepared.structural_report())
+    let aliases = rumoca_phase_structural::alias_quotient_report(model);
+    let quotient = rumoca_phase_structural::quotient_aliases(model).map_err(structural_error)?;
+    let analyzed = quotient.as_ref().unwrap_or(model);
+    let prepared =
+        rumoca_phase_structural::prepare_for_solve(analyzed).map_err(structural_error)?;
+    let mut report = prepared.structural_report();
+    report.aliases = aliases;
+    Ok(report)
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +49,8 @@ pub fn diagnose_structural_singularity(
     model: &dae::Dae,
     _: &SimOptions,
 ) -> Result<Option<SingularityDiagnosis>, SimulationDiagnosticError> {
+    let quotient = rumoca_phase_structural::quotient_aliases(model).map_err(structural_error)?;
+    let model = quotient.as_ref().unwrap_or(model);
     let error = match rumoca_phase_structural::prepare_for_solve(model) {
         Ok(_) => return Ok(None),
         Err(error) => error,

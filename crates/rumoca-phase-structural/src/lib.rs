@@ -29,12 +29,13 @@ use rumoca_ir_dae as dae;
 pub use causal_definitions::CausalDefinitions;
 pub use causal_discrete::{CausalDiscreteError, CausalDiscretePlan, DiscreteRealDefinition};
 pub use dae_transform::{
-    FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
-    FormalStageEquation, FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate,
-    InitialValuePin, InitialValueRole, PinTerm, PreparedDae, PreparedReducedChart,
-    PreparedStructuralAnalysis, PreparedSystem, ReducedSelectionChart, ReductionCandidateGroup,
-    ReductionIdentity, ReductionLane, ReductionOutcome, ReductionRecord, ReductionReport,
-    ReductionSnapshot, ReductionStop, StateSelection, UnmatchedKind, UnmatchedName,
+    AliasClassReport, AliasMemberReport, AliasQuotientReport, AliasRefusal, FormalDerivativeStage,
+    FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate, FormalStageEquation,
+    FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate, InitialValuePin,
+    InitialValueRole, PinTerm, PreparedDae, PreparedReducedChart, PreparedStructuralAnalysis,
+    PreparedSystem, ReducedSelectionChart, ReductionCandidateGroup, ReductionIdentity,
+    ReductionLane, ReductionOutcome, ReductionRecord, ReductionReport, ReductionSnapshot,
+    ReductionStop, StateSelection, UnmatchedKind, UnmatchedName, alias_quotient_report,
     construct_formal_derivatives, inspect_prepare_for_solve, prepare_for_solve, quotient_aliases,
 };
 pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
@@ -243,6 +244,7 @@ fn structural_report_from_sorted<'dae>(
         n_unknowns: sorted.matching.len(),
         matching,
         blocks,
+        aliases: AliasQuotientReport::default(),
     }
 }
 

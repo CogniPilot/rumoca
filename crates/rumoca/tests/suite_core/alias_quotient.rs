@@ -150,3 +150,63 @@ fn guarded_pre_read_and_doubly_seeded_aliases_stay_unquotiented() {
         }
     }
 }
+
+const REPORTED: &str = "
+model AliasReport
+  Real x(start = 1, fixed = true);
+  Real a;
+  Real b;
+  Real c(start = 2);
+  Real d(start = 3);
+equation
+  der(x) = -a;
+  a = -b;
+  b = -x;
+  c = d;
+  d = x * x;
+end AliasReport;";
+
+#[test]
+fn structure_inspection_reports_the_quotient_it_analyzes() {
+    use rumoca_phase_structural::{AliasClassReport, AliasMemberReport, AliasRefusal};
+    let source = compile(REPORTED, "AliasReport");
+    let report = rumoca_sim::structural_report_for_dae(&source, &SimOptions::default())
+        .expect("the quotiented model is structurally regular");
+    let member = |name: &str, negated| AliasMemberReport {
+        name: name.to_string(),
+        negated,
+    };
+    assert_eq!(
+        report.aliases.classes,
+        [
+            AliasClassReport::Quotiented {
+                representative: "x".to_string(),
+                eliminated: vec![member("a", false), member("b", true)],
+                retained_states: Vec::new(),
+            },
+            AliasClassReport::Unchanged {
+                members: vec!["c".to_string(), "d".to_string()],
+                reason: AliasRefusal::SeveralAnchors,
+            },
+        ]
+    );
+    let rendered = report.to_string();
+    for expected in [
+        "alias quotient (STRUCT-T02): 2 class(es), 1 quotiented, 2 member(s) eliminated",
+        "x <- a, -b",
+        "unchanged (several members request a state or carry a seed): c, d",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "missing `{expected}`: {rendered}"
+        );
+    }
+    assert_eq!(report.n_equations, 5, "the quotient keeps every equation");
+    assert!(
+        report
+            .matching
+            .iter()
+            .any(|(equation, unknown)| unknown == "a" && equation.contains("a = -b")),
+        "the eliminated member is determined by its own alias edge: {rendered}"
+    );
+}

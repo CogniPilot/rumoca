@@ -9,6 +9,7 @@
 //! computed, observable variable and the solution set is unchanged.
 
 mod edges;
+mod report;
 #[cfg(test)]
 mod tests;
 
@@ -18,6 +19,7 @@ use rumoca_ir_dae as dae;
 
 use crate::StructuralError;
 use edges::{AliasEdge, alias_edges};
+pub use report::{AliasClassReport, AliasMemberReport, AliasQuotientReport, alias_quotient_report};
 
 /// How one eliminated member reads its class representative.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,15 +65,23 @@ pub fn quotient_aliases(model: &dae::Dae) -> Result<Option<dae::Dae>, Structural
 
 pub(super) fn derive_plan(view: dae::DaeView<'_>) -> AliasPlan {
     let members = member_facts(view);
-    let edges = alias_edges(view, &members);
+    let classes = alias_classes(view, &members);
     let mut plan = AliasPlan {
         substitutions: vec![None; view.variable_count()],
         definitions: BTreeMap::new(),
     };
-    for class in acyclic_classes(view.variable_count(), &edges) {
-        quotient_class(&class, &members, &mut plan);
+    for class in &classes {
+        if let Ok(representative) = representative(class, &members) {
+            quotient_class(class, representative, &members, &mut plan);
+        }
     }
     plan
+}
+
+/// Every alias class of `view` with the facts of its members.
+fn alias_classes(view: dae::DaeView<'_>, members: &[MemberFacts]) -> Vec<AliasClass> {
+    let edges = alias_edges(view, members);
+    classes(view.variable_count(), &edges)
 }
 
 /// Per-declaration eligibility and anchoring, indexed by declaration ordinal.
@@ -163,14 +173,27 @@ fn pre_read_declarations(view: dae::DaeView<'_>) -> BTreeSet<u32> {
         .collect()
 }
 
-/// One connected alias class with its spanning-tree edges.
+/// One connected alias class with its edges; a cyclic class holds a
+/// redundant or sign-inconsistent edge and is never quotiented.
 struct AliasClass {
     members: Vec<u32>,
     edges: Vec<AliasEdge>,
+    cyclic: bool,
 }
 
-/// Union the edges in owner order; a class that closes a cycle is dropped.
-fn acyclic_classes(variables: usize, edges: &[AliasEdge]) -> Vec<AliasClass> {
+/// Why an alias class stays unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AliasRefusal {
+    /// An edge closes a cycle: redundant or sign-inconsistent equations.
+    Cycle,
+    /// Two members request a state or carry seed information.
+    SeveralAnchors,
+    /// The anchored member is not a state although the class has one.
+    AnchorIsNotState,
+}
+
+/// Union the edges in owner order, marking each class that closes a cycle.
+fn classes(variables: usize, edges: &[AliasEdge]) -> Vec<AliasClass> {
     let mut parent = (0..variables as u32).collect::<Vec<_>>();
     let mut cyclic = Vec::new();
     for edge in edges {
@@ -189,13 +212,12 @@ fn acyclic_classes(variables: usize, edges: &[AliasEdge]) -> Vec<AliasClass> {
     let mut classes: BTreeMap<u32, Vec<AliasEdge>> = BTreeMap::new();
     for edge in edges {
         let root = find(&mut parent, edge.first.variable);
-        if !cyclic.contains(&root) {
-            classes.entry(root).or_default().push(*edge);
-        }
+        classes.entry(root).or_default().push(*edge);
     }
     classes
-        .into_values()
-        .map(|edges| AliasClass {
+        .into_iter()
+        .map(|(root, edges)| AliasClass {
+            cyclic: cyclic.contains(&root),
             members: edges
                 .iter()
                 .flat_map(|edge| [edge.first.variable, edge.second.variable])
@@ -217,32 +239,42 @@ fn find(parent: &mut [u32], mut node: u32) -> u32 {
 }
 
 /// The unique anchored member, else the lowest-ordinal state not avoided by
-/// `StateSelect`, else the lowest-ordinal state, else the lowest ordinal. `None` when two anchored members would force a silent choice, or
-/// when the anchored member is not a state although the class has one: a
-/// state's derivative can only be read through another state.
-fn representative(class: &AliasClass, members: &[MemberFacts]) -> Option<u32> {
+/// `StateSelect`, else the lowest-ordinal state, else the lowest ordinal. The
+/// class stays unchanged when it is cyclic, when two anchored members would
+/// force a silent choice, or when the anchored member is not a state although
+/// the class has one.
+fn representative(class: &AliasClass, members: &[MemberFacts]) -> Result<u32, AliasRefusal> {
+    if class.cyclic {
+        return Err(AliasRefusal::Cycle);
+    }
     let facts = |member: &u32| members[*member as usize];
     let mut anchored = class.members.iter().filter(|member| facts(member).anchored);
     let has_state = class.members.iter().any(|member| facts(member).state);
     match (anchored.next(), anchored.next()) {
-        (Some(_), Some(_)) => None,
-        (Some(anchor), None) => (facts(anchor).state || !has_state).then_some(*anchor),
-        (None, _) => class
+        (Some(_), Some(_)) => Err(AliasRefusal::SeveralAnchors),
+        (Some(anchor), None) if !facts(anchor).state && has_state => {
+            Err(AliasRefusal::AnchorIsNotState)
+        }
+        (Some(anchor), None) => Ok(*anchor),
+        (None, _) => Ok(class
             .members
             .iter()
             .find(|member| facts(member).state && !facts(member).avoided)
             .or_else(|| class.members.iter().find(|member| facts(member).state))
             .or(class.members.first())
-            .copied(),
+            .copied()
+            .expect("an alias class has members")),
     }
 }
 
 /// Orient one class from its representative and record each member's
 /// substitution and defining owner.
-fn quotient_class(class: &AliasClass, members: &[MemberFacts], plan: &mut AliasPlan) {
-    let Some(representative) = representative(class, members) else {
-        return;
-    };
+fn quotient_class(
+    class: &AliasClass,
+    representative: u32,
+    members: &[MemberFacts],
+    plan: &mut AliasPlan,
+) {
     let mut adjacency: BTreeMap<u32, Vec<(u32, &AliasEdge)>> = BTreeMap::new();
     for edge in &class.edges {
         let (first, second) = (edge.first.variable, edge.second.variable);
