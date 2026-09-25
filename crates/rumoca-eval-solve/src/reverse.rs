@@ -456,7 +456,16 @@ fn reverse_linear_solve_component(
 fn unary_derivative(op: UnaryOp, x: f64) -> f64 {
     match op {
         UnaryOp::Neg => -1.0,
-        UnaryOp::Abs => x.signum(),
+        // The forward rules select `du` when `x >= 0`, so the kink and a
+        // negative zero take the right derivative; `f64::signum` would give
+        // `-1` for `-0.0` and make reverse rows disagree with forward JVPs.
+        UnaryOp::Abs => {
+            if x >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
         UnaryOp::Sqrt => guarded(0.5 / x.sqrt()),
         UnaryOp::Sin => x.cos(),
         UnaryOp::Cos => -x.sin(),
@@ -667,6 +676,66 @@ mod tests {
             (cot_y[0] - 3.0).abs() < 1.0e-12,
             "df/dy0 should be 3 (register reuse handled), got {}",
             cot_y[0]
+        );
+    }
+
+    /// `f(y0) = abs(-y0)` at `y0 = 0`: the negation yields `-0.0`. The forward
+    /// dual rule selects the tangent when the operand is `>= 0`, so the forward
+    /// derivative is `-1`; the reverse row must agree, or a Jacobian assembled
+    /// from reverse rows disagrees with the forward JVP that certifies it. An
+    /// alias quotient that reads an eliminated member as `-representative`
+    /// produces exactly this `-0.0` at an all-zero operating point.
+    #[test]
+    fn reverse_abs_at_negative_zero_matches_the_forward_rule() {
+        let block = ScalarProgramBlock::with_output_indices(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::Unary {
+                    dst: 1,
+                    op: UnaryOp::Neg,
+                    arg: 0,
+                },
+                LinearOp::Unary {
+                    dst: 2,
+                    op: UnaryOp::Abs,
+                    arg: 1,
+                },
+                LinearOp::StoreOutput { src: 2 },
+            ]],
+            vec![fixture_span()],
+            vec![0],
+        )
+        .expect("valid scalar block");
+        let row_registers =
+            [crate::required_registers(&block.programs()[0]).expect("register count")];
+        let requirements =
+            crate::scalar_program_block_input_requirements(&block).expect("requirements");
+        let mut cot_y = [0.0];
+        reverse_scalar_block_vjp(
+            &ScalarVjpProgram {
+                block: &block,
+                row_registers: &row_registers,
+                requirements,
+            },
+            &ReverseInputs {
+                y: &[0.0],
+                p: &[],
+                t: 0.0,
+                context: RowEvalContext::default(),
+            },
+            &[1.0],
+            &mut ReverseCotangents {
+                y: &mut cot_y,
+                p: &mut [],
+                seed: &mut [],
+            },
+            &mut ReverseScratch::default(),
+        )
+        .expect("reverse sweep");
+        assert_eq!(
+            cot_y,
+            [-1.0],
+            "reverse abs at -0.0 takes the forward branch"
         );
     }
 
