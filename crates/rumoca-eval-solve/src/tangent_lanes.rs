@@ -385,3 +385,6 @@ impl ColoredTangentEvaluator {
         point.row_difference(row, &direction, base)
     }
 }
+
+#[cfg(test)]
+mod tests;
