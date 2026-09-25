@@ -351,6 +351,26 @@ fn every_unquotiented_class_is_recorded_with_its_reason() {
     );
 }
 
+#[test]
+fn an_inspected_quotient_rebuilds_and_records_no_accepted_class() {
+    // a = c; the three-term row is no alias edge and reads the eliminated c.
+    let (result, report) = inspect_quotient_aliases(&fixture(&[
+        &[(A, false), (C, true)],
+        &[(C, false), (B, false), (D, false)],
+    ]));
+    let quotient = match result {
+        Ok(Some(quotient)) => quotient,
+        Ok(None) => panic!("a = c is quotiented"),
+        Err(error) => panic!("a = c is quotiented: {error}"),
+    };
+    assert_eq!(
+        quotient.inspect(continuous_reads)[1],
+        BTreeSet::from([A, B, D]),
+        "the three-term row reads the representative a instead of c"
+    );
+    assert!(report.records.is_empty(), "{:?}", report.records);
+}
+
 fn formal_plan(residuals: &[&[Term]]) -> AliasPlan {
     fixture_with(residuals, true)
         .inspect(|view| derive_plan_observed(view, QuotientScope::FormalDerivatives, &mut ()))

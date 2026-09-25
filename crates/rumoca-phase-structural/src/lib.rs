@@ -37,8 +37,8 @@ pub use dae_transform::{
     ReductionIdentity, ReductionLane, ReductionOutcome, ReductionRecord, ReductionReport,
     ReductionSnapshot, ReductionStop, StateSelection, UnmatchedKind, UnmatchedName,
     alias_quotient_report, construct_formal_derivatives, formal_alias_quotient_report,
-    inspect_prepare_for_solve, inspect_quotient_aliases, inspect_quotient_formal_aliases,
-    prepare_for_solve, quotient_aliases, quotient_formal_aliases,
+    inspect_prepare_for_solve, inspect_quotient_aliases, prepare_for_solve, quotient_aliases,
+    quotient_formal_aliases,
 };
 pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};

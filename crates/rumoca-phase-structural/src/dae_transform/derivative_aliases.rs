@@ -30,14 +30,7 @@ pub(super) fn normalize(prepared: PreparedDae<'_>) -> Result<PreparedDae<'_>, St
     };
     let (model, ids) =
         super::reconstruction::rebuild_derivative_aliases(prepared.as_dae(), &selected, &ids)?;
-    let manifold = ids
-        .into_iter()
-        .zip(redundant)
-        .map(|(expression, redundant)| ManifoldEntry {
-            expression,
-            redundant,
-        })
-        .collect::<Vec<_>>();
+    let manifold = ManifoldEntry::replayed(ids, &redundant);
     let structural = structural_analysis(&model)?;
     // Derivative-alias normalization runs only on the ordinary reducer path,
     // which issues no reduced state-selection charts; rebuilding the aliases

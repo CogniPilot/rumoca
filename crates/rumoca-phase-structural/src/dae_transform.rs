@@ -63,8 +63,7 @@ use crate::{
 pub use self::alias_quotient::{
     AliasClassReport, AliasMemberReport, AliasQuotientReport, AliasRefusal,
     QuotientScope as AliasQuotientScope, alias_quotient_report, formal_alias_quotient_report,
-    inspect_quotient_aliases, inspect_quotient_formal_aliases, quotient_aliases,
-    quotient_formal_aliases,
+    inspect_quotient_aliases, quotient_aliases, quotient_formal_aliases,
 };
 pub use self::formal_derivatives::{
     FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
@@ -495,6 +494,19 @@ impl ManifoldEntry {
             expression: constraint.expression,
             redundant: constraint.redundant,
         }
+    }
+
+    /// Pair the rebuilt ordinals of a replayed manifold, which come back in
+    /// input order, with the redundancy classification of that input.
+    fn replayed(expressions: Vec<u32>, redundant: &[bool]) -> Vec<Self> {
+        expressions
+            .into_iter()
+            .zip(redundant.iter().copied())
+            .map(|(expression, redundant)| Self {
+                expression,
+                redundant,
+            })
+            .collect()
     }
 }
 

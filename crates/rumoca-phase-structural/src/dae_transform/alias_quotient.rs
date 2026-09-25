@@ -102,30 +102,11 @@ pub enum QuotientScope {
 /// The rebuilt root keeps every declaration ordinal, so reduced-chart
 /// coordinates survive unchanged; retained manifold expressions are replayed
 /// onto the rebuilt arena, and pins and structural analysis are recomputed.
+/// The classes this application leaves unchanged are reported by
+/// [`formal_alias_quotient_report`] on the same candidate.
 pub fn quotient_formal_aliases(
     prepared: super::PreparedDae<'_>,
 ) -> Result<super::PreparedDae<'_>, StructuralError> {
-    quotient_formal_aliases_observed(prepared, &mut ())
-}
-
-/// [`quotient_formal_aliases`] paired with the owned records of every
-/// formal-scope class it left unchanged.
-pub fn inspect_quotient_formal_aliases(
-    prepared: super::PreparedDae<'_>,
-) -> (
-    Result<super::PreparedDae<'_>, StructuralError>,
-    super::ReductionReport,
-) {
-    let mut recorder = super::observation::ReductionRecorder::default();
-    let result = quotient_formal_aliases_observed(prepared, &mut recorder);
-    let report = recorder.finish(result.is_err());
-    (result, report)
-}
-
-fn quotient_formal_aliases_observed<'source>(
-    prepared: super::PreparedDae<'source>,
-    observer: &mut impl super::observation::ReductionObserver,
-) -> Result<super::PreparedDae<'source>, StructuralError> {
     let super::PreparedDae::Transformed {
         dae,
         manifold,
@@ -137,19 +118,12 @@ fn quotient_formal_aliases_observed<'source>(
         return Ok(prepared);
     };
     let plan =
-        dae.inspect(|view| derive_plan_observed(view, QuotientScope::FormalDerivatives, observer));
+        dae.inspect(|view| derive_plan_observed(view, QuotientScope::FormalDerivatives, &mut ()));
     if plan.is_empty() {
         return Ok(prepared);
     }
     let (model, manifold) = super::reconstruction::rebuild_alias_quotient(dae, &plan, manifold)?;
-    let manifold = manifold
-        .into_iter()
-        .zip(manifold_redundant.iter().copied())
-        .map(|(expression, redundant)| super::ManifoldEntry {
-            expression,
-            redundant,
-        })
-        .collect();
+    let manifold = super::ManifoldEntry::replayed(manifold, manifold_redundant);
     let structural = super::structural_analysis(&model)?;
     super::transformed(model, manifold, structural, charts.clone())
 }

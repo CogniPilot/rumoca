@@ -153,12 +153,7 @@ pub fn lower_solve_model<'source>(
 ) -> Result<LoweredSolveModel<'source>, SolveModelLoweringError> {
     begin_stage(SolveModelLoweringStage::Programs);
     let program_start = rumoca_core::maybe_start_timer();
-    let selection = crate::state_selection::prepare(model, overrides).map_err(|error| {
-        LowerError::Structural {
-            reason: error.to_string(),
-            span: error.source_span(),
-        }
-    })?;
+    let selection = prepare_selection(model, overrides)?;
     let package = lower_selection(&selection, overrides)?;
     let prepared = selection.primary;
     let formal_aliases = selection.formal_aliases;
@@ -189,6 +184,18 @@ pub fn lower_solve_model<'source>(
         formal_aliases,
         program_seconds,
         runtime_value_seconds,
+    })
+}
+
+/// Prepare the executable state selection of `model`, reporting a structural
+/// failure as a lowering error at its source span.
+fn prepare_selection<'source>(
+    model: &'source dae::Dae,
+    overrides: &HashMap<String, f64>,
+) -> Result<crate::state_selection::PreparedSelection<'source>, LowerError> {
+    crate::state_selection::prepare(model, overrides).map_err(|error| LowerError::Structural {
+        reason: error.to_string(),
+        span: error.source_span(),
     })
 }
 
