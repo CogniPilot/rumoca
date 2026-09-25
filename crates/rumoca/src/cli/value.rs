@@ -157,7 +157,7 @@ pub fn simulate_to_value(args: &SimCommandArgs, source: &str) -> Result<Value> {
     let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref())?;
 
     let mut opts = SimOptions {
-        t_end: direct_sim_t_end(args.t_end),
+        t_end: direct_sim_t_end(args.t_end, result.experiment_stop_time),
         dt: args.dt,
         solver_mode: solver.into(),
         diffsol_method: rumoca_sim::DiffsolMethod::Bdf,

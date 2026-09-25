@@ -37,9 +37,8 @@ Reading the model line by line:
   solve the system.
 - `annotation(experiment(StopTime = 1800.0))` — the standard Modelica way to
   store default simulation settings with the model. The live editors on
-  these pages and the web playground honor it; native CLI runs currently use
-  `--t-end` (default 1.0 s) or the `[sim]` section of a scenario file
-  instead.
+  these pages, the web playground, and direct CLI runs honor it; `--t-end`
+  or the `[sim]` section of a scenario file overrides it.
 
 ## Adding a Second State
 

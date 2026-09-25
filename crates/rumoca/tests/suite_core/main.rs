@@ -42,6 +42,7 @@ mod bilinear_function_constraint;
 mod cli_diagnostic_rendering;
 mod cli_emit;
 mod cli_fmt_lint;
+mod cli_sim_stop_time;
 mod cli_target_acceptance;
 mod clock_trigger_initial_tick;
 mod clocked_coincident_exchange;

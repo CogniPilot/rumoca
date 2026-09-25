@@ -16,7 +16,9 @@ mod cli_report_tests;
 mod cli_tests;
 mod compile_selectors;
 mod model_resolution;
+mod sim_defaults;
 mod value;
+use sim_defaults::direct_sim_t_end;
 
 pub use compile_selectors::{CompilePhase, EmissionPolicyArg, InlinePolicyArg, ScalarizePolicyArg};
 
@@ -453,7 +455,8 @@ pub struct SimCommandArgs {
     #[arg(long, value_enum)]
     pub solver: Option<SimulateSolverMode>,
 
-    /// Simulation end time. Direct runs default to 1.0; scenario runs use `sim.t_end`.
+    /// Simulation end time. Direct runs default to the model's
+    /// `experiment(StopTime)`, else 1.0; scenario runs use `sim.t_end`.
     #[arg(long)]
     pub t_end: Option<f64>,
 
@@ -1412,7 +1415,7 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
     run_simulation(SimulationRun {
         dae: result.dae.as_ref(),
         model: &model,
-        t_end: direct_sim_t_end(args.t_end),
+        t_end: direct_sim_t_end(args.t_end, result.experiment_stop_time),
         dt: args.dt,
         atol: args.atol,
         rtol: args.rtol,
@@ -1453,10 +1456,6 @@ fn simulate_solver_or_auto(
         "bdf" => SimulateSolverMode::Bdf,
         _ => SimulateSolverMode::Auto,
     })
-}
-
-fn direct_sim_t_end(t_end: Option<f64>) -> f64 {
-    t_end.unwrap_or(1.0)
 }
 
 fn run_lint(args: LintArgs) -> Result<()> {

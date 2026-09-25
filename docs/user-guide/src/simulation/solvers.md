@@ -55,7 +55,7 @@ annotation(experiment(
 `StopTime`, `StartTime`, `Tolerance`, `Interval`, and `Solver` (also
 accepted: `Algorithm`, `__Dymola_Algorithm`) are parsed from the annotation.
 Browser/live runs and the playground honor them fully; native *direct* CLI
-runs currently take end time from `--t-end` (default 1.0 s) and scenario
+runs take end time from `--t-end`, else `StopTime`, else 1.0 s, and scenario
 runs from `[sim]`.
 
 ## Events and the Solver
