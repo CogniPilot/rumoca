@@ -25,7 +25,7 @@ use crate::SimOptions;
 const TOLERANCE: f64 = 1e-6;
 
 /// Two coupled nonlinear loops torn at one or two unknowns each.
-const LOOPS: &str = "model TangentLoops
+pub(super) const LOOPS: &str = "model TangentLoops
   Real x(start=1, fixed=true);
   Real a(start=1);
   Real b(start=1);
@@ -46,7 +46,7 @@ equation
 end TangentLoops;";
 
 /// An affine chain solved as one block.
-fn affine_chain() -> String {
+pub(super) fn affine_chain() -> String {
     let mut source = String::from("model TangentChain\n  Real x(start=1, fixed=true);\n");
     for k in 1..=12 {
         source.push_str(&format!("  Real v{k};\n"));
@@ -63,7 +63,12 @@ fn affine_chain() -> String {
     source
 }
 
-fn lower_source(source: &str, model: &str, roots: &[PathBuf]) -> solve::SolveModel {
+/// The checked DAE of `model` in `source` over the source roots `roots`.
+pub(super) fn compile_with_roots(
+    source: &str,
+    model: &str,
+    roots: &[PathBuf],
+) -> std::sync::Arc<rumoca_ir_dae::Dae> {
     let mut session = Session::new(SessionConfig::default());
     for root in roots {
         let parsed = rumoca_compile::source_roots::parse_source_root_with_cache(root)
@@ -76,10 +81,14 @@ fn lower_source(source: &str, model: &str, roots: &[PathBuf]) -> solve::SolveMod
     session
         .add_document(&format!("{model}.mo"), source)
         .expect("fixture parses");
-    let dae = session
+    session
         .compile_model_dae_strict_reachable_uncached_with_recovery(model)
         .unwrap_or_else(|error| panic!("compile {model}: {error}"))
-        .dae;
+        .dae
+}
+
+fn lower_source(source: &str, model: &str, roots: &[PathBuf]) -> solve::SolveModel {
+    let dae = compile_with_roots(source, model, roots);
     lower_dae_for_simulation(&dae, &SimOptions::default())
         .unwrap_or_else(|error| panic!("lower {model}: {error:?}"))
 }
@@ -271,12 +280,17 @@ fn check_torn_block(
 }
 
 /// Check every torn block of `model` at `points` random points; returns the
-/// number of blocks checked.
-fn check_torn_blocks(label: &str, model: &solve::SolveModel, points: usize) -> usize {
+/// number of torn blocks and of those checked at every point (the others
+/// declined at a vanished causal pivot).
+fn check_torn_blocks(label: &str, model: &solve::SolveModel, points: usize) -> (usize, usize) {
     let rows = prepared_rows(model);
     let mut random = Random(0x9e37_79b9_7f4a_7c15);
     let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
-    blocks
+    let torn = blocks
+        .iter()
+        .filter(|block| block.tearing.is_some())
+        .count();
+    let checked = blocks
         .iter()
         .enumerate()
         .filter_map(|(index, block)| Some((index, block.tearing.as_ref()?)))
@@ -289,7 +303,8 @@ fn check_torn_blocks(label: &str, model: &solve::SolveModel, points: usize) -> u
                 points,
             )
         })
-        .count()
+        .count();
+    (torn, checked)
 }
 
 /// Whether some causal row of `tearing` has a vanishing slope in its target.
@@ -370,7 +385,7 @@ fn check_colored_block(
     {
         let value = lanes[destination];
         assert!(
-            (value - dual).abs() <= 1e-12 * dual.abs().max(1.0),
+            value.to_bits() == dual.to_bits(),
             "{label} colored entry {destination}: lanes {value:e} vs one-direction {dual:e}"
         );
         let (row, column) = (
@@ -418,7 +433,7 @@ fn check_colored_blocks(label: &str, model: &solve::SolveModel) -> usize {
 #[test]
 fn torn_tangent_jacobians_match_finite_differences_of_the_causal_sweep() {
     let model = lower_source(LOOPS, "TangentLoops", &[]);
-    assert_eq!(check_torn_blocks("TangentLoops", &model, 8), 2);
+    assert_eq!(check_torn_blocks("TangentLoops", &model, 8), (2, 2));
 }
 
 #[test]
@@ -427,7 +442,7 @@ fn colored_tangent_jacobians_match_finite_differences_and_the_one_direction_pass
     assert!(check_colored_blocks("TangentChain", &model) >= 1);
 }
 
-fn msl_root() -> Option<PathBuf> {
+pub(super) fn msl_root() -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/msl/ModelicaStandardLibrary-4.1.0");
     root.is_dir().then_some(root)
@@ -443,6 +458,8 @@ fn fourbar1_tangent_jacobians_match_finite_differences() {
         "TangentFourbar1",
         &[root],
     );
-    assert!(check_torn_blocks("Fourbar1", &model, 3) >= 5);
-    assert!(check_colored_blocks("Fourbar1", &model) >= 5);
+    // One of the seven torn blocks meets a vanished causal pivot at a random
+    // point, where the plan declines as the torn solve does.
+    assert_eq!(check_torn_blocks("Fourbar1", &model, 3), (7, 6));
+    assert_eq!(check_colored_blocks("Fourbar1", &model), 7);
 }

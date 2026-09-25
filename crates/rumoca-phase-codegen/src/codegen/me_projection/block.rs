@@ -354,7 +354,7 @@ fn record_lane_calls(
     (application, csr): (&solve::ProjectionJacobianApplication, &Csr),
     record: &mut BlockRecord,
 ) -> Result<(), CodegenError> {
-    if !rumoca_eval_solve::projection_policy::COLORED_TANGENT_LANES {
+    if !rumoca_eval_solve::projection_policy::jacobian_sources().colored_lanes {
         return Ok(());
     }
     let Ok(plan) = solve::ColoredTangentPlan::derive(application) else {

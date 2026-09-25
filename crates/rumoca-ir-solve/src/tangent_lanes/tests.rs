@@ -133,3 +133,41 @@ fn a_seeded_runtime_index_and_an_empty_lane_set_are_refused() {
         Err(TangentLaneError::LaneCount { lanes: 0 })
     ));
 }
+
+/// A one-lane aggregate reading the interleaved lanes of a dual region as
+/// scalars has no widened form: the program is refused, and a colored plan
+/// holding it does not construct, so its block keeps the one-direction calls.
+#[test]
+fn a_one_lane_aggregate_reading_a_dual_region_is_refused() {
+    let program = vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: crate::TensorInputKind::Y,
+            input_start: 0,
+            count: 2,
+            seed_start: Some(0),
+            lanes: 2,
+        },
+        LinearOp::TensorBinary {
+            dst_start: 4,
+            op: BinaryOp::Mul,
+            lhs_start: 0,
+            rhs_start: 0,
+            count: 4,
+            lhs_stride: 1,
+            rhs_stride: 1,
+            lanes: 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: 4,
+            count: 4,
+            stride: 1,
+        },
+    ];
+    for lanes in [2, 3, 5] {
+        assert!(
+            TangentLaneProgram::replicate(&program, lanes).is_err(),
+            "{lanes} lanes"
+        );
+    }
+}

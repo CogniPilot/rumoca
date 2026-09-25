@@ -9,6 +9,7 @@ mod array_trajectories;
 mod coincident_strict;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod input_batches;
+mod jacobian_source_trajectories;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod parameter_bindings;
 mod structure_report;

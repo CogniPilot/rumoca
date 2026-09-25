@@ -39,8 +39,7 @@ use super::scaling::{
 use super::{ImplicitProjectionModel, ProjectionBlockUpdate, RuntimeSolveError};
 
 use rumoca_eval_solve::projection_policy::{
-    TORN_BACKTRACK_STEPS, TORN_OUTER_MAX_ITERS, TORN_TANGENT_JACOBIAN,
-    finite_difference_perturbation,
+    TORN_BACKTRACK_STEPS, TORN_OUTER_MAX_ITERS, finite_difference_perturbation,
 };
 
 /// Attempt the torn solve of one coupled block.
@@ -321,8 +320,7 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
 ) -> Result<Option<ReducedJacobian>, RuntimeSolveError> {
     let rows = tearing.residual_rows.len();
     let columns = tearing.tear_y_indices.len();
-    if TORN_TANGENT_JACOBIAN
-        && let Some(exact) = model.torn_tangent_jacobian(tearing, base, p, t)?
+    if let Some(exact) = model.torn_tangent_jacobian(tearing, base, p, t)?
         && let Some(jacobian) =
             tangent_reduced_jacobian(&exact, (rows, columns), tearing, certify_coordinates)
     {

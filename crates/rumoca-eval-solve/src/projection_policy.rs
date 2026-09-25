@@ -39,8 +39,9 @@ pub const TORN_BACKTRACK_STEPS: usize = 24;
 ///
 /// The exact tear Jacobian is an accuracy option: each tangent lane costs about
 /// a primal pass, so it is costlier than the partial finite-difference columns
-/// of the causal sweep. It is off, so the linked kernel and the generated C
-/// share one Jacobian source.
+/// of the causal sweep, and it changes Newton iterates and so trajectories at
+/// the refresh tolerance level. It is off, so the linked kernel and the
+/// generated C share one Jacobian source.
 pub const TORN_TANGENT_JACOBIAN: bool = false;
 
 /// Whether a colored projection Jacobian evaluates each application program
@@ -49,6 +50,52 @@ pub const TORN_TANGENT_JACOBIAN: bool = false;
 /// lane equals the one-direction call it replaces, so the Jacobian is the
 /// same; the primal of every program runs once.
 pub const COLORED_TANGENT_LANES: bool = true;
+
+/// The projection Jacobian sources an evaluator is built with: the policy
+/// constants unless a caller evaluates another choice with
+/// [`with_jacobian_sources`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JacobianSources {
+    /// [`TORN_TANGENT_JACOBIAN`]
+    pub torn_tangent: bool,
+    /// [`COLORED_TANGENT_LANES`]
+    pub colored_lanes: bool,
+}
+
+impl JacobianSources {
+    /// The sources this policy selects.
+    pub const POLICY: Self = Self {
+        torn_tangent: TORN_TANGENT_JACOBIAN,
+        colored_lanes: COLORED_TANGENT_LANES,
+    };
+}
+
+thread_local! {
+    static JACOBIAN_SOURCES: std::cell::Cell<JacobianSources> =
+        const { std::cell::Cell::new(JacobianSources::POLICY) };
+}
+
+/// The Jacobian sources of evaluators built on this thread: the policy's,
+/// or those of an enclosing [`with_jacobian_sources`].
+#[must_use]
+pub fn jacobian_sources() -> JacobianSources {
+    JACOBIAN_SOURCES.with(std::cell::Cell::get)
+}
+
+/// Run `body` with evaluators built on this thread taking `sources`, and
+/// restore the previous sources afterwards, on unwinding included. An
+/// evaluator keeps the sources it was built with, so this compares the
+/// accuracy options of one model without changing the policy.
+pub fn with_jacobian_sources<R>(sources: JacobianSources, body: impl FnOnce() -> R) -> R {
+    struct Restore(JacobianSources);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            JACOBIAN_SOURCES.with(|current| current.set(self.0));
+        }
+    }
+    let _restore = Restore(JACOBIAN_SOURCES.with(|current| current.replace(sources)));
+    body()
+}
 
 /// Relative step of the reduced finite-difference Jacobian.
 pub const FINITE_DIFFERENCE_RELATIVE_STEP: f64 = 1.0e-7;

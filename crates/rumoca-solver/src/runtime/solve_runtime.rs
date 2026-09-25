@@ -1087,16 +1087,34 @@ impl SolveRuntime {
         p: &[f64],
         t: f64,
     ) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
-        let evaluator = self
+        if self.torn_tangents.iter().all(Option::is_none) {
+            return Ok(None);
+        }
+        // Projection blocks are borrowed from this runtime's plan, so a block
+        // is found by identity; the structural comparison serves a caller
+        // holding a copy of the plan.
+        let blocks = &self
             .model
             .problem
             .continuous
             .algebraic_projection_plan
-            .blocks
+            .blocks;
+        let index = blocks
             .iter()
-            .zip(self.torn_tangents.iter())
-            .find(|(block, _)| block.tearing.as_ref() == Some(tearing))
-            .and_then(|(_, evaluator)| evaluator.as_ref());
+            .position(|block| {
+                block
+                    .tearing
+                    .as_ref()
+                    .is_some_and(|own| std::ptr::eq(own, tearing))
+            })
+            .or_else(|| {
+                blocks
+                    .iter()
+                    .position(|block| block.tearing.as_ref() == Some(tearing))
+            });
+        let evaluator = index
+            .and_then(|index| self.torn_tangents.get(index))
+            .and_then(Option::as_ref);
         let Some(evaluator) = evaluator else {
             return Ok(None);
         };
@@ -1759,10 +1777,9 @@ fn torn_tangent_evaluators(
     plan.blocks
         .iter()
         .map(|block| {
-            let tearing = block
-                .tearing
-                .as_ref()
-                .filter(|_| rumoca_eval_solve::projection_policy::TORN_TANGENT_JACOBIAN)?;
+            let tearing = block.tearing.as_ref().filter(|_| {
+                rumoca_eval_solve::projection_policy::jacobian_sources().torn_tangent
+            })?;
             let plan = solve::TornTangentPlan::derive(tearing, jvp).ok()?;
             Some(rumoca_eval_solve::TornTangentEvaluator::new(plan))
         })
@@ -1779,7 +1796,7 @@ fn colored_tangent_evaluators(
         .iter()
         .zip(structures.algebraic_projection())
         .map(|(block, structure)| {
-            if !rumoca_eval_solve::projection_policy::COLORED_TANGENT_LANES {
+            if !rumoca_eval_solve::projection_policy::jacobian_sources().colored_lanes {
                 return None;
             }
             let application = structure.jacobian_application().filter(|application| {
