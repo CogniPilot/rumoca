@@ -1227,6 +1227,13 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'INST-010'
+case_id = 'inst_010_declaration_cannot_modify_final_type_attribute'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
 contract_id = 'INST-011'
 case_id = 'inst_011_inner_can_be_subtype_of_outer'
 test_file = 'tests/inst_contracts.rs'
@@ -2093,6 +2100,20 @@ case_id = 'type_034_integer_division_real'
 test_file = 'tests/type_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
+
+[[cases]]
+contract_id = 'TYPE-036'
+case_id = 'type_036_type_chain_attributes_reach_simulation'
+test_file = 'tests/type_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'TYPE-036'
+case_id = 'type_036_derived_type_cannot_modify_final_base_attribute'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
 
 [[cases]]
 contract_id = 'EQN-009'

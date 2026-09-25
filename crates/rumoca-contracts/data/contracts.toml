@@ -3883,6 +3883,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'TYPE-036'
+category = 'Type'
+name = 'Predefined-type attribute inheritance'
+mls_ref = '§4.6.2, §4.9, §7.2.3'
+requirement = 'A component of a type derived from a predefined type carries the attribute modifications of its type chain; component and outer modifiers win, then the innermost type, then its bases'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'UNIT-001'
 category = 'Unit'
 name = 'Syntax match'

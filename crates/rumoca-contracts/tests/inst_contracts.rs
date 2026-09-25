@@ -259,6 +259,23 @@ fn inst_010_final_cannot_modify() {
     );
 }
 
+#[test]
+fn inst_010_declaration_cannot_modify_final_type_attribute() {
+    expect_failure_in_phase_with_code(
+        r#"
+        type Voltage = Real(final unit = "V");
+        model Test
+            Voltage v(unit = "kV");
+        equation
+            v = 1;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Instantiate,
+        "EI028",
+    );
+}
+
 // =============================================================================
 // INST-011: Inner/outer subtype
 // "Inner component must be subtype of corresponding outer"

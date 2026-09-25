@@ -1,6 +1,6 @@
 //! TYPE (Type/Interface) contract tests - MLS §6
 //!
-//! Tests for the 35 type contracts defined in SPEC_0022.
+//! Tests for the 36 type contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
@@ -143,6 +143,57 @@ fn type_034_integer_division_real() {
         end Test;
     "#,
         "Test",
+    );
+}
+
+// =============================================================================
+// TYPE-036: Predefined-type attribute inheritance
+// A component of a type derived from a predefined type carries the attribute
+// modifications of its type chain; component modifiers win, then the innermost
+// type, then its bases.
+// =============================================================================
+
+#[test]
+fn type_036_type_chain_attributes_reach_simulation() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        package P
+            type Temperature = Real(start = 288.15, min = 0, nominal = 300);
+            type Warm = Temperature(start = 300);
+            model Test
+                Temperature cold;
+                Warm warm;
+                Warm own(start = 310);
+            equation
+                der(cold) = 0;
+                der(warm) = 0;
+                der(own) = 0;
+            end Test;
+        end P;
+    "#,
+        "P.Test",
+        0.1,
+    );
+    assert_eq!(trace.final_value("cold"), 288.15);
+    assert_eq!(trace.final_value("warm"), 300.0);
+    assert_eq!(trace.final_value("own"), 310.0);
+}
+
+#[test]
+fn type_036_derived_type_cannot_modify_final_base_attribute() {
+    expect_failure_in_phase_with_code(
+        r#"
+        type Temperature = Real(final unit = "K");
+        type Celsius = Temperature(unit = "degC");
+        model Test
+            Celsius t;
+        equation
+            t = 1;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Instantiate,
+        "EI028",
     );
 }
 

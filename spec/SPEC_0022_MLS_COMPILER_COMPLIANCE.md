@@ -27,7 +27,7 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.6 ALG contracts | 533–554 | Algorithm rules (17 contracts) |
 | §4.7 CONN contracts | 555–589 | Connection rules (30 contracts) |
 | §4.8 FUNC contracts | 590–632 | Function rules (38 contracts) |
-| §4.9 TYPE contracts | 633–672 | Type/interface rules (35 contracts) |
+| §4.9 TYPE contracts | 633–673 | Type/interface rules (36 contracts) |
 | §4.10 ARR contracts | 673–719 | Array rules (42 contracts) |
 | §4.11 PKG contracts | 720–736 | Package/import rules (12 contracts) |
 | §4.12 OPREC contracts | 737–752 | Operator record rules (11 contracts) |
@@ -676,6 +676,7 @@ Defines state-to-state transitions with priority and timing control.
 | TYPE-033 | Real/Integer coercion | §6.7 | "If A is Real expression, B must be Real or Integer; result is Real" |
 | TYPE-034 | Integer division result | §6.7 | "For Integer exponentiation and division, result type is Real even if both operands Integer" |
 | TYPE-035 | Operator record consistency | §6.7 | "For array/if-expressions: if A has operator record base, B must have same one"
+| TYPE-036 | Predefined-type attribute inheritance | §4.6.2, §4.9, §7.2.3 | A component of a type derived from a predefined type (short class definition or `extends` of a type, through any chain) carries the attribute modifications of that chain; the component's own modifiers and outer modifications win, then the innermost type, then its bases in order. Rumoca: every §3.16 attribute except `unbounded`, which the IR does not represent; values are evaluated in the scope of the type that wrote them; a non-`each` value of an array type repeats over the component's own dimensions; a modification of an attribute the chain made `final` is EI028 (INST-010). |
 
 ### 4.10 Array Contracts (ARR)
 
@@ -914,7 +915,7 @@ areas.
 | Algorithms | ALG | 17 |
 | Connections | CONN | 30 |
 | Functions | FUNC | 38 |
-| Types/Interfaces | TYPE | 35 |
+| Types/Interfaces | TYPE | 36 |
 | Arrays | ARR | 42 |
 | Packages | PKG | 12 |
 | Operator Records | OPREC | 11 |
@@ -924,7 +925,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 15 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **439** |
+| **Total** | | **440** |
 
 ---
 
