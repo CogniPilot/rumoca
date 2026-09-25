@@ -122,6 +122,17 @@ impl<'dae> DifferentialStructure<'dae> {
 pub fn analyze_differential_structure<'dae>(
     view: dae::DaeView<'dae>,
 ) -> Result<DifferentialStructure<'dae>, StructuralError> {
+    analyze_differential_structure_with_order_bounds(view, &[])
+}
+
+/// [`analyze_differential_structure`] with a lower bound on the offset of
+/// every scalar of a source variable, indexed by source variable ordinal
+/// (missing entries are zero). Formal construction raises these bounds for
+/// coordinates a prolonged equation reads beyond its source signature.
+pub(crate) fn analyze_differential_structure_with_order_bounds<'dae>(
+    view: dae::DaeView<'dae>,
+    order_bounds: &[u32],
+) -> Result<DifferentialStructure<'dae>, StructuralError> {
     let (variables, bases) = variable_columns(view)?;
     let mut rows = Vec::new();
     let mut spans = Vec::new();
@@ -139,8 +150,21 @@ pub fn analyze_differential_structure<'dae>(
     let matching = assignment::maximum_weight_matching(&rows, variables.len())
         .map_err(|reason| contract(&spans, reason))?;
     let matching = require_square_matching(view, &variables, &rows, matching)?;
-    let variable_lower_bounds = state_derivative_lower_bounds(view, variables.len(), &bases)?;
+    let mut variable_lower_bounds = state_derivative_lower_bounds(view, variables.len(), &bases)?;
     let invariant_columns = invariant_columns(view, &variables);
+    for ((bound, coordinate), &invariant) in variable_lower_bounds
+        .iter_mut()
+        .zip(&variables)
+        .zip(&invariant_columns)
+    {
+        let requested = order_bounds
+            .get(coordinate.variable.index() as usize)
+            .copied()
+            .unwrap_or(0);
+        if !invariant {
+            *bound = (*bound).max(requested);
+        }
+    }
     let (equation_orders, variable_orders) = offsets::least_offsets_with_lower_bounds(
         &rows,
         &matching,

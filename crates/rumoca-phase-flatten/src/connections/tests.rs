@@ -684,9 +684,7 @@ fn zero_constraint_equality_generation_respects_required_vcg_branch() {
         ("a.R".to_string(), "c.R".to_string()),
         ("c.R".to_string(), "b.R".to_string()),
     ];
-    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::new(
-        crate::vcg::test_required_forest(&Default::default(), &branches, &optional),
-    );
+    let mut oc_forest = crate::vcg::test_equation_forest(&Default::default(), &branches, &optional);
     let vars = [
         rumoca_core::VarName::new("a.R.gamma"),
         rumoca_core::VarName::new("c.R.gamma"),

@@ -104,6 +104,23 @@ fn function_and_time_dependencies_do_not_invent_later_stage_reads() {
 }
 
 #[test]
+fn supplied_no_derivative_rate_stays_within_its_stage() {
+    // `rotate_der` reads `R.w`, which the body of `rotate` never reads. The
+    // twice-prolonged closure keeps that supplied derivative, so construction
+    // must certify the rate aliases `R1.w`/`R2.w` as stage -1 coordinates
+    // instead of leaving them to the highest stage.
+    let source = compile(
+        include_str!("../fixtures/index_reduction/NoDerivativeRateLoop.mo"),
+        "NoDerivativeRateLoop",
+    );
+    let formal = construct_formal_derivatives(&source).unwrap();
+    formal.inspect(|system| {
+        assert_eq!(system.formal_dimension(), 2);
+        check_partition_and_dependencies(system);
+    });
+}
+
+#[test]
 fn algebraic_system_has_one_square_stage() {
     let source = compile(
         "model Algebraic Real x; equation x=1; end Algebraic;",

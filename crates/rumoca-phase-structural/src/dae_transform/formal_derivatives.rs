@@ -5,8 +5,10 @@ use std::collections::BTreeSet;
 use rumoca_ir_dae as dae;
 
 use super::variables::ReservedVariable;
-use crate::{StructuralError, analyze_differential_structure};
+use crate::StructuralError;
+use crate::differential_structure::analyze_differential_structure_with_order_bounds;
 
+mod stage_reads;
 mod stages;
 mod state_candidates;
 pub(super) use stages::EquationProlongation;
@@ -79,36 +81,76 @@ impl<'source, 'target> FormalDerivativeView<'_, 'source, 'target> {
 
 /// Preserve the source system and append formal derivatives at certified orders.
 /// Regular independent coordinates and executable reconstruction are still needed.
+///
+/// Offsets start from the source signatures. When a prolonged owner reads a
+/// coordinate above its own stage (a supplied derivative's `noDerivative`
+/// input rate, see [`stage_reads`]), that variable's order is raised and the
+/// offsets are certified again, so the read becomes a dependency its stage
+/// determines. Each round strictly raises a bound and the shared
+/// differentiation profile caps orders, so the refinement terminates; a read
+/// no raise can place is refused.
 pub fn construct_formal_derivatives(
     model: &dae::Dae,
 ) -> Result<FormalDerivativeSystem<'_>, StructuralError> {
     model.inspect(|source| {
-        let analysis = analyze_differential_structure(source)?;
-        let offsets = analysis.tensor_offsets(source)?.ok_or_else(|| {
-            StructuralError::UnspannedContractViolation {
-                reason: "formal derivative construction requires compatible whole-tensor orders"
-                    .into(),
+        let invariant = crate::time_invariant::invariant_algebraic_variables(source);
+        let mut order_bounds = vec![0_u32; source.variables().count()];
+        loop {
+            let analysis = analyze_differential_structure_with_order_bounds(source, &order_bounds)?;
+            let offsets = analysis.tensor_offsets(source)?.ok_or_else(|| {
+                StructuralError::UnspannedContractViolation {
+                    reason:
+                        "formal derivative construction requires compatible whole-tensor orders"
+                            .into(),
+                }
+            })?;
+            let mut orders = vec![0; source.variables().count()];
+            for (coordinate, &order) in analysis.variables().iter().zip(offsets.variable_orders()) {
+                orders[coordinate.variable().index() as usize] = order;
             }
-        })?;
-        let mut orders = vec![0; source.variables().count()];
-        for (coordinate, &order) in analysis.variables().iter().zip(offsets.variable_orders()) {
-            orders[coordinate.variable().index() as usize] = order;
+            let (rebuilt, coordinates, equations) = super::reconstruction::rebuild_formal(
+                model,
+                source,
+                &orders,
+                offsets.equation_orders(),
+            )?;
+            let reads = rebuilt.inspect(|formal| {
+                stage_reads::later_stage_reads(formal, &coordinates, &equations, &invariant)
+            })?;
+            if reads.is_empty() {
+                return Ok(FormalDerivativeSystem {
+                    source: model,
+                    model: rebuilt,
+                    coordinates,
+                    equations,
+                    dimension: analysis.formal_dimension(),
+                    source_pins: super::transferred_initial_values(source)?,
+                });
+            }
+            if !raise_order_bounds(&mut order_bounds, reads) {
+                return Err(StructuralError::UnspannedContractViolation {
+                    reason: "a prolonged equation reads a coordinate that no certified stage \
+                             order determines"
+                        .into(),
+                });
+            }
         }
-        let (rebuilt, coordinates, equations) = super::reconstruction::rebuild_formal(
-            model,
-            source,
-            &orders,
-            offsets.equation_orders(),
-        )?;
-        Ok(FormalDerivativeSystem {
-            source: model,
-            model: rebuilt,
-            coordinates,
-            equations,
-            dimension: analysis.formal_dimension(),
-            source_pins: super::transferred_initial_values(source)?,
-        })
     })
+}
+
+/// Raise each bound to the order a later-stage read needs; `false` when no
+/// bound rises, so another certification round cannot place the reads.
+fn raise_order_bounds(
+    order_bounds: &mut [u32],
+    reads: std::collections::BTreeMap<usize, u32>,
+) -> bool {
+    let mut raised = false;
+    for (variable, order) in reads {
+        let bound = &mut order_bounds[variable];
+        raised |= order > *bound;
+        *bound = (*bound).max(order);
+    }
+    raised
 }
 
 pub(super) fn reserve_derivatives<'target>(

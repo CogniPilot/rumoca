@@ -17,6 +17,14 @@ use crate::connections_builtin::extract_potential_root_priority;
 use crate::equations::build_qualified_name;
 use crate::path_utils::{scope_split, segments, strip_array_index};
 
+mod spanning_forest;
+
+#[cfg(test)]
+pub(crate) use spanning_forest::test_equation_forest;
+pub(crate) use spanning_forest::{
+    EqualityLink, OverconstrainedEquationForest, SelectedSpanningForest,
+};
+
 /// Result of the VCG spanning tree computation.
 #[derive(Debug)]
 pub(crate) struct VcgResult {
@@ -25,6 +33,10 @@ pub(crate) struct VcgResult {
     /// For the first endpoint `a` of each `Connections.branch(a, b)`, whether
     /// `a` is closer than `b` to the selected root in the spanning tree.
     pub rooted: FxHashMap<String, bool>,
+    /// The selected spanning forest itself. Connection-equation emission keeps
+    /// exactly its optional edges and breaks exactly the rest, so `rooted` and
+    /// the generated `equalityConstraint` calls describe the same tree.
+    pub spanning_forest: SelectedSpanningForest,
 }
 
 /// Proof that required VCG edges form a forest with at most one definite root
@@ -621,9 +633,11 @@ fn index_signature(path: &str) -> String {
 
 /// Build the VCG spanning tree and compute isRoot/rooted for each node.
 ///
-/// Algorithm per MLS §9.4:
-/// 1. Seed the forest with required branch edges and admit optional edges that
-///    connect two forest components without joining distinct definite roots
+/// Algorithm per MLS §9.4 (tree choice: SPEC_0022 §3.12):
+/// 1. Seed the forest with required branch edges, then admit optional edges in
+///    order of their distance from the component roots (see
+///    [`order_optional_edges_by_root_distance`]) when they connect two forest
+///    components without joining distinct definite roots
 /// 2. Find connected components in the selected spanning forest via BFS
 /// 3. For each component, select root:
 ///    - definite root > lowest-priority potential root > alphabetical first
@@ -645,16 +659,25 @@ pub(crate) fn build_vcg(
         return VcgResult {
             is_root: FxHashMap::default(),
             rooted: FxHashMap::default(),
+            spanning_forest: SelectedSpanningForest::default(),
         };
     }
 
     let mut forest = required_forest.0.clone();
     let mut selected_optional_edges = Vec::new();
-    for (lhs, rhs) in optional_edges {
-        if !forest.reject_optional_edge(lhs, rhs) {
+    let mut broken_optional_edges = Vec::new();
+    for (lhs, rhs) in order_optional_edges_by_root_distance(data, &all_nodes, optional_edges) {
+        if forest.reject_optional_edge(lhs, rhs) {
+            broken_optional_edges.push((lhs.clone(), rhs.clone()));
+        } else {
             selected_optional_edges.push((lhs.clone(), rhs.clone()));
         }
     }
+    let spanning_forest = SelectedSpanningForest::new(
+        &required_forest.0,
+        &selected_optional_edges,
+        broken_optional_edges,
+    );
 
     let adj = build_adjacency_list(&all_nodes, &data.branches, &selected_optional_edges);
     let components = find_connected_components(&all_nodes, &adj);
@@ -689,7 +712,81 @@ pub(crate) fn build_vcg(
     VcgResult {
         is_root: is_root_map,
         rooted: rooted_map,
+        spanning_forest,
     }
+}
+
+/// Order optional edges for spanning-forest selection (SPEC_0022 §3.12).
+///
+/// MLS §9.4 leaves the choice among valid spanning trees to the tool. Rumoca
+/// selects the breadth-first forest from the component roots: every optional
+/// edge is keyed by the graph distances of its endpoints from the nearest root
+/// of its connected component (the definite roots it contains, otherwise the
+/// root [`select_root`] names), smaller key first, then by the normalized edge
+/// name. Distances are measured over all required and optional edges. The key
+/// depends only on the graph and its node names, never on the order of the
+/// `connect` statements, so every permutation of the same model yields the same
+/// tree. A single loop is broken at its optional edge with the largest key,
+/// the edge farthest from the root.
+fn order_optional_edges_by_root_distance<'e>(
+    data: &VcgPreScanData,
+    all_nodes: &FxHashSet<String>,
+    optional_edges: &'e [(String, String)],
+) -> Vec<&'e (String, String)> {
+    let adjacency = build_adjacency_list(all_nodes, &data.branches, optional_edges);
+    let distance = root_distances(data, all_nodes, &adjacency);
+    let edge_distance = |node: &str| distance.get(node).copied().unwrap_or(usize::MAX);
+    let mut ordered: Vec<&(String, String)> = optional_edges.iter().collect();
+    ordered.sort_by_cached_key(|(lhs, rhs)| {
+        let (lhs_distance, rhs_distance) = (edge_distance(lhs), edge_distance(rhs));
+        (
+            lhs_distance.min(rhs_distance),
+            lhs_distance.max(rhs_distance),
+            normalize_edge_key(lhs, rhs),
+        )
+    });
+    ordered
+}
+
+/// Breadth-first distance of every node from the nearest root of its connected
+/// component in the full virtual connection graph.
+fn root_distances<'a>(
+    data: &VcgPreScanData,
+    all_nodes: &'a FxHashSet<String>,
+    adjacency: &FxHashMap<&'a str, Vec<&'a str>>,
+) -> FxHashMap<&'a str, usize> {
+    let mut distance = FxHashMap::default();
+    let mut queue = std::collections::VecDeque::new();
+    for component in find_connected_components(all_nodes, adjacency) {
+        let definite = component
+            .iter()
+            .copied()
+            .filter(|node| data.definite_roots.contains(*node))
+            .collect::<Vec<_>>();
+        let seeds = if definite.is_empty() {
+            vec![select_root(
+                &component,
+                &data.definite_roots,
+                &data.potential_roots,
+            )]
+        } else {
+            definite
+        };
+        for seed in seeds {
+            distance.insert(seed, 0);
+            queue.push_back(seed);
+        }
+    }
+    while let Some(current) = queue.pop_front() {
+        let next = distance[current] + 1;
+        for &neighbor in adjacency.get(current).into_iter().flatten() {
+            if !distance.contains_key(neighbor) {
+                distance.insert(neighbor, next);
+                queue.push_back(neighbor);
+            }
+        }
+    }
+    distance
 }
 
 /// Compute shortest-path depths from one selected component root.
@@ -718,114 +815,11 @@ fn bfs_depths<'a>(
     depths
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct VcgEdgeForest {
     index: FxHashMap<String, usize>,
     parent: Vec<usize>,
     has_definite_root: Vec<bool>,
-}
-
-/// Disposition of one generated primitive equality from an overconstrained
-/// record connection edge.
-pub(crate) enum GeneratedEqualityDisposition {
-    /// Keep the ordinary primitive equality because the record edge belongs to
-    /// the selected spanning forest (or is not overconstrained).
-    Retain,
-    /// Omit the primitive equality. This is either a later field of a broken
-    /// edge or a broken edge whose equality constraint has zero width.
-    Omit,
-    /// Replace the complete broken record edge with one equalityConstraint
-    /// call. This variant is emitted exactly once for the normalized pair.
-    Replace {
-        lhs_record: String,
-        rhs_record: String,
-        constraint_size: usize,
-    },
-}
-
-#[derive(Clone, Copy)]
-enum RecordPairDisposition {
-    Retain,
-    Omit,
-    ReplacePending { constraint_size: usize },
-    ReplaceEmitted,
-}
-
-/// MLS §9.4 forest used while emitting equations for overconstrained records.
-///
-/// Connection sets are already transitive closures, so their generated equality
-/// chain need not preserve the original `connect` edge identity. Any
-/// deterministic spanning forest over the same VCG nodes is equivalent.
-/// Required `Connections.branch` edges seed this forest, while generated
-/// potential equalities are admitted only when they extend it. Broken edges
-/// with a nonempty constraint are replaced once by `equalityConstraint`;
-/// zero-width constraints are omitted.
-pub(crate) struct OverconstrainedEquationForest {
-    forest: VcgEdgeForest,
-    pair_dispositions: FxHashMap<(String, String), RecordPairDisposition>,
-}
-
-impl OverconstrainedEquationForest {
-    pub(crate) fn new(required_forest: RequiredEdgeForest) -> Self {
-        Self {
-            forest: required_forest.0,
-            pair_dispositions: FxHashMap::default(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn empty() -> Self {
-        Self::new(RequiredEdgeForest(VcgEdgeForest::new_empty(
-            &FxHashSet::default(),
-            &[],
-            &[],
-        )))
-    }
-
-    pub(crate) fn generated_equality_disposition(
-        &mut self,
-        flat: &flat::Model,
-        lhs: &rumoca_core::VarName,
-        rhs: &rumoca_core::VarName,
-    ) -> Result<GeneratedEqualityDisposition, FlattenError> {
-        let Some((lhs_record, lhs_constraint_size)) = overconstrained_record_info(flat, lhs) else {
-            return Ok(GeneratedEqualityDisposition::Retain);
-        };
-        let Some((rhs_record, rhs_constraint_size)) = overconstrained_record_info(flat, rhs) else {
-            return Ok(GeneratedEqualityDisposition::Retain);
-        };
-        if lhs_constraint_size != rhs_constraint_size {
-            return Err(FlattenError::internal(format!(
-                "overconstrained record edge `{lhs_record}`--`{rhs_record}` has mismatched equalityConstraint widths {lhs_constraint_size} and {rhs_constraint_size}"
-            )));
-        }
-        let key = normalize_edge_key(lhs_record, rhs_record);
-        let disposition = self.pair_dispositions.entry(key).or_insert_with(|| {
-            if !self.forest.reject_optional_edge(lhs_record, rhs_record) {
-                RecordPairDisposition::Retain
-            } else if lhs_constraint_size == 0 {
-                RecordPairDisposition::Omit
-            } else {
-                RecordPairDisposition::ReplacePending {
-                    constraint_size: lhs_constraint_size,
-                }
-            }
-        });
-        Ok(match *disposition {
-            RecordPairDisposition::Retain => GeneratedEqualityDisposition::Retain,
-            RecordPairDisposition::Omit | RecordPairDisposition::ReplaceEmitted => {
-                GeneratedEqualityDisposition::Omit
-            }
-            RecordPairDisposition::ReplacePending { constraint_size } => {
-                *disposition = RecordPairDisposition::ReplaceEmitted;
-                GeneratedEqualityDisposition::Replace {
-                    lhs_record: lhs_record.to_string(),
-                    rhs_record: rhs_record.to_string(),
-                    constraint_size,
-                }
-            }
-        })
-    }
 }
 
 impl RequiredEdgeForest {
@@ -855,25 +849,6 @@ impl RequiredEdgeForest {
         }
         Ok(Self(forest))
     }
-}
-
-#[cfg(test)]
-pub(crate) fn test_required_forest(
-    definite_roots: &FxHashSet<String>,
-    branches: &[(String, String)],
-    optional_edges: &[(String, String)],
-) -> RequiredEdgeForest {
-    let source = rumoca_core::SourceId::from_source_name("vcg_required_forest_test.mo");
-    let data = VcgPreScanData {
-        definite_roots: definite_roots.clone(),
-        branches: branches.to_vec(),
-        branch_spans: (0..branches.len())
-            .map(|index| rumoca_core::Span::from_offsets(source, index * 2, index * 2 + 1))
-            .collect(),
-        potential_roots: Vec::new(),
-    };
-    RequiredEdgeForest::construct(&data, optional_edges)
-        .expect("test required edges must satisfy the VCG construction contract")
 }
 
 impl VcgEdgeForest {
@@ -1800,159 +1775,5 @@ mod tests {
             )),
             "unindexed wrapper edges should expand to indexed edges"
         );
-    }
-
-    fn add_overconstrained_field(
-        flat: &mut flat::Model,
-        record: &str,
-        field: &str,
-        constraint_size: usize,
-    ) {
-        let name = rumoca_core::VarName::new(format!("{record}.{field}"));
-        flat.add_variable(
-            name.clone(),
-            flat::Variable {
-                name,
-                is_primitive: true,
-                is_overconstrained: true,
-                oc_record_path: Some(record.to_string()),
-                oc_eq_constraint_size: Some(constraint_size),
-                ..flat::Variable::empty_with_span(test_span(1, 2))
-            },
-        );
-    }
-
-    #[test]
-    fn zero_sized_equality_constraint_breaks_generated_edge_against_required_edge() {
-        let mut flat = flat::Model::new();
-        for record in ["a.R", "b.R", "c.R"] {
-            add_overconstrained_field(&mut flat, record, "gamma", 0);
-        }
-        let roots = FxHashSet::from_iter(["a.R".to_string()]);
-        let branches = vec![("a.R".to_string(), "b.R".to_string())];
-        let optional = vec![
-            ("a.R".to_string(), "c.R".to_string()),
-            ("c.R".to_string(), "b.R".to_string()),
-        ];
-        let mut forest =
-            OverconstrainedEquationForest::new(test_required_forest(&roots, &branches, &optional));
-
-        assert!(matches!(
-            forest
-                .generated_equality_disposition(
-                    &flat,
-                    &rumoca_core::VarName::new("a.R.gamma"),
-                    &rumoca_core::VarName::new("c.R.gamma"),
-                )
-                .unwrap(),
-            GeneratedEqualityDisposition::Retain
-        ));
-        assert!(matches!(
-            forest
-                .generated_equality_disposition(
-                    &flat,
-                    &rumoca_core::VarName::new("c.R.gamma"),
-                    &rumoca_core::VarName::new("b.R.gamma"),
-                )
-                .unwrap(),
-            GeneratedEqualityDisposition::Omit
-        ));
-    }
-
-    #[test]
-    fn zero_sized_equality_constraint_uses_one_source_edge_decision_for_every_field() {
-        let mut flat = flat::Model::new();
-        for record in ["a.R", "b.R", "c.R"] {
-            add_overconstrained_field(&mut flat, record, "x", 0);
-            add_overconstrained_field(&mut flat, record, "y", 0);
-        }
-        let branches = vec![("a.R".to_string(), "b.R".to_string())];
-        let optional = vec![
-            ("a.R".to_string(), "c.R".to_string()),
-            ("c.R".to_string(), "b.R".to_string()),
-        ];
-        let mut forest = OverconstrainedEquationForest::new(test_required_forest(
-            &FxHashSet::default(),
-            &branches,
-            &optional,
-        ));
-
-        for field in ["x", "y"] {
-            assert!(matches!(
-                forest
-                    .generated_equality_disposition(
-                        &flat,
-                        &rumoca_core::VarName::new(format!("a.R.{field}")),
-                        &rumoca_core::VarName::new(format!("c.R.{field}")),
-                    )
-                    .unwrap(),
-                GeneratedEqualityDisposition::Retain
-            ));
-            assert!(matches!(
-                forest
-                    .generated_equality_disposition(
-                        &flat,
-                        &rumoca_core::VarName::new(format!("c.R.{field}")),
-                        &rumoca_core::VarName::new(format!("b.R.{field}")),
-                    )
-                    .unwrap(),
-                GeneratedEqualityDisposition::Omit
-            ));
-        }
-    }
-
-    #[test]
-    fn nonempty_equality_constraint_break_is_replaced_once() {
-        let mut flat = flat::Model::new();
-        for record in ["a.R", "b.R", "c.R"] {
-            add_overconstrained_field(&mut flat, record, "T", 3);
-            add_overconstrained_field(&mut flat, record, "w", 3);
-        }
-        let branches = vec![("a.R".to_string(), "b.R".to_string())];
-        let optional = vec![
-            ("a.R".to_string(), "c.R".to_string()),
-            ("c.R".to_string(), "b.R".to_string()),
-        ];
-        let mut forest = OverconstrainedEquationForest::new(test_required_forest(
-            &FxHashSet::default(),
-            &branches,
-            &optional,
-        ));
-
-        assert!(matches!(
-            forest
-                .generated_equality_disposition(
-                    &flat,
-                    &rumoca_core::VarName::new("a.R.T"),
-                    &rumoca_core::VarName::new("c.R.T"),
-                )
-                .unwrap(),
-            GeneratedEqualityDisposition::Retain
-        ));
-
-        assert!(matches!(
-            forest
-                .generated_equality_disposition(
-                    &flat,
-                    &rumoca_core::VarName::new("c.R.T"),
-                    &rumoca_core::VarName::new("b.R.T"),
-                )
-                .unwrap(),
-            GeneratedEqualityDisposition::Replace {
-                lhs_record,
-                rhs_record,
-                constraint_size: 3,
-            } if lhs_record == "c.R" && rhs_record == "b.R"
-        ));
-        assert!(matches!(
-            forest
-                .generated_equality_disposition(
-                    &flat,
-                    &rumoca_core::VarName::new("c.R.w"),
-                    &rumoca_core::VarName::new("b.R.w"),
-                )
-                .unwrap(),
-            GeneratedEqualityDisposition::Omit
-        ));
     }
 }

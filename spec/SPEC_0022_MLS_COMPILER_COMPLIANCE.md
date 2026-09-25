@@ -133,6 +133,12 @@ Equation forms:
 
 Constructed from the virtual connection graph by "removing optional spanning tree edges." Contains all nodes with selected root nodes and required spanning-tree edges.
 
+MLS §9.4 lets the tool choose among the valid spanning trees. Rumoca's choice:
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Select one spanning forest per graph. Required (`Connections.branch`) edges are admitted first; optional edges are then admitted in ascending order of (smaller, larger) endpoint distance from the nearest root of their connected component, ties broken by the lexicographically ordered endpoint names; an edge is broken when it would close a cycle or join two definite-root trees. Distances are graph distances over all required and optional edges from the component's definite roots, or from the root that `isRoot` selects when the component has none. `Connections.rooted`/`isRoot` evaluation and connection-equation emission consume this one forest: every selected optional edge keeps its ordinary equalities, every broken one is replaced by `equalityConstraint` (omitted when zero-width). | `rumoca-phase-flatten` `vcg::build_vcg`, `vcg::spanning_forest` | The tree depends only on the graph and node names, never on `connect` statement order; a graph without overconstrained loops breaks no edge and emits the same equations as before, and the branch orientation `rooted` reports is exactly the tree whose loops the emitted equations cut; two independently chosen forests leave `if Connections.rooted(...)` branches inconsistent with the cut |
+
 ### 3.13 Root Nodes ([MLS §9.4](https://specification.modelica.org/maint/3.7/connectors-and-connections.html))
 
 **Definite Root**: "The overdetermined type or record instance R in connector instance a is a (definite) root node." Represents consistently initialized overdetermined records.

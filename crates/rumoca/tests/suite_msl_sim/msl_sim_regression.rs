@@ -31,7 +31,7 @@ fn compiler_with_msl() -> Option<Compiler> {
     None
 }
 
-fn require_msl_compiler() -> Compiler {
+pub(crate) fn require_msl_compiler() -> Compiler {
     compiler_with_msl().expect(
         "MSL simulation regression tests require MODELICAPATH or cached MSL at \
          target/msl/ModelicaStandardLibrary-4.1.0; run without the msl-sim-tests \

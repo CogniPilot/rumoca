@@ -468,6 +468,10 @@ fn generate_connection_set_equations(
 /// `v1 = v2, v2 = v3, ..., v(n-1) = vn`
 ///
 /// In residual form: `v1 - v2 = 0, v2 - v3 = 0, ...`
+///
+/// A set of overconstrained record fields that a broken spanning-forest edge
+/// crosses follows the selected forest instead (MLS §9.4): equalities within
+/// each selected group, one `equalityConstraint` per broken edge between them.
 pub(super) fn generate_equality_equations(
     flat: &mut flat::Model,
     variables: &[rumoca_core::VarName],
@@ -475,10 +479,24 @@ pub(super) fn generate_equality_equations(
     oc_forest: &mut crate::vcg::OverconstrainedEquationForest,
 ) -> Result<(), FlattenError> {
     let provenance = require_connection_provenance(span, "connection equality equation")?;
-    // Generate chain of equality equations: v1 - v2 = 0, v2 - v3 = 0, ...
-    for window in variables.windows(2) {
-        let var_a = &window[0];
-        let var_b = &window[1];
+    for link in oc_forest.equality_links(flat, variables)? {
+        let (var_a, var_b) = match link {
+            crate::vcg::EqualityLink::Equal { lhs, rhs } => (&variables[lhs], &variables[rhs]),
+            crate::vcg::EqualityLink::Constraint {
+                lhs_record,
+                rhs_record,
+                constraint_size,
+            } => {
+                generate_equality_constraint_equation(
+                    flat,
+                    &lhs_record,
+                    &rhs_record,
+                    constraint_size,
+                    span,
+                )?;
+                continue;
+            }
+        };
 
         // MLS §10.5: an element/slice member denotes the dimensions its
         // subscripts leave, so both sides are measured by what they denote.
@@ -500,25 +518,6 @@ pub(super) fn generate_equality_equations(
         // Skip empty arrays (Real[0]) — no equations needed
         if scalar_count == 0 {
             continue;
-        }
-
-        match oc_forest.generated_equality_disposition(flat, var_a, var_b)? {
-            crate::vcg::GeneratedEqualityDisposition::Retain => {}
-            crate::vcg::GeneratedEqualityDisposition::Omit => continue,
-            crate::vcg::GeneratedEqualityDisposition::Replace {
-                lhs_record,
-                rhs_record,
-                constraint_size,
-            } => {
-                generate_equality_constraint_equation(
-                    flat,
-                    &lhs_record,
-                    &rhs_record,
-                    constraint_size,
-                    span,
-                )?;
-                continue;
-            }
         }
 
         // Mark both variables as connected

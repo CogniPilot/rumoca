@@ -5,7 +5,9 @@ use std::sync::Arc;
 pub(crate) struct FlattenGraphData {
     pub(crate) vcg_data: vcg::VcgPreScanData,
     pub(crate) optional_edges: Vec<(String, String)>,
-    pub(crate) required_forest: vcg::RequiredEdgeForest,
+    /// The one selected MLS §9.4 spanning forest; `Connections.rooted` and
+    /// connection-equation emission both follow it.
+    pub(crate) spanning_forest: vcg::SelectedSpanningForest,
 }
 
 pub(crate) struct OverlayScopeIndex<'a> {
@@ -930,7 +932,7 @@ pub(crate) fn prepare_context_for_equation_flattening(
     Ok(FlattenGraphData {
         vcg_data,
         optional_edges,
-        required_forest,
+        spanning_forest: vcg_result.spanning_forest,
     })
 }
 
@@ -1100,7 +1102,7 @@ fn finalize_flat_connections(
     outer_refs::redirect_outer_refs(flat, &overlay.outer_prefix_to_inner);
     let connections_start = maybe_start_timer();
     let mut oc_forest =
-        vcg::OverconstrainedEquationForest::new(flatten_graph.required_forest.clone());
+        vcg::OverconstrainedEquationForest::new(flatten_graph.spanning_forest.clone());
     let result = connections::process_connections(
         flat,
         overlay,
