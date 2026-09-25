@@ -341,11 +341,45 @@ once and writes exactly the per-step isolators' values; the linked kernel and
 the generated C consume the same runs, and an evaluation failure inside a run
 falls back to its steps one by one.
 
+A projection block's residual split constructs from the block's checked row
+programs and its unknown set (`y_indices`), once per (block, program). The
+block-unknown cone of a program is the set of register versions written by an
+operation that reads a block unknown (a `LoadY` or a Y tensor range naming
+one, directly or inside a fold or conditional body) or reads a register
+version already in the cone; a `Select`, a conditional, or a guarded fold
+whose condition or activation is in the cone is in it, and a pure call, fold,
+or conditional runs whole, so it is in the cone when any input is, whatever
+its output summaries say. An operation is invariant when it is outside the
+cone, every register it writes is written once in the program, and it has no
+non-repeatable effect (a random or impure operation); output stores are never
+invariant. The invariant part is the invariant operations in program order,
+and its live-out registers are those a remaining operation reads. The
+dependent part is the remaining operations in program order, entered with the
+live-out registers preset. A block projection call changes only the block's
+unknowns at fixed parameters, time, and external tables, so every invariant
+operation computes the same bits at every point of the call: the invariant
+part evaluated once per call, followed at each pass by the dependent part
+over its live-out values, is bit-identical to evaluating the whole program at
+that pass. The split serves the residual passes of the affine, torn, and dense
+paths and the causal chain and isolator programs, which are prefixes of the
+same row programs over the same registers; only values invariant under every
+unknown of the block hoist, so a torn sweep that moves any of them reads the
+same live-out values. Jacobian and tangent-lane programs are outside the
+split: their register identities differ from the row programs', and their
+seed-invariant operations already run once per call. The certificate records
+the invariant positions and live-out registers of each (block, program); its
+checker re-derives both from the program and the unknown set and rejects any
+difference. Failures keep their order: the invariant part runs before the
+call's first program evaluation and reports nothing; when it fails, the call
+discards its values and evaluates the unsplit programs, so the same operation
+raises the same error at the same pass as without the split.
+
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Within one structural-artifact construction, applications of one immutable source share one operation-invariance proof; source replacement or specialization derives fresh evidence for its exact owner. The existing register-source checker must prove every read uses a seed-invariant register version; seed loads and any operation with non-repeatable effects cannot establish reuse. Every write replaces the destination version's evidence. | Projection-Jacobian construction | Preserves failure behavior without multiplying source-wide proof work by the block count |
 | Native preparation may retain certified result ranges after their first complete, ordered execution and reuse those exact values in subsequent colors. Mixed primal/tangent tensor operations remain complete operations; no scalar graph is reconstructed. | Prepared projection application | Preserves tensor ownership and arithmetic order |
 | Reuse is confined to one non-reentrant call at identical Y, P, time, external tables, and execution mode. The first failure aborts publication; later calls execute their first occurrence afresh. | Native projection workspace | Preserves validation, coordinate freshness, and failure semantics |
+| A block residual split hoists an operation only outside the block-unknown cone, when each register it writes is written once and it has no non-repeatable effect; the dependent part enters with the hoisted live-out registers preset. The invariant part runs once per block projection call, before the first program evaluation and without reporting; any failure discards it and the call evaluates the unsplit programs. | Block residual construction (`rumoca-eval-solve`), linked kernel, compiled residual path, and generated C | Identical operands give identical bits within a call that changes only the block's unknowns; errors surface where the unsplit evaluation raises them |
 
 A separate block-Jacobian kernel may restrict numerical AD to the unknown
 coordinates issued by that projection block. Its construction retains the
