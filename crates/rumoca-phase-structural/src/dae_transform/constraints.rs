@@ -64,9 +64,10 @@ pub(super) struct DifferentiationFacts {
     pub(super) component_definitions: Vec<Option<std::sync::Arc<ComponentConstraint>>>,
     pub(super) auxiliary_blocks:
         Vec<Option<std::sync::Arc<super::auxiliary_blocks::AuxiliaryBlock>>>,
-    /// Algebraic variables whose value is a parameter-constant, indexed by
-    /// variable identity. The time derivative of such a coordinate is zero.
-    pub(super) invariant_algebraics: Vec<bool>,
+    /// Algebraic variables whose value is a parameter-constant and the pure
+    /// functions that preserve that constancy. The time derivative of such a
+    /// coordinate is zero.
+    pub(super) invariance: crate::time_invariant::TimeInvariance,
 }
 
 #[cfg(test)]
@@ -95,9 +96,7 @@ impl DifferentiationFacts {
             algebraic_definitions,
             component_definitions: vec![None; view.variable_count()],
             auxiliary_blocks: vec![None; view.variable_count()],
-            invariant_algebraics: crate::time_invariant::invariant_algebraic_variables_with_causal(
-                view, &causal,
-            ),
+            invariance: crate::time_invariant::TimeInvariance::derive_with_causal(view, &causal),
         };
         alternative_definitions::complete(view, &mut facts);
         facts.complete_reconstruction_facts(view);

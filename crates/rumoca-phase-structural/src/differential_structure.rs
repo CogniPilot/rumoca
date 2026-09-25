@@ -323,15 +323,10 @@ fn invariant_columns(
     view: dae::DaeView<'_>,
     variables: &[DifferentialCoordinate<'_>],
 ) -> Vec<bool> {
-    let invariant = crate::time_invariant::invariant_algebraic_variables(view);
+    let invariance = crate::time_invariant::TimeInvariance::derive(view);
     variables
         .iter()
-        .map(|coordinate| {
-            invariant
-                .get(coordinate.variable.index() as usize)
-                .copied()
-                .unwrap_or(false)
-        })
+        .map(|coordinate| invariance.algebraic(coordinate.variable.index()))
         .collect()
 }
 

@@ -9,9 +9,18 @@
 //!
 //! The closure is conservative: it proves invariance only for a coordinate whose
 //! value is fixed by parameters and constants. A coordinate that reads a state,
-//! an input, `time`, a state derivative, a function result, a conditional, or an
-//! unresolved coordinate is never classified invariant, and neither is one whose
-//! definition is cyclic, absent, or ambiguous.
+//! an input, `time`, a state derivative, a conditional over a varying guard, an
+//! impure function result, or an unresolved coordinate is never classified
+//! invariant, and neither is one whose definition is cyclic, absent, or
+//! ambiguous.
+//!
+//! A call is invariant when its callee is pure and every argument is invariant.
+//! MLS 3.7 §12.3 guarantees that a pure function "always gives the same output
+//! for the same input", and a checked DAE function body reads only its own
+//! inputs, locals, and constants, never a model coordinate. A function is
+//! treated as impure when it is an external function without an explicit
+//! `pure`, or when its body reaches such a function (the recursive case of
+//! §12.3).
 
 use std::collections::HashMap;
 
@@ -20,29 +29,108 @@ use rumoca_ir_dae as dae;
 use crate::CausalDefinitions;
 use crate::residual_normalization::equation_sides;
 
+/// Whole-model time-invariance facts: the algebraic variables proved
+/// parameter-constant and the functions whose calls are deterministic in their
+/// arguments, both indexed by DAE identity.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TimeInvariance {
+    algebraics: Vec<bool>,
+    pure_functions: Vec<bool>,
+}
+
+impl TimeInvariance {
+    /// Derive the invariance facts of `view`.
+    pub(crate) fn derive(view: dae::DaeView<'_>) -> Self {
+        Self::derive_with_causal(view, &CausalDefinitions::derive(view))
+    }
+
+    /// [`TimeInvariance::derive`] reusing a causal-definition analysis the
+    /// caller already built, avoiding a second derivation on large models.
+    pub(crate) fn derive_with_causal<'dae>(
+        view: dae::DaeView<'dae>,
+        causal: &CausalDefinitions<'dae>,
+    ) -> Self {
+        let pure_functions = pure_functions(view);
+        let algebraics = invariant_algebraic_variables(view, causal, &pure_functions);
+        Self {
+            algebraics,
+            pure_functions,
+        }
+    }
+
+    /// Whether the algebraic variable with this identity index is
+    /// parameter-constant.
+    pub(crate) fn algebraic(&self, index: u32) -> bool {
+        self.algebraics
+            .get(index as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// The parameter-constant flag of every variable, indexed by identity.
+    pub(crate) fn algebraics(&self) -> &[bool] {
+        &self.algebraics
+    }
+
+    /// Whether any algebraic variable is parameter-constant.
+    pub(crate) fn has_invariant_algebraic(&self) -> bool {
+        self.algebraics.iter().any(|&flag| flag)
+    }
+
+    /// Whether `expression` holds the same value at every instant.
+    pub(crate) fn expression<'dae>(
+        &self,
+        view: dae::DaeView<'dae>,
+        expression: dae::ExprId<'dae>,
+    ) -> bool {
+        expression_is_time_invariant(view, expression, self.scope())
+    }
+
+    fn scope(&self) -> InvarianceScope<'_> {
+        InvarianceScope {
+            algebraics: &self.algebraics,
+            pure_functions: &self.pure_functions,
+        }
+    }
+}
+
+/// Borrowed facts one invariance query reads.
+#[derive(Clone, Copy)]
+struct InvarianceScope<'facts> {
+    algebraics: &'facts [bool],
+    pure_functions: &'facts [bool],
+}
+
+impl InvarianceScope<'_> {
+    fn pure_function(self, function: dae::FunctionId<'_>) -> bool {
+        self.pure_functions
+            .get(function.index() as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
 /// Whether `expression` holds the same value at every instant, given the
 /// algebraic variables already proved time-invariant.
 ///
 /// The accepted forms mirror the whole-model constancy that differentiation
 /// resolves to zero: literals, parameter coordinates, invariant algebraic
-/// coordinates, fixed domain binders, and total arithmetic, aggregate, builtin,
-/// and fixed index operations over such operands. Every other operation and
-/// coordinate refuses, so an accepted expression is a genuine constant of the
-/// whole model. A domain binder is a compile-time loop index whose value is
-/// fixed while differentiating at a domain point, so it too is invariant.
-pub(crate) fn expression_is_time_invariant<'dae>(
+/// coordinates, fixed domain binders, and total arithmetic, aggregate, record,
+/// builtin, pure-call, and fixed index operations over such operands. Every
+/// other operation and coordinate refuses, so an accepted expression is a
+/// genuine constant of the whole model. A domain binder is a compile-time loop
+/// index whose value is fixed while differentiating at a domain point, so it
+/// too is invariant.
+fn expression_is_time_invariant<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
-    invariant_algebraics: &[bool],
+    scope: InvarianceScope<'_>,
 ) -> bool {
     let Some(node) = view.expression(expression) else {
         return false;
     };
-    let all = |operands: dae::ExpressionOperands<'dae>| {
-        operands
-            .iter()
-            .all(|operand| expression_is_time_invariant(view, operand, invariant_algebraics))
-    };
+    let invariant = |operand| expression_is_time_invariant(view, operand, scope);
+    let all = |operands: dae::ExpressionOperands<'dae>| operands.iter().all(invariant);
     match node.operation() {
         dae::ExpressionOperation::Literal(
             dae::DaeLiteral::Real(_)
@@ -51,36 +139,141 @@ pub(crate) fn expression_is_time_invariant<'dae>(
             | dae::DaeLiteral::Enumeration(_),
         ) => true,
         dae::ExpressionOperation::Coordinate(coordinate) => {
-            coordinate_is_time_invariant(coordinate, invariant_algebraics)
+            coordinate_is_time_invariant(coordinate, scope.algebraics)
         }
         // Every unary and binary operator of this IR is a pure function of its
         // operands, so a fixed operand yields a fixed result.
-        dae::ExpressionOperation::Unary { operand, .. } => {
-            expression_is_time_invariant(view, operand, invariant_algebraics)
-        }
-        dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
-            expression_is_time_invariant(view, lhs, invariant_algebraics)
-                && expression_is_time_invariant(view, rhs, invariant_algebraics)
-        }
+        dae::ExpressionOperation::Unary { operand, .. }
+        | dae::ExpressionOperation::Field { base: operand, .. } => invariant(operand),
+        dae::ExpressionOperation::Binary { lhs, rhs, .. } => invariant(lhs) && invariant(rhs),
         // A parameter-guarded selection among fixed values is itself fixed. The
         // operand list carries both the guards and the branch values.
         dae::ExpressionOperation::Conditional(operands)
         | dae::ExpressionOperation::Array(operands)
+        | dae::ExpressionOperation::Record(operands)
         | dae::ExpressionOperation::Builtin {
             arguments: operands,
             ..
         } => all(operands),
+        dae::ExpressionOperation::Call {
+            function,
+            arguments,
+            ..
+        } => scope.pure_function(function) && all(arguments),
         dae::ExpressionOperation::Index { base, subscripts } => {
-            expression_is_time_invariant(view, base, invariant_algebraics)
+            invariant(base)
                 && subscripts.iter().all(|subscript| match subscript {
                     dae::SubscriptView::Whole { .. } => true,
                     dae::SubscriptView::Index { expression, .. }
-                    | dae::SubscriptView::Slice { expression, .. } => {
-                        expression_is_time_invariant(view, expression, invariant_algebraics)
-                    }
+                    | dae::SubscriptView::Slice { expression, .. } => invariant(expression),
                 })
         }
         _ => false,
+    }
+}
+
+/// The functions whose every call is deterministic in its arguments, indexed
+/// by function identity.
+///
+/// MLS 3.7 §12.3 treats a function as impure when "It is declared impure. It
+/// is an external function without explicit purity. It calls another function
+/// treated as impure". A checked DAE admits no Modelica body declared impure,
+/// and records an external body's purity with the bare form already impure, so
+/// the greatest fixpoint below removes every function whose body reaches an
+/// impure callee. Recursion among pure functions stays pure.
+fn pure_functions(view: dae::DaeView<'_>) -> Vec<bool> {
+    let functions = (0..view.function_count())
+        .filter_map(|index| view.function_id(index).and_then(|id| view.function(id)))
+        .collect::<Vec<_>>();
+    let mut pure = functions
+        .iter()
+        .map(|function| {
+            function
+                .external()
+                .is_none_or(|external| external.purity().is_pure())
+        })
+        .collect::<Vec<_>>();
+    let mut traversal = dae::ExpressionTraversal::new();
+    let callees = functions
+        .iter()
+        .map(|function| function_callees(view, *function, &mut traversal))
+        .collect::<Vec<_>>();
+    loop {
+        let mut changed = false;
+        for (index, callees) in callees.iter().enumerate() {
+            if pure[index]
+                && callees
+                    .iter()
+                    .any(|callee| !pure.get(*callee as usize).copied().unwrap_or(false))
+            {
+                pure[index] = false;
+                changed = true;
+            }
+        }
+        if !changed {
+            return pure;
+        }
+    }
+}
+
+/// Every function a function body calls, by identity index.
+fn function_callees<'dae>(
+    view: dae::DaeView<'dae>,
+    function: dae::FunctionView<'dae>,
+    traversal: &mut dae::ExpressionTraversal<'dae>,
+) -> Vec<u32> {
+    let mut roots = (0..function.definition_count())
+        .filter_map(|index| function.definition_id(index))
+        .filter_map(|id| view.function_definition(id))
+        .map(|definition| definition.rhs())
+        .collect::<Vec<_>>();
+    statement_roots(function.statements(), &mut roots);
+    if let Some(external) = function.external() {
+        roots.extend(external.arguments().filter_map(|argument| match argument {
+            dae::ExternalArgumentView::Input(expression) => Some(expression),
+            dae::ExternalArgumentView::Output(_) => None,
+        }));
+    }
+    let mut callees = Vec::new();
+    traversal.visit_pruned(view, roots, |_, node| {
+        if let dae::ExpressionOperation::Call { function, .. } = node.operation() {
+            callees.push(function.index());
+        }
+        true
+    });
+    callees
+}
+
+/// The expressions a statement list evaluates besides its definitions: the
+/// assertion predicates and messages and the shared branch guards and values.
+fn statement_roots<'dae>(
+    statements: dae::FunctionStatements<'dae>,
+    roots: &mut Vec<dae::ExprId<'dae>>,
+) {
+    for statement in statements {
+        match statement {
+            dae::FunctionStatementView::Assignment { .. } => {}
+            dae::FunctionStatementView::AssignmentGroup {
+                conditional: Some(group),
+                ..
+            } => {
+                roots.extend(group.conditions());
+                roots.extend(group.fallback());
+                for branch in (0..group.branch_count()).filter_map(|ordinal| group.branch(ordinal))
+                {
+                    roots.extend(branch);
+                }
+            }
+            dae::FunctionStatementView::AssignmentGroup {
+                conditional: None, ..
+            } => {}
+            dae::FunctionStatementView::Assertion {
+                condition, message, ..
+            } => roots.extend([condition, message]),
+            dae::FunctionStatementView::For { statements, .. } => {
+                statement_roots(statements, roots);
+            }
+        }
     }
 }
 
@@ -106,15 +299,10 @@ fn coordinate_is_time_invariant(
 /// monotone fixpoint starts empty, so a definitional cycle never resolves to
 /// invariant. A `StateSelect.always` request is honored as a genuine dynamic
 /// coordinate and is excluded.
-pub(crate) fn invariant_algebraic_variables(view: dae::DaeView<'_>) -> Vec<bool> {
-    invariant_algebraic_variables_with_causal(view, &CausalDefinitions::derive(view))
-}
-
-/// [`invariant_algebraic_variables`] reusing a causal-definition analysis the
-/// caller already built, avoiding a second derivation on large models.
-pub(crate) fn invariant_algebraic_variables_with_causal<'dae>(
+fn invariant_algebraic_variables<'dae>(
     view: dae::DaeView<'dae>,
     causal: &CausalDefinitions<'dae>,
+    pure_functions: &[bool],
 ) -> Vec<bool> {
     let family_values = family_element_definitions(view, causal);
     let mut invariant = vec![false; view.variable_count()];
@@ -128,7 +316,11 @@ pub(crate) fn invariant_algebraic_variables_with_causal<'dae>(
             if variable.state_select() == rumoca_core::StateSelect::Always {
                 continue;
             }
-            if variable_is_time_invariant(view, causal, &family_values, id, variable, &invariant) {
+            let scope = InvarianceScope {
+                algebraics: &invariant,
+                pure_functions,
+            };
+            if variable_is_time_invariant(view, causal, &family_values, id, variable, scope) {
                 invariant[index] = true;
                 changed = true;
             }
@@ -152,7 +344,7 @@ fn variable_is_time_invariant<'dae>(
     family_values: &HashMap<u32, dae::ExprId<'dae>>,
     id: dae::VariableId<'dae>,
     variable: dae::VariableView<'dae>,
-    invariant: &[bool],
+    invariant: InvarianceScope<'_>,
 ) -> bool {
     if let Some(definition) = causal.definition_for_variable(id) {
         return expression_is_time_invariant(view, definition, invariant);
@@ -272,158 +464,4 @@ fn family_domain_binder<'dae>(
 }
 
 #[cfg(test)]
-mod tests {
-    use rumoca_core::{SourceMap, Span, TypeId, VarName};
-
-    use super::*;
-
-    /// A defining value for the algebraic `c`, built over a parameter `p` and a
-    /// state `x`. The closure must accept a parameter-only value and refuse any
-    /// value that reads the state.
-    enum Value {
-        BuiltinOverParameter,
-        AlgebraicChain,
-        MaxOverState,
-        BuiltinOverState,
-    }
-
-    fn classify(value: Value) -> (dae::Dae, u32) {
-        let mut sources = SourceMap::new();
-        let text = "parameter Real p; Real x; Real a; Real c; equation definitions;";
-        let source = sources.add("invariance.mo", text);
-        let span = Span::from_offsets(source, 0, text.len());
-        let provenance = dae::DaeProvenance::source(span).unwrap();
-        let mut target = 0;
-        let dae = dae::Dae::construct(sources, |dae| {
-            let real = dae.types(|types| {
-                types.intern(
-                    TypeId::new(0),
-                    dae::ValueType::scalar(dae::ScalarType::Real),
-                    provenance,
-                )
-            })?;
-            let (p, x, a, c) = dae.variables(|variables| {
-                Ok((
-                    variables.parameter(
-                        VarName::new("p"),
-                        real,
-                        provenance,
-                        dae::VariableAttributes::default(),
-                    )?,
-                    variables.state(
-                        VarName::new("x"),
-                        real,
-                        provenance,
-                        dae::VariableAttributes::default(),
-                    )?,
-                    variables.algebraic(
-                        VarName::new("a"),
-                        real,
-                        provenance,
-                        dae::VariableAttributes::default(),
-                    )?,
-                    variables.algebraic(
-                        VarName::new("c"),
-                        real,
-                        provenance,
-                        dae::VariableAttributes::default(),
-                    )?,
-                ))
-            })?;
-            target = c.index();
-            let coordinates = [
-                dae::CoordinateInput::Parameter(p),
-                dae::CoordinateInput::State(x),
-                dae::CoordinateInput::Algebraic(a),
-                dae::CoordinateInput::Algebraic(c),
-            ];
-            let residuals = dae.expressions(|expressions| {
-                residuals(expressions, value, coordinates, provenance)
-            })?;
-            dae.continuous(|continuous| add_residuals(continuous, residuals, provenance))
-        })
-        .unwrap();
-        (dae, target)
-    }
-
-    type Coordinates<'dae> = [dae::CoordinateInput<'dae>; 4];
-
-    fn residuals<'dae>(
-        expressions: &mut dae::Expressions<'_, 'dae>,
-        value: Value,
-        coordinates: Coordinates<'dae>,
-        provenance: dae::DaeProvenance,
-    ) -> Result<Vec<dae::ExprId<'dae>>, dae::DaeConstructionError> {
-        let [p, x, a, c] = coordinates;
-        let p_value = expressions.at(provenance).coordinate(p)?;
-        let x_value = expressions.at(provenance).coordinate(x)?;
-        let a_value = expressions.at(provenance).coordinate(a)?;
-        let c_value = expressions.at(provenance).coordinate(c)?;
-        let a_definition = expressions
-            .at(provenance)
-            .builtin(dae::PureBuiltin::Abs, [p_value])?;
-        let c_definition = match value {
-            Value::BuiltinOverParameter => expressions
-                .at(provenance)
-                .builtin(dae::PureBuiltin::Abs, [p_value])?,
-            Value::AlgebraicChain => {
-                expressions
-                    .at(provenance)
-                    .binary(dae::BinaryOperator::Add, a_value, a_value)?
-            }
-            Value::MaxOverState => expressions
-                .at(provenance)
-                .builtin(dae::PureBuiltin::Max, [x_value, p_value])?,
-            Value::BuiltinOverState => expressions
-                .at(provenance)
-                .builtin(dae::PureBuiltin::Abs, [x_value])?,
-        };
-        let a_residual = expressions.at(provenance).binary(
-            dae::BinaryOperator::Subtract,
-            a_value,
-            a_definition,
-        )?;
-        let c_residual = expressions.at(provenance).binary(
-            dae::BinaryOperator::Subtract,
-            c_value,
-            c_definition,
-        )?;
-        Ok(vec![a_residual, c_residual])
-    }
-
-    fn add_residuals<'dae>(
-        continuous: &mut dae::ContinuousEquations<'_, 'dae>,
-        residuals: Vec<dae::ExprId<'dae>>,
-        provenance: dae::DaeProvenance,
-    ) -> Result<(), dae::DaeConstructionError> {
-        for residual in residuals {
-            continuous.equation(provenance, |equation| equation.residual(residual))?;
-        }
-        Ok(())
-    }
-
-    fn target_is_invariant(value: Value) -> bool {
-        let (dae, target) = classify(value);
-        dae.inspect(|view| invariant_algebraic_variables(view)[target as usize])
-    }
-
-    #[test]
-    fn a_parameter_only_algebraic_is_time_invariant() {
-        assert!(target_is_invariant(Value::BuiltinOverParameter));
-    }
-
-    #[test]
-    fn an_algebraic_reached_only_through_invariant_algebraics_is_time_invariant() {
-        assert!(target_is_invariant(Value::AlgebraicChain));
-    }
-
-    #[test]
-    fn a_max_over_a_state_is_not_time_invariant() {
-        assert!(!target_is_invariant(Value::MaxOverState));
-    }
-
-    #[test]
-    fn a_builtin_over_a_state_is_not_time_invariant() {
-        assert!(!target_is_invariant(Value::BuiltinOverState));
-    }
-}
+mod tests;

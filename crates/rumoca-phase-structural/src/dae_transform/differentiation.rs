@@ -290,12 +290,8 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     /// Restricted to models that carry at least one such algebraic, leaving the
     /// derivative of every other model unchanged.
     fn reads_only_invariants(&self, source_id: dae::ExprId<'source>) -> bool {
-        self.facts.invariant_algebraics.iter().any(|&flag| flag)
-            && crate::time_invariant::expression_is_time_invariant(
-                self.source,
-                source_id,
-                &self.facts.invariant_algebraics,
-            )
+        self.facts.invariance.has_invariant_algebraic()
+            && self.facts.invariance.expression(self.source, source_id)
     }
 
     fn differentiate_coordinate(

@@ -93,7 +93,7 @@ pub fn construct_formal_derivatives(
     model: &dae::Dae,
 ) -> Result<FormalDerivativeSystem<'_>, StructuralError> {
     model.inspect(|source| {
-        let invariant = crate::time_invariant::invariant_algebraic_variables(source);
+        let invariance = crate::time_invariant::TimeInvariance::derive(source);
         let mut order_bounds = vec![0_u32; source.variables().count()];
         loop {
             let analysis = analyze_differential_structure_with_order_bounds(source, &order_bounds)?;
@@ -115,7 +115,12 @@ pub fn construct_formal_derivatives(
                 offsets.equation_orders(),
             )?;
             let reads = rebuilt.inspect(|formal| {
-                stage_reads::later_stage_reads(formal, &coordinates, &equations, &invariant)
+                stage_reads::later_stage_reads(
+                    formal,
+                    &coordinates,
+                    &equations,
+                    invariance.algebraics(),
+                )
             })?;
             if reads.is_empty() {
                 return Ok(FormalDerivativeSystem {
