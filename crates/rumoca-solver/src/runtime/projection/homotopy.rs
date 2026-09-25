@@ -363,4 +363,20 @@ mod tests {
         assert_eq!(y, [7.0]);
         assert_eq!(p, [1.0, 0.0]);
     }
+
+    /// The combined initialization model issues no linked-kernel artifacts: it
+    /// declines every request, so initialization projects without them.
+    #[test]
+    fn the_combined_initialization_model_declines_linked_kernel_requests() {
+        let model = StepLimitedModel::new();
+        let combined = super::super::CombinedInitializationProjectionModel {
+            model: &model,
+            y_len: 1,
+            parameter_scales: vec![1.0],
+        };
+        let answer = combined
+            .linked_kernel(super::super::KernelRequest::EndBlock)
+            .expect("the request is answered");
+        assert!(matches!(answer, super::super::KernelAnswer::Declined));
+    }
 }

@@ -240,3 +240,33 @@ fn certificate_scales(
             .collect(),
     }
 }
+
+/// The fixture is a projection model whose residual and directional
+/// derivative the certificate never evaluates: both leave their outputs
+/// untouched, and its plan and row names are the ones it was given.
+#[test]
+fn the_scaled_block_fixture_is_an_inert_projection_model() {
+    let block = solve::AlgebraicProjectionBlock {
+        rows: vec![0],
+        y_indices: vec![0],
+        tearing: None,
+        alternate_charts: Vec::new(),
+    };
+    let model = ScaledBlock {
+        plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![block.clone()],
+        },
+        targets: vec![None],
+        nominals: vec![1.0],
+    };
+    let mut out = [7.0];
+    model
+        .eval_residual(&[1.0], &[], 0.0, &mut out)
+        .expect("the residual is inert");
+    model
+        .eval_jacobian_v(&[1.0], &[], 0.0, &[1.0], &mut out)
+        .expect("the directional derivative is inert");
+    assert_eq!(out, [7.0]);
+    assert_eq!(model.algebraic_projection_plan().blocks, [block]);
+    assert_eq!(model.target_name_for_row(0), None);
+}
