@@ -29,7 +29,8 @@ for (size_t k=0; k<{{ width }}; ++k) {{ dst }}[cursor++]=r{{ operand }}[outer*{{
 } }
 {% elif op.operation == "construct_aggregate" -%}
 {% for element in op.elements -%}
-memcpy(&{{ dst }}[{{ loop.index0 * program.register_types[element].scalar_count }}], r{{ element }}, sizeof(r{{ element }}));
+{% set width = program.register_types[element].scalar_count -%}
+memcpy(&{{ dst }}[{{ loop.index0 * width }}], r{{ element }}, {{ width if width > 0 else 1 }} * sizeof(r{{ element }}[0]));
 {% endfor -%}
 {% elif op.operation == "scale" -%}
 for (size_t k=0; k<{{ ty.scalar_count }}; ++k) {{ dst }}[k]=r{{ op.aggregate }}[k]*r{{ op.scalar }}[0];

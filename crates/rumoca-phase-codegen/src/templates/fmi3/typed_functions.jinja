@@ -2,6 +2,11 @@
 {%- from "fmi-typed-arithmetic.jinja" import integer, declaration, copy, import_scalars, arithmetic %}
 {%- from "fmi-typed-tensors.jinja" import tensor %}
 
+{#- Whether a value of this type is a binary64 array a caller can pass
+    through unconverted (nonempty; an empty type keeps its one-element local). -#}
+{%- macro direct(ty) -%}{% if ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64" and ty.scalar_count > 0 %}1{% endif %}{%- endmacro %}
+{%- macro ctype(ty) -%}{% if ty.scalar.kind == "real" %}double{% elif ty.scalar.kind == "integer" %}int64_t{% else %}bool{% endif %}{%- endmacro %}
+
 {%- macro call(name, inputs, outputs) -%}
 if ({{ name }}((const void*[]){ {% for input in inputs %}r{{ input }},{% else %}NULL{% endfor %} }, (void*[]){ {% for output in outputs %}r{{ output }},{% else %}NULL{% endfor %} })) return 1;
 {% endmacro %}
@@ -50,16 +55,38 @@ if ({{ region_name }}_fold((const void*[]){ {% for input in op.destinations + op
 {% endfor -%}
 static int {{ name }}(const void* const in[], void* const out[]) {
 (void)in; (void)out;
-{% set input = namespace(index=0) -%}
+{% set input = namespace(index=0, pointers=[]) -%}
 {% for slot in program.slots -%}
+{% set stored = namespace(value=false) -%}
+{% for issued in program.operations %}{% if issued.operation.operation == "store" and issued.operation.slot == slot.id %}{% set stored.value = true %}{% endif %}{% endfor -%}
+{% if slot.storage == "input" and not stored.value and slot.value_type.scalar_count > 0 -%}
+{#- An input slot the body never writes reads the caller's array. -#}
+const {{ ctype(slot.value_type) }}* s{{ slot.id }} = in[{{ input.index }}];
+{% set input.index = input.index + 1 -%}
+{% set input.pointers = input.pointers + [slot.id] -%}
+{% else -%}
 {{ declaration("s" ~ slot.id, slot.value_type) }}
 {% if slot.storage == "input" -%}
 memcpy(s{{ slot.id }}, in[{{ input.index }}], sizeof(s{{ slot.id }}));
 {% set input.index = input.index + 1 -%}
 {% endif -%}
+{% endif -%}
 {% endfor -%}
-{% for ty in program.register_types %}{{ declaration("r" ~ loop.index0, ty) }}{% endfor %}
-{% for issued in program.operations %}{{ operation(issued.operation, program, name ~ "_region_" ~ loop.index0, prefix) }}{% endfor -%}
+{#- A register only a load of such an input slot defines reads the slot's
+    array as well (every other operation issues fresh registers). -#}
+{% set written = namespace(ids=[]) -%}
+{% for issued in program.operations -%}
+{% if issued.operation.destination is defined %}{% set written.ids = written.ids + [issued.operation.destination] %}{% endif -%}
+{% if issued.operation.destinations is defined %}{% set written.ids = written.ids + issued.operation.destinations|list %}{% endif -%}
+{% endfor -%}
+{% set alias = namespace(ids=[]) -%}
+{% for issued in program.operations -%}
+{% set op = issued.operation -%}
+{% if op.operation == "load" and op.slot in input.pointers and written.ids|select("equalto", op.destination)|list|length == 1 %}{% set alias.ids = alias.ids + [op.destination] %}{% endif -%}
+{% endfor -%}
+{% for ty in program.register_types %}{% if loop.index0 not in alias.ids %}{{ declaration("r" ~ loop.index0, ty) }}{% endif %}{% endfor %}
+{% for issued in program.operations %}{% set op = issued.operation %}{% if op.operation == "load" and op.destination in alias.ids %}const {{ ctype(program.register_types[op.destination]) }}* r{{ op.destination }} = s{{ op.slot }}; (void)r{{ op.destination }};
+{% else %}{{ operation(op, program, name ~ "_region_" ~ loop.index0, prefix) }}{% endif %}{% endfor -%}
 {% set output = namespace(index=0) -%}
 {% for slot in program.slots -%}
 {% if slot.storage == "output" -%}
@@ -71,21 +98,25 @@ return 0;
 }
 {% endmacro %}
 
+{#- Binary64 inputs and outputs pass the caller's arrays straight through;
+    other types convert through local arrays. -#}
 {%- macro wrapper(owner, kind="") -%}
 RMC_API int rumoca_scalar_pure_{{ kind }}{{ owner.id }}(const double* const in[], double* out) {
 (void)in; (void)out;
 {% for ty in owner.inputs -%}
+{% if not direct(ty) -%}
 {{ declaration("a" ~ loop.index0, ty) }}
 {{ import_scalars("a" ~ loop.index0, "in[" ~ loop.index0 ~ "]", ty) -}}
+{% endif -%}
 {% endfor -%}
-{% for output in owner.outputs %}{{ declaration("b" ~ loop.index0, output.value_type) }}{% endfor %}
-if (rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {% for ty in owner.inputs %}a{{ loop.index0 }},{% else %}NULL{% endfor %} }, (void*[]){ {% for output in owner.outputs %}b{{ loop.index0 }},{% else %}NULL{% endfor %} })) return 1;
-{% set offset = namespace(value=0) -%}
+{% set offset = namespace(value=0, args="", conversions="") -%}
 {% for output in owner.outputs -%}
-for (size_t k=0; k<{{ output.value_type.scalar_count }}; ++k) out[{{ offset.value }}+k]=(double)b{{ loop.index0 }}[k];
+{% if direct(output.value_type) %}{% set offset.args = offset.args ~ "out+" ~ offset.value ~ "," -%}
+{% else %}{{ declaration("b" ~ loop.index0, output.value_type) }}{% set offset.args = offset.args ~ "b" ~ loop.index0 ~ "," %}{% set offset.conversions = offset.conversions ~ "for (size_t k=0; k<" ~ output.value_type.scalar_count ~ "; ++k) out[" ~ offset.value ~ "+k]=(double)b" ~ loop.index0 ~ "[k];\n" %}{% endif -%}
 {% set offset.value = offset.value + output.value_type.scalar_count -%}
-{% endfor -%}
-return 0;
+{% endfor %}
+if (rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }, (void*[]){ {{ offset.args if offset.args else "NULL" }} })) return 1;
+{{ offset.conversions }}return 0;
 }
 {% endmacro %}
 

@@ -240,7 +240,12 @@ pub fn walk_event_partition<V: SolveVisitor + ?Sized>(
     partition: &SolveEventPartition,
 ) -> Result<(), V::Error> {
     visitor.visit_scalar_program_block(&partition.root_conditions)?;
-    visitor.visit_scalar_program_block(&partition.dynamic_time_event_rhs)
+    visitor.visit_scalar_program_block(&partition.dynamic_time_event_rhs)?;
+    visitor.visit_scalar_program_block(&partition.action_conditions)?;
+    let delays = &partition.delays;
+    visitor.visit_scalar_program_block(&delays.source_rhs)?;
+    visitor.visit_scalar_program_block(&delays.delay_time_rhs)?;
+    visitor.visit_scalar_program_block(&delays.delay_max_rhs)
 }
 
 pub fn walk_clock_partition<V: SolveVisitor + ?Sized>(

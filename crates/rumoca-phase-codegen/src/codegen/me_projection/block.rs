@@ -70,6 +70,7 @@ pub(super) struct BlockRecord {
     cruns: usize,
     causal_target: usize,
     causal_col: usize,
+    tear_deps: usize,
     elimination: bool,
     nelim: usize,
     elim_row: usize,
@@ -411,10 +412,65 @@ fn record_torn(
     record.tear_col = table.push(tear_col);
     record.residual_row = table.push(residual_row);
     record.ncruns = runs.len() / 4;
-    record.cruns = table.push(runs);
+    record.cruns = table.push(runs.iter().copied());
     record.causal_target = table.push(causal.iter().map(|&(_, y)| y));
+    record.tear_deps = tear_dependencies(sources, table, tearing, &runs, &causal);
     record.causal_col = table.push(causal_col);
     Ok(())
+}
+
+/// Per tear column, the causal runs and reduced residual rows a perturbation
+/// of that tear can change: a run is dependent when its residual program reads
+/// the tear or a target of an earlier dependent run, and a residual row when
+/// its program reads any of those. The reads are those of the whole residual
+/// program, a superset of every isolation prefix. A perturbation sweep of the
+/// reduced Jacobian re-evaluates only these; every other run and row reads the
+/// same values as the base sweep and so has the base result, bit for bit.
+/// Returns the pool offset of `k` entries, each the pool offset of one list
+/// `[nruns, runs.., nrows, rows..]`.
+fn tear_dependencies(
+    sources: &BlockSources<'_>,
+    table: &mut ProgramTable,
+    tearing: &solve::BlockTearing,
+    runs: &[usize],
+    causal: &[(usize, usize)],
+) -> usize {
+    let program = |row: usize| sources.implicit.row_output_position(row).map(|(p, _)| p);
+    let reads = |row: usize, dirty: &std::collections::BTreeSet<usize>| {
+        program(row).is_none_or(|p| dirty.iter().any(|&y| sources.implicit.row_reads_y(p, y)))
+    };
+    let lists = tearing
+        .tear_y_indices
+        .iter()
+        .map(|&tear| {
+            let mut dirty = std::collections::BTreeSet::from([tear]);
+            let mut dependent_runs = Vec::new();
+            for (index, run) in runs.chunks(4).enumerate() {
+                let steps = &causal[run[2]..run[2] + run[3]];
+                if steps.iter().any(|&(row, _)| reads(row, &dirty)) {
+                    dependent_runs.push(index);
+                    dirty.extend(steps.iter().map(|&(_, target)| target));
+                }
+            }
+            let rows = tearing
+                .residual_rows
+                .iter()
+                .enumerate()
+                .filter(|&(_, &row)| reads(row, &dirty))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let mut list = vec![dependent_runs.len()];
+            list.extend(dependent_runs);
+            list.push(rows.len());
+            list.extend(rows);
+            list
+        })
+        .collect::<Vec<_>>();
+    let starts = lists
+        .into_iter()
+        .map(|list| table.push(list))
+        .collect::<Vec<_>>();
+    table.push(starts)
 }
 
 /// The causal sweep as runs of consecutive steps recovered from one residual

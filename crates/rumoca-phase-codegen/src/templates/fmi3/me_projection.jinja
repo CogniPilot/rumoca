@@ -92,11 +92,13 @@ static size_t* rmc_salloc(ModelInstance* m, size_t count) {
 #define RMC_RELEASE (m->rmc_dtop = rmc_dmark, m->rmc_stop = rmc_smark)
 
 /* scaling.rs: valid_variable_scale */
-static double rmc_valid_scale(double scale) { return (isfinite(scale) && scale > 0.0) ? scale : 1.0; }
+/* fmax for operands known not to be NaN, where it is the plain comparison. */
+static inline double rmc_max(double a, double b) { return a > b ? a : b; }
+static inline double rmc_valid_scale(double scale) { return (isfinite(scale) && scale > 0.0) ? scale : 1.0; }
 /* scaling.rs: scaled_tolerance */
 static double rmc_scaled_tolerance(double tol, double scale) {
     double scaled = fabs(tol) * rmc_valid_scale(scale);
-    return isfinite(scaled) ? fmax(scaled, DBL_MIN) : DBL_MAX;
+    return isfinite(scaled) ? rmc_max(scaled, DBL_MIN) : DBL_MAX;
 }
 /* scaling.rs: scaled_residual_converged / scaled_correction_converged */
 static bool rmc_scaled_converged(double tol, const double* values, const double* scales, size_t n) {
@@ -109,14 +111,14 @@ static double rmc_scaled_norm(const double* values, const double* scales, size_t
     for (size_t i = 0; i < n; ++i) {
         double quotient = fabs(values[i]) / rmc_valid_scale(scales[i]);
         if (!isfinite(quotient)) return INFINITY;
-        norm = fmax(norm, quotient);
+        norm = rmc_max(norm, quotient);
     }
     return norm;
 }
 /* scaling.rs: model_variable_scale over SolveModel::solver_variable_scale */
 static double rmc_model_scale(size_t index, double value) {
     double magnitude = isfinite(value) ? fabs(value) : 0.0;
-    return fmax(rmc_valid_scale(rmc_variable_scale[index]), magnitude);
+    return rmc_max(rmc_valid_scale(rmc_variable_scale[index]), magnitude);
 }
 static bool rmc_all_finite(const double* values, size_t n) {
     for (size_t i = 0; i < n; ++i) if (!isfinite(values[i])) return false;
@@ -246,7 +248,7 @@ typedef struct {
     size_t ncolors; const size_t* colors; const size_t* color_seeds; const size_t* color_calls;
     const size_t* placements; size_t jvp_max_outputs;
     bool torn; size_t k; const size_t* tear_col; const size_t* residual_row;
-    size_t ncausal; size_t ncruns; const size_t* cruns; const size_t* causal_target; const size_t* causal_col;
+    size_t ncausal; size_t ncruns; const size_t* cruns; const size_t* causal_target; const size_t* causal_col; const size_t* tear_deps;
     bool elimination; size_t nelim; const size_t* elim_row; const size_t* elim_col;
     size_t nelim_tear; const size_t* elim_residual; const size_t* elim_tear;
     size_t nguards; const size_t* guards; const size_t* guard_step; size_t elim_capacity;
@@ -260,7 +262,7 @@ static const size_t rmc_pool[{{ me.table.pool|length }}] = {
 #define RMC_P(offset) (rmc_pool + (offset))
 static const RmcBlock rmc_blocks[{{ me.blocks|length }}] = {
 {%- for b in me.blocks %}
-    { {{ b.canonical }}, {{ b.n }}, RMC_P({{ b.y }}), RMC_P({{ b.row_target }}), RMC_P({{ b.row_program }}), RMC_P({{ b.row_offset }}), {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, RMC_P({{ b.row_ptr }}), RMC_P({{ b.col_idx }}), {{ b.nnz }}, {{ b.ncolors }}, RMC_P({{ b.colors }}), RMC_P({{ b.color_seeds }}), RMC_P({{ b.color_calls }}), RMC_P({{ b.placements }}), {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, RMC_P({{ b.tear_col }}), RMC_P({{ b.residual_row }}), {{ b.ncausal }}, {{ b.ncruns }}, RMC_P({{ b.cruns }}), RMC_P({{ b.causal_target }}), RMC_P({{ b.causal_col }}), {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, RMC_P({{ b.elim_row }}), RMC_P({{ b.elim_col }}), {{ b.nelim_tear }}, RMC_P({{ b.elim_residual }}), RMC_P({{ b.elim_tear }}), {{ b.nguards }}, RMC_P({{ b.guards }}), RMC_P({{ b.guard_step }}), {{ b.elim_capacity }}, RMC_P({{ b.iso_default }}), RMC_P({{ b.iso_start }}), RMC_P({{ b.iso_entries }}) },
+    { {{ b.canonical }}, {{ b.n }}, RMC_P({{ b.y }}), RMC_P({{ b.row_target }}), RMC_P({{ b.row_program }}), RMC_P({{ b.row_offset }}), {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, RMC_P({{ b.row_ptr }}), RMC_P({{ b.col_idx }}), {{ b.nnz }}, {{ b.ncolors }}, RMC_P({{ b.colors }}), RMC_P({{ b.color_seeds }}), RMC_P({{ b.color_calls }}), RMC_P({{ b.placements }}), {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, RMC_P({{ b.tear_col }}), RMC_P({{ b.residual_row }}), {{ b.ncausal }}, {{ b.ncruns }}, RMC_P({{ b.cruns }}), RMC_P({{ b.causal_target }}), RMC_P({{ b.causal_col }}), RMC_P({{ b.tear_deps }}), {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, RMC_P({{ b.elim_row }}), RMC_P({{ b.elim_col }}), {{ b.nelim_tear }}, RMC_P({{ b.elim_residual }}), RMC_P({{ b.elim_tear }}), {{ b.nguards }}, RMC_P({{ b.guards }}), RMC_P({{ b.guard_step }}), {{ b.elim_capacity }}, RMC_P({{ b.iso_default }}), RMC_P({{ b.iso_start }}), RMC_P({{ b.iso_entries }}) },
 {%- endfor %}
 };
 /* projection_policy::finite_difference_perturbation */
@@ -285,7 +287,13 @@ static int rmc_row(ModelInstance* m, const RmcBlock* b, size_t row, double* valu
 }
 /* projection.rs: implicit_selected_residuals */
 static int rmc_rows(ModelInstance* m, const RmcBlock* b, double* residual) {
-    for (size_t row = 0; row < b->n; ++row) if (rmc_row(m, b, row, residual + row) != 0) return -1;
+    /* Consecutive rows of one multi-output program read one evaluation. */
+    double out[{{ me.table.row_max_outputs }}]; size_t last = SIZE_MAX;
+    for (size_t row = 0; row < b->n; ++row) {
+        size_t program = b->row_program[row];
+        if (program != last && rmc_row_fn[program](m, out) != 0) return -1;
+        last = program; residual[row] = out[b->row_offset[row]];
+    }
     return 0;
 }
 /* initial.rs: algebraic_block_jacobian through the issued colored application */
@@ -310,12 +318,13 @@ done:
     RMC_RELEASE; return result;
 }
 /* scaling.rs: jacobian_row_scales over the compressed-row pattern */
-static void rmc_row_scales(const RmcBlock* b, const double* jac, const double* vscale, const double* fallback, double* rscale) {
+static void rmc_row_scales(const RmcBlock* b, const double* jac, const double* vscale, const double* fallback, double* valid, double* rscale) {
+    for (size_t col = 0; col < b->n; ++col) valid[col] = rmc_valid_scale(vscale[col]);
     for (size_t row = 0; row < b->n; ++row) {
         double scale = 0.0;
         for (size_t e = b->row_ptr[row]; e < b->row_ptr[row + 1]; ++e) {
-            double contribution = fabs(jac[e]) * rmc_valid_scale(vscale[b->col_idx[e]]);
-            if (isfinite(contribution)) scale = fmax(scale, contribution);
+            double contribution = fabs(jac[e]) * valid[b->col_idx[e]];
+            if (isfinite(contribution)) scale = rmc_max(scale, contribution);
         }
         rscale[row] = scale > 0.0 ? scale : fallback[row];
     }
@@ -323,14 +332,14 @@ static void rmc_row_scales(const RmcBlock* b, const double* jac, const double* v
 /* scaling.rs: algebraic_block_scales; -1 error */
 static int rmc_block_scales(ModelInstance* m, const RmcBlock* b, const double* jac, double* rscale, double* vscale) {
     RMC_MARK;
-    double* fallback = rmc_dalloc_raw(m, b->n);
-    if (!fallback) { RMC_RELEASE; return rmc_exhausted(m); }
+    double* fallback = rmc_dalloc_raw(m, b->n); double* valid = rmc_dalloc_raw(m, b->n);
+    if (!fallback || !valid) { RMC_RELEASE; return rmc_exhausted(m); }
     for (size_t i = 0; i < b->n; ++i) vscale[i] = rmc_model_scale(b->y[i], m->y[b->y[i]]);
     for (size_t row = 0; row < b->n; ++row) {
         size_t target = b->row_target[row];
         fallback[row] = target != 0 ? rmc_model_scale(target - 1, m->y[target - 1]) : vscale[row];
     }
-    rmc_row_scales(b, jac, vscale, fallback, rscale);
+    rmc_row_scales(b, jac, vscale, fallback, valid, rscale);
     RMC_RELEASE; return 0;
 }
 static bool rmc_lu_invertible(const double* lu, size_t n) {
@@ -392,26 +401,41 @@ static int rmc_project_singleton(ModelInstance* m, const RmcBlock* b, RmcUpdate*
     return 0;
 }
 
+/* One causal run of the sweep: -1 error, 0 declined, 1 recovered. */
+static inline int rmc_torn_run(ModelInstance* m, const RmcBlock* b, size_t run) {
+    const size_t* entry = b->cruns + 4 * run;
+    if (entry[0] == RMC_RUN_ISOLATOR) {
+        double value = 0.0;
+        if (rmc_isolate(m, entry[1], &value) != 0) return -1;
+        if (!isfinite(value)) return 0;
+        m->y[b->causal_target[entry[2]]] = value;
+        return 1;
+    }
+    int result = rmc_causal_fn[entry[1]](m, b->causal_target + entry[2]);
+    return result < 0 ? -1 : (result > 0 ? 0 : 1);
+}
+static inline int rmc_torn_residual(ModelInstance* m, const RmcBlock* b, size_t i, double* residual) {
+    double value = 0.0;
+    if (rmc_row(m, b, b->residual_row[i], &value) != 0) return -1;
+    residual[i] = isfinite(value) ? value : NAN;
+    return 0;
+}
 /* tearing.rs: per_row_torn_block_sweep; -1 error, 0 declined, 1 completed */
 static int rmc_torn_sweep(ModelInstance* m, const RmcBlock* b, double* residual) {
-    for (size_t run = 0; run < b->ncruns; ++run) {
-        const size_t* entry = b->cruns + 4 * run;
-        if (entry[0] == RMC_RUN_ISOLATOR) {
-            double value = 0.0;
-            if (rmc_isolate(m, entry[1], &value) != 0) return -1;
-            if (!isfinite(value)) return 0;
-            m->y[b->causal_target[entry[2]]] = value;
-            continue;
-        }
-        int result = rmc_causal_fn[entry[1]](m, b->causal_target + entry[2]);
-        if (result < 0) return -1;
-        if (result > 0) return 0;
-    }
-    for (size_t i = 0; i < b->k; ++i) {
-        double value = 0.0;
-        if (rmc_row(m, b, b->residual_row[i], &value) != 0) return -1;
-        residual[i] = isfinite(value) ? value : NAN;
-    }
+    for (size_t run = 0; run < b->ncruns; ++run) { int result = rmc_torn_run(m, b, run); if (result != 1) return result; }
+    for (size_t i = 0; i < b->k; ++i) if (rmc_torn_residual(m, b, i, residual) != 0) return -1;
+    return 1;
+}
+/* The same sweep after perturbing tear `col` of a consistent base point:
+   only the runs and residual rows the tear reaches are re-evaluated; the
+   others keep their base values, which a full sweep would recompute from the
+   same inputs bit for bit. */
+static int rmc_torn_sweep_from(ModelInstance* m, const RmcBlock* b, size_t col, const double* base_residual, double* residual) {
+    const size_t* deps = rmc_pool + b->tear_deps[col];
+    const size_t* rows = deps + 1 + deps[0];
+    for (size_t r = 0; r < deps[0]; ++r) { int result = rmc_torn_run(m, b, deps[1 + r]); if (result != 1) return result; }
+    for (size_t i = 0; i < b->k; ++i) residual[i] = base_residual[i];
+    for (size_t r = 0; r < rows[0]; ++r) if (rmc_torn_residual(m, b, rows[1 + r], residual) != 0) return -1;
     return 1;
 }
 /* tearing.rs: reduced_jacobian; the recovered rows matter only when
@@ -425,7 +449,7 @@ static int rmc_reduced_jacobian(ModelInstance* m, const RmcBlock* b, const doubl
         size_t tear = b->tear_col[col];
         double h = rmc_perturbation(base[tear], vscale[col]);
         m->y[b->y[tear]] = base[tear] + h;
-        int swept = rmc_torn_sweep(m, b, perturbed);
+        int swept = rmc_torn_sweep_from(m, b, col, residual, perturbed);
         if (swept < 0) { result = -1; break; }
         if (swept == 0 || !rmc_all_finite(perturbed, k)) { rmc_restore(m, b, base); result = 0; break; }
         for (size_t row = 0; row < k; ++row) jac[row * k + col] = (perturbed[row] - residual[row]) / h;
@@ -507,7 +531,7 @@ static int rmc_torn_newton(ModelInstance* m, const RmcBlock* b, double* residual
     if (result == 1) {
         for (size_t row = 0; row < k; ++row) {
             double scale = 0.0;
-            for (size_t col = 0; col < k; ++col) { double contribution = fabs(jac[row * k + col]) * rmc_valid_scale(vscale[col]); if (isfinite(contribution)) scale = fmax(scale, contribution); }
+            for (size_t col = 0; col < k; ++col) { double contribution = fabs(jac[row * k + col]) * rmc_valid_scale(vscale[col]); if (isfinite(contribution)) scale = rmc_max(scale, contribution); }
             rscale[row] = scale > 0.0 ? scale : vscale[row];
         }
         bool converged = rmc_scaled_converged(m->rmc_tol, residual, rscale, k);
@@ -600,17 +624,24 @@ static int rmc_eliminate_prepare(ModelInstance* m, const RmcBlock* b, const doub
     e->ipiv = rmc_salloc(m, cap + 1); columns = rmc_salloc(m, cap + 1);
     e->promoted = rmc_salloc(m, b->nelim + 1); e->residual = rmc_salloc(m, cap + 1); e->tear = rmc_salloc(m, cap + 1);
     if (!e->values || !e->recovery || !e->reduced || !e->ipiv || !columns || !e->promoted || !e->residual || !e->tear) return rmc_exhausted(m);
-    for (size_t row = 0; row < n; ++row)
-        for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p)
-            e->values[p] = jac[p] * rmc_valid_scale(vscale[b->col_idx[p]]) / rmc_valid_scale(rscale[row]);
+    double* valid = rmc_dalloc_raw(m, n);
+    if (!valid) return rmc_exhausted(m);
+    for (size_t col = 0; col < n; ++col) valid[col] = rmc_valid_scale(vscale[col]);
+    for (size_t row = 0; row < n; ++row) {
+        double row_scale = rmc_valid_scale(rscale[row]);
+        for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p) e->values[p] = jac[p] * valid[b->col_idx[p]] / row_scale;
+    }
     if (!rmc_eliminate_initialize(b, jac, e)) return 0;
+    /* The recovery matrix is zero except the computed entries and the unit
+       tear entries, so its finiteness is that of the computed entries. */
+    bool finite = true;
     for (size_t s = 0; s < b->nelim; ++s) {
         if (e->promoted[s]) continue;
         size_t row = b->elim_row[s], target = b->elim_col[s];
         double magnitude = 0.0, pivot = 0.0;
         for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p) {
             if (!isfinite(e->values[p])) return 0;
-            magnitude = fmax(magnitude, fabs(e->values[p]));
+            magnitude = rmc_max(magnitude, fabs(e->values[p]));
             if (b->col_idx[p] == target) pivot = e->values[p];
         }
         if (!(fabs(pivot) > sqrt(DBL_EPSILON) * magnitude)) {
@@ -621,6 +652,7 @@ static int rmc_eliminate_prepare(ModelInstance* m, const RmcBlock* b, const doub
             double sum = 0.0;
             for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p) if (b->col_idx[p] != target) sum -= e->values[p] * e->recovery[b->col_idx[p] * cap + c];
             e->recovery[target * cap + c] = sum / pivot;
+            finite = finite && isfinite(e->recovery[target * cap + c]);
         }
     }
     size_t k = e->k;
@@ -632,7 +664,7 @@ static int rmc_eliminate_prepare(ModelInstance* m, const RmcBlock* b, const doub
             e->reduced[r * k + c] = sum;
         }
     }
-    if (!rmc_all_finite(e->recovery, n * cap) || !rmc_all_finite(e->reduced, k * k)) return 0;
+    if (!finite || !rmc_all_finite(e->reduced, k * k)) return 0;
     rmc_lu(e->reduced, k, e->ipiv, columns);
     return rmc_lu_invertible(e->reduced, k) ? 1 : 0;
 }

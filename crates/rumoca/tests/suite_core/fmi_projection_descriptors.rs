@@ -118,7 +118,7 @@ fn model_c(model: &str, source: &str, target: &str) -> String {
 }
 
 /// `RmcBlock` field names in their C initializer order.
-const FIELDS: [&str; 42] = [
+const FIELDS: [&str; 43] = [
     "canonical",
     "n",
     "y",
@@ -147,6 +147,7 @@ const FIELDS: [&str; 42] = [
     "cruns",
     "causal_target",
     "causal_col",
+    "tear_deps",
     "elimination",
     "nelim",
     "elim_row",
@@ -382,6 +383,23 @@ fn assert_tearing(model: &str, tables: &Tables, block: &Block) {
         next, ncausal,
         "{model}: causal runs cover every causal step"
     );
+    // Per tear, the ascending runs and reduced residual rows its perturbation
+    // reaches; every tear reaches some residual row.
+    let ncruns = block.get("ncruns");
+    for &list in block.range(tables, "tear_deps", k) {
+        let runs = tables.pool[list];
+        let rows = tables.pool[list + 1 + runs];
+        let run_ids = &tables.pool[list + 1..list + 1 + runs];
+        let row_ids = &tables.pool[list + 2 + runs..list + 2 + runs + rows];
+        assert!(run_ids.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(run_ids.iter().all(|&run| run < ncruns));
+        assert!(row_ids.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(row_ids.iter().all(|&row| row < k));
+        assert!(
+            rows > 0,
+            "{model}: a tear perturbation reaches a residual row"
+        );
+    }
 }
 
 /// The elimination covers the block and carries the shared capacity.

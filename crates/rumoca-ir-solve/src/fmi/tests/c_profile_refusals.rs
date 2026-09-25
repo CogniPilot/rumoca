@@ -190,3 +190,59 @@ fn a_projection_plan_without_residual_rows_is_refused() {
         },
     );
 }
+
+/// The published causality of the one parameter after `mutate`.
+fn published_causality(mutate: impl FnOnce(&mut SolveModel)) -> serde_json::Value {
+    let (mut model, input) = super::max_step_duration_local::delay_bearing_model_with_one_run();
+    model.problem.events.delays = SolveDelayPartition::default();
+    mutate(&mut model);
+    let view = FmiComponent::construct(model, vec![input])
+        .expect("the fixture is a checked component")
+        .into_codegen_view()
+        .try_c()
+        .expect("a parameter-determined assertion is admitted");
+    serde_json::to_value(&view).unwrap()["variables"][0]["causality"].clone()
+}
+
+/// An error assertion whose condition reads the parameter `p` (storage index
+/// 1) and nothing else reads it.
+fn assertion_on_parameter(model: &mut SolveModel) {
+    let events = &mut model.problem.events;
+    events.actions = vec![crate::SolveEventAction {
+        kind: crate::SolveEventActionKind::Assert,
+        message: crate::SolveEventMessage {
+            parts: vec![crate::SolveEventMessagePart::Text(
+                "p must be positive".into(),
+            )],
+        },
+        span: span(),
+        origin: "assertion fixture".into(),
+        clock_owner: None,
+    }];
+    events.action_conditions = rows(vec![vec![
+        LinearOp::LoadP { dst: 0, index: 1 },
+        LinearOp::Const { dst: 1, value: 0.0 },
+        LinearOp::Compare {
+            dst: 2,
+            op: crate::CompareOp::Le,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ]]);
+}
+
+/// SPEC_0044 ME-PARAM-001: an assertion condition is a read that keeps a
+/// parameter settable, even when no other program reads it; the same
+/// assertion over a constant leaves the parameter folded.
+#[test]
+fn a_parameter_read_only_by_an_assertion_condition_stays_settable() {
+    assert_eq!(published_causality(assertion_on_parameter), "parameter");
+    assert_eq!(
+        published_causality(|model| {
+            assertion_on_parameter(model);
+            model.problem.events.action_conditions = rows(vec![constant_row(0.0)]);
+        }),
+        "local"
+    );
+}
