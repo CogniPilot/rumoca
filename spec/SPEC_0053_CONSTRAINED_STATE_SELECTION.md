@@ -24,7 +24,7 @@ lower-order constraints in `ContinuousSolveSystem::manifold_residual` and
 | Derive independent coordinates and dependent differential coordinates from source-bound equations, derivative incidence, and initialization obligations before constructing executable derivative kernels | structural reduction | Avoid an ill-conditioned ambient ODE with unnecessary independent directions |
 | Keep source tensors and equation families authoritative; coordinate selection is a checked aggregate map over their scalar views, never a replacement collection of scalar declarations | DAE and Solve construction | Preserve SPEC_0032 ownership and provenance |
 | A construction witness binds each candidate set, its integration dimension, reconstruction equations, derivative equations, and coordinate maps to the same DAE | checked Solve construction | Matching alone does not establish numerical regularity |
-| Honor `StateSelect` and `reinit` requirements by typed coordinate identity; a `StateSelect.always` coordinate that is structurally redundant (an algebraic or output coordinate with no independent integration slot: an alias of another state's derivative, an acceleration-level derivative sensor, or a constraint/function output) is demoted per MLS 3.6 §4.8.8, while an `always` set that is infeasible among peer primary differential state candidates fails explicitly | structural reduction | Preserve MLS state-selection semantics |
+| Honor `StateSelect` and `reinit` requirements by typed coordinate identity; a `StateSelect.always` coordinate that is structurally redundant (an algebraic or output coordinate with no independent integration slot: an alias of another state's derivative, an acceleration-level derivative sensor, or a constraint/function output) is demoted per MLS 3.7 §4.9.7.1, while an `always` set that is infeasible among peer primary differential state candidates fails explicitly | structural reduction | Preserve MLS state-selection semantics |
 | Preserve every source equation, assertion, initialization condition, and visible variable when changing differential roles | structural reconstruction | Coordinate choice cannot change the source solution set |
 | Prove dependency closure for the selected derivative outputs; dependent derivatives execute only when needed by that closure or an observation | Solve planning | Removing outputs must not discard needed equations or compute avoidable derivatives |
 | Classify each holonomic manifold constraint as definitional (a conserved first integral: its lower-order form is implied by the ODE, so one differentiation reconstructs a matched state derivative) or redundant (a loop closure: over-determining at the position level, closed only by differentiating to acceleration, which introduces a multiplier), carry that classification on the prepared manifold, and retain the source coordinates when every manifold constraint is definitional but reduce to an independent basis when any constraint is redundant | structural reduction classifies; Solve state selection decides | A first integral has no globally injective reduced chart, so a fixed reduced basis folds when a coordinate passes through zero, while a retained loop closure leaves a redundant acceleration residual the solver cannot integrate cheaply; the per-constraint differentiation order separates the two where no whole-model predicate can |
@@ -129,6 +129,13 @@ selects the wrong branch even though every algebraic residual is small.
 `GyroscopicEffects` exhibits the same geometric limitation through two
 selected position components. This is an open correctness counterexample,
 not evidence that a different fixed coordinate preference is sufficient.
+A reduced loop-closure chart folds the same way when its constraint slope
+vanishes on the manifold (`Constraints.UniversalConstraint` reconstructs the
+middle Cardan angle of a free body, whose slope vanishes where the last angle
+reaches `-pi/2`). The
+construction, certificate, and switching contract for those charts are the
+STRUCT-T07 constraint-fold chart rows in
+[SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
@@ -175,7 +182,7 @@ The compiler must construct and validate the reduced differential system itself.
 
 - [SPEC_0007](SPEC_0007_IR_PIPELINE.md), [STRUCT-T07](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope)
 - [SPEC_0032](SPEC_0032_RANGE_PRESERVING_TENSORS.md), [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md), [SPEC_0038](SPEC_0038_UNIFIED_FMI_EXECUTION.md)
-- [MLS StateSelect](https://specification.modelica.org/maint/3.6/class-predefined-types-and-declarations.html#stateselect)
+- [MLS 3.7 §4.9.7.1 StateSelect](https://specification.modelica.org/maint/3.7/class-predefined-types-and-declarations.html#stateselect)
 - [FMI 3.0.2](https://fmi-standard.org/docs/3.0.2/) — ModelStructure and Model Exchange completed-step/Event Mode rules
 - [Tang et al., structural offsets by fixed-point iteration](https://arxiv.org/pdf/1406.4473), §2
 - [McKenzie and Pryce, structural analysis and dummy derivatives](https://orca.cardiff.ac.uk/id/eprint/100978/), 2017
