@@ -566,9 +566,7 @@ impl SolvePureCallTableBuilder {
         if self.owners.iter().any(|owner| owner.identity == identity) {
             return Err(SolveProgramConstructionError::DuplicateCallIdentity { provenance });
         }
-        let owner_index = u32::try_from(self.owners.len())
-            .map_err(|_| SolveProgramConstructionError::IdentityOverflow { provenance })?;
-        let id = SolvePureCallOwnerId::from_index(owner_index);
+        let id = next_owner_id(self.owners.len(), provenance)?;
         let interfaces = SolvePureCallTableView::primal(&self.owners);
         let body = TypedProgram::construct_with_calls(self.arithmetic, interfaces, |builder| {
             let input_slots = inputs
@@ -626,6 +624,18 @@ impl SolvePureCallTableBuilder {
             .filter(|owner| owner.id == id)
             .map(SolvePureCallOwner::call_site)
     }
+}
+
+/// The identity the next owner receives: the table's current length, which
+/// must fit the owner index width. Kept out of the generic construction path
+/// so the overflow branch exists once rather than per instantiation.
+fn next_owner_id(
+    owner_count: usize,
+    provenance: Span,
+) -> Result<SolvePureCallOwnerId, SolveProgramConstructionError> {
+    let owner_index = u32::try_from(owner_count)
+        .map_err(|_| SolveProgramConstructionError::IdentityOverflow { provenance })?;
+    Ok(SolvePureCallOwnerId::from_index(owner_index))
 }
 
 fn derive_affinity(

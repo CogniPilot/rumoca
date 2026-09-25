@@ -1277,10 +1277,15 @@ mod tests {
             "Pkg/Sub/Helper.mo",
             "Pkg/Sub/Root.mo",
         ] {
-            // Documents are keyed by their canonical path, which on Windows
-            // carries the verbatim prefix and native separators, so look the
-            // file up by the same key the session stores.
-            let uri = canonical_path_key(&root.join(file).to_string_lossy());
+            // Documents are keyed by the path the source-root walk produced
+            // under the root as given: native separators, no canonicalization
+            // (a canonical key differs on macOS, where the temporary root is a
+            // symlink, and on Windows, where it carries the verbatim prefix).
+            let uri = file
+                .split('/')
+                .fold(root.clone(), |path, component| path.join(component))
+                .to_string_lossy()
+                .to_string();
             assert!(
                 by_file.is_source_root_backed_document(&uri),
                 "{uri} must remain a source-root document"
