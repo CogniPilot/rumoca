@@ -321,7 +321,7 @@ fn record_jacobian(
                     .get(call.program())
                     .ok_or_else(|| refuse(canonical, "names a missing JVP program"))?
                     .clone();
-                check_seed_loads(canonical, &operations, sources.seed_len)?;
+                check_seed_loads(canonical, &operations, sources.seed_len, 1)?;
                 Ok((operations, program_span(source, canonical, call.program())?))
             })?;
             record.jvp_max_outputs = record.jvp_max_outputs.max(table.jvp.output_count(function));
@@ -354,7 +354,10 @@ fn record_lane_calls(
     (application, csr): (&solve::ProjectionJacobianApplication, &Csr),
     record: &mut BlockRecord,
 ) -> Result<(), CodegenError> {
-    if !rumoca_eval_solve::projection_policy::jacobian_sources().colored_lanes {
+    // Generated components follow the policy itself: a thread-scoped choice
+    // (`projection_policy::with_jacobian_sources`) compares linked-kernel
+    // evaluators only.
+    if !rumoca_eval_solve::projection_policy::JacobianSources::POLICY.colored_lanes {
         return Ok(());
     }
     let Ok(plan) = solve::ColoredTangentPlan::derive(application) else {
@@ -366,7 +369,7 @@ fn record_lane_calls(
     for call in plan.calls() {
         let lanes = call.colors.len();
         let program = plan.programs()[call.program].clone();
-        check_seed_loads(canonical, program.ops(), sources.seed_len * lanes)?;
+        check_seed_loads(canonical, program.ops(), sources.seed_len, lanes)?;
         let outputs = program.lane_outputs();
         let seeds = lane_seed_positions(program.ops(), &call.colors, application);
         let function = table.lanes.push(program, span);
@@ -431,14 +434,22 @@ fn lane_seed_positions(
         .collect()
 }
 
-fn check_seed_loads(
+/// Refuse a program reading a seed outside `seed_len` seeds of `lanes`
+/// directions: a `LoadSeed` index is a position (`seed * lanes + lane`), a
+/// tensor load's seed range is in seeds.
+pub(super) fn check_seed_loads(
     canonical: usize,
     operations: &[solve::LinearOp],
     seed_len: usize,
+    lanes: usize,
 ) -> Result<(), CodegenError> {
     for operation in operations {
         match operation {
-            solve::LinearOp::LoadSeed { index, .. } if *index >= seed_len => {
+            solve::LinearOp::LoadSeed { index, .. }
+                if seed_len
+                    .checked_mul(lanes)
+                    .is_none_or(|positions| *index >= positions) =>
+            {
                 return Err(refuse(
                     canonical,
                     "loads a seed outside the solver-Y and parameter lanes",

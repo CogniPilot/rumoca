@@ -52,3 +52,30 @@ fn an_unrepresentable_row_isolation_refuses_its_block() {
         "only the materialized isolator is interned; the refused isolation interns nothing"
     );
 }
+
+/// Lane seeds are checked in their own units: a `LoadSeed` index is a
+/// position among `seed_len * lanes`, a tensor load's seed range is in seeds.
+#[test]
+fn lane_seed_loads_are_checked_in_their_own_units() {
+    use rumoca_ir_solve::{LinearOp, TensorInputKind};
+
+    use super::block::check_seed_loads;
+
+    let (seed_len, lanes) = (4, 3);
+    let load = |index| vec![LinearOp::LoadSeed { dst: 0, index }];
+    let tensor = |seed_start| {
+        vec![LinearOp::TensorLoad {
+            dst_start: 0,
+            input: TensorInputKind::Y,
+            input_start: 0,
+            count: 2,
+            seed_start: Some(seed_start),
+            lanes: lanes + 1,
+        }]
+    };
+    assert!(check_seed_loads(0, &load(seed_len * lanes - 1), seed_len, lanes).is_ok());
+    assert!(check_seed_loads(0, &load(seed_len * lanes), seed_len, lanes).is_err());
+    assert!(check_seed_loads(0, &tensor(seed_len - 2), seed_len, lanes).is_ok());
+    // Within `seed_len * lanes` positions but past the last seed.
+    assert!(check_seed_loads(0, &tensor(seed_len - 1), seed_len, lanes).is_err());
+}
