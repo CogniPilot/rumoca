@@ -25,9 +25,10 @@ use initial_diagnostics::initial_projection_error;
 pub(crate) use scaling::scaled_newton_delta_with_tearing;
 use scaling::{
     OriginRowScales, algebraic_block_scales, algebraic_plan_row_scales,
-    initial_block_fallback_scales, initial_residual_scales, jacobian_row_magnitudes,
-    jacobian_row_scales, model_variable_scale, origin_bounded_residual_converged,
-    scaled_correction_converged, scaled_residual_converged, scaled_residual_norm, scaled_tolerance,
+    initial_block_fallback_scales, initial_residual_scales, jacobian_row_derived,
+    jacobian_row_magnitudes, jacobian_row_scales, model_variable_scale,
+    origin_bounded_residual_converged, scaled_correction_converged, scaled_residual_converged,
+    scaled_residual_norm, scaled_tolerance,
 };
 pub(crate) use scaling::{ScaledNewtonSystem, scaled_newton_delta, scaled_newton_delta_with_cache};
 use singleton::{SingletonAssignmentStep, initial_row_target_name, singleton_assignment_improves};

@@ -38,6 +38,11 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
     );
     let row_magnitudes =
         jacobian_row_magnitudes(&jacobian, structure.map(solve::JacobianStructure::pattern));
+    let row_derived = jacobian_row_derived(
+        &jacobian,
+        &variable_scales,
+        structure.map(solve::JacobianStructure::pattern),
+    );
     let mut system = AffineBlockSystem {
         model,
         parameters: p,
@@ -46,6 +51,7 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         block_index,
         jacobian,
         row_magnitudes,
+        row_derived,
         row_scales,
         variable_scales,
         structure,
@@ -87,6 +93,8 @@ struct AffineBlockSystem<'a, M> {
     jacobian: DMatrix<f64>,
     /// [`jacobian_row_magnitudes`] of `jacobian`.
     row_magnitudes: Vec<f64>,
+    /// [`jacobian_row_derived`] at the origin variable scales.
+    row_derived: Vec<bool>,
     row_scales: Vec<f64>,
     variable_scales: Vec<f64>,
     structure: Option<&'a solve::JacobianStructure>,
@@ -142,6 +150,7 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             structure: self.structure.map(solve::JacobianStructure::pattern),
             scales: &self.row_scales,
             magnitudes: &self.row_magnitudes,
+            derived: &self.row_derived,
         };
         origin_bounded_residual_converged(
             self.model,

@@ -6,7 +6,7 @@ use rumoca_ir_solve as solve;
 
 use super::super::{ImplicitProjectionModel, RuntimeSolveError};
 use super::{
-    OriginRowScales, algebraic_block_scales, jacobian_row_magnitudes,
+    OriginRowScales, algebraic_block_scales, jacobian_row_derived, jacobian_row_magnitudes,
     origin_bounded_residual_converged, scaled_residual_converged,
 };
 
@@ -77,7 +77,17 @@ impl Random {
 }
 
 fn magnitude(random: &mut Random) -> f64 {
-    [0.0, 1e-8, 0.3, 2.0, 1e6, 1e300, f64::INFINITY][random.choose(7)]
+    [
+        0.0,
+        5e-324,
+        1e-310,
+        1e-8,
+        0.3,
+        2.0,
+        1e6,
+        1e300,
+        f64::INFINITY,
+    ][random.choose(9)]
 }
 
 #[test]
@@ -114,8 +124,10 @@ fn origin_bounded_certificate_decides_as_the_full_row_scales() {
             origin_y[index] = 0.0;
             y[index] = (random.unit() - 0.5) * [1.0, 1e3, 1e10][random.choose(3)];
         }
-        let (origin_scales, _) = algebraic_block_scales(&model, &origin_y, &block, &jacobian, None);
+        let (origin_scales, origin_variable_scales) =
+            algebraic_block_scales(&model, &origin_y, &block, &jacobian, None);
         let magnitudes = jacobian_row_magnitudes(&jacobian, None);
+        let derived = jacobian_row_derived(&jacobian, &origin_variable_scales, None);
         let (scales, _) = algebraic_block_scales(&model, &y, &block, &jacobian, None);
         let tol = 1e-8;
         let residual = scales
@@ -127,6 +139,7 @@ fn origin_bounded_certificate_decides_as_the_full_row_scales() {
             structure: None,
             scales: &origin_scales,
             magnitudes: &magnitudes,
+            derived: &derived,
         };
         let bounded =
             origin_bounded_residual_converged(&model, &y, &block, &origin, &residual, tol);
@@ -142,5 +155,52 @@ fn origin_bounded_certificate_decides_as_the_full_row_scales() {
     assert!(
         accepted > 100 && rejected > 100,
         "{accepted} accepted, {rejected} rejected"
+    );
+}
+
+/// A contribution underflowing to zero at the origin puts the row on its
+/// fallback scale there, while the refined coordinate forms a smaller scale
+/// from the same entry: the origin shortcut must not accept that row.
+#[test]
+fn an_underflowed_origin_contribution_does_not_bound_the_row_scale() {
+    let block = solve::AlgebraicProjectionBlock {
+        rows: vec![0],
+        y_indices: vec![0],
+        tearing: None,
+        alternate_charts: Vec::new(),
+    };
+    let model = ScaledBlock {
+        plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![block.clone()],
+        },
+        targets: vec![Some(0)],
+        nominals: vec![0.5, 1.0],
+    };
+    let jacobian = DMatrix::from_element(1, 1, 5e-324);
+    let (origin_y, y) = (vec![0.0, 0.0], vec![100.0, 0.0]);
+    let (origin_scales, origin_variable_scales) =
+        algebraic_block_scales(&model, &origin_y, &block, &jacobian, None);
+    assert_eq!(
+        5e-324 * 0.5,
+        0.0,
+        "the origin contribution underflows to zero"
+    );
+    let magnitudes = jacobian_row_magnitudes(&jacobian, None);
+    let derived = jacobian_row_derived(&jacobian, &origin_variable_scales, None);
+    assert_eq!(derived, [false]);
+    let (scales, _) = algebraic_block_scales(&model, &y, &block, &jacobian, None);
+    let (residual, tol) = ([1e-12], 1e-8);
+    let origin = OriginRowScales {
+        jacobian: &jacobian,
+        structure: None,
+        scales: &origin_scales,
+        magnitudes: &magnitudes,
+        derived: &derived,
+    };
+    let full = scaled_residual_converged(&residual, &scales, tol);
+    assert!(!full, "the full row scale at y rejects the residual");
+    assert_eq!(
+        origin_bounded_residual_converged(&model, &y, &block, &origin, &residual, tol),
+        full
     );
 }

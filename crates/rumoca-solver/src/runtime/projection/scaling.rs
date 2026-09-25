@@ -503,6 +503,18 @@ fn sparse_triplets(
 
 /// Largest finite magnitude of each row of `jacobian` over its structural
 /// entries (every column without a pattern).
+/// Whether each row's scale at `variable_scales` comes from a nonzero finite
+/// contribution rather than its fallback.
+pub(super) fn jacobian_row_derived(
+    jacobian: &DMatrix<f64>,
+    variable_scales: &[f64],
+    structure: Option<&solve::StructuralPattern>,
+) -> Vec<bool> {
+    (0..jacobian.nrows())
+        .map(|row| jacobian_row_scale(jacobian, row, variable_scales, 0.0, structure) > 0.0)
+        .collect()
+}
+
 pub(super) fn jacobian_row_magnitudes(
     jacobian: &DMatrix<f64>,
     structure: Option<&solve::StructuralPattern>,
@@ -565,6 +577,8 @@ pub(super) struct OriginRowScales<'a> {
     pub(super) scales: &'a [f64],
     /// [`jacobian_row_magnitudes`] of the same Jacobian.
     pub(super) magnitudes: &'a [f64],
+    /// [`jacobian_row_derived`] at the origin variable scales.
+    pub(super) derived: &'a [bool],
 }
 
 /// Whether `residual` converges under the row scales [`algebraic_block_scales`]
@@ -598,7 +612,13 @@ pub(super) fn origin_bounded_residual_converged<M: ImplicitProjectionModel + ?Si
         largest.max(valid_variable_scale(*scale))
     });
     residual.iter().enumerate().all(|(row, &value)| {
-        let bounded = (origin.magnitudes[row] * largest).is_finite();
+        // A contribution only grows from the origin, so an origin scale formed
+        // from a nonzero contribution bounds the scale at `y` from below. A row
+        // on its fallback at the origin with a nonzero entry may form a
+        // smaller scale from contributions at `y` (an underflowed product), so
+        // only a row with no nonzero entry keeps its growing fallback.
+        let bounded = (origin.magnitudes[row] * largest).is_finite()
+            && (origin.derived[row] || origin.magnitudes[row] == 0.0);
         if bounded && value.abs() <= scaled_tolerance(tol, origin.scales[row]) {
             return true;
         }
