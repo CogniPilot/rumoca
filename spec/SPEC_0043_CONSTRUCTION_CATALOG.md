@@ -308,6 +308,23 @@ active seeds for the next call. Projection reuse retains no value across
 invocations; independently certified closed-input pure-call reuse retains its
 own contract. Initialization and parameter-sensitivity seed domains are unchanged.
 
+A tangent-lane program constructs only from a checked forward JVP program and
+a lane count below `MAX_TENSOR_LANES`: operations that read no seed-dependent
+register run once, seed-dependent scalar operations run once per lane, and
+interleaved dual aggregates (including the two single-lane idioms that pack
+and split them) widen to one primal and one lane per tangent. Seeds are
+element-major and outputs lane-major; each lane equals the one-direction
+program operation for operation, and any other seed-dependent vocabulary
+declines. A torn block's tangent plan constructs from its checked
+`BlockTearing` and the solver-Y JVP rows: each causal step names its row, its
+target, its coefficient source (a lane seeded on the target alone), and the
+tear columns its reads reach; each reduced residual row names its tangent
+source; a row without a multi-lane program is marked finite-difference.
+Evaluation follows the sweep order and declines at a vanished coefficient. A
+block's colored tangent plan assigns one lane per color of its checked
+pattern. Plans are derived views, rebuilt by each consumer from the same
+construction, never canonical IR.
+
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Within one structural-artifact construction, applications of one immutable source share one operation-invariance proof; source replacement or specialization derives fresh evidence for its exact owner. The existing register-source checker must prove every read uses a seed-invariant register version; seed loads and any operation with non-repeatable effects cannot establish reuse. Every write replaces the destination version's evidence. | Projection-Jacobian construction | Preserves failure behavior without multiplying source-wide proof work by the block count |
