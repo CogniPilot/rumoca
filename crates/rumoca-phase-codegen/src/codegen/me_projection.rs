@@ -13,6 +13,8 @@
 mod assign;
 mod block;
 mod initial;
+#[cfg(test)]
+mod lane_render_tests;
 mod table;
 #[cfg(test)]
 mod tests;

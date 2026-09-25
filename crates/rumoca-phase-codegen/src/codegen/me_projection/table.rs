@@ -73,7 +73,7 @@ impl LaneFamily {
         self.programs.len() - 1
     }
 
-    fn into_plan(self) -> Result<Value, CodegenError> {
+    pub(super) fn into_plan(self) -> Result<Value, CodegenError> {
         let (programs, spans): (Vec<_>, Vec<_>) = self.programs.into_iter().unzip();
         let block = solve::ScalarProgramBlock::with_tangent_lane_programs(&programs, spans)
             .map_err(|error| CodegenError::template(error.to_string()))?;

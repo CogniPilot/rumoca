@@ -104,8 +104,8 @@
         }
         r[{{ op.dst }}+(i*{{ op.columns }}+j)*2]=re; r[{{ op.dst }}+(i*{{ op.columns }}+j)*2+1]=du;
     }
-{%- elif op.kind == "TensorTranspose" and op.lanes == 2 %}    for (size_t i=0; i<{{ op.rows }}; ++i) for (size_t j=0; j<{{ op.columns }}; ++j) for (size_t k=0; k<{{ op.element_width * 2 }}; ++k)
-        r[{{ op.dst }}+(i*{{ op.columns }}+j)*{{ op.element_width * 2 }}+k]=r[{{ op.src_start }}+(j*{{ op.rows }}+i)*{{ op.element_width * 2 }}+k];
+{%- elif op.kind == "TensorTranspose" and op.lanes >= 2 %}    for (size_t i=0; i<{{ op.rows }}; ++i) for (size_t j=0; j<{{ op.columns }}; ++j) for (size_t k=0; k<{{ op.element_width * op.lanes }}; ++k)
+        r[{{ op.dst }}+(i*{{ op.columns }}+j)*{{ op.element_width * op.lanes }}+k]=r[{{ op.src_start }}+(j*{{ op.rows }}+i)*{{ op.element_width * op.lanes }}+k];
 {%- elif op.kind == "TensorCross" and op.lanes == 2 %}    {
         double a[6], b[6], c[6];
         for (size_t k=0; k<6; ++k) { a[k]=r[{{ op.lhs_start }}+k]; b[k]=r[{{ op.rhs_start }}+k]; }
@@ -117,6 +117,48 @@
         }
         for (size_t k=0; k<6; ++k) r[{{ op.dst }}+k]=c[k];
     }
+{#- Tangent-lane programs (rumoca_ir_solve::TangentLaneProgram) widen dual
+    aggregates to one primal and lanes-1 tangents per element; the lane count
+    is a render-time constant, so every local array has a fixed size. -#}
+{%- elif op.kind == "TensorLoad" and op.lanes > 2 %}{% set w = op.lanes %}    for (size_t k=0; k<{{ op.count }}; ++k) {
+        r[{{ op.dst }}+{{ w }}*k] = m->{{ op.input | lower }}[{{ op.input_start }}+k];
+        for (size_t l=1; l<{{ w }}; ++l) r[{{ op.dst }}+{{ w }}*k+l] = {% if op.seed_start is defined and op.seed_start is not none %}seed[({{ op.seed_start }}+k)*{{ w - 1 }}+(l-1)]{% else %}0.0{% endif %};
+    }
+{%- elif op.kind == "TensorBinary" and op.lanes > 2 and op.operator in ["Add", "Sub", "Mul", "Div"] %}{% set w = op.lanes %}    for (size_t k=0; k<{{ op.count }}; ++k) {
+        size_t x = {{ op.lhs_start }}+k*{{ op.lhs_stride * w }}, y = {{ op.rhs_start }}+k*{{ op.rhs_stride * w }}, z = {{ op.dst }}+k*{{ w }};
+        double a = r[x], b = r[y], c[{{ w }}];
+{%- if op.operator == "Add" %}
+        c[0] = a + b; for (size_t l=1; l<{{ w }}; ++l) c[l] = r[x+l] + r[y+l];
+{%- elif op.operator == "Sub" %}
+        c[0] = a - b; for (size_t l=1; l<{{ w }}; ++l) c[l] = r[x+l] - r[y+l];
+{%- elif op.operator == "Mul" %}
+        c[0] = a * b; for (size_t l=1; l<{{ w }}; ++l) c[l] = r[x+l] * b + a * r[y+l];
+{%- else %}
+        c[0] = (b == 0.0 && a == 0.0) ? 0.0 : a / b; for (size_t l=1; l<{{ w }}; ++l) c[l] = b == 0.0 ? 0.0 : (r[x+l] * b - a * r[y+l]) / (b * b);
+{%- endif %}
+        for (size_t l=0; l<{{ w }}; ++l) r[z+l] = c[l];
+    }
+{%- elif op.kind == "MatrixMultiply" and op.lanes > 2 %}{% set w = op.lanes %}    for (size_t i=0; i<{{ op.rows }}; ++i) for (size_t j=0; j<{{ op.columns }}; ++j) {
+        double c[{{ w }}] = {0.0};
+        for (size_t k=0; k<{{ op.inner }}; ++k) {
+            size_t x={{ op.lhs_start }}+(i*{{ op.inner }}+k)*{{ w }}, y={{ op.rhs_start }}+(k*{{ op.columns }}+j)*{{ w }};
+            c[0] += r[x]*r[y];
+            for (size_t l=1; l<{{ w }}; ++l) c[l] += r[x+l]*r[y] + r[x]*r[y+l];
+        }
+        for (size_t l=0; l<{{ w }}; ++l) r[{{ op.dst }}+(i*{{ op.columns }}+j)*{{ w }}+l]=c[l];
+    }
+{%- elif op.kind == "TensorCross" and op.lanes > 2 %}{% set w = op.lanes %}    {
+        double a[{{ 3 * w }}], b[{{ 3 * w }}], c[{{ 3 * w }}];
+        for (size_t k=0; k<{{ 3 * w }}; ++k) { a[k]=r[{{ op.lhs_start }}+k]; b[k]=r[{{ op.rhs_start }}+k]; }
+        static const size_t first[3]={1,2,0}, second[3]={2,0,1};
+        for (size_t k=0; k<3; ++k) {
+            size_t f={{ w }}*first[k], s={{ w }}*second[k];
+            c[{{ w }}*k]=a[f]*b[s]-a[s]*b[f];
+            for (size_t l=1; l<{{ w }}; ++l) c[{{ w }}*k+l]=a[f+l]*b[s]+a[f]*b[s+l]-a[s+l]*b[f]-a[s]*b[f+l];
+        }
+        for (size_t k=0; k<{{ 3 * w }}; ++k) r[{{ op.dst }}+k]=c[k];
+    }
+
 {%- elif op.kind == "TensorConcatenate" %}
 {%- set inner = op.dimensions[op.axis + 1:]|product %}{%- set result_axis = op.dimensions[op.axis] %}{%- set offset = namespace(value=0) %}
 {%- for source in op.sources %}
