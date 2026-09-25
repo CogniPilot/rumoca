@@ -49,6 +49,7 @@ mod clocked_sample_regression;
 mod component_redeclare_constraints;
 mod component_redeclare_dimensions;
 mod connection_normalization_golden;
+mod constant_folding;
 mod coupled_refresh_schedule;
 mod derivative_alias_initial_acceleration;
 mod derivative_kinks;

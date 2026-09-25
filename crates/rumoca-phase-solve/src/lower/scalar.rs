@@ -6,7 +6,9 @@ mod conditions;
 mod constants;
 mod coordinates;
 mod functions;
+mod literal_values;
 mod operators;
+mod register_folding;
 mod selector;
 
 use std::cell::RefCell;
@@ -421,6 +423,10 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     ops: Vec<solve::LinearOp>,
     next_register: solve::Reg,
     integer_registers: Vec<Option<i64>>,
+    /// The exact value of each register loaded from a literal or folded from
+    /// literals, and the operand of each register that negates another.
+    real_registers: Vec<Option<f64>>,
+    negated_registers: Vec<Option<solve::Reg>>,
     /// The incidence proofs of exactly zero product terms, shared with
     /// structural analysis so both omit the same terms.
     zero_coefficients: rumoca_eval_dae::ZeroCoefficients<'dae>,
@@ -500,6 +506,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             ops: Vec::new(),
             next_register: 0,
             integer_registers: Vec::new(),
+            real_registers: Vec::new(),
+            negated_registers: Vec::new(),
             zero_coefficients: rumoca_eval_dae::ZeroCoefficients::default(),
             unary_values: HashMap::new(),
             expression_cache: rustc_hash::FxHashMap::default(),
@@ -729,7 +737,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let output = self.expression(expression, scalar)?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        Ok(solve::prune_dead_constants(self.ops))
     }
 
     /// Compile several scalar projections into one source-owned program.
@@ -746,7 +754,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let output = self.expression(expression, scalar)?;
             self.ops.push(solve::LinearOp::StoreOutput { src: output });
         }
-        Ok(self.ops)
+        Ok(solve::prune_dead_constants(self.ops))
     }
 
     /// Compile complete aggregate expressions before projecting their scalar
@@ -809,7 +817,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 });
             }
         }
-        Ok(std::mem::take(&mut self.ops))
+        Ok(solve::prune_dead_constants(std::mem::take(&mut self.ops)))
     }
 
     pub(super) fn clocked_program(
@@ -821,7 +829,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.active_clock = Some(clock);
         let output = self.expression(expression, scalar)?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        Ok(solve::prune_dead_constants(self.ops))
     }
 
     /// Compile the source of MLS §16.5.1 `sample(u)` against event-entry
@@ -837,7 +845,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.sampled_source = true;
         let output = self.expression(expression, scalar)?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        Ok(solve::prune_dead_constants(self.ops))
     }
 
     /// Compile `slot - Σ ±termᵢ` into one residual program.
@@ -881,7 +889,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         self.ops
             .push(solve::LinearOp::StoreOutput { src: residual });
-        Ok(self.ops)
+        Ok(solve::prune_dead_constants(self.ops))
     }
 
     /// Compile `slot - start` for one exact scalar initialization equation.
@@ -920,7 +928,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         };
         self.ops
             .push(solve::LinearOp::StoreOutput { src: residual });
-        Ok(self.ops)
+        Ok(solve::prune_dead_constants(self.ops))
     }
 
     pub(super) fn scaled_derivative_program(
@@ -934,7 +942,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let coefficient = self.expression(input.coefficient, input.coefficient_scalar)?;
         let output = self.affine_quotient(numerator, coefficient, input.span)?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        Ok(solve::prune_dead_constants(self.ops))
     }
 
     pub(super) fn packed_pair(
@@ -1321,6 +1329,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let node = self.node(expression);
         self.expect_scalar(node, scalar)?;
+        if !matches!(node.operation(), dae::ExpressionOperation::Literal(_))
+            && let Some(value) = self.exact_literal(expression, scalar)
+        {
+            let result = self.constant(value, node.provenance().span())?;
+            self.expression_cache.insert(key, result);
+            return Ok(result);
+        }
         let result = match node.operation() {
             dae::ExpressionOperation::Literal(value) => {
                 self.literal(value, node.provenance().span())
@@ -1528,6 +1543,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             solve::ScalarSlot::Time => self.ops.push(solve::LinearOp::LoadTime { dst }),
             solve::ScalarSlot::Constant(value) => {
                 self.ops.push(solve::LinearOp::Const { dst, value });
+                self.real_registers[dst as usize] = Some(value);
             }
         }
         Ok(dst)
@@ -1562,6 +1578,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     fn constant(&mut self, value: f64, span: Span) -> Result<solve::Reg, LowerError> {
         let dst = self.register(span)?;
         self.ops.push(solve::LinearOp::Const { dst, value });
+        self.real_registers[dst as usize] = Some(value);
         self.set_integer_register(dst, exact_i64(value));
         Ok(dst)
     }
@@ -1588,6 +1605,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .checked_add(1)
             .ok_or_else(|| LowerError::contract("Solve register index overflow", span))?;
         self.integer_registers.push(None);
+        self.real_registers.push(None);
+        self.negated_registers.push(None);
         Ok(register)
     }
 

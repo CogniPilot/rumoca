@@ -55,7 +55,7 @@ pub use linear_op::{
     FunctionConditionalProgram, FunctionFoldProgram, LinearOp, MatrixProductShape, RandomGenerator,
     Reg, ScalarProgramRegisterError, ScalarProgramRegisterFlow, StridedOperand,
     TargetAssignmentShape, TensorConcatenateSource, TensorIndex, TensorInputKind, TensorSubscript,
-    TensorUpdateSubscript, UnaryOp, resolve_indexed_slot,
+    TensorUpdateSubscript, UnaryOp, prune_dead_constants, resolve_indexed_slot,
 };
 pub use model::*;
 pub use refresh::*;

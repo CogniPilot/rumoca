@@ -40,11 +40,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let Some(operator) = LoweredUnaryOperator::of(operator) else {
             return Ok(operand);
         };
+        if operator == LoweredUnaryOperator::Negate
+            && let Some(folded) = self.fold_negation(operand, span)?
+        {
+            return Ok(folded);
+        }
         let op = match operator {
             LoweredUnaryOperator::Negate => solve::UnaryOp::Neg,
             LoweredUnaryOperator::Not => solve::UnaryOp::Not,
         };
         let dst = self.solve_unary(op, operand, span)?;
+        if operator == LoweredUnaryOperator::Negate {
+            self.record_negation(dst, operand);
+        }
         let integer = self
             .integer_register(operand)
             .and_then(|value| match operator {
@@ -62,6 +70,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         rhs: solve::Reg,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        if let Some(folded) = self.fold_binary(operator, lhs, rhs, span)? {
+            return Ok(folded);
+        }
         let dst = self.register(span)?;
         let operation = match operator {
             dae::BinaryOperator::Add | dae::BinaryOperator::ElementwiseAdd => {
@@ -191,6 +202,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        if let Some((operand, operand_scalar)) =
+            self.identity_operand_scalar(operator, lhs, rhs, scalar)
+        {
+            return self.expression(operand, operand_scalar);
+        }
         if let Some(output) =
             self.compact_tensor_binary_expression(operator, lhs, rhs, scalar, span)?
         {
@@ -231,7 +247,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let lhs_count = scalar_count(self.view, lhs);
         let rhs_count = scalar_count(self.view, rhs);
         let count = lhs_count.max(rhs_count);
-        if count <= 1 {
+        // A literal operand lowers per scalar, where its lanes fold exactly.
+        if count <= 1 || self.is_literal_operand(lhs) || self.is_literal_operand(rhs) {
             return Ok(None);
         }
         let op = match operator {
@@ -288,7 +305,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<solve::Reg, LowerError> {
         let lhs_dimensions = self.node(lhs).value_type().dimensions().to_vec();
         let rhs_dimensions = self.node(rhs).value_type().dimensions().to_vec();
-        if self.omits_product_term(lhs, rhs, scalar) {
+        if self.omits_product_term(lhs, rhs, scalar)
+            || self.is_literal_operand(lhs)
+            || self.is_literal_operand(rhs)
+        {
             return self.sparse_product(lhs, rhs, scalar, span);
         }
         match (lhs_dimensions.as_slice(), rhs_dimensions.as_slice()) {
@@ -400,9 +420,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             {
                 continue;
             }
-            let factor = self.expression(lhs, lhs_index)?;
-            let other = self.expression(rhs, rhs_index)?;
-            let term = self.binary(dae::BinaryOperator::Multiply, factor, other, span)?;
+            let term = if self.exact_literal(lhs, lhs_index) == Some(1.0) {
+                self.expression(rhs, rhs_index)?
+            } else if self.exact_literal(rhs, rhs_index) == Some(1.0) {
+                self.expression(lhs, lhs_index)?
+            } else {
+                let factor = self.expression(lhs, lhs_index)?;
+                let other = self.expression(rhs, rhs_index)?;
+                self.binary(dae::BinaryOperator::Multiply, factor, other, span)?
+            };
             sum = Some(match sum {
                 None => term,
                 Some(partial) => self.binary(dae::BinaryOperator::Add, partial, term, span)?,

@@ -1029,6 +1029,8 @@ fn static_quotient_family_lowers_to_computable_solve_operations() {
 }
 
 fn assert_static_quotient_program(operations: &[LinearOp]) {
+    // Each quotient of two literals is one exact literal division, folded at
+    // lowering; the rounding each builtin owns still runs.
     assert_eq!(
         operations
             .iter()
@@ -1040,7 +1042,7 @@ fn assert_static_quotient_program(operations: &[LinearOp]) {
                 }
             ))
             .count(),
-        3
+        0
     );
     assert_eq!(
         operations

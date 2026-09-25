@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use crate::{SolvePureCallDirectionalSite, SolvePureCallSite, SolveValueType};
 
+mod dead_constants;
 mod seed_invariance;
+
+pub use dead_constants::prune_dead_constants;
 
 /// Register index in a lowered op sequence.
 pub type Reg = u32;
