@@ -69,6 +69,8 @@ struct TornSystem {
     /// Tear coordinates in reduced-column order, matching `residual_rows`.
     tear_columns: Vec<usize>,
     factor: Factor,
+    /// One recovery accumulator per tear column.
+    accumulator: Box<[f64]>,
     work: DVector<f64>,
     reduced_rhs: DVector<f64>,
 }
@@ -111,6 +113,7 @@ impl TornSystem {
             residual_rows: Vec::with_capacity(capacity),
             tear_columns: Vec::with_capacity(capacity),
             factor: Factor::Unfactored,
+            accumulator: vec![0.0; capacity].into_boxed_slice(),
             work: DVector::zeros(n),
             reduced_rhs: DVector::zeros(layout.tears().len()),
         })
@@ -238,10 +241,7 @@ impl TornSystem {
                 }
                 Pivot::NonFinite => return None,
             };
-            for column in 0..self.tear_columns.len() {
-                self.recovery[target * stride + column] =
-                    self.recovery_numerator(row, target, column) / pivot;
-            }
+            self.recover(row, target, pivot);
         }
         let k = self.tear_columns.len();
         let reduced = DMatrix::from_fn(k, k, |row, column| {
@@ -268,19 +268,35 @@ impl TornSystem {
         factor.is_invertible().then_some(factor)
     }
 
-    fn recovery_numerator(&self, row: usize, target: usize, column: usize) -> f64 {
-        let mut sum = 0.0;
+    /// The recovery row of causal target `target` from its row `row`: for
+    /// every tear column, minus the row's other entries against their
+    /// recovery rows, over the pivot. Each column accumulates the entries in
+    /// pattern order, so one pass over the row serves every column exactly as
+    /// one pass per column would.
+    fn recover(&mut self, row: usize, target: usize, pivot: f64) {
+        let columns = self.tear_columns.len();
+        let stride = self.capacity;
+        let accumulator = &mut self.accumulator[..columns];
+        accumulator.fill(0.0);
+        let entries = self.offsets[row]..self.offsets[row + 1];
         for (&dependency, &value) in self
             .layout
             .row_columns(row)
             .iter()
-            .zip(self.row_values(row))
+            .zip(&self.values[entries])
         {
-            if dependency != target {
-                sum -= value * self.recovery[dependency * self.capacity + column];
+            if dependency == target {
+                continue;
+            }
+            let recovery = &self.recovery[dependency * stride..dependency * stride + columns];
+            for (sum, &coefficient) in accumulator.iter_mut().zip(recovery) {
+                *sum -= value * coefficient;
             }
         }
-        sum
+        let out = &mut self.recovery[target * stride..target * stride + columns];
+        for (value, &sum) in out.iter_mut().zip(accumulator.iter()) {
+            *value = sum / pivot;
+        }
     }
 
     fn causal_rhs(&self, row: usize, target: usize, mut value: f64) -> f64 {

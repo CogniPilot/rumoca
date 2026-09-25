@@ -645,12 +645,16 @@ static bool rmc_eliminate_initialize(const RmcBlock* b, const double* jac, RmcEl
 /* TornSystem::update and refactor; -1 error, 0 rejected, 1 ready */
 static int rmc_eliminate_prepare(ModelInstance* m, const RmcBlock* b, const double* jac, const double* rscale, const double* vscale, RmcElimination* e) {
     size_t n = b->n, cap = b->elim_capacity; size_t* columns = NULL;
-    e->values = rmc_dalloc(m, b->nnz + 1); e->recovery = rmc_dalloc(m, n * cap + 1); e->reduced = rmc_dalloc(m, cap * cap + 1);
+    /* values and reduced are written in full before any read; the recovery
+       relation starts at zero. */
+    e->values = rmc_dalloc_raw(m, b->nnz + 1); e->recovery = rmc_dalloc(m, n * cap + 1); e->reduced = rmc_dalloc_raw(m, cap * cap + 1);
     e->ipiv = rmc_salloc(m, cap + 1); columns = rmc_salloc(m, cap + 1);
     e->promoted = rmc_salloc(m, b->nelim + 1); e->residual = rmc_salloc(m, cap + 1); e->tear = rmc_salloc(m, cap + 1);
     if (!e->values || !e->recovery || !e->reduced || !e->ipiv || !columns || !e->promoted || !e->residual || !e->tear) return rmc_exhausted(m);
-    double* valid = rmc_dalloc_raw(m, n);
-    if (!valid) return rmc_exhausted(m);
+    /* One accumulator per tear column: each column's sum takes the row
+       entries in their pattern order, as one sum per column would. */
+    double* valid = rmc_dalloc_raw(m, n); double* acc = rmc_dalloc_raw(m, cap + 1);
+    if (!valid || !acc) return rmc_exhausted(m);
     for (size_t col = 0; col < n; ++col) valid[col] = rmc_valid_scale(vscale[col]);
     for (size_t row = 0; row < n; ++row) {
         double row_scale = rmc_valid_scale(rscale[row]);
@@ -673,20 +677,22 @@ static int rmc_eliminate_prepare(ModelInstance* m, const RmcBlock* b, const doub
             if (!rmc_eliminate_promote(b, e, s)) return 0;
             continue;
         }
-        for (size_t c = 0; c < e->k; ++c) {
-            double sum = 0.0;
-            for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p) if (b->col_idx[p] != target) sum -= e->values[p] * e->recovery[b->col_idx[p] * cap + c];
-            e->recovery[target * cap + c] = sum / pivot;
-            finite = finite && isfinite(e->recovery[target * cap + c]);
+        size_t k = e->k; double* out = e->recovery + target * cap;
+        for (size_t c = 0; c < k; ++c) acc[c] = 0.0;
+        for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p) {
+            if (b->col_idx[p] == target) continue;
+            double value = e->values[p]; const double* recovery = e->recovery + b->col_idx[p] * cap;
+            for (size_t c = 0; c < k; ++c) acc[c] -= value * recovery[c];
         }
+        for (size_t c = 0; c < k; ++c) { out[c] = acc[c] / pivot; finite = finite && isfinite(out[c]); }
     }
     size_t k = e->k;
     for (size_t r = 0; r < k; ++r) {
-        size_t source = e->residual[r];
-        for (size_t c = 0; c < k; ++c) {
-            double sum = -0.0;
-            for (size_t p = b->row_ptr[source]; p < b->row_ptr[source + 1]; ++p) sum += e->values[p] * e->recovery[b->col_idx[p] * cap + c];
-            e->reduced[r * k + c] = sum;
+        size_t source = e->residual[r]; double* out = e->reduced + r * k;
+        for (size_t c = 0; c < k; ++c) out[c] = -0.0;
+        for (size_t p = b->row_ptr[source]; p < b->row_ptr[source + 1]; ++p) {
+            double value = e->values[p]; const double* recovery = e->recovery + b->col_idx[p] * cap;
+            for (size_t c = 0; c < k; ++c) out[c] += value * recovery[c];
         }
     }
     if (!finite || !rmc_all_finite(e->reduced, k * k)) return 0;
@@ -696,7 +702,7 @@ static int rmc_eliminate_prepare(ModelInstance* m, const RmcBlock* b, const doub
 /* TornSystem::solve; -1 error, 0 no solution, 1 solved */
 static int rmc_eliminate_solve(ModelInstance* m, const RmcBlock* b, const RmcElimination* e, const double* residual, const double* rscale, const double* vscale, double* delta) {
     RMC_MARK; size_t n = b->n, k = e->k, cap = b->elim_capacity; int result = 1;
-    double* work = rmc_dalloc(m, n); double* rhs = rmc_dalloc(m, n); double* reduced_rhs = rmc_dalloc(m, k + 1);
+    double* work = rmc_dalloc(m, n); double* rhs = rmc_dalloc_raw(m, n); double* reduced_rhs = rmc_dalloc_raw(m, k + 1);
     if (!work || !rhs || !reduced_rhs) { RMC_RELEASE; return rmc_exhausted(m); }
     for (size_t row = 0; row < n; ++row) rhs[row] = -residual[row] / rmc_valid_scale(rscale[row]);
     for (size_t s = 0; s < b->nelim; ++s) {
