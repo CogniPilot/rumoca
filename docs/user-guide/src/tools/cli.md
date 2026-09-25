@@ -39,7 +39,7 @@ rumoca sim -c path/to/rumoca-scenario.toml
 | `-m, --model <MODEL>` | Main model/class to compile (auto-inferred when omitted) |
 | `--source-root <PATH>` | Add a source root (repeatable); `MODELICAPATH` entries are appended after these |
 | `--solver <SOLVER>` | `auto`, `bdf`, or `rk-like` — see [Solvers and Accuracy](../simulation/solvers.md) |
-| `--t-end <T_END>` | Batch end time. Direct runs default to the model's `experiment(StopTime)`, else 1.0; batch scenarios use `[sim].t_end`; interactive runs are user-terminated |
+| `--t-end <T_END>` | Batch end time. Direct runs start at the model's `experiment(StartTime)` and default to its `experiment(StopTime)`, else one time unit after the start; batch scenarios use `[sim].t_end`; interactive runs are user-terminated |
 | `--dt <DT>` | Optional fixed output interval; chosen automatically if omitted |
 | `-o, --output <OUTPUT>` | Simulation report path (default `<MODEL>_results.html`) |
 | `--inspect <MODE>` | Analyze instead of simulating: `structure`, `eval`, `jacobian` |

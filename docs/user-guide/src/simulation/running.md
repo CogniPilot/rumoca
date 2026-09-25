@@ -12,7 +12,8 @@ rumoca sim Ball.mo --model Ball --t-end 10 --solver rk-like
 ```
 
 Everything is a CLI flag: `--t-end` (default: the model's
-`experiment(StopTime)`, else 1.0), `--dt`, `--solver`,
+`experiment(StopTime)`, else one time unit after `experiment(StartTime)`,
+where the run starts), `--dt`, `--solver`,
 `--source-root`, `--output`. The result is an HTML report with interactive
 plots of every variable (default `<MODEL>_results.html`).
 

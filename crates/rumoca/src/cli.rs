@@ -455,8 +455,8 @@ pub struct SimCommandArgs {
     #[arg(long, value_enum)]
     pub solver: Option<SimulateSolverMode>,
 
-    /// Simulation end time. Direct runs default to the model's
-    /// `experiment(StopTime)`, else 1.0; scenario runs use `sim.t_end`.
+    /// Simulation end time. Direct runs start at `experiment(StartTime)` and
+    /// default to `experiment(StopTime)`; scenario runs use `sim.t_end`.
     #[arg(long)]
     pub t_end: Option<f64>,
 
