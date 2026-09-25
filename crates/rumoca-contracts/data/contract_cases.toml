@@ -3766,3 +3766,17 @@ case_id = 'oprec_011_unused_zero_sized_array_is_legal'
 test_file = 'tests/oprec_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ANN-017'
+case_id = 'ann_017_evaluate_and_final_parameters_are_marked_evaluable'
+test_file = 'tests/ann_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ANN-017'
+case_id = 'ann_017_folded_parameters_keep_their_values_in_simulation'
+test_file = 'tests/ann_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'

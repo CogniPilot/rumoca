@@ -246,3 +246,47 @@ fn ann_009_evaluate_on_unbound_parameter_warns() {
         "WR005",
     );
 }
+
+// =============================================================================
+// ANN-017: Evaluate = true on an evaluable parameter proposes using its value
+// during symbolic processing, after which the value cannot change
+// =============================================================================
+
+const ANN_017_MODEL: &str = r#"
+    model M
+        parameter Real k = 2 annotation(Evaluate = true);
+        final parameter Real c = 2 * k;
+        parameter Real t = 1;
+        final parameter Real ct = 2 * t;
+        Real x(start = 1, fixed = true);
+    equation
+        der(x) = -c * t * x / ct;
+    end M;
+"#;
+
+#[test]
+fn ann_017_evaluate_and_final_parameters_are_marked_evaluable() {
+    let result = expect_success(ANN_017_MODEL, "M");
+    let marked = result.dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| variable.is_evaluable())
+            .map(|(_, variable)| variable.name().to_string())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        marked,
+        ["k", "c"],
+        "a final parameter over an ordinary parameter stays unevaluated"
+    );
+}
+
+#[test]
+fn ann_017_folded_parameters_keep_their_values_in_simulation() {
+    let trace = rumoca_contracts::test_support::simulate_model(ANN_017_MODEL, "M", 1.0);
+    let expected = (-2.0_f64).exp();
+    let actual = trace.final_value("x");
+    assert!(
+        (actual - expected).abs() < 1e-4,
+        "x(1) = {actual}, expected {expected}"
+    );
+}

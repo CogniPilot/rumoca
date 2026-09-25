@@ -66,6 +66,7 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "ANN-010",
     "ANN-013",
     "ANN-014",
+    "ANN-017",
     "ARR-001",
     "ARR-002",
     "ARR-003",
