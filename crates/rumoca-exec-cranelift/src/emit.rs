@@ -6412,6 +6412,18 @@ fn emit_tensor_binary_primal(
     Ok(fb.ins().select(denominator_zero, zero_over_zero, raw))
 }
 
+/// `value` when finite, else zero: `value - value` is zero exactly for a
+/// finite value and NaN otherwise.
+fn emit_finite_or_zero(
+    fb: &mut FunctionBuilder<'_>,
+    value: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let zero = fb.ins().f64const(0.0);
+    let difference = fb.ins().fsub(value, value);
+    let finite = fb.ins().fcmp(FloatCC::Equal, difference, zero);
+    fb.ins().select(finite, value, zero)
+}
+
 fn emit_tensor_binary_tangent(
     fb: &mut FunctionBuilder<'_>,
     op: BinaryOp,
@@ -6428,15 +6440,19 @@ fn emit_tensor_binary_tangent(
             let rhs_term = fb.ins().fmul(lhs_re, rhs_du);
             fb.ins().fadd(lhs_term, rhs_term)
         }
+        // `rumoca_eval_solve::reverse::division_tangent`: each local partial
+        // when finite, else zero.
         BinaryOp::Div => {
-            let lhs_term = fb.ins().fmul(lhs_du, rhs_re);
-            let rhs_term = fb.ins().fmul(lhs_re, rhs_du);
-            let numerator = fb.ins().fsub(lhs_term, rhs_term);
-            let denominator = fb.ins().fmul(rhs_re, rhs_re);
-            let quotient = fb.ins().fdiv(numerator, denominator);
-            let zero = fb.ins().f64const(0.0);
-            let denominator_zero = fb.ins().fcmp(FloatCC::Equal, rhs_re, zero);
-            fb.ins().select(denominator_zero, zero, quotient)
+            let one = fb.ins().f64const(1.0);
+            let lhs_partial = fb.ins().fdiv(one, rhs_re);
+            let lhs_partial = emit_finite_or_zero(fb, lhs_partial);
+            let negated = fb.ins().fneg(lhs_re);
+            let square = fb.ins().fmul(rhs_re, rhs_re);
+            let rhs_partial = fb.ins().fdiv(negated, square);
+            let rhs_partial = emit_finite_or_zero(fb, rhs_partial);
+            let lhs_term = fb.ins().fmul(lhs_du, lhs_partial);
+            let rhs_term = fb.ins().fmul(rhs_du, rhs_partial);
+            fb.ins().fadd(lhs_term, rhs_term)
         }
         _ => {
             return Err(CompileError::Backend(

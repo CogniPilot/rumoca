@@ -377,15 +377,12 @@ fn execute_general_op(
                             read_reg_value(regs, lhs + 1) * rhs_re
                                 + lhs_re * read_reg_value(regs, rhs + 1)
                         }
-                        BinaryOp::Div => {
-                            if rhs_re == 0.0 {
-                                0.0
-                            } else {
-                                (read_reg_value(regs, lhs + 1) * rhs_re
-                                    - lhs_re * read_reg_value(regs, rhs + 1))
-                                    / (rhs_re * rhs_re)
-                            }
-                        }
+                        BinaryOp::Div => rumoca_eval_solve::reverse::division_tangent(
+                            lhs_re,
+                            read_reg_value(regs, lhs + 1),
+                            rhs_re,
+                            read_reg_value(regs, rhs + 1),
+                        ),
                         _ => unreachable!("validated tensor binary operator"),
                     };
                     set_reg_value(regs, dst + 1, tangent);

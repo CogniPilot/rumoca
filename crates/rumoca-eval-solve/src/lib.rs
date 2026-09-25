@@ -3852,13 +3852,7 @@ fn eval_tensor_binary_tangent(
         BinaryOp::Add => lhs_du + rhs_du,
         BinaryOp::Sub => lhs_du - rhs_du,
         BinaryOp::Mul => lhs_du * rhs_re + lhs_re * rhs_du,
-        BinaryOp::Div => {
-            if rhs_re == 0.0 {
-                0.0
-            } else {
-                (lhs_du * rhs_re - lhs_re * rhs_du) / (rhs_re * rhs_re)
-            }
-        }
+        BinaryOp::Div => reverse::division_tangent(lhs_re, lhs_du, rhs_re, rhs_du),
         _ => {
             unreachable!("TensorBinary validation accepts only add, subtract, multiply, and divide")
         }

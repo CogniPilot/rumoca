@@ -21,36 +21,41 @@
 //! # Kink rules
 //!
 //! Four sites differentiate the same operations: these reverse rows, the
-//! forward dual lowering (`rumoca_phase_solve::ad`), the typed directional
-//! owner of a pure call (`rumoca_ir_solve` `typed_program::program::directional`),
-//! and the generated C kernel, which renders the forward and directional
-//! programs (as the native backend compiles them). The projection solver
-//! assembles a block matrix from reverse rows
-//! and certifies it with forward Jacobian-vector products, so the sites must
-//! agree wherever an operation is not differentiable. This table is the one
-//! statement of those rules; the forward and directional sites implement them
-//! in emitted operations and cite it.
+//! forward dual lowering (`rumoca_phase_solve::ad`, including the fused
+//! dual-lane tensor division the evaluator, the native backend, and the C
+//! kernel execute), the typed directional owner of a pure call
+//! (`rumoca_ir_solve` `typed_program::program::directional`), and the
+//! generated C kernel, which renders the forward and directional programs. The
+//! projection solver assembles a block matrix from reverse rows and certifies
+//! it with forward Jacobian-vector products, so the sites must agree wherever
+//! an operation is not differentiable. This table is the one statement of
+//! those rules; the other sites form the same local partials in emitted
+//! operations and cite it.
 //!
-//! A partial that does not exist at the primal point (a vertical tangent, a
-//! pole, a point outside the real domain, or an overflow) contributes zero at
-//! every site, never a non-finite value: a NaN or infinite tangent would poison
-//! the certification of every coordinate it reaches. Each rule is a function of
+//! A partial the table qualifies "when finite" contributes zero wherever it is
+//! not finite (a vertical tangent, a pole, a point outside the real domain, an
+//! overflow, or an underflowing denominator), never a non-finite value: a NaN
+//! or infinite tangent would poison the certification of every coordinate it
+//! reaches. The remaining partials (`sin`, `cos`, `tan`, `atan`, `sinh`,
+//! `cosh`, `tanh`, `exp`, and the product rule) are finite wherever their
+//! operands are finite and the primal does not overflow; where they are not,
+//! every site produces the same non-finite value. Each rule is a function of
 //! the primal operands alone, never of which operands carry a tangent, so
 //! forward products stay linear in the direction.
 //!
 //! | Operation | Local partials, and the rule where they do not exist |
 //! |---|---|
-//! | `abs(x)` | `+1` when `x >= 0`, including `-0.0`; `-1` otherwise |
+//! | `abs(x)` | `+1` when `x >= 0`, including `-0.0`; `-1` otherwise, including NaN |
 //! | `sign`, `floor`, `ceil`, `trunc`, `not`, `and`, `or`, comparisons | `0` everywhere, including at jumps; `integer`, `div`, `mod`, and `rem` lower through these |
 //! | `min(l, r)` / `max(l, r)` | the operand the comparison `l <= r` / `l >= r` selects; ties select `l`, and a NaN operand selects `r` |
 //! | `if` / `noEvent` / `smooth` | the branch the primal condition selects |
-//! | `sqrt(x)` | `0.5 / sqrt(x)` for `x > 0`; `0` otherwise |
-//! | `asin(x)` / `acos(x)` | `±1 / sqrt(1 - x²)` for `1 - x² > 0`; `0` otherwise |
-//! | `log(x)` / `log10(x)` | `1 / x` / `1 / (x ln 10)` when finite; `0` at `x = 0` and where the reciprocal overflows |
-//! | `tan(x)` | `1 / cos²(x)`; no finite double has `cos(x) = 0`, so the zero rule is never reached |
+//! | `sqrt(x)` | `0.5 / sqrt(x)` when finite, else `0` (so `x <= 0` gives `0`) |
+//! | `asin(x)` / `acos(x)` | `±1 / sqrt(1 - x²)` when finite, else `0` (so `|x| >= 1` gives `0`) |
+//! | `log(x)` / `log10(x)` | `1 / x` / `1 / (x ln 10)` when finite, else `0` (so `x = 0` and a subnormal `x` give `0`) |
+//! | `tan(x)` | `1 / cos²(x)`, finite for every finite `x`; NaN at a non-finite `x` |
 //! | `tanh(x)` | `1 / cosh²(x)`, which reaches `0` when `cosh` overflows |
-//! | `l / r` | `(1 / r, -l / r²)`; `(0, 0)` at `r = 0` |
-//! | `atan2(l, r)` | `(r, -l) / (l² + r²)`; `(0, 0)` where `l² + r² = 0`, including the origin |
+//! | `l / r` | `1 / r` and `-l / r²`, each when finite, else `0` (so `r = 0` gives `(0, 0)`, and a subnormal or huge `r` whose square underflows or overflows zeroes the partial that does) |
+//! | `atan2(l, r)` | `r / (l² + r²)` and `-l / (l² + r²)`, each when finite, else `0` (so the origin gives `(0, 0)`) |
 //! | `pow(l, r)` | `∂l = r·l^(r-1)` when finite, else `0` (so `l < 0` with a non-integer `r` gives `0`, and `l = 0` gives `1` at `r = 1` and `0` otherwise); `∂r = l^r·ln(l)` when `l > 0` and finite, else `0` |
 //!
 //! `rumoca_phase_solve`'s `kink_rule_tests` pin the reverse, forward, and typed
@@ -509,9 +514,11 @@ fn unary_derivative(op: UnaryOp, x: f64) -> f64 {
         UnaryOp::Sqrt => guarded(0.5 / x.sqrt()),
         UnaryOp::Sin => x.cos(),
         UnaryOp::Cos => -x.sin(),
+        // Finite for every finite `x`; NaN at a non-finite `x`, as at the
+        // forward sites, which apply it to aggregates without a guard.
         UnaryOp::Tan => {
             let c = x.cos();
-            guarded(1.0 / (c * c))
+            1.0 / (c * c)
         }
         UnaryOp::Asin => guarded(1.0 / (1.0 - x * x).sqrt()),
         UnaryOp::Acos => guarded(-1.0 / (1.0 - x * x).sqrt()),
@@ -537,15 +544,10 @@ fn binary_partials(op: BinaryOp, lhs: f64, rhs: f64) -> (f64, f64) {
         BinaryOp::Add => (1.0, 1.0),
         BinaryOp::Sub => (1.0, -1.0),
         BinaryOp::Mul => (rhs, lhs),
-        // Division has no finite derivative at a zero denominator. Keep the
-        // existing AD boundary policy of contributing no gradient there.
-        BinaryOp::Div => {
-            if rhs == 0.0 {
-                (0.0, 0.0)
-            } else {
-                (1.0 / rhs, -lhs / (rhs * rhs))
-            }
-        }
+        // Each partial when finite: a zero denominator, a subnormal one whose
+        // square underflows, and an overflowing `r²` all zero the partial
+        // that does not exist rather than poisoning the product.
+        BinaryOp::Div => (guarded(1.0 / rhs), guarded(-lhs / (rhs * rhs))),
         // pow(l, r): ∂/∂l = r·l^(r-1); ∂/∂r = l^r·ln(l) (only for l > 0).
         BinaryOp::Pow => {
             let dl = guarded(rhs * lhs.powf(rhs - 1.0));
@@ -556,14 +558,11 @@ fn binary_partials(op: BinaryOp, lhs: f64, rhs: f64) -> (f64, f64) {
             };
             (dl, dr)
         }
-        // atan2(l, r): ∂/∂l = r/(l²+r²); ∂/∂r = -l/(l²+r²).
+        // atan2(l, r): ∂/∂l = r/(l²+r²); ∂/∂r = -l/(l²+r²), each when finite
+        // (the origin, where both are 0/0, contributes nothing).
         BinaryOp::Atan2 => {
             let denom = lhs * lhs + rhs * rhs;
-            if denom == 0.0 {
-                (0.0, 0.0)
-            } else {
-                (rhs / denom, -lhs / denom)
-            }
+            (guarded(rhs / denom), guarded(-lhs / denom))
         }
         // Min/Max are piecewise-linear: the gradient flows to the selected operand.
         BinaryOp::Min => {
@@ -583,6 +582,15 @@ fn binary_partials(op: BinaryOp, lhs: f64, rhs: f64) -> (f64, f64) {
         // Boolean ops are non-differentiable.
         BinaryOp::And | BinaryOp::Or => (0.0, 0.0),
     }
+}
+
+/// The forward tangent of `l / r` under the division kink rule, for the fused
+/// dual-lane tensor division: each local partial when finite, else zero,
+/// accumulated in the order the scalar forward lowering emits.
+#[must_use]
+pub fn division_tangent(lhs: f64, lhs_du: f64, rhs: f64, rhs_du: f64) -> f64 {
+    let (dl, dr) = binary_partials(BinaryOp::Div, lhs, rhs);
+    lhs_du * dl + rhs_du * dr
 }
 
 /// Replace a non-finite local derivative (e.g. `1/0`, `sqrt'(0)`) with zero so a

@@ -3135,13 +3135,25 @@ impl<'a> AdBuilder<'a> {
             return Ok(DualReg { re, du: zero });
         }
 
-        let term1 = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re)?;
-        let term2 = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du)?;
-        let numer_du = self.emit_binary(BinaryOp::Sub, term1, term2)?;
-        let rhs_sq = self.emit_binary(BinaryOp::Mul, rhs.re, rhs.re)?;
-        let safe_du = self.emit_binary(BinaryOp::Div, numer_du, rhs_sq)?;
-        let du = self.emit_select(denom_zero, zero, safe_du)?;
-
+        // Each local partial when finite (the `rumoca_eval_solve::reverse`
+        // kink rules): a zero, subnormal, or huge denominator zeroes the
+        // partial that does not exist.
+        let lhs_term = if self.tangent_is_zero(lhs) {
+            None
+        } else {
+            let one = self.one_reg()?;
+            let partial = self.emit_binary(BinaryOp::Div, one, rhs.re)?;
+            Some(self.scale_by_finite_partial(lhs.du, partial)?)
+        };
+        let rhs_term = if self.tangent_is_zero(rhs) {
+            None
+        } else {
+            let negated = self.emit_unary(UnaryOp::Neg, lhs.re)?;
+            let rhs_sq = self.emit_binary(BinaryOp::Mul, rhs.re, rhs.re)?;
+            let partial = self.emit_binary(BinaryOp::Div, negated, rhs_sq)?;
+            Some(self.scale_by_finite_partial(rhs.du, partial)?)
+        };
+        let du = self.sum_terms(lhs_term, rhs_term)?;
         Ok(DualReg { re, du })
     }
 
@@ -3176,8 +3188,14 @@ impl<'a> AdBuilder<'a> {
             let guarded = self.emit_select(lhs_positive, finite, zero)?;
             Some(self.emit_binary(BinaryOp::Mul, rhs.du, guarded)?)
         };
-        match (base_term, exponent_term) {
-            (Some(base), Some(exponent)) => self.emit_binary(BinaryOp::Add, base, exponent),
+        self.sum_terms(base_term, exponent_term)
+    }
+
+    /// The sum of the operand terms of a binary tangent, omitting a term whose
+    /// operand carries no tangent.
+    fn sum_terms(&mut self, lhs: Option<Reg>, rhs: Option<Reg>) -> Result<Reg, LowerError> {
+        match (lhs, rhs) {
+            (Some(lhs), Some(rhs)) => self.emit_binary(BinaryOp::Add, lhs, rhs),
             (Some(term), None) | (None, Some(term)) => Ok(term),
             (None, None) => self.zero_reg(),
         }
@@ -3196,18 +3214,26 @@ impl<'a> AdBuilder<'a> {
 
     fn binary_atan2(&mut self, lhs: DualReg, rhs: DualReg) -> Result<DualReg, LowerError> {
         let re = self.emit_binary(BinaryOp::Atan2, lhs.re, rhs.re)?;
-        let term1 = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re)?;
-        let term2 = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du)?;
-        let numer = self.emit_binary(BinaryOp::Sub, term1, term2)?;
         let lhs_sq = self.emit_binary(BinaryOp::Mul, lhs.re, lhs.re)?;
         let rhs_sq = self.emit_binary(BinaryOp::Mul, rhs.re, rhs.re)?;
         let denom = self.emit_binary(BinaryOp::Add, lhs_sq, rhs_sq)?;
-        let safe_du = self.emit_binary(BinaryOp::Div, numer, denom)?;
-        // No partial exists where `l² + r² = 0` (the `rumoca_eval_solve::reverse`
-        // kink rules), including the origin, where `safe_du` is `0 / 0`.
-        let zero = self.zero_reg()?;
-        let denom_zero = self.emit_compare(CompareOp::Eq, denom, zero)?;
-        let du = self.emit_select(denom_zero, zero, safe_du)?;
+        // Each local partial when finite (the `rumoca_eval_solve::reverse`
+        // kink rules), so the origin, where both are `0 / 0`, contributes
+        // nothing.
+        let lhs_term = if self.tangent_is_zero(lhs) {
+            None
+        } else {
+            let partial = self.emit_binary(BinaryOp::Div, rhs.re, denom)?;
+            Some(self.scale_by_finite_partial(lhs.du, partial)?)
+        };
+        let rhs_term = if self.tangent_is_zero(rhs) {
+            None
+        } else {
+            let negated = self.emit_unary(UnaryOp::Neg, lhs.re)?;
+            let partial = self.emit_binary(BinaryOp::Div, negated, denom)?;
+            Some(self.scale_by_finite_partial(rhs.du, partial)?)
+        };
+        let du = self.sum_terms(lhs_term, rhs_term)?;
         Ok(DualReg { re, du })
     }
 

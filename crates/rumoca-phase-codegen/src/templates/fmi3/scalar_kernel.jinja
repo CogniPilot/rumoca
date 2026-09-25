@@ -91,7 +91,9 @@
 {%- elif op.operator == "Mul" %}
         r[{{ op.dst }}+2*k] = a * b; r[{{ op.dst }}+2*k+1] = da * b + a * db;
 {%- else %}
-        r[{{ op.dst }}+2*k] = (b == 0.0 && a == 0.0) ? 0.0 : a / b; r[{{ op.dst }}+2*k+1] = b == 0.0 ? 0.0 : (da * b - a * db) / (b * b);
+        /* reverse.rs division_tangent: each local partial when finite, else zero */
+        double pa = 1.0 / b, pb = -a / (b * b); pa = isfinite(pa) ? pa : 0.0; pb = isfinite(pb) ? pb : 0.0;
+        r[{{ op.dst }}+2*k] = (b == 0.0 && a == 0.0) ? 0.0 : a / b; r[{{ op.dst }}+2*k+1] = da * pa + db * pb;
 {%- endif %}
     }
 {%- elif op.kind == "MatrixMultiply" and op.lanes == 2 %}    for (size_t i=0; i<{{ op.rows }}; ++i) for (size_t j=0; j<{{ op.columns }}; ++j) {

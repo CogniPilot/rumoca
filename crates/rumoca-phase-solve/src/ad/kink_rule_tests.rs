@@ -228,11 +228,22 @@ fn directional_partials(operation: Operation, point: [f64; 2]) -> Option<[f64; 3
     Some(forward_partials(&[row], Some(&table), point))
 }
 
+/// Distance in units in the last place, with both zeros at distance zero.
+fn ulps(lhs: f64, rhs: f64) -> u64 {
+    let ordered = |value: f64| {
+        let bits = value.to_bits() as i64;
+        if bits < 0 { i64::MIN - bits } else { bits }
+    };
+    ordered(lhs).abs_diff(ordered(rhs))
+}
+
+/// Sites agree when both are NaN, or when they are equal (exactly at a kink,
+/// within one unit in the last place elsewhere).
 fn same(lhs: f64, rhs: f64, exact: bool) -> bool {
-    if exact {
-        lhs == rhs
+    if lhs.is_nan() || rhs.is_nan() {
+        lhs.is_nan() && rhs.is_nan()
     } else {
-        (lhs - rhs).abs() <= 1e-12 * lhs.abs().max(rhs.abs()).max(1e-300)
+        lhs == rhs || (!exact && ulps(lhs, rhs) <= 1)
     }
 }
 
@@ -250,8 +261,10 @@ fn check(probe: &Probe) {
     sites.extend(rule.map(|rule| ("rule", contract(rule))));
     for (name, products) in &sites {
         for (direction, (value, reference)) in products.iter().zip(&reverse).enumerate() {
+            // The table states a finite value at every kink it names.
+            let finite = rule.is_none() || value.is_finite();
             assert!(
-                value.is_finite() && same(*value, *reference, rule.is_some()),
+                finite && same(*value, *reference, rule.is_some()),
                 "{operation:?} at {point:?} along {:?}: {name} = {value}, reverse = \
                  {reference} ({sites:?})",
                 DIRECTIONS[direction]
@@ -324,6 +337,7 @@ fn unary_kinks_agree_across_sites() {
         at(log10, SUBNORMAL, Some(0.0)),
         at(log10, 10.0, None),
         at(tan, std::f64::consts::FRAC_PI_2, None),
+        at(tan, f64::INFINITY, None),
         at(tan, 1.0, None),
         at(tanh, 0.0, Some(1.0)),
         at(tanh, 1.0, None),
@@ -395,8 +409,15 @@ fn binary_kinks_agree_across_sites() {
         at(Operation::PowConstantExponent(0.0), 0.0, Some(0.0)),
         at(Operation::PowConstantExponent(-1.0), 0.0, Some(0.0)),
         at(Operation::PowConstantExponent(3.0), 1.5, None),
-        // Division contributes nothing at a zero denominator.
+        // Division: each partial when finite, so a zero, subnormal, huge, or
+        // infinite denominator zeroes the partial that does not exist.
         at2(div, [1.0, 0.0], Some([0.0, 0.0])),
+        at2(div, [1.0, SUBNORMAL], Some([0.0, 0.0])),
+        at2(div, [1.0, -SUBNORMAL], Some([0.0, 0.0])),
+        at2(div, [1.0, 1e200], Some([1e-200, 0.0])),
+        at2(div, [1.0, -1e200], Some([-1e-200, 0.0])),
+        at2(div, [1.0, f64::INFINITY], Some([0.0, 0.0])),
+        at2(div, [1.0, f64::NEG_INFINITY], Some([0.0, 0.0])),
         at2(div, [0.0, 0.0], Some([0.0, 0.0])),
         at2(div, [0.0, -0.0], Some([0.0, 0.0])),
         at2(div, [1.0, 2.0], None),
@@ -418,4 +439,81 @@ fn binary_kinks_agree_across_sites() {
         at2(binary(B::Sub, T::Subtract), [2.0, 3.0], None),
     ];
     probes.iter().for_each(check);
+}
+
+/// Every probed value, including the non-finite and extreme ones at which a
+/// partial overflows, underflows, or does not exist.
+const VALUES: [f64; 17] = [
+    f64::NAN,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    SUBNORMAL,
+    -SUBNORMAL,
+    f64::MIN_POSITIVE,
+    -f64::MIN_POSITIVE,
+    1e200,
+    -1e200,
+    0.0,
+    -0.0,
+    1.0,
+    -1.0,
+    0.5,
+    -2.0,
+    3.0,
+    std::f64::consts::FRAC_PI_2,
+];
+
+#[test]
+fn every_operation_agrees_at_extreme_operands() {
+    use BinaryOp as B;
+    use SolveBinaryOperator as T;
+    use SolveUnaryOperator as V;
+    use UnaryOp as U;
+    let unary_operations = [
+        (U::Neg, Some(V::Negate)),
+        (U::Not, None),
+        (U::Abs, Some(V::Abs)),
+        (U::Sign, Some(V::Sign)),
+        (U::Sqrt, Some(V::Sqrt)),
+        (U::Floor, Some(V::Floor)),
+        (U::Ceil, Some(V::Ceiling)),
+        (U::Trunc, Some(V::Truncate)),
+        (U::Sin, Some(V::Sin)),
+        (U::Cos, Some(V::Cos)),
+        (U::Tan, Some(V::Tan)),
+        (U::Asin, Some(V::Asin)),
+        (U::Acos, Some(V::Acos)),
+        (U::Atan, Some(V::Atan)),
+        (U::Sinh, Some(V::Sinh)),
+        (U::Cosh, Some(V::Cosh)),
+        (U::Tanh, Some(V::Tanh)),
+        (U::Exp, Some(V::Exp)),
+        (U::Log, Some(V::Log)),
+        (U::Log10, Some(V::Log10)),
+    ];
+    let binary_operations = [
+        (B::Add, Some(T::Add)),
+        (B::Sub, Some(T::Subtract)),
+        (B::Mul, Some(T::Multiply)),
+        (B::Div, Some(T::Divide)),
+        (B::Pow, Some(T::Power)),
+        (B::And, None),
+        (B::Or, None),
+        (B::Atan2, Some(T::Atan2)),
+        (B::Min, Some(T::Min)),
+        (B::Max, Some(T::Max)),
+    ];
+    for x in VALUES {
+        for (op, typed) in unary_operations {
+            check(&at(Operation::Unary(op, typed), x, None));
+        }
+        for exponent in VALUES {
+            check(&at(Operation::PowConstantExponent(exponent), x, None));
+        }
+        for y in VALUES {
+            for (op, typed) in binary_operations {
+                check(&at2(Operation::Binary(op, typed), [x, y], None));
+            }
+        }
+    }
 }
