@@ -43,25 +43,24 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         &variable_scales,
         structure.map(solve::JacobianStructure::pattern),
     );
-    // The model scales the refinement's certificate reads, resolved once.
-    let mut certificate_scales = CertificateScales {
-        unknowns: Vec::with_capacity(block.y_indices.len()),
-        fallbacks: Vec::with_capacity(block.rows.len()),
+    // The certificate's scales at the origin: every block unknown is zero
+    // there, so its origin scale is its declared scale, and a fallback
+    // coordinate outside the block keeps its value for the whole call, so its
+    // origin scale serves every pass.
+    let certificate_scales = CertificateScales {
+        unknowns: block
+            .y_indices
+            .iter()
+            .copied()
+            .zip(variable_scales.iter().copied())
+            .collect(),
+        fallbacks: fallback_targets(model, block)
+            .into_iter()
+            .map(|target| {
+                target.map(|index| (index, model_variable_scale(model, index, candidate[index])))
+            })
+            .collect(),
     };
-    for &index in &block.y_indices {
-        certificate_scales
-            .unknowns
-            .push((index, model.variable_scale_for_y_index(index)));
-    }
-    for &row in &block.rows {
-        let target = model.implicit_target(row).and_then(y_index_for_slot);
-        let fallback = &mut certificate_scales.fallbacks;
-        if let Some(index) = target {
-            fallback.push(Some((index, model.variable_scale_for_y_index(index))));
-        } else {
-            fallback.push(None);
-        }
-    }
     let mut system = AffineBlockSystem {
         model,
         parameters: p,

@@ -75,6 +75,19 @@ pub(super) fn model_variable_scale<M: ImplicitProjectionModel + ?Sized>(
     valid_variable_scale(model.variable_scale_for_y_index(index)).max(current_magnitude)
 }
 
+/// The solver-Y coordinate whose scale is each row's fallback: its implicit
+/// target, if it has one in solver Y.
+pub(super) fn fallback_targets<M: ImplicitProjectionModel + ?Sized>(
+    model: &M,
+    block: &solve::AlgebraicProjectionBlock,
+) -> Vec<Option<usize>> {
+    block
+        .rows
+        .iter()
+        .map(|&row| model.implicit_target(row).and_then(y_index_for_slot))
+        .collect()
+}
+
 pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
     model: &M,
     y: &[f64],
@@ -87,18 +100,14 @@ pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
         .iter()
         .map(|&index| model_variable_scale(model, index, y[index]))
         .collect::<Vec<_>>();
-    let fallback_scales = block
-        .rows
-        .iter()
+    let fallback_scales = fallback_targets(model, block)
+        .into_iter()
         .enumerate()
-        .map(|(offset, &row)| {
-            model
-                .implicit_target(row)
-                .and_then(y_index_for_slot)
-                .map_or_else(
-                    || variable_scales.get(offset).copied().unwrap_or(1.0),
-                    |index| model_variable_scale(model, index, y[index]),
-                )
+        .map(|(offset, target)| {
+            target.map_or_else(
+                || variable_scales.get(offset).copied().unwrap_or(1.0),
+                |index| model_variable_scale(model, index, y[index]),
+            )
         })
         .collect::<Vec<_>>();
     let row_scales = jacobian_row_scales(jacobian, &variable_scales, &fallback_scales, structure);

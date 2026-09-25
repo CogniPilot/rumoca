@@ -6,8 +6,9 @@ use rumoca_ir_solve as solve;
 
 use super::super::{ImplicitProjectionModel, RuntimeSolveError};
 use super::{
-    CertificateScales, OriginRowScales, algebraic_block_scales, jacobian_row_derived,
-    jacobian_row_magnitudes, origin_bounded_residual_converged, scaled_residual_converged,
+    CertificateScales, OriginRowScales, algebraic_block_scales, fallback_targets,
+    jacobian_row_derived, jacobian_row_magnitudes, model_variable_scale,
+    origin_bounded_residual_converged, scaled_residual_converged,
 };
 
 /// A block over `y[0..n]` whose rows target the unknowns, a coordinate
@@ -143,7 +144,7 @@ fn origin_bounded_certificate_decides_as_the_full_row_scales() {
         };
         let bounded = origin_bounded_residual_converged(
             &y,
-            &certificate_scales(&model, &block),
+            &certificate_scales(&model, &block, &origin_y, &origin_variable_scales),
             &origin,
             &residual,
             tol,
@@ -207,7 +208,7 @@ fn an_underflowed_origin_contribution_does_not_bound_the_row_scale() {
     assert_eq!(
         origin_bounded_residual_converged(
             &y,
-            &certificate_scales(&model, &block),
+            &certificate_scales(&model, &block, &origin_y, &origin_variable_scales),
             &origin,
             &residual,
             tol
@@ -216,26 +217,25 @@ fn an_underflowed_origin_contribution_does_not_bound_the_row_scale() {
     );
 }
 
-/// The certificate scales the affine projection resolves for `block`.
+/// The certificate scales the affine projection resolves for `block` at the
+/// origin `origin_y`, whose unknown scales are `origin_variable_scales`.
 fn certificate_scales(
     model: &ScaledBlock,
     block: &solve::AlgebraicProjectionBlock,
+    origin_y: &[f64],
+    origin_variable_scales: &[f64],
 ) -> CertificateScales {
-    let declared = |index: usize| (index, model.variable_scale_for_y_index(index));
     CertificateScales {
         unknowns: block
             .y_indices
             .iter()
-            .map(|&index| declared(index))
+            .copied()
+            .zip(origin_variable_scales.iter().copied())
             .collect(),
-        fallbacks: block
-            .rows
-            .iter()
-            .map(|&row| {
-                model.implicit_target(row).map(|slot| match slot {
-                    solve::ScalarSlot::Y { index, .. } => declared(index),
-                    _ => unreachable!("fixture targets are solver coordinates"),
-                })
+        fallbacks: fallback_targets(model, block)
+            .into_iter()
+            .map(|target| {
+                target.map(|index| (index, model_variable_scale(model, index, origin_y[index])))
             })
             .collect(),
     }

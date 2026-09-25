@@ -1100,7 +1100,7 @@ impl SolveRuntime {
     }
 
     /// The reduced tear Jacobian of a planned torn block (see
-    /// [`ImplicitProjectionModel::torn_tangent_jacobian`]).
+    /// [`KernelRequest::TornJacobian`](crate::runtime::projection::KernelRequest)).
     pub(crate) fn torn_tangent_jacobian(
         &self,
         tearing: &solve::BlockTearing,

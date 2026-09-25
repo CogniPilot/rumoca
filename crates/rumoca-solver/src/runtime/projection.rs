@@ -25,7 +25,7 @@ use initial_diagnostics::initial_projection_error;
 pub(crate) use scaling::scaled_newton_delta_with_tearing;
 use scaling::{
     CertificateScales, OriginRowScales, algebraic_block_scales, algebraic_plan_row_scales,
-    initial_block_fallback_scales, initial_residual_scales, jacobian_row_derived,
+    fallback_targets, initial_block_fallback_scales, initial_residual_scales, jacobian_row_derived,
     jacobian_row_magnitudes, jacobian_row_scales, model_variable_scale,
     origin_bounded_residual_converged, scaled_correction_converged, scaled_residual_converged,
     scaled_residual_norm, scaled_tolerance,
@@ -240,13 +240,6 @@ pub(crate) trait ImplicitProjectionModel {
         false
     }
 
-    /// Begin one projection call of a block at its incoming point
-    /// (`Some((block_index, y, p, t))`), or end the call in progress (`None`):
-    /// a model with a block residual split (SPEC_0043 §6a) evaluates the
-    /// invariant parts of the block's residual programs at the beginning,
-    /// reporting nothing on failure, and discards them at the end.
-    fn scope_block_projection(&self, _call: Option<(usize, &[f64], &[f64], f64)>) {}
-
     fn solve_algebraic_newton_delta(
         &self,
         _block_index: usize,
@@ -331,30 +324,51 @@ pub(crate) trait ImplicitProjectionModel {
         tearing::per_row_torn_block_sweep(self, tearing, y, p, t, residual_out)
     }
 
-    /// Every structural entry `(row, column, value)` of a block's Jacobian from
-    /// its issued colored tangent plan, or `None` when the model issues none.
-    fn colored_tangent_entries(
+    /// Answer a linked-kernel request (see [`KernelRequest`]); a model that
+    /// issues none of these declines every request.
+    fn linked_kernel(
         &self,
-        _structure: &solve::JacobianStructure,
-        _coordinates: (&[usize], &[usize]),
-        _point: (&[f64], &[f64], f64),
-    ) -> Result<Option<crate::runtime::projection::JacobianEntries>, RuntimeSolveError> {
-        Ok(None)
+        _request: KernelRequest<'_>,
+    ) -> Result<KernelAnswer, RuntimeSolveError> {
+        Ok(KernelAnswer::Declined)
     }
+}
 
-    /// The reduced tear Jacobian of `tearing` at `y` (whose causal coordinates
-    /// hold the sweep of its tears) from the block's issued tangent plan, or
-    /// `None` when the model issues none for it or the plan declines at `y`
-    /// (a vanished causal coefficient); the caller then differences the sweep.
-    fn torn_tangent_jacobian(
-        &self,
-        _tearing: &solve::BlockTearing,
-        _y: &[f64],
-        _p: &[f64],
-        _t: f64,
-    ) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
-        Ok(None)
-    }
+/// Requests only the linked kernel's model answers; any other model declines
+/// them and the projection takes its ordinary path.
+pub(crate) enum KernelRequest<'a> {
+    /// Begin one projection call of a block at its incoming point: a block
+    /// residual split (SPEC_0043 §6a) evaluates the invariant parts of the
+    /// block's residual programs, reporting nothing on failure.
+    BeginBlock {
+        block_index: usize,
+        point: (&'a [f64], &'a [f64], f64),
+    },
+    /// End the block projection call in progress, discarding its values.
+    EndBlock,
+    /// Every structural entry `(row, column, value)` of a block's Jacobian
+    /// from its issued colored tangent plan.
+    ColoredEntries {
+        structure: &'a solve::JacobianStructure,
+        coordinates: (&'a [usize], &'a [usize]),
+        point: (&'a [f64], &'a [f64], f64),
+    },
+    /// The reduced tear Jacobian of `tearing` at a point whose causal
+    /// coordinates hold the sweep of its tears, from the block's issued
+    /// tangent plan; declined where the plan declines (a vanished causal
+    /// coefficient), and the caller then differences the sweep.
+    TornJacobian {
+        tearing: &'a solve::BlockTearing,
+        point: (&'a [f64], &'a [f64], f64),
+    },
+}
+
+/// The answer to a [`KernelRequest`].
+pub(crate) enum KernelAnswer {
+    Declined,
+    Done,
+    ColoredEntries(JacobianEntries),
+    TornJacobian(rumoca_eval_solve::TornTangentJacobian),
 }
 
 pub(crate) trait AlgebraicProjectionModel: ImplicitProjectionModel {
@@ -575,6 +589,12 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
         let mut all_settled = true;
         let mut earlier_row_invalidated = false;
         for (block_index, block) in plan.blocks.iter().enumerate() {
+            // One call changes only this block's unknowns: the invariant parts
+            // of its residual programs hold for the whole call.
+            model.linked_kernel(KernelRequest::BeginBlock {
+                block_index,
+                point: (y, args.parameters, args.time),
+            })?;
             let update = project_algebraic_block(
                 model,
                 y,
@@ -587,7 +607,9 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
                     step_limit,
                     certify_coordinates,
                 },
-            )?;
+            );
+            model.linked_kernel(KernelRequest::EndBlock)?;
+            let update = update?;
             if update.changed && block_index != 0 && !earlier_row_invalidated {
                 earlier_row_invalidated =
                     model.algebraic_projection_block_invalidates_earlier(block_index);
@@ -696,23 +718,6 @@ fn try_torn_algebraic_block<M: ImplicitProjectionModel>(
 }
 
 fn project_algebraic_block<M: ImplicitProjectionModel>(
-    model: &M,
-    y: &mut [f64],
-    p: &[f64],
-    t: f64,
-    block: &solve::AlgebraicProjectionBlock,
-    block_index: usize,
-    policy: AlgebraicBlockProjectionPolicy,
-) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
-    // One call changes only this block's unknowns: the invariant parts of
-    // its residual programs hold for the whole call.
-    model.scope_block_projection(Some((block_index, y, p, t)));
-    let update = project_algebraic_block_in_call(model, y, p, t, block, block_index, policy);
-    model.scope_block_projection(None);
-    update
-}
-
-fn project_algebraic_block_in_call<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
     p: &[f64],

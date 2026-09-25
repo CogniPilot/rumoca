@@ -367,26 +367,41 @@ impl<'a> ProjectionJacobian<'a> {
 }
 
 impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
-    fn colored_tangent_entries(
+    fn linked_kernel(
         &self,
-        structure: &solve::JacobianStructure,
-        coordinates: (&[usize], &[usize]),
-        point: (&[f64], &[f64], f64),
-    ) -> Result<Option<crate::runtime::projection::JacobianEntries>, RuntimeSolveError> {
-        self.eval_colored_tangent_entries(structure, coordinates, point)
-    }
-
-    fn torn_tangent_jacobian(
-        &self,
-        tearing: &solve::BlockTearing,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-    ) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
-        if !self.jacobian_v.is_solver_y_only() {
-            return Ok(None);
-        }
-        self.runtime.torn_tangent_jacobian(tearing, y, p, t)
+        request: crate::runtime::projection::KernelRequest<'_>,
+    ) -> Result<crate::runtime::projection::KernelAnswer, RuntimeSolveError> {
+        use crate::runtime::projection::{KernelAnswer, KernelRequest};
+        Ok(match request {
+            KernelRequest::BeginBlock {
+                block_index,
+                point: (y, p, t),
+            } => {
+                if let Some(&index) = self.block_indices.get(block_index) {
+                    self.runtime.begin_block_residual_split(index, y, p, t);
+                }
+                KernelAnswer::Done
+            }
+            KernelRequest::EndBlock => {
+                self.runtime.end_block_residual_split();
+                KernelAnswer::Done
+            }
+            KernelRequest::ColoredEntries {
+                structure,
+                coordinates,
+                point,
+            } => self
+                .eval_colored_tangent_entries(structure, coordinates, point)?
+                .map_or(KernelAnswer::Declined, KernelAnswer::ColoredEntries),
+            KernelRequest::TornJacobian {
+                tearing,
+                point: (y, p, t),
+            } if self.jacobian_v.is_solver_y_only() => self
+                .runtime
+                .torn_tangent_jacobian(tearing, y, p, t)?
+                .map_or(KernelAnswer::Declined, KernelAnswer::TornJacobian),
+            KernelRequest::TornJacobian { .. } => KernelAnswer::Declined,
+        })
     }
 
     fn eval_prepared_implicit_jacobian(
@@ -737,17 +752,6 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 .refresh_owners
                 .algebraic_projection_block_is_affine(index)
         })
-    }
-
-    fn scope_block_projection(&self, call: Option<(usize, &[f64], &[f64], f64)>) {
-        match call {
-            Some((block_index, y, p, t)) => {
-                if let Some(&index) = self.block_indices.get(block_index) {
-                    self.runtime.begin_block_residual_split(index, y, p, t);
-                }
-            }
-            None => self.runtime.end_block_residual_split(),
-        }
     }
 
     fn solve_affine_torn_delta(

@@ -983,7 +983,13 @@ fn fill_colored_algebraic_rows(
         rows,
         y_indices,
     } = block;
-    if let Some(entries) = model.colored_tangent_entries(structure, (rows, y_indices), (y, p, t))? {
+    if let KernelAnswer::ColoredEntries(entries) =
+        model.linked_kernel(KernelRequest::ColoredEntries {
+            structure,
+            coordinates: (rows, y_indices),
+            point: (y, p, t),
+        })?
+    {
         for (row, column, value) in entries
             .into_iter()
             .filter(|(row, _, _)| selected_rows[*row])

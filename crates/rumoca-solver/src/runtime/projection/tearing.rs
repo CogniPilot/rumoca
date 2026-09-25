@@ -36,7 +36,9 @@ use super::scaling::{
     ScaledNewtonSystem, jacobian_row_scales, model_variable_scale, scaled_correction_converged,
     scaled_newton_delta, scaled_residual_converged, scaled_residual_norm,
 };
-use super::{ImplicitProjectionModel, ProjectionBlockUpdate, RuntimeSolveError};
+use super::{
+    ImplicitProjectionModel, KernelAnswer, KernelRequest, ProjectionBlockUpdate, RuntimeSolveError,
+};
 
 use rumoca_eval_solve::projection_policy::{
     TORN_BACKTRACK_STEPS, TORN_OUTER_MAX_ITERS, finite_difference_perturbation,
@@ -320,9 +322,11 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
 ) -> Result<Option<ReducedJacobian>, RuntimeSolveError> {
     let rows = tearing.residual_rows.len();
     let columns = tearing.tear_y_indices.len();
-    if let Some(exact) = model.torn_tangent_jacobian(tearing, base, p, t)?
-        && let Some(jacobian) =
-            tangent_reduced_jacobian(&exact, (rows, columns), tearing, certify_coordinates)
+    if let KernelAnswer::TornJacobian(exact) = model.linked_kernel(KernelRequest::TornJacobian {
+        tearing,
+        point: (base, p, t),
+    })? && let Some(jacobian) =
+        tangent_reduced_jacobian(&exact, (rows, columns), tearing, certify_coordinates)
     {
         return Ok(Some(jacobian));
     }
