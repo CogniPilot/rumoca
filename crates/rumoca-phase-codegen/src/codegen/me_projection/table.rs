@@ -60,6 +60,27 @@ impl<K: Ord> FunctionFamily<K> {
     }
 }
 
+/// Colored Jacobian lane programs (tangent-lane programs), emitted with their
+/// own checked block because their aggregates are wider than two lanes.
+#[derive(Default)]
+pub(super) struct LaneFamily {
+    programs: Vec<(solve::TangentLaneProgram, Span)>,
+}
+
+impl LaneFamily {
+    pub(super) fn push(&mut self, program: solve::TangentLaneProgram, span: Span) -> usize {
+        self.programs.push((program, span));
+        self.programs.len() - 1
+    }
+
+    fn into_plan(self) -> Result<Value, CodegenError> {
+        let (programs, spans): (Vec<_>, Vec<_>) = self.programs.into_iter().unzip();
+        let block = solve::ScalarProgramBlock::with_tangent_lane_programs(&programs, spans)
+            .map_err(|error| CodegenError::template(error.to_string()))?;
+        Ok(Value::from_object(ScalarProgramPlan::new(Arc::new(block))?))
+    }
+}
+
 /// Shared function families and the index pool of one component.
 #[derive(Default)]
 pub(super) struct ProgramTable {
@@ -67,6 +88,9 @@ pub(super) struct ProgramTable {
     pub(super) rows: FunctionFamily<usize>,
     /// Forward Jacobian programs keyed by (application source, program).
     pub(super) jvp: FunctionFamily<(usize, usize)>,
+    /// Multi-lane forward Jacobian programs, one per colored application
+    /// program ([`solve::ColoredTangentPlan`]).
+    pub(super) lanes: LaneFamily,
     /// Target isolators keyed by (program, output offset, target).
     pub(super) isolators: IsolatorCatalog,
     /// Causal isolation chains keyed by (program, ordered (output, target) pairs).
@@ -119,6 +143,7 @@ impl ProgramTable {
         Ok(minijinja::context! {
             rows => self.rows.into_plan()?,
             jvp => self.jvp.into_plan()?,
+            lanes => self.lanes.into_plan()?,
             isolators => isolators.into_plan()?,
             causal => self.causal.into_plan()?,
             isolator_group => isolator_group,

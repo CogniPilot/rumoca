@@ -865,7 +865,8 @@ fn render_solve_op_typed(
                 for column in 0..*columns {
                     let output = (row * *columns + column) * *lanes;
                     let mut primal = dialect.format_const("0.0".to_string());
-                    let mut tangent = dialect.format_const("0.0".to_string());
+                    let mut tangents =
+                        vec![dialect.format_const("0.0".to_string()); lanes.saturating_sub(1)];
                     for term in 0..*inner {
                         let lhs = (row * *inner + term) * *lanes;
                         let rhs = (term * *columns + column) * *lanes;
@@ -888,25 +889,26 @@ fn render_solve_op_typed(
                             primal,
                             dialect.render_binary("Mul", lhs_re.clone(), rhs_re.clone())?,
                         )?;
-                        if *lanes == 2 {
+                        for (lane, tangent) in tangents.iter_mut().enumerate() {
+                            let lane = lane as solve::Reg + 1;
                             let lhs_du = solve_reg(
                                 regs,
                                 solve_reg_index(
-                                    *lhs_start + lhs as solve::Reg + 1,
+                                    *lhs_start + lhs as solve::Reg + lane,
                                     "matrix-multiply lhs tangent register",
                                 )?,
                             )?;
                             let rhs_du = solve_reg(
                                 regs,
                                 solve_reg_index(
-                                    *rhs_start + rhs as solve::Reg + 1,
+                                    *rhs_start + rhs as solve::Reg + lane,
                                     "matrix-multiply rhs tangent register",
                                 )?,
                             )?;
                             let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re.clone())?;
-                            let rhs_term = dialect.render_binary("Mul", lhs_re, rhs_du)?;
+                            let rhs_term = dialect.render_binary("Mul", lhs_re.clone(), rhs_du)?;
                             let term = dialect.render_binary("Add", lhs_term, rhs_term)?;
-                            tangent = dialect.render_binary("Add", tangent, term)?;
+                            *tangent = dialect.render_binary("Add", tangent.clone(), term)?;
                         }
                     }
                     store_solve_reg(
@@ -917,11 +919,11 @@ fn render_solve_op_typed(
                         )?,
                         primal,
                     )?;
-                    if *lanes == 2 {
+                    for (lane, tangent) in tangents.into_iter().enumerate() {
                         store_solve_reg(
                             regs,
                             solve_reg_index(
-                                *dst_start + output as solve::Reg + 1,
+                                *dst_start + output as solve::Reg + lane as solve::Reg + 1,
                                 "matrix-multiply tangent destination register",
                             )?,
                             tangent,
@@ -948,7 +950,7 @@ fn render_solve_op_typed(
                 let rhs_re = solve_reg(regs, solve_reg_index(rhs, "tensor-binary rhs register")?)?;
                 let raw_primal =
                     dialect.render_binary(op.kind_name(), lhs_re.clone(), rhs_re.clone())?;
-                let primal = if *lanes == 2 && *op == solve::BinaryOp::Div {
+                let primal = if *lanes >= 2 && *op == solve::BinaryOp::Div {
                     let zero = "0.0".to_owned();
                     let denominator_zero =
                         dialect.render_compare("Eq", rhs_re.clone(), zero.clone())?;
@@ -965,14 +967,15 @@ fn render_solve_op_typed(
                     solve_reg_index(dst, "tensor-binary destination register")?,
                     primal,
                 )?;
-                if *lanes == 2 {
+                for lane in 1..*lanes as solve::Reg {
+                    let (lhs_re, rhs_re) = (lhs_re.clone(), rhs_re.clone());
                     let lhs_du = solve_reg(
                         regs,
-                        solve_reg_index(lhs + 1, "tensor-binary lhs tangent register")?,
+                        solve_reg_index(lhs + lane, "tensor-binary lhs tangent register")?,
                     )?;
                     let rhs_du = solve_reg(
                         regs,
-                        solve_reg_index(rhs + 1, "tensor-binary rhs tangent register")?,
+                        solve_reg_index(rhs + lane, "tensor-binary rhs tangent register")?,
                     )?;
                     let tangent = match op {
                         solve::BinaryOp::Add | solve::BinaryOp::Sub => {
@@ -1001,7 +1004,7 @@ fn render_solve_op_typed(
                     };
                     store_solve_reg(
                         regs,
-                        solve_reg_index(dst + 1, "tensor-binary tangent destination register")?,
+                        solve_reg_index(dst + lane, "tensor-binary tangent destination register")?,
                         tangent,
                     )?;
                 }
@@ -1041,31 +1044,31 @@ fn render_solve_op_typed(
                 let dst = solve_reg_index(*dst_start, "tensor-cross destination start")?
                     + component * *lanes;
                 store_solve_reg(regs, dst, primal)?;
-                if *lanes == 2 {
+                for lane in 1..*lanes {
                     let first_lhs = dialect.render_binary(
                         "Mul",
-                        lhs[first + 1].clone(),
+                        lhs[first + lane].clone(),
                         rhs[second].clone(),
                     )?;
                     let first_rhs = dialect.render_binary(
                         "Mul",
                         lhs[first].clone(),
-                        rhs[second + 1].clone(),
+                        rhs[second + lane].clone(),
                     )?;
                     let second_lhs = dialect.render_binary(
                         "Mul",
-                        lhs[second + 1].clone(),
+                        lhs[second + lane].clone(),
                         rhs[first].clone(),
                     )?;
                     let second_rhs = dialect.render_binary(
                         "Mul",
                         lhs[second].clone(),
-                        rhs[first + 1].clone(),
+                        rhs[first + lane].clone(),
                     )?;
                     let positive = dialect.render_binary("Add", first_lhs, first_rhs)?;
                     let negative = dialect.render_binary("Add", second_lhs, second_rhs)?;
                     let tangent = dialect.render_binary("Sub", positive, negative)?;
-                    store_solve_reg(regs, dst + 1, tangent)?;
+                    store_solve_reg(regs, dst + lane, tangent)?;
                 }
             }
         }
@@ -1332,11 +1335,16 @@ fn render_solve_op_typed(
                     )?,
                     primal,
                 )?;
-                if *lanes == 2 {
+                for lane in 1..*lanes {
                     let tangent = if let Some(seed_start) = seed_start {
-                        let seed_index = seed_start.checked_add(element).ok_or_else(|| {
-                            render_err("tensor-load seed index overflow in solve-row output")
-                        })?;
+                        // Element-major tangent seeds: `lanes - 1` per element.
+                        let seed_index = seed_start
+                            .checked_add(element)
+                            .and_then(|index| index.checked_mul(*lanes - 1))
+                            .and_then(|index| index.checked_add(lane - 1))
+                            .ok_or_else(|| {
+                                render_err("tensor-load seed index overflow in solve-row output")
+                            })?;
                         cfg.seed_access(seed_index).ok_or_else(|| {
                             render_err(
                                 "seeded TensorLoad requires a `seed` access pattern in solve-row output",
@@ -1348,7 +1356,7 @@ fn render_solve_op_typed(
                     store_solve_reg(
                         regs,
                         solve_reg_index(
-                            *dst_start + (element * *lanes + 1) as solve::Reg,
+                            *dst_start + (element * *lanes + lane) as solve::Reg,
                             "tensor-load tangent destination register",
                         )?,
                         tangent,

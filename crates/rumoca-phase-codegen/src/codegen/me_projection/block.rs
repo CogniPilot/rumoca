@@ -85,6 +85,10 @@ pub(super) struct BlockRecord {
     iso_default: usize,
     iso_start: usize,
     iso_entries: usize,
+    nlane_calls: usize,
+    lane_calls: usize,
+    lane_max_outputs: usize,
+    lane_max: usize,
 }
 
 pub(super) fn refuse(canonical: usize, reason: &str) -> CodegenError {
@@ -328,6 +332,56 @@ fn record_jacobian(
     record.color_seeds = table.push(seeds);
     record.color_calls = table.push(calls);
     record.placements = table.push(placements);
+    record_lane_calls(sources, table, canonical, (application, csr), record)
+}
+
+/// The colored application as one multi-lane call per program
+/// ([`solve::ColoredTangentPlan`]): `(function, lanes, colors, placements,
+/// placement count, lane outputs)` per call, with `(lane, output offset,
+/// pattern position)` placements. Left empty when the plan does not construct
+/// or the policy keeps the one-direction colors.
+fn record_lane_calls(
+    sources: &BlockSources<'_>,
+    table: &mut ProgramTable,
+    canonical: usize,
+    (application, csr): (&solve::ProjectionJacobianApplication, &Csr),
+    record: &mut BlockRecord,
+) -> Result<(), CodegenError> {
+    if !rumoca_eval_solve::projection_policy::COLORED_TANGENT_LANES {
+        return Ok(());
+    }
+    let Ok(plan) = solve::ColoredTangentPlan::derive(application) else {
+        return Ok(());
+    };
+    let n = application.rows().len();
+    let span = program_span(application.source(), canonical, 0)?;
+    let mut calls = Vec::new();
+    for call in plan.calls() {
+        let lanes = call.colors.len();
+        let program = plan.programs()[call.program].clone();
+        check_seed_loads(canonical, program.ops(), sources.seed_len * lanes)?;
+        let outputs = program.lane_outputs();
+        let function = table.lanes.push(program, span);
+        let colors = table.push(call.colors.iter().copied());
+        let mut placements = Vec::with_capacity(3 * call.placements.len());
+        for &(lane, offset, destination) in call.placements.iter() {
+            let position = csr.position(canonical, destination % n, destination / n)?;
+            placements.extend([lane, offset, position]);
+        }
+        let placement_start = table.push(placements);
+        calls.extend([
+            function,
+            lanes,
+            colors,
+            placement_start,
+            call.placements.len(),
+            outputs,
+        ]);
+        record.lane_max_outputs = record.lane_max_outputs.max(lanes * outputs);
+        record.lane_max = record.lane_max.max(lanes);
+    }
+    record.nlane_calls = calls.len() / 6;
+    record.lane_calls = table.push(calls);
     Ok(())
 }
 
@@ -709,6 +763,10 @@ impl BlockRecord {
     /// elimination's recovery matrix at its promotion capacity with its step
     /// flags and reduced row and tear lists, and one program's outputs and
     /// seeds.
+    pub(super) const fn lane_max(&self) -> usize {
+        self.lane_max
+    }
+
     pub(super) fn workspace(&self, seed_len: usize) -> (usize, usize) {
         let n = self.n;
         let k = self.k.max(self.nelim_tear).max(self.elim_capacity);
@@ -721,6 +779,7 @@ impl BlockRecord {
             + 24 * (k + 1)
             + self.max_outputs
             + self.jvp_max_outputs
+            + self.lane_max_outputs
             + seed_len
             + 64;
         let sizes = 9 * n + 6 * (k + 1) + 16;

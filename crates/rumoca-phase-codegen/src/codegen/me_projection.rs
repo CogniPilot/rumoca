@@ -370,6 +370,7 @@ pub(super) fn me_refresh_value(
         .map(|index| float_literal(component.solver_variable_scale(index)))
         .collect::<Vec<_>>();
     let BlockCatalog { table, records, .. } = catalog;
+    let lane_max = records.iter().map(BlockRecord::lane_max).max().unwrap_or(0);
     let (block_doubles, block_sizes) = records
         .iter()
         .map(|record| record.workspace(seed_len))
@@ -395,6 +396,7 @@ pub(super) fn me_refresh_value(
         init => init,
         work => minijinja::context! { doubles => doubles, sizes => sizes },
         seed_len => seed_len,
+        lane_max => lane_max,
         variable_scales => variable_scales,
         policy => policy_value(),
     })

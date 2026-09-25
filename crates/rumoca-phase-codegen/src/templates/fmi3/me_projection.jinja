@@ -42,10 +42,12 @@ static int {{ name }}({{ signature }}) {
 {%- macro workspace_fields(me) -%}
 {%- if me.kernel %} double rmc_d[{{ me.work.doubles }}]; size_t rmc_s[{{ me.work.sizes }}]; size_t rmc_dtop; size_t rmc_stop; double rmc_tol; bool rmc_certify;{% endif -%}
 {%- if me.blocks|length > 0 %} double rmc_seed[{{ me.seed_len if me.seed_len > 0 else 1 }}];{% endif -%}
+{%- if me.lane_max > 0 %} double rmc_lane_seed[{{ (me.seed_len if me.seed_len > 0 else 1) * me.lane_max }}];{% endif -%}
 {%- endmacro %}
 {%- macro workspace_reset(me) -%}
 {%- if me.kernel %} m->rmc_dtop = 0; m->rmc_stop = 0; m->rmc_tol = {{ me.policy.tolerance }}; m->rmc_certify = true;{% endif -%}
 {%- if me.blocks|length > 0 %} memset(m->rmc_seed, 0, sizeof(m->rmc_seed));{% endif -%}
+{%- if me.lane_max > 0 %} memset(m->rmc_lane_seed, 0, sizeof(m->rmc_lane_seed));{% endif -%}
 {%- endmacro %}
 
 {#- ── generic kernel ─────────────────────────────────────────────────────── -#}
@@ -253,6 +255,7 @@ typedef struct {
     size_t nelim_tear; const size_t* elim_residual; const size_t* elim_tear;
     size_t nguards; const size_t* guards; const size_t* guard_step; size_t elim_capacity;
     const size_t* iso_default; const size_t* iso_start; const size_t* iso_entries;
+    size_t nlane_calls; const size_t* lane_calls; size_t lane_max_outputs; size_t lane_max;
 } RmcBlock;
 static const size_t rmc_pool[{{ me.table.pool|length }}] = {
 {%- for chunk in me.table.pool|batch(24) %}
@@ -262,7 +265,7 @@ static const size_t rmc_pool[{{ me.table.pool|length }}] = {
 #define RMC_P(offset) (rmc_pool + (offset))
 static const RmcBlock rmc_blocks[{{ me.blocks|length }}] = {
 {%- for b in me.blocks %}
-    { {{ b.canonical }}, {{ b.n }}, RMC_P({{ b.y }}), RMC_P({{ b.row_target }}), RMC_P({{ b.row_program }}), RMC_P({{ b.row_offset }}), {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, RMC_P({{ b.row_ptr }}), RMC_P({{ b.col_idx }}), {{ b.nnz }}, {{ b.ncolors }}, RMC_P({{ b.colors }}), RMC_P({{ b.color_seeds }}), RMC_P({{ b.color_calls }}), RMC_P({{ b.placements }}), {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, RMC_P({{ b.tear_col }}), RMC_P({{ b.residual_row }}), {{ b.ncausal }}, {{ b.ncruns }}, RMC_P({{ b.cruns }}), RMC_P({{ b.causal_target }}), RMC_P({{ b.causal_col }}), RMC_P({{ b.tear_deps }}), {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, RMC_P({{ b.elim_row }}), RMC_P({{ b.elim_col }}), {{ b.nelim_tear }}, RMC_P({{ b.elim_residual }}), RMC_P({{ b.elim_tear }}), {{ b.nguards }}, RMC_P({{ b.guards }}), RMC_P({{ b.guard_step }}), {{ b.elim_capacity }}, RMC_P({{ b.iso_default }}), RMC_P({{ b.iso_start }}), RMC_P({{ b.iso_entries }}) },
+    { {{ b.canonical }}, {{ b.n }}, RMC_P({{ b.y }}), RMC_P({{ b.row_target }}), RMC_P({{ b.row_program }}), RMC_P({{ b.row_offset }}), {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, RMC_P({{ b.row_ptr }}), RMC_P({{ b.col_idx }}), {{ b.nnz }}, {{ b.ncolors }}, RMC_P({{ b.colors }}), RMC_P({{ b.color_seeds }}), RMC_P({{ b.color_calls }}), RMC_P({{ b.placements }}), {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, RMC_P({{ b.tear_col }}), RMC_P({{ b.residual_row }}), {{ b.ncausal }}, {{ b.ncruns }}, RMC_P({{ b.cruns }}), RMC_P({{ b.causal_target }}), RMC_P({{ b.causal_col }}), RMC_P({{ b.tear_deps }}), {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, RMC_P({{ b.elim_row }}), RMC_P({{ b.elim_col }}), {{ b.nelim_tear }}, RMC_P({{ b.elim_residual }}), RMC_P({{ b.elim_tear }}), {{ b.nguards }}, RMC_P({{ b.guards }}), RMC_P({{ b.guard_step }}), {{ b.elim_capacity }}, RMC_P({{ b.iso_default }}), RMC_P({{ b.iso_start }}), RMC_P({{ b.iso_entries }}), {{ b.nlane_calls }}, RMC_P({{ b.lane_calls }}), {{ b.lane_max_outputs }}, {{ b.lane_max }} },
 {%- endfor %}
 };
 /* projection_policy::finite_difference_perturbation */
@@ -297,8 +300,35 @@ static int rmc_rows(ModelInstance* m, const RmcBlock* b, double* residual) {
     return 0;
 }
 /* initial.rs: algebraic_block_jacobian through the issued colored application */
+/* tangent_lanes.rs: ColoredTangentEvaluator::eval; lane j of a call seeds
+   the columns of color colors[j] (element-major), and every placement takes
+   the value that color's one-direction call writes. -1 error */
+static void rmc_lane_seeds(const RmcBlock* b, const size_t* colors, size_t lanes, double value, double* seed) {
+    for (size_t lane = 0; lane < lanes; ++lane) {
+        const size_t* color = b->colors + 4 * colors[lane];
+        for (size_t s = color[0]; s < color[1]; ++s) seed[b->color_seeds[s] * lanes + lane] = value;
+    }
+}
+static int rmc_jacobian_lanes(ModelInstance* m, const RmcBlock* b, double* values) {
+    RMC_MARK; int result = 0;
+    double* out = rmc_dalloc(m, b->lane_max_outputs);
+    if (!out) { RMC_RELEASE; return rmc_exhausted(m); }
+    for (size_t e = 0; e < b->nnz; ++e) values[e] = 0.0;
+    for (size_t call = 0; call < b->nlane_calls && result == 0; ++call) {
+        const size_t* entry = b->lane_calls + 6 * call;
+        size_t lanes = entry[1], outputs = entry[5];
+        const size_t* colors = rmc_pool + entry[2];
+        const size_t* placements = rmc_pool + entry[3];
+        rmc_lane_seeds(b, colors, lanes, 1.0, m->rmc_lane_seed);
+        if (rmc_lane_fn[entry[0]](m, m->rmc_lane_seed, out) != 0) result = -1;
+        rmc_lane_seeds(b, colors, lanes, 0.0, m->rmc_lane_seed);
+        for (size_t p = 0; p < entry[4] && result == 0; ++p) values[placements[3 * p + 2]] = out[placements[3 * p] * outputs + placements[3 * p + 1]];
+    }
+    RMC_RELEASE; return result;
+}
 static int rmc_jacobian(ModelInstance* m, const RmcBlock* b, double* values) {
     RMC_MARK; int result = 0;
+    if (b->nlane_calls > 0) { RMC_RELEASE; return rmc_jacobian_lanes(m, b, values); }
     double* seed = m->rmc_seed; double* out = rmc_dalloc(m, b->jvp_max_outputs);
     if (!out) { result = rmc_exhausted(m); goto done; }
     for (size_t e = 0; e < b->nnz; ++e) values[e] = 0.0;
@@ -1476,6 +1506,11 @@ RMC_API extern const RmcJvpProgram rmc_jvp_fn[{{ me.table.jvp.programs|length }}
 {%- else %}
 #define rmc_jvp_fn ((const RmcJvpProgram*)0)
 {%- endif %}
+{%- if me.table.lanes.programs|length > 0 %}
+RMC_API extern const RmcJvpProgram rmc_lane_fn[{{ me.table.lanes.programs|length }}];
+{%- else %}
+#define rmc_lane_fn ((const RmcJvpProgram*)0)
+{%- endif %}
 {%- if me.table.isolators.programs|length > 0 %}
 RMC_API extern const RmcProgram rmc_iso_fn[{{ me.table.isolators.programs|length }}];
 RMC_API extern const size_t rmc_iso_group[{{ me.table.isolator_group|length }}];
@@ -1511,6 +1546,12 @@ RMC_API const RmcProgram rmc_row_fn[{{ me.table.rows.programs|length }}] = { {% 
 {%- endfor %}
 {%- if me.table.jvp.programs|length > 0 %}
 RMC_API const RmcJvpProgram rmc_jvp_fn[{{ me.table.jvp.programs|length }}] = { {% for program in me.table.jvp.programs %}rmc_jvp_p{{ loop.index0 }},{% endfor %} };
+{%- endif %}
+{%- for program in me.table.lanes.programs %}
+{{ program_function("rmc_lane_p" ~ loop.index0, program, "ModelInstance* m, const double* seed, double* o", true) }}
+{%- endfor %}
+{%- if me.table.lanes.programs|length > 0 %}
+RMC_API const RmcJvpProgram rmc_lane_fn[{{ me.table.lanes.programs|length }}] = { {% for program in me.table.lanes.programs %}rmc_lane_p{{ loop.index0 }},{% endfor %} };
 {%- endif %}
 {%- endif %}
 {%- endmacro %}
