@@ -2598,15 +2598,17 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 rhs_start,
                 lanes,
             } => {
-                let mut lhs = vec![0.0; 3 * lanes];
-                let mut rhs = vec![0.0; 3 * lanes];
-                for offset in 0..3 * lanes {
+                let count = 3 * lanes;
+                let mut lhs = [0.0; CROSS_VALUES];
+                let mut rhs = [0.0; CROSS_VALUES];
+                for offset in 0..count {
                     lhs[offset] = self.get(lhs_start + offset as Reg)?;
                     rhs[offset] = self.get(rhs_start + offset as Reg)?;
                 }
-                let values = tensor_cross_values(&lhs, &rhs, lanes);
-                for (offset, value) in values.into_iter().take(3 * lanes).enumerate() {
-                    self.set(dst_start + offset as Reg, value)?;
+                let mut values = [0.0; CROSS_VALUES];
+                tensor_cross_values(&lhs[..count], &rhs[..count], lanes, &mut values[..count]);
+                for (offset, value) in values[..count].iter().enumerate() {
+                    self.set(dst_start + offset as Reg, *value)?;
                 }
             }
             LinearOp::TensorTranspose {
@@ -3838,14 +3840,23 @@ fn eval_tensor_cross(
     lanes: usize,
 ) {
     let count = 3 * lanes;
-    let lhs = regs[lhs_start as usize..lhs_start as usize + count].to_vec();
-    let rhs = regs[rhs_start as usize..rhs_start as usize + count].to_vec();
-    let values = tensor_cross_values(&lhs, &rhs, lanes);
-    regs[dst_start as usize..dst_start as usize + count].copy_from_slice(&values[..count]);
+    let mut lhs = [0.0; CROSS_VALUES];
+    let mut rhs = [0.0; CROSS_VALUES];
+    lhs[..count].copy_from_slice(&regs[lhs_start as usize..lhs_start as usize + count]);
+    rhs[..count].copy_from_slice(&regs[rhs_start as usize..rhs_start as usize + count]);
+    tensor_cross_values(
+        &lhs[..count],
+        &rhs[..count],
+        lanes,
+        &mut regs[dst_start as usize..dst_start as usize + count],
+    );
 }
 
-fn tensor_cross_values(lhs: &[f64], rhs: &[f64], lanes: usize) -> Vec<f64> {
-    let mut output = vec![0.0; 3 * lanes];
+/// Register values of the widest cross product, kept on the stack.
+const CROSS_VALUES: usize = 3 * MAX_OP_LANES;
+
+/// The cross product of two `lanes`-wide 3-vectors into `output`.
+fn tensor_cross_values(lhs: &[f64], rhs: &[f64], lanes: usize, output: &mut [f64]) {
     for (component, (first, second)) in [(1, 2), (2, 0), (0, 1)].into_iter().enumerate() {
         let dst = component * lanes;
         let first = first * lanes;
@@ -3857,7 +3868,6 @@ fn tensor_cross_values(lhs: &[f64], rhs: &[f64], lanes: usize) -> Vec<f64> {
                 - lhs[second] * rhs[first + lane];
         }
     }
-    output
 }
 
 fn eval_tensor_binary_tangent(

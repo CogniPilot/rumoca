@@ -6,8 +6,8 @@ use rumoca_ir_solve::{ColoredTangentPlan, TangentLaneProgram, TangentRowSource, 
 
 use crate::{
     EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
-    SimulationRuntimeState, eval_row_prepared_maybe_fast, row_input_requirements,
-    validate_input_requirements, validate_output_len,
+    RowInputRequirements, SimulationRuntimeState, eval_row_prepared_maybe_fast,
+    row_input_requirements, validate_input_requirements, validate_output_len,
 };
 
 /// A [`TangentLaneProgram`] prepared for repeated evaluation.
@@ -16,6 +16,9 @@ use crate::{
 /// `i`) and outputs lane-major (`out[l * m + o]` is lane `l` of output `o`).
 pub struct PreparedTangentLaneProgram {
     program: TangentLaneProgram,
+    /// The inputs the program reads, derived once; an error is reported at
+    /// every evaluation.
+    requirements: Result<RowInputRequirements, EvalSolveError>,
     scratch: RefCell<RowEvalScratch>,
 }
 
@@ -23,6 +26,7 @@ impl PreparedTangentLaneProgram {
     #[must_use]
     pub fn new(program: TangentLaneProgram) -> Self {
         Self {
+            requirements: row_input_requirements(program.ops()),
             program,
             scratch: RefCell::new(RowEvalScratch::default()),
         }
@@ -52,7 +56,7 @@ impl PreparedTangentLaneProgram {
         };
         let ops = self.program.ops();
         validate_output_len(out, self.program.lanes() * self.program.lane_outputs())?;
-        validate_input_requirements(row_input_requirements(ops)?, y, p, context.seed)?;
+        validate_input_requirements(self.requirements.clone()?, y, p, context.seed)?;
         let mut scratch = self.scratch.borrow_mut();
         let mut sink = OutputCursor::new(out);
         eval_row_prepared_maybe_fast(
