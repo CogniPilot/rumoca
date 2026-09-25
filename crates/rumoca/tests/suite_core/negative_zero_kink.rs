@@ -20,7 +20,7 @@ fn a_stiff_loop_resting_on_an_abs_kink_at_negative_zero_simulates() {
         .unwrap();
     let mut finals = Vec::new();
     for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
-        let result = simulate_dae_with_diagnostics(
+        let result = match simulate_dae_with_diagnostics(
             &compiled.dae,
             &SimOptions {
                 solver_mode,
@@ -28,8 +28,10 @@ fn a_stiff_loop_resting_on_an_abs_kink_at_negative_zero_simulates() {
                 dt: Some(0.01),
                 ..Default::default()
             },
-        )
-        .unwrap_or_else(|error| panic!("{solver_mode:?} must simulate: {error}"));
+        ) {
+            Ok(result) => result,
+            Err(error) => panic!("{solver_mode:?} must simulate: {error}"),
+        };
         let column = |name: &str| {
             let index = result.names.iter().position(|n| n == name).unwrap();
             &result.data[index]

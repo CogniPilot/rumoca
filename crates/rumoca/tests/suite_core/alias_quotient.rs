@@ -210,3 +210,55 @@ fn structure_inspection_reports_the_quotient_it_analyzes() {
         "the eliminated member is determined by its own alias edge: {rendered}"
     );
 }
+
+const INDEXED: &str = "
+model AliasIndexed
+  Real x(start = 1, fixed = true);
+  Real v[3];
+  Real w[3];
+equation
+  der(x) = -x;
+  for i in 1:3 loop
+    v[i] = i * x;
+  end for;
+  for i in 1:3 loop
+    w[i] = -v[i];
+  end for;
+end AliasIndexed;";
+
+#[test]
+fn an_indexed_negation_family_quotients_through_its_binders() {
+    let source = compile(INDEXED, "AliasIndexed");
+    let Some(quotient) = quotient_aliases(&source).unwrap() else {
+        panic!("the indexed negation family is eligible");
+    };
+    let reads = owner_reads(&quotient);
+    assert!(
+        reads.iter().any(|owner| owner == &["v", "w"]),
+        "`w` keeps only its indexed definition against `v`: {reads:?}"
+    );
+    let result = simulate_dae_with_diagnostics(
+        &source,
+        &SimOptions {
+            solver_mode: SimSolverMode::Bdf,
+            t_end: 1.0,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let column = |name: &str| {
+        let index = result.names.iter().position(|n| n == name).unwrap();
+        &result.data[index]
+    };
+    for (row, &time) in result.times.iter().enumerate() {
+        let x = (-time).exp();
+        for (name, expected) in [("v[3]", 3.0 * x), ("w[1]", -x), ("w[3]", -3.0 * x)] {
+            let actual = column(name)[row];
+            assert!(
+                (actual - expected).abs() < 1e-4,
+                "{name} at {time}: {actual} != {expected}"
+            );
+        }
+    }
+}

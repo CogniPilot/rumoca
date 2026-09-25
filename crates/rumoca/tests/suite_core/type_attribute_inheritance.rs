@@ -93,10 +93,13 @@ end TypeAttributes;
 "#;
 
 fn compile(model: &str) -> CompilationResult {
-    Compiler::new()
+    match Compiler::new()
         .model(model)
         .compile_str(SOURCE, "TypeAttributes.mo")
-        .unwrap_or_else(|err| panic!("{model} should compile: {err:?}"))
+    {
+        Ok(compiled) => compiled,
+        Err(err) => panic!("{model} should compile: {err:?}"),
+    }
 }
 
 fn number(expr: Option<&Expression>, what: &str) -> f64 {
@@ -114,11 +117,10 @@ fn number(expr: Option<&Expression>, what: &str) -> f64 {
 }
 
 fn flat_var<'a>(compiled: &'a CompilationResult, name: &str) -> &'a rumoca_ir_flat::Variable {
-    compiled
-        .flat
-        .variables
-        .get(&VarName::new(name))
-        .unwrap_or_else(|| panic!("missing flat variable {name}"))
+    let Some(variable) = compiled.flat.variables.get(&VarName::new(name)) else {
+        panic!("missing flat variable {name}");
+    };
+    variable
 }
 
 fn trace_at(compiled: &CompilationResult, name: &str, t_end: f64) -> (f64, f64) {
@@ -131,11 +133,9 @@ fn trace_at(compiled: &CompilationResult, name: &str, t_end: f64) -> (f64, f64) 
         },
     )
     .expect("simulation should succeed");
-    let index = result
-        .names
-        .iter()
-        .position(|n| n == name)
-        .unwrap_or_else(|| panic!("missing trace {name}"));
+    let Some(index) = result.names.iter().position(|n| n == name) else {
+        panic!("missing trace {name}");
+    };
     let trace = &result.data[index];
     (trace[0], trace[trace.len() - 1])
 }
@@ -235,11 +235,9 @@ fn array_type_attributes_repeat_over_the_component_dimensions() {
     )
     .expect("simulation should succeed");
     let initial = |name: &str| {
-        let index = result
-            .names
-            .iter()
-            .position(|n| n == name)
-            .unwrap_or_else(|| panic!("missing trace {name} in {:?}", result.names));
+        let Some(index) = result.names.iter().position(|n| n == name) else {
+            panic!("missing trace {name} in {:?}", result.names);
+        };
         result.data[index][0]
     };
     for (name, expected) in [
