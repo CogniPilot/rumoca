@@ -180,3 +180,34 @@ mod tests {
         assert_eq!(torn_promotion_capacity(33), None);
     }
 }
+
+/// Whether a block projection call evaluates each residual program's
+/// invariant part once and its dependent part per pass (SPEC_0043 §6a block
+/// residual split). Every pass computes the same bits either way.
+pub const BLOCK_RESIDUAL_SPLIT: bool = true;
+
+thread_local! {
+    static BLOCK_RESIDUAL_SPLIT_ENABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(BLOCK_RESIDUAL_SPLIT) };
+}
+
+/// Whether block projection calls on this thread use the residual split: the
+/// policy's choice, or that of an enclosing [`with_block_residual_split`].
+#[must_use]
+pub fn block_residual_split() -> bool {
+    BLOCK_RESIDUAL_SPLIT_ENABLED.with(std::cell::Cell::get)
+}
+
+/// Run `body` with block projection calls on this thread using the residual
+/// split or not, and restore the previous choice afterwards, on unwinding
+/// included.
+pub fn with_block_residual_split<R>(enabled: bool, body: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            BLOCK_RESIDUAL_SPLIT_ENABLED.with(|current| current.set(self.0));
+        }
+    }
+    let _restore = Restore(BLOCK_RESIDUAL_SPLIT_ENABLED.with(|current| current.replace(enabled)));
+    body()
+}

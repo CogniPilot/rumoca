@@ -52,10 +52,10 @@ pub use layout::{
     VarLayout, VarLayoutShapeContractError, scalar_slot_p, scalar_slot_y,
 };
 pub use linear_op::{
-    BinaryOp, CompareOp, FoldInitialSource, FoldTensorNode, FoldTensorUpdate,
-    FoldTensorUpdateStore, FunctionConditionalArmProgram, FunctionConditionalOwnerId,
-    FunctionConditionalProgram, FunctionFoldProgram, LinearOp, MAX_TENSOR_LANES,
-    MatrixProductShape, RandomGenerator, Reg, ScalarProgramRegisterError,
+    BinaryOp, BlockResidualSplit, BlockResidualSplitError, CompareOp, FoldInitialSource,
+    FoldTensorNode, FoldTensorUpdate, FoldTensorUpdateStore, FunctionConditionalArmProgram,
+    FunctionConditionalOwnerId, FunctionConditionalProgram, FunctionFoldProgram, LinearOp,
+    MAX_TENSOR_LANES, MatrixProductShape, RandomGenerator, Reg, ScalarProgramRegisterError,
     ScalarProgramRegisterFlow, StridedOperand, TargetAssignmentShape, TensorConcatenateSource,
     TensorIndex, TensorInputKind, TensorSubscript, TensorUpdateSubscript, UnaryOp,
     prune_dead_constants, resolve_indexed_slot,

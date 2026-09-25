@@ -34,6 +34,10 @@ use rumoca_eval_solve::{
     to_scalar_program_block,
 };
 
+mod block_residual_split;
+pub use block_residual_split::{
+    BlockResidualSplitCounts, block_residual_split_counts, reset_block_residual_split_counts,
+};
 mod coupled_event;
 mod discrete_rows;
 mod event_transactions;
@@ -342,6 +346,12 @@ pub struct SolveRuntime {
     /// Colored tangent plan of each algebraic projection block, aligned with
     /// the block list and its structural artifacts.
     colored_tangents: Rc<[Option<rumoca_eval_solve::ColoredTangentEvaluator>]>,
+    /// Block residual splits aligned with the projection plan's blocks.
+    block_splits: Rc<[Option<block_residual_split::BlockSplits>]>,
+    /// Invariant values of the block projection call in progress.
+    active_split: block_residual_split::ActiveSplitSlot,
+    /// Output buffer of a single-row split evaluation.
+    split_row_scratch: std::cell::RefCell<Vec<f64>>,
     refresh_program_rows: FxHashMap<solve::RefreshScalarProgramSource, usize>,
     manifold: manifold_execution::PreparedManifoldProjection,
     initial_residual: PreparedComputeBlock,
@@ -720,6 +730,14 @@ impl SolveRuntime {
                 &model.problem.continuous.algebraic_projection_plan,
                 &continuous_structural,
             ),
+            block_splits: block_residual_split::block_residual_splits(
+                &model.problem.continuous.algebraic_projection_plan,
+                &continuous_structural,
+                &implicit_scalar_rhs,
+            )
+            .into(),
+            active_split: std::cell::RefCell::new(None),
+            split_row_scratch: std::cell::RefCell::new(Vec::new()),
             implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock::new(
                 implicit_projection_scalar_jacobian,
             )?,

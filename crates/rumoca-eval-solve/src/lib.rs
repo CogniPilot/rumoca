@@ -27,6 +27,7 @@ use rumoca_ir_solve::{
     resolve_indexed_slot,
 };
 
+mod block_residual_split;
 mod compute_block_scalarize;
 pub mod dense_basis;
 pub mod linear_solve;
@@ -48,6 +49,7 @@ mod tangent_lanes;
 pub mod tensor_policy;
 mod typed_program;
 mod update_rows;
+pub use block_residual_split::PreparedBlockResidualSplit;
 pub use compute_block_scalarize::{
     ScalarProgramProjection, ScalarizeError, checked_contiguous_output_count,
     checked_tensor_output_count, scalar_program_output_count, scalar_program_output_indices,

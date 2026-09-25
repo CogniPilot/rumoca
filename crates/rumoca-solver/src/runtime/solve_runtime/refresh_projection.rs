@@ -518,6 +518,12 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         else {
             return Ok(None);
         };
+        if let Some(value) = self.runtime.eval_split_residual_row(program_idx, (y, p, t)) {
+            let value = value?;
+            self.runtime
+                .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
+            return Ok(Some(value));
+        }
         if let Some(compiled) = &self.runtime.compiled_implicit_rhs
             && let Some(value) = compiled
                 .call_program_output(
@@ -732,6 +738,16 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 .refresh_owners
                 .algebraic_projection_block_is_affine(index)
         })
+    }
+
+    fn begin_block_projection(&self, block_index: usize, y: &[f64], p: &[f64], t: f64) {
+        if let Some(&index) = self.block_indices.get(block_index) {
+            self.runtime.begin_block_residual_split(index, y, p, t);
+        }
+    }
+
+    fn end_block_projection(&self) {
+        self.runtime.end_block_residual_split();
     }
 
     fn solve_affine_torn_delta(

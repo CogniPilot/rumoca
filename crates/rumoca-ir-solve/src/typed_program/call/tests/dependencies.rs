@@ -84,7 +84,7 @@ fn input_leaves(outputs: &[Box<[crate::SolveCallDependency]>]) -> Vec<Box<[usize
         .collect()
 }
 
-fn separated_outputs(width: u32) -> SolvePureCallTable {
+pub(super) fn separated_outputs(width: u32) -> SolvePureCallTable {
     let vector = SolveValueType::tensor(SolveScalarType::real(profile()), vec![width]).unwrap();
     let inputs = vec![vector.clone(), vector.clone()];
     let outputs = vec![

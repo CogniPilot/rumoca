@@ -843,6 +843,7 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
 #[cfg(test)]
 mod tests {
     mod affinity;
+    mod block_split;
     mod dependencies;
     mod value_projections;
     mod views;

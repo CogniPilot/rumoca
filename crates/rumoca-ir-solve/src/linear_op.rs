@@ -9,9 +9,11 @@ use std::sync::Arc;
 
 use crate::{SolvePureCallDirectionalSite, SolvePureCallSite, SolveValueType};
 
+mod block_split;
 mod dead_constants;
 mod seed_invariance;
 
+pub use block_split::{BlockResidualSplit, BlockResidualSplitError};
 pub use dead_constants::prune_dead_constants;
 
 /// Register index in a lowered op sequence.

@@ -6,6 +6,7 @@ use crate::SimulationSession;
 use crate::{SimOptions, SimSolverMode, simulate_dae, simulate_dae_with_diagnostics};
 
 mod array_trajectories;
+mod block_residual_split;
 mod coincident_strict;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod input_batches;
