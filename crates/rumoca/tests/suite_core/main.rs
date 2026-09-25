@@ -167,6 +167,7 @@ mod structured_family_corner_lowering;
 mod terminate_when_regression;
 mod tiered_models;
 mod time_event_when_activation;
+mod type_attribute_inheritance;
 mod verification_surface_wiring;
 
 mod structural_binding_functions;

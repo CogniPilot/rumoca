@@ -643,7 +643,11 @@ fn test_continuous_declaration_binding_preserves_runtime_expression() {
         &mut ctx,
         &effective_components,
         &TypeOverrideMap::new(),
-        false,
+        &TypeInfo {
+            class_def: None,
+            is_primitive: true,
+            is_discrete: false,
+        },
         &[],
     )
     .expect("continuous binding should prepare");
@@ -676,7 +680,11 @@ fn test_parameter_declaration_binding_still_resolves_structural_expression() {
         &mut ctx,
         &effective_components,
         &TypeOverrideMap::new(),
-        true,
+        &TypeInfo {
+            class_def: None,
+            is_primitive: true,
+            is_discrete: true,
+        },
         &[],
     )
     .expect("parameter binding should prepare");

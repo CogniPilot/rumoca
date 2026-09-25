@@ -1354,13 +1354,11 @@ fn instantiate_component(
     let instance_id = overlay.alloc_id();
     let qualified_name = ctx.current_path();
     handle_inner_outer(tree, comp, ctx, overlay, &qualified_name, &type_name)?;
-    let TypeInfo {
-        class_def,
-        is_primitive,
-        is_discrete: is_discrete_type,
-    } = validated_component_type_info(tree, comp, ctx, &qualified_name, &type_name)?;
+    let type_info = validated_component_type_info(tree, comp, ctx, &qualified_name, &type_name)?;
+    validate_final_type_attribute_overrides(tree, type_info.class_def, comp, ctx.mod_env())?;
     let ComponentBindingInfo {
         mut attrs,
+        type_attribute_shapes,
         binding,
         binding_source,
         binding_source_scope,
@@ -1372,12 +1370,15 @@ fn instantiate_component(
         ctx,
         scope.effective_components,
         scope.type_overrides,
-        is_discrete_type,
+        &type_info,
         scope.imports.attributes,
     )?;
+    let TypeInfo {
+        class_def,
+        is_primitive,
+        is_discrete: is_discrete_type,
+    } = type_info;
     let (flow, stream) = component_flow_stream(comp, ctx);
-    validate_final_type_attribute_overrides(tree, class_def, comp, ctx.mod_env())?;
-    merge_type_hierarchy_string_attributes(tree, class_def, &mut attrs);
     let (dims, dims_expr) = resolve_component_shape(
         tree,
         comp,
@@ -1386,6 +1387,7 @@ fn instantiate_component(
         scope.effective_components,
         scope.imports.qualification,
     )?;
+    broadcast_type_attribute_values(&type_attribute_shapes, &dims, &mut attrs);
     let type_id = component_type_id(tree, &type_name, class_def, is_primitive);
     let declaration_source_scope = component_declaration_source_scope(ctx, comp);
     let binding_scope_for_record_expansion = binding_scope_for_record_expansion(
@@ -1524,6 +1526,7 @@ fn resolve_component_shape(
 
 struct ComponentBindingInfo {
     attrs: ExtractedAttributes,
+    type_attribute_shapes: TypeAttributeShapes,
     binding: Option<ast::Expression>,
     binding_source: Option<ast::Expression>,
     binding_source_scope: Option<ast::QualifiedName>,
@@ -1537,9 +1540,10 @@ fn prepare_component_binding_info(
     ctx: &mut InstantiateContext,
     effective_components: &IndexMap<String, ast::Component>,
     type_overrides: &TypeOverrideMap,
-    is_discrete_type: bool,
+    type_info: &TypeInfo<'_>,
     imports: &[(String, String)],
 ) -> InstantiateResult<ComponentBindingInfo> {
+    let is_discrete_type = type_info.is_discrete;
     let eval_ctx = InstantiateEvalCtx {
         tree,
         mod_env: ctx.mod_env(),
@@ -1554,6 +1558,17 @@ fn prepare_component_binding_info(
         binding_from_modification,
         binding_is_each,
     } = extract_component_attrs_and_binding(comp, ctx.mod_env(), &eval_ctx, imports)?;
+    let type_attribute_shapes = if type_info.is_primitive {
+        let merge = TypeAttributeMerge {
+            ctx,
+            comp,
+            class_def: type_info.class_def,
+            eval_ctx: &eval_ctx,
+        };
+        merge_type_hierarchy_attributes(&merge, &mut attrs)?
+    } else {
+        TypeAttributeShapes::default()
+    };
     // Sibling component occurrences of this class are still being materialized,
     // so only class-alias selections can be proved for declaration-side
     // expressions here. A member that stays unproven keeps its absent identity
@@ -1599,6 +1614,7 @@ fn prepare_component_binding_info(
     }
     Ok(ComponentBindingInfo {
         attrs,
+        type_attribute_shapes,
         binding,
         binding_source,
         binding_source_scope,
