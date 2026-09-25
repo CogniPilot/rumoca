@@ -12,6 +12,6 @@ mod projection;
 pub use function_context::FunctionCallContext;
 pub use numeric::{NumericEvaluationError, NumericEvaluationErrorKind, NumericEvaluator};
 pub use projection::{
-    ProjectionError, ScalarCoordinateProjectionCache, for_each_scalar_coordinate,
-    for_each_scalar_coordinate_cached,
+    ProjectionError, ScalarCoordinateProjectionCache, ZeroCoefficients, for_each_scalar_coordinate,
+    for_each_scalar_coordinate_cached, multiplication_scalar_pairs,
 };

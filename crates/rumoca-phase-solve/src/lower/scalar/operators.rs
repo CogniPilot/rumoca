@@ -240,7 +240,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 solve::BinaryOp::Sub
             }
             dae::BinaryOperator::ElementwiseMultiply => solve::BinaryOp::Mul,
-            dae::BinaryOperator::Multiply if lhs_count == 1 || rhs_count == 1 => {
+            dae::BinaryOperator::Multiply
+                if (lhs_count == 1 || rhs_count == 1)
+                    && !(0..count).any(|scalar| self.omits_product_term(lhs, rhs, scalar)) =>
+            {
                 solve::BinaryOp::Mul
             }
             dae::BinaryOperator::ElementwiseDivide => solve::BinaryOp::Div,
@@ -285,6 +288,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<solve::Reg, LowerError> {
         let lhs_dimensions = self.node(lhs).value_type().dimensions().to_vec();
         let rhs_dimensions = self.node(rhs).value_type().dimensions().to_vec();
+        if self.omits_product_term(lhs, rhs, scalar) {
+            return self.sparse_product(lhs, rhs, scalar, span);
+        }
         match (lhs_dimensions.as_slice(), rhs_dimensions.as_slice()) {
             ([], _) => {
                 let lhs = self.expression(lhs, 0)?;
@@ -349,6 +355,62 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 "checked multiplication shape has no scalar projection",
                 span,
             )),
+        }
+    }
+
+    /// Whether scalar `scalar` of `lhs * rhs` has a product term structural
+    /// incidence omits as exactly zero.
+    fn omits_product_term(
+        &mut self,
+        lhs: dae::ExprId<'dae>,
+        rhs: dae::ExprId<'dae>,
+        scalar: usize,
+    ) -> bool {
+        let pairs = rumoca_eval_dae::multiplication_scalar_pairs(
+            self.node(lhs).value_type().dimensions(),
+            self.node(rhs).value_type().dimensions(),
+            scalar,
+        );
+        pairs.into_iter().any(|(lhs_index, rhs_index)| {
+            self.zero_coefficients
+                .omits_term(self.view, lhs, rhs, lhs_index, rhs_index)
+        })
+    }
+
+    /// Lower scalar `scalar` of `lhs * rhs` as the sum of the product terms
+    /// structural incidence keeps, so the program reads exactly the
+    /// coordinates the structural analysis matched.
+    fn sparse_product(
+        &mut self,
+        lhs: dae::ExprId<'dae>,
+        rhs: dae::ExprId<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let pairs = rumoca_eval_dae::multiplication_scalar_pairs(
+            self.node(lhs).value_type().dimensions(),
+            self.node(rhs).value_type().dimensions(),
+            scalar,
+        );
+        let mut sum = None;
+        for (lhs_index, rhs_index) in pairs {
+            if self
+                .zero_coefficients
+                .omits_term(self.view, lhs, rhs, lhs_index, rhs_index)
+            {
+                continue;
+            }
+            let factor = self.expression(lhs, lhs_index)?;
+            let other = self.expression(rhs, rhs_index)?;
+            let term = self.binary(dae::BinaryOperator::Multiply, factor, other, span)?;
+            sum = Some(match sum {
+                None => term,
+                Some(partial) => self.binary(dae::BinaryOperator::Add, partial, term, span)?,
+            });
+        }
+        match sum {
+            Some(sum) => Ok(sum),
+            None => self.constant(0.0, span),
         }
     }
 

@@ -3,6 +3,7 @@ mod scalar_selection;
 #[cfg(test)]
 mod tests;
 mod zero_coefficients;
+pub use zero_coefficients::ZeroCoefficients;
 
 use std::collections::{HashMap, HashSet};
 
@@ -1587,7 +1588,9 @@ fn integer_binary(
     }
 }
 
-fn multiplication_scalar_pairs(lhs: &[u32], rhs: &[u32], scalar: usize) -> Vec<(usize, usize)> {
+/// The `(lhs, rhs)` scalar factor pairs whose products sum to row-major scalar
+/// `scalar` of a checked `Multiply` with these operand dimensions.
+pub fn multiplication_scalar_pairs(lhs: &[u32], rhs: &[u32], scalar: usize) -> Vec<(usize, usize)> {
     match (lhs, rhs) {
         ([], _) => vec![(0, scalar)],
         (_, []) => vec![(scalar, 0)],

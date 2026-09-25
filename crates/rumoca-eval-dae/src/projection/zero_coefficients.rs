@@ -2,12 +2,31 @@
 
 use super::*;
 
+/// Memoized proofs that one factor of a product is exactly zero.
+///
+/// Structural incidence omits a Real continuous coordinate multiplied by such a
+/// factor, and Solve lowering omits the same product term, so both derive the
+/// same dependency structure from one proof.
 #[derive(Default)]
-pub(super) struct ZeroCoefficients<'dae> {
+pub struct ZeroCoefficients<'dae> {
     values: HashMap<(dae::ExprId<'dae>, usize), bool>,
 }
 
 impl<'dae> ZeroCoefficients<'dae> {
+    /// Whether the term `(lhs_index, rhs_index)` of `lhs * rhs` is an exactly
+    /// zero product of a Real continuous coordinate, which incidence omits.
+    pub fn omits_term(
+        &mut self,
+        view: dae::DaeView<'dae>,
+        lhs: dae::ExprId<'dae>,
+        rhs: dae::ExprId<'dae>,
+        lhs_index: usize,
+        rhs_index: usize,
+    ) -> bool {
+        self.omits_coordinate(view, rhs, lhs, lhs_index)
+            || self.omits_coordinate(view, lhs, rhs, rhs_index)
+    }
+
     pub(super) fn omits_coordinate(
         &mut self,
         view: dae::DaeView<'dae>,

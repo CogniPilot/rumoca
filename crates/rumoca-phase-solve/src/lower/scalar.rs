@@ -421,6 +421,9 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     ops: Vec<solve::LinearOp>,
     next_register: solve::Reg,
     integer_registers: Vec<Option<i64>>,
+    /// The incidence proofs of exactly zero product terms, shared with
+    /// structural analysis so both omit the same terms.
+    zero_coefficients: rumoca_eval_dae::ZeroCoefficients<'dae>,
     unary_values: HashMap<(u64, solve::UnaryOp, solve::Reg), solve::Reg>,
     expression_cache: rustc_hash::FxHashMap<(u64, dae::ExprId<'dae>, usize), solve::Reg>,
     packed_expression_cache: rustc_hash::FxHashMap<(u64, dae::ExprId<'dae>), solve::Reg>,
@@ -497,6 +500,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             ops: Vec::new(),
             next_register: 0,
             integer_registers: Vec::new(),
+            zero_coefficients: rumoca_eval_dae::ZeroCoefficients::default(),
             unary_values: HashMap::new(),
             expression_cache: rustc_hash::FxHashMap::default(),
             packed_expression_cache: rustc_hash::FxHashMap::default(),
