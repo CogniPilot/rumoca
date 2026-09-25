@@ -67,6 +67,8 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     pub(super) derivative_anchors: super::equalities::DerivativeAnchors,
     pub(super) function_context: FunctionCallContext<'source>,
     pub(super) scoped_cache: ScopedReconstructionCache<'source, 'target>,
+    /// STRUCT-T10(b): source call nodes replaced by their substituted body.
+    inline_calls: &'borrow [bool],
     rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
 }
 
@@ -172,6 +174,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             derivative_anchors: Default::default(),
             function_context: FunctionCallContext::default(),
             scoped_cache: ScopedReconstructionCache::default(),
+            inline_calls: &[],
             rebuilt,
         }
     }
@@ -182,6 +185,12 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     pub(super) fn substituting_demoted_value(mut self) -> Self {
         assert!(self.candidate.is_some());
         self.substitute_demoted_value = true;
+        self
+    }
+
+    /// Replace the flagged source calls by their substituted bodies.
+    pub(super) fn inlining_calls(mut self, inline_calls: &'borrow [bool]) -> Self {
+        self.inline_calls = inline_calls;
         self
     }
 
@@ -256,6 +265,21 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         };
         self.function_context = previous;
         rebuilt
+    }
+
+    /// STRUCT-T10(b): the single straight-line result of an admitted call,
+    /// with the call's own arguments substituted.
+    fn rebuild_inlined_call(
+        &mut self,
+        call: dae::ExprId<'source>,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let (result, context) = FunctionCallContext::default()
+            .call_result(self.source, call)
+            .expect("the inline plan admits only single-assignment callees");
+        let previous = std::mem::replace(&mut self.function_context, context);
+        let value = self.rebuild_instantiated(result);
+        self.function_context = previous;
+        value
     }
 
     /// Substitution retains the MLS §10.6.13 promotion at a Real argument,
@@ -339,6 +363,14 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .map(|element| self.rebuild_instantiated(element))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.target.at(provenance).array(elements)
+            }
+            dae::ExpressionOperation::Record(fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|field| self.rebuild_instantiated(field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let value_type = self.types[source.value_type_id().index() as usize];
+                self.target.at(provenance).record(value_type, fields)
             }
             dae::ExpressionOperation::Field { base, field } => {
                 let (projected, projected_context) = self
@@ -462,6 +494,14 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 output,
                 arguments,
             } => {
+                if self
+                    .inline_calls
+                    .get(source_id.index() as usize)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    return self.rebuild_inlined_call(source_id);
+                }
                 let arguments = self.rebuild_operands(arguments)?;
                 let function = self.functions[function.index() as usize].id;
                 if owner == source_id {

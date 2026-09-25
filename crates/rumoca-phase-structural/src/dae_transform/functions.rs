@@ -31,6 +31,7 @@ fn function_signature<'target>(
         results,
         function.declaration(),
     )
+    .with_inline(function.inline())
 }
 
 fn declare_parameters<'target>(

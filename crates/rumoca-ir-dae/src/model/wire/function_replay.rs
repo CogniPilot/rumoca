@@ -82,6 +82,7 @@ fn function_output<'storage>(
                 provenance: derivative.provenance,
             })
             .collect(),
+        inline: function.inline,
         declaration: function.declaration,
     }
 }
@@ -376,7 +377,8 @@ fn function_signature<'dae>(
         map_function_value_types(&ids.types, &function.parameters)?,
         map_function_value_types(&ids.types, &function.outputs)?,
         function.declaration,
-    ))
+    )
+    .with_inline(function.inline))
 }
 
 fn replay_component<'group, 'dae>(

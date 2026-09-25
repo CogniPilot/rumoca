@@ -158,7 +158,8 @@ pub(crate) use construction_checks::{
 /// 37 appends the checked aggregate auxiliary `LinearSolve` pure function.
 /// 38 preserves source-call ownership for supplied derivative invocations.
 /// 39 records checked evaluability of `final` and `Evaluate=true` parameters.
-pub const DAE_SCHEMA_VERSION: u16 = 39;
+/// 40 carries each function's MLS §18.3 inline request on the wire.
+pub const DAE_SCHEMA_VERSION: u16 = 40;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;

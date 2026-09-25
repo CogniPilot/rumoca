@@ -13,7 +13,8 @@ use rumoca_phase_structural::{
     AliasQuotientReport, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
     FormalStateCoordinate, PreparedDae, ReducedSelectionChart, StateSelection, StructuralError,
     construct_formal_derivatives, fold_evaluable_parameters, formal_alias_quotient_report,
-    prepare_for_solve, quotient_aliases, quotient_formal_aliases,
+    inline_annotated_calls, inline_formal_calls, prepare_for_solve, quotient_aliases,
+    quotient_formal_aliases,
 };
 
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
@@ -55,8 +56,8 @@ struct AlternateSelections {
 }
 
 /// Prepare the executable selection of `model` after its STRUCT-T10(a)
-/// evaluable-parameter folding and STRUCT-T02 alias quotient. A model neither
-/// transform changes prepares unchanged; otherwise the owned reconstruction is
+/// evaluable-parameter folding, STRUCT-T10(b) annotated call inlining, and
+/// STRUCT-T02 alias quotient. A model no transform changes prepares unchanged; otherwise the owned reconstruction is
 /// prepared, which keeps every source declaration, so later stages read the
 /// same variables and names.
 pub(crate) fn prepare<'source>(
@@ -64,7 +65,11 @@ pub(crate) fn prepare<'source>(
     overrides: &HashMap<String, f64>,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
     let folded = fold_evaluable_parameters(model)?;
-    match (quotient_aliases(folded.as_ref().unwrap_or(model))?, folded) {
+    let inlined = inline_annotated_calls(folded.as_ref().unwrap_or(model))?.or(folded);
+    match (
+        quotient_aliases(inlined.as_ref().unwrap_or(model))?,
+        inlined,
+    ) {
         (None, None) => prepare_source(model, overrides),
         (Some(quotient), _) | (None, Some(quotient)) => prepare_quotient(quotient, overrides),
     }
@@ -262,11 +267,12 @@ fn recover_singular_via_formal(
     }))
 }
 
-/// Report the formal-scope alias classes of a prepared candidate and apply
-/// the formal quotient.
+/// Inline the after-index-reduction calls of a prepared candidate, report its
+/// formal-scope alias classes, and apply the formal quotient.
 fn quotient_formal_candidate(
     candidate: PreparedDae<'_>,
 ) -> Result<(PreparedDae<'_>, AliasQuotientReport), StructuralError> {
+    let candidate = inline_formal_calls(candidate)?;
     let report = formal_alias_quotient_report(&candidate);
     Ok((quotient_formal_aliases(candidate)?, report))
 }
@@ -324,6 +330,7 @@ fn prepare_alternate_chart(
     formal
         .construct_state_candidate(|view| resolve_alternate_coordinates(view, selection))?
         .into_prepared()
+        .and_then(inline_formal_calls)
         .and_then(quotient_formal_aliases)
 }
 

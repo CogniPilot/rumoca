@@ -1,3 +1,7 @@
+//! Record-valued pure calls keep exact per-output dependencies through Solve
+//! lowering and wire replay. The fixture callees refuse inlining
+//! (`Inline=false`) so each call stays a pure-call site the wire checks.
+
 use rumoca::Compiler;
 use rumoca_sim::{
     SimOptions, SimSolverMode, deserialize_solve_model, lower_dae_for_simulation,
@@ -18,7 +22,7 @@ package RecordDependency
   algorithm
     R.T := {{cos(q), -sin(q)}, {sin(q), cos(q)}};
     R.w := w;
-    annotation(Inline=true);
+    annotation(Inline=false);
   end rotation;
   model Probe
     Real q(start=0.1, fixed=true);
@@ -43,7 +47,7 @@ package CopiedCoordinates
     output Real w[2];
   algorithm
     w := R.w;
-    annotation(Inline=true);
+    annotation(Inline=false);
   end angularVelocity2;
   model Probe
     Real q[2](start={1, 2}, each fixed=true);

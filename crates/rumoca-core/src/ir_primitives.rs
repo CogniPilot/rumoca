@@ -1441,6 +1441,10 @@ pub enum InlineAnnotation {
     Unstated,
     /// `annotation(Inline = true)` or `annotation(LateInline = true)`.
     Requested,
+    /// `annotation(InlineAfterIndexReduction = true)` without an `Inline` or
+    /// `LateInline` request: substitute the body only after the function has
+    /// been differentiated for index reduction.
+    AfterIndexReduction,
     /// `annotation(Inline = false)`. Absolute: no policy raises it.
     Never,
 }

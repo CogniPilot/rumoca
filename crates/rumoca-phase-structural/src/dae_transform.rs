@@ -25,6 +25,7 @@ mod formal_derivatives;
 mod function_derivatives;
 mod functions;
 mod initial_pins;
+mod inline_calls;
 mod observation;
 mod parameter_conditionals;
 mod reconstruction;
@@ -73,6 +74,7 @@ pub use self::formal_derivatives::{
     ReducedSelectionChart, StateSelection, construct_formal_derivatives,
 };
 pub use self::initial_pins::{InitialValuePin, InitialValueRole, PinTerm};
+pub use self::inline_calls::{inline_annotated_calls, inline_formal_calls};
 pub use self::observation::{
     ReductionCandidateGroup, ReductionIdentity, ReductionLane, ReductionOutcome, ReductionRecord,
     ReductionReport, ReductionSnapshot, ReductionStop, UnmatchedKind, UnmatchedName,

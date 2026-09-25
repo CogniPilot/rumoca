@@ -359,8 +359,8 @@ fn unsupported_external_annotation(expression: &ast::Expression, reason: &str) -
     ))
 }
 
-/// Read the MLS §18.3 `Inline`/`LateInline` annotation off a function
-/// declaration.
+/// Read the MLS §18.3 `Inline`/`LateInline`/`InlineAfterIndexReduction`
+/// annotation off a function declaration.
 ///
 /// Both spellings are recognized because both ask the same question of a
 /// compiler that substitutes bodies at one point: whether this call should
@@ -376,15 +376,19 @@ pub(super) fn extract_inline_annotation(
     annotations: &[ast::Expression],
 ) -> rumoca_core::InlineAnnotation {
     let mut requested = false;
+    let mut after_index_reduction = false;
     for annotation in annotations {
         match inline_clause(annotation) {
             Some(("Inline", false)) => return rumoca_core::InlineAnnotation::Never,
             Some(("Inline" | "LateInline", true)) => requested = true,
+            Some(("InlineAfterIndexReduction", true)) => after_index_reduction = true,
             _ => {}
         }
     }
     if requested {
         rumoca_core::InlineAnnotation::Requested
+    } else if after_index_reduction {
+        rumoca_core::InlineAnnotation::AfterIndexReduction
     } else {
         rumoca_core::InlineAnnotation::Unstated
     }

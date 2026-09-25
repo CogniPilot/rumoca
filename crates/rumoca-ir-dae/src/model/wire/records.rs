@@ -81,6 +81,8 @@ pub(super) struct FunctionEntryWire<Name = rumoca_core::VarName> {
     /// MLS §12.9 external interface; mutually exclusive with `statements`.
     pub(super) external: Option<ExternalBodyInput<Name>>,
     pub(super) derivatives: Vec<FunctionDerivativeWire>,
+    /// MLS §18.3 inline request of the declaration.
+    pub(super) inline: rumoca_core::InlineAnnotation,
     #[serde(deserialize_with = "deserialize_provenance")]
     pub(super) declaration: DaeProvenance,
 }

@@ -112,6 +112,7 @@ mod initial_alias_domain;
 mod initial_value_alias_transfer;
 mod initialization_ordering;
 mod initialization_tensor_incidence;
+mod inline_calls;
 mod integer_builtin_checked;
 mod interface_flow_balance;
 mod invariant_pure_call_frames;
