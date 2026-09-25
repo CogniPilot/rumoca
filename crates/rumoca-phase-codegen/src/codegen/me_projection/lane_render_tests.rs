@@ -95,7 +95,7 @@ const HARNESS: &str = r#"{%- from "fmi-c-kernel.jinja" import scalar_op %}
 #include <stdio.h>
 #include <stddef.h>
 typedef struct { const double* y; const double* p; double time; } ModelInstance;
-{%- set program = plan.programs[0] %}
+{%- set program = plan.programs[plan.programs|length - 1] %}
 static int lane_program(ModelInstance* m, const double* seed, double* o) {
     double r[{{ program.temporary_count }}];
 {%- for op in program.ops %}
@@ -115,8 +115,11 @@ int main(void) {
 "#;
 
 fn render(program: &solve::TangentLaneProgram, outputs: usize) -> String {
+    // The rendered program follows another, so its stores must address
+    // its own outputs from zero.
     let mut family = LaneFamily::default();
     let span = solve::source_span_from_offsets(1, 0, 1);
+    family.push(program.clone(), span);
     family.push(program.clone(), span);
     let plan = family.into_plan().expect("a checked tangent-lane plan");
     let mut environment = crate::codegen::create_environment();

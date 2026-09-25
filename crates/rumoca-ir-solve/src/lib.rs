@@ -209,7 +209,10 @@ impl ScalarProgramBlock {
             .iter()
             .map(|program| program.ops().to_vec())
             .collect::<Vec<_>>();
-        let output_indices = (0..stored_output_count(&operations)).collect::<Vec<_>>();
+        let output_indices = operations
+            .iter()
+            .flat_map(|program| 0..Self::program_output_count(program))
+            .collect::<Vec<_>>();
         validate_scalar_program_metadata_lengths(
             "ScalarProgramBlock",
             0,
