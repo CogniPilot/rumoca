@@ -362,23 +362,28 @@ unknowns at fixed parameters, time, and external tables, so every invariant
 operation computes the same bits at every point of the call: the invariant
 part evaluated once per call, followed at each pass by the dependent part
 over its live-out values, is bit-identical to evaluating the whole program at
-that pass. A block of one row settles by its singleton assignment
-first and does not split, and an evaluator that runs a program lazily
-(skipping operations its selected branches do not reach) keeps that program
-unsplit, because the invariant part evaluates every invariant operation. The
-split serves the residual passes of the affine, torn, and dense
-paths and the causal chain and isolator programs, which are prefixes of the
-same row programs over the same registers; only values invariant under every
-unknown of the block hoist, so a torn sweep that moves any of them reads the
-same live-out values. Jacobian and tangent-lane programs are outside the
-split: their register identities differ from the row programs', and their
-seed-invariant operations already run once per call. The certificate records
-the invariant positions and live-out registers of each (block, program); its
-checker re-derives both from the program and the unknown set and rejects any
-difference. Failures keep their order: the invariant part runs before the
-call's first program evaluation and reports nothing; when it fails, the call
-discards its values and evaluates the unsplit programs, so the same operation
-raises the same error at the same pass as without the split.
+that pass. The split serves the residual passes of affine blocks of more
+than one row; only values invariant under every unknown of the block hoist,
+so any pass that moves the unknowns reads the same live-out values. A one-row
+block settles by its singleton assignment first, and a block the affine
+certificate does not cover evaluates its own torn sweep and Newton programs,
+so neither splits; an evaluator that runs a program lazily (skipping
+operations its selected branches do not reach) keeps that program unsplit,
+because the invariant part evaluates every invariant operation. A compiled
+backend runs the invariant part as a program storing the live-out registers
+as its outputs and the dependent part as a program loading them from its
+seed vector, both standalone programs of the same operations. Jacobian and
+tangent-lane programs are outside the split: their register identities
+differ from the row programs', and their seed-invariant operations already
+run once per call. The certificate records the invariant positions and
+live-out registers of each (block, program); its checker re-derives both
+from the program and the unknown set and rejects any difference, a
+dependent write to a live-out register, and a read neither part defines.
+Failures keep their order: the invariant part runs before the call's first
+program evaluation and reports nothing; when it fails, the call discards its
+values and evaluates the unsplit programs, and a dependent part that fails
+or declines at a pass hands that pass to its unsplit program, so the same
+operation raises the same error at the same pass as without the split.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|

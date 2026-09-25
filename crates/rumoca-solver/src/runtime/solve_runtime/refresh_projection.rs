@@ -519,7 +519,6 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             return Ok(None);
         };
         if let Some(value) = self.runtime.eval_split_residual_row(program_idx, (y, p, t)) {
-            let value = value?;
             self.runtime
                 .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
             return Ok(Some(value));

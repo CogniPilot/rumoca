@@ -63,11 +63,12 @@ impl RefreshProjectionModel<'_> {
         t: f64,
         out: &mut Vec<f64>,
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(result) = self
+        if self
             .runtime
             .eval_split_residual_program(program, (y, p, t), out)
+            .is_some()
         {
-            return result;
+            return Ok(());
         }
         if let Some(compiled) = &self.runtime.compiled_implicit_rhs
             && compiled

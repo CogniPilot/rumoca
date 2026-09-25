@@ -13,6 +13,7 @@ use rumoca_solver::{block_residual_split_counts, reset_block_residual_split_coun
 use super::super::entry::lower_dae_for_simulation;
 use super::tangent_jacobian::{LOOPS, affine_chain, compile_with_roots, msl_root};
 use crate::{SimOptions, SimResult, simulate_dae};
+use rumoca_solver::SimExecutionPolicy;
 
 fn lower(dae: &rumoca_ir_dae::Dae) -> solve::SolveModel {
     lower_dae_for_simulation(dae, &SimOptions::default()).expect("the fixture lowers")
@@ -134,17 +135,21 @@ fn context(model: &solve::SolveModel) -> RowEvalContext<'_> {
     }
 }
 
-fn options() -> SimOptions {
+fn options(policy: SimExecutionPolicy) -> SimOptions {
     SimOptions {
         t_end: 1.0,
         dt: Some(0.01),
-        execution_policy: rumoca_solver::SimExecutionPolicy::Interpreter,
+        execution_policy: policy,
         ..SimOptions::default()
     }
 }
 
-fn simulate(dae: &rumoca_ir_dae::Dae, split: bool) -> Result<SimResult, String> {
-    with_block_residual_split(split, || simulate_dae(dae, &options()))
+fn simulate(
+    dae: &rumoca_ir_dae::Dae,
+    split: bool,
+    policy: SimExecutionPolicy,
+) -> Result<SimResult, String> {
+    with_block_residual_split(split, || simulate_dae(dae, &options(policy)))
         .map_err(|error| format!("{error:?}"))
 }
 
@@ -156,15 +161,31 @@ fn bits(result: &SimResult) -> Vec<Vec<u64>> {
         .collect()
 }
 
-/// Split and unsplit interpreter trajectories agree bit for bit; returns the
-/// split counts of the split run.
+/// [`assert_trajectory_exact_under`] for native execution, which splits the
+/// compiled residual programs, and for the interpreter, which splits the
+/// prepared ones; returns the interpreter's counts.
 fn assert_trajectory_exact(
     label: &str,
     dae: &rumoca_ir_dae::Dae,
 ) -> rumoca_solver::BlockResidualSplitCounts {
-    let unsplit = simulate(dae, false).expect("the unsplit run");
+    let native = assert_trajectory_exact_under(label, dae, SimExecutionPolicy::Auto);
+    assert!(
+        native.calls > 0 && native.fallbacks == 0,
+        "{label} native: {native:?}"
+    );
+    assert_trajectory_exact_under(label, dae, SimExecutionPolicy::Interpreter)
+}
+
+/// Split and unsplit trajectories under `policy` agree bit for bit; returns
+/// the split counts of the split run.
+fn assert_trajectory_exact_under(
+    label: &str,
+    dae: &rumoca_ir_dae::Dae,
+    policy: SimExecutionPolicy,
+) -> rumoca_solver::BlockResidualSplitCounts {
+    let unsplit = simulate(dae, false, policy).expect("the unsplit run");
     reset_block_residual_split_counts();
-    let split = simulate(dae, true).expect("the split run");
+    let split = simulate(dae, true, policy).expect("the split run");
     let counts = block_residual_split_counts();
     assert_eq!(split.times, unsplit.times, "{label}: output times");
     assert!(
@@ -195,7 +216,12 @@ fn fixture_splits_are_exact_and_evaluate_each_invariant_part_once_per_call() {
         counts.dependent_evaluations >= 2 * counts.calls,
         "{counts:?}"
     );
-    assert_trajectory_exact("TangentLoops", &loops);
+    // The loops are not affine: their blocks keep their torn and Newton
+    // programs, and the split leaves their trajectories unchanged.
+    for policy in [SimExecutionPolicy::Auto, SimExecutionPolicy::Interpreter] {
+        let counts = assert_trajectory_exact_under("TangentLoops", &loops, policy);
+        assert_eq!(counts.calls, 0, "{counts:?}");
+    }
 }
 
 /// `f` converts `1e300*max(u - 0.5, 0)` to an Integer, out of range once its
@@ -224,9 +250,9 @@ end SplitFailing;";
 #[test]
 fn a_failing_invariant_call_fails_as_the_unsplit_programs_do() {
     let dae = compile_with_roots(FAILING, "SplitFailing", &[]);
-    let unsplit = simulate(&dae, false);
+    let unsplit = simulate(&dae, false, SimExecutionPolicy::Interpreter);
     reset_block_residual_split_counts();
-    let split = simulate(&dae, true);
+    let split = simulate(&dae, true, SimExecutionPolicy::Interpreter);
     let counts = block_residual_split_counts();
     let unsplit = unsplit.expect_err("the unsplit run fails at the assertion");
     let split = split.expect_err("the split run fails at the assertion");

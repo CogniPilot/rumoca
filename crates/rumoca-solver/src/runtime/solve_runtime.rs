@@ -710,6 +710,14 @@ impl SolveRuntime {
             structured_discrete_rows.rows(),
         );
         let clock_partition_clocks = discrete_rows::clock_partition_clocks(&model.problem.discrete);
+        let block_splits = block_residual_split::block_residual_splits(
+            &model.problem.continuous.refresh_owners,
+            &model.problem.continuous.algebraic_projection_plan,
+            &continuous_structural,
+            &implicit_scalar_rhs,
+            execution_backend.as_deref(),
+        )
+        .into();
         Ok(Self {
             model: model.clone(),
             state_count: model.state_scalar_count(),
@@ -730,13 +738,8 @@ impl SolveRuntime {
                 &model.problem.continuous.algebraic_projection_plan,
                 &continuous_structural,
             ),
-            block_splits: block_residual_split::block_residual_splits(
-                &model.problem.continuous.algebraic_projection_plan,
-                &continuous_structural,
-                &implicit_scalar_rhs,
-            )
-            .into(),
-            active_split: std::cell::RefCell::new(None),
+            block_splits,
+            active_split: std::cell::Cell::new(None),
             split_row_scratch: std::cell::RefCell::new(Vec::new()),
             implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock::new(
                 implicit_projection_scalar_jacobian,

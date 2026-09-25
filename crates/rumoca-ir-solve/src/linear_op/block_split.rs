@@ -124,6 +124,38 @@ impl BlockResidualSplit {
     pub const fn register_count(&self) -> usize {
         self.register_count
     }
+
+    /// The invariant part as a standalone program storing its live-out
+    /// registers, in [`Self::live_out`] order, as its outputs.
+    #[must_use]
+    pub fn invariant_program(&self) -> Vec<LinearOp> {
+        let mut program = self.invariant.to_vec();
+        program.extend(
+            self.live_out
+                .iter()
+                .map(|&src| LinearOp::StoreOutput { src }),
+        );
+        program
+    }
+
+    /// The dependent part as a standalone program receiving the live-out
+    /// values from its seed vector (live-out `i` at seed index `offset + i`,
+    /// so the programs of one block share one vector), storing the original
+    /// program's outputs.
+    #[must_use]
+    pub fn dependent_program(&self, offset: usize) -> Vec<LinearOp> {
+        let mut program: Vec<LinearOp> = self
+            .live_out
+            .iter()
+            .enumerate()
+            .map(|(index, &dst)| LinearOp::LoadSeed {
+                dst,
+                index: offset + index,
+            })
+            .collect();
+        program.extend(self.dependent.iter().cloned());
+        program
+    }
 }
 
 /// Validate `part` in order over the registers `defined` already holds,

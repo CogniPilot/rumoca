@@ -170,3 +170,44 @@ fn a_failing_invariant_operation_fails_as_the_whole_program_does() {
         "the same error, span included"
     );
 }
+
+/// The standalone forms a compiled backend runs: the invariant program's
+/// outputs are the live-out values, and the dependent program over them as
+/// its seed stores the whole program's outputs, both bit for bit.
+#[test]
+fn the_standalone_forms_equal_the_split_evaluation() {
+    let program = two_residuals();
+    let split = split_of(&program, &[0, 1]);
+    let (p, y) = ([1.7], [1.25, -3.5, 0.3, -0.8]);
+    let invariant =
+        whole(&split.split().invariant_program(), &y, &p).expect("the invariant program");
+    let mut values = Vec::new();
+    split
+        .eval_invariant((&y, &p, 0.0), RowEvalContext::default(), &mut values)
+        .expect("the invariant part evaluates");
+    assert_eq!(
+        invariant.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+        values.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+    );
+    let dependent = PreparedScalarProgramBlock::new(
+        ScalarProgramBlock::with_program_spans(
+            vec![split.split().dependent_program(0)],
+            vec![span()],
+        )
+        .expect("a checked dependent program"),
+    )
+    .expect("a prepared dependent program");
+    let mut out = Vec::new();
+    let context = RowEvalContext {
+        seed: Some(&values),
+        ..RowEvalContext::default()
+    };
+    dependent
+        .eval_row_outputs_unchecked_with_context(0, &y, &p, 0.0, context, &mut out)
+        .expect("the dependent program evaluates");
+    let reference = whole(&program, &y, &p).expect("the program evaluates");
+    assert_eq!(
+        out.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+        reference.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+    );
+}
