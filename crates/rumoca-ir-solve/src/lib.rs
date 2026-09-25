@@ -24,6 +24,7 @@ mod scalar_program_outputs;
 #[cfg(test)]
 mod scalar_program_tests;
 mod shape_error;
+mod tangent_lanes;
 mod typed_program;
 mod variable_bounds;
 pub mod visitor;
@@ -53,15 +54,17 @@ pub use layout::{
 pub use linear_op::{
     BinaryOp, CompareOp, FoldInitialSource, FoldTensorNode, FoldTensorUpdate,
     FoldTensorUpdateStore, FunctionConditionalArmProgram, FunctionConditionalOwnerId,
-    FunctionConditionalProgram, FunctionFoldProgram, LinearOp, MatrixProductShape, RandomGenerator,
-    Reg, ScalarProgramRegisterError, ScalarProgramRegisterFlow, StridedOperand,
-    TargetAssignmentShape, TensorConcatenateSource, TensorIndex, TensorInputKind, TensorSubscript,
-    TensorUpdateSubscript, UnaryOp, prune_dead_constants, resolve_indexed_slot,
+    FunctionConditionalProgram, FunctionFoldProgram, LinearOp, MAX_TENSOR_LANES,
+    MatrixProductShape, RandomGenerator, Reg, ScalarProgramRegisterError,
+    ScalarProgramRegisterFlow, StridedOperand, TargetAssignmentShape, TensorConcatenateSource,
+    TensorIndex, TensorInputKind, TensorSubscript, TensorUpdateSubscript, UnaryOp,
+    prune_dead_constants, resolve_indexed_slot,
 };
 pub use model::*;
 pub use parameter_reads::read_parameter_slots;
 pub use refresh::*;
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
+pub use tangent_lanes::{TangentLaneError, TangentLaneProgram};
 pub use typed_program::*;
 pub use visitor::{
     LinearOpSliceKind, SolveVisitor, walk_compute_block, walk_compute_node,
