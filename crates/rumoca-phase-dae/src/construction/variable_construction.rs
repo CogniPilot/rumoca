@@ -328,7 +328,8 @@ fn lower_variable_attributes<'dae>(
         causality,
         is_tunable: matches!(variable.role, RuntimeVariableRole::Parameter)
             && !derived_parameter
-            && !variable.flat.evaluate,
+            && !variable.flat.evaluate
+            && !context.evaluable_parameters.contains(&variable.flat.name),
         is_held: matches!(
             variable.role,
             RuntimeVariableRole::DiscreteReal | RuntimeVariableRole::DiscreteValue

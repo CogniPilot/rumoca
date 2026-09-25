@@ -125,6 +125,32 @@ fn an_explicit_evaluate_false_outranks_final() {
 }
 
 #[test]
+fn a_dependent_parameter_of_evaluable_parameters_is_evaluable() {
+    let source = compile(
+        "model Dependent
+           parameter Real n[3] = {0, 3, 4} annotation(Evaluate = true);
+           parameter Real k = 2;
+           Real x(start = 1, fixed = true);
+         protected
+           parameter Real e[3] = n / sqrt(n * n);
+           parameter Real ek = e[2] * k;
+           parameter Real refused = 2 * e[3] annotation(Evaluate = false);
+           parameter Real independent = 5;
+         equation
+           der(x) = -(e[3] + ek + refused + independent) * x;
+         end Dependent;",
+        "Dependent",
+    );
+    assert_eq!(evaluable(&source), ["n", "e"]);
+    let folded = fold_evaluable_parameters(&source).unwrap().unwrap();
+    assert_eq!(
+        read_parameters(&folded),
+        ["ek", "independent", "k", "refused"],
+        "a dependent parameter reading an ordinary one stays a parameter"
+    );
+}
+
+#[test]
 fn folding_replaces_every_evaluable_read_and_keeps_every_declaration() {
     let source = compile(FOLDED, "Folded");
     let folded = fold_evaluable_parameters(&source)

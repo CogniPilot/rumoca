@@ -632,6 +632,10 @@ pub struct InstanceData {
     /// Structural parameters can be evaluated at compile time for if-equation
     /// branch selection (MLS §18.3).
     pub evaluate: bool,
+    /// True if the declaration writes `annotation(Evaluate = false)`, which
+    /// makes the parameter non-evaluable (MLS §4.5, §18.6).
+    #[serde(default)]
+    pub evaluate_refused: bool,
     /// True if this component declaration has the `final` prefix (MLS §7.2.6).
     /// Used for preserving flat-output declaration qualifiers.
     pub is_final: bool,
@@ -704,6 +708,7 @@ impl Default for InstanceData {
             is_discrete_type: false,
             from_expandable_connector: false,
             evaluate: false,
+            evaluate_refused: false,
             is_final: false,
             is_overconstrained: false,
             is_protected: false,

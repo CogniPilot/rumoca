@@ -777,6 +777,10 @@ pub struct Variable {
     /// Structural parameters can be evaluated at compile time for if-equation
     /// branch selection (MLS §18.3).
     pub evaluate: bool,
+    /// True if the declaration writes `annotation(Evaluate = false)`, which
+    /// makes the parameter non-evaluable (MLS §4.5, §18.6).
+    #[serde(default)]
+    pub evaluate_refused: bool,
 
     /// True if this variable's base type is Integer or Boolean (MLS §4.5).
     /// Such variables are discrete by default even without explicit `discrete` prefix.
@@ -933,6 +937,7 @@ impl Variable {
             binding: None,
             binding_from_modification: false,
             evaluate: false,
+            evaluate_refused: false,
             is_discrete_type: false,
             is_primitive: false,
             from_expandable_connector: false,

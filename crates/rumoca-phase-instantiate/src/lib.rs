@@ -1225,6 +1225,7 @@ fn build_instance_data(
         is_discrete_type: args.is_discrete_type,
         from_expandable_connector: args.ctx.is_in_expandable_connector(),
         evaluate: args.evaluate,
+        evaluate_refused: evaluate_annotation(args.comp) == Some(false),
         is_final: args.is_final,
         is_overconstrained: args.ctx.is_in_overconstrained(),
         is_protected: args.comp.is_protected || args.ctx.is_in_protected(),

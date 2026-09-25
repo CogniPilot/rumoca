@@ -248,6 +248,7 @@ pub(crate) fn create_flat_variable(
         binding,
         binding_from_modification: instance.binding_from_modification,
         evaluate: instance.evaluate,
+        evaluate_refused: instance.evaluate_refused,
         is_discrete_type: instance.is_discrete_type,
         is_primitive: instance.is_primitive,
         from_expandable_connector: instance.from_expandable_connector,

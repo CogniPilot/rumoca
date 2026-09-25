@@ -1283,11 +1283,14 @@ fn seeded_eval_context(flat: &flat::Model) -> EvalContext {
 
 /// Parameters STRUCT-T10(a) may fold (MLS §4.5, §18.6).
 ///
-/// A parameter qualifies when it is `final` or `Evaluate=true`, keeps the
-/// default `fixed=true`, and its binding evaluates from constants and other
-/// qualifying parameters alone. Ordinary parameters are never admitted to the
-/// context, so a binding that reads one stays unevaluated here and its
-/// parameter keeps its runtime meaning.
+/// A parameter qualifies when it keeps the default `fixed=true`, does not
+/// write `Evaluate=false`, and its binding evaluates from constants and other
+/// qualifying parameters alone, and either it is `final` or `Evaluate=true`,
+/// or its binding reads a qualifying parameter. The second kind is a
+/// dependent parameter determined solely by translation-time values. An
+/// ordinary independent parameter is never admitted to the context, so a
+/// binding that reads one stays unevaluated here and its parameter keeps its
+/// runtime meaning.
 fn evaluable_parameters(flat: &flat::Model) -> HashSet<VarName> {
     let mut context = seeded_eval_context(flat);
     let mut evaluable = HashSet::new();
@@ -1297,7 +1300,7 @@ fn evaluable_parameters(flat: &flat::Model) -> HashSet<VarName> {
             let admitted = match variable.variability {
                 Variability::Constant(_) => true,
                 Variability::Parameter(_) => {
-                    variable.evaluate && variable.fixed_uniform() != Some(false)
+                    !variable.evaluate_refused && variable.fixed_uniform() != Some(false)
                 }
                 _ => false,
             };
@@ -1308,7 +1311,7 @@ fn evaluable_parameters(flat: &flat::Model) -> HashSet<VarName> {
                 continue;
             };
             if matches!(variable.variability, Variability::Parameter(_))
-                && !reads_only_evaluable(flat, binding, &evaluable, true)
+                && !reads_only_evaluable(flat, binding, &evaluable, variable.evaluate)
             {
                 continue;
             }
