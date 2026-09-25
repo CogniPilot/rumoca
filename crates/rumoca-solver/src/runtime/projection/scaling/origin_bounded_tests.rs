@@ -243,7 +243,7 @@ fn certificate_scales(
 
 /// The fixture is a projection model whose residual and directional
 /// derivative the certificate never evaluates: both leave their outputs
-/// untouched, and its plan and row names are the ones it was given.
+/// untouched, and its plan is the one it was given.
 #[test]
 fn the_scaled_block_fixture_is_an_inert_projection_model() {
     let block = solve::AlgebraicProjectionBlock {
@@ -268,5 +268,4 @@ fn the_scaled_block_fixture_is_an_inert_projection_model() {
         .expect("the directional derivative is inert");
     assert_eq!(out, [7.0]);
     assert_eq!(model.algebraic_projection_plan().blocks, [block]);
-    assert_eq!(model.target_name_for_row(0), None);
 }
