@@ -593,6 +593,18 @@ impl<'de> Deserialize<'de> for ContinuousRefreshOwners {
 }
 
 impl ContinuousRefreshOwners {
+    /// Owners rebuilt from wire-visible plans through the same checked
+    /// construction decoding uses.
+    pub(crate) fn from_wire_plans(
+        algebraic: RefreshPlan,
+        derivative: RefreshPlan,
+        root: RefreshPlan,
+        event: RefreshPlan,
+        clock_events: Vec<RefreshPlan>,
+    ) -> Result<Self, ContinuousRefreshConstructionError> {
+        Self::checked(algebraic, derivative, root, event, clock_events)
+    }
+
     #[must_use]
     pub const fn is_issued(&self) -> bool {
         self.root_after_derivative.is_some()

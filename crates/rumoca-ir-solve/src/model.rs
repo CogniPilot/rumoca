@@ -10,7 +10,7 @@ pub use affine_elimination::AffineEliminationLayout;
 pub use event_transaction::*;
 pub use jacobian_outputs::*;
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default)]
 pub struct ContinuousSolveSystem {
     pub implicit_rhs: ComputeBlock,
     pub implicit_row_targets: Vec<Option<ScalarSlot>>,
@@ -37,42 +37,12 @@ pub struct ContinuousSolveSystem {
     /// same solver-Y space as the primary basis, so a runtime can re-select a
     /// regular chart across such a fold. Chart index zero is the primary basis.
     ///
-    /// An empty set is dropped from human-readable serialization by the manual
-    /// [`Serialize`] below, so a model with no reduced first-integral group has
-    /// byte-identical JSON to one that predates the field; positional binary
-    /// formats keep the field so their fixed layout still round-trips.
-    #[serde(default)]
+    /// An empty set is dropped from human-readable serialization, so a model
+    /// with no chart set has byte-identical JSON to one that predates the
+    /// field; positional binary formats keep the field so their fixed layout
+    /// still round-trips. Each alternate plan travels as a delta against this
+    /// system (see `continuous_wire`).
     pub reduced_chart_set: ReducedChartSet,
-}
-
-impl Serialize for ContinuousSolveSystem {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        // A non-empty set is always written. An empty set is dropped only from
-        // human-readable formats (JSON), keeping a model with no reduced
-        // first-integral group byte-identical, while non-self-describing formats
-        // (bincode) retain every field so a positional round-trip reads back the
-        // same layout.
-        let omit_charts =
-            serializer.is_human_readable() && self.reduced_chart_set.charts.is_empty();
-        let field_count = if omit_charts { 8 } else { 9 };
-        let mut state = serializer.serialize_struct("ContinuousSolveSystem", field_count)?;
-        state.serialize_field("implicit_rhs", &self.implicit_rhs)?;
-        state.serialize_field("implicit_row_targets", &self.implicit_row_targets)?;
-        state.serialize_field("algebraic_projection_plan", &self.algebraic_projection_plan)?;
-        state.serialize_field("residual", &self.residual)?;
-        state.serialize_field("manifold_residual", &self.manifold_residual)?;
-        state.serialize_field("manifold_projection_plan", &self.manifold_projection_plan)?;
-        state.serialize_field("derivative_rhs", &self.derivative_rhs)?;
-        state.serialize_field("refresh_owners", &self.refresh_owners)?;
-        if !omit_charts {
-            state.serialize_field("reduced_chart_set", &self.reduced_chart_set)?;
-        }
-        state.end()
-    }
 }
 
 /// A bounded set of admissible reduced state-selection charts. Empty for every

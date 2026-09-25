@@ -10,8 +10,10 @@ mod affinity;
 mod certificate;
 #[cfg(test)]
 mod certificate_tests;
+mod chart_delta;
 #[cfg(test)]
 mod compute_block_tests;
+mod continuous_wire;
 mod feature_query;
 pub mod fmi;
 mod initialization;
@@ -42,6 +44,7 @@ pub use certificate::{
     derive_root_reachable_runtime_rows, derive_root_relation_refresh_roles,
     derive_runtime_assignment_roles,
 };
+pub use chart_delta::{ChartDeltaError, ChartPlanDelta};
 pub use feature_query::{
     SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events,
     solve_has_initialization, solve_has_runtime_events,

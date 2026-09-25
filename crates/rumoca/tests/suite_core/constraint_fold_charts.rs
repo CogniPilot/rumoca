@@ -362,3 +362,80 @@ fn msl_universal_constraint_keeps_the_constrained_body_on_the_joint() {
         "the constrained body tracks the jointed body: worst gap {worst}"
     );
 }
+
+/// Round-trip `model` through its wire and require every alternate plan to be
+/// reproduced exactly by patching the decoded primary, while the wire carries
+/// only deltas: under half the size of the whole plans.
+fn assert_chart_deltas_are_faithful(model: &SolveModel) {
+    let continuous = &model.problem.continuous;
+    let wire = serde_json::to_vec(
+        &serde_json::to_value(rumoca_phase_solve::solve_model_wire(model).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let replayed = rumoca_phase_solve::deserialize_solve_model(
+        &mut serde_json::Deserializer::from_slice(&wire),
+    )
+    .expect("the chart-carrying model replays from its wire");
+    let decoded = &replayed.problem.continuous;
+    let mut alternates = 0;
+    for (original, decoded) in continuous
+        .reduced_chart_set
+        .charts
+        .iter()
+        .zip(&decoded.reduced_chart_set.charts)
+    {
+        let (Some(original), Some(decoded)) = (&original.plan, &decoded.plan) else {
+            assert!(original.plan.is_none() && decoded.plan.is_none());
+            continue;
+        };
+        alternates += 1;
+        assert_eq!(json(&decoded.residual), json(&original.residual));
+        assert_eq!(json(&decoded.implicit_rhs), json(&original.implicit_rhs));
+        assert_eq!(decoded.implicit_row_targets, original.implicit_row_targets);
+        assert_eq!(
+            decoded.algebraic_projection_plan,
+            original.algebraic_projection_plan
+        );
+        assert_eq!(
+            json(&decoded.derivative_rhs),
+            json(&original.derivative_rhs)
+        );
+        assert_eq!(
+            json(&decoded.refresh_owners),
+            json(&original.refresh_owners)
+        );
+    }
+    assert!(alternates > 0, "the model carries executable alternates");
+    let chart_set =
+        serde_json::to_string(&serde_json::to_value(continuous).unwrap()["reduced_chart_set"])
+            .unwrap()
+            .len();
+    // Standalone, a chart serializes its whole plan: the size a copy would take.
+    let whole_plans = serde_json::to_string(&continuous.reduced_chart_set.charts)
+        .unwrap()
+        .len();
+    assert!(
+        chart_set * 2 < whole_plans,
+        "the chart set travels as deltas: {chart_set} bytes against {whole_plans} for whole plans"
+    );
+}
+
+fn json<T: serde::Serialize>(value: &T) -> serde_json::Value {
+    serde_json::to_value(value).unwrap()
+}
+
+#[test]
+fn a_split_circle_alternate_travels_as_a_faithful_delta() {
+    assert_chart_deltas_are_faithful(&lowered(SPLIT_CIRCLE_CHART, "SplitCircleChart"));
+}
+
+#[test]
+fn msl_universal_constraint_alternates_travel_as_faithful_deltas() {
+    let Some(root) = msl_root() else {
+        return;
+    };
+    assert_chart_deltas_are_faithful(&lowered_msl(
+        &root,
+        "Modelica.Mechanics.MultiBody.Examples.Constraints.UniversalConstraint",
+    ));
+}
