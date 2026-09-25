@@ -56,14 +56,44 @@ impl AliasPlan {
 ///
 /// Returns `None` when no class is eligible, leaving the source untouched.
 pub fn quotient_aliases(model: &dae::Dae) -> Result<Option<dae::Dae>, StructuralError> {
-    let plan = model.inspect(derive_plan);
+    quotient_aliases_observed(model, &mut ())
+}
+
+/// [`quotient_aliases`] paired with the owned records of every class it left
+/// unchanged, through the structural reduction observation seam.
+pub fn inspect_quotient_aliases(
+    model: &dae::Dae,
+) -> (
+    Result<Option<dae::Dae>, StructuralError>,
+    super::ReductionReport,
+) {
+    let mut recorder = super::observation::ReductionRecorder::default();
+    let result = quotient_aliases_observed(model, &mut recorder);
+    let report = recorder.finish(result.is_err());
+    (result, report)
+}
+
+fn quotient_aliases_observed(
+    model: &dae::Dae,
+    observer: &mut impl super::observation::ReductionObserver,
+) -> Result<Option<dae::Dae>, StructuralError> {
+    let plan = model.inspect(|view| derive_plan_observed(view, observer));
     if plan.is_empty() {
         return Ok(None);
     }
     super::reconstruction::rebuild_alias_quotient(model, &plan).map(Some)
 }
 
+#[cfg(test)]
 pub(super) fn derive_plan(view: dae::DaeView<'_>) -> AliasPlan {
+    derive_plan_observed(view, &mut ())
+}
+
+/// Derive the quotient, reporting every class it leaves unchanged and why.
+fn derive_plan_observed(
+    view: dae::DaeView<'_>,
+    observer: &mut impl super::observation::ReductionObserver,
+) -> AliasPlan {
     let members = member_facts(view);
     let classes = alias_classes(view, &members);
     let mut plan = AliasPlan {
@@ -71,8 +101,14 @@ pub(super) fn derive_plan(view: dae::DaeView<'_>) -> AliasPlan {
         definitions: BTreeMap::new(),
     };
     for class in &classes {
-        if let Ok(representative) = representative(class, &members) {
-            quotient_class(class, representative, &members, &mut plan);
+        match representative(class, &members) {
+            Ok(representative) => quotient_class(class, representative, &members, &mut plan),
+            Err(reason) => {
+                observer.observe(super::observation::ReductionEvent::AliasClassUnchanged {
+                    members: &class.members,
+                    reason,
+                })
+            }
         }
     }
     plan

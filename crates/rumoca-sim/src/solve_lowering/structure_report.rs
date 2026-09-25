@@ -19,6 +19,14 @@ pub fn structural_report_for_dae(
         rumoca_phase_structural::prepare_for_solve(analyzed).map_err(structural_error)?;
     let mut report = prepared.structural_report();
     report.aliases = aliases;
+    if prepared.inspect(|system| !system.manifold.is_empty()) {
+        report.notes.push(
+            "this is the structural reducer's BLT, which retains a constrained state manifold; \
+             Solve lowering may instead execute a reduced state selection built from formal \
+             derivatives, whose blocks differ (inspect the emitted Solve IR for those)"
+                .to_string(),
+        );
+    }
     Ok(report)
 }
 

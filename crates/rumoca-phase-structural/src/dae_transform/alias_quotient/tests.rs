@@ -3,13 +3,14 @@ use rumoca_core::{SourceMap, Span, TypeId, VarName};
 use super::*;
 
 /// Declarations of every fixture, in ordinal order: states `x`, `y` and
-/// algebraics `a`, `b`, `c`, `d`. `d` starts at a nonzero guess.
+/// algebraics `a`, `b`, `c`, `d`, `e`. `d` and `e` start at a nonzero guess.
 const X: u32 = 0;
 const Y: u32 = 1;
 const A: u32 = 2;
 const B: u32 = 3;
 const C: u32 = 4;
 const D: u32 = 5;
+const E: u32 = 6;
 
 /// One signed term of a fixture residual: `(declaration, negated)`.
 type Term = (u32, bool);
@@ -113,6 +114,15 @@ fn declare<'dae>(
             )?),
             dae::CoordinateInput::Algebraic(variables.algebraic(
                 VarName::new("d"),
+                real,
+                at,
+                dae::VariableAttributes {
+                    start: Some(seed),
+                    ..attributes()
+                },
+            )?),
+            dae::CoordinateInput::Algebraic(variables.algebraic(
+                VarName::new("e"),
                 real,
                 at,
                 dae::VariableAttributes {
@@ -283,4 +293,38 @@ fn continuous_reads(view: dae::DaeView<'_>) -> Vec<BTreeSet<u32>> {
             reads
         })
         .collect()
+}
+
+/// The unchanged-class records one quotient observes for `residuals`.
+fn unchanged(residuals: &[&[Term]]) -> Vec<(Vec<u32>, AliasRefusal)> {
+    let (result, report) = inspect_quotient_aliases(&fixture(residuals));
+    assert!(result.unwrap().is_none(), "no class is quotiented");
+    report
+        .records
+        .into_iter()
+        .map(|record| match record {
+            crate::ReductionRecord::AliasClassUnchanged { members, reason } => (members, reason),
+            other => panic!("the quotient records only unchanged classes, got {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn every_unquotiented_class_is_recorded_with_its_reason() {
+    assert_eq!(
+        unchanged(&[
+            &[(A, false), (C, true)],
+            &[(C, false), (B, true)],
+            &[(B, false), (A, false)],
+        ]),
+        [(vec![A, B, C], AliasRefusal::Cycle)]
+    );
+    assert_eq!(
+        unchanged(&[&[(D, false), (E, true)]]),
+        [(vec![D, E], AliasRefusal::SeveralAnchors)]
+    );
+    assert_eq!(
+        unchanged(&[&[(X, false), (D, true)]]),
+        [(vec![X, D], AliasRefusal::AnchorIsNotState)]
+    );
 }

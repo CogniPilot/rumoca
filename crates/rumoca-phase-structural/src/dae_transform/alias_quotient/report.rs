@@ -115,11 +115,11 @@ impl fmt::Display for AliasQuotientReport {
             .iter()
             .filter(|class| matches!(class, AliasClassReport::Quotiented { .. }))
             .count();
+        let (classes, eliminated) = (self.classes.len(), self.eliminated_count());
+        write!(f, "alias quotient (STRUCT-T02): {classes} class(es), ")?;
         writeln!(
             f,
-            "alias quotient (STRUCT-T02): {} class(es), {quotiented} quotiented, {} member(s) eliminated",
-            self.classes.len(),
-            self.eliminated_count()
+            "{quotiented} quotiented, {eliminated} member(s) eliminated"
         )?;
         for class in &self.classes {
             write!(f, "{class}")?;

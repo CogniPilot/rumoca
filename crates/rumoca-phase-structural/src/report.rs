@@ -20,6 +20,7 @@ impl crate::PreparedDae<'_> {
                 matching: Vec::new(),
                 blocks: Vec::new(),
                 aliases: crate::AliasQuotientReport::default(),
+                notes: Vec::new(),
             },
         })
     }
@@ -110,6 +111,9 @@ pub struct StructuralReport {
     /// The STRUCT-T02 alias quotient applied before this analysis, including
     /// every class it left unchanged and why.
     pub aliases: crate::AliasQuotientReport,
+    /// Scope notes a reader needs to interpret this analysis, such as a
+    /// reduced state selection that executes a different system.
+    pub notes: Vec<String>,
 }
 
 impl StructuralReport {
@@ -203,6 +207,9 @@ impl fmt::Display for StructuralReport {
             self.largest_coupled_block(),
         )?;
 
+        for note in &self.notes {
+            writeln!(f, "note: {note}")?;
+        }
         if !self.aliases.classes.is_empty() {
             write!(f, "\n{}", self.aliases)?;
         }
@@ -244,6 +251,7 @@ mod tests {
             n_equations: 1_025,
             n_unknowns: 1_025,
             aliases: crate::AliasQuotientReport::default(),
+            notes: Vec::new(),
             matching: Vec::new(),
             blocks: vec![
                 family_report(),
@@ -277,6 +285,7 @@ mod tests {
             n_equations: 1_024,
             n_unknowns: 1_024,
             aliases: crate::AliasQuotientReport::default(),
+            notes: Vec::new(),
             matching: Vec::new(),
             blocks: vec![family_report()],
         };

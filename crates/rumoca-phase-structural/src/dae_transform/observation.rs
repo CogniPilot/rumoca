@@ -167,6 +167,12 @@ pub(super) enum ReductionEvent<'a> {
     RetriedPristine { lane: Lane },
     /// The one terminal event for a whole [`crate::prepare_for_solve`] call.
     Stopped { outcome: StoppedOutcome<'a> },
+    /// One STRUCT-T02 alias class the quotient leaves unchanged, with the
+    /// declaration ordinals of its members and the refusal that decided it.
+    AliasClassUnchanged {
+        members: &'a [u32],
+        reason: super::alias_quotient::AliasRefusal,
+    },
 }
 
 /// The read-only seam production and diagnostic code share.
@@ -434,6 +440,12 @@ pub enum ReductionRecord {
     Stopped {
         outcome: ReductionStop,
     },
+    /// One STRUCT-T02 alias class left unchanged: member declaration
+    /// ordinals and the reason.
+    AliasClassUnchanged {
+        members: Vec<u32>,
+        reason: super::alias_quotient::AliasRefusal,
+    },
 }
 
 /// The owned report [`crate::inspect_prepare_for_solve`] returns: every event
@@ -580,6 +592,12 @@ impl ReductionObserver for ReductionRecorder {
             ReductionEvent::Stopped { outcome } => ReductionRecord::Stopped {
                 outcome: outcome.into(),
             },
+            ReductionEvent::AliasClassUnchanged { members, reason } => {
+                ReductionRecord::AliasClassUnchanged {
+                    members: members.to_vec(),
+                    reason,
+                }
+            }
         };
         self.records.push(record);
     }
