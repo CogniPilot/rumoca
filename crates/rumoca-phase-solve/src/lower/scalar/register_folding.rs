@@ -15,10 +15,7 @@ impl<'dae> ScalarCompiler<'_, 'dae> {
     /// time instead of through a packed tensor op.
     pub(super) fn is_literal_operand(&self, expression: dae::ExprId<'dae>) -> bool {
         const MAXIMUM_LITERAL_SCALARS: usize = 16;
-        let node = self
-            .view
-            .expression(expression)
-            .expect("branded expression resolves");
+        let node = self.node(expression);
         node.variability() == dae::ExpressionVariability::Constant
             && node
                 .value_type()
