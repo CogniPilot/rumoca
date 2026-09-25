@@ -58,7 +58,7 @@ pub use ops::{eval_binary, eval_compare, eval_unary};
 pub use prepared::{
     ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedScalarProgramBlock,
     PreparedTornSweep, TargetAssignmentOutputRequest, TargetIsolationProgram, TornSweepComposite,
-    TornSweepStatus, target_assignment_shape, target_assignment_shapes,
+    TornSweepRun, TornSweepStatus, target_assignment_shape, target_assignment_shapes,
 };
 pub use prepared_event_transaction::PreparedEventTransactionProgram;
 pub use prepared_guarded_assignment::PreparedGuardedAssignmentProgram;

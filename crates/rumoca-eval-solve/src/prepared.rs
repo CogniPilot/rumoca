@@ -25,6 +25,8 @@ mod tensor_affine_assignment;
 mod tensor_affine_assignment_tests;
 mod torn_sweep;
 #[cfg(test)]
+mod torn_sweep_run_tests;
+#[cfg(test)]
 mod zero_assignment_tests;
 
 use std::cell::RefCell;
@@ -54,7 +56,7 @@ use assignment_shape::target_assignment_shapes_with_output_offsets;
 pub use assignment_shape::{target_assignment_shape, target_assignment_shapes};
 use dependency::{parameter_static_y_gradient, row_parameter_indices};
 pub(crate) use dependency::{row_reads_y_index, row_y_input_ranges};
-pub use isolation_program::TargetIsolationProgram;
+pub use isolation_program::{TargetIsolationProgram, TornSweepRun};
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::AlgebraicRefreshRow;
 #[cfg(test)]

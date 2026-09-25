@@ -138,6 +138,62 @@ impl PreparedScalarProgramBlock {
     }
 }
 
+/// Consecutive causal steps recovered from one residual program: the program,
+/// its `(output, target)` pairs in sweep order, and the first step. A run of
+/// several pairs evaluates as one
+/// [`PreparedScalarProgramBlock::target_isolation_chain_program`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TornSweepRun {
+    pub program_row: usize,
+    pub pairs: Vec<(usize, usize)>,
+    pub first_step: usize,
+}
+
+impl PreparedScalarProgramBlock {
+    /// The causal sweep `(row, target)` as runs: a step joins the run before
+    /// it when both recover through the same residual program and the chain
+    /// program answers every pair of the run in order. `None` when a step has
+    /// no isolator program. The linked kernel and every backend group a torn
+    /// sweep through this one construction.
+    pub fn torn_sweep_runs(&self, causal: &[(usize, usize)]) -> Option<Vec<TornSweepRun>> {
+        let mut runs: Vec<TornSweepRun> = Vec::new();
+        for (step, &(row, target)) in causal.iter().enumerate() {
+            let (program_row, offset) = self.row_output_position(row)?;
+            if !matches!(
+                self.target_isolation_output_program(program_row, offset, target),
+                TargetIsolationProgram::Isolator(_)
+            ) {
+                return None;
+            }
+            if let Some(run) = runs.last_mut().filter(|run| run.program_row == program_row)
+                && self.extends_run(run, (offset, target))
+            {
+                continue;
+            }
+            runs.push(TornSweepRun {
+                program_row,
+                pairs: vec![(offset, target)],
+                first_step: step,
+            });
+        }
+        Some(runs)
+    }
+}
+
+impl PreparedScalarProgramBlock {
+    /// Append `pair` to `run` when the chain program still answers it.
+    fn extends_run(&self, run: &mut TornSweepRun, pair: (usize, usize)) -> bool {
+        run.pairs.push(pair);
+        let extends = self
+            .target_isolation_chain_program(run.program_row, &run.pairs)
+            .is_some();
+        if !extends {
+            run.pairs.pop();
+        }
+        extends
+    }
+}
+
 impl PreparedScalarProgramBlock {
     /// One program answering several (output, target) isolations of one row
     /// in the given order, storing each value as its own output right after
@@ -150,10 +206,13 @@ impl PreparedScalarProgramBlock {
     /// isolators before it execute: each materialization writes only
     /// registers no earlier prefix operation wrote, and its value is stored
     /// before the prefix continues. A sequential consumer writes each value
-    /// before the next isolation, so no pair's prefix may read the target of
-    /// an earlier pair. Returns `None` when a pair has no shape, the prefix
-    /// lengths decrease, a prefix reads an earlier target, or a
-    /// materialization does not fit.
+    /// before the next isolation, and a per-step isolator would evaluate its
+    /// whole prefix after those writes, so no pair's isolated value may depend
+    /// on the target of an earlier pair; the prefix may still read that target
+    /// elsewhere, as every residual output reads its own target, because
+    /// those registers do not reach the value. Returns `None` when a pair has
+    /// no shape, the prefix lengths decrease, an isolated value depends on an
+    /// earlier target, or a materialization does not fit.
     pub fn target_isolation_chain_program(
         &self,
         row_idx: usize,
@@ -166,11 +225,7 @@ impl PreparedScalarProgramBlock {
             let shape = self.assignment_shape_for_output(row_idx, output, target)?;
             let length = shape.expr_eval_len();
             let prefix = row.get(..length)?;
-            if length < evaluated
-                || pairs[..position]
-                    .iter()
-                    .any(|&(_, earlier)| super::dependency::row_reads_y_index(prefix, earlier))
-            {
+            if length < evaluated || value_reads_earlier_target(prefix, shape, &pairs[..position]) {
                 return None;
             }
             program.extend(
@@ -190,4 +245,18 @@ impl PreparedScalarProgramBlock {
         }
         Some(program)
     }
+}
+
+/// Whether the isolated value of `shape` depends on the target of any
+/// earlier pair within its row prefix.
+fn value_reads_earlier_target(
+    prefix: &[LinearOp],
+    shape: &rumoca_ir_solve::TargetAssignmentShape,
+    earlier: &[(usize, usize)],
+) -> bool {
+    let depends =
+        |register, target| super::dependency::reg_depends_on_y_index(prefix, register, target);
+    shape
+        .value_registers()
+        .any(|register| earlier.iter().any(|&(_, target)| depends(register, target)))
 }

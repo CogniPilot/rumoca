@@ -474,11 +474,12 @@ fn tear_dependencies(
 }
 
 /// The causal sweep as runs of consecutive steps recovered from one residual
-/// program, each a (chain function, first step, step count) triple. A step
-/// joins the run before it when one chain program answers both in order
-/// (`target_isolation_chain_program`: non-decreasing prefixes, and no prefix
-/// reads an earlier step's target), so each run evaluates its row prefix once
-/// and the sweep computes exactly the values of the per-step isolators.
+/// program, each a (chain function, first step, step count) triple, from the
+/// linked kernel's own grouping (`torn_sweep_runs`: one chain program answers
+/// every step of a run in order, non-decreasing prefixes, and no isolated
+/// value depends on an earlier step's target), so each run evaluates its row
+/// prefix once and the sweep computes exactly the values of the per-step
+/// isolators.
 /// A run under construction: its residual program, its (output, target)
 /// pairs, and its first causal step.
 type CausalRun = (usize, Vec<(usize, usize)>, usize);
@@ -489,9 +490,7 @@ fn causal_runs(
     canonical: usize,
     causal: &[(usize, usize)],
 ) -> Result<Vec<usize>, CodegenError> {
-    let mut runs = Vec::new();
-    let mut run: Option<CausalRun> = None;
-    for (step, &(row, target)) in causal.iter().enumerate() {
+    for &(row, target) in causal {
         let (program, offset) = sources
             .implicit
             .row_output_position(row)
@@ -507,26 +506,20 @@ fn causal_runs(
                 "recovers through a row without an isolator",
             ));
         }
-        if let Some((current, pairs, _)) = run.as_mut()
-            && *current == program
-        {
-            pairs.push((offset, target));
-            if sources
-                .implicit
-                .target_isolation_chain_program(program, pairs)
-                .is_some()
-            {
-                continue;
-            }
-            pairs.pop();
-        }
-        if let Some(finished) = run.take() {
-            push_run(sources, table, canonical, finished, &mut runs)?;
-        }
-        run = Some((program, vec![(offset, target)], step));
     }
-    if let Some(finished) = run {
-        push_run(sources, table, canonical, finished, &mut runs)?;
+    let grouped = sources
+        .implicit
+        .torn_sweep_runs(causal)
+        .ok_or_else(|| refuse(canonical, "recovers through a row without an isolator"))?;
+    let mut runs = Vec::new();
+    for run in grouped {
+        push_run(
+            sources,
+            table,
+            canonical,
+            (run.program_row, run.pairs, run.first_step),
+            &mut runs,
+        )?;
     }
     Ok(runs)
 }

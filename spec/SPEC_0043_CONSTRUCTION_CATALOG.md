@@ -325,6 +325,17 @@ block's colored tangent plan assigns one lane per color of its checked
 pattern. Plans are derived views, rebuilt by each consumer from the same
 construction, never canonical IR.
 
+A torn sweep's runs construct from its checked causal steps and the certified
+isolators of their rows (`torn_sweep_runs`): consecutive steps recovered from
+one residual program form one run when one chain program answers them in
+order, with non-decreasing prefixes and no isolated value depending, within
+its prefix, on the target of an earlier step of the run. The prefix may read
+that target elsewhere (each residual output reads its own target) because
+those registers do not reach the value. A run evaluates its row prefix once and
+writes exactly the per-step isolators' values; the linked kernel and the
+generated C consume the same runs, and an evaluation failure inside a run
+falls back to its steps one by one.
+
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Within one structural-artifact construction, applications of one immutable source share one operation-invariance proof; source replacement or specialization derives fresh evidence for its exact owner. The existing register-source checker must prove every read uses a seed-invariant register version; seed loads and any operation with non-repeatable effects cannot establish reuse. Every write replaces the destination version's evidence. | Projection-Jacobian construction | Preserves failure behavior without multiplying source-wide proof work by the block count |
