@@ -66,7 +66,7 @@ pub use refresh::*;
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
 pub use tangent_lanes::{
     ColoredLaneCall, ColoredTangentPlan, TangentLaneError, TangentLaneProgram, TangentRowSource,
-    TornTangentPlan, TornTangentResidual, TornTangentStep,
+    TornTangentPlan, TornTangentResidual, TornTangentStep, tensor_lanes,
 };
 pub use typed_program::*;
 pub use visitor::{
@@ -196,6 +196,54 @@ impl ScalarProgramBlock {
     ) -> Result<Self, SolveProblemShapeContractError> {
         let output_indices = (0..stored_output_count(&programs)).collect();
         Self::with_output_indices(programs, program_spans, output_indices)
+    }
+
+    /// A block of checked tangent-lane programs, each storing its lane-major
+    /// outputs at local positions. Only these blocks carry tensor aggregates
+    /// wider than two lanes; a backend without that width refuses them.
+    pub fn with_tangent_lane_programs(
+        programs: &[TangentLaneProgram],
+        program_spans: Vec<Span>,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        let operations = programs
+            .iter()
+            .map(|program| program.ops().to_vec())
+            .collect::<Vec<_>>();
+        let output_indices = (0..stored_output_count(&operations)).collect::<Vec<_>>();
+        validate_scalar_program_metadata_lengths(
+            "ScalarProgramBlock",
+            0,
+            operations.len(),
+            program_spans.len(),
+            output_indices.len(),
+            output_indices.len(),
+            first_span(&program_spans),
+        )?;
+        validate_scalar_program_provenance("ScalarProgramBlock", 0, &program_spans)?;
+        validate_scalar_program_outputs("ScalarProgramBlock", 0, &operations, &program_spans)?;
+        let register_counts = programs
+            .iter()
+            .map(TangentLaneProgram::register_count)
+            .collect();
+        Ok(Self::from_valid_parts(
+            operations,
+            program_spans,
+            output_indices,
+            register_counts,
+        ))
+    }
+
+    /// Largest interleaved lane count of any tensor aggregate in the block:
+    /// 2 for every block but a tangent-lane block. A backend compares it with
+    /// the width it supports.
+    #[must_use]
+    pub fn max_tensor_lanes(&self) -> usize {
+        self.programs()
+            .iter()
+            .flatten()
+            .filter_map(tangent_lanes::tensor_lanes)
+            .max()
+            .unwrap_or(1)
     }
 
     pub fn with_output_indices(

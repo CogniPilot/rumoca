@@ -385,6 +385,9 @@ fn ptr_to_wasm_i32<T>(ptr: *const T) -> Result<u32, WasmCompileError> {
 }
 
 #[cfg(test)]
+mod tangent_lane_refusal_tests;
+
+#[cfg(test)]
 mod tests {
     use rumoca_ir_solve::{BinaryOp, LinearOp, ScalarProgramBlock, UnaryOp, VarLayout};
     use wasmparser::FunctionBody;

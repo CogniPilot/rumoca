@@ -78,6 +78,7 @@ struct ImportCatalog {
 }
 
 pub(super) fn emit_residual_module(rows: &[Vec<LinearOp>]) -> Result<Vec<u8>, String> {
+    refuse_wide_tensor_lanes(rows)?;
     let imports = collect_imports(rows)?;
     let max_registers = max_registers(rows)?;
 
@@ -88,6 +89,21 @@ pub(super) fn emit_residual_module(rows: &[Vec<LinearOp>]) -> Result<Vec<u8>, St
     add_export_section(&mut module, import_catalog.eval_function_index);
     add_code_section(&mut module, rows, max_registers, &import_catalog)?;
     Ok(module.finish())
+}
+
+/// Tangent-lane programs carry tensor aggregates wider than the dual layout.
+fn refuse_wide_tensor_lanes(rows: &[Vec<LinearOp>]) -> Result<(), String> {
+    match rows
+        .iter()
+        .flatten()
+        .find(|op| rumoca_ir_solve::tensor_lanes(op).is_some_and(|lanes| lanes > 2))
+    {
+        Some(op) => Err(format!(
+            "WASM backend supports tensor lanes up to 2; {} carries more",
+            op.kind_name()
+        )),
+        None => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

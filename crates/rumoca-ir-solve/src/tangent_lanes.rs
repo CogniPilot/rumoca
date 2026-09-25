@@ -128,6 +128,12 @@ impl TangentLaneProgram {
     }
 }
 
+/// The interleaved lane count of a tensor aggregate, if `op` is one. Backends
+/// that implement only the dual layout refuse ops wider than two lanes.
+pub fn tensor_lanes(op: &LinearOp) -> Option<usize> {
+    regions::aggregate_lanes(op)
+}
+
 fn unsupported(op_index: usize, op: &LinearOp) -> TangentLaneError {
     TangentLaneError::Unsupported {
         op_index,

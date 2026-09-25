@@ -1069,6 +1069,12 @@ fn validate_row_supported_by_jit(row: &[LinearOp], kind: RowKind) -> Result<(), 
                 "cranelift row compiler does not support discrete random solve-IR ops".to_string(),
             ));
         }
+        if rumoca_ir_solve::tensor_lanes(op).is_some_and(|lanes| lanes > 2) {
+            return Err(CompileError::Backend(format!(
+                "cranelift row compiler supports tensor lanes up to 2; {} carries more",
+                op.kind_name()
+            )));
+        }
         if matches!(op, LinearOp::LoadSeed { .. }) && !kind.has_seed() {
             return Err(CompileError::Backend(
                 "LoadSeed in residual row without seed input".to_string(),

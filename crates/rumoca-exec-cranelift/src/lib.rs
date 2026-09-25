@@ -516,6 +516,9 @@ pub fn compile_exact_assignment_schedule_with_pure_calls(
 }
 
 #[cfg(test)]
+mod tangent_lane_refusal_tests;
+
+#[cfg(test)]
 mod tests {
     mod projection_jacobian;
     mod register_constants;
