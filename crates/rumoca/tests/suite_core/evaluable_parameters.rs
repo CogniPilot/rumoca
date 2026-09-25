@@ -110,6 +110,21 @@ fn a_binding_with_an_ordinary_branch_is_not_marked() {
 }
 
 #[test]
+fn an_explicit_evaluate_false_outranks_final() {
+    let source = compile(
+        "model Refused
+           final parameter Real k = 2 annotation(Evaluate = false);
+           final parameter Real c = 3;
+           Real x(start = 1, fixed = true);
+         equation
+           der(x) = -k * c * x;
+         end Refused;",
+        "Refused",
+    );
+    assert_eq!(evaluable(&source), ["c"]);
+}
+
+#[test]
 fn folding_replaces_every_evaluable_read_and_keeps_every_declaration() {
     let source = compile(FOLDED, "Folded");
     let folded = fold_evaluable_parameters(&source)

@@ -91,7 +91,7 @@ use conditional_components::{ConditionScope, mark_disabled_component_if_needed};
 use dims::{
     qualify_shape_subscripts_imports, resolve_component_dimensions, resolve_type_alias_dimensions,
 };
-use evaluate_annotation::has_evaluate_annotation;
+use evaluate_annotation::evaluate_annotation;
 #[cfg(test)]
 pub(crate) use inner_outer::inner_visible_to_outer;
 pub(crate) use inner_outer::{
@@ -1402,7 +1402,10 @@ fn instantiate_component(
             .mod_env()
             .get(&ast::QualifiedName::from_ident(&comp.name))
             .is_some_and(|modifier| modifier.final_);
-    let evaluate = is_final || has_evaluate_annotation(comp) || ctx.inherited_evaluate();
+    // MLS §18.6: an explicit `Evaluate = false` outranks `final` and any
+    // enclosing `Evaluate = true`.
+    let evaluate =
+        evaluate_annotation(comp).unwrap_or_else(|| is_final || ctx.inherited_evaluate());
     let effective_variability = resolve_effective_variability(comp, ctx.inherited_variability());
     let (class_overrides, has_forwarding_class_redeclare, nested_type_overrides) =
         resolve_component_nested_type_overrides(
