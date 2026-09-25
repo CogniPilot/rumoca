@@ -55,6 +55,14 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
         seed: &[f64],
         out: &mut [f64],
     ) -> Result<(), MeError>;
+
+    /// Whether a failed evaluation is a recoverable trial discard rather than a
+    /// failure: a component that switches reduced charts refuses a trial point
+    /// its active chart cannot certify, and the plugin retries a smaller step
+    /// (SPEC_0040 STRUCT-T07 constraint-fold chart rows).
+    fn discards_failed_trials(&self) -> bool {
+        false
+    }
 }
 
 /// The sole production derivative source: the one leased FMI component.
@@ -94,6 +102,10 @@ impl MeDerivativeComponent for KernelDerivatives {
         kernel.set_continuous_states(states)?;
         kernel.get_directional_derivative(seed, out)
     }
+
+    fn discards_failed_trials(&self) -> bool {
+        self.kernel.borrow().switches_reduced_charts()
+    }
 }
 
 /// The activation state and the latched failure the handle and the controller
@@ -107,6 +119,10 @@ struct DerivativeCell {
     active: Cell<bool>,
     event_boundary: Cell<Option<f64>>,
     pending: RefCell<Option<MeIntegrationError>>,
+    /// The first trial discard of the current host call, and whether the
+    /// plugin acknowledged it by rejecting its trial.
+    discard: RefCell<Option<MeIntegrationError>>,
+    discard_taken: Cell<bool>,
 }
 
 impl DerivativeCell {
@@ -130,6 +146,28 @@ impl DerivativeCell {
         if pending.is_none() {
             *pending = Some(error);
         }
+        MeDerivativeRefused
+    }
+
+    /// Route one failed evaluation: a component evaluation failure of a
+    /// discarding component is recorded as a recoverable trial discard for the
+    /// plugin to reject; every other failure is latched.
+    fn fail(&self, error: MeIntegrationError) -> MeDerivativeRefused {
+        let trial = matches!(
+            &error,
+            MeIntegrationError::Component(failure) if matches!(
+                failure.kind(),
+                MeError::Evaluation { .. } | MeError::NonFiniteDerivative { .. }
+            )
+        );
+        if !(trial && self.component.discards_failed_trials()) {
+            return self.refuse(error);
+        }
+        let mut discard = self.discard.borrow_mut();
+        if discard.is_none() {
+            *discard = Some(error);
+        }
+        self.discard_taken.set(false);
         MeDerivativeRefused
     }
 
@@ -224,7 +262,7 @@ impl MeDerivativeHandle {
         values.resize(width, 0.0);
         match self.shared.evaluate(time, states, &mut values) {
             Ok(()) => Ok(values),
-            Err(error) => Err(self.shared.refuse(error)),
+            Err(error) => Err(self.shared.fail(error)),
         }
     }
 
@@ -234,7 +272,7 @@ impl MeDerivativeHandle {
     pub fn derivatives_into(&self, time: f64, states: &[f64], out: &mut [f64]) {
         if let Err(error) = self.shared.evaluate(time, states, out) {
             out.fill(f64::NAN);
-            self.shared.refuse(error);
+            self.shared.fail(error);
         }
     }
 
@@ -248,8 +286,22 @@ impl MeDerivativeHandle {
     ) {
         if let Err(error) = self.shared.evaluate_directional(time, states, seed, out) {
             out.fill(f64::NAN);
-            self.shared.refuse(error);
+            self.shared.fail(error);
         }
+    }
+
+    /// Acknowledge a recoverable trial discard: whether a callback since the
+    /// last acknowledgement refused its trial point (its output is NaN) without
+    /// latching a failure. A plugin that reads `true` must reject the trial and
+    /// retry a smaller step; a discard it never acknowledges, or one whose
+    /// host call still fails, surfaces as the component's typed cause.
+    pub fn take_discard(&self) -> bool {
+        let pending = self.shared.discard.borrow().is_some();
+        let fresh = pending && !self.shared.discard_taken.get();
+        if fresh {
+            self.shared.discard_taken.set(true);
+        }
+        fresh
     }
 
     /// Whether a callback of this handle has already been refused.
@@ -290,6 +342,8 @@ impl MeDerivativeController {
                 active: Cell::new(false),
                 event_boundary: Cell::new(None),
                 pending: RefCell::new(None),
+                discard: RefCell::new(None),
+                discard_taken: Cell::new(false),
             }),
         }
     }
@@ -336,6 +390,18 @@ impl MeDerivativeController {
     #[must_use]
     pub(in crate::fmi_me) fn take_error(&self) -> Option<MeIntegrationError> {
         self.shared.pending.borrow_mut().take()
+    }
+
+    /// Close the trial discards of one host call. A discard the plugin
+    /// acknowledged in a call that succeeded was a rejected trial and is
+    /// dropped; otherwise its component cause is the call's typed failure.
+    pub(in crate::fmi_me) fn settle_discard(
+        &self,
+        call_succeeded: bool,
+    ) -> Option<MeIntegrationError> {
+        let discard = self.shared.discard.borrow_mut().take();
+        let taken = self.shared.discard_taken.replace(false);
+        discard.filter(|_| !(call_succeeded && taken))
     }
 }
 
@@ -571,5 +637,104 @@ mod tests {
             handle.has_failed(),
             "the refusal is latched even with no host controller left to read it"
         );
+    }
+
+    /// A component whose evaluation fails past `x = 1`, as a reduced chart
+    /// that cannot certify a trial point beyond its fold does.
+    struct FoldingComponent {
+        discards: bool,
+    }
+
+    impl MeDerivativeComponent for FoldingComponent {
+        fn state_count(&self) -> usize {
+            1
+        }
+
+        fn derivatives_into(
+            &self,
+            _time: f64,
+            states: &[f64],
+            _event_boundary: Option<f64>,
+            out: &mut [f64],
+        ) -> Result<(), MeError> {
+            if states[0] > 1.0 {
+                return Err(MeError::Evaluation {
+                    message: "certified projection failed past the fold".to_owned(),
+                });
+            }
+            out[0] = 1.0;
+            Ok(())
+        }
+
+        fn directional_derivative_into(
+            &self,
+            _time: f64,
+            _states: &[f64],
+            _event_boundary: Option<f64>,
+            _seed: &[f64],
+            _out: &mut [f64],
+        ) -> Result<(), MeError> {
+            Err(MeError::DirectionalDerivativeUnavailable {
+                reason: "not needed".to_owned(),
+            })
+        }
+
+        fn discards_failed_trials(&self) -> bool {
+            self.discards
+        }
+    }
+
+    fn folding(discards: bool) -> MeDerivativeController {
+        MeDerivativeController::over_component(Box::new(FoldingComponent { discards }))
+    }
+
+    #[test]
+    fn a_switching_component_discards_a_failed_trial_without_latching() {
+        let controller = folding(true);
+        let handle = controller.issue_handle();
+        let _window = controller.activate();
+        let mut out = [0.0];
+        handle.derivatives_into(0.0, &[2.0], &mut out);
+        assert!(out[0].is_nan(), "a discarded trial reports NaN");
+        assert!(!handle.has_failed(), "a discard is not a latched failure");
+        assert!(handle.take_discard());
+        assert!(!handle.take_discard(), "one acknowledgement per discard");
+        // A rejected trial followed by a successful step is no failure.
+        handle.derivatives_into(0.0, &[0.5], &mut out);
+        assert_eq!(out[0], 1.0);
+        assert!(controller.settle_discard(true).is_none());
+        assert!(controller.take_error().is_none());
+    }
+
+    #[test]
+    fn an_unacknowledged_or_unrecovered_discard_is_the_typed_cause() {
+        let controller = folding(true);
+        let handle = controller.issue_handle();
+        let _window = controller.activate();
+        let mut out = [0.0];
+        handle.derivatives_into(0.0, &[2.0], &mut out);
+        let cause = controller
+            .settle_discard(true)
+            .expect("a discard the plugin never acknowledged");
+        assert!(cause.to_string().contains("past the fold"), "{cause}");
+
+        handle.derivatives_into(0.0, &[2.0], &mut out);
+        assert!(handle.take_discard());
+        assert!(
+            controller.settle_discard(false).is_some(),
+            "a call that still failed reports the discard's cause"
+        );
+    }
+
+    #[test]
+    fn a_component_without_charts_latches_the_same_failure() {
+        let controller = folding(false);
+        let handle = controller.issue_handle();
+        let _window = controller.activate();
+        let mut out = [0.0];
+        handle.derivatives_into(0.0, &[2.0], &mut out);
+        assert!(handle.has_failed());
+        assert!(!handle.take_discard());
+        assert!(controller.take_error().is_some());
     }
 }

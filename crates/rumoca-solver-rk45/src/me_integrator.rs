@@ -16,6 +16,8 @@ use crate::dense_output::Dopri5DenseOutput;
 const METHOD: &str = "rk45";
 const MIN_STEP: f64 = 1.0e-12;
 const CONTINUOUS_EXTENSION_ORDER: u32 = 4;
+/// Step factor after the component discarded a trial point.
+const DISCARD_SHRINK: f64 = 0.25;
 
 /// Build the RK45 numerical plugin accepted by the common FMI ME host.
 ///
@@ -219,6 +221,22 @@ impl Rk45Integrator {
         Ok(step)
     }
 
+    /// The retry step after a discarded trial, or step-size underflow.
+    fn shrink_after_discard(
+        &self,
+        request: &MeAdvanceRequest,
+        step: f64,
+    ) -> Result<f64, MeIntegrationError> {
+        if step <= MIN_STEP {
+            return Err(MeIntegrationError::StepSizeUnderflow {
+                method: METHOD,
+                from_time: request.current().time(),
+                to_time: request.latest_accepted_time(),
+            });
+        }
+        Ok((step * DISCARD_SHRINK).min(request.latest_accepted_time() - request.current().time()))
+    }
+
     fn retain_interval(
         &mut self,
         start: &MeContinuousPoint,
@@ -281,7 +299,16 @@ impl MeIntegratorBackend for Rk45Integrator {
         let mut step = self.proposed_step(request)?;
         loop {
             let error_norm =
-                self.trial_step(request.current().time(), request.current().states(), step)?;
+                match self.trial_step(request.current().time(), request.current().states(), step) {
+                    // The component refused a trial point of this step: reject
+                    // it and retry a smaller one, exactly as for a large error.
+                    Err(MeIntegrationError::ComponentDiscard { .. }) => {
+                        self.fsal_time = None;
+                        step = self.shrink_after_discard(request, step)?;
+                        continue;
+                    }
+                    outcome => outcome?,
+                };
             if !error_norm.is_finite() {
                 return Err(MeIntegrationError::numerical(
                     METHOD,
@@ -467,6 +494,9 @@ fn evaluate_derivative(
 ) -> Result<(), MeIntegrationError> {
     resize_work(out, derivatives.state_count(), "RK45 derivative workspace")?;
     derivatives.derivatives_into(time, states, out);
+    if derivatives.take_discard() {
+        return Err(MeIntegrationError::ComponentDiscard { time });
+    }
     if derivatives.has_failed() {
         return Err(MeIntegrationError::DerivativeRefused);
     }

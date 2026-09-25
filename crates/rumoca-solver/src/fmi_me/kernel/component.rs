@@ -1692,6 +1692,13 @@ impl SolveMeKernel {
 
     // -- dynamic state selection (SPEC_0053 section 2a, carrier A) ---------
 
+    /// Whether this component switches among reduced charts. Such a component
+    /// refuses a trial point its active chart cannot certify as a recoverable
+    /// discard, and leaves the switch to the next accepted step.
+    pub(crate) fn switches_reduced_charts(&self) -> bool {
+        self.reduced_charts.is_some()
+    }
+
     /// Snapshot the mutable numerical state of every reduced-chart runtime, in
     /// chart index order. A model with no folding first-integral group has one
     /// runtime, so the vector is a single primary-basis snapshot.
@@ -1743,12 +1750,14 @@ impl SolveMeKernel {
         Ok(())
     }
 
-    /// At an accepted step, estimate the conditioning of the active reduced
-    /// chart and, when it is approaching its fold while a strictly better
+    /// At an accepted step, estimate the conditioning of every reduced chart
+    /// and, when the active one is approaching its fold while a strictly better
     /// conditioned regular alternate exists, latch a basis-change request whose
     /// coordinate is this step's settled full physical vector. Returns whether a
-    /// request was latched. A model with no folding first-integral group never
-    /// enters this path, so its completed step is unchanged.
+    /// request was latched. An active chart that settled below its regular region
+    /// crossed its fold before a change could be requested: that is a typed
+    /// failure, and no chart is adopted after the fact. A model with no chart set
+    /// never enters this path, so its completed step is unchanged.
     pub(super) fn detect_basis_change_request(&mut self) -> Result<bool, MeError> {
         let Some(charts) = self.reduced_charts.as_ref() else {
             return Ok(false);
@@ -1769,28 +1778,27 @@ impl SolveMeKernel {
                 settle.max_iters,
             )
             .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
-        let target = dynamic_chart::detect_basis_change(
-            &self.runtime,
-            &charts.charts,
-            &charts.group_cols,
-            self.active_chart,
-            t,
-            &solver_y,
-            &self.params,
-        )
-        .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
-        match target {
-            Some(target) => {
+        let conditioning = dynamic_chart::chart_conditioning(charts, t, &solver_y, &self.params)
+            .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
+        match dynamic_chart::decide(&conditioning, self.active_chart) {
+            dynamic_chart::ChartDecision::Switch(target) => {
                 self.pending_basis_change = Some(dynamic_chart::PendingBasisChange {
                     target,
                     physical_solver_y: solver_y,
                 });
                 Ok(true)
             }
-            None => {
+            dynamic_chart::ChartDecision::Keep => {
                 self.pending_basis_change = None;
                 Ok(false)
             }
+            dynamic_chart::ChartDecision::Folded { sigma, regular } => Err(MeError::Evaluation {
+                message: format!(
+                    "reduced chart {} crossed its fold before a basis change could be requested at t={t}: its conditioning {sigma:.3e} is below its regular bound {regular:.3e}",
+                    self.active_chart
+                ),
+            }
+            .at_stage(MeStage::Integration)),
         }
     }
 
@@ -1799,8 +1807,11 @@ impl SolveMeKernel {
     /// chart from the pre-margin physical coordinate, re-establish the target
     /// chart's reconstruction with branch-limited certified projection, and
     /// rebind the coordinate map, integrator state, numerical caches, and
-    /// rollback context to the one active basis. A failed trial reconstruction
-    /// stays a loud error and never becomes an accepted step.
+    /// rollback context to the one active basis. The target's transfer is
+    /// computed completely before anything is rebound, so a failed transfer
+    /// leaves the active chart, states, and caches exactly as they were and
+    /// reports a typed error; it never becomes an accepted step or a partial
+    /// switch.
     pub(super) fn run_basis_change_boundary(&mut self) -> Result<MeDiscreteStates, MeError> {
         let before = self.states.clone();
         let change = self
@@ -1820,18 +1831,37 @@ impl SolveMeKernel {
             let chart = &charts.charts[target];
             (Rc::clone(runtime), chart.binding_rows.clone())
         };
+        let t = self.continuous_eval_time();
+        let solver_y = self.basis_transfer(&target_runtime, &binding_rows, &change, t)?;
+
         self.active_chart = target;
         self.runtime = target_runtime;
+        self.copy_states_from_solver_y(&solver_y);
+        *self.solver_y_guess.borrow_mut() = solver_y;
+        self.clear_runtime_caches();
+        self.invalidate_continuous_linearization();
+        self.discrete_states_after_update(continuous_state_values_changed(&before, &self.states))
+    }
 
-        let t = self.continuous_eval_time();
+    /// The full solver coordinate of a basis change, computed on the target
+    /// chart's runtime without touching the component: the target's generated
+    /// state values recovered from the latched physical coordinate, and every
+    /// original constraint re-established by branch-limited certified projection
+    /// at unchanged tolerances.
+    fn basis_transfer(
+        &self,
+        target_runtime: &SolveRuntime,
+        binding_rows: &[usize],
+        change: &dynamic_chart::PendingBasisChange,
+        t: f64,
+    ) -> Result<Vec<f64>, MeError> {
         let physical = &change.physical_solver_y;
         // Recover the target chart's integrated source value for each generated
         // state coordinate from the identity residual `state - source`.
-        let residuals = self
-            .runtime
-            .evaluate_implicit_residual_rows(t, physical, &self.params, &binding_rows)
+        let residuals = target_runtime
+            .evaluate_implicit_residual_rows(t, physical, &self.params, binding_rows)
             .map_err(|error| MeError::from(error).at_stage(MeStage::EventIteration))?;
-        let mut new_states = before.clone();
+        let mut new_states = self.states.clone();
         for (state, residual) in new_states.iter_mut().zip(&residuals) {
             *state -= residual;
         }
@@ -1845,7 +1875,7 @@ impl SolveMeKernel {
             .ok_or_else(|| contract("physical coordinate is shorter than the state prefix"))?;
         prefix.copy_from_slice(&new_states);
         let settle = self.numerics_settle();
-        self.runtime
+        target_runtime
             .refresh_algebraic_and_output_slots_certified(
                 t,
                 &mut solver_y,
@@ -1854,12 +1884,7 @@ impl SolveMeKernel {
                 settle.max_iters,
             )
             .map_err(|error| MeError::from(error).at_stage(MeStage::EventIteration))?;
-
-        self.copy_states_from_solver_y(&solver_y);
-        *self.solver_y_guess.borrow_mut() = solver_y;
-        self.clear_runtime_caches();
-        self.invalidate_continuous_linearization();
-        self.discrete_states_after_update(continuous_state_values_changed(&before, &self.states))
+        Ok(solver_y)
     }
 }
 

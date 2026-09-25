@@ -612,7 +612,10 @@ impl MeSimulationSession<'_, '_> {
             );
             match host.derivatives.take_error() {
                 Some(latched) => Err(latched_failure(latched)),
-                None => outcome.map_err(MeSessionError::from),
+                None => match host.derivatives.settle_discard(outcome.is_ok()) {
+                    Some(cause) => Err(latched_failure(cause)),
+                    None => outcome.map_err(MeSessionError::from),
+                },
             }
         })
     }

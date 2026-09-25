@@ -271,6 +271,13 @@ impl MeIntegratorBackend for DiffsolBdfIntegrator {
             }
             let state = method.state();
             let states = try_copy(state.y.as_slice(), "BDF accepted endpoint")?;
+            if !states.iter().all(|value| value.is_finite()) {
+                return Err(MeIntegrationError::numerical(
+                    METHOD,
+                    MeNumericalFailure::AdvanceExhausted,
+                    "Diffsol accepted a non-finite endpoint",
+                ));
+            }
             let order = u32::try_from(method.order()).map_err(|_| {
                 MeIntegrationError::numerical(
                     METHOD,
@@ -286,6 +293,13 @@ impl MeIntegratorBackend for DiffsolBdfIntegrator {
             .is_some_and(|derivatives| derivatives.has_failed())
         {
             return Err(MeIntegrationError::DerivativeRefused);
+        }
+        // A discarded trial filled its callback with NaN, which failed that
+        // Newton iteration and made the method retry a smaller step; the step it
+        // accepted converged on finite values, so the discard was a rejected
+        // trial and is acknowledged here.
+        if let Some(derivatives) = self.derivatives.as_ref() {
+            derivatives.take_discard();
         }
         self.accepted_interval = Some(AcceptedInterval {
             start_time: request.current().time(),
