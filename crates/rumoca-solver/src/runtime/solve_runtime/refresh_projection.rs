@@ -1481,6 +1481,11 @@ fn folding_jacobian_entry(
     t: f64,
     seed: &mut [f64],
 ) -> Result<f64, RuntimeSolveError> {
+    // The compiler-derived implicit pattern proves most entries structurally
+    // zero; only the rest need a Jacobian evaluation.
+    if !model.implicit_jacobian_v_row_depends_on(row, col) {
+        return Ok(0.0);
+    }
     let slot = seed.get_mut(col).ok_or_else(|| {
         RuntimeSolveError::solve_ir("folding group column is out of solver range")
     })?;
