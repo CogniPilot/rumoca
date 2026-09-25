@@ -1,0 +1,5 @@
+{%- from "fmi-me-projection.jinja" import jacobian_unit %}
+#include "model.h"
+/* Forward-Jacobian programs of the projection blocks. */
+typedef int RmcJacobianUnit;
+{{ jacobian_unit(me_refresh) }}

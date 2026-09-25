@@ -21,21 +21,10 @@ importer can own integration or use the component's fixed integrator.
 
 ## Unsupported
 
-The current profile supports parameter-dependent error assertions, including
-assertions inside pure array functions. The checked profile retains their
-predicates and original messages; invalid parameters fail initialization or the
-next FMI evaluation after a legal parameter change. Time-, state-, and
-input-dependent assertions remain outside this profile.
-
-Dependent parameters retain their Solve initialization assignments and export
-as calculated parameters. Changing an independent tunable parameter recomputes
-these bindings before checking assertions or reading outputs. Initialization
-residuals, projections, and state assignments remain unsupported.
-
-The current profile rejects general events, clocks, runtime event history, external
-calls/tables, random operations, and coupled or non-isolable implicit residual
-systems. Tunable algebraic coefficients still require a residual solver. It does not
-advertise state serialization or derivatives it does not implement.
+The FMI 2 target shares the FMI 3 C kernel and profile: see the Unsupported
+section of the `fmi3` target. Integer and enumeration ordinals export as
+Integer, Boolean as Boolean, and String parameters and constants as String. It
+does not advertise state serialization or derivatives it does not implement.
 
 ## Verification
 

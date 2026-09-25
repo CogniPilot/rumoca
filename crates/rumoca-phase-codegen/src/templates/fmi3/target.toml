@@ -12,7 +12,7 @@ Advertised profiles: FMI 3 Model Exchange and Co-Simulation."""
 
 [package]
 root = "{{ model_name }}"
-required_files = ["modelDescription.xml", "sources/buildDescription.xml", "sources/model.c"]
+required_files = ["modelDescription.xml", "sources/buildDescription.xml", "sources/model.c", "sources/model.h", "sources/rmc_rows.c", "sources/rmc_isolators.c", "sources/rmc_functions.c", "sources/rmc_assign.c", "sources/rmc_jacobian.c"]
 
 [package.archive]
 path = "{{ model_name }}.fmu"
@@ -64,6 +64,30 @@ template = "buildDescription.xml.jinja"
 [[files]]
 path = "sources/model.c"
 template = "model.c.jinja"
+
+[[files]]
+path = "sources/model.h"
+template = "model.h.jinja"
+
+[[files]]
+path = "sources/rmc_rows.c"
+template = "rmc_rows.c.jinja"
+
+[[files]]
+path = "sources/rmc_isolators.c"
+template = "rmc_isolators.c.jinja"
+
+[[files]]
+path = "sources/rmc_functions.c"
+template = "rmc_functions.c.jinja"
+
+[[files]]
+path = "sources/rmc_assign.c"
+template = "rmc_assign.c.jinja"
+
+[[files]]
+path = "sources/rmc_jacobian.c"
+template = "rmc_jacobian.c.jinja"
 
 [[partials]]
 template = "scalar_kernel.jinja"

@@ -1,32 +1,16 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array %}
-{%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields %}
-{%- from "fmi-typed-functions.jinja" import functions %}
-#include <float.h>
-#include <math.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <stdlib.h>
-#include <string.h>
-#define FMI3_FUNCTION_PREFIX {{ model_identifier }}_
-#include "fmi3Functions.h"
-#define FMI_EXPORT FMI3_Export
-enum ModelState { MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED };
-enum InterfaceType { INTERFACE_ME, INTERFACE_CS };
-#define Y_LEN {{ solve.layout.y_scalars if solve.layout.y_scalars > 0 else 1 }}
-#define P_LEN {{ solve.layout.p_scalars if solve.layout.p_scalars > 0 else 1 }}
-#define STATE_LEN {{ solve.solve_layout.state_scalar_count if solve.solve_layout.state_scalar_count > 0 else 1 }}
-typedef struct { bool assertions_initialized; bool assertion_failed; bool parameters_dirty; fmi3InstanceEnvironment environment; fmi3LogMessageCallback logger; double time; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type;{{ workspace_fields(me_refresh) }} } ModelInstance;
-{{ functions(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 else []) }}
+{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array, rmc_kind, text_fields, text_table %}
+{%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields, workspace_reset %}
+#include "model.h"
+{{ text_table(fmi_text_starts) }}
 
 static void initialize_values(ModelInstance* m) {
 {{- value_array("initial_y", "Y_LEN", fmi.initial_y) }}
 {{- value_array("initial_p", "P_LEN", fmi.initial_parameters) }}
-    m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true;
+    m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true; m->tolerance=0.0; rmc_release_text(m);{{ workspace_reset(me_refresh) }}
     memcpy(m->y, initial_y, sizeof(m->y)); memcpy(m->p, initial_p, sizeof(m->p)); m->time = 0.0;
 }
-{% if fmi.assertions %}
+{% if fmi.assertions and solve.events.actions|length > 0 %}
 static void log_assertion(ModelInstance* m, const char* message) { if (m->logger) m->logger(m->environment, fmi3Error, "assertion", message); }
 {% endif %}
 #define RMC_LOG(m, message) do { if ((m)->logger) (m)->logger((m)->environment, fmi3Error, "error", (message)); } while (0)
@@ -65,42 +49,31 @@ static fmi3Status integrate_rk4(ModelInstance* m, fmi3Float64 start, fmi3Float64
 }
 {#- One row per FMI 3 value reference, indexed by the reference itself: time
     is 0, the variables are 1..N in inventory order and the state derivatives
-    follow (the renderer refuses any other numbering). -#}
-enum RmcColumn { RMC_COLUMN_TIME, RMC_COLUMN_Y, RMC_COLUMN_P, RMC_COLUMN_DERIVATIVE };
+    follow (the renderer refuses any other numbering). Integer and
+    enumeration values are Int32 and Boolean values Boolean, all held in the
+    numeric storage run; String values live in the instance text table. -#}
+enum RmcColumn { RMC_COLUMN_TIME, RMC_COLUMN_Y, RMC_COLUMN_P, RMC_COLUMN_DERIVATIVE, RMC_COLUMN_TEXT };
+enum RmcKind { RMC_KIND_FLOAT64, RMC_KIND_INT32, RMC_KIND_BOOLEAN, RMC_KIND_STRING };
 enum RmcAccess { RMC_ACCESS_FIXED, RMC_ACCESS_STATE, RMC_ACCESS_INPUT, RMC_ACCESS_PARAMETER, RMC_ACCESS_TUNABLE_PARAMETER };
-typedef struct { unsigned char column; unsigned char access; unsigned char marks_parameters; size_t base; size_t count; } RmcValueReference;
+typedef struct { unsigned char column; unsigned char kind; unsigned char access; unsigned char marks_parameters; size_t base; size_t count; } RmcValueReference;
 static const RmcValueReference rmc_value_references[] = {
-    {RMC_COLUMN_TIME, RMC_ACCESS_FIXED, 0, 0, 1},
+    {RMC_COLUMN_TIME, RMC_KIND_FLOAT64, RMC_ACCESS_FIXED, 0, 0, 1},
+{%- set text = namespace(base=0) %}
 {%- for variable in fmi.variables %}{% if loop.index0 % 6 == 0 %}
    {% endif %} {
-{%- if variable.storage.column == "y" %}RMC_COLUMN_Y{% elif variable.storage.column == "p" %}RMC_COLUMN_P{% else %}{{ fail("unsupported-feature:fmi.c.value-reference-column " ~ variable.storage.column) }}{% endif %}, {% if variable.role == "State" %}RMC_ACCESS_STATE{% elif variable.causality == "input" %}RMC_ACCESS_INPUT{% elif variable.causality == "parameter" %}{% if variable.tunable %}RMC_ACCESS_TUNABLE_PARAMETER{% else %}RMC_ACCESS_PARAMETER{% endif %}{% else %}RMC_ACCESS_FIXED{% endif %}, {{ 1 if variable.causality == "parameter" else 0 }}, {{ variable.storage.base }}, {{ variable.storage.scalar_count }}},
+{%- if variable.value_kind == "String" %}RMC_COLUMN_TEXT{% elif variable.storage.column == "y" %}RMC_COLUMN_Y{% elif variable.storage.column == "p" %}RMC_COLUMN_P{% else %}{{ fail("unsupported-feature:fmi.c.value-reference-column " ~ variable.storage.column) }}{% endif %}, {{ rmc_kind(variable) }}, {% if variable.role == "State" %}RMC_ACCESS_STATE{% elif variable.causality == "input" %}RMC_ACCESS_INPUT{% elif variable.causality == "parameter" %}{% if variable.tunable %}RMC_ACCESS_TUNABLE_PARAMETER{% else %}RMC_ACCESS_PARAMETER{% endif %}{% else %}RMC_ACCESS_FIXED{% endif %}, {{ 1 if variable.causality == "parameter" and variable.value_kind != "String" else 0 }}, {% if variable.value_kind == "String" %}{{ text.base }}{% set text.base = text.base + variable.storage.scalar_count %}{% else %}{{ variable.storage.base }}{% endif %}, {{ variable.storage.scalar_count }}},
 {%- endfor %}
 {%- set derivative = namespace(ordinal=0, base=0) %}
 {%- for variable in fmi.variables %}{% if variable.role == "State" %}{% if derivative.ordinal % 6 == 0 %}
-   {% endif %} {RMC_COLUMN_DERIVATIVE, RMC_ACCESS_FIXED, 0, {{ derivative.base }}, {{ variable.storage.scalar_count }}},
+   {% endif %} {RMC_COLUMN_DERIVATIVE, RMC_KIND_FLOAT64, RMC_ACCESS_FIXED, 0, {{ derivative.base }}, {{ variable.storage.scalar_count }}},
 {%- set derivative.ordinal = derivative.ordinal + 1 %}{% set derivative.base = derivative.base + variable.storage.scalar_count %}{% endif %}{% endfor %}
 };
 #define RMC_VALUE_REFERENCES (sizeof(rmc_value_references) / sizeof(rmc_value_references[0]))
-static size_t value_count(fmi3ValueReference vr) {
-    return vr < RMC_VALUE_REFERENCES ? rmc_value_references[vr].count : 0;
+static const RmcValueReference* rmc_reference(fmi3ValueReference vr, unsigned char kind) {
+    return vr < RMC_VALUE_REFERENCES && rmc_value_references[vr].kind == kind ? &rmc_value_references[vr] : NULL;
 }
-static fmi3Status get_float64(ModelInstance* m, fmi3ValueReference vr, double* values) {
-    if (settle_values(m) != fmi3OK) return fmi3Error;
-    if (vr >= RMC_VALUE_REFERENCES) return fmi3Error;
-    const RmcValueReference* ref = &rmc_value_references[vr];
-    const double* source;
-    switch (ref->column) {
-    case RMC_COLUMN_TIME: source = &m->time; break;
-    case RMC_COLUMN_Y: source = m->y; break;
-    case RMC_COLUMN_P: source = m->p; break;
-    default: if (evaluate_derivatives(m) != fmi3OK) return fmi3Error; source = m->derivative; break;
-    }
-    for (size_t k = 0; k < ref->count; ++k) values[k] = source[ref->base + k];
-    return fmi3OK;
-}
-static fmi3Boolean can_set_float64(const ModelInstance* m, fmi3ValueReference vr) {
-    if (vr >= RMC_VALUE_REFERENCES) return fmi3False;
-    switch (rmc_value_references[vr].access) {
+static fmi3Boolean rmc_can_set(const ModelInstance* m, const RmcValueReference* ref) {
+    switch (ref->access) {
     case RMC_ACCESS_STATE:
         return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
             || (m->type == INTERFACE_ME && m->state == MODEL_CONTINUOUS);
@@ -117,17 +90,74 @@ static fmi3Boolean can_set_float64(const ModelInstance* m, fmi3ValueReference vr
     default: return fmi3False;
     }
 }
-static fmi3Status set_float64(ModelInstance* m, fmi3ValueReference vr, const double* values) {
-    if (vr >= RMC_VALUE_REFERENCES) return fmi3Error;
-    const RmcValueReference* ref = &rmc_value_references[vr];
-    double* target;
-    switch (ref->column) {
-    case RMC_COLUMN_Y: target = m->y; break;
-    case RMC_COLUMN_P: target = m->p; break;
-    default: return fmi3Error;
+/* One typed request: every reference names a variable of `kind` (settable
+   in the current state when `setting`) and the counts cover `nvalues`. */
+static bool rmc_request(const ModelInstance* m, const fmi3ValueReference vr[], size_t nvr, size_t nvalues, unsigned char kind, bool setting) {
+    size_t total = 0;
+    for (size_t k = 0; k < nvr; ++k) {
+        const RmcValueReference* ref = rmc_reference(vr[k], kind);
+        if (!ref || (setting && !rmc_can_set(m, ref)) || ref->count > nvalues - total) return false;
+        total += ref->count;
     }
-    for (size_t k = 0; k < ref->count; ++k) target[ref->base + k] = values[k];
-    if (ref->marks_parameters) m->parameters_dirty=true;
+    return total == nvalues;
+}
+/* The settled numeric storage one reference reads; NULL on a failed refresh. */
+static const double* rmc_numeric_source(ModelInstance* m, const RmcValueReference* ref) {
+    if (settle_values(m) != fmi3OK) return NULL;
+    switch (ref->column) {
+    case RMC_COLUMN_TIME: return &m->time;
+    case RMC_COLUMN_Y: return m->y;
+    case RMC_COLUMN_P: return m->p;
+    case RMC_COLUMN_DERIVATIVE: return evaluate_derivatives(m) == fmi3OK ? m->derivative : NULL;
+    default: return NULL;
+    }
+}
+#define RMC_GET_NUMERIC(Name, Type, KIND, CONVERT) \
+FMI_EXPORT fmi3Status fmi3Get##Name(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, Type values[], size_t nvalues) { \
+    ModelInstance* m = i; size_t cursor = 0; \
+    if (!m || (!vr && nvr) || (!values && nvalues) || !rmc_request(m, vr, nvr, nvalues, KIND, false)) return fmi3Error; \
+    for (size_t k = 0; k < nvr; ++k) { \
+        const RmcValueReference* ref = &rmc_value_references[vr[k]]; const double* source = rmc_numeric_source(m, ref); \
+        if (!source) return fmi3Error; \
+        for (size_t j = 0; j < ref->count; ++j) { double value = source[ref->base + j]; values[cursor++] = CONVERT; } \
+    } \
+    return fmi3OK; \
+}
+#define RMC_SET_NUMERIC(Name, Type, KIND, VALID, STORE) \
+FMI_EXPORT fmi3Status fmi3Set##Name(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, const Type values[], size_t nvalues) { \
+    ModelInstance* m = i; size_t cursor = 0; \
+    if (!m || (!vr && nvr) || (!values && nvalues) || !rmc_request(m, vr, nvr, nvalues, KIND, true)) return fmi3Error; \
+    for (size_t k = 0; k < nvalues; ++k) { Type value = values[k]; (void)value; if (!(VALID)) return fmi3Error; } \
+    for (size_t k = 0; k < nvr; ++k) { \
+        const RmcValueReference* ref = &rmc_value_references[vr[k]]; double* target = ref->column == RMC_COLUMN_Y ? m->y : m->p; \
+        for (size_t j = 0; j < ref->count; ++j) { Type value = values[cursor++]; target[ref->base + j] = STORE; } \
+        if (ref->marks_parameters) m->parameters_dirty = true; \
+    } \
+    return fmi3OK; \
+}
+RMC_GET_NUMERIC(Float64, fmi3Float64, RMC_KIND_FLOAT64, value)
+RMC_SET_NUMERIC(Float64, fmi3Float64, RMC_KIND_FLOAT64, isfinite(value), value)
+RMC_GET_NUMERIC(Int32, fmi3Int32, RMC_KIND_INT32, (fmi3Int32)value)
+RMC_SET_NUMERIC(Int32, fmi3Int32, RMC_KIND_INT32, true, (double)value)
+RMC_GET_NUMERIC(Boolean, fmi3Boolean, RMC_KIND_BOOLEAN, value != 0.0)
+RMC_SET_NUMERIC(Boolean, fmi3Boolean, RMC_KIND_BOOLEAN, true, value ? 1.0 : 0.0)
+FMI_EXPORT fmi3Status fmi3GetString(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, fmi3String values[], size_t nvalues) {
+    ModelInstance* m = i; size_t cursor = 0;
+    if (!m || (!vr && nvr) || (!values && nvalues) || !rmc_request(m, vr, nvr, nvalues, RMC_KIND_STRING, false)) return fmi3Error;
+    for (size_t k = 0; k < nvr; ++k) {
+        const RmcValueReference* ref = &rmc_value_references[vr[k]];
+        for (size_t j = 0; j < ref->count; ++j) values[cursor++] = rmc_text(m, ref->base + j);
+    }
+    return fmi3OK;
+}
+FMI_EXPORT fmi3Status fmi3SetString(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, const fmi3String values[], size_t nvalues) {
+    ModelInstance* m = i; size_t cursor = 0;
+    if (!m || (!vr && nvr) || (!values && nvalues) || !rmc_request(m, vr, nvr, nvalues, RMC_KIND_STRING, true)) return fmi3Error;
+    for (size_t k = 0; k < nvalues; ++k) if (!values[k]) return fmi3Error;
+    for (size_t k = 0; k < nvr; ++k) {
+        const RmcValueReference* ref = &rmc_value_references[vr[k]];
+        for (size_t j = 0; j < ref->count; ++j) if (!rmc_set_text(m, ref->base + j, values[cursor++])) return fmi3Error;
+    }
     return fmi3OK;
 }
 FMI_EXPORT const char* fmi3GetVersion(void) { return "3.0"; }
@@ -143,17 +173,15 @@ FMI_EXPORT fmi3Instance fmi3InstantiateCoSimulation(fmi3String name, fmi3String 
     ModelInstance* m=calloc(1,sizeof(ModelInstance));if(!m)return NULL;initialize_values(m);m->environment=environment;m->logger=logger;m->type=INTERFACE_CS;m->state=MODEL_INSTANTIATED;return m;
 }
 FMI_EXPORT fmi3Instance fmi3InstantiateScheduledExecution(fmi3String name, fmi3String token, fmi3String resources, fmi3Boolean visible, fmi3Boolean loggingOn, fmi3InstanceEnvironment environment, fmi3LogMessageCallback logger, fmi3ClockUpdateCallback clockUpdate, fmi3LockPreemptionCallback lockPreemption, fmi3UnlockPreemptionCallback unlockPreemption) { (void)name;(void)token;(void)resources;(void)visible;(void)loggingOn;(void)environment;(void)logger;(void)clockUpdate;(void)lockPreemption;(void)unlockPreemption;return NULL; }
-FMI_EXPORT void fmi3FreeInstance(fmi3Instance instance) { free(instance); }
+FMI_EXPORT void fmi3FreeInstance(fmi3Instance instance) { if (instance) rmc_release_text(instance); free(instance); }
 FMI_EXPORT fmi3Status fmi3SetDebugLogging(fmi3Instance i, fmi3Boolean loggingOn, size_t n, const fmi3String categories[]) { (void)loggingOn; return i && (categories || n == 0) ? fmi3OK : fmi3Error; }
-FMI_EXPORT fmi3Status fmi3EnterInitializationMode(fmi3Instance i, fmi3Boolean td, fmi3Float64 tol, fmi3Float64 start, fmi3Boolean sd, fmi3Float64 stop) { ModelInstance* m=i; if (!m || m->state != MODEL_INSTANTIATED || !isfinite(start) || (td && (!isfinite(tol) || tol < 0.0)) || (sd && (!isfinite(stop) || stop < start))) return fmi3Error; m->time=start; m->state=MODEL_INITIALIZATION; return fmi3OK; }
-FMI_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance i) { ModelInstance* m=i; if (!m || m->state != MODEL_INITIALIZATION || initialize_assertions(m) != fmi3OK || evaluate_derivatives(m) != fmi3OK) return fmi3Error; m->state=m->type==INTERFACE_ME?MODEL_EVENT:MODEL_STEP; return fmi3OK; }
+FMI_EXPORT fmi3Status fmi3EnterInitializationMode(fmi3Instance i, fmi3Boolean td, fmi3Float64 tol, fmi3Float64 start, fmi3Boolean sd, fmi3Float64 stop) { ModelInstance* m=i; if (!m || m->state != MODEL_INSTANTIATED || !isfinite(start) || (td && (!isfinite(tol) || tol < 0.0)) || (sd && (!isfinite(stop) || stop < start))) return fmi3Error; m->time=start; m->tolerance=td ? tol : 0.0; m->state=MODEL_INITIALIZATION; return fmi3OK; }
+FMI_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance i) { ModelInstance* m=i; if (!m || m->state != MODEL_INITIALIZATION || {% if me_refresh.init.rows > 0 %}rmc_initialize(m, m->tolerance) != fmi3OK || {% endif %}initialize_assertions(m) != fmi3OK || evaluate_derivatives(m) != fmi3OK) return fmi3Error; m->state=m->type==INTERFACE_ME?MODEL_EVENT:MODEL_STEP; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3EnterEventMode(fmi3Instance i) { ModelInstance* m=i; if (!m || m->type != INTERFACE_ME || (m->state != MODEL_EVENT && m->state != MODEL_CONTINUOUS)) return fmi3Error; m->state=MODEL_EVENT; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3UpdateDiscreteStates(fmi3Instance i, fmi3Boolean* need, fmi3Boolean* terminate, fmi3Boolean* nominalsChanged, fmi3Boolean* valuesChanged, fmi3Boolean* nextDefined, fmi3Float64* nextTime) { ModelInstance* m=i; if (!m || m->state != MODEL_EVENT || !need || !terminate || !nominalsChanged || !valuesChanged || !nextDefined || !nextTime) return fmi3Error; if (settle_assertion_event(m) != fmi3OK) return fmi3Error; *need=0; *terminate=0; *nominalsChanged=0; *valuesChanged=0; *nextDefined=0; *nextTime=0.0; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3EnterContinuousTimeMode(fmi3Instance i) { ModelInstance* m=i; if (!m || m->type != INTERFACE_ME || m->state != MODEL_EVENT) return fmi3Error; m->state=MODEL_CONTINUOUS; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3Terminate(fmi3Instance i) { ModelInstance* m=i; if (!m || (m->state != MODEL_EVENT && m->state != MODEL_CONTINUOUS && m->state != MODEL_STEP)) return fmi3Error; m->state=MODEL_TERMINATED; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3Reset(fmi3Instance i) { ModelInstance* m=i; if (!m) return fmi3Error; initialize_values(m); m->state=MODEL_INSTANTIATED; return fmi3OK; }
-FMI_EXPORT fmi3Status fmi3GetFloat64(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, fmi3Float64 values[], size_t nvalues) { ModelInstance* m=i; if (!m || (!vr && nvr) || (!values && nvalues)) return fmi3Error; size_t cursor=0; for (size_t k=0;k<nvr;++k) { size_t count=value_count(vr[k]); if (!count || cursor+count>nvalues || get_float64(m,vr[k],values+cursor)!=fmi3OK) return fmi3Error; cursor+=count; } return cursor==nvalues?fmi3OK:fmi3Error; }
-FMI_EXPORT fmi3Status fmi3SetFloat64(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, const fmi3Float64 values[], size_t nvalues) { ModelInstance* m=i; if (!m || (!vr && nvr) || (!values && nvalues)) return fmi3Error; size_t cursor=0; for (size_t k=0;k<nvr;++k) { size_t count=value_count(vr[k]); if (!count || cursor+count>nvalues || !can_set_float64(m,vr[k])) return fmi3Error; for (size_t j=0;j<count;++j) if (!isfinite(values[cursor+j])) return fmi3Error; cursor+=count; } if (cursor!=nvalues) return fmi3Error; cursor=0; for (size_t k=0;k<nvr;++k) { size_t count=value_count(vr[k]); if (set_float64(m,vr[k],values+cursor)!=fmi3OK) return fmi3Error; cursor+=count; } return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3SetTime(fmi3Instance i, fmi3Float64 time) { ModelInstance* m=i; if (!m || m->type != INTERFACE_ME || m->state != MODEL_CONTINUOUS || !isfinite(time)) return fmi3Error; m->time=time; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3SetContinuousStates(fmi3Instance i, const fmi3Float64 x[], size_t nx) { ModelInstance* m=i; if (!m || m->type != INTERFACE_ME || m->state != MODEL_CONTINUOUS || nx != {{ solve.solve_layout.state_scalar_count }} || (!x && nx)) return fmi3Error; for(size_t k=0;k<nx;++k)if(!isfinite(x[k]))return fmi3Error; for(size_t k=0;k<nx;++k)m->y[k]=x[k]; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3GetContinuousStates(fmi3Instance i, fmi3Float64 x[], size_t nx) { ModelInstance* m=i; if (!m || m->type != INTERFACE_ME || m->state == MODEL_INSTANTIATED || m->state == MODEL_STEP || nx != {{ solve.solve_layout.state_scalar_count }} || (!x && nx)) return fmi3Error; for(size_t k=0;k<nx;++k)x[k]=m->y[k]; return fmi3OK; }
@@ -172,12 +200,9 @@ UNSUPPORTED_GET_SET(fmi3Int8, Int8)
 UNSUPPORTED_GET_SET(fmi3UInt8, UInt8)
 UNSUPPORTED_GET_SET(fmi3Int16, Int16)
 UNSUPPORTED_GET_SET(fmi3UInt16, UInt16)
-UNSUPPORTED_GET_SET(fmi3Int32, Int32)
 UNSUPPORTED_GET_SET(fmi3UInt32, UInt32)
 UNSUPPORTED_GET_SET(fmi3Int64, Int64)
 UNSUPPORTED_GET_SET(fmi3UInt64, UInt64)
-UNSUPPORTED_GET_SET(fmi3Boolean, Boolean)
-UNSUPPORTED_GET_SET(fmi3String, String)
 
 FMI_EXPORT fmi3Status fmi3GetBinary(fmi3Instance i,const fmi3ValueReference vr[],size_t nvr,size_t sizes[],fmi3Binary values[],size_t nvalues){(void)vr;(void)sizes;(void)values;return i&&nvr==0&&nvalues==0?fmi3OK:fmi3Error;}
 FMI_EXPORT fmi3Status fmi3SetBinary(fmi3Instance i,const fmi3ValueReference vr[],size_t nvr,const size_t sizes[],const fmi3Binary values[],size_t nvalues){(void)vr;(void)sizes;(void)values;return i&&nvr==0&&nvalues==0?fmi3OK:fmi3Error;}

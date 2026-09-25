@@ -128,11 +128,12 @@ pub fn finish_fmi_component(
 fn lower_variables(view: dae::DaeView<'_>) -> Result<Vec<FmiVariableInput>, FmiLoweringError> {
     let mut numeric = rumoca_eval_dae::NumericEvaluator::new(view);
     view.variables()
-        .map(|(_, variable)| lower_variable(&mut numeric, variable))
+        .map(|(_, variable)| lower_variable(view, &mut numeric, variable))
         .collect()
 }
 
 fn lower_variable<'dae>(
+    view: dae::DaeView<'dae>,
     numeric: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
     variable: dae::VariableView<'dae>,
 ) -> Result<FmiVariableInput, FmiLoweringError> {
@@ -162,7 +163,63 @@ fn lower_variable<'dae>(
         variability: fmi_variability(variable),
         tunable: variable.is_tunable(),
         declaration: variable.declaration().span(),
+        text_start: text_start(view, variable),
     })
+}
+
+/// The per-scalar literal start of a `String` declaration: its `start`
+/// attribute, else its binding, when that is a string literal or an array of
+/// string literals (a scalar literal broadcasts over an array declaration).
+/// Any other expression leaves the text start absent, and a consumer that
+/// needs one refuses the declaration rather than inventing a value.
+fn text_start<'dae>(
+    view: dae::DaeView<'dae>,
+    variable: dae::VariableView<'dae>,
+) -> Option<Vec<String>> {
+    if variable.value_type().scalar_type() != dae::ScalarType::String {
+        return None;
+    }
+    let expression = variable.start().or_else(|| variable.binding())?;
+    let mut values = Vec::new();
+    collect_string_literals(view, expression, &mut values)?;
+    let count = variable.scalar_count();
+    if values.len() == 1 && count > 1 {
+        values.resize(count, values[0].clone());
+    }
+    (values.len() == count).then_some(values)
+}
+
+fn collect_string_literals<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    values: &mut Vec<String>,
+) -> Option<()> {
+    match view.expression(expression)?.operation() {
+        dae::ExpressionOperation::Literal(dae::DaeLiteral::String(text)) => {
+            values.push(text.clone());
+            Some(())
+        }
+        dae::ExpressionOperation::Array(elements) => {
+            let mut index = 0;
+            while let Some(element) = elements.get(index) {
+                collect_string_literals(view, element, values)?;
+                index += 1;
+            }
+            Some(())
+        }
+        // A literal filled over the declaration broadcasts like a scalar
+        // binding: `fill(text, n)` or an iterator-free comprehension.
+        dae::ExpressionOperation::Builtin {
+            builtin: dae::PureBuiltin::Fill,
+            arguments,
+        } => collect_string_literals(view, arguments.get(0)?, values),
+        dae::ExpressionOperation::Comprehension { body, .. } => {
+            let start = values.len();
+            collect_string_literals(view, body, values)?;
+            (values.len() == start + 1).then_some(())
+        }
+        _ => None,
+    }
 }
 
 fn numeric_attribute<'dae>(
@@ -178,7 +235,10 @@ fn numeric_attribute<'dae>(
     }
     if !matches!(
         variable.value_type().scalar_type(),
-        dae::ScalarType::Real | dae::ScalarType::Integer
+        dae::ScalarType::Real
+            | dae::ScalarType::Integer
+            | dae::ScalarType::Boolean
+            | dae::ScalarType::Enumeration
     ) {
         return Ok(None);
     }

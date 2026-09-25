@@ -11,12 +11,14 @@
 //! regular through the chain rows. The trajectory starts on `x = 0.5`, so the
 //! initial refresh promotes both steps and the rest promote one.
 
+use rumoca_eval_solve::projection_policy::torn_promotion_capacity;
+
 use super::projection::{
     DRIVER, FIXED_STATE_DRIVER, assert_projection_trace, compile_packaged_sources, in_process_trace,
 };
 use super::*;
 
-const MODEL: &str = "AffinePromote";
+pub(super) const MODEL: &str = "AffinePromote";
 const OUTPUTS: &[&str] = &["x", "v2", "v10", "v13", "v19", "w1", "w2", "w3"];
 
 fn affine_promote() -> String {
@@ -49,7 +51,7 @@ fn affine_promote() -> String {
     source
 }
 
-fn compile() -> rumoca::CompilationResult {
+pub(super) fn compile() -> rumoca::CompilationResult {
     rumoca::Compiler::new()
         .model(MODEL)
         .compile_str(&affine_promote(), &format!("{MODEL}.mo"))
@@ -72,10 +74,7 @@ fn packaged_fmi_promotes_vanished_affine_pivots_like_the_linked_kernel() {
         let fmu = build_named_fmu(work.path(), &compiled, target, MODEL);
         let source =
             fs::read_to_string(fmu.root.join("sources/model.c")).expect("read generated model");
-        assert!(
-            source.contains("rmc_eliminate_promote(b, e, s)"),
-            "{target} does not emit the in-place tear promotion"
-        );
+        assert_promoted_block_descriptor(target, &source);
         validate_source_package(&fmu, standard);
         for interface in ["ModelExchange", "CoSimulation"] {
             let csv = work
@@ -156,6 +155,147 @@ fn linked_values(compiled: &rumoca::CompilationResult, names: &[&str]) -> Vec<Ve
                 .collect()
         })
         .collect()
+}
+
+/// The promoted block's descriptor row, not generic kernel text, is what the
+/// FMU must carry: at least one `rmc_blocks[]` initializer row is an
+/// elimination block, and every such row's `elim_capacity` is exactly the
+/// promotion capacity the shared policy issues for its tear count, so the
+/// generated kernel promotes vanished pivots up to the same bound the linked
+/// kernel does. Fields are decoded by name against the generated `RmcBlock`
+/// struct, so an inserted field (for instance a `causal_offset` after
+/// `causal_col`) shifts both the struct and the initializer together and the
+/// decode still lands on the right value.
+fn assert_promoted_block_descriptor(target: &str, source: &str) {
+    let fields = rmc_block_fields(source);
+    let index = |name: &str| {
+        fields
+            .iter()
+            .position(|field| field == name)
+            .unwrap_or_else(|| panic!("{target}: RmcBlock struct has no `{name}` field"))
+    };
+    let elimination = index("elimination");
+    let nelim_tear = index("nelim_tear");
+    let elim_capacity = index("elim_capacity");
+    let mut promoted = 0usize;
+    for row in rmc_block_rows(source) {
+        let values = split_initializer_fields(&row);
+        assert_eq!(
+            values.len(),
+            fields.len(),
+            "{target}: block descriptor carries {} values for {} struct fields:\n{row}",
+            values.len(),
+            fields.len()
+        );
+        if values[elimination] != "true" {
+            continue;
+        }
+        promoted += 1;
+        let base = values[nelim_tear].parse::<usize>().unwrap_or_else(|_| {
+            panic!(
+                "{target}: nelim_tear `{}` is not a count",
+                values[nelim_tear]
+            )
+        });
+        let capacity = values[elim_capacity].parse::<usize>().unwrap_or_else(|_| {
+            panic!(
+                "{target}: elim_capacity `{}` is not a count",
+                values[elim_capacity]
+            )
+        });
+        assert!(
+            base > 0,
+            "{target}: a promoting elimination block issues no tears"
+        );
+        let expected = torn_promotion_capacity(base).unwrap_or_else(|| {
+            panic!("{target}: the shared policy issues no promotion capacity for {base} tears")
+        });
+        assert_eq!(
+            capacity, expected,
+            "{target}: promoted block elim_capacity {capacity} is not \
+             torn_promotion_capacity({base}) = {expected}"
+        );
+    }
+    assert!(
+        promoted >= 1,
+        "{target}: the generated model emits no promoting elimination block"
+    );
+}
+
+/// Field names of the generated C `RmcBlock` struct, in declaration order.
+fn rmc_block_fields(source: &str) -> Vec<String> {
+    let close = source
+        .find("} RmcBlock;")
+        .expect("generated source declares the RmcBlock struct");
+    let open = source[..close]
+        .rfind("typedef struct {")
+        .expect("RmcBlock struct opens with a typedef")
+        + "typedef struct {".len();
+    source[open..close]
+        .split(';')
+        .filter_map(|declaration| declaration.split_whitespace().last())
+        .map(|name| name.trim_start_matches('*').to_string())
+        .collect()
+}
+
+/// The brace-delimited `rmc_blocks[]` initializer rows, one string per block.
+fn rmc_block_rows(source: &str) -> Vec<String> {
+    let marker = "static const RmcBlock rmc_blocks[";
+    let start = source
+        .find(marker)
+        .expect("generated source initializes rmc_blocks");
+    let open = start
+        + source[start..]
+            .find('{')
+            .expect("rmc_blocks initializer opens with a brace");
+    let mut rows = Vec::new();
+    let mut depth = 0i32;
+    let mut row_start = 0usize;
+    for (offset, character) in source[open..].char_indices() {
+        match character {
+            '{' => {
+                depth += 1;
+                if depth == 2 {
+                    row_start = open + offset + 1;
+                }
+            }
+            '}' => {
+                if depth == 2 {
+                    rows.push(source[row_start..open + offset].to_string());
+                }
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    rows
+}
+
+/// One initializer row split at its top-level commas, so `RMC_P(offset)` and
+/// other parenthesized values stay whole.
+fn split_initializer_fields(row: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut depth = 0i32;
+    let mut last = 0usize;
+    for (offset, character) in row.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                fields.push(row[last..offset].trim().to_string());
+                last = offset + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = row[last..].trim();
+    if !tail.is_empty() {
+        fields.push(tail.to_string());
+    }
+    fields
 }
 
 fn generated_values(driver: &Path, fmu: &BuiltFmu, names: &[&str]) -> Vec<Vec<f64>> {

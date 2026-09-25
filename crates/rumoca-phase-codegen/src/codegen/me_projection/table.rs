@@ -69,6 +69,8 @@ pub(super) struct ProgramTable {
     pub(super) jvp: FunctionFamily<(usize, usize)>,
     /// Target isolators keyed by (program, output offset, target).
     pub(super) isolators: IsolatorCatalog,
+    /// Causal isolation chains keyed by (program, ordered (output, target) pairs).
+    pub(super) causal: FunctionFamily<(usize, Vec<(usize, usize)>)>,
     /// Distinct Jacobian application sources, compared by owner identity.
     pub(super) jvp_sources: Vec<solve::ScalarProgramBlock>,
     pool: Vec<usize>,
@@ -100,6 +102,10 @@ impl ProgramTable {
         implicit: &rumoca_eval_solve::PreparedScalarProgramBlock,
     ) -> Result<Value, CodegenError> {
         let (isolators, isolator_group, isolator_slot) = self.isolators.into_groups(implicit)?;
+        let row_max_outputs = (0..self.rows.programs.len())
+            .map(|id| self.rows.output_count(id))
+            .max()
+            .unwrap_or(1);
         let iso_max_outputs = (0..isolators.programs.len())
             .map(|id| isolators.output_count(id))
             .max()
@@ -114,9 +120,11 @@ impl ProgramTable {
             rows => self.rows.into_plan()?,
             jvp => self.jvp.into_plan()?,
             isolators => isolators.into_plan()?,
+            causal => self.causal.into_plan()?,
             isolator_group => isolator_group,
             isolator_slot => isolator_slot,
             iso_max_outputs => iso_max_outputs,
+            row_max_outputs => row_max_outputs,
             pool => pool,
         })
     }

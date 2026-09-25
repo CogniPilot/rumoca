@@ -97,10 +97,12 @@ impl SolveTemplateRenderer {
         let pure_calls = super::pure_call_families::PureCallFamilies::new(component.pure_calls())?;
         let assertion_messages = super::fmi_c_assertions::messages(component.problem())?;
         let handle = super::solve_lazy::SolveRenderHandle::fmi(component);
-        require_dense_value_references(&handle.fmi_value())?;
+        let fmi = handle.fmi_value();
+        require_dense_value_references(&fmi)?;
+        let text_starts = super::fmi_c_assertions::text_starts(&fmi)?;
         let context = solve_render_context_value_with_handles(handle, None, Value::default())?;
         Ok(Self {
-            context: minijinja::context! { typed_pure_calls => pure_calls.owners_value(), typed_directional_calls => pure_calls.directional_value(), pure_call_symbols => pure_calls.symbols_value(), fmi_assertion_messages => assertion_messages, me_refresh => me_refresh, ..context },
+            context: minijinja::context! { typed_pure_calls => pure_calls.owners_value(), typed_directional_calls => pure_calls.directional_value(), pure_call_symbols => pure_calls.symbols_value(), fmi_assertion_messages => assertion_messages, fmi_text_starts => text_starts, me_refresh => me_refresh, ..context },
         })
     }
 

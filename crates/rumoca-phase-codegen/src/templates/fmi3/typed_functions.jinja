@@ -72,7 +72,7 @@ return 0;
 {% endmacro %}
 
 {%- macro wrapper(owner, kind="") -%}
-static inline int rumoca_scalar_pure_{{ kind }}{{ owner.id }}(const double* const in[], double* out) {
+RMC_API int rumoca_scalar_pure_{{ kind }}{{ owner.id }}(const double* const in[], double* out) {
 (void)in; (void)out;
 {% for ty in owner.inputs -%}
 {{ declaration("a" ~ loop.index0, ty) }}
@@ -89,6 +89,9 @@ return 0;
 }
 {% endmacro %}
 
+{#- The pure-function translation unit: each function family's body stays
+    private to the unit; the scalar wrappers every program calls are the
+    unit's interface. -#}
 {%- macro functions(table, directional=[]) -%}
 {% if table.owners|length > 0 -%}
 static inline double rumoca_real64(uint64_t bits) { double value; memcpy(&value, &bits, sizeof(value)); return value; }
@@ -102,5 +105,13 @@ static inline double rumoca_real64(uint64_t bits) { double value; memcpy(&value,
 {% for owner in directional -%}
 {{ definition(owner.body, "rumoca_pure_directional_" ~ owner.id, "rumoca_pure_directional_") -}}
 {{ wrapper(owner, "directional_") -}}
+{% endfor -%}
+{% endmacro %}
+
+{#- The wrapper declarations every program translation unit includes. -#}
+{%- macro function_prototypes(table, directional=[]) -%}
+{% for owner in table.owners %}RMC_API int rumoca_scalar_pure_{{ owner.id }}(const double* const in[], double* out);
+{% endfor -%}
+{% for owner in directional %}RMC_API int rumoca_scalar_pure_directional_{{ owner.id }}(const double* const in[], double* out);
 {% endfor -%}
 {% endmacro %}

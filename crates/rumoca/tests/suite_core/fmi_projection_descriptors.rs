@@ -2,7 +2,8 @@
 //!
 //! The fmi2 and fmi3 targets settle coupled algebraic blocks through one C
 //! kernel that reads per-block descriptors (`RmcBlock`) over one integer pool.
-//! These cases render the generated `model.c` for one fixture per projection
+//! These cases render the generated C sources (`model.c` and the program
+//! translation units beside it) for one fixture per projection
 //! path (torn, affine, dense with seeded isolation, seed rescue, and the torn
 //! affine elimination with promotion capacity) and check the descriptors
 //! against the structure each path requires, without compiling or running the
@@ -98,17 +99,26 @@ fn model_c(model: &str, source: &str, target: &str) -> String {
         Ok(files) => files,
         Err(error) => panic!("render {model} {target}: {error:#}"),
     };
-    let Some(file) = files
+    assert!(
+        files.iter().any(|file| file.path == "sources/model.c"),
+        "{model} {target} emits sources/model.c"
+    );
+    // Every C translation unit, `model.c` first; the shared header only
+    // declares what the units define.
+    let mut units = files
         .into_iter()
-        .find(|file| file.path == "sources/model.c")
-    else {
-        panic!("{model} {target} emits sources/model.c");
-    };
-    file.content
+        .filter(|file| file.path.starts_with("sources/") && file.path.ends_with(".c"))
+        .collect::<Vec<_>>();
+    units.sort_by_key(|file| (file.path != "sources/model.c", file.path.clone()));
+    units
+        .into_iter()
+        .map(|file| file.content)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `RmcBlock` field names in their C initializer order.
-const FIELDS: [&str; 41] = [
+const FIELDS: [&str; 42] = [
     "canonical",
     "n",
     "y",
@@ -133,7 +143,8 @@ const FIELDS: [&str; 41] = [
     "tear_col",
     "residual_row",
     "ncausal",
-    "causal",
+    "ncruns",
+    "cruns",
     "causal_target",
     "causal_col",
     "elimination",
@@ -154,6 +165,8 @@ const FIELDS: [&str; 41] = [
 
 const ISOLATION_KINDS: std::ops::RangeInclusive<usize> = 0..=2;
 const ISOLATION_PROGRAM: usize = 2;
+const RUN_CHAIN: usize = 0;
+const RUN_ISOLATOR: usize = 1;
 
 /// The rendered projection tables of one component.
 #[derive(Debug, PartialEq)]
@@ -161,6 +174,7 @@ struct Tables {
     pool: Vec<usize>,
     blocks: Vec<Block>,
     isolator_count: usize,
+    causal_count: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -230,14 +244,25 @@ fn parse_tables(source: &str) -> Option<Tables> {
         .filter(|token| !token.trim().is_empty())
         .map(parse_value)
         .collect();
-    let isolator_count = braced_body(source, "static const size_t rmc_iso_group[")
-        .map_or(0, |body| {
-            body.split(',').filter(|t| !t.trim().is_empty()).count()
-        });
+    // One-line initializers `opener ... = { a, b, };` of the program tables.
+    let entries = |opener: &str| {
+        source.find(opener).map_or(0, |start| {
+            let body = &source[start..];
+            let open = body.find('{').map_or(body.len(), |open| open + 1);
+            let close = body.find("};").unwrap_or(body.len()).max(open);
+            body[open..close]
+                .split(',')
+                .filter(|t| !t.trim().is_empty())
+                .count()
+        })
+    };
+    let isolator_count = entries("RMC_API const size_t rmc_iso_group[");
+    let causal_count = entries("RMC_API const RmcCausalProgram rmc_causal_fn[");
     Some(Tables {
         pool,
         blocks,
         isolator_count,
+        causal_count,
     })
 }
 
@@ -333,12 +358,29 @@ fn assert_tearing(model: &str, tables: &Tables, block: &Block) {
             .iter()
             .all(|&c| c < n)
     );
-    assert!(
-        block
-            .range(tables, "causal", ncausal)
-            .iter()
-            .all(|&id| id < tables.isolator_count),
-        "{model}: causal steps name emitted isolators"
+    // Runs of (kind, function, first step, step count) cover the causal
+    // steps in order; a single step names an emitted isolator, a longer run
+    // an emitted causal chain.
+    let runs = block.range(tables, "cruns", 4 * block.get("ncruns"));
+    let mut next = 0;
+    for run in runs.chunks(4) {
+        let [kind, function, first, count] = [run[0], run[1], run[2], run[3]];
+        assert_eq!(first, next, "{model}: causal runs cover the steps in order");
+        assert!(count > 0, "{model}: a causal run is non-empty");
+        let emitted = match kind {
+            RUN_ISOLATOR => count == 1 && function < tables.isolator_count,
+            RUN_CHAIN => count > 1 && function < tables.causal_count,
+            _ => false,
+        };
+        assert!(
+            emitted,
+            "{model}: causal run {run:?} names an emitted program"
+        );
+        next += count;
+    }
+    assert_eq!(
+        next, ncausal,
+        "{model}: causal runs cover every causal step"
     );
 }
 
@@ -437,7 +479,7 @@ fn seeded_blocks_emit_isolators_and_the_block_rescue() {
             "{model}: the dense path seeds through row isolators"
         );
         assert!(
-            model_c.contains("rescue_0:"),
+            has_seeded_projection_step(&model_c),
             "{model}: a seeded projection stage restores its targets on failure"
         );
     }
@@ -473,4 +515,20 @@ fn affine_elimination_descriptor_carries_the_promotion_capacity() {
         .filter(|block| block.flag("singleton_exact"))
         .count();
     assert_eq!(singletons + 1, tables.blocks.len());
+}
+
+/// Whether a refresh step table holds a projection step with seeds: rows are
+/// `{ kind, first, count, block, seed_first, seed_count, rescue, nrescue }`
+/// with kind 2 for a projection step. The same reading as
+/// `suite_template_runtime/cli_target_fmi/projection.rs`, which is a separate
+/// test binary.
+fn has_seeded_projection_step(source: &str) -> bool {
+    source.lines().any(|line| {
+        let fields = line
+            .trim()
+            .strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix("},"))
+            .map(|row| row.split(',').map(str::trim).collect::<Vec<_>>());
+        matches!(fields.as_deref(), Some([kind, _, _, _, _, seeds, _, _]) if *kind == "2" && *seeds != "0")
+    })
 }

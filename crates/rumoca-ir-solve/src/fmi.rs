@@ -68,7 +68,7 @@ pub enum FmiConfigurationCapability {
 
 use crate::{
     ScalarSlot, SolveArtifacts, SolveModel, SolveProblem, SolveVariableDeclaration,
-    SolveVariableStorageRole, SolveVariableStorageRun,
+    SolveVariableStorageRole, SolveVariableStorageRun, SolveVariableValueKind,
 };
 use rumoca_core::Span;
 use std::collections::BTreeSet;
@@ -717,6 +717,23 @@ fn checked_variable(
             });
         }
     };
+    let text_start = match input.text_start {
+        Some(_) if input.value_kind != SolveVariableValueKind::String => {
+            return Err(FmiComponentError::StorageTypeMismatch {
+                name: input.name,
+                span: input.declaration,
+            });
+        }
+        Some(values) if values.len() != scalar_count => {
+            return Err(FmiComponentError::ScalarCount {
+                name: input.name,
+                actual: values.len(),
+                expected: scalar_count,
+                span: input.declaration,
+            });
+        }
+        text_start => text_start,
+    };
     let initial = metadata::initial_for_storage(input.role, input.causality, input.variability);
     let start = if initial == Some(FmiInitial::Calculated)
         || input.causality == FmiCausality::Independent
@@ -742,6 +759,7 @@ fn checked_variable(
         minimum: input.minimum,
         maximum: input.maximum,
         nominal: input.nominal,
+        text_start,
         unit: input.unit,
         description: input.description,
         causality: input.causality,

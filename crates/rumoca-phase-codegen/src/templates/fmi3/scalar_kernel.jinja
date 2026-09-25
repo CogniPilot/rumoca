@@ -133,10 +133,23 @@
 
 {%- macro c_string(bytes) -%}"{% for byte in bytes %}\{{ byte // 64 }}{{ (byte // 8) % 8 }}{{ byte % 8 }}{% endfor %}"{%- endmacro %}
 
+{#- The discrete rows in the admitted dependency order, each storing straight
+    into its parameter-backed target (the event iteration's fixed point). #}
+{%- macro discrete_rows(solve, order, prefix) %}
+{%- for index in order %}{% set program = solve.discrete.rhs_plan.programs[index] %}
+    {
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "m->p", prefix ~ "Error", solve.discrete.update_targets) }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- endmacro %}
+
 {%- macro assertions(solve, fmi, messages, prefix) %}
 static {{ prefix }}Status check_assertions(ModelInstance* m) {
     (void)m;
-{%- if fmi.assertions %}
+{%- if fmi.assertions and solve.events.actions|length > 0 %}
     if (m->assertion_failed) return {{ prefix }}Error;
     double actions[{{ solve.events.actions|length }}];
 {%- for program in solve.events.action_plan.programs %}
@@ -157,22 +170,20 @@ static {{ prefix }}Status check_assertions(ModelInstance* m) {
 {%- endif %}
     return {{ prefix }}OK;
 }
+/* The parameter-determined discrete equations, settled with the bindings. */
+static {{ prefix }}Status update_discrete_equations(ModelInstance* m) {
+    (void)m;
+{{- discrete_rows(solve, fmi.discrete_equations, prefix) }}
+    return {{ prefix }}OK;
+}
+/* The condition memories after the algebraic refresh, then the event commit:
+   every pre() history takes the value its source settled to. */
 static {{ prefix }}Status update_assertion_memory(ModelInstance* m) {
     (void)m;
-{%- if fmi.assertions and solve.discrete.update_targets|length > 0 %}
-    double current[{{ solve.discrete.update_targets|length }}];
-{%- for program in solve.discrete.rhs_plan.programs %}
-    {
-    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
-{%- for op in program.ops %}
-{{ scalar_op(op, "current", prefix ~ "Error") }}
+{{- discrete_rows(solve, fmi.discrete_memories, prefix) }}
+{%- for binding in solve.solve_layout.pre_param_bindings %}
+    m->p[{{ binding.dest_p_index }}] = {% if binding.source.Y is defined %}m->y[{{ binding.source.Y.index }}]{% else %}m->p[{{ binding.source.P.index }}]{% endif %};
 {%- endfor %}
-    }
-{%- endfor %}
-{%- for target in solve.discrete.update_targets %}
-    m->p[{{ target.P.index }}] = current[{{ loop.index0 }}];
-{%- endfor %}
-{%- endif %}
     return {{ prefix }}OK;
 }
 {%- endmacro %}
@@ -204,4 +215,43 @@ static {{ prefix }}Status settle_assertion_event(ModelInstance* m) {
 {%- for value in values %}{% if loop.index0 % 8 == 0 %}
        {% endif %} {{ value }},{% else %} 0.0{% endfor %}
     };
+{%- endmacro %}
+
+{#- The FMI value type of one inventory entry: Real is Float64, Integer and
+    enumeration ordinals are Int32, Boolean is Boolean, String is String. -#}
+{%- macro rmc_kind(variable) -%}
+{%- if variable.value_kind == "Real" %}RMC_KIND_FLOAT64{% elif variable.value_kind in ["Integer", "Enumeration"] %}RMC_KIND_INT32{% elif variable.value_kind == "Boolean" %}RMC_KIND_BOOLEAN{% elif variable.value_kind == "String" %}RMC_KIND_STRING{% else %}{{ fail("unsupported-feature:fmi.c.value-kind " ~ variable.value_kind) }}{% endif -%}
+{%- endmacro %}
+
+{#- Instance storage of the String texts: the current text of every String
+    scalar and the owned copy an importer's set installed, if any. -#}
+{%- macro text_fields(texts) -%}
+{%- if texts|length > 0 %} const char* text[{{ texts|length }}]; char* text_owned[{{ texts|length }}];{% endif -%}
+{%- endmacro %}
+
+{#- The literal start texts and the text accessors. A set copies the text so
+    the importer's buffer may be released; reset and free release the copies. -#}
+{%- macro text_table(texts) %}
+{%- if texts|length > 0 %}
+static const char* const rmc_text_start[{{ texts|length }}] = {
+{%- for bytes in texts %}
+    {{ c_string(bytes) }},
+{%- endfor %}
+};
+static const char* rmc_text(const ModelInstance* m, size_t index) { return m->text[index]; }
+static bool rmc_set_text(ModelInstance* m, size_t index, const char* value) {
+    size_t length = strlen(value); char* copy = malloc(length + 1);
+    if (!copy) return false;
+    memcpy(copy, value, length + 1);
+    free(m->text_owned[index]); m->text_owned[index] = copy; m->text[index] = copy;
+    return true;
+}
+static void rmc_release_text(ModelInstance* m) {
+    for (size_t k = 0; k < {{ texts|length }}; ++k) { free(m->text_owned[k]); m->text_owned[k] = NULL; m->text[k] = rmc_text_start[k]; }
+}
+{%- else %}
+static const char* rmc_text(const ModelInstance* m, size_t index) { (void)m; (void)index; return NULL; }
+static bool rmc_set_text(ModelInstance* m, size_t index, const char* value) { (void)m; (void)index; (void)value; return false; }
+static void rmc_release_text(ModelInstance* m) { (void)m; }
+{%- endif %}
 {%- endmacro %}

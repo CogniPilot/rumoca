@@ -161,6 +161,16 @@ fn guard_steps(
     guards
         .iter()
         .map(|&(row, column)| {
+            // Every zero guard is recorded from within the causal loop for the
+            // row of the causal step being placed (see `append_zero_guards`),
+            // so that row always owns a causal position; the lookup is
+            // unreachable-None by construction. The solving column, by
+            // contrast, may still be a tear, which owns no causal step and
+            // declines the layout through its own lookup.
+            debug_assert!(
+                row_position[row].is_some(),
+                "zero guard on row {row} without a causal step"
+            );
             let holder = row_position[row]?;
             let solver = column_position[column]?;
             (solver > holder).then_some((holder, solver))

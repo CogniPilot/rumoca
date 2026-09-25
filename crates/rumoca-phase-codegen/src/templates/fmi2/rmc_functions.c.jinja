@@ -1,0 +1,5 @@
+{%- from "fmi-typed-functions.jinja" import functions %}
+#include "model.h"
+/* Pure functions and their directional derivatives. */
+typedef int RmcFunctionsUnit;
+{{ functions(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 else []) }}

@@ -1,12 +1,23 @@
-//! Admission proof for parameter-dependent assertion partitions in generated C.
+//! Admission proof for parameter-determined event partitions in generated C.
+//!
+//! The C profile executes a model's events only where every one is fixed
+//! between parameter changes: error assertions whose predicates, their
+//! condition memories, and every discrete equation depend on parameters and
+//! constants alone. Such a partition changes nothing between events, so the
+//! component evaluates it at initialization and at each event, exactly as the
+//! runtime's event iteration would settle it in one pass.
 
 mod memory_reads;
 pub(super) mod scalar_dependencies;
+#[cfg(test)]
+mod tests;
 mod typed_dependencies;
 
 use crate::{DiscreteRowRole, RefreshStage, ScalarSlot, SolveEventActionKind, SolveModel};
 
-pub(super) fn validate(model: &SolveModel) -> Result<(), &'static str> {
+/// Admit a parameter-determined event partition and return the order in which
+/// the component evaluates the discrete rows.
+pub(super) fn validate(model: &SolveModel) -> Result<DiscreteOrder, &'static str> {
     let problem = &model.problem;
     let events = &problem.events;
     let discrete = &problem.discrete;
@@ -20,7 +31,6 @@ pub(super) fn validate(model: &SolveModel) -> Result<(), &'static str> {
             .root_relation_memory_targets
             .iter()
             .any(Option::is_some)
-        || events.actions.is_empty()
         || events
             .actions
             .iter()
@@ -28,34 +38,36 @@ pub(super) fn validate(model: &SolveModel) -> Result<(), &'static str> {
     {
         return Err("only unscheduled assertions without relation memory are supported");
     }
-    if !discrete.event_iteration_plan.runs.is_empty()
-        || !discrete.runtime_assignment_rhs.is_empty()
+    if !discrete.runtime_assignment_rhs.is_empty()
         || !discrete.post_commit_assignment_rhs.is_empty()
         || !discrete.structured_rhs.is_empty()
         || !discrete.structured_updates.is_empty()
         || !discrete.guarded_assignments.is_empty()
         || !discrete.event_transactions.is_empty()
         || discrete
-            .row_roles
-            .iter()
-            .any(|role| *role != DiscreteRowRole::ConditionMemory)
-        || discrete
             .update_targets
             .iter()
             .any(|slot| !matches!(slot, ScalarSlot::P { .. }))
     {
-        return Err("assertion profile cannot execute discrete state updates");
+        return Err(
+            "the C profile executes only parameter-determined discrete equations; runtime, guarded, structured, or transactional discrete updates need event iteration",
+        );
     }
-    if !problem.solve_layout.pre_param_bindings.is_empty() {
-        return Err("assertion profile cannot execute pre-value bindings");
+    if discrete.row_roles.contains(&DiscreteRowRole::EventAction) {
+        return Err("the C profile cannot execute event-edge discrete actions");
+    }
+    let pre = &problem.solve_layout.pre_param_bindings;
+    if pre.iter().any(|binding| binding.clock_schedule.is_some()) {
+        return Err("the C profile cannot execute clocked previous() history");
     }
     memory_reads::validate(model)?;
     let mut y = vec![false; problem.layout.y_scalars()];
     let mut p = super::parameter_updates::stable_parameters(problem);
-    static_algebraics(model, &mut y, &p)?;
-    // Condition memories are private event data, constant between mode changes.
-    // Their current-value producers must themselves be parameter-dependent.
-    require_static(model, &discrete.rhs, &y, &p)?;
+    for binding in pre {
+        *p.get_mut(binding.dest_p_index)
+            .ok_or("a pre() binding names storage outside the parameters")? = false;
+    }
+    let order = discrete_order(model, &mut y, &mut p)?;
     for index in &events.condition_memory_parameter_indices {
         p[*index] = true;
     }
@@ -66,7 +78,80 @@ pub(super) fn validate(model: &SolveModel) -> Result<(), &'static str> {
     }
     require_static(model, &events.root_conditions, &y, &p)?;
     require_static(model, &events.action_conditions, &y, &p)?;
-    Ok(())
+    Ok(order)
+}
+
+/// The two evaluation orders of the discrete rows. Parameter-determined
+/// discrete equations settle with the parameter bindings, before any
+/// algebraic refresh, so they read only parameters, constants, and equations
+/// already settled. Condition memories settle after the refresh and may also
+/// read algebraics the exact assignments determine from parameters. No row
+/// reads a pre() value. Evaluating the rows once in these orders yields the
+/// event iteration's fixed point bit for bit, because each row then reads the
+/// final values of its inputs.
+#[derive(Debug, Default)]
+pub(in crate::fmi) struct DiscreteOrder {
+    pub(in crate::fmi) equations: Vec<usize>,
+    pub(in crate::fmi) memories: Vec<usize>,
+}
+
+fn discrete_order(
+    model: &SolveModel,
+    y: &mut [bool],
+    p: &mut [bool],
+) -> Result<DiscreteOrder, &'static str> {
+    let discrete = &model.problem.discrete;
+    let programs = discrete.rhs.programs();
+    let (mut equations, mut memories) = (Vec::new(), Vec::new());
+    let mut outputs = Vec::with_capacity(programs.len());
+    let mut cursor = 0;
+    for (index, program) in programs.iter().enumerate() {
+        let count = crate::ScalarProgramBlock::program_output_count(program);
+        let rows = discrete
+            .rhs
+            .output_indices()
+            .get(cursor..cursor + count)
+            .ok_or("a discrete row has no output index")?;
+        let written = rows
+            .iter()
+            .map(|output| match discrete.update_targets.get(*output) {
+                Some(ScalarSlot::P { index, .. }) => Some(*index),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or("a discrete row writes outside the parameters")?;
+        let role = |output: &usize| discrete.row_roles.get(*output).copied();
+        if rows
+            .iter()
+            .all(|row| role(row) == Some(DiscreteRowRole::Equation))
+        {
+            equations.push(index);
+        } else if rows
+            .iter()
+            .all(|row| role(row) == Some(DiscreteRowRole::ConditionMemory))
+        {
+            memories.push(index);
+        } else {
+            return Err("a discrete program mixes equations and condition memories");
+        }
+        outputs.push(written);
+        cursor += count;
+    }
+    let unsettled = vec![false; y.len()];
+    let calls = &model.pure_calls;
+    let equations = scalar_dependencies::dependency_order(calls, programs, &equations, &outputs, &unsettled, p)
+        .map(|(order, _)| order)
+        .map_err(|_| "a discrete equation depends on time, a state, an input, an algebraic, or a pre() value")?;
+    static_algebraics(model, y, p)?;
+    let memories = scalar_dependencies::dependency_order(calls, programs, &memories, &outputs, y, p)
+        .map(|(order, _)| order)
+        .map_err(|_| {
+        "assertion depends on time, a continuous state, an input, or an unsupported dependence operation"
+    })?;
+    Ok(DiscreteOrder {
+        equations,
+        memories,
+    })
 }
 
 fn require_static(
@@ -94,9 +179,9 @@ fn static_algebraics(model: &SolveModel, y: &mut [bool], p: &[bool]) -> Result<(
                 dynamic_sequence,
                 ..
             } => (*static_sequence, *dynamic_sequence),
-            RefreshStage::ProjectionBlock { .. } => {
-                return Err("assertion profile requires exact algebraic assignments");
-            }
+            // A projected unknown is never proved static: it keeps the
+            // time-dependent mark every coordinate starts with.
+            RefreshStage::ProjectionBlock { .. } => continue,
         };
         for sequence in [a, b] {
             let Some(schedule) = owners.exact_assignment_schedule(sequence) else {

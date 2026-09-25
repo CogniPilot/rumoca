@@ -6,16 +6,28 @@ pub(super) fn validate(model: &crate::SolveModel) -> Result<(), &'static str> {
         .events
         .condition_memory_parameter_indices
         .clone();
+    // A parameter-determined discrete equation is settled with the parameter
+    // bindings, so the continuous kernel may read it; a condition memory is
+    // event data it never reads.
+    let discrete = &model.problem.discrete;
     memory.extend(
-        model
-            .problem
-            .discrete
+        discrete
             .update_targets
             .iter()
-            .filter_map(|slot| match slot {
+            .zip(&discrete.row_roles)
+            .filter(|(_, role)| **role != crate::DiscreteRowRole::Equation)
+            .filter_map(|(slot, _)| match slot {
                 crate::ScalarSlot::P { index, .. } => Some(*index),
                 _ => None,
             }),
+    );
+    memory.extend(
+        model
+            .problem
+            .solve_layout
+            .pre_param_bindings
+            .iter()
+            .map(|binding| binding.dest_p_index),
     );
     MemoryReads(&memory).visit_continuous_system(&model.problem.continuous)
 }
@@ -48,7 +60,9 @@ impl SolveVisitor for MemoryReads<'_> {
             _ => false,
         };
         if reads {
-            Err("continuous kernel reads assertion condition memory")
+            Err(
+                "the continuous kernel reads a condition memory or a pre() value the C profile updates only at events",
+            )
         } else {
             Ok(())
         }

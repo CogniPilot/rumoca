@@ -1,6 +1,7 @@
 use super::*;
 use crate::SolveVariableValueKind;
 
+mod c_profile_refusals;
 mod parameter_profile;
 
 #[test]
@@ -44,6 +45,7 @@ fn variable_metadata_is_available_only_through_borrowed_views() {
         minimum: Some(vec![0.0, 0.0]),
         maximum: Some(vec![3.0, 4.0]),
         nominal: Some(vec![1.0, 1.0]),
+        text_start: None,
         unit: Some("m".to_string()),
         description: Some("state".to_string()),
         causality: FmiCausality::Local,
@@ -281,6 +283,7 @@ mod max_step_duration_local {
             variability: FmiVariability::Fixed,
             tunable: false,
             declaration: fixture_span(),
+            text_start: None,
         }
     }
 

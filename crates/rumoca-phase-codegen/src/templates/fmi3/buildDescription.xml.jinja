@@ -4,6 +4,11 @@
   <BuildConfiguration modelIdentifier="{{ model_identifier }}">
     <SourceFileSet language="C99">
       <SourceFile name="model.c"/>
+      <SourceFile name="rmc_rows.c"/>
+      <SourceFile name="rmc_isolators.c"/>
+      <SourceFile name="rmc_functions.c"/>
+      <SourceFile name="rmc_assign.c"/>
+      <SourceFile name="rmc_jacobian.c"/>
       <PreprocessorDefinition name="FMI3_OVERRIDE_FUNCTION_PREFIX" value="1" description="Export the unprefixed FMI 3 shared-library ABI"/>
     </SourceFileSet>
   </BuildConfiguration>

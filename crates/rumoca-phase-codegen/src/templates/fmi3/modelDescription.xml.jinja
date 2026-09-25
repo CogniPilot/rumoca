@@ -16,11 +16,25 @@
     <Float64 name="time" valueReference="0" causality="independent" variability="continuous" unit="s"/>
 {%- set state_ordinal = namespace(value=0) %}
 {%- for variable in fmi.variables %}
-    <Float64 name="{{ variable.name | xml_escape }}" valueReference="{{ variable.value_reference_fmi3 }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.initial %} initial="{{ variable.initial }}"{% endif %}{% if variable.start is defined %} start="{% for value in variable.start %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}{% if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}{% if variable.minimum %} min="{% for value in variable.minimum %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}{% if variable.maximum %} max="{% for value in variable.maximum %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}{% if variable.nominal %} nominal="{% for value in variable.nominal %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}>
+{%- set kind = variable.value_kind %}
+{%- set element = "Float64" if kind == "Real" else ("Int32" if kind in ["Integer", "Enumeration"] else kind) %}
+    <{{ element }} name="{{ variable.name | xml_escape }}" valueReference="{{ variable.value_reference_fmi3 }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.initial %} initial="{{ variable.initial }}"{% endif %}
+{%- if variable.start is defined and kind != "String" %} start="{% for value in variable.start %}{% if kind == "Real" %}{{ value }}{% elif kind == "Boolean" %}{{ "true" if value != 0 else "false" }}{% else %}{{ value | int }}{% endif %}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}
+{%- if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}
+{%- if kind in ["Real", "Integer", "Enumeration"] %}
+{%- if variable.minimum %} min="{% for value in variable.minimum %}{{ value if kind == "Real" else value | int }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}
+{%- if variable.maximum %} max="{% for value in variable.maximum %}{{ value if kind == "Real" else value | int }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}
+{%- endif %}
+{%- if kind == "Real" and variable.nominal %} nominal="{% for value in variable.nominal %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}>
 {%- for extent in variable.dimensions %}
       <Dimension start="{{ extent }}"/>
 {%- endfor %}
-    </Float64>
+{%- if kind == "String" and variable.start is defined %}
+{%- for text in variable.text_start %}
+      <Start value="{{ text | xml_escape }}"/>
+{%- endfor %}
+{%- endif %}
+    </{{ element }}>
 {%- if variable.role == "State" %}
 {%- set state_ordinal.value = state_ordinal.value + 1 %}
 {%- endif %}

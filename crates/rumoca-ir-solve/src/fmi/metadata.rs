@@ -117,6 +117,9 @@ pub struct FmiVariable {
     pub(super) minimum: Option<Vec<f64>>,
     pub(super) maximum: Option<Vec<f64>>,
     pub(super) nominal: Option<Vec<f64>>,
+    /// The per-scalar literal start of a `String` entry, absent for every
+    /// other kind and for a `String` whose declaration gives no literal.
+    pub(super) text_start: Option<Vec<String>>,
     pub(super) unit: Option<String>,
     pub(super) description: Option<String>,
     pub(super) causality: FmiCausality,
@@ -199,6 +202,11 @@ impl FmiVariable {
     }
 
     #[must_use]
+    pub fn text_start(&self) -> Option<&[String]> {
+        self.text_start.as_deref()
+    }
+
+    #[must_use]
     pub fn unit(&self) -> Option<&str> {
         self.unit.as_deref()
     }
@@ -255,17 +263,43 @@ impl FmiVariable {
 /// The only construction site is [`super::FmiEventFreeCodegenView`]'s
 /// `Serialize`, which is reachable only after the narrowing proved the
 /// component event-free.
-pub(super) struct SerializedFmiVariables<'inventory>(&'inventory [FmiVariable]);
+pub(super) struct SerializedFmiVariables<'inventory> {
+    variables: &'inventory [FmiVariable],
+    constants: Option<&'inventory std::collections::BTreeSet<usize>>,
+}
 
 impl<'inventory> SerializedFmiVariables<'inventory> {
     pub(super) const fn borrowing(variables: &'inventory [FmiVariable]) -> Self {
-        Self(variables)
+        Self {
+            variables,
+            constants: None,
+        }
+    }
+
+    /// Encode the entries at these inventory indices as constants: `local`,
+    /// `constant`, `initial="exact"` with their start, not tunable. A
+    /// consumer that proved no program reads a parameter publishes it so, as
+    /// no set of it could take effect.
+    pub(super) const fn with_constants(
+        self,
+        constants: &'inventory std::collections::BTreeSet<usize>,
+    ) -> Self {
+        Self {
+            constants: Some(constants),
+            ..self
+        }
     }
 }
 
 impl Serialize for SerializedFmiVariables<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(self.0.iter().map(SerializedFmiVariable))
+        serializer.collect_seq(self.variables.iter().enumerate().map(|(index, variable)| {
+            SerializedFmiVariable(
+                variable,
+                self.constants
+                    .is_some_and(|constants| constants.contains(&index)),
+            )
+        }))
     }
 }
 
@@ -273,8 +307,9 @@ impl Serialize for SerializedFmiVariables<'_> {
 ///
 /// Rendering reads the same entry the checked views expose: the derived scalar
 /// identities rather than the stored ones, the typed backing owner, and a
-/// `start` key only where the entry has one to give.
-struct SerializedFmiVariable<'entry>(&'entry FmiVariable);
+/// `start` key only where the entry has one to give. The flag marks an entry
+/// published as a constant (see [`SerializedFmiVariables::with_constants`]).
+struct SerializedFmiVariable<'entry>(&'entry FmiVariable, bool);
 
 impl Serialize for SerializedFmiVariable<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -291,13 +326,22 @@ impl Serialize for SerializedFmiVariable<'_> {
         entry.serialize_entry("minimum", &variable.minimum)?;
         entry.serialize_entry("maximum", &variable.maximum)?;
         entry.serialize_entry("nominal", &variable.nominal)?;
+        entry.serialize_entry("text_start", &variable.text_start)?;
         entry.serialize_entry("unit", &variable.unit)?;
         entry.serialize_entry("description", &variable.description)?;
-        entry.serialize_entry("causality", &variable.causality)?;
-        entry.serialize_entry("variability", &variable.variability)?;
-        entry.serialize_entry("initial", &variable.initial)?;
-        entry.serialize_entry("initial_unknown", &variable.is_initial_unknown())?;
-        entry.serialize_entry("tunable", &variable.tunable)?;
+        if self.1 {
+            entry.serialize_entry("causality", &FmiCausality::Local)?;
+            entry.serialize_entry("variability", &FmiVariability::Constant)?;
+            entry.serialize_entry("initial", &Some(FmiInitial::Exact))?;
+            entry.serialize_entry("initial_unknown", &false)?;
+            entry.serialize_entry("tunable", &false)?;
+        } else {
+            entry.serialize_entry("causality", &variable.causality)?;
+            entry.serialize_entry("variability", &variable.variability)?;
+            entry.serialize_entry("initial", &variable.initial)?;
+            entry.serialize_entry("initial_unknown", &variable.is_initial_unknown())?;
+            entry.serialize_entry("tunable", &variable.tunable)?;
+        }
         entry.serialize_entry("declaration", &variable.declaration)?;
         entry.serialize_entry("value_reference_fmi3", &variable.value_reference_fmi3)?;
         entry.end()
@@ -388,4 +432,7 @@ pub struct FmiVariableInput {
     pub variability: FmiVariability,
     pub tunable: bool,
     pub declaration: Span,
+    /// The literal start of each scalar of a `String` declaration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_start: Option<Vec<String>>,
 }

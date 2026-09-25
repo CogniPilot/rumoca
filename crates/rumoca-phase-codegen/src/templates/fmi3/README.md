@@ -20,26 +20,40 @@ checked component state.
 
 ## Unsupported
 
+Public variables keep their FMI value types: Real as Float64, Integer and
+enumeration ordinals as Int32, Boolean as Boolean, and String parameters and
+constants as String with their literal start text. A String whose declaration
+gives no literal start is refused.
+
 The current profile supports parameter-dependent error assertions, including
-assertions inside pure array functions. The checked profile retains their
+assertions inside pure array functions, and discrete equations and condition
+memories determined by parameters alone. The checked profile retains the
 predicates and original messages; invalid parameters fail initialization or the
-next FMI evaluation after a legal parameter change. Time-, state-, and
-input-dependent assertions remain outside this profile.
+next FMI evaluation after a legal parameter change. Discrete equations settle
+with the parameter bindings in dependency order. Time-, state-, and
+input-dependent assertions and discrete updates remain outside this profile.
 
-Dependent parameters retain their Solve initialization assignments and export
-as calculated parameters. Changing an independent tunable parameter recomputes
-these bindings before checking assertions or reading outputs. Initialization
-residuals, projections, and state assignments remain unsupported.
+Dependent parameters retain their Solve initialization assignments, evaluated
+in dependency order, and export as calculated parameters. Changing an
+independent tunable parameter recomputes these bindings before checking
+assertions or reading outputs. An initialization residual runs the runtime's
+settled initialization (bindings and the initialization projection alternate
+until the bindings stop changing, each residual row evaluated after the
+algebraic refresh) through the shared projection kernel at the FMI tolerance.
+Initialization rows over declaration seeds, homotopy continuation, delay
+histories, and retained state-manifold rows are refused.
 
-The current profile rejects general events, clocks, runtime event history, external
-calls/tables, random operations, and coupled or non-isolable implicit residual
-systems. A continuous algebraic system is supported only when every canonical
-BLT block is a singleton with a construction-checked exact assignment. The
-issued schedule preserves causal BLT order, including chains between singleton
-algebraics. Dynamic-coefficient, coupled, and non-isolable systems remain
-unsupported. Non-finite refreshed values fail the FMI call and a failed CS step
-rolls back its state. Unimplemented FMI capabilities are absent from metadata
-and reject at the ABI.
+The current profile rejects general events, clocks, runtime event history,
+external calls/tables, and random operations. Algebraic systems run the shared
+ME projection kernel of SPEC_0044 ME-PROJ-001. Non-finite refreshed values fail
+the FMI call and a failed CS step rolls back its state. Unimplemented FMI
+capabilities are absent from metadata and reject at the ABI.
+
+The C sources are split into translation units that compile in parallel:
+`model.c` (FMI surface, refresh, kernel), `rmc_assign.c` (exact assignments),
+`rmc_rows.c` (residual rows), `rmc_jacobian.c` (forward Jacobians),
+`rmc_isolators.c` (isolators and causal runs), and `rmc_functions.c` (pure
+functions), sharing `model.h`.
 
 ## Verification
 

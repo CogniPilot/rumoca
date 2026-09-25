@@ -20,7 +20,7 @@ pub(super) fn validate(version: &str, fmu_root: &Path, standard: &Path, xml: &st
     let output = Command::new("cc")
         .args(["-std=c99", "-Wall", "-Wextra", "-Wpedantic", "-Werror"])
         .arg(format!("-I{}", standard.join("headers").display()))
-        .arg(fmu_root.join("sources/model.c"))
+        .args(source_units(fmu_root))
         .arg(&source)
         .args(["-lm", "-o"])
         .arg(&executable)
@@ -222,3 +222,14 @@ int main(void) {{
     return 0;
 }}
 "#;
+
+/// Every C translation unit the package declares, in name order.
+fn source_units(fmu_root: &Path) -> Vec<std::path::PathBuf> {
+    let mut units = fs::read_dir(fmu_root.join("sources"))
+        .expect("read FMU sources")
+        .map(|entry| entry.expect("read FMU source entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "c"))
+        .collect::<Vec<_>>();
+    units.sort();
+    units
+}

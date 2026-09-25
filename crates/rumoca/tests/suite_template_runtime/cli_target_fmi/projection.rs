@@ -149,7 +149,7 @@ equation
 end SingularSeed;"
                 .to_string(),
             outputs: &["y", "t", "s", "u"],
-            marker: Some("rescue_0:"),
+            marker: Some(SEEDED_RESCUE),
         },
     ]
 }
@@ -176,7 +176,7 @@ fn packaged_fmi_projection_paths_match_the_linked_me_kernel() {
                 let source = fs::read_to_string(fmu.root.join("sources/model.c"))
                     .expect("read generated model source");
                 assert!(
-                    source.contains(marker),
+                    emits_marker(&source, marker),
                     "{} {target} does not emit the projection path `{marker}`",
                     fixture.model
                 );
@@ -327,13 +327,12 @@ fn packaged_fmi_runs_the_complete_plan_after_a_failed_rescue() {
     let source =
         fs::read_to_string(fmu.root.join("sources/model.c")).expect("read generated model source");
     assert!(
-        source.contains("rescue_0:"),
+        has_seeded_projection_step(&source),
         "the seeded stage rescues its block"
     );
-    assert_eq!(
-        source.matches("rmc_project_complete(m, RMC_P(").count(),
-        source.matches("\nfallback:\n").count(),
-        "the staged plans project the complete plan only in their fallback"
+    assert!(
+        source.contains("failure:\n    if (complete) {"),
+        "the staged plans project the complete plan in their fallback"
     );
     let driver = work.path().join("fallback_trace.py");
     fs::write(&driver, FALLBACK_DRIVER).expect("write fallback driver");
@@ -535,3 +534,29 @@ for state in states:
 model.terminate()
 model.freeInstance()
 "#;
+
+/// The marker of a projection stage whose causal seed may need a rescue.
+const SEEDED_RESCUE: &str = "a seeded projection step";
+
+/// Whether the generated source emits the projection path `marker`.
+fn emits_marker(source: &str, marker: &str) -> bool {
+    if marker == SEEDED_RESCUE {
+        has_seeded_projection_step(source)
+    } else {
+        source.contains(marker)
+    }
+}
+
+/// Whether a refresh step table holds a projection step with seeds: the rows
+/// are `{ kind, first, count, block, seed_first, seed_count, rescue, nrescue }`
+/// with kind 2 for a projection step.
+fn has_seeded_projection_step(source: &str) -> bool {
+    source.lines().any(|line| {
+        let fields = line
+            .trim()
+            .strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix("},"))
+            .map(|row| row.split(',').map(str::trim).collect::<Vec<_>>());
+        matches!(fields.as_deref(), Some([kind, _, _, _, _, seeds, _, _]) if *kind == "2" && *seeds != "0")
+    })
+}

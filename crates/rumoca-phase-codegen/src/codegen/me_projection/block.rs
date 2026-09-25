@@ -33,6 +33,10 @@ const ISOLATION_PROGRAM: usize = 2;
 /// The pool's encoding of a residual row without an implicit target; a row
 /// with a target stores its solver-Y index plus one.
 const NO_TARGET: usize = 0;
+/// Causal run kinds as the C kernel encodes them: a multi-step isolation
+/// chain, or one step answered by its row's grouped isolator.
+const RUN_CHAIN: usize = 0;
+const RUN_ISOLATOR: usize = 1;
 
 /// One block descriptor: counts, flags, and pool offsets, in the field order
 /// of the C `RmcBlock`.
@@ -62,7 +66,8 @@ pub(super) struct BlockRecord {
     tear_col: usize,
     residual_row: usize,
     ncausal: usize,
-    causal: usize,
+    ncruns: usize,
+    cruns: usize,
     causal_target: usize,
     causal_col: usize,
     elimination: bool,
@@ -399,31 +404,110 @@ fn record_torn(
     ) else {
         return Err(refuse(canonical, "tears outside its own rows or unknowns"));
     };
-    let mut isolators = Vec::with_capacity(causal.len());
-    for &(row, target) in &causal {
-        let (program, offset) = sources
-            .implicit
-            .row_output_position(row)
-            .ok_or_else(|| refuse(canonical, "recovers through a row without a scalar view"))?;
-        let TargetIsolationProgram::Isolator(_) = sources
-            .implicit
-            .target_isolation_output_program(program, offset, target)
-        else {
-            return Err(refuse(
-                canonical,
-                "recovers through a row without an isolator",
-            ));
-        };
-        isolators.push(table.isolators.intern((program, offset, target)));
-    }
+    let runs = causal_runs(sources, table, canonical, &causal)?;
     record.torn = true;
     record.k = tear_col.len();
     record.ncausal = causal.len();
     record.tear_col = table.push(tear_col);
     record.residual_row = table.push(residual_row);
-    record.causal = table.push(isolators);
+    record.ncruns = runs.len() / 4;
+    record.cruns = table.push(runs);
     record.causal_target = table.push(causal.iter().map(|&(_, y)| y));
     record.causal_col = table.push(causal_col);
+    Ok(())
+}
+
+/// The causal sweep as runs of consecutive steps recovered from one residual
+/// program, each a (chain function, first step, step count) triple. A step
+/// joins the run before it when one chain program answers both in order
+/// (`target_isolation_chain_program`: non-decreasing prefixes, and no prefix
+/// reads an earlier step's target), so each run evaluates its row prefix once
+/// and the sweep computes exactly the values of the per-step isolators.
+/// A run under construction: its residual program, its (output, target)
+/// pairs, and its first causal step.
+type CausalRun = (usize, Vec<(usize, usize)>, usize);
+
+fn causal_runs(
+    sources: &BlockSources<'_>,
+    table: &mut ProgramTable,
+    canonical: usize,
+    causal: &[(usize, usize)],
+) -> Result<Vec<usize>, CodegenError> {
+    let mut runs = Vec::new();
+    let mut run: Option<CausalRun> = None;
+    for (step, &(row, target)) in causal.iter().enumerate() {
+        let (program, offset) = sources
+            .implicit
+            .row_output_position(row)
+            .ok_or_else(|| refuse(canonical, "recovers through a row without a scalar view"))?;
+        if !matches!(
+            sources
+                .implicit
+                .target_isolation_output_program(program, offset, target),
+            TargetIsolationProgram::Isolator(_)
+        ) {
+            return Err(refuse(
+                canonical,
+                "recovers through a row without an isolator",
+            ));
+        }
+        if let Some((current, pairs, _)) = run.as_mut()
+            && *current == program
+        {
+            pairs.push((offset, target));
+            if sources
+                .implicit
+                .target_isolation_chain_program(program, pairs)
+                .is_some()
+            {
+                continue;
+            }
+            pairs.pop();
+        }
+        if let Some(finished) = run.take() {
+            push_run(sources, table, canonical, finished, &mut runs)?;
+        }
+        run = Some((program, vec![(offset, target)], step));
+    }
+    if let Some(finished) = run {
+        push_run(sources, table, canonical, finished, &mut runs)?;
+    }
+    Ok(runs)
+}
+
+fn push_run(
+    sources: &BlockSources<'_>,
+    table: &mut ProgramTable,
+    canonical: usize,
+    (program, pairs, first): CausalRun,
+    runs: &mut Vec<usize>,
+) -> Result<(), CodegenError> {
+    let count = pairs.len();
+    if let [(offset, target)] = pairs[..] {
+        runs.extend([
+            RUN_ISOLATOR,
+            table.isolators.intern((program, offset, target)),
+            first,
+            1,
+        ]);
+        return Ok(());
+    }
+    let function = table.causal.intern((program, pairs.clone()), || {
+        let operations = sources
+            .implicit
+            .target_isolation_chain_program(program, &pairs)
+            .ok_or_else(|| {
+                refuse(
+                    canonical,
+                    "recovers through an isolator chain that does not materialize",
+                )
+            })?;
+        Ok((
+            operations,
+            program_span(sources.implicit.block(), canonical, program)?,
+        ))
+    })?;
+    runs.extend([RUN_CHAIN, function, first, count]);
     Ok(())
 }
 

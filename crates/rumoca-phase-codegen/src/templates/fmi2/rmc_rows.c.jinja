@@ -1,0 +1,5 @@
+{%- from "fmi-me-projection.jinja" import rows_unit %}
+#include "model.h"
+/* Residual-row programs of the projection blocks. */
+typedef int RmcRowsUnit;
+{{ rows_unit(me_refresh) }}

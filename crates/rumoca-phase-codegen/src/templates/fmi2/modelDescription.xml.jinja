@@ -9,11 +9,21 @@
   <ModelExchange modelIdentifier="{{ model_identifier }}">
     <SourceFiles>
       <File name="model.c"/>
+      <File name="rmc_rows.c"/>
+      <File name="rmc_isolators.c"/>
+      <File name="rmc_functions.c"/>
+      <File name="rmc_assign.c"/>
+      <File name="rmc_jacobian.c"/>
     </SourceFiles>
   </ModelExchange>
   <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true">
     <SourceFiles>
       <File name="model.c"/>
+      <File name="rmc_rows.c"/>
+      <File name="rmc_isolators.c"/>
+      <File name="rmc_functions.c"/>
+      <File name="rmc_assign.c"/>
+      <File name="rmc_jacobian.c"/>
     </SourceFiles>
   </CoSimulation>
   <UnitDefinitions>
@@ -29,7 +39,16 @@
 {%- for variable in fmi.variables %}
 {%- for scalar in range(variable.storage.scalar_count) %}
     <ScalarVariable name="{{ variable.scalar_names[scalar] | xml_escape }}" valueReference="{{ index.vr }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.initial %} initial="{{ variable.initial }}"{% endif %}{% if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}>
+{%- set kind = variable.value_kind %}
+{%- if kind == "Real" %}
       <Real{% if variable.start is defined %} start="{{ variable.start[scalar] }}"{% endif %}{% if variable.minimum %} min="{{ variable.minimum[scalar] }}"{% endif %}{% if variable.maximum %} max="{{ variable.maximum[scalar] }}"{% endif %}{% if variable.nominal %} nominal="{{ variable.nominal[scalar] }}"{% endif %}/>
+{%- elif kind in ["Integer", "Enumeration"] %}
+      <Integer{% if variable.start is defined %} start="{{ variable.start[scalar] | int }}"{% endif %}{% if variable.minimum %} min="{{ variable.minimum[scalar] | int }}"{% endif %}{% if variable.maximum %} max="{{ variable.maximum[scalar] | int }}"{% endif %}/>
+{%- elif kind == "Boolean" %}
+      <Boolean{% if variable.start is defined %} start="{{ "true" if variable.start[scalar] != 0 else "false" }}"{% endif %}/>
+{%- else %}
+      <String{% if variable.start is defined %} start="{{ variable.text_start[scalar] | xml_escape }}"{% endif %}/>
+{%- endif %}
     </ScalarVariable>
 {%- set index.model = index.model + 1 %}
 {%- set index.vr = index.vr + 1 %}

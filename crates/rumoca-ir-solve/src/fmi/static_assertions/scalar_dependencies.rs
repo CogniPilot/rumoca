@@ -107,6 +107,18 @@ fn transfer(
                     && r[*rhs_start as usize + i * rhs_stride];
             }
         }
+        // Every filled element repeats the value lanes.
+        Op::TensorFill {
+            dst_start,
+            value_start,
+            count,
+            lanes,
+        } => {
+            let start = *value_start as usize;
+            let stable = r.get(start..start + lanes)?.iter().all(|v| *v);
+            let start = *dst_start as usize;
+            r.get_mut(start..start + count * lanes)?.fill(stable);
+        }
         Op::StoreOutput { src } => outputs.push(r[*src as usize]),
         Op::StoreOutputRange {
             start,
@@ -123,4 +135,54 @@ fn transfer(
         }
     }
     Some(())
+}
+
+/// Why no dependency order exists.
+pub(in crate::fmi) enum OrderError {
+    /// A program holds an operation the dependence analysis does not model.
+    Unsupported,
+    /// A program reads a value nothing settles (time, a state, an input, or a
+    /// cycle).
+    Unsettled,
+}
+
+/// The order in which `candidates` (indices into `programs`) can each be
+/// evaluated once from settled values, grouped into dependency levels: a
+/// program joins the first level at which every output it computes is settled
+/// under `p`, and its `outputs` settle for the levels after it. Returns the
+/// order and the number of levels, which is the number of repeated
+/// simultaneous sweeps that settle every program from arbitrary values.
+pub(in crate::fmi) fn dependency_order(
+    table: &SolvePureCallTable,
+    programs: &[Vec<Op>],
+    candidates: &[usize],
+    outputs: &[Vec<usize>],
+    y: &[bool],
+    p: &mut [bool],
+) -> Result<(Vec<usize>, usize), OrderError> {
+    let mut pending = candidates.to_vec();
+    let mut order = Vec::with_capacity(pending.len());
+    let mut levels = 0;
+    while !pending.is_empty() {
+        let first = order.len();
+        let mut waiting = Vec::new();
+        for index in pending {
+            let settled =
+                program_outputs(table, &programs[index], y, p).ok_or(OrderError::Unsupported)?;
+            if settled.iter().all(|value| *value) {
+                order.push(index);
+            } else {
+                waiting.push(index);
+            }
+        }
+        if order.len() == first {
+            return Err(OrderError::Unsettled);
+        }
+        for index in &order[first..] {
+            outputs[*index].iter().for_each(|target| p[*target] = true);
+        }
+        levels += 1;
+        pending = waiting;
+    }
+    Ok((order, levels))
 }

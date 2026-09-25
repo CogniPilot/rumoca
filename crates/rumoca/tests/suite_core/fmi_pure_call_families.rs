@@ -1,8 +1,8 @@
 //! Generated FMI C emits each content-identical pure-call family once.
 //!
 //! `sq` is called from two residual rows and from inside `wrap`, so the Solve
-//! lowering issues one pure-call owner per call site. The rendered `model.c`
-//! must define one C function per family (primal and directional) and route
+//! lowering issues one pure-call owner per call site. The rendered C sources
+//! (every translation unit and the shared `model.h`) must define one C function per family (primal and directional) and route
 //! every call site, including the nested call inside `wrap`, through the
 //! family representative's symbol.
 
@@ -36,7 +36,8 @@ equation
   c = wrap(x);
 end TwoCalls;";
 
-fn model_c(target: &str) -> String {
+/// Every rendered C translation unit and the shared header, concatenated.
+fn c_sources(target: &str) -> String {
     let compiled = match rumoca::Compiler::new()
         .model("TwoCalls")
         .compile_str(SOURCE, "TwoCalls.mo")
@@ -48,13 +49,19 @@ fn model_c(target: &str) -> String {
         Ok(files) => files,
         Err(error) => panic!("render TwoCalls {target}: {error:#}"),
     };
-    let Some(file) = files
+    assert!(
+        files.iter().any(|file| file.path == "sources/model.c"),
+        "TwoCalls {target} emits sources/model.c"
+    );
+    files
         .into_iter()
-        .find(|file| file.path == "sources/model.c")
-    else {
-        panic!("TwoCalls {target} emits sources/model.c");
-    };
-    file.content
+        .filter(|file| {
+            file.path.starts_with("sources/")
+                && (file.path.ends_with(".c") || file.path.ends_with(".h"))
+        })
+        .map(|file| file.content)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Owner ids named by `<prefix><id>(` occurrences in `text`.
@@ -141,10 +148,11 @@ fn assert_families(target: &str, source: &str, directional: &str) {
 #[test]
 fn identical_pure_call_owners_render_one_routed_family() {
     for target in ["fmi3", "fmi2"] {
-        let source = model_c(target);
+        let source = c_sources(target);
         assert_families(target, &source, "");
         assert_families(target, &source, "directional_");
-        let sq_sites = symbols(&source, "rumoca_scalar_pure_").len();
+        // Call sites only: every program calls a wrapper as `if (wrapper(...))`.
+        let sq_sites = symbols(&source, "if (rumoca_scalar_pure_").len();
         assert!(
             sq_sites >= 3,
             "{target}: every scalar-program call site is emitted ({sq_sites})"

@@ -1,0 +1,5 @@
+{%- from "fmi-me-projection.jinja" import isolators_unit %}
+#include "model.h"
+/* Target isolators and causal runs of the projection blocks. */
+typedef int RmcIsolatorsUnit;
+{{ isolators_unit(me_refresh) }}

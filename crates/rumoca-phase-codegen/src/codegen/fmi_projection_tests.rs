@@ -86,6 +86,7 @@ fn state_input() -> solve::fmi::FmiVariableInput {
         variability: solve::fmi::FmiVariability::Continuous,
         tunable: false,
         declaration: fixture_span(),
+        text_start: None,
     }
 }
 
@@ -285,7 +286,113 @@ fn a_state_manifold_projection_is_refused_before_any_byte() {
     assert!(
         error
             .to_string()
-            .contains("C initialization requires parameter assignments without residuals"),
+            .contains("C initialization cannot certify retained state-manifold rows"),
+        "{error}"
+    );
+}
+
+/// A chain of `depth` parameter bindings `p[k] = p[k-1] + 1` over one run of
+/// `depth + 1` parameters, beside the state run.
+fn component_with_binding_chain(depth: usize) -> solve::fmi::FmiComponent {
+    let mut model = model_with_one_state_run(false);
+    let count = depth + 1;
+    model.problem.layout = solve::VarLayout::from_parts(IndexMap::new(), 2, count);
+    model
+        .problem
+        .solve_layout
+        .variable_storage_runs
+        .push(solve::SolveVariableStorageRun {
+            base: solve::ScalarSlot::P {
+                index: 0,
+                byte_offset: 0,
+            },
+            scalar_count: count,
+            role: solve::SolveVariableStorageRole::Parameter,
+            value_kind: solve::SolveVariableValueKind::Real,
+        });
+    model
+        .problem
+        .solve_layout
+        .variable_declarations
+        .push(solve::SolveVariableDeclaration::new(
+            solve::SolveVariableStorageRole::Parameter,
+            solve::SolveVariableValueKind::Real,
+        ));
+    model.problem.solve_layout.parameter_count = count;
+    let programs = (1..count)
+        .map(|k| {
+            vec![
+                solve::LinearOp::LoadP {
+                    dst: 0,
+                    index: k - 1,
+                },
+                solve::LinearOp::Const { dst: 1, value: 1.0 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Add,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ]
+        })
+        .collect();
+    let mut initialization = model.problem.initialization.clone().into_input();
+    initialization.update_rhs = solve::ScalarProgramBlock::with_source_span(
+        programs,
+        fixture_span()
+            .require_provenance("binding chain fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("the chain is computable");
+    initialization.update_targets = (1..count)
+        .map(|index| solve::ScalarSlot::P {
+            index,
+            byte_offset: 8 * index,
+        })
+        .collect();
+    model.problem.initialization = solve::InitializationSolveSystem::construct(initialization)
+        .expect("each binding owns its own target");
+    let parameter = solve::fmi::FmiVariableInput {
+        name: "p".to_string(),
+        scalar_names: (1..=count).map(|k| format!("p[{k}]")).collect(),
+        role: solve::SolveVariableStorageRole::Parameter,
+        dimensions: vec![count as u32],
+        start: vec![0.0; count],
+        causality: solve::fmi::FmiCausality::Parameter,
+        variability: solve::fmi::FmiVariability::Fixed,
+        ..state_input()
+    };
+    solve::fmi::FmiComponent::construct(model, vec![state_input(), parameter])
+        .expect("the binding chain is a checked component")
+}
+
+/// The runtime settles parameter bindings with at most
+/// `ALGEBRAIC_REFRESH_MAX_ITERS` simultaneous sweeps; a chain deep enough to
+/// exhaust them is refused rather than exported to settle where the linked
+/// kernel fails (SPEC_0044 ME-PARAM-001).
+#[test]
+fn a_binding_chain_the_runtime_cannot_settle_is_refused() {
+    let limit = rumoca_eval_solve::projection_policy::ALGEBRAIC_REFRESH_MAX_ITERS;
+    let render = |depth| {
+        let view = component_with_binding_chain(depth)
+            .into_codegen_view()
+            .try_c()
+            .expect("an acyclic parameter chain is admitted");
+        assert_eq!(view.parameter_binding_levels(), depth);
+        SolveTemplateRenderer::new_owned_with_fmi(view)
+    };
+    assert!(
+        render(limit - 1).is_ok(),
+        "a chain within the sweep limit renders"
+    );
+    let error = render(limit)
+        .map(|_| ())
+        .expect_err("the runtime cannot settle it");
+    assert!(
+        error.to_string().contains(&format!(
+            "parameter bindings form a dependency chain {limit} levels deep"
+        )),
         "{error}"
     );
 }

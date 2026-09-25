@@ -1,0 +1,37 @@
+{%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
+{%- from "fmi-c-kernel.jinja" import text_fields %}
+{%- from "fmi-me-projection.jinja" import workspace_fields, kernel_declarations %}
+{%- from "fmi-typed-functions.jinja" import function_prototypes %}
+/* Declarations shared by the component's translation units. */
+#ifndef RUMOCA_FMU_MODEL_H
+#define RUMOCA_FMU_MODEL_H
+#include <float.h>
+#include <math.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define FMI2_FUNCTION_PREFIX {{ model_identifier }}_
+#include "fmi2Functions.h"
+#define FMI_EXPORT FMI2_Export
+
+enum ModelState { MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED };
+#define Y_LEN {{ solve.layout.y_scalars if solve.layout.y_scalars > 0 else 1 }}
+#define P_LEN {{ solve.layout.p_scalars if solve.layout.p_scalars > 0 else 1 }}
+#define STATE_LEN {{ solve.solve_layout.state_scalar_count if solve.solve_layout.state_scalar_count > 0 else 1 }}
+typedef struct {
+    bool assertions_initialized; bool assertion_failed; bool parameters_dirty;
+    double time; double tolerance;
+    double y[Y_LEN];
+    double p[P_LEN];
+    double derivative[STATE_LEN];
+    enum ModelState state;
+    fmi2Type type;
+    fmi2CallbackFunctions callbacks;{{ text_fields(fmi_text_starts) }}
+   {{ workspace_fields(me_refresh) }}
+} ModelInstance;
+{{ kernel_declarations(me_refresh) }}
+{{ function_prototypes(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 else []) }}
+#endif

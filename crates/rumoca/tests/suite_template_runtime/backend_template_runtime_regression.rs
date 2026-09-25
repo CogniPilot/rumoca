@@ -101,23 +101,21 @@ end ExactAlgebraic;
     for target in ["fmi2", "fmi3"] {
         let files = rumoca::render_target_files(&compiled, "ExactAlgebraic", target, None)
             .expect("FMI consumes the checked exact-assignment schedule");
-        let model_c = files
-            .iter()
-            .find(|file| file.path == "sources/model.c")
-            .expect("FMI emits its C kernel");
+        let model_c = source_unit(&files, "sources/model.c");
+        let assign_c = source_unit(&files, "sources/rmc_assign.c");
         assert!(
-            model_c.content.contains("refresh_algebraics"),
+            model_c.contains("refresh_algebraics"),
             "the FMI kernel must emit the exact algebraic refresh"
         );
         assert!(
-            model_c.content.contains("m->y[1] = r["),
+            assign_c.contains("m->y[1] = r["),
             "the FMI kernel must commit the checked algebraic target"
         );
         assert!(
-            model_c.content.contains("if (!isfinite(m->y[1]))"),
+            assign_c.contains("if (!isfinite(m->y[1]))"),
             "the FMI kernel must reject a non-finite refreshed algebraic value"
         );
-        execute_emitted_algebraic_refresh(&model_c.content, target);
+        execute_emitted_algebraic_refresh(&model_c, &assign_c, target);
     }
 
     for target in [
@@ -164,16 +162,7 @@ end TunableAlgebraicCoefficient;
         let files =
             rumoca::render_target_files(&compiled, "TunableAlgebraicCoefficient", target, None)
                 .expect("FMI refreshes an algebraic through a tunable coefficient");
-        let model_c = files
-            .iter()
-            .find(|file| file.path == "sources/model.c")
-            .expect("FMI emits its C kernel");
-        let refresh = model_c
-            .content
-            .split("refresh_algebraics(ModelInstance* m) {")
-            .nth(1)
-            .and_then(|rest| rest.split("\n}\n").next())
-            .expect("FMI emits the algebraic refresh body");
+        let refresh = source_unit(&files, "sources/rmc_assign.c");
         assert!(
             refresh.contains("m->p[0]"),
             "the refresh reads the tunable coefficient at run time instead of a folded value"
@@ -196,7 +185,7 @@ end FinalRk4Algebraic;
 "#,
     );
     execute_emitted_fmi3_kernel(
-        &rendered.model_c,
+        (&rendered.model_c, &rendered.assign_c),
         2,
         1,
         r#"
@@ -258,7 +247,7 @@ end NonfiniteFinalAlgebraic;
     if (fabs(last_time - 0.1) > 1.0e-12) return 12;
 "#
     );
-    execute_emitted_fmi3_kernel(&rendered.model_c, 2, 1, &body);
+    execute_emitted_fmi3_kernel((&rendered.model_c, &rendered.assign_c), 2, 1, &body);
 }
 
 #[test]
@@ -278,7 +267,7 @@ end ChainedSingletons;
 "#,
     );
     execute_emitted_fmi3_kernel(
-        &rendered.model_c,
+        (&rendered.model_c, &rendered.assign_c),
         3,
         1,
         r#"
@@ -293,6 +282,7 @@ end ChainedSingletons;
 
 struct RenderedFmi3 {
     model_c: String,
+    assign_c: String,
     model_description: String,
 }
 
@@ -329,6 +319,7 @@ fn render_fmi3_model(model: &str, source: &str) -> RenderedFmi3 {
     };
     RenderedFmi3 {
         model_c: content("sources/model.c"),
+        assign_c: content("sources/rmc_assign.c").replace("#include \"model.h\"", ""),
         model_description: files
             .iter()
             .find(|file| file.path == "modelDescription.xml")
@@ -338,12 +329,18 @@ fn render_fmi3_model(model: &str, source: &str) -> RenderedFmi3 {
     }
 }
 
-fn execute_emitted_fmi3_kernel(model_c: &str, y_len: usize, state_len: usize, body: &str) {
+fn execute_emitted_fmi3_kernel(
+    (model_c, assign_c): (&str, &str),
+    y_len: usize,
+    state_len: usize,
+    body: &str,
+) {
     let kernel_start = model_c
-        .find("static void initialize_values")
+        .find("#include \"model.h\"")
+        .map(|offset| offset + "#include \"model.h\"".len())
         .expect("rendered FMI3 C owns its initialization and integration kernels");
     let kernel_end = model_c[kernel_start..]
-        .find("static size_t value_count")
+        .find("enum RmcColumn")
         .map(|offset| kernel_start + offset)
         .expect("rendered FMI3 C terminates its integration kernel");
     let do_step_start = model_c
@@ -360,24 +357,20 @@ fn execute_emitted_fmi3_kernel(model_c: &str, y_len: usize, state_len: usize, bo
         .map(|offset| value_helpers_start + offset)
         .expect("rendered FMI3 C terminates its value helpers");
     let value_helpers = &model_c[value_helpers_start..value_helpers_end];
-    let public_values_start = model_c
-        .find("FMI_EXPORT fmi3Status fmi3GetFloat64")
-        .expect("rendered FMI3 C owns Float64 accessors");
-    let public_values_end = model_c[public_values_start..]
-        .find("FMI_EXPORT fmi3Status fmi3SetTime")
-        .map(|offset| public_values_start + offset)
-        .expect("rendered FMI3 C terminates Float64 accessors");
-    let public_values = &model_c[public_values_start..public_values_end];
     let do_step = &model_c[do_step_start..do_step_end];
     let driver = format!(
         r#"
 #include <math.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #define FMI_EXPORT
 typedef void* fmi3Instance;
 typedef double fmi3Float64;
+typedef int32_t fmi3Int32;
+typedef const char* fmi3String;
 typedef int fmi3Boolean;
 typedef unsigned int fmi3ValueReference;
 typedef enum {{ fmi3OK = 0, fmi3Error = 3 }} fmi3Status;
@@ -387,10 +380,11 @@ enum InterfaceType {{ INTERFACE_ME, INTERFACE_CS }};
 #define Y_LEN {y_len}
 #define P_LEN 1
 #define STATE_LEN {state_len}
-typedef struct {{ bool assertions_initialized; bool assertion_failed; bool parameters_dirty; double time; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type; }} ModelInstance;
+#define RMC_API
+typedef struct {{ bool assertions_initialized; bool assertion_failed; bool parameters_dirty; double time; double tolerance; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type; }} ModelInstance;
+{assign_c}
 {kernel}
 {value_helpers}
-{public_values}
 {do_step}
 int main(void) {{
     ModelInstance model = {{0}};
@@ -432,15 +426,16 @@ fn compile_and_run_c(driver: &str, label: &str) {
     );
 }
 
-fn execute_emitted_algebraic_refresh(model_c: &str, prefix: &str) {
+fn execute_emitted_algebraic_refresh(model_c: &str, assign_c: &str, prefix: &str) {
     let start = model_c
-        .find(&format!("static {prefix}Status refresh_parameters"))
+        .find(&format!("static {prefix}Status update_discrete_equations"))
         .expect("rendered FMI C owns parameter and algebraic refresh");
     let tail = &model_c[start..];
     let end = tail
         .find(&format!("static {prefix}Status settle_values"))
         .expect("rendered FMI C terminates the algebraic refresh kernel");
     let refresh = &tail[..end];
+    let assign = assign_c.replace("#include \"model.h\"", "");
     let driver = format!(
         r#"
 #include <math.h>
@@ -449,10 +444,13 @@ fn execute_emitted_algebraic_refresh(model_c: &str, prefix: &str) {
 #include <string.h>
 #define Y_LEN 2
 typedef enum {{ {prefix}OK = 0, {prefix}Error = 3 }} {prefix}Status;
+#define RMC_API
 typedef struct {{ bool parameters_dirty; double time; double y[2]; double p[1]; }} ModelInstance;
+{assign}
 {refresh}
 int main(void) {{
     ModelInstance model = {{0}};
+    (void)update_assertion_memory;
     model.y[0] = 3.0;
     if (refresh_algebraics(&model) != {prefix}OK) return 1;
     if (fabs(model.y[1] - 6.0) > 1.0e-12) return 2;
@@ -799,4 +797,14 @@ adjoint = jax.jacrev(generated.rhs, argnums=1)(0.0, jnp.array([1.0]), jnp.zeros(
 assert float(adjoint[0, 0]) == -2.0
 "#,
     );
+}
+
+/// One rendered source unit's text.
+fn source_unit(files: &[RenderedTargetFile], path: &str) -> String {
+    files
+        .iter()
+        .find(|file| file.path == path)
+        .unwrap_or_else(|| panic!("FMI emits {path}"))
+        .content
+        .clone()
 }

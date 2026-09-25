@@ -1,46 +1,19 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array %}
-{%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields %}
-{%- from "fmi-typed-functions.jinja" import functions %}
-#include <float.h>
-#include <math.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <stdlib.h>
-#include <string.h>
-
-#define FMI2_FUNCTION_PREFIX {{ model_identifier }}_
-#include "fmi2Functions.h"
-#define FMI_EXPORT FMI2_Export
-
-enum ModelState { MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED };
-#define Y_LEN {{ solve.layout.y_scalars if solve.layout.y_scalars > 0 else 1 }}
-#define P_LEN {{ solve.layout.p_scalars if solve.layout.p_scalars > 0 else 1 }}
-#define STATE_LEN {{ solve.solve_layout.state_scalar_count if solve.solve_layout.state_scalar_count > 0 else 1 }}
-typedef struct {
-    bool assertions_initialized; bool assertion_failed; bool parameters_dirty;
-    double time;
-    double y[Y_LEN];
-    double p[P_LEN];
-    double derivative[STATE_LEN];
-    enum ModelState state;
-    fmi2Type type;
-    fmi2CallbackFunctions callbacks;
-   {{ workspace_fields(me_refresh) }}
-} ModelInstance;
-{{ functions(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 else []) }}
+{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array, rmc_kind, text_fields, text_table %}
+{%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields, workspace_reset %}
+#include "model.h"
+{{ text_table(fmi_text_starts) }}
 
 static void initialize_values(ModelInstance* m) {
 {{- value_array("initial_y", "Y_LEN", fmi.initial_y) }}
 {{- value_array("initial_p", "P_LEN", fmi.initial_parameters) }}
-    m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true;
+    m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true; m->tolerance=0.0; rmc_release_text(m);{{ workspace_reset(me_refresh) }}
     memcpy(m->y, initial_y, sizeof(m->y));
     memcpy(m->p, initial_p, sizeof(m->p));
     m->time = 0.0;
 }
 
-{% if fmi.assertions %}
+{% if fmi.assertions and solve.events.actions|length > 0 %}
 static void log_assertion(ModelInstance* m, const char* message) { if (m->callbacks.logger) m->callbacks.logger(m->callbacks.componentEnvironment, "Rumoca", fmi2Error, "assertion", "%s", message); }
 {% endif %}
 #define RMC_LOG(m, message) do { if ((m)->callbacks.logger) (m)->callbacks.logger((m)->callbacks.componentEnvironment, "Rumoca", fmi2Error, "error", "%s", (message)); } while (0)
@@ -94,43 +67,48 @@ static fmi2Status integrate_rk4(ModelInstance* m, fmi2Real start, fmi2Real step)
 
 {#- One row per FMI 2 value reference, indexed by the reference itself: time
     is 0, then every variable scalar in inventory order, then every state
-    derivative scalar. -#}
-enum RmcColumn { RMC_COLUMN_TIME, RMC_COLUMN_Y, RMC_COLUMN_P, RMC_COLUMN_DERIVATIVE };
+    derivative scalar. Integer and enumeration values are Integer and Boolean
+    values Boolean, all held in the numeric storage run; String values live in
+    the instance text table. -#}
+enum RmcColumn { RMC_COLUMN_TIME, RMC_COLUMN_Y, RMC_COLUMN_P, RMC_COLUMN_DERIVATIVE, RMC_COLUMN_TEXT };
+enum RmcKind { RMC_KIND_FLOAT64, RMC_KIND_INT32, RMC_KIND_BOOLEAN, RMC_KIND_STRING };
 enum RmcAccess { RMC_ACCESS_FIXED, RMC_ACCESS_STATE, RMC_ACCESS_INPUT, RMC_ACCESS_PARAMETER, RMC_ACCESS_TUNABLE_PARAMETER };
-typedef struct { unsigned char column; unsigned char access; unsigned char marks_parameters; size_t index; } RmcValueReference;
+typedef struct { unsigned char column; unsigned char kind; unsigned char access; unsigned char marks_parameters; size_t index; } RmcValueReference;
 static const RmcValueReference rmc_value_references[] = {
-    {RMC_COLUMN_TIME, RMC_ACCESS_FIXED, 0, 0},
-{%- set row = namespace(count=0) %}
+    {RMC_COLUMN_TIME, RMC_KIND_FLOAT64, RMC_ACCESS_FIXED, 0, 0},
+{%- set row = namespace(count=0, text=0) %}
 {%- for variable in fmi.variables %}
-{%- set column %}{% if variable.storage.column == "y" %}RMC_COLUMN_Y{% elif variable.storage.column == "p" %}RMC_COLUMN_P{% else %}{{ fail("unsupported-feature:fmi.c.value-reference-column " ~ variable.storage.column) }}{% endif %}{% endset %}
+{%- set column %}{% if variable.value_kind == "String" %}RMC_COLUMN_TEXT{% elif variable.storage.column == "y" %}RMC_COLUMN_Y{% elif variable.storage.column == "p" %}RMC_COLUMN_P{% else %}{{ fail("unsupported-feature:fmi.c.value-reference-column " ~ variable.storage.column) }}{% endif %}{% endset %}
 {%- set access %}{% if variable.role == "State" %}RMC_ACCESS_STATE{% elif variable.causality == "input" %}RMC_ACCESS_INPUT{% elif variable.causality == "parameter" %}{% if variable.tunable %}RMC_ACCESS_TUNABLE_PARAMETER{% else %}RMC_ACCESS_PARAMETER{% endif %}{% else %}RMC_ACCESS_FIXED{% endif %}{% endset %}
 {%- for scalar in range(variable.storage.scalar_count) %}{% if row.count % 6 == 0 %}
-   {% endif %} { {{- column }}, {{ access }}, {{ 1 if variable.causality == "parameter" else 0 }}, {{ variable.storage.base + scalar -}} },
+   {% endif %} { {{- column }}, {{ rmc_kind(variable) }}, {{ access }}, {{ 1 if variable.causality == "parameter" and variable.value_kind != "String" else 0 }}, {% if variable.value_kind == "String" %}{{ row.text }}{% set row.text = row.text + 1 %}{% else %}{{ variable.storage.base + scalar }}{% endif -%} },
 {%- set row.count = row.count + 1 %}
 {%- endfor %}
 {%- endfor %}
 {%- for scalar in range(solve.solve_layout.state_scalar_count) %}{% if row.count % 6 == 0 %}
-   {% endif %} {RMC_COLUMN_DERIVATIVE, RMC_ACCESS_FIXED, 0, {{ scalar }}},
+   {% endif %} {RMC_COLUMN_DERIVATIVE, RMC_KIND_FLOAT64, RMC_ACCESS_FIXED, 0, {{ scalar }}},
 {%- set row.count = row.count + 1 %}
 {%- endfor %}
 };
 #define RMC_VALUE_REFERENCES (sizeof(rmc_value_references) / sizeof(rmc_value_references[0]))
 
-static fmi2Status get_real(ModelInstance* m, fmi2ValueReference vr, fmi2Real* value) {
+static const RmcValueReference* rmc_reference(fmi2ValueReference vr, unsigned char kind) {
+    return vr < RMC_VALUE_REFERENCES && rmc_value_references[vr].kind == kind ? &rmc_value_references[vr] : NULL;
+}
+/* One settled numeric value. */
+static fmi2Status rmc_get_numeric(ModelInstance* m, const RmcValueReference* ref, double* value) {
     if (settle_values(m) != fmi2OK) return fmi2Error;
-    if (vr >= RMC_VALUE_REFERENCES) return fmi2Error;
-    const RmcValueReference* ref = &rmc_value_references[vr];
     switch (ref->column) {
     case RMC_COLUMN_TIME: *value = m->time; return fmi2OK;
     case RMC_COLUMN_Y: *value = m->y[ref->index]; return fmi2OK;
     case RMC_COLUMN_P: *value = m->p[ref->index]; return fmi2OK;
-    default: if (evaluate_derivatives(m) != fmi2OK) return fmi2Error; *value = m->derivative[ref->index]; return fmi2OK;
+    case RMC_COLUMN_DERIVATIVE: if (evaluate_derivatives(m) != fmi2OK) return fmi2Error; *value = m->derivative[ref->index]; return fmi2OK;
+    default: return fmi2Error;
     }
 }
 
-static fmi2Boolean can_set_real(const ModelInstance* m, fmi2ValueReference vr) {
-    if (vr >= RMC_VALUE_REFERENCES) return fmi2False;
-    switch (rmc_value_references[vr].access) {
+static fmi2Boolean rmc_can_set(const ModelInstance* m, const RmcValueReference* ref) {
+    switch (ref->access) {
     case RMC_ACCESS_STATE:
         return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
             || (m->type == fmi2ModelExchange && m->state == MODEL_CONTINUOUS);
@@ -148,19 +126,29 @@ static fmi2Boolean can_set_real(const ModelInstance* m, fmi2ValueReference vr) {
     }
 }
 
-static fmi2Status set_real(ModelInstance* m, fmi2ValueReference vr, fmi2Real value) {
-    if (!isfinite(value)) return fmi2Error;
-    if (vr >= RMC_VALUE_REFERENCES) return fmi2Error;
-    const RmcValueReference* ref = &rmc_value_references[vr];
-    switch (ref->column) {
-    case RMC_COLUMN_Y: m->y[ref->index] = value; break;
-    case RMC_COLUMN_P: m->p[ref->index] = value; break;
-    default: return fmi2Error;
-    }
-    if (ref->marks_parameters) m->parameters_dirty = true;
-    return fmi2OK;
+#define RMC_GET_NUMERIC(Name, Type, KIND, CONVERT) \
+FMI_EXPORT fmi2Status fmi2Get##Name(fmi2Component c, const fmi2ValueReference vr[], size_t n, Type values[]) { \
+    ModelInstance* m = c; \
+    if (!m || (!vr && n) || (!values && n) || m->state == MODEL_INSTANTIATED) return fmi2Error; \
+    for (size_t i = 0; i < n; ++i) { \
+        const RmcValueReference* ref = rmc_reference(vr[i], KIND); double value = 0.0; \
+        if (!ref || rmc_get_numeric(m, ref, &value) != fmi2OK) return fmi2Error; \
+        values[i] = CONVERT; \
+    } \
+    return fmi2OK; \
 }
-
+#define RMC_SET_NUMERIC(Name, Type, KIND, VALID, STORE) \
+FMI_EXPORT fmi2Status fmi2Set##Name(fmi2Component c, const fmi2ValueReference vr[], size_t n, const Type values[]) { \
+    ModelInstance* m = c; \
+    if (!m || (!vr && n) || (!values && n)) return fmi2Error; \
+    for (size_t i = 0; i < n; ++i) { const RmcValueReference* ref = rmc_reference(vr[i], KIND); Type value = values[i]; (void)value; if (!ref || !rmc_can_set(m, ref) || !(VALID)) return fmi2Error; } \
+    for (size_t i = 0; i < n; ++i) { \
+        const RmcValueReference* ref = &rmc_value_references[vr[i]]; Type value = values[i]; \
+        (ref->column == RMC_COLUMN_Y ? m->y : m->p)[ref->index] = STORE; \
+        if (ref->marks_parameters) m->parameters_dirty = true; \
+    } \
+    return fmi2OK; \
+}
 FMI_EXPORT const char* fmi2GetTypesPlatform(void) { return "default"; }
 FMI_EXPORT const char* fmi2GetVersion(void) { return "2.0"; }
 FMI_EXPORT fmi2Status fmi2SetDebugLogging(fmi2Component c, fmi2Boolean loggingOn, size_t n, const fmi2String categories[]) { (void)loggingOn; if (!c || (!categories && n)) return fmi2Error; return fmi2OK; }
@@ -171,20 +159,31 @@ FMI_EXPORT fmi2Component fmi2Instantiate(fmi2String name, fmi2Type type, fmi2Str
     if (!m) return NULL;
     m->callbacks = *callbacks; m->type = type; m->state = MODEL_INSTANTIATED; initialize_values(m); return m;
 }
-FMI_EXPORT void fmi2FreeInstance(fmi2Component c) { if (c) { ModelInstance* m = c; m->callbacks.freeMemory(m); } }
-FMI_EXPORT fmi2Status fmi2SetupExperiment(fmi2Component c, fmi2Boolean td, fmi2Real tol, fmi2Real start, fmi2Boolean sd, fmi2Real stop) { ModelInstance* m = c; if (!m || m->state != MODEL_INSTANTIATED || !isfinite(start) || (td && (!isfinite(tol) || tol < 0.0)) || (sd && (!isfinite(stop) || stop < start))) return fmi2Error; m->time = start; return fmi2OK; }
+FMI_EXPORT void fmi2FreeInstance(fmi2Component c) { if (c) { ModelInstance* m = c; rmc_release_text(m); m->callbacks.freeMemory(m); } }
+FMI_EXPORT fmi2Status fmi2SetupExperiment(fmi2Component c, fmi2Boolean td, fmi2Real tol, fmi2Real start, fmi2Boolean sd, fmi2Real stop) { ModelInstance* m = c; if (!m || m->state != MODEL_INSTANTIATED || !isfinite(start) || (td && (!isfinite(tol) || tol < 0.0)) || (sd && (!isfinite(stop) || stop < start))) return fmi2Error; m->time = start; m->tolerance = td ? tol : 0.0; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2EnterInitializationMode(fmi2Component c) { ModelInstance* m = c; if (!m || m->state != MODEL_INSTANTIATED) return fmi2Error; m->state = MODEL_INITIALIZATION; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2ExitInitializationMode(fmi2Component c) { ModelInstance* m = c; if (!m || m->state != MODEL_INITIALIZATION || initialize_assertions(m) != fmi2OK || evaluate_derivatives(m) != fmi2OK) return fmi2Error; m->state = m->type == fmi2ModelExchange ? MODEL_EVENT : MODEL_STEP; return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2ExitInitializationMode(fmi2Component c) { ModelInstance* m = c; if (!m || m->state != MODEL_INITIALIZATION || {% if me_refresh.init.rows > 0 %}rmc_initialize(m, m->tolerance) != fmi2OK || {% endif %}initialize_assertions(m) != fmi2OK || evaluate_derivatives(m) != fmi2OK) return fmi2Error; m->state = m->type == fmi2ModelExchange ? MODEL_EVENT : MODEL_STEP; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2Terminate(fmi2Component c) { ModelInstance* m = c; if (!m || (m->state != MODEL_EVENT && m->state != MODEL_CONTINUOUS && m->state != MODEL_STEP)) return fmi2Error; m->state = MODEL_TERMINATED; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2Reset(fmi2Component c) { ModelInstance* m = c; if (!m) return fmi2Error; initialize_values(m); m->state = MODEL_INSTANTIATED; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2GetReal(fmi2Component c, const fmi2ValueReference vr[], size_t n, fmi2Real values[]) { ModelInstance* m = c; if (!m || (!vr && n) || (!values && n) || m->state == MODEL_INSTANTIATED) return fmi2Error; for (size_t i = 0; i < n; ++i) if (get_real(m, vr[i], &values[i]) != fmi2OK) return fmi2Error; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2SetReal(fmi2Component c, const fmi2ValueReference vr[], size_t n, const fmi2Real values[]) { ModelInstance* m = c; if (!m || (!vr && n) || (!values && n)) return fmi2Error; for (size_t i = 0; i < n; ++i) if (!can_set_real(m, vr[i]) || !isfinite(values[i])) return fmi2Error; for (size_t i = 0; i < n; ++i) if (set_real(m, vr[i], values[i]) != fmi2OK) return fmi2Error; return fmi2OK; }
-#define UNSUPPORTED_GET_SET(Type, Name) \
-FMI_EXPORT fmi2Status fmi2Get##Name(fmi2Component c, const fmi2ValueReference vr[], size_t n, Type values[]) { (void)c; (void)vr; (void)values; return n == 0 ? fmi2OK : fmi2Error; } \
-FMI_EXPORT fmi2Status fmi2Set##Name(fmi2Component c, const fmi2ValueReference vr[], size_t n, const Type values[]) { (void)c; (void)vr; (void)values; return n == 0 ? fmi2OK : fmi2Error; }
-UNSUPPORTED_GET_SET(fmi2Integer, Integer)
-UNSUPPORTED_GET_SET(fmi2Boolean, Boolean)
-UNSUPPORTED_GET_SET(fmi2String, String)
+RMC_GET_NUMERIC(Real, fmi2Real, RMC_KIND_FLOAT64, value)
+RMC_SET_NUMERIC(Real, fmi2Real, RMC_KIND_FLOAT64, isfinite(value), value)
+RMC_GET_NUMERIC(Integer, fmi2Integer, RMC_KIND_INT32, (fmi2Integer)value)
+RMC_SET_NUMERIC(Integer, fmi2Integer, RMC_KIND_INT32, true, (double)value)
+RMC_GET_NUMERIC(Boolean, fmi2Boolean, RMC_KIND_BOOLEAN, value != 0.0 ? fmi2True : fmi2False)
+RMC_SET_NUMERIC(Boolean, fmi2Boolean, RMC_KIND_BOOLEAN, true, value ? 1.0 : 0.0)
+FMI_EXPORT fmi2Status fmi2GetString(fmi2Component c, const fmi2ValueReference vr[], size_t n, fmi2String values[]) {
+    ModelInstance* m = c;
+    if (!m || (!vr && n) || (!values && n)) return fmi2Error;
+    for (size_t i = 0; i < n; ++i) { const RmcValueReference* ref = rmc_reference(vr[i], RMC_KIND_STRING); if (!ref) return fmi2Error; values[i] = rmc_text(m, ref->index); }
+    return fmi2OK;
+}
+FMI_EXPORT fmi2Status fmi2SetString(fmi2Component c, const fmi2ValueReference vr[], size_t n, const fmi2String values[]) {
+    ModelInstance* m = c;
+    if (!m || (!vr && n) || (!values && n)) return fmi2Error;
+    for (size_t i = 0; i < n; ++i) { const RmcValueReference* ref = rmc_reference(vr[i], RMC_KIND_STRING); if (!ref || !rmc_can_set(m, ref) || !values[i]) return fmi2Error; }
+    for (size_t i = 0; i < n; ++i) if (!rmc_set_text(m, rmc_value_references[vr[i]].index, values[i])) return fmi2Error;
+    return fmi2OK;
+}
 FMI_EXPORT fmi2Status fmi2SetTime(fmi2Component c, fmi2Real time) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || !isfinite(time)) return fmi2Error; m->time = time; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2SetContinuousStates(fmi2Component c, const fmi2Real x[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || nx != {{ solve.solve_layout.state_scalar_count }} || (!x && nx)) return fmi2Error; for (size_t i = 0; i < nx; ++i) if (!isfinite(x[i])) return fmi2Error; for (size_t i = 0; i < nx; ++i) m->y[i] = x[i]; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2GetContinuousStates(fmi2Component c, fmi2Real x[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state == MODEL_INSTANTIATED || m->state == MODEL_STEP || nx != {{ solve.solve_layout.state_scalar_count }} || (!x && nx)) return fmi2Error; for (size_t i = 0; i < nx; ++i) x[i] = m->y[i]; return fmi2OK; }

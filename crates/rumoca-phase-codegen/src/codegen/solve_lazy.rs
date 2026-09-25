@@ -558,40 +558,6 @@ fn ordered_exact_algebraic_assignments(
     Some(assignments)
 }
 
-/// Append the final scalar programs of one issued exact-assignment schedule,
-/// each storing its values into its solver-Y targets.
-pub(super) fn append_issued_assignment_schedule(
-    source: &solve::ComputeBlock,
-    owners: &solve::ContinuousRefreshOwners,
-    schedule: &solve::ExactRefreshAssignmentSchedule,
-    programs: &mut Vec<Vec<solve::LinearOp>>,
-    spans: &mut Vec<rumoca_core::Span>,
-    targets: &mut Vec<usize>,
-) -> Result<(), CodegenError> {
-    for program_id in schedule.program_ids() {
-        let program = owners
-            .exact_assignment_program(*program_id)
-            .ok_or_else(|| {
-                CodegenError::template("issued algebraic assignment schedule has no program owner")
-            })?;
-        let block = program
-            .final_scalar_program(source)
-            .map_err(|error| CodegenError::template(error.to_string()))?;
-        let [operations] = block.programs() else {
-            return Err(CodegenError::template(
-                "issued algebraic assignment owner is not one correlated program",
-            ));
-        };
-        let span = block.program_span(0).ok_or_else(|| {
-            CodegenError::template("issued algebraic assignment owner has no provenance")
-        })?;
-        programs.push(operations.clone());
-        spans.push(span);
-        targets.extend_from_slice(program.target_indices());
-    }
-    Ok(())
-}
-
 fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let scalar =
         super::discrete_render_view::DiscreteRenderView::checked(&handle.problem().discrete)?;

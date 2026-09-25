@@ -4,6 +4,7 @@
 //! checks the packaged source FMU, builds its shared library, and executes both
 //! advertised interfaces against one tensor-valued analytic model.
 
+mod affine_guard_harness;
 mod affine_promotion;
 mod algebraic;
 mod assertions;

@@ -137,3 +137,57 @@ impl PreparedScalarProgramBlock {
         Some(program)
     }
 }
+
+impl PreparedScalarProgramBlock {
+    /// One program answering several (output, target) isolations of one row
+    /// in the given order, storing each value as its own output right after
+    /// it is computed.
+    ///
+    /// The row prefix is evaluated once, extended between stores up to each
+    /// pair's own prefix length, so every stored value equals that pair's
+    /// single isolator on the same inputs, and a consumer that stops at a
+    /// non-finite store has executed exactly the operations the single
+    /// isolators before it execute: each materialization writes only
+    /// registers no earlier prefix operation wrote, and its value is stored
+    /// before the prefix continues. A sequential consumer writes each value
+    /// before the next isolation, so no pair's prefix may read the target of
+    /// an earlier pair. Returns `None` when a pair has no shape, the prefix
+    /// lengths decrease, a prefix reads an earlier target, or a
+    /// materialization does not fit.
+    pub fn target_isolation_chain_program(
+        &self,
+        row_idx: usize,
+        pairs: &[(usize, usize)],
+    ) -> Option<Vec<LinearOp>> {
+        let row = self.block.programs().get(row_idx)?;
+        let mut program = Vec::new();
+        let mut evaluated = 0;
+        for (position, &(output, target)) in pairs.iter().enumerate() {
+            let shape = self.assignment_shape_for_output(row_idx, output, target)?;
+            let length = shape.expr_eval_len();
+            let prefix = row.get(..length)?;
+            if length < evaluated
+                || pairs[..position]
+                    .iter()
+                    .any(|&(_, earlier)| super::dependency::row_reads_y_index(prefix, earlier))
+            {
+                return None;
+            }
+            program.extend(
+                row.get(evaluated..length)?
+                    .iter()
+                    .filter(|op| {
+                        !matches!(
+                            op,
+                            LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. }
+                        )
+                    })
+                    .cloned(),
+            );
+            evaluated = length;
+            let (result, _) = materialize_target_assignment(shape, &mut program)?;
+            program.push(LinearOp::StoreOutput { src: result });
+        }
+        Some(program)
+    }
+}

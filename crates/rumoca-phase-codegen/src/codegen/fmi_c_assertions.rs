@@ -23,6 +23,31 @@ pub(super) fn messages(problem: &SolveProblem) -> Result<Vec<Vec<u8>>, CodegenEr
         .collect()
 }
 
+/// The literal start text of every `String` scalar of the checked FMI
+/// inventory, in inventory order, as exact UTF-8 bytes. The C profile keeps
+/// these texts beside the numeric storage, which no program reads for them.
+pub(super) fn text_starts(fmi: &minijinja::Value) -> Result<Vec<Vec<u8>>, CodegenError> {
+    let mut texts = Vec::new();
+    for variable in fmi.get_attr("variables")?.try_iter()? {
+        if variable.get_attr("value_kind")?.as_str() != Some("String") {
+            continue;
+        }
+        let starts = variable.get_attr("text_start")?;
+        if starts.is_none() {
+            return Err(CodegenError::template(
+                "unsupported-feature:fmi.c.string: a String variable has no literal start",
+            ));
+        }
+        for start in starts.try_iter()? {
+            let text = start
+                .as_str()
+                .ok_or_else(|| CodegenError::template("a String start is not text"))?;
+            texts.push(text.as_bytes().to_vec());
+        }
+    }
+    Ok(texts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

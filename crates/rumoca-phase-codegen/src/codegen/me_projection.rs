@@ -10,13 +10,14 @@
 //! numerical policy (`rumoca_eval_solve::projection_policy`) both executors
 //! read. It derives execution views only; it never records canonical IR.
 
+mod assign;
 mod block;
+mod initial;
 mod table;
 #[cfg(test)]
 mod tests;
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use minijinja::Value;
 use rumoca_eval_solve::{
@@ -24,8 +25,8 @@ use rumoca_eval_solve::{
 };
 use rumoca_ir_solve as solve;
 
-use super::scalar_program_plan::ScalarProgramPlan;
 use crate::errors::CodegenError;
+use assign::AssignmentCatalog;
 use block::{BlockRecord, BlockSources, block_record};
 use table::ProgramTable;
 
@@ -206,64 +207,59 @@ impl BlockCatalog<'_> {
     }
 }
 
-fn assignment_plan(
-    problem: &solve::SolveProblem,
-    schedule: &solve::ExactRefreshAssignmentSchedule,
-) -> Result<Value, CodegenError> {
-    let mut programs = Vec::new();
-    let mut spans = Vec::new();
-    let mut targets = Vec::new();
-    super::solve_lazy::append_issued_assignment_schedule(
-        &problem.continuous.implicit_rhs,
-        &problem.continuous.refresh_owners,
-        schedule,
-        &mut programs,
-        &mut spans,
-        &mut targets,
-    )?;
-    let block = solve::ScalarProgramBlock::with_output_indices(programs, spans, targets)
-        .map_err(|error| CodegenError::template(error.to_string()))?;
-    Ok(Value::from_object(ScalarProgramPlan::new(Arc::new(block))?))
-}
+/// Step kinds of the C step table.
+const STEP_ASSIGN: usize = 0;
+const STEP_COMPLETE: usize = 1;
+const STEP_PROJECT: usize = 2;
 
-/// The executable steps of one plan plus, for a staged plan, the complete
-/// simultaneous projection the linked kernel falls back to when a seed or an
-/// exact-assignment stage yields a non-finite coordinate.
+/// The executable steps of one plan as rows of the C step table (kind,
+/// assignment range, block, seed range, rescue range) plus, for a staged plan,
+/// the complete simultaneous projection the linked kernel falls back to when a
+/// seed or an exact-assignment stage yields a non-finite coordinate.
 fn plan_value(
     problem: &solve::SolveProblem,
     plan: &solve::RefreshPlan,
     steps: &[solve::StagedRefreshStep<'_>],
     catalog: &mut BlockCatalog<'_>,
+    assignments: &mut AssignmentCatalog,
 ) -> Result<Value, CodegenError> {
-    let values = steps
-        .iter()
-        .map(|step| match step {
-            solve::StagedRefreshStep::ProjectComplete => {
-                Ok(minijinja::context! { kind => "complete" })
+    let mut rows = Vec::with_capacity(steps.len());
+    let mut fallback = false;
+    for step in steps {
+        rows.push(match step {
+            solve::StagedRefreshStep::ProjectComplete => [STEP_COMPLETE, 0, 0, 0, 0, 0, 0, 0],
+            solve::StagedRefreshStep::Assignments(schedule) => {
+                fallback = true;
+                let (first, count) = assignments.schedule(problem, schedule)?;
+                [STEP_ASSIGN, first, count, 0, 0, 0, 0, 0]
             }
-            solve::StagedRefreshStep::Assignments(schedule) => Ok(minijinja::context! {
-                kind => "assign",
-                plan => assignment_plan(problem, schedule)?,
-            }),
             solve::StagedRefreshStep::Project {
                 block_index,
                 seeds,
                 seed_rows,
             } => {
                 let block = catalog.intern(*block_index)?;
-                let rescue = catalog.rescue_targets(plan, seed_rows, *block_index)?;
-                let seeds = seeds
-                    .map(|schedule| assignment_plan(problem, schedule))
-                    .transpose()?;
-                Ok(minijinja::context! {
-                    kind => "project",
-                    block => block,
-                    seeds => seeds,
-                    rescue => rescue,
-                })
+                let (rescue, nrescue) = catalog.rescue_targets(plan, seed_rows, *block_index)?;
+                let (seed_first, seed_count) = match seeds {
+                    Some(schedule) => {
+                        fallback = true;
+                        assignments.schedule(problem, schedule)?
+                    }
+                    None => (0, 0),
+                };
+                [
+                    STEP_PROJECT,
+                    0,
+                    0,
+                    block,
+                    seed_first,
+                    seed_count,
+                    rescue,
+                    nrescue,
+                ]
             }
-        })
-        .collect::<Result<Vec<_>, CodegenError>>()?;
+        });
+    }
     let staged = !steps.is_empty() && !plan.causal_solution_certified;
     let complete = if staged {
         Some(catalog.complete_plan(plan)?)
@@ -271,13 +267,34 @@ fn plan_value(
         None
     };
     Ok(minijinja::context! {
-        steps => values,
+        steps => rows,
         complete => complete,
+        fallback => fallback && complete.is_some(),
     })
 }
 
 fn float_literal(value: f64) -> String {
     format!("{value:?}")
+}
+
+/// The runtime settles the bindings with at most this many simultaneous sweeps
+/// and fails beyond it (`eval_and_apply_update_rows`); a component that would
+/// succeed where the linked kernel fails is refused instead.
+fn require_settleable_bindings(
+    component: &solve::fmi::FmiCCodegenView,
+) -> Result<(), CodegenError> {
+    let levels = component.parameter_binding_levels();
+    if levels < policy::ALGEBRAIC_REFRESH_MAX_ITERS {
+        return Ok(());
+    }
+    Err(CodegenError::dae_preparation_failed(
+        format!(
+            "unsupported-feature:initialization: parameter bindings form a dependency chain \
+             {levels} levels deep; the runtime settles at most {} levels",
+            policy::ALGEBRAIC_REFRESH_MAX_ITERS - 1
+        ),
+        None,
+    ))
 }
 
 /// The complete ME refresh view of one checked FMI C component.
@@ -286,6 +303,7 @@ pub(super) fn me_refresh_value(
 ) -> Result<Value, CodegenError> {
     let problem = component.problem();
     let artifacts = component.artifacts();
+    require_settleable_bindings(component)?;
     let owners = &problem.continuous.refresh_owners;
     if let Some(reason) = unsupported_runtime_shape(problem) {
         return Err(CodegenError::dae_preparation_failed(
@@ -333,35 +351,66 @@ pub(super) fn me_refresh_value(
         ids: BTreeMap::new(),
         records: Vec::new(),
     };
-    let derivative = plan_value(problem, plans[0].0, &plans[0].1, &mut catalog)?;
-    let algebraic = plan_value(problem, plans[1].0, &plans[1].1, &mut catalog)?;
+    let mut assignments = AssignmentCatalog::default();
+    let derivative = plan_value(
+        problem,
+        plans[0].0,
+        &plans[0].1,
+        &mut catalog,
+        &mut assignments,
+    )?;
+    let algebraic = plan_value(
+        problem,
+        plans[1].0,
+        &plans[1].1,
+        &mut catalog,
+        &mut assignments,
+    )?;
     let variable_scales = (0..y_len)
         .map(|index| float_literal(component.solver_variable_scale(index)))
         .collect::<Vec<_>>();
     let BlockCatalog { table, records, .. } = catalog;
-    let (doubles, sizes) = records
+    let (block_doubles, block_sizes) = records
         .iter()
         .map(|record| record.workspace(seed_len))
         .fold((1, 1), |(doubles, sizes), (d, s)| {
             (doubles.max(d), sizes.max(s))
         });
+    let (init, init_doubles) = initial::initialization_value(problem, artifacts)?;
+    let init_sizes = init.get_attr("sizes")?.as_usize().unwrap_or(0);
+    let kernel = !records.is_empty() || init_doubles > 0;
+    let table = table.into_value(&implicit)?;
+    // The initialization frames hold the algebraic refresh, whose deepest
+    // block frame and isolator outputs nest inside them.
+    let doubles =
+        block_doubles + table.get_attr("iso_max_outputs")?.as_usize().unwrap_or(1) + init_doubles;
+    let sizes = block_sizes + init_sizes;
     Ok(minijinja::context! {
         derivative => derivative,
         algebraic => algebraic,
         blocks => Value::from_serialize(&records),
-        table => table.into_value(&implicit)?,
+        table => table,
+        kernel => kernel,
+        assign => assignments.into_value()?,
+        init => init,
         work => minijinja::context! { doubles => doubles, sizes => sizes },
         seed_len => seed_len,
         variable_scales => variable_scales,
-        policy => minijinja::context! {
-            tolerance => float_literal(policy::ALGEBRAIC_REFRESH_TOLERANCE),
-            refresh_iters => policy::ALGEBRAIC_REFRESH_MAX_ITERS
-                * policy::ALGEBRAIC_PROJECTION_ITER_FACTOR,
-            refine_iters => policy::ALGEBRAIC_PROJECTION_MAX_ITERS,
-            trust_fraction => float_literal(policy::ALGEBRAIC_PROJECTION_TRUST_FRACTION),
-            torn_iters => policy::TORN_OUTER_MAX_ITERS,
-            torn_backtracks => policy::TORN_BACKTRACK_STEPS,
-            fd_step => float_literal(policy::FINITE_DIFFERENCE_RELATIVE_STEP),
-        },
+        policy => policy_value(),
     })
+}
+
+/// The one numerical policy both executors read.
+fn policy_value() -> Value {
+    minijinja::context! {
+        tolerance => float_literal(policy::ALGEBRAIC_REFRESH_TOLERANCE),
+        refresh_iters => policy::ALGEBRAIC_REFRESH_MAX_ITERS
+            * policy::ALGEBRAIC_PROJECTION_ITER_FACTOR,
+        refine_iters => policy::ALGEBRAIC_PROJECTION_MAX_ITERS,
+        update_iters => policy::ALGEBRAIC_REFRESH_MAX_ITERS,
+        trust_fraction => float_literal(policy::ALGEBRAIC_PROJECTION_TRUST_FRACTION),
+        torn_iters => policy::TORN_OUTER_MAX_ITERS,
+        torn_backtracks => policy::TORN_BACKTRACK_STEPS,
+        fd_step => float_literal(policy::FINITE_DIFFERENCE_RELATIVE_STEP),
+    }
 }

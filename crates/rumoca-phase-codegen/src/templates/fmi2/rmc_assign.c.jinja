@@ -1,0 +1,5 @@
+{%- from "fmi-me-projection.jinja" import assignment_functions %}
+#include "model.h"
+/* Exact-assignment programs of the refresh plans. */
+typedef int RmcAssignUnit;
+{{ assignment_functions(me_refresh) }}
