@@ -88,6 +88,65 @@ pub(super) fn reg_depends_on_y_index(row: &[LinearOp], reg: u32, target_y_index:
     YDependencyAnalyzer::new(row, target_y_index).depends_on(reg)
 }
 
+/// Whether an operation of `prefix` that can fail on its operand values
+/// ([`op_can_fail`]) reads any of `y_indices`. Each such operation is judged
+/// by the dependence of its result right after it executes, so a later
+/// rewrite of its destination register cannot hide the read; an operation
+/// without a destination register counts as reading them.
+pub(super) fn failable_op_reads_any_y_index(prefix: &[LinearOp], y_indices: &[usize]) -> bool {
+    if y_indices.is_empty() {
+        return false;
+    }
+    prefix.iter().enumerate().any(|(position, op)| {
+        if !op_can_fail(op) {
+            return false;
+        }
+        let Some(register) = op.dst_register() else {
+            return true;
+        };
+        let dependency = ScalarProgramYDependency::new(&prefix[..=position]);
+        y_indices
+            .iter()
+            .any(|&y_index| dependency.depends_on(register, y_index))
+    })
+}
+
+/// Whether evaluating `op` can return an error, rather than a non-finite
+/// value, depending on its operand values: a singular dense solve, a pure
+/// call whose body raises, an external-table query, a random-generator op
+/// on runtime state, or a function fold or conditional whose body holds one
+/// of these. Structural errors (register bounds, uninitialized registers)
+/// fail the same way on every input.
+pub(super) fn op_can_fail(op: &LinearOp) -> bool {
+    match op {
+        LinearOp::LinearSolveComponent { .. }
+        | LinearOp::PureCall { .. }
+        | LinearOp::PureCallDirectional { .. }
+        | LinearOp::TableBounds { .. }
+        | LinearOp::TableLookup { .. }
+        | LinearOp::TableLookupSlope { .. }
+        | LinearOp::TableNextEvent { .. }
+        | LinearOp::RandomInitialState { .. }
+        | LinearOp::RandomResult { .. }
+        | LinearOp::RandomState { .. }
+        | LinearOp::ImpureRandomInit { .. }
+        | LinearOp::ImpureRandom { .. }
+        | LinearOp::ImpureRandomInteger { .. } => true,
+        LinearOp::FunctionFold { program, .. }
+        | LinearOp::GuardedFunctionFold { program, .. }
+        | LinearOp::StoreOutputFunctionFold { program, .. } => {
+            program.update.iter().any(op_can_fail)
+        }
+        LinearOp::FunctionConditional { program, .. } => program
+            .arms
+            .iter()
+            .flat_map(|arm| arm.condition.iter().chain(arm.result.iter()))
+            .chain(program.fallback.iter())
+            .any(op_can_fail),
+        _ => false,
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct GradientDependency {
     value_parameter_only: bool,

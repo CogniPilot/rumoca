@@ -25,6 +25,8 @@ mod tensor_affine_assignment;
 mod tensor_affine_assignment_tests;
 mod torn_sweep;
 #[cfg(test)]
+mod torn_sweep_failable_tests;
+#[cfg(test)]
 mod torn_sweep_run_tests;
 #[cfg(test)]
 mod zero_assignment_tests;
@@ -1083,12 +1085,25 @@ pub(crate) fn assignment_shape_reads_y_index(
     shape: &TargetAssignmentShape,
     y_index: usize,
 ) -> bool {
+    assignment_shape_reads_any_y_index(row, shape, &[y_index])
+}
+
+/// Whether the isolated value of `shape` depends on any of `y_indices`
+/// within its expression prefix, from one dependency analysis of that prefix.
+pub(crate) fn assignment_shape_reads_any_y_index(
+    row: &[LinearOp],
+    shape: &TargetAssignmentShape,
+    y_indices: &[usize],
+) -> bool {
     let Some(expression_prefix) = row.get(..shape.expr_eval_len()) else {
         return true;
     };
-    shape
-        .value_registers()
-        .any(|register| dependency::reg_depends_on_y_index(expression_prefix, register, y_index))
+    let dependency = rumoca_ir_solve::ScalarProgramYDependency::new(expression_prefix);
+    shape.value_registers().any(|register| {
+        y_indices
+            .iter()
+            .any(|&y_index| dependency.depends_on(register, y_index))
+    })
 }
 
 impl<'a> AssignmentProgramBuilder<'a> {

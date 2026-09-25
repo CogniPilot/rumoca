@@ -208,11 +208,16 @@ impl PreparedScalarProgramBlock {
     /// before the prefix continues. A sequential consumer writes each value
     /// before the next isolation, and a per-step isolator would evaluate its
     /// whole prefix after those writes, so no pair's isolated value may depend
-    /// on the target of an earlier pair; the prefix may still read that target
-    /// elsewhere, as every residual output reads its own target, because
-    /// those registers do not reach the value. Returns `None` when a pair has
-    /// no shape, the prefix lengths decrease, an isolated value depends on an
-    /// earlier target, or a materialization does not fit.
+    /// on the target of an earlier pair, and no operation of its prefix that
+    /// can fail on its operand values (a singular dense solve, a raising pure
+    /// call, a table query, a random-generator op, or a fold or conditional
+    /// holding one) may read such a target, since the per-step isolator would
+    /// evaluate it on the new value and could fail where the chain does not.
+    /// The prefix may still read that target elsewhere, as every residual
+    /// output reads its own target, because those registers neither reach the
+    /// value nor decide an error. Returns `None` when a pair has no shape, the
+    /// prefix lengths decrease, an isolated value or a failable operation
+    /// depends on an earlier target, or a materialization does not fit.
     pub fn target_isolation_chain_program(
         &self,
         row_idx: usize,
@@ -225,7 +230,14 @@ impl PreparedScalarProgramBlock {
             let shape = self.assignment_shape_for_output(row_idx, output, target)?;
             let length = shape.expr_eval_len();
             let prefix = row.get(..length)?;
-            if length < evaluated || value_reads_earlier_target(prefix, shape, &pairs[..position]) {
+            let earlier = pairs[..position]
+                .iter()
+                .map(|&(_, target)| target)
+                .collect::<Vec<_>>();
+            if length < evaluated
+                || super::assignment_shape_reads_any_y_index(row, shape, &earlier)
+                || super::dependency::failable_op_reads_any_y_index(prefix, &earlier)
+            {
                 return None;
             }
             program.extend(
@@ -245,18 +257,4 @@ impl PreparedScalarProgramBlock {
         }
         Some(program)
     }
-}
-
-/// Whether the isolated value of `shape` depends on the target of any
-/// earlier pair within its row prefix.
-fn value_reads_earlier_target(
-    prefix: &[LinearOp],
-    shape: &rumoca_ir_solve::TargetAssignmentShape,
-    earlier: &[(usize, usize)],
-) -> bool {
-    let depends =
-        |register, target| super::dependency::reg_depends_on_y_index(prefix, register, target);
-    shape
-        .value_registers()
-        .any(|register| earlier.iter().any(|&(_, target)| depends(register, target)))
 }

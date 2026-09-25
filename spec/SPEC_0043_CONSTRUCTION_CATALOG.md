@@ -326,14 +326,17 @@ pattern. Plans are derived views, rebuilt by each consumer from the same
 construction, never canonical IR.
 
 A torn sweep's runs construct from its checked causal steps and the certified
-isolators of their rows (`torn_sweep_runs`): consecutive steps recovered from
-one residual program form one run when one chain program answers them in
-order, with non-decreasing prefixes and no isolated value depending, within
-its prefix, on the target of an earlier step of the run. The prefix may read
-that target elsewhere (each residual output reads its own target) because
-those registers do not reach the value. A run evaluates its row prefix once and
-writes exactly the per-step isolators' values; the linked kernel and the
-generated C consume the same runs, and an evaluation failure inside a run
+isolators of their rows (`torn_sweep_runs`): consecutive causal steps of one
+residual program form one run when one chain program answers them in order
+(`target_isolation_chain_program`): prefixes do not decrease, and neither a
+step's isolated value nor an operation of its prefix that can fail on its
+operand values (a singular dense solve, a raising pure call, a table query, a
+random-generator op, or a fold or conditional holding one) depends on the
+target of an earlier step of the run. The prefix may read that target
+elsewhere (each residual output reads its own target) because those registers
+neither reach the value nor decide an error. A run evaluates its row prefix
+once and writes exactly the per-step isolators' values; the linked kernel and
+the generated C consume the same runs, and an evaluation failure inside a run
 falls back to its steps one by one.
 
 | Rule | Owner/Where | Brief Justification |
