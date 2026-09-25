@@ -148,7 +148,9 @@ fn additive_terms<'dae>(
 
 struct CoordinateAccess<'dae> {
     variable: u32,
-    value_type: dae::ValueTypeId<'dae>,
+    /// Structural value type (scalar kind and shape); declared quantity and
+    /// unit types may differ across an equation, which already equates them.
+    value_type: &'dae dae::ValueType,
     binders: Vec<u32>,
 }
 
@@ -206,7 +208,7 @@ fn coordinate_access<'dae>(
     }
     Some(CoordinateAccess {
         variable,
-        value_type: declaration.value_type_id(),
+        value_type: declaration.value_type(),
         binders,
     })
 }

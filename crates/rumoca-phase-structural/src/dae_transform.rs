@@ -62,7 +62,7 @@ use crate::{
 
 pub use self::alias_quotient::{
     AliasClassReport, AliasMemberReport, AliasQuotientReport, AliasRefusal, alias_quotient_report,
-    inspect_quotient_aliases, quotient_aliases,
+    inspect_quotient_aliases, quotient_aliases, quotient_formal_aliases,
 };
 pub use self::formal_derivatives::{
     FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,

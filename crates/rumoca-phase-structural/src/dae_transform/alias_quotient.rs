@@ -77,25 +77,73 @@ fn quotient_aliases_observed(
     model: &dae::Dae,
     observer: &mut impl super::observation::ReductionObserver,
 ) -> Result<Option<dae::Dae>, StructuralError> {
-    let plan = model.inspect(|view| derive_plan_observed(view, observer));
+    let plan = model.inspect(|view| derive_plan_observed(view, QuotientScope::Source, observer));
     if plan.is_empty() {
         return Ok(None);
     }
-    super::reconstruction::rebuild_alias_quotient(model, &plan).map(Some)
+    super::reconstruction::rebuild_alias_quotient(model, &plan, &[]).map(|(model, _)| Some(model))
+}
+
+/// Which edges one application of the quotient admits (SPEC_0040 STRUCT-T02).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum QuotientScope {
+    /// Before state selection: every eligible edge.
+    Source,
+    /// After formal-derivative construction: edges with a formal-derivative
+    /// endpoint only.
+    FormalDerivatives,
+}
+
+/// Apply the formal-derivative quotient to a finalized candidate DAE.
+///
+/// The rebuilt root keeps every declaration ordinal, so reduced-chart
+/// coordinates survive unchanged; retained manifold expressions are replayed
+/// onto the rebuilt arena, and pins and structural analysis are recomputed.
+pub fn quotient_formal_aliases(
+    prepared: super::PreparedDae<'_>,
+) -> Result<super::PreparedDae<'_>, StructuralError> {
+    let super::PreparedDae::Transformed {
+        dae,
+        manifold,
+        manifold_redundant,
+        charts,
+        ..
+    } = &prepared
+    else {
+        return Ok(prepared);
+    };
+    let plan =
+        dae.inspect(|view| derive_plan_observed(view, QuotientScope::FormalDerivatives, &mut ()));
+    if plan.is_empty() {
+        return Ok(prepared);
+    }
+    let (model, manifold) = super::reconstruction::rebuild_alias_quotient(dae, &plan, manifold)?;
+    let manifold = manifold
+        .into_iter()
+        .zip(manifold_redundant.iter().copied())
+        .map(|(expression, redundant)| super::ManifoldEntry {
+            expression,
+            redundant,
+        })
+        .collect();
+    let structural = super::structural_analysis(&model)?;
+    super::transformed(model, manifold, structural, charts.clone())
 }
 
 #[cfg(test)]
 pub(super) fn derive_plan(view: dae::DaeView<'_>) -> AliasPlan {
-    derive_plan_observed(view, &mut ())
+    derive_plan_observed(view, QuotientScope::Source, &mut ())
 }
 
-/// Derive the quotient, reporting every class it leaves unchanged and why.
+/// Derive one application of the quotient, reporting every class it leaves
+/// unchanged and why.
 fn derive_plan_observed(
     view: dae::DaeView<'_>,
+    scope: QuotientScope,
     observer: &mut impl super::observation::ReductionObserver,
 ) -> AliasPlan {
     let members = member_facts(view);
-    let classes = alias_classes(view, &members);
+    let classes = alias_classes(view, &members, scope);
     let mut plan = AliasPlan {
         substitutions: vec![None; view.variable_count()],
         definitions: BTreeMap::new(),
@@ -114,9 +162,19 @@ fn derive_plan_observed(
     plan
 }
 
-/// Every alias class of `view` with the facts of its members.
-fn alias_classes(view: dae::DaeView<'_>, members: &[MemberFacts]) -> Vec<AliasClass> {
-    let edges = alias_edges(view, members);
+/// Every alias class of `view` admitted by `scope`.
+fn alias_classes(
+    view: dae::DaeView<'_>,
+    members: &[MemberFacts],
+    scope: QuotientScope,
+) -> Vec<AliasClass> {
+    let mut edges = alias_edges(view, members);
+    if scope == QuotientScope::FormalDerivatives {
+        edges.retain(|edge| {
+            members[edge.first.variable as usize].formal
+                || members[edge.second.variable as usize].formal
+        });
+    }
     classes(view.variable_count(), &edges)
 }
 
@@ -125,6 +183,8 @@ fn alias_classes(view: dae::DaeView<'_>, members: &[MemberFacts]) -> Vec<AliasCl
 pub(super) struct MemberFacts {
     pub(super) eligible: bool,
     state: bool,
+    /// A generated index-reduction declaration: a formal-derivative coordinate.
+    formal: bool,
     /// `StateSelect.avoid` or `never`: a state the model prefers not to keep.
     avoided: bool,
     anchored: bool,
@@ -143,6 +203,9 @@ fn member_facts(view: dae::DaeView<'_>) -> Vec<MemberFacts> {
             MemberFacts {
                 eligible,
                 state: variable.role() == dae::VariableRole::State,
+                formal: variable.origin() == dae::VariableOrigin::Generated
+                    && variable.declaration().origin()
+                        == dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::IndexReduction),
                 avoided: matches!(
                     variable.state_select(),
                     rumoca_core::StateSelect::Avoid | rumoca_core::StateSelect::Never

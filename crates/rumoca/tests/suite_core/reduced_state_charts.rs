@@ -231,14 +231,21 @@ fn circle_chart_alternate_chart_re_lowers_to_a_regular_mirror_plan() {
         .get(&format!("$formal_derivative.1.{primary_integrated}"))
         .copied()
         .expect("q[2] has a formal derivative slot");
-    assert_eq!(
-        sole_load_y_index(&plan.derivative_rhs),
-        Some(alternate_slot),
+    // STRUCT-T02 quotients the prolonged `der(q) = v` relation after state
+    // selection, so a kernel may read q[i]'s derivative through its
+    // representative v[i] instead of the formal coordinate itself.
+    let derivative_slots = |integrated: &str, formal_slot: usize| {
+        let velocity = integrated.replacen('q', "v", 1);
+        [Some(formal_slot), maps.name_to_idx.get(&velocity).copied()]
+    };
+    assert!(
+        derivative_slots(integrated, alternate_slot)
+            .contains(&sole_load_y_index(&plan.derivative_rhs)),
         "the alternate kernel loads q[1]'s derivative slot"
     );
-    assert_eq!(
-        sole_load_y_index(&continuous.derivative_rhs),
-        Some(primary_slot),
+    assert!(
+        derivative_slots(primary_integrated, primary_slot)
+            .contains(&sole_load_y_index(&continuous.derivative_rhs)),
         "the primary kernel loads q[2]'s derivative slot"
     );
     assert_ne!(

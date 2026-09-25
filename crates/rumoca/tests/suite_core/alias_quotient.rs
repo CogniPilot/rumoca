@@ -262,3 +262,43 @@ fn an_indexed_negation_family_quotients_through_its_binders() {
         }
     }
 }
+
+/// `RateCancellation` executes a reduced state selection. Its source relation
+/// `der(q) = rate` prolongs to `$formal_derivative.1.q = rate`, a copy edge with
+/// a formal-derivative endpoint, so the second quotient application reads the
+/// formal coordinate through `rate` everywhere except its own defining edge.
+#[test]
+fn a_prolonged_derivative_relation_is_quotiented_after_state_selection() {
+    let source = compile(
+        include_str!("../fixtures/index_reduction/RateCancellation.mo"),
+        "RateCancellation",
+    );
+    let lowered =
+        rumoca_phase_solve::lower_solve_model(&source, &std::collections::HashMap::new(), |_| {})
+            .unwrap();
+    assert_eq!(lowered.model().state_scalar_count(), 2);
+    let prepared = lowered.prepared_dae();
+    let formal = "$formal_derivative.1.q".to_string();
+    let readers = owner_reads(prepared)
+        .into_iter()
+        .filter(|names| names.contains(&formal))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        readers,
+        [vec![formal.clone(), "rate".to_string()]],
+        "only the defining edge reads the eliminated formal coordinate"
+    );
+    let roles = |model: &dae::Dae| {
+        model.inspect(|view| {
+            view.variables()
+                .filter(|(_, variable)| variable.origin() == dae::VariableOrigin::Source)
+                .map(|(_, variable)| variable.name().to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(
+        roles(&source),
+        roles(prepared),
+        "every source declaration survives both applications"
+    );
+}

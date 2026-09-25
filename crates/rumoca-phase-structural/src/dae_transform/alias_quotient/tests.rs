@@ -18,6 +18,12 @@ type Term = (u32, bool);
 /// Build a DAE whose continuous residuals are the given signed-term sums, plus
 /// `der(x) = a` and `der(y) = b` so both states are ordinary.
 fn fixture(residuals: &[&[Term]]) -> dae::Dae {
+    fixture_with(residuals, false)
+}
+
+/// [`fixture`], with `a` and `c` declared as generated index-reduction
+/// coordinates when `formal` holds, as formal-derivative construction does.
+fn fixture_with(residuals: &[&[Term]], formal: bool) -> dae::Dae {
     let mut sources = SourceMap::new();
     let text = "Real x, y, a, b, c, d; equation aliases;";
     let source = sources.add("aliases.mo", text);
@@ -31,7 +37,7 @@ fn fixture(residuals: &[&[Term]]) -> dae::Dae {
                 at,
             )
         })?;
-        let coordinates = declare(dae, real, at)?;
+        let coordinates = declare(dae, real, at, formal)?;
         let rows = dae.expressions(|expressions| {
             let mut rows = residuals
                 .iter()
@@ -76,7 +82,19 @@ fn declare<'dae>(
     dae: &mut dae::DaeConstruction<'dae>,
     real: dae::ValueTypeId<'dae>,
     at: dae::DaeProvenance,
+    formal: bool,
 ) -> Result<Vec<dae::CoordinateInput<'dae>>, dae::DaeConstructionError> {
+    let (generated_at, generated) = if formal {
+        (
+            dae::DaeProvenance::generated(dae::DaeGeneration::IndexReduction, at.span())?,
+            dae::VariableAttributes {
+                origin: dae::VariableOrigin::Generated,
+                ..Default::default()
+            },
+        )
+    } else {
+        (at, dae::VariableAttributes::default())
+    };
     let seed =
         dae.expressions(|expressions| expressions.at(at).literal(dae::DaeLiteral::Real(0.5)))?;
     dae.variables(|variables| {
@@ -97,8 +115,8 @@ fn declare<'dae>(
             dae::CoordinateInput::Algebraic(variables.algebraic(
                 VarName::new("a"),
                 real,
-                at,
-                attributes(),
+                generated_at,
+                generated.clone(),
             )?),
             dae::CoordinateInput::Algebraic(variables.algebraic(
                 VarName::new("b"),
@@ -109,8 +127,8 @@ fn declare<'dae>(
             dae::CoordinateInput::Algebraic(variables.algebraic(
                 VarName::new("c"),
                 real,
-                at,
-                attributes(),
+                generated_at,
+                generated,
             )?),
             dae::CoordinateInput::Algebraic(variables.algebraic(
                 VarName::new("d"),
@@ -327,4 +345,55 @@ fn every_unquotiented_class_is_recorded_with_its_reason() {
         unchanged(&[&[(X, false), (D, true)]]),
         [(vec![X, D], AliasRefusal::AnchorIsNotState)]
     );
+}
+
+fn formal_plan(residuals: &[&[Term]]) -> AliasPlan {
+    fixture_with(residuals, true)
+        .inspect(|view| derive_plan_observed(view, QuotientScope::FormalDerivatives, &mut ()))
+}
+
+#[test]
+fn the_formal_application_composes_sign_chains_through_formal_coordinates() {
+    // a = -c (formal to formal) and c + b = 0 (formal to source): b = a.
+    let plan = formal_plan(&[&[(A, false), (C, false)], &[(C, false), (B, false)]]);
+    assert_eq!(plan.substitutions[A as usize], None);
+    assert_eq!(plan.substitutions[C as usize], substitution(A, true));
+    assert_eq!(plan.substitutions[B as usize], substitution(A, false));
+}
+
+#[test]
+fn the_formal_application_admits_no_edge_without_a_formal_endpoint() {
+    // x = b joins a state and a source algebraic; only a = c is formal.
+    let plan = formal_plan(&[&[(X, false), (B, true)], &[(A, false), (C, true)]]);
+    assert_eq!(
+        plan.substitutions[B as usize], None,
+        "x = b stays a source edge"
+    );
+    assert_eq!(plan.substitutions[C as usize], substitution(A, false));
+    assert_eq!(plan.definitions.len(), 1);
+}
+
+#[test]
+fn the_formal_application_keeps_source_roles_and_names() {
+    let source = fixture_with(
+        &[&[(A, false), (C, false)], &[(C, false), (B, false)]],
+        true,
+    );
+    let plan = source
+        .inspect(|view| derive_plan_observed(view, QuotientScope::FormalDerivatives, &mut ()));
+    let (quotient, _) =
+        crate::dae_transform::reconstruction::rebuild_alias_quotient(&source, &plan, &[]).unwrap();
+    source.inspect(|before| {
+        quotient.inspect(|after| {
+            for ((_, old), (_, new)) in before.variables().zip(after.variables()) {
+                assert_eq!((old.name(), old.role()), (new.name(), new.role()));
+            }
+            let reads = continuous_reads(after);
+            assert_eq!(
+                reads[3],
+                BTreeSet::from([Y, A]),
+                "der(y) = b reads the representative a"
+            );
+        })
+    });
 }

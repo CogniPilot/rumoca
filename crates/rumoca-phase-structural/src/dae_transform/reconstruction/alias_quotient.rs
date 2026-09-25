@@ -16,7 +16,9 @@ use crate::StructuralError;
 pub(in super::super) fn rebuild_alias_quotient(
     model: &dae::Dae,
     plan: &AliasPlan,
-) -> Result<dae::Dae, StructuralError> {
+    prior_manifold: &[u32],
+) -> Result<(dae::Dae, Vec<u32>), StructuralError> {
+    let mut manifold = Vec::with_capacity(prior_manifold.len());
     model
         .inspect(|source| {
             dae::Dae::construct(model.source_map().clone(), |target| {
@@ -39,6 +41,11 @@ pub(in super::super) fn rebuild_alias_quotient(
                             quotients,
                             ..
                         } = prepared;
+                        manifold.extend(
+                            prior_manifold
+                                .iter()
+                                .map(|&id| expressions[id as usize].index()),
+                        );
                         define_variables(source, target, &expressions, variables)?;
                         let definitions =
                             alias_definitions(source, target, variables, &expressions, plan)?;
@@ -59,6 +66,7 @@ pub(in super::super) fn rebuild_alias_quotient(
                 )
             })
         })
+        .map(|model| (model, manifold))
         .map_err(construction_failure)
 }
 

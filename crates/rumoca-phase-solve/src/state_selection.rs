@@ -10,7 +10,7 @@ use rumoca_ir_dae as dae;
 use rumoca_phase_structural::{
     FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate, FormalStateCoordinate,
     PreparedDae, ReducedSelectionChart, StateSelection, StructuralError,
-    construct_formal_derivatives, prepare_for_solve, quotient_aliases,
+    construct_formal_derivatives, prepare_for_solve, quotient_aliases, quotient_formal_aliases,
 };
 
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
@@ -168,7 +168,7 @@ fn reduce_or_retain<'source>(
     }
     let alternates = prepare_alternate_charts(&formal, &alternate_selections)?;
     Ok(PreparedSelection {
-        primary: candidate.into_prepared()?,
+        primary: quotient_formal_aliases(candidate.into_prepared()?)?,
         alternates,
     })
 }
@@ -192,7 +192,7 @@ fn recover_singular_via_formal(
         .ok()?;
     let alternates = prepare_alternate_charts(&formal, &alternate_selections).ok()?;
     Some(PreparedSelection {
-        primary: candidate.into_prepared().ok()?,
+        primary: quotient_formal_aliases(candidate.into_prepared().ok()?).ok()?,
         alternates,
     })
 }
@@ -238,6 +238,7 @@ fn prepare_alternate_chart(
     formal
         .construct_state_candidate(|view| resolve_alternate_coordinates(view, selection))?
         .into_prepared()
+        .and_then(quotient_formal_aliases)
 }
 
 /// Rebind an alternate chart's lifetime-free Independent set onto branded formal

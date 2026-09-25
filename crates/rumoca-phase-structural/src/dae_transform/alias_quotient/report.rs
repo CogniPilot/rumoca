@@ -52,6 +52,14 @@ impl AliasQuotientReport {
 /// Report the alias classes `quotient_aliases` would find in `model`.
 #[must_use]
 pub fn alias_quotient_report(model: &dae::Dae) -> AliasQuotientReport {
+    report_in(model, super::QuotientScope::Source)
+}
+
+/// Report the alias classes one application of the quotient finds in `model`.
+pub(in super::super) fn report_in(
+    model: &dae::Dae,
+    scope: super::QuotientScope,
+) -> AliasQuotientReport {
     model.inspect(|view| {
         let members = member_facts(view);
         let name = |ordinal: u32| {
@@ -60,7 +68,7 @@ pub fn alias_quotient_report(model: &dae::Dae) -> AliasQuotientReport {
                 .map(|variable| variable.name().to_string())
                 .unwrap_or_default()
         };
-        let classes = alias_classes(view, &members)
+        let classes = alias_classes(view, &members, scope)
             .iter()
             .map(|class| match representative(class, &members) {
                 Err(reason) => AliasClassReport::Unchanged {
