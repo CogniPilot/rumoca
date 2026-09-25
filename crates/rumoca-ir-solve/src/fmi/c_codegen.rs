@@ -202,42 +202,11 @@ impl FmiCCodegenView {
     }
 }
 
-/// Every parameter storage index some emitted program reads.
-struct ParameterReads(BTreeSet<usize>);
-
-impl crate::SolveVisitor for ParameterReads {
-    type Error = std::convert::Infallible;
-    fn visit_linear_op(
-        &mut self,
-        _kind: crate::LinearOpSliceKind,
-        _index: usize,
-        op: &crate::LinearOp,
-    ) -> Result<(), Self::Error> {
-        use crate::{LinearOp, TensorInputKind};
-        match op {
-            LinearOp::LoadP { index, .. } => {
-                self.0.insert(*index);
-            }
-            LinearOp::LoadIndexedP { base, count, .. } => self.0.extend(*base..*base + *count),
-            LinearOp::TensorLoad {
-                input: TensorInputKind::P,
-                input_start,
-                count,
-                ..
-            } => self.0.extend(*input_start..*input_start + *count),
-            _ => {}
-        }
-        Ok(())
-    }
-}
-
 /// The settable parameters whose values no emitted program reads: the
 /// compiler folded them into the programs that use them, so a set could not
 /// take effect. The C profile exports them as constants that cannot be set.
 fn folded_parameters(metadata: &FmiMetadata, problem: &crate::SolveProblem) -> BTreeSet<usize> {
-    use crate::SolveVisitor;
-    let mut reads = ParameterReads(BTreeSet::new());
-    let Ok(()) = reads.visit_solve_problem(problem);
+    let reads = crate::read_parameter_slots(problem);
     metadata
         .variables()
         .iter()
@@ -247,7 +216,7 @@ fn folded_parameters(metadata: &FmiMetadata, problem: &crate::SolveProblem) -> B
             variable.storage().is_some_and(|storage| {
                 storage.column() == super::metadata::FmiStorageColumn::P
                     && (storage.base()..storage.base() + storage.scalar_count())
-                        .all(|index| !reads.0.contains(&index))
+                        .all(|index| !reads.contains(&index))
             })
         })
         .map(|(index, _)| index)

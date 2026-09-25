@@ -19,6 +19,8 @@ const SETTLE_MAX_ITERS: usize = 64;
 pub enum PreparedVectorError {
     #[error("`{name}` is not a tunable scalar parameter of this model")]
     NotAParameter { name: String },
+    #[error("`{name}` is fixed at translation time; change it by recompiling")]
+    NotTunable { name: String },
     #[error("parameter settle failed: {message}")]
     Settle { message: String },
     #[error("runtime preparation failed: {message}")]
@@ -51,7 +53,9 @@ impl From<PreparedVectorError> for crate::SimulationDiagnosticError {
     fn from(value: PreparedVectorError) -> Self {
         let message = value.to_string();
         match value {
-            PreparedVectorError::NotAParameter { .. } => Self::InvalidOverride { message },
+            PreparedVectorError::NotAParameter { .. } | PreparedVectorError::NotTunable { .. } => {
+                Self::InvalidOverride { message }
+            }
             PreparedVectorError::Settle { .. } => Self::RuntimePreparation {
                 message,
                 span: None,
@@ -68,10 +72,20 @@ pub fn refresh_prepared_vectors(
     overrides: &[(String, f64)],
 ) -> Result<(Vec<f64>, Vec<f64>), PreparedVectorError> {
     let mut params = model.parameters.clone();
+    let read = if overrides.is_empty() {
+        Default::default()
+    } else {
+        solve::read_parameter_slots(&model.problem)
+    };
     for (name, value) in overrides {
         let Some(solve::ScalarSlot::P { index, .. }) = model.problem.layout.binding(name) else {
             return Err(PreparedVectorError::NotAParameter { name: name.clone() });
         };
+        // A slot no program reads was folded at translation time; setting it
+        // could not take effect (SPEC_0040 STRUCT-T10(a)).
+        if !read.contains(&index) {
+            return Err(PreparedVectorError::NotTunable { name: name.clone() });
+        }
         params[index] = *value;
     }
 

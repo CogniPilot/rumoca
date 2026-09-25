@@ -79,3 +79,39 @@ fn refresh_rejects_non_parameter_names() {
         );
     }
 }
+
+#[test]
+fn refresh_rejects_translation_time_parameters() {
+    // `k` is final and `h = 2*k` depends only on it: both are folded into the
+    // model at translation time (SPEC_0040 STRUCT-T10(a)), so an override would
+    // change nothing. `g` stays tunable.
+    let source = r#"
+model FoldedOverride
+  final parameter Real k = 2;
+  parameter Real h = 2*k;
+  parameter Real g = 3;
+  Real x(start = 1, fixed = true);
+equation
+  der(x) = -k*x + g + h;
+end FoldedOverride;
+"#;
+    let compiled = Compiler::new()
+        .model("FoldedOverride")
+        .compile_str(source, "folded_override.mo")
+        .expect("compile FoldedOverride");
+    let model = lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).expect("lower");
+    for name in ["k", "h"] {
+        let err = rumoca_sim::refresh_prepared_vectors(&model, 0.0, &[(name.to_string(), 5.0)])
+            .expect_err("a translation-time parameter override must fail");
+        assert!(
+            matches!(&err, PreparedVectorError::NotTunable { name: n } if n == name),
+            "expected NotTunable for `{name}`, got {err:?}"
+        );
+        assert_eq!(
+            rumoca_sim::SimulationDiagnosticError::from(err).diagnostic_code(),
+            "EX003"
+        );
+    }
+    rumoca_sim::refresh_prepared_vectors(&model, 0.0, &[("g".to_string(), 5.0)])
+        .expect("a tunable parameter override is accepted");
+}

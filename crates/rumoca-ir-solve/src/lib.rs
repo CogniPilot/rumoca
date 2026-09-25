@@ -18,6 +18,7 @@ mod initialization;
 mod layout;
 mod linear_op;
 mod model;
+mod parameter_reads;
 mod refresh;
 mod scalar_program_outputs;
 #[cfg(test)]
@@ -58,6 +59,7 @@ pub use linear_op::{
     TensorUpdateSubscript, UnaryOp, prune_dead_constants, resolve_indexed_slot,
 };
 pub use model::*;
+pub use parameter_reads::read_parameter_slots;
 pub use refresh::*;
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
 pub use typed_program::*;

@@ -206,6 +206,34 @@ def test_override_rejections_are_typed() -> None:
     m.simulate(t=0.1, params={"b": 9.0})
 
 
+def test_translation_time_param_override_is_rejected() -> None:
+    # `k` is final and `h = 2*k` depends only on it: both are folded into the
+    # model at translation time, so an override would change nothing and is
+    # rejected rather than silently ignored.
+    src = (
+        "model FoldedOverride\n"
+        "  final parameter Real k = 2;\n"
+        "  parameter Real h = 2*k;\n"
+        "  parameter Real g = 3;\n"
+        "  Real x(start = 1, fixed = true);\n"
+        "equation\n"
+        "  der(x) = -k*x + g + h;\n"
+        "end FoldedOverride;\n"
+    )
+    m = _loads(src, model="FoldedOverride")
+    for name in ("k", "h"):
+        for call in (
+            lambda: m.simulate(t=0.1, params={name: 5.0}),
+            lambda: m.with_params(**{name: 5.0}),
+        ):
+            try:
+                call()
+            except rm.StructuralParamError:
+                continue
+            raise AssertionError(f"override of {name} was accepted")
+    m.with_params(g=5.0).simulate(t=0.1)
+
+
 def test_dependent_param_propagation() -> None:
     # `b = 2*a` is folded at lowering; overriding `a` must re-derive `b` rather
     # than run with the stale value. der(x)=b so x(1)=b.
