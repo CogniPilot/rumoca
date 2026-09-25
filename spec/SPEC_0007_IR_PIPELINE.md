@@ -280,7 +280,7 @@ affine patterns originate from SPEC_0032 owners, never scalar-row recovery.
 Transformations require checked, root-owned DAEs; partial mutation,
 replayable proof receipts, and mutable partition callbacks are prohibited.
 
-**In scope:** only `STRUCT-T01`–`STRUCT-T09` in
+**In scope:** only `STRUCT-T01`–`STRUCT-T10` in
 [SPEC_0040 §3](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
 Other transformations require amendments.
 

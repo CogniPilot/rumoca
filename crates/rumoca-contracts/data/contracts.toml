@@ -290,6 +290,24 @@ status = 'NotApplicable'
 tier = 1
 
 [[contracts]]
+id = 'ANN-016'
+category = 'Annotation'
+name = 'Inline expansion'
+mls_ref = '§18.3'
+requirement = 'Inline and LateInline propose inlining a function body at each call; InlineAfterIndexReduction proposes it after differentiation for index reduction'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-017'
+category = 'Annotation'
+name = 'Evaluate folding'
+mls_ref = '§18.6'
+requirement = 'Evaluate = true on an evaluable parameter proposes using its value during symbolic processing, after which it cannot change'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
 id = 'ARR-001'
 category = 'Array'
 name = 'Fixed dimensionality'

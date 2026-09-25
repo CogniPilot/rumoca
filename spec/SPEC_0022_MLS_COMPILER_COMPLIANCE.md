@@ -35,7 +35,7 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.14 CLK contracts | 768–792 | Clock/synchronous rules (20 contracts) |
 | §4.15 STRM contracts | 793–808 | Stream connector rules (11 contracts) |
 | §4.16 SM contracts | 809–861 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 862–881 | Annotation rules (15 contracts) |
+| §4.17 ANN contracts | 862–883 | Annotation rules (17 contracts) |
 | §4.18 UNIT contracts | 882–897 | Unit expression rules (9 contracts) |
 | §5. Contract Summary | 898–923 | Category counts and totals |
 | §6. Compiler Phases | 924–973 | Phase input/output mapping |
@@ -885,7 +885,9 @@ areas.
 | ANN-012 | mayOnlyConnectOnce error | §18.8 | "Error if connection set has more than two elements" |
 | ANN-013 | Annotation placement | §18.1 | "Standard annotations shall only be used where their semantics is defined" |
 | ANN-014 | TestCase restriction | §18.7 | "Class with TestCase annotation shall not be used in other models unless those also have TestCase" |
-| ANN-015 | Extent coordinate order | §18.9.1.1 | "Coordinates of first point shall be less than coordinates of second point"
+| ANN-015 | Extent coordinate order | §18.9.1.1 | "Coordinates of first point shall be less than coordinates of second point" |
+| ANN-016 | Inline expansion | §18.3 | `Inline = true` and `LateInline = true` propose including the function body at each call; `InlineAfterIndexReduction = true` proposes it after the function is differentiated for index reduction and before other symbolic transformations. Rumoca (SPEC_0040 STRUCT-T10(b)): a pure, non-recursive, straight-line Modelica body is inlined with substituted arguments and kept body assertions, `Inline`/`LateInline` before index reduction and `InlineAfterIndexReduction` after formal-derivative construction; a callee with a derivative annotation is never inlined before index reduction, and external, impure, recursive, or loop-bearing callees are refused |
+| ANN-017 | Evaluate folding | §18.6 | `Evaluate = true` on an evaluable parameter proposes using its value during symbolic processing, after which the value cannot change. Rumoca (SPEC_0040 STRUCT-T10(a)): evaluable parameters declared `final` or `Evaluate = true` are replaced by their values in one checked reconstruction and exported as constants; ordinary tunable parameters and unevaluable bindings are never folded (ANN-009) |
 
 ### 4.18 Unit Expression Contracts (UNIT)
 
@@ -923,9 +925,9 @@ areas.
 | Clocks/Synchronous | CLK | 20 |
 | Stream Connectors | STRM | 11 |
 | State Machines | SM | 8 |
-| Annotations | ANN | 15 |
+| Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **440** |
+| **Total** | | **442** |
 
 ---
 
