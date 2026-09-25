@@ -345,6 +345,11 @@ pub fn walk_scalar_program_block<V: SolveVisitor + ?Sized>(
     Ok(())
 }
 
+/// Visit every operation of `ops`, then the operations of each nested fold
+/// update, conditional arm, and conditional fallback it carries, under the
+/// same slice kind. A nested operation's index counts within its own nested
+/// slice. Nested programs read the same Y, P, and seed storage as their
+/// enclosing program, so a visitor that asks what a slice reads sees them.
 pub fn walk_linear_op_slice<V: SolveVisitor + ?Sized>(
     visitor: &mut V,
     kind: LinearOpSliceKind,
@@ -352,6 +357,21 @@ pub fn walk_linear_op_slice<V: SolveVisitor + ?Sized>(
 ) -> Result<(), V::Error> {
     for (op_index, op) in ops.iter().enumerate() {
         visitor.visit_linear_op(kind, op_index, op)?;
+        match op {
+            LinearOp::FunctionFold { program, .. }
+            | LinearOp::GuardedFunctionFold { program, .. }
+            | LinearOp::StoreOutputFunctionFold { program, .. } => {
+                walk_linear_op_slice(visitor, kind, &program.update)?;
+            }
+            LinearOp::FunctionConditional { program, .. } => {
+                for arm in &program.arms {
+                    walk_linear_op_slice(visitor, kind, &arm.condition)?;
+                    walk_linear_op_slice(visitor, kind, &arm.result)?;
+                }
+                walk_linear_op_slice(visitor, kind, &program.fallback)?;
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -564,6 +584,76 @@ mod tests {
                     node_index: 4,
                     span
                 })
+        );
+    }
+
+    #[derive(Default)]
+    struct ParameterLoads(Vec<usize>);
+
+    impl SolveVisitor for ParameterLoads {
+        type Error = Infallible;
+
+        fn visit_linear_op(
+            &mut self,
+            _kind: LinearOpSliceKind,
+            _op_index: usize,
+            op: &LinearOp,
+        ) -> Result<(), Self::Error> {
+            if let LinearOp::LoadP { index, .. } = op {
+                self.0.push(*index);
+            }
+            Ok(())
+        }
+    }
+
+    fn load_parameter_row(index: usize) -> Vec<LinearOp> {
+        vec![
+            LinearOp::LoadP { dst: 0, index },
+            LinearOp::StoreOutput { src: 0 },
+        ]
+    }
+
+    #[test]
+    fn nested_fold_bodies_and_conditional_regions_are_visited_exactly_once() {
+        let fold = crate::FunctionFoldProgram::checked(
+            single_binder_domain(),
+            1,
+            0,
+            load_parameter_row(7),
+        )
+        .expect("a one-carried fold is checked");
+        let conditional = crate::FunctionConditionalProgram::checked(
+            0,
+            vec![1],
+            [(load_parameter_row(8), load_parameter_row(9))],
+            load_parameter_row(10),
+        )
+        .expect("a one-arm conditional is checked");
+        let ops = vec![
+            LinearOp::LoadP { dst: 0, index: 6 },
+            LinearOp::FunctionFold {
+                dst_start: 1,
+                initial_start: 0,
+                capture_start: 0,
+                program: std::sync::Arc::new(fold),
+            },
+            LinearOp::FunctionConditional {
+                dst_start: 2,
+                capture_start: 0,
+                program: std::sync::Arc::new(conditional),
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ];
+        let mut visitor = ParameterLoads::default();
+        let kind = LinearOpSliceKind::ScalarProgram {
+            program_index: 0,
+            span: None,
+        };
+        let Ok(()) = walk_linear_op_slice(&mut visitor, kind, &ops);
+        assert_eq!(
+            visitor.0,
+            [6, 7, 8, 9, 10],
+            "the enclosing slice, the fold body, and the arm condition, result, and fallback each once, in order"
         );
     }
 }

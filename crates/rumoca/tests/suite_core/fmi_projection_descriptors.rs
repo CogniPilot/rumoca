@@ -550,3 +550,132 @@ fn has_seeded_projection_step(source: &str) -> bool {
         matches!(fields.as_deref(), Some([kind, _, _, _, _, seeds, _, _]) if *kind == "2" && *seeds != "0")
     })
 }
+
+/// Two coupled loops torn into one block: a perturbation of some tears
+/// reaches none of its causal runs.
+const TWO_TEARS: &str = "model TwoTears
+  Real x(start=1, fixed=true);
+  Real u(start=1);
+  Real v(start=1);
+  Real w(start=1);
+  Real z(start=1);
+  Real s(start=1);
+equation
+  der(x) = -0.1*u - 0.1*z;
+  u = x + 0.2*sin(w) + 0.1*cos(z);
+  v = u*u + 0.1*u;
+  w = 1 + v - 0.3*cos(v) + 0.1*sin(w);
+  s = 0.5*z + 0.2*sin(z);
+  z = 0.3*s*s + 0.1*u + 0.2*sin(z);
+end TwoTears;";
+
+/// Every Y index a program reads, nested fold and conditional bodies included.
+fn program_y_reads(program: &[rumoca_ir_solve::LinearOp], reads: &mut Vec<usize>) {
+    use rumoca_ir_solve::{LinearOp, TensorInputKind};
+    for op in program {
+        match op {
+            LinearOp::LoadY { index, .. } => reads.push(*index),
+            LinearOp::TensorLoad {
+                input: TensorInputKind::Y,
+                input_start,
+                count,
+                ..
+            } => reads.extend(*input_start..input_start + count),
+            LinearOp::FunctionFold { program, .. }
+            | LinearOp::GuardedFunctionFold { program, .. }
+            | LinearOp::StoreOutputFunctionFold { program, .. } => {
+                program_y_reads(&program.update, reads);
+            }
+            LinearOp::FunctionConditional { program, .. } => {
+                for arm in &program.arms {
+                    program_y_reads(&arm.condition, reads);
+                    program_y_reads(&arm.result, reads);
+                }
+                program_y_reads(&program.fallback, reads);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The partial perturbation sweep skips work: some tear's run list is shorter
+/// than the block's run count, and every tear's runs and reduced rows equal
+/// the closure recomputed here from the lowered row programs' Y reads.
+#[test]
+fn tear_dependencies_skip_unreached_runs_and_match_the_row_reads() {
+    let (_, tables) = rendered("TwoTears", TWO_TEARS);
+    assert_well_formed("TwoTears", &tables);
+    let block = tables
+        .blocks
+        .iter()
+        .find(|block| block.flag("torn"))
+        .expect("the coupled loops are torn");
+    let (k, ncruns, ncausal) = (block.get("k"), block.get("ncruns"), block.get("ncausal"));
+    let compiled = Compiler::new()
+        .model("TwoTears")
+        .compile_str(TWO_TEARS, "TwoTears.mo")
+        .expect("compile TwoTears");
+    let model =
+        rumoca_sim::lower_dae_for_simulation(&compiled.dae, &rumoca_sim::SimOptions::default())
+            .expect("lower TwoTears");
+    let plan_block =
+        &model.problem.continuous.algebraic_projection_plan.blocks[block.get("canonical")];
+    let tearing = plan_block.tearing.as_ref().expect("the block is torn");
+    let targets = block.range(&tables, "causal_target", ncausal);
+    assert_eq!(
+        targets,
+        tearing
+            .causal_steps
+            .iter()
+            .map(|step| step.y_index)
+            .collect::<Vec<_>>(),
+        "the descriptor keeps the issued causal order"
+    );
+    let implicit = rumoca_eval_solve::PreparedScalarProgramBlock::new(
+        rumoca_eval_solve::to_scalar_program_projection(&model.problem.continuous.implicit_rhs)
+            .expect("scalarize the implicit rows")
+            .into_block(),
+    )
+    .expect("prepare the implicit rows");
+    let reads = |row: usize| {
+        let (program, _) = implicit.row_output_position(row).expect("a scalar row");
+        let mut reads = Vec::new();
+        program_y_reads(&implicit.block().programs()[program], &mut reads);
+        reads
+    };
+    let runs = block.range(&tables, "cruns", 4 * ncruns);
+    let mut skipped = false;
+    for (tear, &list) in block.range(&tables, "tear_deps", k).iter().enumerate() {
+        let mut dirty = vec![tearing.tear_y_indices[tear]];
+        let mut expected_runs = Vec::new();
+        for (index, run) in runs.chunks(4).enumerate() {
+            let steps = &tearing.causal_steps[run[2]..run[2] + run[3]];
+            if steps
+                .iter()
+                .any(|step| reads(step.row).iter().any(|y| dirty.contains(y)))
+            {
+                expected_runs.push(index);
+                dirty.extend(steps.iter().map(|step| step.y_index));
+            }
+        }
+        let expected_rows = tearing
+            .residual_rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| reads(**row).iter().any(|y| dirty.contains(y)))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let listed_runs = tables.pool[list];
+        let listed_rows = tables.pool[list + 1 + listed_runs];
+        assert_eq!(
+            &tables.pool[list + 1..list + 1 + listed_runs],
+            expected_runs.as_slice()
+        );
+        assert_eq!(
+            &tables.pool[list + 2 + listed_runs..list + 2 + listed_runs + listed_rows],
+            expected_rows.as_slice()
+        );
+        skipped |= listed_runs < ncruns;
+    }
+    assert!(skipped, "some tear's perturbation skips a causal run");
+}

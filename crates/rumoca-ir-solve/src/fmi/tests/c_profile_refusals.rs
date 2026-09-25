@@ -246,3 +246,76 @@ fn a_parameter_read_only_by_an_assertion_condition_stays_settable() {
         "local"
     );
 }
+
+/// A continuous residual row reading the parameter `p` (storage index 1) only
+/// inside a nested sub-program.
+fn nested_read(model: &mut SolveModel, row: Vec<LinearOp>) {
+    model.problem.continuous.residual = ComputeBlock::from_scalar_program_block(rows(vec![row]));
+}
+
+fn load_parameter_row() -> Vec<LinearOp> {
+    vec![
+        LinearOp::LoadP { dst: 0, index: 1 },
+        LinearOp::StoreOutput { src: 0 },
+    ]
+}
+
+/// SPEC_0044 ME-PARAM-001: reads inside fold updates and conditional arms are
+/// reads; the parameter stays settable.
+#[test]
+fn a_parameter_read_only_inside_a_nested_program_stays_settable() {
+    let fold = crate::FunctionFoldProgram::checked(
+        rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 2,
+                step: 1,
+            }],
+        },
+        1,
+        0,
+        load_parameter_row(),
+    )
+    .expect("a one-carried fold is checked");
+    assert_eq!(
+        published_causality(|model| nested_read(
+            model,
+            vec![
+                LinearOp::Const { dst: 0, value: 0.0 },
+                LinearOp::FunctionFold {
+                    dst_start: 1,
+                    initial_start: 0,
+                    capture_start: 0,
+                    program: std::sync::Arc::new(fold),
+                },
+                LinearOp::StoreOutput { src: 1 },
+            ],
+        )),
+        "parameter",
+        "a fold body read keeps the parameter settable"
+    );
+    let conditional = crate::FunctionConditionalProgram::checked(
+        0,
+        vec![1],
+        [(constant_row(1.0), load_parameter_row())],
+        constant_row(0.0),
+    )
+    .expect("a one-arm conditional is checked");
+    assert_eq!(
+        published_causality(|model| nested_read(
+            model,
+            vec![
+                LinearOp::FunctionConditional {
+                    dst_start: 0,
+                    capture_start: 0,
+                    program: std::sync::Arc::new(conditional),
+                },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        )),
+        "parameter",
+        "a conditional arm read keeps the parameter settable"
+    );
+}
