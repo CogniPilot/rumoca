@@ -1,5 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
+mod chart_switch;
 mod component;
 mod dynamic_chart;
 mod event_boundary;
