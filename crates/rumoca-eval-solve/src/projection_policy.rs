@@ -36,7 +36,12 @@ pub const TORN_BACKTRACK_STEPS: usize = 24;
 /// tangent follows from the implicit function theorem on its row in sweep
 /// order, evaluated from multi-lane tangent programs. A block without a plan,
 /// or a point where the plan declines, differences the causal sweep.
-pub const TORN_TANGENT_JACOBIAN: bool = true;
+///
+/// The exact tear Jacobian is an accuracy option: each tangent lane costs about
+/// a primal pass, so it is costlier than the partial finite-difference columns
+/// of the causal sweep. It is off, so the linked kernel and the generated C
+/// share one Jacobian source.
+pub const TORN_TANGENT_JACOBIAN: bool = false;
 
 /// Relative step of the reduced finite-difference Jacobian.
 pub const FINITE_DIFFERENCE_RELATIVE_STEP: f64 = 1.0e-7;
