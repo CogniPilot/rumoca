@@ -336,9 +336,10 @@ fn record_jacobian(
 }
 
 /// The colored application as one multi-lane call per program
-/// ([`solve::ColoredTangentPlan`]): `(function, lanes, colors, placements,
-/// placement count, lane outputs)` per call, with `(lane, output offset,
-/// pattern position)` placements. Left empty when the plan does not construct
+/// ([`solve::ColoredTangentPlan`]): `(function, lanes, seed positions, seed
+/// position count, placements, placement count, lane outputs)` per call, with
+/// `(lane, output offset, pattern position)` placements. The seed positions
+/// are the lane seeds the call reads that its colors set to one. Left empty when the plan does not construct
 /// or the policy keeps the one-direction colors.
 fn record_lane_calls(
     sources: &BlockSources<'_>,
@@ -361,8 +362,10 @@ fn record_lane_calls(
         let program = plan.programs()[call.program].clone();
         check_seed_loads(canonical, program.ops(), sources.seed_len * lanes)?;
         let outputs = program.lane_outputs();
+        let seeds = lane_seed_positions(program.ops(), &call.colors, application);
         let function = table.lanes.push(program, span);
-        let colors = table.push(call.colors.iter().copied());
+        let seed_count = seeds.len();
+        let seeds = table.push(seeds);
         let mut placements = Vec::with_capacity(3 * call.placements.len());
         for &(lane, offset, destination) in call.placements.iter() {
             let position = csr.position(canonical, destination % n, destination / n)?;
@@ -372,7 +375,8 @@ fn record_lane_calls(
         calls.extend([
             function,
             lanes,
-            colors,
+            seeds,
+            seed_count,
             placement_start,
             call.placements.len(),
             outputs,
@@ -380,9 +384,45 @@ fn record_lane_calls(
         record.lane_max_outputs = record.lane_max_outputs.max(lanes * outputs);
         record.lane_max = record.lane_max.max(lanes);
     }
-    record.nlane_calls = calls.len() / 6;
+    record.nlane_calls = calls.len() / LANE_CALL_FIELDS;
     record.lane_calls = table.push(calls);
     Ok(())
+}
+
+/// Fields of one lane-call descriptor in the index pool.
+const LANE_CALL_FIELDS: usize = 7;
+
+/// Lane seed positions `seed * lanes + lane` a tangent-lane program reads
+/// whose seed belongs to the color of that lane: exactly the entries a call
+/// sets to one, so every other lane seed stays zero.
+fn lane_seed_positions(
+    operations: &[solve::LinearOp],
+    colors: &[usize],
+    application: &solve::ProjectionJacobianApplication,
+) -> Vec<usize> {
+    let lanes = colors.len();
+    let mut read = std::collections::BTreeSet::new();
+    for operation in operations {
+        match operation {
+            solve::LinearOp::LoadSeed { index, .. } => {
+                read.insert(*index);
+            }
+            solve::LinearOp::TensorLoad {
+                seed_start: Some(start),
+                count,
+                lanes: width,
+                ..
+            } => read.extend(start * (width - 1)..(start + count) * (width - 1)),
+            _ => {}
+        }
+    }
+    read.into_iter()
+        .filter(|position| {
+            application.colors()[colors[position % lanes]]
+                .seed_indices()
+                .contains(&(position / lanes))
+        })
+        .collect()
 }
 
 fn check_seed_loads(

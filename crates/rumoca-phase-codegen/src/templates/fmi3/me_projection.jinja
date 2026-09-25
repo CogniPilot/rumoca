@@ -301,28 +301,23 @@ static int rmc_rows(ModelInstance* m, const RmcBlock* b, double* residual) {
 }
 /* initial.rs: algebraic_block_jacobian through the issued colored application */
 /* tangent_lanes.rs: ColoredTangentEvaluator::eval; lane j of a call seeds
-   the columns of color colors[j] (element-major), and every placement takes
-   the value that color's one-direction call writes. -1 error */
-static void rmc_lane_seeds(const RmcBlock* b, const size_t* colors, size_t lanes, double value, double* seed) {
-    for (size_t lane = 0; lane < lanes; ++lane) {
-        const size_t* color = b->colors + 4 * colors[lane];
-        for (size_t s = color[0]; s < color[1]; ++s) seed[b->color_seeds[s] * lanes + lane] = value;
-    }
-}
+   the columns of its j-th color (element-major; only the seeds the program
+   reads are written), and every placement takes the value that color's
+   one-direction call writes. -1 error */
 static int rmc_jacobian_lanes(ModelInstance* m, const RmcBlock* b, double* values) {
     RMC_MARK; int result = 0;
     double* out = rmc_dalloc(m, b->lane_max_outputs);
     if (!out) { RMC_RELEASE; return rmc_exhausted(m); }
     for (size_t e = 0; e < b->nnz; ++e) values[e] = 0.0;
     for (size_t call = 0; call < b->nlane_calls && result == 0; ++call) {
-        const size_t* entry = b->lane_calls + 6 * call;
-        size_t lanes = entry[1], outputs = entry[5];
-        const size_t* colors = rmc_pool + entry[2];
-        const size_t* placements = rmc_pool + entry[3];
-        rmc_lane_seeds(b, colors, lanes, 1.0, m->rmc_lane_seed);
+        const size_t* entry = b->lane_calls + 7 * call;
+        const size_t* seeds = rmc_pool + entry[2];
+        const size_t* placements = rmc_pool + entry[4];
+        size_t outputs = entry[6];
+        for (size_t s = 0; s < entry[3]; ++s) m->rmc_lane_seed[seeds[s]] = 1.0;
         if (rmc_lane_fn[entry[0]](m, m->rmc_lane_seed, out) != 0) result = -1;
-        rmc_lane_seeds(b, colors, lanes, 0.0, m->rmc_lane_seed);
-        for (size_t p = 0; p < entry[4] && result == 0; ++p) values[placements[3 * p + 2]] = out[placements[3 * p] * outputs + placements[3 * p + 1]];
+        for (size_t s = 0; s < entry[3]; ++s) m->rmc_lane_seed[seeds[s]] = 0.0;
+        for (size_t p = 0; p < entry[5] && result == 0; ++p) values[placements[3 * p + 2]] = out[placements[3 * p] * outputs + placements[3 * p + 1]];
     }
     RMC_RELEASE; return result;
 }
