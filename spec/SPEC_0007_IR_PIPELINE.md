@@ -300,7 +300,7 @@ Tangents and non-additive lifts replay exact anchors.
 Additive lifts share acyclic source-row value/derivative proofs excluding replaced owners and lifted coordinates.
 Holonomic replacement excludes value identities; undoing lifts restores original equations.
 
-STRUCT-T03 reconstruction:
+STRUCT-T03 reconstruction (aggregate rows: SPEC_0040 §3):
 
 | Rule | Owner | Why |
 |---|---|---|
@@ -310,12 +310,11 @@ STRUCT-T03 reconstruction:
 | Follow exact function/array substitutions and independently defined derivatives; retain source residual owners and assertions | structural coefficient proof | Reconstruction must preserve source behavior |
 | Structural differentiation may select an exact whole-coordinate equality with proved state/invariant value anchors when executable causal-definition uniqueness is unavailable; selection must be acyclic and retain every source equation, including alternative definitions | structural substitution facts | Multiple equations constrain a coordinate without preventing exact substitution |
 | Differentiate `A*q=b` as `A*der(q)=der(b)-der(A)*q`, preserving exact zeros and only needed primal reads; manifold reconstruction uses proved state/invariant anchors on the same nonsingular domain | structural reconstruction | Preserve the original primal solve instead of recursively recomputing it |
-| Keep identity, projection, matrix product, and outer product aggregate; never enumerate a tensor basis to obtain coefficients | structural reconstruction | Compiler representation must stay compact |
-| Reject singular runtime matrices through the checked aggregate solve | native evaluation | Structural shape cannot prove numerical nonsingularity |
 
 **Placement requirement:**
 
 `rumoca-phase-structural` reconstructs finalized DAEs; analysis stays outside DAE.
+STRUCT-T02 quotients copy and negation aliases once, before state selection, through one checked reconstruction; eliminated members stay defined, observable variables, and every unquotiented class is explicit.
 `rumoca-phase-solve` lowers finalized DAE only. STRUCT-T09 permits exact implicit-derivative
 and mixed derivative/algebraic aliases, never scalar pivot selection or numerical
 coefficient matrices. Other dummy-derivative transformations, unrelated symbolic
