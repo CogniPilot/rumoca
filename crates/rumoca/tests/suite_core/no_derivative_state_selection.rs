@@ -20,7 +20,7 @@ fn no_derivative_rate_alias_selects_states_and_follows_the_closed_form() {
             "NoDerivativeRateLoop.mo",
         )
         .unwrap();
-    let result = simulate_dae_with_diagnostics(
+    let result = match simulate_dae_with_diagnostics(
         &compiled.dae,
         &SimOptions {
             t_end: 2.0,
@@ -28,14 +28,14 @@ fn no_derivative_rate_alias_selects_states_and_follows_the_closed_form() {
             solver_mode: SimSolverMode::Bdf,
             ..Default::default()
         },
-    )
-    .unwrap_or_else(|error| panic!("{error}"));
+    ) {
+        Ok(result) => result,
+        Err(error) => panic!("{error}"),
+    };
     let column = |name: &str| {
-        let index = result
-            .names
-            .iter()
-            .position(|candidate| candidate == name)
-            .unwrap_or_else(|| panic!("missing {name}"));
+        let Some(index) = result.names.iter().position(|candidate| candidate == name) else {
+            panic!("missing {name}");
+        };
         &result.data[index]
     };
     let (q, phi2) = (column("q"), column("phi2"));

@@ -2,10 +2,7 @@
 
 use super::*;
 
-impl<'dae, F> Projection<'_, 'dae, F>
-where
-    F: FnMut(dae::CoordinateView<'dae>, usize),
-{
+impl<'dae> Projection<'_, 'dae> {
     pub(super) fn array_update_scalar(
         &mut self,
         base: dae::ExprId<'dae>,

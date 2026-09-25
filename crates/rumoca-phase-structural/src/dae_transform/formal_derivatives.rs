@@ -84,7 +84,7 @@ impl<'source, 'target> FormalDerivativeView<'_, 'source, 'target> {
 ///
 /// Offsets start from the source signatures. When a prolonged owner reads a
 /// coordinate above its own stage (a supplied derivative's `noDerivative`
-/// input rate, see [`stage_reads`]), that variable's order is raised and the
+/// input rate, see the `stage_reads` module), that variable's order is raised and the
 /// offsets are certified again, so the read becomes a dependency its stage
 /// determines. Each round strictly raises a bound and the shared
 /// differentiation profile caps orders, so the refinement terminates; a read

@@ -158,7 +158,9 @@ pub fn for_each_scalar_coordinate_cached<'dae>(
     projection.expression(root, scalar_index)
 }
 
-struct Projection<'visit, 'dae, F> {
+/// The walk dispatches the caller's visitor dynamically, so every caller shares
+/// one compiled projection instead of one copy per visitor type.
+struct Projection<'visit, 'dae> {
     view: dae::DaeView<'dae>,
     domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
     integer_stack: Vec<bool>,
@@ -168,7 +170,7 @@ struct Projection<'visit, 'dae, F> {
     function_summary_captures: Vec<FunctionSummaryCapture>,
     model_visited: HashSet<ScalarExpressionDependency>,
     cache: &'visit mut ScalarCoordinateProjectionCache<'dae>,
-    visit: &'visit mut F,
+    visit: &'visit mut dyn FnMut(dae::CoordinateView<'dae>, usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -226,10 +228,7 @@ struct ScalarExpressionDependency {
     domain_context: Vec<(u32, Vec<i64>)>,
 }
 
-impl<'dae, F> Projection<'_, 'dae, F>
-where
-    F: FnMut(dae::CoordinateView<'dae>, usize),
-{
+impl<'dae> Projection<'_, 'dae> {
     fn expression(
         &mut self,
         expression: dae::ExprId<'dae>,

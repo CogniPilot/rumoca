@@ -175,29 +175,32 @@ fn expected_directions(broken: &(String, String)) -> [f64; 3] {
 fn rooted_branches_agree_with_the_emitted_cut_for_every_connect_order() {
     let mut cuts = std::collections::BTreeSet::new();
     for connects in orderings() {
-        let compiled = Compiler::new()
+        let compiled = match Compiler::new()
             .model("VcgRooted.Loop")
             .compile_str(&source(&connects), "vcg_rooted.mo")
-            .unwrap_or_else(|error| panic!("{connects:?}: {error}"));
+        {
+            Ok(compiled) => compiled,
+            Err(error) => panic!("{connects:?}: {error}"),
+        };
         let broken = broken_edge(&compiled.flat);
         let directions = expected_directions(&broken);
         cuts.insert(broken);
 
-        let result = simulate_dae_with_diagnostics(
+        let result = match simulate_dae_with_diagnostics(
             &compiled.dae,
             &SimOptions {
                 t_end: 1.0,
                 dt: Some(0.25),
                 ..Default::default()
             },
-        )
-        .unwrap_or_else(|error| panic!("{connects:?}: {error}"));
+        ) {
+            Ok(result) => result,
+            Err(error) => panic!("{connects:?}: {error}"),
+        };
         let series = |name: &str| {
-            let index = result
-                .names
-                .iter()
-                .position(|candidate| candidate == name)
-                .unwrap_or_else(|| panic!("missing {name}"));
+            let Some(index) = result.names.iter().position(|candidate| candidate == name) else {
+                panic!("missing {name}");
+            };
             &result.data[index]
         };
         for (joint, expected) in ["j1", "j2", "j3"].into_iter().zip(directions) {
