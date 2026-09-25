@@ -314,7 +314,7 @@ STRUCT-T03 reconstruction (aggregate rows: SPEC_0040 §3):
 **Placement requirement:**
 
 `rumoca-phase-structural` reconstructs finalized DAEs; analysis stays outside DAE.
-STRUCT-T02 quotients copy and negation aliases once, before state selection, through one checked reconstruction; eliminated members stay defined, observable variables, and every unquotiented class is explicit.
+STRUCT-T02 quotients copy and negation aliases before state selection and again among formal-derivative coordinates after it, each through one checked reconstruction; eliminated members stay defined, observable variables, and every unquotiented class is explicit.
 `rumoca-phase-solve` lowers finalized DAE only. STRUCT-T09 permits exact implicit-derivative
 and mixed derivative/algebraic aliases, never scalar pivot selection or numerical
 coefficient matrices. Other dummy-derivative transformations, unrelated symbolic
