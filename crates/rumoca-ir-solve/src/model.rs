@@ -76,16 +76,73 @@ impl Serialize for ContinuousSolveSystem {
 }
 
 /// A bounded set of admissible reduced state-selection charts. Empty for every
-/// model without a folding definitional first-integral coordinate group.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+/// model without a folding definitional first-integral coordinate group or an
+/// admissible single exchange of a reduced constraint group.
+///
+/// `exchanges` is the coverage record of a reduced constraint group: every
+/// ranked single exchange, issued or withheld (SPEC_0040 STRUCT-T07
+/// constraint-fold chart rows). It is empty for a first-integral mirror set and
+/// for every model without such a group, and an empty record is dropped from
+/// human-readable serialization so that IR stays byte-identical.
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct ReducedChartSet {
     pub charts: Vec<ReducedChart>,
+    #[serde(default)]
+    pub exchanges: Vec<ChartExchange>,
 }
 
 impl ReducedChartSet {
     pub fn is_empty(&self) -> bool {
         self.charts.is_empty()
     }
+}
+
+impl Serialize for ReducedChartSet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let omit_exchanges = serializer.is_human_readable() && self.exchanges.is_empty();
+        let field_count = if omit_exchanges { 1 } else { 2 };
+        let mut state = serializer.serialize_struct("ReducedChartSet", field_count)?;
+        state.serialize_field("charts", &self.charts)?;
+        if !omit_exchanges {
+            state.serialize_field("exchanges", &self.exchanges)?;
+        }
+        state.end()
+    }
+}
+
+/// One ranked single exchange of a reduced constraint group: the primary
+/// reconstructs `dependent` and integrates `incoming`; the exchange reverses
+/// the two roles.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ChartExchange {
+    pub dependent: ChartCoordinate,
+    pub incoming: ChartCoordinate,
+    pub status: ChartExchangeStatus,
+}
+
+/// A source scalar named by its declaration and flat scalar ordinal.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ChartCoordinate {
+    pub variable: String,
+    pub scalar: u32,
+}
+
+/// Whether an exchange became an alternate chart, and why not when withheld.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum ChartExchangeStatus {
+    /// Issued as reduced chart `chart` of the set.
+    Issued { chart: usize },
+    /// Ranked below the per-group alternate cap.
+    WithheldByCap,
+    /// Its integrated set has no formal successor at some stage, or its
+    /// checked candidate construction failed.
+    WithheldByConstruction,
+    /// It lowered to a solver layout that differs from the primary's.
+    WithheldByLayout,
 }
 
 /// One admissible reduced chart: a Dependent/Independent column selection of one

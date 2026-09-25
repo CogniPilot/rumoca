@@ -83,6 +83,7 @@ pub(crate) fn lower_selection(
     overrides: &std::collections::HashMap<String, f64>,
 ) -> Result<LoweredSolvePackage, LowerError> {
     let mut package = lower_prepared_solve_package(&selection.primary, overrides)?;
+    package.problem.continuous.reduced_chart_set.exchanges = selection.exchanges.clone();
     attach_alternate_chart_plans(&mut package.problem, &selection.alternates, overrides)?;
     Ok(package)
 }
@@ -92,9 +93,15 @@ pub(crate) fn lower_selection(
 /// solver artifacts on the matching chart. The alternates align positionally with
 /// reduced chart index one and above; chart zero is the primary basis and keeps no
 /// separate plan.
+///
+/// An exchange alternate is withheld rather than failing the model when its
+/// checked construction failed, when it does not lower, or when it lowers to a
+/// solver layout other than the primary's (SPEC_0040 STRUCT-T07 constraint-fold
+/// chart rows): every chart must run in the one solver-Y space the transfer
+/// relies on. A first-integral mirror keeps its existing failure semantics.
 fn attach_alternate_chart_plans(
     problem: &mut solve::SolveProblem,
-    alternates: &[rumoca_phase_structural::PreparedDae<'_>],
+    alternates: &[Option<rumoca_phase_structural::PreparedDae<'_>>],
     overrides: &std::collections::HashMap<String, f64>,
 ) -> Result<(), LowerError> {
     if alternates.is_empty() {
@@ -105,6 +112,8 @@ fn attach_alternate_chart_plans(
             "reduced chart count does not match the prepared alternate selections",
         ));
     }
+    let exchange = !problem.continuous.reduced_chart_set.exchanges.is_empty();
+    let mut withheld = Vec::new();
     // The primary problem skeleton (its layout, solve layout, and initialization)
     // is shared by every alternate basis: an alternate re-selects the Independent
     // coordinates of the same first-integral group in the same solver-Y space. The
@@ -114,9 +123,29 @@ fn attach_alternate_chart_plans(
     // artifacts.
     let base = problem.clone();
     for (offset, alternate) in alternates.iter().enumerate() {
-        let alternate_continuous = lower_prepared_solve_package(alternate, overrides)?
-            .problem
-            .continuous;
+        let Some(alternate) = alternate else {
+            withheld.push((
+                offset + 1,
+                solve::ChartExchangeStatus::WithheldByConstruction,
+            ));
+            continue;
+        };
+        let lowered = match lower_prepared_solve_package(alternate, overrides) {
+            Ok(lowered) => lowered.problem,
+            Err(_) if exchange => {
+                withheld.push((
+                    offset + 1,
+                    solve::ChartExchangeStatus::WithheldByConstruction,
+                ));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if exchange && !same_solver_layout(&lowered.solve_layout, &base.solve_layout) {
+            withheld.push((offset + 1, solve::ChartExchangeStatus::WithheldByLayout));
+            continue;
+        }
+        let alternate_continuous = lowered.continuous;
         let mut plan = solve::ReducedChartPlan {
             implicit_rhs: alternate_continuous.implicit_rhs,
             implicit_row_targets: alternate_continuous.implicit_row_targets,
@@ -129,7 +158,46 @@ fn attach_alternate_chart_plans(
         plan.artifacts = reduced_chart_continuous_artifacts(&base, &plan)?;
         problem.continuous.reduced_chart_set.charts[offset + 1].plan = Some(plan);
     }
+    withhold_charts(&mut problem.continuous.reduced_chart_set, &withheld);
     Ok(())
+}
+
+/// Two lowered bases share one solver-Y space: the same scalar names in the
+/// same slots, with the same state/algebraic split.
+fn same_solver_layout(a: &solve::SolveLayout, b: &solve::SolveLayout) -> bool {
+    a.solver_maps.names == b.solver_maps.names
+        && a.state_scalar_count == b.state_scalar_count
+        && a.algebraic_scalar_count == b.algebraic_scalar_count
+}
+
+/// Drop the withheld alternate charts, renumber the survivors, and record why
+/// each dropped exchange was withheld. A set left with only its primary keeps
+/// that partition-only chart; the runtime executes no switch for it.
+fn withhold_charts(
+    set: &mut solve::ReducedChartSet,
+    withheld: &[(usize, solve::ChartExchangeStatus)],
+) {
+    if withheld.is_empty() {
+        return;
+    }
+    let dropped = |chart: usize| withheld.iter().find(|(index, _)| *index == chart);
+    for exchange in &mut set.exchanges {
+        let solve::ChartExchangeStatus::Issued { chart } = exchange.status else {
+            continue;
+        };
+        exchange.status = match dropped(chart) {
+            Some(&(_, status)) => status,
+            None => solve::ChartExchangeStatus::Issued {
+                chart: chart - withheld.iter().filter(|(index, _)| *index < chart).count(),
+            },
+        };
+    }
+    let mut index = 0;
+    set.charts.retain(|_| {
+        let keep = dropped(index).is_none();
+        index += 1;
+        keep
+    });
 }
 
 /// Materialize the runtime-executable continuous artifacts of one alternate

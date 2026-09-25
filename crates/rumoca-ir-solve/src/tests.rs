@@ -1685,9 +1685,12 @@ fn reduced_chart_set_is_omitted_when_empty_and_round_trips_when_present() {
                 plan: Some(ReducedChartPlan::default()),
             },
         ],
+        exchanges: Vec::new(),
     };
     let json = serde_json::to_string(&present).expect("serialize present continuous system");
     assert!(json.contains("reduced_chart_set"));
+    // A mirror set carries no exchange coverage, so the record stays out of JSON.
+    assert!(!json.contains("exchanges"));
     // A partition-only chart omits its plan from JSON; an alternate keeps it, so a
     // model that predates the field stays byte-identical while the alternate gains
     // exactly one executable kernel.
@@ -1712,6 +1715,47 @@ fn reduced_chart_set_is_omitted_when_empty_and_round_trips_when_present() {
     assert_eq!(
         bincode::serialize(&from_bincode).expect("re-serialize present from bincode"),
         bytes
+    );
+
+    // An exchange coverage record is written and round-trips through both formats.
+    present.reduced_chart_set.exchanges = vec![
+        ChartExchange {
+            dependent: ChartCoordinate {
+                variable: "x".to_string(),
+                scalar: 0,
+            },
+            incoming: ChartCoordinate {
+                variable: "y".to_string(),
+                scalar: 0,
+            },
+            status: ChartExchangeStatus::Issued { chart: 1 },
+        },
+        ChartExchange {
+            dependent: ChartCoordinate {
+                variable: "x".to_string(),
+                scalar: 0,
+            },
+            incoming: ChartCoordinate {
+                variable: "z".to_string(),
+                scalar: 0,
+            },
+            status: ChartExchangeStatus::WithheldByCap,
+        },
+    ];
+    let json = serde_json::to_string(&present).expect("serialize exchange coverage");
+    assert!(json.contains("\"exchanges\""));
+    let from_json: ContinuousSolveSystem =
+        serde_json::from_str(&json).expect("deserialize exchange coverage from json");
+    assert_eq!(
+        from_json.reduced_chart_set.exchanges,
+        present.reduced_chart_set.exchanges
+    );
+    let bytes = bincode::serialize(&present).expect("serialize exchange coverage as bincode");
+    let from_bincode: ContinuousSolveSystem =
+        bincode::deserialize(&bytes).expect("deserialize exchange coverage from bincode");
+    assert_eq!(
+        from_bincode.reduced_chart_set.exchanges,
+        present.reduced_chart_set.exchanges
     );
 }
 

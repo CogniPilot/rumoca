@@ -609,7 +609,10 @@ fn lower_reduced_chart_set(
             })
         })
         .collect::<Result<Vec<_>, LowerError>>()?;
-    Ok(solve::ReducedChartSet { charts })
+    Ok(solve::ReducedChartSet {
+        charts,
+        exchanges: Vec::new(),
+    })
 }
 
 fn aggregate_call_reads_derivative<'dae>(

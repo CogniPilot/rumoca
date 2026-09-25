@@ -267,7 +267,7 @@ fn direction_arguments(
     Ok(result)
 }
 
-fn variable(coordinate: dae::CoordinateView<'_>) -> Option<u32> {
+pub(super) fn variable(coordinate: dae::CoordinateView<'_>) -> Option<u32> {
     match coordinate {
         dae::CoordinateView::Algebraic(v) => Some(v.index()),
         dae::CoordinateView::Parameter(v) => Some(v.index()),

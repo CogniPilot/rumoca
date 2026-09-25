@@ -135,6 +135,27 @@ pub fn torn_promotion_capacity(base: usize) -> Option<usize> {
     )
 }
 
+/// Most alternate charts one reduced constraint group issues. Ranked single
+/// exchanges past this cap are recorded as withheld (SPEC_0040 STRUCT-T07
+/// constraint-fold chart rows).
+pub const MAX_ALTERNATE_CHARTS_PER_GROUP: usize = 4;
+
+/// Reduced-chart conditioning at or above which the active chart is kept
+/// without testing an alternate. A chart's `sigma` falls smoothly toward zero
+/// as it approaches its fold, so requesting a change below this keeps the
+/// transfer strictly inside the regular regime.
+pub const CHART_SWITCH_KEEP: f64 = 0.5;
+
+/// Factor by which an alternate's conditioning must exceed the active chart's
+/// to be adopted. Switching back needs the same factor the other way, so the
+/// ratio must swing by its square: the hysteresis band.
+pub const CHART_SWITCH_IMPROVEMENT: f64 = 1.5;
+
+/// Multiple of a chart's singular threshold that bounds its regular region.
+/// An alternate below it is never adopted, and an active chart that settles
+/// below it at an accepted step has crossed its fold.
+pub const CHART_REGULAR_MULTIPLE: f64 = 1.0e6;
+
 /// Admission of the torn affine elimination, shared by the linked kernel and
 /// every generated C component: the block is a sparse candidate, its issued
 /// reduced system is small and dense, and a promotion capacity exists. The

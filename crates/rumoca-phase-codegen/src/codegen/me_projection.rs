@@ -104,11 +104,11 @@ fn algebraic_refresh_covers(
 }
 
 /// The runtime projection shapes the shared kernel does not execute: a block
-/// with alternate reduced charts (the linked kernel switches charts when the
-/// active one folds) and a retained state-manifold projection (the linked
-/// kernel projects accepted states onto lower-order constraints). A model
-/// carrying either is refused rather than integrated on one chart without the
-/// manifold correction.
+/// with alternate reduced charts or a reduced chart set with an executable
+/// alternate (the linked kernel switches charts when the active one folds), and
+/// a retained state-manifold projection (the linked kernel projects accepted
+/// states onto lower-order constraints). A model carrying any is refused rather
+/// than integrated on one chart or without the manifold correction.
 fn unsupported_runtime_shape(problem: &solve::SolveProblem) -> Option<&'static str> {
     let continuous = &problem.continuous;
     if continuous
@@ -118,6 +118,17 @@ fn unsupported_runtime_shape(problem: &solve::SolveProblem) -> Option<&'static s
         .any(|block| !block.alternate_charts.is_empty())
     {
         return Some("a projection block carries alternate reduced charts");
+    }
+    // A reduced chart set with an executable alternate switches basis at a fold
+    // (SPEC_0040 STRUCT-T07 constraint-fold chart rows); the generated kernel does
+    // not mirror that switch yet.
+    if continuous
+        .reduced_chart_set
+        .charts
+        .iter()
+        .any(|chart| chart.plan.is_some())
+    {
+        return Some("the reduced chart set carries alternate charts the kernel switches between");
     }
     if !continuous.manifold_projection_plan.is_empty() {
         return Some("the model retains a state-manifold projection");

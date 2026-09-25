@@ -471,10 +471,6 @@ end ImplicitContact;
     for (source, model) in [
         (unconstrained, "Unconstrained"),
         (implicit_contact, "ImplicitContact"),
-        (
-            include_str!("../fixtures/index_reduction/QuaternionLockInline.mo"),
-            "QuaternionLockInline",
-        ),
     ] {
         let lowered = lowered(source, model);
         assert!(
@@ -490,10 +486,11 @@ end ImplicitContact;
 }
 
 #[test]
-fn a_redundant_loop_closure_carries_no_reduced_charts() {
-    // A kinematic loop closure is over-determining at the position level and is
-    // reduced by the ordinary reducer, not by the formal first-integral path, so
-    // it issues no reconstruction charts.
+fn a_redundant_loop_closure_issues_exchange_charts_not_mirrors() {
+    // A kinematic loop closure is over-determining at the position level. It
+    // issues no first-integral mirrors; its alternates are the ranked single
+    // exchanges of a reduced constraint group (SPEC_0040 STRUCT-T07
+    // constraint-fold chart rows), each recorded in the coverage.
     let Some(root) = msl_root() else {
         return;
     };
@@ -501,14 +498,25 @@ fn a_redundant_loop_closure_carries_no_reduced_charts() {
         &root,
         "Modelica.Mechanics.MultiBody.Examples.Constraints.PrismaticConstraint",
     );
+    let set = &lowered.problem.continuous.reduced_chart_set;
     assert!(
-        lowered
-            .problem
-            .continuous
-            .reduced_chart_set
-            .charts
-            .is_empty(),
-        "a redundant loop closure carries no reduced state-selection charts"
+        !set.exchanges.is_empty(),
+        "a redundant loop closure records its exchange coverage"
+    );
+    assert!(set.charts.first().is_some_and(|chart| chart.plan.is_none()));
+    assert_eq!(
+        set.charts
+            .iter()
+            .filter(|chart| chart.plan.is_some())
+            .count(),
+        set.exchanges
+            .iter()
+            .filter(|exchange| matches!(
+                exchange.status,
+                rumoca_ir_solve::ChartExchangeStatus::Issued { .. }
+            ))
+            .count(),
+        "every issued exchange is one executable alternate"
     );
 }
 

@@ -1,12 +1,14 @@
 //! Static independent coordinates for structurally constrained state manifolds.
 
 mod evaluation;
+mod exchange;
 
 use std::collections::HashMap;
 
 use rumoca_core::StateSelect;
 use rumoca_eval_solve::dense_basis::ColumnChoice;
 use rumoca_ir_dae as dae;
+use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{
     AliasQuotientReport, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
     FormalStateCoordinate, PreparedDae, ReducedSelectionChart, StateSelection, StructuralError,
@@ -19,22 +21,37 @@ use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
 use evaluation::TrialPoint;
 
 /// The prepared reduced state selection: the primary basis every model executes,
-/// plus one fully prepared alternate DAE per alternate reduced chart of a folding
-/// definitional first-integral group.
+/// plus one prepared alternate DAE per alternate reduced chart, either a mirror
+/// of a folding definitional first-integral group or a single exchange of a
+/// reduced constraint group.
 ///
 /// The alternates are the same coordinate transformation as the primary run with
-/// a mirror Independent set, so each lowers through the ordinary Solve machinery
+/// another Independent set, so each lowers through the ordinary Solve machinery
 /// into its own executable reconstruction and derivative kernel. They are empty
-/// for every model without a folding first-integral group. The alternates align
-/// with the primary's reduced chart set positionally: `alternates[k]` is the
-/// prepared DAE for reduced chart `k + 1` (chart zero is the primary basis).
+/// for every model without such a group. The alternates align with the primary's
+/// reduced chart set positionally: `alternates[k]` is the prepared DAE for
+/// reduced chart `k + 1` (chart zero is the primary basis). An exchange whose
+/// checked construction fails is `None`; lowering withholds its chart.
 pub(crate) struct PreparedSelection<'source> {
     pub primary: PreparedDae<'source>,
-    pub alternates: Vec<PreparedDae<'static>>,
+    pub alternates: Vec<Option<PreparedDae<'static>>>,
+    /// Coverage record of a reduced constraint group's exchanges; empty for a
+    /// first-integral mirror set and for every model without such a group.
+    pub exchanges: Vec<solve::ChartExchange>,
     /// The formal-derivative application of the STRUCT-T02 quotient on the
     /// primary candidate, with every class it left unchanged; empty when the
     /// source basis is retained.
     pub formal_aliases: AliasQuotientReport,
+}
+
+/// The alternate Independent sets of a primary selection, each described by
+/// source variable ordinal, formal derivative order, and tensor scalar so it
+/// survives the branded-coordinate lifetime, plus the exchange coverage of a
+/// reduced constraint group (empty for a first-integral mirror).
+#[derive(Default)]
+struct AlternateSelections {
+    selections: Vec<Vec<(u32, usize, u32)>>,
+    exchanges: Vec<solve::ChartExchange>,
 }
 
 /// Prepare the executable selection of `model` after its STRUCT-T10(a)
@@ -61,6 +78,7 @@ fn prepare_quotient(
     let PreparedSelection {
         primary,
         alternates,
+        exchanges,
         formal_aliases,
     } = prepare_source(&quotient, overrides)?;
     let primary = match primary {
@@ -94,6 +112,7 @@ fn prepare_quotient(
     Ok(PreparedSelection {
         primary,
         alternates,
+        exchanges,
         formal_aliases,
     })
 }
@@ -152,7 +171,7 @@ fn reduce_or_retain<'source>(
     // Construct the reduced candidate first so an infeasible request (an
     // over-constrained `StateSelect.always`, a singular stage Jacobian) still
     // surfaces its exact typed failure rather than being masked by retention.
-    let mut alternate_selections = Vec::new();
+    let mut alternate_selections = AlternateSelections::default();
     let candidate = formal.construct_state_candidate_with_charts(|formal| {
         let (selection, alternates) = select(formal, overrides)?;
         alternate_selections = alternates;
@@ -168,6 +187,7 @@ fn reduce_or_retain<'source>(
     Ok(PreparedSelection {
         primary,
         alternates,
+        exchanges: alternate_selections.exchanges,
         formal_aliases,
     })
 }
@@ -219,7 +239,7 @@ fn recover_singular_via_formal(
     let Ok(formal) = construct_formal_derivatives(model) else {
         return Ok(None);
     };
-    let mut alternate_selections = Vec::new();
+    let mut alternate_selections = AlternateSelections::default();
     let Ok(candidate) = formal.construct_state_candidate_with_charts(|formal| {
         let (selection, alternates) = select(formal, overrides)?;
         alternate_selections = alternates;
@@ -237,6 +257,7 @@ fn recover_singular_via_formal(
     Ok(Some(PreparedSelection {
         primary,
         alternates,
+        exchanges: alternate_selections.exchanges,
         formal_aliases,
     }))
 }
@@ -258,28 +279,39 @@ impl<'source> PreparedSelection<'source> {
         Self {
             primary,
             alternates: Vec::new(),
+            exchanges: Vec::new(),
             formal_aliases: AliasQuotientReport::default(),
         }
     }
 }
 
 /// Prepare one transformed DAE per alternate reduced chart by re-running the
-/// ordinary coordinate transformation with the chart's mirror Independent set as
-/// the chosen states. Each alternate is a distinct, fully checked candidate; it
+/// ordinary coordinate transformation with the chart's Independent set as the
+/// chosen states. Each alternate is a distinct, fully checked candidate; it
 /// carries no reduced chart set of its own, so no re-enumeration recurses.
 ///
 /// The selections name their coordinates by source variable ordinal, formal
 /// derivative order, and tensor scalar, which the finalized transformed root
 /// resolves back to branded coordinates. This reuses the same construction the
 /// primary basis went through, so an alternate plan is as trustworthy as the
-/// primary.
+/// primary. A first-integral mirror that fails is the model's failure; an
+/// exchange that fails is withheld (`None`) and its chart is dropped when the
+/// plans are attached.
 fn prepare_alternate_charts(
     formal: &FormalDerivativeSystem<'_>,
-    selections: &[Vec<(u32, usize, u32)>],
-) -> Result<Vec<PreparedDae<'static>>, StructuralError> {
-    selections
+    alternates: &AlternateSelections,
+) -> Result<Vec<Option<PreparedDae<'static>>>, StructuralError> {
+    let exchange = !alternates.exchanges.is_empty();
+    alternates
+        .selections
         .iter()
-        .map(|selection| prepare_alternate_chart(formal, selection))
+        .map(
+            |selection| match prepare_alternate_chart(formal, selection) {
+                Ok(prepared) => Ok(Some(prepared)),
+                Err(_) if exchange => Ok(None),
+                Err(error) => Err(error),
+            },
+        )
         .collect()
 }
 
@@ -313,10 +345,8 @@ fn resolve_alternate_coordinates<'source, 'formal>(
         .collect()
 }
 
-/// The primary reduced selection plus the full Independent set of each alternate
-/// reduced chart, described by source variable ordinal, formal derivative order,
-/// and tensor scalar so it survives the branded-coordinate lifetime.
-type SelectionWithAlternates<'formal> = (StateSelection<'formal>, Vec<Vec<(u32, usize, u32)>>);
+/// The primary reduced selection plus the alternate Independent sets.
+type SelectionWithAlternates<'formal> = (StateSelection<'formal>, AlternateSelections);
 
 fn select<'formal>(
     formal: FormalDerivativeView<'_, '_, 'formal>,
@@ -343,8 +373,11 @@ fn select<'formal>(
     // group's integrated scalar remapped, so it must be recorded as the primary
     // basis is built.
     let mut primary_selection: Vec<(u32, usize, u32)> = Vec::new();
+    // The same coordinates grouped by stage, deepest first, with each level.
+    let mut stage_integrated = Vec::new();
     let mut charts = Vec::new();
     let mut fold = None;
+    let mut exchanges = None;
     let mut deepest_stage = true;
     for stage in programs.stages().iter().filter(|s| s.stage().level() < 0) {
         let coordinates = stage
@@ -379,15 +412,21 @@ fn select<'formal>(
                 )),
             })?;
         // The deepest stage carries the lowest-order (position-level) holonomic
-        // constraint, where a definitional first integral folds. Enumerate its
-        // bounded regular reconstruction charts here; every higher stage follows
-        // the primary basis and is not re-enumerated.
+        // constraint, where a chart folds. Enumerate its bounded alternate charts
+        // here: the mirrors of a definitional first-integral group, or else the
+        // ranked single exchanges of a reduced constraint group. Every higher
+        // stage follows the chosen basis and is not re-enumerated.
         if deepest_stage {
             let (enumerated, group) = enumerate_reduced_charts(&matrix, &coordinates, &selected);
             charts = enumerated;
+            if group.is_none() {
+                exchanges =
+                    exchange::stage_exchanges(stage, &matrix, &coordinates, &choices, &selected);
+            }
             fold = group;
             deepest_stage = false;
         }
+        let mut integrated = Vec::with_capacity(selected.len());
         for index in selected {
             let (coordinate, scalar) = coordinates[index];
             result.push(formal.state_coordinate(
@@ -395,16 +434,22 @@ fn select<'formal>(
                 coordinate.order(),
                 scalar as u32,
             )?);
-            primary_selection.push((
-                coordinate.source().index(),
-                coordinate.order(),
-                scalar as u32,
-            ));
+            integrated.push(exchange::StageColumn {
+                coordinate: selection_coordinate(coordinate, scalar),
+                forced: choices[index] == ColumnChoice::Independent,
+            });
         }
+        primary_selection.extend(integrated.iter().map(|column| column.coordinate));
+        stage_integrated.push((stage.stage().level(), integrated));
     }
-    let alternates = fold
-        .map(|group| group.alternate_selections(&primary_selection))
-        .unwrap_or_default();
+    let alternates = match (fold, exchanges) {
+        (Some(group), _) => AlternateSelections {
+            selections: group.alternate_selections(&primary_selection),
+            exchanges: Vec::new(),
+        },
+        (None, Some(plan)) => plan.into_alternates(&stage_integrated, &mut charts),
+        (None, None) => AlternateSelections::default(),
+    };
     Ok((
         StateSelection {
             coordinates: result,
@@ -412,6 +457,19 @@ fn select<'formal>(
         },
         alternates,
     ))
+}
+
+/// A stage coordinate named by source ordinal, formal order, and scalar, so it
+/// survives the branded-coordinate lifetime.
+fn selection_coordinate(
+    coordinate: FormalStageCoordinate<'_, '_>,
+    scalar: usize,
+) -> (u32, usize, u32) {
+    (
+        coordinate.source().index(),
+        coordinate.order(),
+        scalar as u32,
+    )
 }
 
 /// Enumerate the bounded regular reconstruction charts of one folding
@@ -551,8 +609,8 @@ impl ReducedFoldGroup {
 /// algebraic or output coordinate carries no such slot: it is structurally
 /// determined by the equation system (an alias of another state's derivative, an
 /// acceleration-level derivative sensor, or a constraint/function output), so it
-/// cannot be an independent state. MLS 3.6 §4.8.8 makes `always` a request, not a
-/// guarantee: a coordinate that cannot be a state is demoted rather than failing.
+/// cannot be an independent state. MLS 3.7 §4.9.7.1 makes `always` a request, not
+/// a guarantee: a coordinate that cannot be a state is demoted rather than failing.
 fn requests_forced_state(variable: dae::VariableView<'_>) -> bool {
     variable.state_select() == StateSelect::Always
         && variable.variability() == dae::ExpressionVariability::Continuous

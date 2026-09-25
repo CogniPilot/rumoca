@@ -159,7 +159,9 @@ pub(super) fn build_reduced_charts(
 ) -> Result<Option<ReducedChartRuntimes>, RuntimeSolveError> {
     let model = &runtime.model;
     let chart_set = &model.problem.continuous.reduced_chart_set;
-    if chart_set.is_empty() {
+    // A reduced constraint group's exchange charts span multi-row reconstruction
+    // blocks this runtime does not yet evaluate; it runs on its primary basis.
+    if chart_set.is_empty() || !chart_set.exchanges.is_empty() {
         return Ok(None);
     }
 
