@@ -64,13 +64,18 @@ impl RefreshProjectionModel<'_> {
         if !self.jacobian_v.is_solver_y_only() {
             return Ok(false);
         }
-        let Some(application) = structure.jacobian_application() else {
+        let compiled = structure.jacobian_application().and_then(|application| {
+            let compiled = self
+                .runtime
+                .compiled_algebraic_jacobians
+                .get(application.block_index())?
+                .as_ref()?;
+            Some((application, compiled))
+        });
+        let Some((application, compiled)) = compiled else {
             return Ok(false);
         };
         let index = application.block_index();
-        let Some(Some(compiled)) = self.runtime.compiled_algebraic_jacobians.get(index) else {
-            return Ok(false);
-        };
         let owns_structure = self
             .runtime
             .continuous_structural
@@ -86,6 +91,70 @@ impl RefreshProjectionModel<'_> {
             .call(y, p, t, self.runtime.model.external_tables.as_slice(), out)
             .map_err(RuntimeSolveError::solve_ir)?;
         Ok(true)
+    }
+}
+
+impl RefreshProjectionModel<'_> {
+    /// Every structural entry `(row, column, value)` of the block from its
+    /// colored tangent plan: one multi-lane evaluation with one lane per color,
+    /// when no backend compiled the projection JVP.
+    pub(super) fn eval_colored_tangent_entries(
+        &self,
+        structure: &solve::JacobianStructure,
+        (rows, y_indices): (&[usize], &[usize]),
+        (y, p, t): (&[f64], &[f64], f64),
+    ) -> Result<Option<crate::runtime::projection::JacobianEntries>, RuntimeSolveError> {
+        if !self.jacobian_v.is_solver_y_only() {
+            return Ok(None);
+        }
+        // A backend-compiled JVP evaluates the colors natively; the lanes serve
+        // the interpreted runtime.
+        if self
+            .runtime
+            .compiled_implicit_projection_jacobian_v
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let owned = self.runtime.continuous_structural.algebraic_projection();
+        let Some(index) = owned
+            .iter()
+            .position(|owned| std::ptr::eq(owned, structure))
+        else {
+            return Ok(None);
+        };
+        let (Some(Some(evaluator)), Some(block)) = (
+            self.runtime.colored_tangents.get(index),
+            self.runtime
+                .model
+                .problem
+                .continuous
+                .algebraic_projection_plan
+                .blocks
+                .get(index),
+        ) else {
+            return Ok(None);
+        };
+        if block.rows != rows || block.y_indices != y_indices {
+            return Ok(None);
+        }
+        let point = rumoca_eval_solve::TangentPoint {
+            y,
+            p,
+            t,
+            context: self.runtime.row_eval_context(),
+            primal: Some(&self.runtime.implicit_scalar_rhs),
+            fd_step: rumoca_eval_solve::projection_policy::FINITE_DIFFERENCE_RELATIVE_STEP,
+        };
+        let Some(values) = evaluator.eval(point, rows)? else {
+            return Ok(None);
+        };
+        let entries = evaluator.plan().entries().iter().zip(values);
+        Ok(Some(
+            entries
+                .map(|(entry, value)| (entry.row, entry.column, value))
+                .collect(),
+        ))
     }
 }
 

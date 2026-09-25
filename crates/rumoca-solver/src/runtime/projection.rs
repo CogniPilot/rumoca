@@ -56,6 +56,9 @@ pub(crate) struct AlgebraicProjectionArgs<'a> {
     pub tolerance: f64,
 }
 
+/// Structural Jacobian entries `(block row, block column, value)`.
+pub(crate) type JacobianEntries = Vec<(usize, usize, f64)>;
+
 pub(crate) trait ImplicitProjectionModel {
     fn eval_prepared_implicit_jacobian(
         &self,
@@ -317,6 +320,31 @@ pub(crate) trait ImplicitProjectionModel {
         residual_out: &mut Vec<f64>,
     ) -> Result<bool, RuntimeSolveError> {
         tearing::per_row_torn_block_sweep(self, tearing, y, p, t, residual_out)
+    }
+
+    /// Every structural entry `(row, column, value)` of a block's Jacobian from
+    /// its issued colored tangent plan, or `None` when the model issues none.
+    fn colored_tangent_entries(
+        &self,
+        _structure: &solve::JacobianStructure,
+        _coordinates: (&[usize], &[usize]),
+        _point: (&[f64], &[f64], f64),
+    ) -> Result<Option<crate::runtime::projection::JacobianEntries>, RuntimeSolveError> {
+        Ok(None)
+    }
+
+    /// The reduced tear Jacobian of `tearing` at `y` (whose causal coordinates
+    /// hold the sweep of its tears) from the block's issued tangent plan, or
+    /// `None` when the model issues none for it or the plan declines at `y`
+    /// (a vanished causal coefficient); the caller then differences the sweep.
+    fn torn_tangent_jacobian(
+        &self,
+        _tearing: &solve::BlockTearing,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+    ) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
+        Ok(None)
     }
 }
 

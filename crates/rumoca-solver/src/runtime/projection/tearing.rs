@@ -39,7 +39,8 @@ use super::scaling::{
 use super::{ImplicitProjectionModel, ProjectionBlockUpdate, RuntimeSolveError};
 
 use rumoca_eval_solve::projection_policy::{
-    TORN_BACKTRACK_STEPS, TORN_OUTER_MAX_ITERS, finite_difference_perturbation,
+    TORN_BACKTRACK_STEPS, TORN_OUTER_MAX_ITERS, TORN_TANGENT_JACOBIAN,
+    finite_difference_perturbation,
 };
 
 /// Attempt the torn solve of one coupled block.
@@ -320,6 +321,13 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
 ) -> Result<Option<ReducedJacobian>, RuntimeSolveError> {
     let rows = tearing.residual_rows.len();
     let columns = tearing.tear_y_indices.len();
+    if TORN_TANGENT_JACOBIAN
+        && let Some(exact) = model.torn_tangent_jacobian(tearing, base, p, t)?
+        && let Some(jacobian) =
+            tangent_reduced_jacobian(&exact, (rows, columns), tearing, certify_coordinates)
+    {
+        return Ok(Some(jacobian));
+    }
     let mut jacobian = DMatrix::zeros(rows, columns);
     let recovered_rows = if certify_coordinates {
         tearing.causal_steps.len()
@@ -357,6 +365,44 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
     } else {
         Ok(None)
     }
+}
+
+/// The reduced Jacobian of a tangent plan, when every entry is finite and no
+/// row or column vanishes. A vanished row or column (a slope that is exactly
+/// zero at a symmetric start, such as a squared norm at the origin) leaves the
+/// Newton system singular; the finite-difference Jacobian's perturbation
+/// reaches the nearby nonzero slope instead.
+fn tangent_reduced_jacobian(
+    exact: &rumoca_eval_solve::TornTangentJacobian,
+    (rows, columns): (usize, usize),
+    tearing: &solve::BlockTearing,
+    certify_coordinates: bool,
+) -> Option<ReducedJacobian> {
+    let recovered_rows = if certify_coordinates {
+        tearing.causal_steps.len()
+    } else {
+        0
+    };
+    let recovered = exact.recovered.get(..recovered_rows * columns)?;
+    let finite = exact
+        .residual
+        .iter()
+        .chain(recovered)
+        .all(|value| value.is_finite());
+    if !finite || exact.residual.len() != rows * columns {
+        return None;
+    }
+    let residual = DMatrix::from_row_slice(rows, columns, &exact.residual);
+    let vanished = residual
+        .row_iter()
+        .any(|row| row.iter().all(|value| *value == 0.0))
+        || residual
+            .column_iter()
+            .any(|column| column.iter().all(|value| *value == 0.0));
+    (!vanished).then(|| ReducedJacobian {
+        residual,
+        recovered: DMatrix::from_row_slice(recovered_rows, columns, recovered),
+    })
 }
 
 /// Backtracking line search along the reduced Newton direction. Accepts the

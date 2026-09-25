@@ -99,6 +99,8 @@ impl Random {
 struct Rows<'a> {
     model: &'a solve::SolveModel,
     primal: PreparedScalarProgramBlock,
+    /// The solver-Y JVP rows the runtime projection differentiates.
+    jvp: solve::ScalarProgramBlock,
 }
 
 impl Rows<'_> {
@@ -176,93 +178,118 @@ fn random_point(model: &solve::SolveModel, random: &mut Random) -> Vec<f64> {
         .collect()
 }
 
-/// Check every torn block of `model` at `points` random points; returns the
-/// number of blocks checked.
-fn check_torn_blocks(label: &str, model: &solve::SolveModel, points: usize) -> usize {
-    let jvp = to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)
-        .expect("scalarize the solver-Y JVP");
-    let rows = Rows {
+fn prepared_rows(model: &solve::SolveModel) -> Rows<'_> {
+    Rows {
         model,
         primal: PreparedScalarProgramBlock::new(
             to_scalar_program_block(&model.problem.continuous.implicit_rhs)
                 .expect("scalarize the implicit rows"),
         )
         .expect("prepare the implicit rows"),
-    };
+        jvp: to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)
+            .expect("scalarize the solver-Y JVP"),
+    }
+}
+
+fn point<'a>(rows: &'a Rows<'a>, y: &'a [f64]) -> TangentPoint<'a> {
+    TangentPoint {
+        y,
+        p: &rows.model.parameters,
+        t: 0.0,
+        context: rows.context(),
+        primal: Some(&rows.primal),
+        fd_step: 1e-7,
+    }
+}
+
+/// Central differences of the reduced residual and the causal coordinates
+/// through the sweep, one column per tear, both row-major.
+fn sweep_difference(
+    rows: &Rows<'_>,
+    tearing: &solve::BlockTearing,
+    y: &[f64],
+) -> (Vec<f64>, Vec<f64>) {
+    let tears = tearing.tear_y_indices.len();
+    let mut residual = vec![0.0; tears * tears];
+    let mut recovered = vec![0.0; tearing.causal_steps.len() * tears];
+    for (column, &tear) in tearing.tear_y_indices.iter().enumerate() {
+        let step = 1e-7 * y[tear].abs().max(1.0);
+        let mut plus = y.to_vec();
+        plus[tear] += step;
+        let plus_residual = rows.sweep(tearing, &mut plus);
+        let mut minus = y.to_vec();
+        minus[tear] -= step;
+        let minus_residual = rows.sweep(tearing, &mut minus);
+        let quotient = |plus: f64, minus: f64| (plus - minus) / (2.0 * step);
+        let targets = tearing.causal_steps.iter().map(|causal| causal.y_index);
+        let causal = targets.map(|index| quotient(plus[index], minus[index]));
+        let reduced = plus_residual
+            .iter()
+            .zip(&minus_residual)
+            .map(|(plus, minus)| quotient(*plus, *minus));
+        for (row, value) in reduced.enumerate() {
+            residual[row * tears + column] = value;
+        }
+        for (row, value) in causal.enumerate() {
+            recovered[row * tears + column] = value;
+        }
+    }
+    (residual, recovered)
+}
+
+/// Check one torn block at `points` random points; `false` when the plan
+/// declines at a point with a vanished causal pivot.
+fn check_torn_block(
+    label: &str,
+    rows: &Rows<'_>,
+    tearing: &solve::BlockTearing,
+    random: &mut Random,
+    points: usize,
+) -> bool {
+    let plan = TornTangentPlan::derive(tearing, &rows.jvp).expect("the tear Jacobian plan");
+    let evaluator = TornTangentEvaluator::new(plan);
+    for _ in 0..points {
+        let mut y = random_point(rows.model, random);
+        rows.sweep(tearing, &mut y);
+        let exact = evaluator
+            .eval(point(rows, &y))
+            .expect("evaluate the tangent Jacobian");
+        let Some(exact) = exact else {
+            // The plan declines only at a vanished causal pivot, which the
+            // torn solve cannot isolate either.
+            assert!(
+                has_vanished_pivot(rows, tearing, &y),
+                "{label}: the tangent plan declined at regular pivots"
+            );
+            return false;
+        };
+        let (residual, recovered) = sweep_difference(rows, tearing, &y);
+        assert_close(&format!("{label} reduced"), &exact.residual, &residual);
+        assert_close(&format!("{label} recovered"), &exact.recovered, &recovered);
+    }
+    true
+}
+
+/// Check every torn block of `model` at `points` random points; returns the
+/// number of blocks checked.
+fn check_torn_blocks(label: &str, model: &solve::SolveModel, points: usize) -> usize {
+    let rows = prepared_rows(model);
     let mut random = Random(0x9e37_79b9_7f4a_7c15);
-    let mut checked = 0;
-    for (block_index, block) in model
-        .problem
-        .continuous
-        .algebraic_projection_plan
-        .blocks
+    let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
+    blocks
         .iter()
         .enumerate()
-    {
-        let Some(tearing) = &block.tearing else {
-            continue;
-        };
-        let plan = TornTangentPlan::derive(tearing, &jvp).expect("the tear Jacobian plan");
-        let evaluator = TornTangentEvaluator::new(plan);
-        let tears = tearing.tear_y_indices.len();
-        let mut regular = true;
-        for _ in 0..points {
-            let mut y = random_point(model, &mut random);
-            rows.sweep(tearing, &mut y);
-            let Some(exact) = evaluator
-                .eval(TangentPoint {
-                    y: &y,
-                    p: &model.parameters,
-                    t: 0.0,
-                    context: rows.context(),
-                    primal: Some(&rows.primal),
-                    fd_step: 1e-7,
-                })
-                .expect("evaluate the tangent Jacobian")
-            else {
-                // The plan declines only at a vanished causal pivot, which the
-                // torn solve cannot isolate either.
-                assert!(
-                    has_vanished_pivot(&rows, tearing, &y),
-                    "{label} block {block_index}: the tangent plan declined at regular pivots"
-                );
-                regular = false;
-                break;
-            };
-            let mut residual = vec![0.0; tears * tears];
-            let mut recovered = vec![0.0; tearing.causal_steps.len() * tears];
-            for (column, &tear) in tearing.tear_y_indices.iter().enumerate() {
-                let step = 1e-7 * y[tear].abs().max(1.0);
-                let mut plus = y.clone();
-                plus[tear] += step;
-                let plus_residual = rows.sweep(tearing, &mut plus);
-                let mut minus = y.clone();
-                minus[tear] -= step;
-                let minus_residual = rows.sweep(tearing, &mut minus);
-                for row in 0..tears {
-                    residual[row * tears + column] =
-                        (plus_residual[row] - minus_residual[row]) / (2.0 * step);
-                }
-                for (index, causal) in tearing.causal_steps.iter().enumerate() {
-                    recovered[index * tears + column] =
-                        (plus[causal.y_index] - minus[causal.y_index]) / (2.0 * step);
-                }
-            }
-            let block_label = format!("{label} block {block_index}");
-            assert_close(
-                &format!("{block_label} reduced"),
-                &exact.residual,
-                &residual,
-            );
-            assert_close(
-                &format!("{block_label} recovered"),
-                &exact.recovered,
-                &recovered,
-            );
-        }
-        checked += usize::from(regular);
-    }
-    checked
+        .filter_map(|(index, block)| Some((index, block.tearing.as_ref()?)))
+        .filter(|(index, tearing)| {
+            check_torn_block(
+                &format!("{label} block {index}"),
+                &rows,
+                tearing,
+                &mut random,
+                points,
+            )
+        })
+        .count()
 }
 
 /// Whether some causal row of `tearing` has a vanishing slope in its target.
@@ -273,96 +300,113 @@ fn has_vanished_pivot(rows: &Rows<'_>, tearing: &solve::BlockTearing, y: &[f64])
         plus[step.y_index] += delta;
         let slope = (rows.value(step.row, &plus) - rows.value(step.row, y)) / delta;
         // A vanished slope leaves the sweep undefined (not a number) as well.
-        !(slope.abs() > 1e-9)
+        slope.is_nan() || slope.abs() <= 1e-9
     })
 }
 
-/// Check every block's colored Jacobian of `model`; returns the blocks checked.
-fn check_colored_blocks(label: &str, model: &solve::SolveModel) -> usize {
-    let jvp = to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)
-        .expect("scalarize the solver-Y JVP");
-    let single = PreparedScalarProgramBlock::new(jvp.clone()).expect("prepare the JVP rows");
-    let rows = Rows {
-        model,
-        primal: PreparedScalarProgramBlock::new(
-            to_scalar_program_block(&model.problem.continuous.implicit_rhs)
-                .expect("scalarize the implicit rows"),
+/// The one-direction colored JVP of `row` for the columns of color `lane`.
+fn one_direction(
+    rows: &Rows<'_>,
+    single: &PreparedScalarProgramBlock,
+    (plan, block): (&ColoredTangentPlan, &solve::AlgebraicProjectionBlock),
+    (row, lane): (usize, usize),
+    y: &[f64],
+) -> f64 {
+    let mut seed = vec![0.0; y.len()];
+    let columns = plan
+        .colors()
+        .iter()
+        .enumerate()
+        .filter(|(_, color)| **color == lane);
+    for (column, _) in columns {
+        seed[block.y_indices[column]] = 1.0;
+    }
+    let (program, offset) = single.row_output_position(row).expect("a JVP row");
+    single
+        .eval_row_output_unchecked_with_context(
+            program,
+            offset,
+            y,
+            &rows.model.parameters,
+            0.0,
+            RowEvalContext {
+                seed: Some(&seed),
+                ..rows.context()
+            },
         )
-        .expect("prepare the implicit rows"),
-    };
+        .expect("evaluate the one-direction JVP")
+}
+
+/// Check the colored Jacobian of one block at a random point.
+fn check_colored_block(
+    label: &str,
+    rows: &Rows<'_>,
+    single: &PreparedScalarProgramBlock,
+    block: &solve::AlgebraicProjectionBlock,
+    structure: &solve::JacobianStructure,
+) {
+    let pattern = structure.pattern().nonzero_coordinates();
+    let plan = ColoredTangentPlan::derive(
+        &block.rows,
+        &block.y_indices,
+        &pattern,
+        structure.coloring().groups(),
+        &rows.jvp,
+    )
+    .expect("the colored Jacobian plan");
+    let evaluator = ColoredTangentEvaluator::new(plan);
+    let y = random_point(rows.model, &mut Random(0x2545_f491_4f6c_dd1d));
+    let values = evaluator
+        .eval(point(rows, &y), &block.rows)
+        .expect("evaluate the colored tangents")
+        .expect("every entry evaluates");
+    let mut difference = Vec::with_capacity(values.len());
+    for (entry, value) in evaluator.plan().entries().iter().zip(&values) {
+        let row = block.rows[entry.row];
+        let dual = one_direction(
+            rows,
+            single,
+            (evaluator.plan(), block),
+            (row, entry.lane),
+            &y,
+        );
+        assert!(
+            (value - dual).abs() <= 1e-12 * dual.abs().max(1.0),
+            "{label} colored ({row}, {}): lanes {value:e} vs one-direction {dual:e}",
+            entry.column
+        );
+        let column = block.y_indices[entry.column];
+        let step = 1e-7 * y[column].abs().max(1.0);
+        let mut plus = y.clone();
+        plus[column] += step;
+        let mut minus = y.clone();
+        minus[column] -= step;
+        difference.push((rows.value(row, &plus) - rows.value(row, &minus)) / (2.0 * step));
+    }
+    assert_close(&format!("{label} colored"), &values, &difference);
+}
+
+/// Check every multi-color block's colored Jacobian of `model`; returns the
+/// blocks checked.
+fn check_colored_blocks(label: &str, model: &solve::SolveModel) -> usize {
+    let rows = prepared_rows(model);
+    let single = PreparedScalarProgramBlock::new(rows.jvp.clone()).expect("prepare the JVP rows");
     let structures = model.artifacts.continuous.structural.algebraic_projection();
-    let mut checked = 0;
-    for (block, structure) in model
-        .problem
-        .continuous
-        .algebraic_projection_plan
-        .blocks
+    let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
+    let colored = blocks
         .iter()
         .zip(structures)
-    {
-        let pattern = structure.pattern().nonzero_coordinates();
-        let groups = structure.coloring().groups();
-        if groups.len() < 2 {
-            continue;
-        }
-        let plan =
-            ColoredTangentPlan::derive(&block.rows, &block.y_indices, &pattern, groups, &jvp)
-                .expect("the colored Jacobian plan");
-        let evaluator = ColoredTangentEvaluator::new(plan);
-        let y = &random_point(model, &mut Random(0x2545_f491_4f6c_dd1d));
-        let point = TangentPoint {
-            y,
-            p: &model.parameters,
-            t: 0.0,
-            context: rows.context(),
-            primal: Some(&rows.primal),
-            fd_step: 1e-7,
-        };
-        let values = evaluator
-            .eval(point, &block.rows)
-            .expect("evaluate the colored tangents")
-            .expect("every entry evaluates");
-        let mut dual = Vec::with_capacity(values.len());
-        let mut difference = Vec::with_capacity(values.len());
-        for entry in evaluator.plan().entries() {
-            let row = block.rows[entry.row];
-            let mut seed = vec![0.0; y.len()];
-            for (column, color) in evaluator.plan().colors().iter().enumerate() {
-                if *color == entry.lane {
-                    seed[block.y_indices[column]] = 1.0;
-                }
-            }
-            let (program, offset) = single.row_output_position(row).expect("a JVP row");
-            dual.push(
-                single
-                    .eval_row_output_unchecked_with_context(
-                        program,
-                        offset,
-                        y,
-                        &model.parameters,
-                        0.0,
-                        RowEvalContext {
-                            seed: Some(&seed),
-                            ..rows.context()
-                        },
-                    )
-                    .expect("evaluate the one-direction JVP"),
-            );
-            let column = block.y_indices[entry.column];
-            let step = 1e-7 * y[column].abs().max(1.0);
-            let mut plus = y.clone();
-            plus[column] += step;
-            let mut minus = y.clone();
-            minus[column] -= step;
-            difference.push((rows.value(row, &plus) - rows.value(row, &minus)) / (2.0 * step));
-        }
-        for (index, (lanes, dual)) in values.iter().zip(&dual).enumerate() {
-            assert!(
-                (lanes - dual).abs() <= 1e-12 * dual.abs().max(1.0),
-                "{label} colored entry {index}: lanes {lanes:e} vs one-direction {dual:e}"
-            );
-        }
-        assert_close(&format!("{label} colored"), &values, &difference);
+        .enumerate()
+        .filter(|(_, (_, structure))| structure.coloring().groups().len() >= 2);
+    let mut checked = 0;
+    for (index, (block, structure)) in colored {
+        check_colored_block(
+            &format!("{label} block {index}"),
+            &rows,
+            &single,
+            block,
+            structure,
+        );
         checked += 1;
     }
     checked
@@ -371,7 +415,7 @@ fn check_colored_blocks(label: &str, model: &solve::SolveModel) -> usize {
 #[test]
 fn torn_tangent_jacobians_match_finite_differences_of_the_causal_sweep() {
     let model = lower_source(LOOPS, "TangentLoops", &[]);
-    assert!(check_torn_blocks("TangentLoops", &model, 8) == 2);
+    assert_eq!(check_torn_blocks("TangentLoops", &model, 8), 2);
 }
 
 #[test]

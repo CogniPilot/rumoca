@@ -983,6 +983,15 @@ fn fill_colored_algebraic_rows(
         rows,
         y_indices,
     } = block;
+    if let Some(entries) = model.colored_tangent_entries(structure, (rows, y_indices), (y, p, t))? {
+        for (row, column, value) in entries
+            .into_iter()
+            .filter(|(row, _, _)| selected_rows[*row])
+        {
+            jacobian[(row, column)] = value;
+        }
+        return Ok(());
+    }
     let column_rows = structure.pattern().column_rows();
     // The tensor JVP certificate uses the canonical `[solver-y | parameter]`
     // seed layout. Projection colors activate only solver-y columns; parameter

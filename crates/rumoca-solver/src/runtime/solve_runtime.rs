@@ -336,6 +336,12 @@ pub struct SolveRuntime {
     implicit_projection_jacobian_v: PreparedComputeBlock,
     implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
+    /// Tangent plan of each algebraic projection block's tearing, aligned
+    /// with the block list; `None` for an untorn block or one without a plan.
+    torn_tangents: Rc<[Option<rumoca_eval_solve::TornTangentEvaluator>]>,
+    /// Colored tangent plan of each algebraic projection block, aligned with
+    /// the block list and its structural artifacts.
+    colored_tangents: Rc<[Option<rumoca_eval_solve::ColoredTangentEvaluator>]>,
     refresh_program_rows: FxHashMap<solve::RefreshScalarProgramSource, usize>,
     manifold: manifold_execution::PreparedManifoldProjection,
     initial_residual: PreparedComputeBlock,
@@ -706,6 +712,15 @@ impl SolveRuntime {
                 &model.artifacts.continuous.implicit_jacobian_v,
                 "runtime_implicit_projection_jacobian_v",
             )?,
+            torn_tangents: torn_tangent_evaluators(
+                &model.problem.continuous.algebraic_projection_plan,
+                &implicit_projection_scalar_jacobian,
+            ),
+            colored_tangents: colored_tangent_evaluators(
+                &model.problem.continuous.algebraic_projection_plan,
+                &continuous_structural,
+                &implicit_projection_scalar_jacobian,
+            ),
             implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock::new(
                 implicit_projection_scalar_jacobian,
             )?,
@@ -1062,6 +1077,40 @@ impl SolveRuntime {
                     .map_or_else(|| "<missing>".to_string(), ToString::to_string),
             );
         }
+    }
+
+    /// The reduced tear Jacobian of a planned torn block (see
+    /// [`ImplicitProjectionModel::torn_tangent_jacobian`]).
+    pub(crate) fn torn_tangent_jacobian(
+        &self,
+        tearing: &solve::BlockTearing,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
+        let evaluator = self
+            .model
+            .problem
+            .continuous
+            .algebraic_projection_plan
+            .blocks
+            .iter()
+            .zip(self.torn_tangents.iter())
+            .find(|(block, _)| block.tearing.as_ref() == Some(tearing))
+            .and_then(|(_, evaluator)| evaluator.as_ref());
+        let Some(evaluator) = evaluator else {
+            return Ok(None);
+        };
+        evaluator
+            .eval(rumoca_eval_solve::TangentPoint {
+                y,
+                p,
+                t,
+                context: self.row_eval_context(),
+                primal: Some(&self.implicit_scalar_rhs),
+                fd_step: rumoca_eval_solve::projection_policy::FINITE_DIFFERENCE_RELATIVE_STEP,
+            })
+            .map_err(Into::into)
     }
 
     pub fn row_eval_context(&self) -> RowEvalContext<'_> {
@@ -1701,3 +1750,46 @@ fn validate_derivative_output_len(
 
 #[cfg(test)]
 mod tests;
+
+/// The tangent evaluator of each projection block's tearing over the
+/// solver-Y JVP rows `jvp`, aligned with `plan.blocks`.
+fn torn_tangent_evaluators(
+    plan: &solve::AlgebraicProjectionPlan,
+    jvp: &solve::ScalarProgramBlock,
+) -> Rc<[Option<rumoca_eval_solve::TornTangentEvaluator>]> {
+    plan.blocks
+        .iter()
+        .map(|block| {
+            let tearing = block
+                .tearing
+                .as_ref()
+                .filter(|_| rumoca_eval_solve::projection_policy::TORN_TANGENT_JACOBIAN)?;
+            let plan = solve::TornTangentPlan::derive(tearing, jvp).ok()?;
+            Some(rumoca_eval_solve::TornTangentEvaluator::new(plan))
+        })
+        .collect()
+}
+
+/// The colored tangent evaluator of each projection block over the solver-Y
+/// JVP rows `jvp`, aligned with `plan.blocks` and their structures.
+fn colored_tangent_evaluators(
+    plan: &solve::AlgebraicProjectionPlan,
+    structures: &solve::ContinuousStructuralArtifacts,
+    jvp: &solve::ScalarProgramBlock,
+) -> Rc<[Option<rumoca_eval_solve::ColoredTangentEvaluator>]> {
+    plan.blocks
+        .iter()
+        .zip(structures.algebraic_projection())
+        .map(|(block, structure)| {
+            let plan = solve::ColoredTangentPlan::derive(
+                &block.rows,
+                &block.y_indices,
+                &structure.pattern().nonzero_coordinates(),
+                structure.coloring().groups(),
+                jvp,
+            )
+            .ok()?;
+            Some(rumoca_eval_solve::ColoredTangentEvaluator::new(plan))
+        })
+        .collect()
+}

@@ -367,6 +367,28 @@ impl<'a> ProjectionJacobian<'a> {
 }
 
 impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
+    fn colored_tangent_entries(
+        &self,
+        structure: &solve::JacobianStructure,
+        coordinates: (&[usize], &[usize]),
+        point: (&[f64], &[f64], f64),
+    ) -> Result<Option<crate::runtime::projection::JacobianEntries>, RuntimeSolveError> {
+        self.eval_colored_tangent_entries(structure, coordinates, point)
+    }
+
+    fn torn_tangent_jacobian(
+        &self,
+        tearing: &solve::BlockTearing,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
+        if !self.jacobian_v.is_solver_y_only() {
+            return Ok(None);
+        }
+        self.runtime.torn_tangent_jacobian(tearing, y, p, t)
+    }
+
     fn eval_prepared_implicit_jacobian(
         &self,
         structure: &solve::JacobianStructure,

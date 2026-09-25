@@ -31,6 +31,13 @@ pub const TORN_OUTER_MAX_ITERS: usize = 64;
 /// Maximum step halvings in the reduced Newton line search.
 pub const TORN_BACKTRACK_STEPS: usize = 24;
 
+/// Whether the reduced Newton takes its tear Jacobian from the block's issued
+/// tangent plan (`rumoca_ir_solve::TornTangentPlan`): each causal step's
+/// tangent follows from the implicit function theorem on its row in sweep
+/// order, evaluated from multi-lane tangent programs. A block without a plan,
+/// or a point where the plan declines, differences the causal sweep.
+pub const TORN_TANGENT_JACOBIAN: bool = true;
+
 /// Relative step of the reduced finite-difference Jacobian.
 pub const FINITE_DIFFERENCE_RELATIVE_STEP: f64 = 1.0e-7;
 
