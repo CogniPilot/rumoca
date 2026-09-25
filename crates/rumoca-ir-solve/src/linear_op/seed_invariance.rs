@@ -2,7 +2,7 @@ use super::*;
 
 impl ScalarProgramRegisterFlow {
     /// Whether every source register of `op` is marked in `readable`.
-    pub(crate) fn op_reads_only(op: &LinearOp, op_index: usize, readable: &[bool]) -> bool {
+    pub fn op_reads_only(op: &LinearOp, op_index: usize, readable: &[bool]) -> bool {
         let mut validation = ScalarProgramValidationCache::default();
         validate_op_sources(op, op_index, readable, None, None, &mut validation).is_ok()
     }

@@ -248,6 +248,15 @@ fn repeatable(op: &LinearOp) -> bool {
     )
 }
 
+impl LinearOp {
+    /// Whether this operation reads one of `indices` of solver Y directly
+    /// (`LoadY`, a Y tensor range) or inside a fold or conditional body.
+    #[must_use]
+    pub fn reads_y_index_in(&self, indices: &BTreeSet<usize>) -> bool {
+        reads_unknown(self, indices)
+    }
+}
+
 /// Whether `op` reads a block unknown directly or inside a nested body.
 fn reads_unknown(op: &LinearOp, unknowns: &BTreeSet<usize>) -> bool {
     match op {

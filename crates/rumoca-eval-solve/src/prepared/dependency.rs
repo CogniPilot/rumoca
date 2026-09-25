@@ -1,6 +1,8 @@
 use std::{collections::BTreeSet, ops::Range};
 
-use rumoca_ir_solve::{BinaryOp, LinearOp, ScalarProgramYDependency, UnaryOp};
+use rumoca_ir_solve::{
+    BinaryOp, LinearOp, Reg, ScalarProgramRegisterFlow, ScalarProgramYDependency, UnaryOp,
+};
 
 use crate::required_registers;
 
@@ -89,25 +91,34 @@ pub(super) fn reg_depends_on_y_index(row: &[LinearOp], reg: u32, target_y_index:
 }
 
 /// Whether an operation of `prefix` that can fail on its operand values
-/// ([`op_can_fail`]) reads any of `y_indices`. Each such operation is judged
-/// by the dependence of its result right after it executes, so a later
-/// rewrite of its destination register cannot hide the read; an operation
-/// without a destination register counts as reading them.
+/// ([`op_can_fail`]) reads any of `y_indices`. A failure depends on every
+/// operand, so each such operation is judged by what it reads: a register
+/// version depending on one of `y_indices` when it executes (whatever its
+/// output summaries say), or one of them directly inside a nested body.
 pub(super) fn failable_op_reads_any_y_index(prefix: &[LinearOp], y_indices: &[usize]) -> bool {
     if y_indices.is_empty() {
         return false;
     }
+    let Ok(flow) = ScalarProgramRegisterFlow::derive(prefix) else {
+        return true;
+    };
+    let targets: BTreeSet<usize> = y_indices.iter().copied().collect();
     prefix.iter().enumerate().any(|(position, op)| {
         if !op_can_fail(op) {
             return false;
         }
-        let Some(register) = op.dst_register() else {
+        if op.reads_y_index_in(&targets) {
             return true;
-        };
-        let dependency = ScalarProgramYDependency::new(&prefix[..=position]);
-        y_indices
-            .iter()
-            .any(|&y_index| dependency.depends_on(register, y_index))
+        }
+        let dependency = ScalarProgramYDependency::new(&prefix[..position]);
+        let independent = (0..flow.register_count())
+            .map(|register| {
+                !y_indices
+                    .iter()
+                    .any(|&y_index| dependency.depends_on(register as Reg, y_index))
+            })
+            .collect::<Vec<_>>();
+        !ScalarProgramRegisterFlow::op_reads_only(op, position, &independent)
     })
 }
 
