@@ -47,20 +47,20 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
     // there, so its origin scale is its declared scale, and a fallback
     // coordinate outside the block keeps its value for the whole call, so its
     // origin scale serves every pass.
-    let certificate_scales = CertificateScales {
-        unknowns: block
-            .y_indices
-            .iter()
-            .copied()
-            .zip(variable_scales.iter().copied())
-            .collect(),
-        fallbacks: fallback_targets(model, block)
-            .into_iter()
-            .map(|target| {
-                target.map(|index| (index, model_variable_scale(model, index, candidate[index])))
-            })
-            .collect(),
+    let mut certificate_scales = CertificateScales {
+        unknowns: Vec::with_capacity(block.y_indices.len()),
+        fallbacks: Vec::with_capacity(block.rows.len()),
     };
+    for (&index, &scale) in block.y_indices.iter().zip(&variable_scales) {
+        certificate_scales.unknowns.push((index, scale));
+    }
+    for target in fallback_targets(model, block) {
+        let mut fallback = None;
+        if let Some(index) = target {
+            fallback = Some((index, model_variable_scale(model, index, candidate[index])));
+        }
+        certificate_scales.fallbacks.push(fallback);
+    }
     let mut system = AffineBlockSystem {
         model,
         parameters: p,

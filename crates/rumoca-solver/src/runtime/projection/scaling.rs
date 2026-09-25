@@ -81,11 +81,14 @@ pub(super) fn fallback_targets<M: ImplicitProjectionModel + ?Sized>(
     model: &M,
     block: &solve::AlgebraicProjectionBlock,
 ) -> Vec<Option<usize>> {
-    block
-        .rows
-        .iter()
-        .map(|&row| model.implicit_target(row).and_then(y_index_for_slot))
-        .collect()
+    let mut targets = Vec::with_capacity(block.rows.len());
+    for &row in &block.rows {
+        targets.push(match model.implicit_target(row) {
+            Some(slot) => y_index_for_slot(slot),
+            None => None,
+        });
+    }
+    targets
 }
 
 pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
