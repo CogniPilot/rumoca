@@ -348,10 +348,11 @@ fn resolve_alternate_coordinates<'source, 'formal>(
 /// The primary reduced selection plus the alternate Independent sets.
 type SelectionWithAlternates<'formal> = (StateSelection<'formal>, AlternateSelections);
 
-fn select<'formal>(
-    formal: FormalDerivativeView<'_, '_, 'formal>,
-    overrides: &HashMap<String, f64>,
-) -> Result<SelectionWithAlternates<'formal>, StructuralError> {
+/// Refuse a `StateSelect.always` request for more independent coordinates than
+/// the differential dimension provides.
+fn check_forced_state_count(
+    formal: FormalDerivativeView<'_, '_, '_>,
+) -> Result<(), StructuralError> {
     let required = formal
         .source
         .variables()
@@ -364,6 +365,14 @@ fn select<'formal>(
             formal.formal_dimension()
         )));
     }
+    Ok(())
+}
+
+fn select<'formal>(
+    formal: FormalDerivativeView<'_, '_, 'formal>,
+    overrides: &HashMap<String, f64>,
+) -> Result<SelectionWithAlternates<'formal>, StructuralError> {
+    check_forced_state_count(formal)?;
     let programs = lower_state_selection_stages(formal).map_err(failure)?;
     let mut point = TrialPoint::new(formal, overrides)?;
     point.seed_definitions(&programs)?;
@@ -420,8 +429,14 @@ fn select<'formal>(
             let (enumerated, group) = enumerate_reduced_charts(&matrix, &coordinates, &selected);
             charts = enumerated;
             if group.is_none() {
-                exchanges =
-                    exchange::stage_exchanges(stage, &matrix, &coordinates, &choices, &selected);
+                exchanges = exchange::stage_exchanges(
+                    stage,
+                    &matrix,
+                    &coordinates,
+                    &choices,
+                    &selected,
+                    || formal.stage_slope_is_invariant(stage.stage()),
+                );
             }
             fold = group;
             deepest_stage = false;

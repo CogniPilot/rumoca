@@ -8,6 +8,7 @@ use super::variables::ReservedVariable;
 use crate::StructuralError;
 use crate::differential_structure::analyze_differential_structure_with_order_bounds;
 
+mod slope_invariance;
 mod stage_reads;
 mod stages;
 mod state_candidates;

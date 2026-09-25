@@ -125,6 +125,30 @@ fn an_exchange_shares_the_primary_solver_layout() {
 }
 
 #[test]
+fn a_linear_loop_closure_is_exempt_by_its_constant_slope() {
+    // `x1 + 2*x2 = 1` is affine with constant coefficients, so every chart's slope
+    // is a constant matrix that cannot vanish: the exchange is ranked but withheld,
+    // and no executable alternate (hence no C refusal) is issued.
+    let model = lowered(
+        include_str!("../fixtures/index_reduction/LinearLoop.mo"),
+        "LinearLoop",
+    );
+    let set = &model.problem.continuous.reduced_chart_set;
+    assert_eq!(
+        set.exchanges
+            .iter()
+            .map(|e| (e.dependent.clone(), e.incoming.clone(), e.status))
+            .collect::<Vec<_>>(),
+        vec![(
+            coordinate("x1", 0),
+            coordinate("x2", 0),
+            ChartExchangeStatus::WithheldBySlopeInvariance
+        )]
+    );
+    assert!(set.charts.iter().all(|chart| chart.plan.is_none()));
+}
+
+#[test]
 fn a_model_whose_only_integrated_coordinate_is_always_issues_no_exchange() {
     // `p` is `StateSelect.always`, so the circle's reconstructed coordinate has no
     // admissible partner and the chart set stays as the static selection left it.

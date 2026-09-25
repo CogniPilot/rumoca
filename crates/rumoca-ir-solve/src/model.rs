@@ -143,6 +143,9 @@ pub enum ChartExchangeStatus {
     WithheldByConstruction,
     /// It lowered to a solver layout that differs from the primary's.
     WithheldByLayout,
+    /// The group's constraint slope is proven constant and nonsingular at
+    /// construction, so no chart of it can fold.
+    WithheldBySlopeInvariance,
 }
 
 /// One admissible reduced chart: a Dependent/Independent column selection of one

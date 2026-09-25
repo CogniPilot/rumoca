@@ -189,6 +189,8 @@ struct StageExchange {
 
 /// The ranked single exchanges of a reduced constraint group's deepest stage.
 pub(super) struct ExchangePlan {
+    /// The stage's constraint slope is proven constant, so no chart folds.
+    slope_invariant: bool,
     primary_trial: (f64, f64),
     issued: Vec<StageExchange>,
     withheld: Vec<(solve::ChartCoordinate, solve::ChartCoordinate)>,
@@ -202,6 +204,7 @@ pub(super) fn stage_exchanges(
     coordinates: &[(FormalStageCoordinate<'_, '_>, usize)],
     choices: &[ColumnChoice],
     selected: &[usize],
+    slope_is_invariant: impl FnOnce() -> bool,
 ) -> Option<ExchangePlan> {
     let readers = stage
         .equations()
@@ -221,6 +224,7 @@ pub(super) fn stage_exchanges(
     if ranked.issued.is_empty() {
         return None;
     }
+    let slope_invariant = slope_is_invariant();
     let dependent = (0..coordinates.len())
         .filter(|column| !selected.contains(column))
         .collect::<Vec<_>>();
@@ -263,6 +267,7 @@ pub(super) fn stage_exchanges(
         })
         .collect();
     Some(ExchangePlan {
+        slope_invariant,
         primary_trial: conditioning(&dependent),
         issued,
         withheld: ranked.withheld.iter().map(names).collect(),
@@ -346,6 +351,21 @@ impl ExchangePlan {
         stage_integrated: &[(i64, Vec<StageColumn>)],
         charts: &mut Vec<ReducedSelectionChart>,
     ) -> AlternateSelections {
+        // A constant slope nonsingular at construction never vanishes: the group
+        // cannot fold, so it issues no alternate and records why.
+        if self.slope_invariant {
+            let status = solve::ChartExchangeStatus::WithheldBySlopeInvariance;
+            return AlternateSelections {
+                selections: Vec::new(),
+                exchanges: self
+                    .issued
+                    .into_iter()
+                    .map(|exchange| exchange.names)
+                    .chain(self.withheld)
+                    .map(|names| chart_exchange(names, status))
+                    .collect(),
+            };
+        }
         let mut selections = Vec::new();
         let mut constructed = Vec::new();
         let mut exchanges = Vec::new();
