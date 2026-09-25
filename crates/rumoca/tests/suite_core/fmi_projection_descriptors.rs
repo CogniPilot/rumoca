@@ -467,7 +467,10 @@ fn torn_loop_descriptor_carries_its_tearing_and_colored_jacobian() {
     let block = single_block("TornLoop", &tables);
     assert_eq!(block.get("n"), 3);
     assert!(block.flag("torn") && !block.flag("affine") && !block.flag("elimination"));
-    assert!(block.get("ncolors") > 0, "the torn block keeps its JVP");
+    assert!(
+        block.get("nlane_calls") > 0 && block.get("ncolors") == 0,
+        "the torn block keeps its JVP, emitted once as multi-lane calls"
+    );
     assert_eq!(block.get("nnz"), 6);
 }
 

@@ -280,7 +280,9 @@ fn record_rows(
 }
 
 /// The issued colored forward application of the block Jacobian, flattened
-/// into seed, call, and placement ranges over the compressed-row pattern.
+/// into seed, call, and placement ranges over the compressed-row pattern: as
+/// multi-lane calls when the colored tangent plan constructs, otherwise as
+/// one-direction calls per color.
 // SPEC_0021: Exception - the Jacobian record threads the sources, table, block, structure, pattern, and record together.
 #[allow(clippy::too_many_arguments)]
 fn record_jacobian(
@@ -298,12 +300,16 @@ fn record_jacobian(
             application.rows() == block.rows && application.y_indices() == block.y_indices
         })
         .ok_or_else(|| refuse(canonical, "has no issued colored Jacobian application"))?;
+    record.jvp_max_outputs = 1;
+    record_lane_calls(sources, table, canonical, (application, csr), record)?;
+    if record.nlane_calls > 0 {
+        return Ok(());
+    }
     let source = application.source();
     let source_id = table.jvp_source(source);
     let n = block.rows.len();
     let (mut colors, mut seeds, mut calls, mut placements) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    record.jvp_max_outputs = 1;
     for color in application.colors() {
         let seed_start = seeds.len();
         seeds.extend_from_slice(color.seed_indices());
@@ -332,7 +338,7 @@ fn record_jacobian(
     record.color_seeds = table.push(seeds);
     record.color_calls = table.push(calls);
     record.placements = table.push(placements);
-    record_lane_calls(sources, table, canonical, (application, csr), record)
+    Ok(())
 }
 
 /// The colored application as one multi-lane call per program
