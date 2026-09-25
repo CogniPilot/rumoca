@@ -686,3 +686,22 @@ fn tear_dependencies_skip_unreached_runs_and_match_the_row_reads() {
     }
     assert!(skipped, "some tear's perturbation skips a causal run");
 }
+
+/// With the colored lanes scoped off, a block's Jacobian renders as the
+/// one-direction colored calls: colors and placements, no lane calls.
+#[test]
+fn torn_loop_descriptor_renders_one_direction_colors_without_lanes() {
+    use rumoca_eval_solve::projection_policy::{JacobianSources, with_jacobian_sources};
+    let sources = JacobianSources {
+        colored_lanes: false,
+        ..JacobianSources::POLICY
+    };
+    let (_, tables) = with_jacobian_sources(sources, || rendered("TornLoop", TORN));
+    assert_well_formed("TornLoop", &tables);
+    let block = single_block("TornLoop", &tables);
+    assert!(
+        block.get("ncolors") > 0 && block.get("nlane_calls") == 0,
+        "the torn block keeps its JVP as one-direction colors"
+    );
+    assert_eq!(block.get("nnz"), 6);
+}

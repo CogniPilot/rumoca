@@ -6,8 +6,8 @@ use rumoca_ir_solve as solve;
 
 use super::super::{ImplicitProjectionModel, RuntimeSolveError};
 use super::{
-    OriginRowScales, algebraic_block_scales, jacobian_row_derived, jacobian_row_magnitudes,
-    origin_bounded_residual_converged, scaled_residual_converged,
+    CertificateScales, OriginRowScales, algebraic_block_scales, jacobian_row_derived,
+    jacobian_row_magnitudes, origin_bounded_residual_converged, scaled_residual_converged,
 };
 
 /// A block over `y[0..n]` whose rows target the unknowns, a coordinate
@@ -141,8 +141,13 @@ fn origin_bounded_certificate_decides_as_the_full_row_scales() {
             magnitudes: &magnitudes,
             derived: &derived,
         };
-        let bounded =
-            origin_bounded_residual_converged(&model, &y, &block, &origin, &residual, tol);
+        let bounded = origin_bounded_residual_converged(
+            &y,
+            &CertificateScales::new(&model, &block),
+            &origin,
+            &residual,
+            tol,
+        );
         let full = scaled_residual_converged(&residual, &scales, tol);
         disagreements += usize::from(bounded != full);
         if full {
@@ -200,7 +205,13 @@ fn an_underflowed_origin_contribution_does_not_bound_the_row_scale() {
     let full = scaled_residual_converged(&residual, &scales, tol);
     assert!(!full, "the full row scale at y rejects the residual");
     assert_eq!(
-        origin_bounded_residual_converged(&model, &y, &block, &origin, &residual, tol),
+        origin_bounded_residual_converged(
+            &y,
+            &CertificateScales::new(&model, &block),
+            &origin,
+            &residual,
+            tol
+        ),
         full
     );
 }

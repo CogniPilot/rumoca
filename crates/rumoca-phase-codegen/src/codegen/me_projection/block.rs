@@ -299,7 +299,10 @@ fn record_jacobian(
         .filter(|application| {
             application.rows() == block.rows && application.y_indices() == block.y_indices
         })
-        .ok_or_else(|| refuse(canonical, "has no issued colored Jacobian application"))?;
+        .ok_or(refuse(
+            canonical,
+            "has no issued colored Jacobian application",
+        ))?;
     record.jvp_max_outputs = 1;
     record_lane_calls(sources, table, canonical, (application, csr), record)?;
     if record.nlane_calls > 0 {
@@ -354,10 +357,10 @@ fn record_lane_calls(
     (application, csr): (&solve::ProjectionJacobianApplication, &Csr),
     record: &mut BlockRecord,
 ) -> Result<(), CodegenError> {
-    // Generated components follow the policy itself: a thread-scoped choice
-    // (`projection_policy::with_jacobian_sources`) compares linked-kernel
-    // evaluators only.
-    if !rumoca_eval_solve::projection_policy::JacobianSources::POLICY.colored_lanes {
+    // Rendering follows the Jacobian sources of the rendering thread: the
+    // policy's unless a caller scopes others (`with_jacobian_sources`),
+    // which renders the one-direction colored calls for comparison.
+    if !rumoca_eval_solve::projection_policy::jacobian_sources().colored_lanes {
         return Ok(());
     }
     let Ok(plan) = solve::ColoredTangentPlan::derive(application) else {
@@ -602,10 +605,10 @@ fn causal_runs(
     causal: &[(usize, usize)],
 ) -> Result<Vec<usize>, CodegenError> {
     for &(row, target) in causal {
-        let (program, offset) = sources
-            .implicit
-            .row_output_position(row)
-            .ok_or_else(|| refuse(canonical, "recovers through a row without a scalar view"))?;
+        let (program, offset) = sources.implicit.row_output_position(row).ok_or(refuse(
+            canonical,
+            "recovers through a row without a scalar view",
+        ))?;
         if !matches!(
             sources
                 .implicit
@@ -618,10 +621,10 @@ fn causal_runs(
             ));
         }
     }
-    let grouped = sources
-        .implicit
-        .torn_sweep_runs(causal)
-        .ok_or_else(|| refuse(canonical, "recovers through a row without an isolator"))?;
+    let grouped = sources.implicit.torn_sweep_runs(causal).ok_or(refuse(
+        canonical,
+        "recovers through a row without an isolator",
+    ))?;
     let mut runs = Vec::new();
     for run in grouped {
         push_run(

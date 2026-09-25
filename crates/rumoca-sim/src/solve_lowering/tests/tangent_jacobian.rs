@@ -81,16 +81,18 @@ pub(super) fn compile_with_roots(
     session
         .add_document(&format!("{model}.mo"), source)
         .expect("fixture parses");
-    session
-        .compile_model_dae_strict_reachable_uncached_with_recovery(model)
-        .unwrap_or_else(|error| panic!("compile {model}: {error}"))
-        .dae
+    match session.compile_model_dae_strict_reachable_uncached_with_recovery(model) {
+        Ok(compiled) => compiled.dae,
+        Err(error) => panic!("compile {model}: {error}"),
+    }
 }
 
 fn lower_source(source: &str, model: &str, roots: &[PathBuf]) -> solve::SolveModel {
     let dae = compile_with_roots(source, model, roots);
-    lower_dae_for_simulation(&dae, &SimOptions::default())
-        .unwrap_or_else(|error| panic!("lower {model}: {error:?}"))
+    match lower_dae_for_simulation(&dae, &SimOptions::default()) {
+        Ok(model) => model,
+        Err(error) => panic!("lower {model}: {error:?}"),
+    }
 }
 
 /// Deterministic uniform numbers in `[-1, 1)`.
@@ -263,9 +265,19 @@ fn check_torn_block(
             .expect("evaluate the tangent Jacobian");
         let Some(exact) = exact else {
             // The plan declines only at a vanished causal pivot, which the
-            // torn solve cannot isolate either.
+            // torn solve cannot isolate either: some causal row has a
+            // vanishing slope in its target (a vanished slope leaves the
+            // sweep undefined, not a number, as well).
+            let mut vanished = false;
+            for step in &tearing.causal_steps {
+                let mut plus = y.to_vec();
+                let delta = 1e-7 * y[step.y_index].abs().max(1.0);
+                plus[step.y_index] += delta;
+                let slope = (rows.value(step.row, &plus) - rows.value(step.row, &y)) / delta;
+                vanished |= slope.is_nan() || slope.abs() <= 1e-9;
+            }
             assert!(
-                has_vanished_pivot(rows, tearing, &y),
+                vanished,
                 "{label}: the tangent plan declined at regular pivots"
             );
             return false;
@@ -303,18 +315,6 @@ fn check_torn_blocks(label: &str, model: &solve::SolveModel, points: usize) -> (
         })
         .count();
     (torn, checked)
-}
-
-/// Whether some causal row of `tearing` has a vanishing slope in its target.
-fn has_vanished_pivot(rows: &Rows<'_>, tearing: &solve::BlockTearing, y: &[f64]) -> bool {
-    tearing.causal_steps.iter().any(|step| {
-        let mut plus = y.to_vec();
-        let delta = 1e-7 * y[step.y_index].abs().max(1.0);
-        plus[step.y_index] += delta;
-        let slope = (rows.value(step.row, &plus) - rows.value(step.row, y)) / delta;
-        // A vanished slope leaves the sweep undefined (not a number) as well.
-        slope.is_nan() || slope.abs() <= 1e-9
-    })
 }
 
 /// The one-direction values of every placement of `application`: each color's

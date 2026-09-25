@@ -24,8 +24,10 @@ fn options(t_end: f64) -> SimOptions {
 }
 
 fn simulate(dae: &rumoca_ir_dae::Dae, t_end: f64, sources: JacobianSources) -> SimResult {
-    with_jacobian_sources(sources, || simulate_dae(dae, &options(t_end)))
-        .unwrap_or_else(|error| panic!("simulate under {sources:?}: {error:?}"))
+    match with_jacobian_sources(sources, || simulate_dae(dae, &options(t_end))) {
+        Ok(result) => result,
+        Err(error) => panic!("simulate under {sources:?}: {error:?}"),
+    }
 }
 
 fn bits(result: &SimResult) -> Vec<Vec<u64>> {

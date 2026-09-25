@@ -43,18 +43,23 @@ fn check_splits(label: &str, model: &solve::SolveModel) -> usize {
         }
         // The runtime's program choice: the residual selection's programs,
         // or the rows' programs when the block has none.
-        let sources: Vec<usize> = match structure.residual_output_evaluation() {
-            Some(selection) => selection
-                .programs()
-                .iter()
-                .map(|program| program.program())
-                .collect(),
-            None => block
-                .rows
-                .iter()
-                .filter_map(|&row| Some(prepared.row_output_position(row)?.0))
-                .collect(),
-        };
+        let mut sources = Vec::new();
+        match structure.residual_output_evaluation() {
+            Some(selection) => {
+                for program in selection.programs() {
+                    sources.push(program.program());
+                }
+            }
+            None => {
+                for &row in &block.rows {
+                    sources.extend(
+                        prepared
+                            .row_output_position(row)
+                            .map(|(program, _)| program),
+                    );
+                }
+            }
+        }
         for program in sources {
             let label = format!("{label} block {index} program {program}");
             if check_split(&label, model, &prepared, (block, program), &mut state) {
@@ -77,9 +82,9 @@ fn check_split(
     let Some(split) = BlockResidualSplit::derive(ops, &block.y_indices) else {
         return false;
     };
-    split
-        .check(ops, &block.y_indices)
-        .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+    if let Err(error) = split.check(ops, &block.y_indices) {
+        panic!("{label}: {error:?}");
+    }
     let outputs = solve::ScalarProgramBlock::program_output_count(ops);
     let split = PreparedBlockResidualSplit::new(split, outputs, None);
     let p = &model.parameters;

@@ -581,21 +581,66 @@ pub(super) struct OriginRowScales<'a> {
     pub(super) derived: &'a [bool],
 }
 
+/// The model data the origin-bounded certificate reads, resolved once per
+/// affine projection: each block unknown's y index and declared scale, and
+/// each row's fallback coordinate (its implicit target, or the unknown at the
+/// same offset) with that coordinate's declared scale.
+pub(super) struct CertificateScales {
+    pub(super) unknowns: Vec<(usize, f64)>,
+    pub(super) fallbacks: Vec<Option<(usize, f64)>>,
+}
+
+impl CertificateScales {
+    pub(super) fn new<M: ImplicitProjectionModel + ?Sized>(
+        model: &M,
+        block: &solve::AlgebraicProjectionBlock,
+    ) -> Self {
+        let declared = |index: usize| (index, model.variable_scale_for_y_index(index));
+        Self {
+            unknowns: block
+                .y_indices
+                .iter()
+                .map(|&index| declared(index))
+                .collect(),
+            fallbacks: block
+                .rows
+                .iter()
+                .map(|&row| {
+                    model
+                        .implicit_target(row)
+                        .and_then(y_index_for_slot)
+                        .map(declared)
+                })
+                .collect(),
+        }
+    }
+}
+
+/// [`model_variable_scale`] of a coordinate with declared scale `declared`.
+fn declared_variable_scale(declared: f64, current_value: f64) -> f64 {
+    let current_magnitude = if current_value.is_finite() {
+        current_value.abs()
+    } else {
+        0.0
+    };
+    valid_variable_scale(declared).max(current_magnitude)
+}
+
 /// Whether `residual` converges under the row scales [`algebraic_block_scales`]
 /// gives at `y`, decided without forming every row scale.
 ///
 /// A block unknown's scale `max(nominal, |y|)` never falls below its origin
 /// value, and a row target outside the block keeps its value, so every
-/// finite contribution `|J| * scale`, and with it every row scale and scaled
-/// tolerance, is at least its origin value while no contribution overflows
-/// (bounded by the row's largest magnitude times the largest unknown scale).
-/// A row within tolerance of its origin scale therefore converges under its
-/// scale at `y`; any other row forms that scale exactly. The decision equals
+/// finite contribution `|J| * scale` is at least its origin value while no
+/// contribution overflows (bounded by the row's largest magnitude times the
+/// largest unknown scale). A row whose origin scale came from a nonzero
+/// contribution, or which has no nonzero entry, and which is within
+/// tolerance of that origin scale, therefore converges under its scale at
+/// `y`; any other row forms that scale exactly. The decision equals
 /// [`scaled_residual_converged`] over the full scales.
-pub(super) fn origin_bounded_residual_converged<M: ImplicitProjectionModel + ?Sized>(
-    model: &M,
+pub(super) fn origin_bounded_residual_converged(
     y: &[f64],
-    block: &solve::AlgebraicProjectionBlock,
+    scales: &CertificateScales,
     origin: &OriginRowScales<'_>,
     residual: &[f64],
     tol: f64,
@@ -603,15 +648,15 @@ pub(super) fn origin_bounded_residual_converged<M: ImplicitProjectionModel + ?Si
     if residual.len() != origin.scales.len() {
         return false;
     }
-    let variable_scales = block
-        .y_indices
-        .iter()
-        .map(|&index| model_variable_scale(model, index, y[index]))
-        .collect::<Vec<_>>();
-    let largest = variable_scales.iter().fold(0.0_f64, |largest, scale| {
-        largest.max(valid_variable_scale(*scale))
-    });
-    residual.iter().enumerate().all(|(row, &value)| {
+    let mut variable_scales = Vec::with_capacity(scales.unknowns.len());
+    for &(index, declared) in &scales.unknowns {
+        variable_scales.push(declared_variable_scale(declared, y[index]));
+    }
+    let mut largest = 0.0_f64;
+    for &scale in &variable_scales {
+        largest = largest.max(valid_variable_scale(scale));
+    }
+    for (row, &value) in residual.iter().enumerate() {
         // A contribution only grows from the origin, so an origin scale formed
         // from a nonzero contribution bounds the scale at `y` from below. A row
         // on its fallback at the origin with a nonzero entry may form a
@@ -620,15 +665,12 @@ pub(super) fn origin_bounded_residual_converged<M: ImplicitProjectionModel + ?Si
         let bounded = (origin.magnitudes[row] * largest).is_finite()
             && (origin.derived[row] || origin.magnitudes[row] == 0.0);
         if bounded && value.abs() <= scaled_tolerance(tol, origin.scales[row]) {
-            return true;
+            continue;
         }
-        let fallback = model
-            .implicit_target(block.rows[row])
-            .and_then(y_index_for_slot)
-            .map_or_else(
-                || variable_scales.get(row).copied().unwrap_or(1.0),
-                |index| model_variable_scale(model, index, y[index]),
-            );
+        let fallback = match scales.fallbacks[row] {
+            Some((index, declared)) => declared_variable_scale(declared, y[index]),
+            None => variable_scales.get(row).copied().unwrap_or(1.0),
+        };
         let scale = jacobian_row_scale(
             origin.jacobian,
             row,
@@ -636,8 +678,11 @@ pub(super) fn origin_bounded_residual_converged<M: ImplicitProjectionModel + ?Si
             fallback,
             origin.structure,
         );
-        value.is_finite() && value.abs() <= scaled_tolerance(tol, scale)
-    })
+        if !(value.is_finite() && value.abs() <= scaled_tolerance(tol, scale)) {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
