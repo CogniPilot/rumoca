@@ -240,14 +240,12 @@ pub(crate) trait ImplicitProjectionModel {
         false
     }
 
-    /// Begin one projection call of block `block_index` at its incoming point:
+    /// Begin one projection call of a block at its incoming point
+    /// (`Some((block_index, y, p, t))`), or end the call in progress (`None`):
     /// a model with a block residual split (SPEC_0043 §6a) evaluates the
-    /// invariant parts of the block's residual programs here, reporting
-    /// nothing on failure.
-    fn begin_block_projection(&self, _block_index: usize, _y: &[f64], _p: &[f64], _t: f64) {}
-
-    /// End the projection call begun by [`Self::begin_block_projection`].
-    fn end_block_projection(&self) {}
+    /// invariant parts of the block's residual programs at the beginning,
+    /// reporting nothing on failure, and discards them at the end.
+    fn scope_block_projection(&self, _call: Option<(usize, &[f64], &[f64], f64)>) {}
 
     fn solve_algebraic_newton_delta(
         &self,
@@ -708,9 +706,9 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     // One call changes only this block's unknowns: the invariant parts of
     // its residual programs hold for the whole call.
-    model.begin_block_projection(block_index, y, p, t);
+    model.scope_block_projection(Some((block_index, y, p, t)));
     let update = project_algebraic_block_in_call(model, y, p, t, block, block_index, policy);
-    model.end_block_projection();
+    model.scope_block_projection(None);
     update
 }
 

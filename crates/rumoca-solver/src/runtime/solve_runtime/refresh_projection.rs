@@ -740,14 +740,15 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         })
     }
 
-    fn begin_block_projection(&self, block_index: usize, y: &[f64], p: &[f64], t: f64) {
-        if let Some(&index) = self.block_indices.get(block_index) {
-            self.runtime.begin_block_residual_split(index, y, p, t);
+    fn scope_block_projection(&self, call: Option<(usize, &[f64], &[f64], f64)>) {
+        match call {
+            Some((block_index, y, p, t)) => {
+                if let Some(&index) = self.block_indices.get(block_index) {
+                    self.runtime.begin_block_residual_split(index, y, p, t);
+                }
+            }
+            None => self.runtime.end_block_residual_split(),
         }
-    }
-
-    fn end_block_projection(&self) {
-        self.runtime.end_block_residual_split();
     }
 
     fn solve_affine_torn_delta(

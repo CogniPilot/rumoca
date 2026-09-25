@@ -590,32 +590,6 @@ pub(super) struct CertificateScales {
     pub(super) fallbacks: Vec<Option<(usize, f64)>>,
 }
 
-impl CertificateScales {
-    pub(super) fn new<M: ImplicitProjectionModel + ?Sized>(
-        model: &M,
-        block: &solve::AlgebraicProjectionBlock,
-    ) -> Self {
-        let declared = |index: usize| (index, model.variable_scale_for_y_index(index));
-        Self {
-            unknowns: block
-                .y_indices
-                .iter()
-                .map(|&index| declared(index))
-                .collect(),
-            fallbacks: block
-                .rows
-                .iter()
-                .map(|&row| {
-                    model
-                        .implicit_target(row)
-                        .and_then(y_index_for_slot)
-                        .map(declared)
-                })
-                .collect(),
-        }
-    }
-}
-
 /// [`model_variable_scale`] of a coordinate with declared scale `declared`.
 fn declared_variable_scale(declared: f64, current_value: f64) -> f64 {
     let current_magnitude = if current_value.is_finite() {

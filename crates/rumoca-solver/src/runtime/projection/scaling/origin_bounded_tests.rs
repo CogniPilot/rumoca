@@ -143,7 +143,7 @@ fn origin_bounded_certificate_decides_as_the_full_row_scales() {
         };
         let bounded = origin_bounded_residual_converged(
             &y,
-            &CertificateScales::new(&model, &block),
+            &certificate_scales(&model, &block),
             &origin,
             &residual,
             tol,
@@ -207,11 +207,36 @@ fn an_underflowed_origin_contribution_does_not_bound_the_row_scale() {
     assert_eq!(
         origin_bounded_residual_converged(
             &y,
-            &CertificateScales::new(&model, &block),
+            &certificate_scales(&model, &block),
             &origin,
             &residual,
             tol
         ),
         full
     );
+}
+
+/// The certificate scales the affine projection resolves for `block`.
+fn certificate_scales(
+    model: &ScaledBlock,
+    block: &solve::AlgebraicProjectionBlock,
+) -> CertificateScales {
+    let declared = |index: usize| (index, model.variable_scale_for_y_index(index));
+    CertificateScales {
+        unknowns: block
+            .y_indices
+            .iter()
+            .map(|&index| declared(index))
+            .collect(),
+        fallbacks: block
+            .rows
+            .iter()
+            .map(|&row| {
+                model.implicit_target(row).map(|slot| match slot {
+                    solve::ScalarSlot::Y { index, .. } => declared(index),
+                    _ => unreachable!("fixture targets are solver coordinates"),
+                })
+            })
+            .collect(),
+    }
 }
