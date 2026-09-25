@@ -223,3 +223,118 @@ fn a_locked_quaternion_exchanges_its_integrated_component() {
     );
     assert_eq!(set.charts.len(), 4);
 }
+
+/// Simulate a fixture through the default component host.
+fn simulate(
+    source: &str,
+    model: &str,
+    t_end: f64,
+    tolerance: f64,
+) -> Result<rumoca_sim::SimResult, rumoca_sim::SimulationDiagnosticError> {
+    let compiled = Compiler::new()
+        .model(model)
+        .compile_str(source, "constraint_fold_charts.mo")
+        .unwrap();
+    rumoca_sim::simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &rumoca_sim::SimOptions {
+            t_end,
+            dt: Some(0.01),
+            rtol: tolerance,
+            atol: tolerance,
+            ..Default::default()
+        },
+    )
+}
+
+fn column(result: &rumoca_sim::SimResult, name: &str) -> usize {
+    result
+        .names
+        .iter()
+        .position(|candidate| candidate == name)
+        .unwrap_or_else(|| panic!("trace exposes {name}"))
+}
+
+#[test]
+fn a_split_circle_switches_charts_and_completes_its_revolution_on_the_physical_branch() {
+    // x(t) = cos t, y(t) = sin t. A fixed chart reconstructing x from
+    // x*x + y*y = 1 lands on the mirror root after a quarter turn; switching to
+    // the exchange before each fold keeps the physical branch.
+    let result = simulate(
+        SPLIT_CIRCLE_CHART,
+        "SplitCircleChart",
+        std::f64::consts::TAU + 0.5,
+        1e-8,
+    )
+    .expect("the split circle completes a revolution through chart switches");
+    let (x, y) = (column(&result, "x"), column(&result, "y"));
+    let mut worst = 0.0_f64;
+    for (index, &time) in result.times.iter().enumerate() {
+        worst = worst
+            .max((result.data[x][index] - time.cos()).abs())
+            .max((result.data[y][index] - time.sin()).abs());
+    }
+    assert!(
+        worst < 1e-4,
+        "the switched trajectory stays on the physical branch: worst error {worst}"
+    );
+}
+
+#[test]
+fn an_undetermined_index_one_algebraic_keeps_its_typed_projection_failure() {
+    // `a2` is an index-1 algebraic of `sin(a3)*sin(a1) = cos(a3)*sin(a2)*cos(a1)`,
+    // left undetermined where cos(a3) = 0 (t = 0.5). No reduced chart exists to
+    // exchange, so the certified projection reports the singular row.
+    let error = simulate(
+        include_str!("../fixtures/index_reduction/CardanChartFold.mo"),
+        "CardanChartFold",
+        1.0,
+        1e-10,
+    )
+    .expect_err("the undetermined algebraic is not silently continued");
+    let message = error.to_string();
+    assert!(
+        message.contains("algebraic projection did not establish coordinate convergence")
+            && message.contains("target=a2"),
+        "{message}"
+    );
+}
+
+#[test]
+fn msl_universal_constraint_keeps_the_constrained_body_on_the_joint() {
+    let Some(root) = msl_root() else {
+        return;
+    };
+    let dae = Compiler::new()
+        .model("Modelica.Mechanics.MultiBody.Examples.Constraints.UniversalConstraint")
+        .source_root(root.to_str().expect("MSL root path is UTF-8"))
+        .compile_str(
+            "package ChartProbe import Modelica; end ChartProbe;",
+            "constraint_fold_charts.mo",
+        )
+        .unwrap()
+        .dae;
+    let result = rumoca_sim::simulate_dae_with_diagnostics(
+        &dae,
+        &rumoca_sim::SimOptions {
+            t_end: 10.0,
+            dt: Some(0.01),
+            rtol: 1e-10,
+            atol: 1e-10,
+            ..Default::default()
+        },
+    )
+    .expect("UniversalConstraint runs to t = 10 through its Cardan fold");
+    let mut worst = 0.0_f64;
+    for k in 1..=3 {
+        let joint = column(&result, &format!("bodyOfJoint.frame_b.r_0[{k}]"));
+        let constrained = column(&result, &format!("bodyOfConstraint.frame_b.r_0[{k}]"));
+        for (a, b) in result.data[joint].iter().zip(&result.data[constrained]) {
+            worst = worst.max((a - b).abs());
+        }
+    }
+    assert!(
+        worst < 1e-4,
+        "the constrained body tracks the jointed body: worst gap {worst}"
+    );
+}
