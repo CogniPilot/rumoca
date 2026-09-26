@@ -43,13 +43,13 @@ static int {{ name }}({{ signature }}) {
 {%- if me.kernel %} double rmc_d[{{ me.work.doubles }}]; size_t rmc_s[{{ me.work.sizes }}]; size_t rmc_dtop; size_t rmc_stop; double rmc_tol; bool rmc_certify;{% endif -%}
 {%- if me.blocks|length > 0 %} double rmc_seed[{{ me.seed_len if me.seed_len > 0 else 1 }}];{% endif -%}
 {%- if me.lane_max > 0 %} double rmc_lane_seed[{{ (me.seed_len if me.seed_len > 0 else 1) * me.lane_max }}];{% endif -%}
-{%- if me.switching %} size_t rmc_chart; size_t rmc_chart_target; bool rmc_chart_pending; double rmc_chart_y[Y_LEN];{% endif -%}
+{%- if me.switching %} size_t rmc_chart; size_t rmc_chart_target; bool rmc_chart_pending; double rmc_chart_reference; double rmc_chart_target_reference; double rmc_chart_y[Y_LEN];{% endif -%}
 {%- endmacro %}
 {%- macro workspace_reset(me) -%}
 {%- if me.kernel %} m->rmc_dtop = 0; m->rmc_stop = 0; m->rmc_tol = {{ me.policy.tolerance }}; m->rmc_certify = true;{% endif -%}
 {%- if me.blocks|length > 0 %} memset(m->rmc_seed, 0, sizeof(m->rmc_seed));{% endif -%}
 {%- if me.lane_max > 0 %} memset(m->rmc_lane_seed, 0, sizeof(m->rmc_lane_seed));{% endif -%}
-{%- if me.switching %} m->rmc_chart = 0; m->rmc_chart_target = 0; m->rmc_chart_pending = false;{% endif -%}
+{%- if me.switching %} m->rmc_chart = 0; m->rmc_chart_target = 0; m->rmc_chart_pending = false; m->rmc_chart_reference = {{ me.switching[0].trial_rcond }}; m->rmc_chart_target_reference = 0.0;{% endif -%}
 {%- endmacro %}
 
 {#- ── generic kernel ─────────────────────────────────────────────────────── -#}
@@ -1290,10 +1290,10 @@ static {{ prefix }}Status {{ name }}(ModelInstance* m) {
 #define RMC_CHART_REGULAR_MULTIPLE {{ me.policy.chart_regular_multiple }}
 #define RMC_CHART_SWITCH_KEEP {{ me.policy.chart_switch_keep }}
 #define RMC_CHART_SWITCH_IMPROVEMENT {{ me.policy.chart_switch_improvement }}
-typedef struct { size_t nrows; size_t ncols; size_t ndep; const size_t* dep; size_t nentries; const size_t* entries; const size_t* binding; size_t jvp_max_outputs; size_t row_max_outputs; } RmcChart;
+typedef struct { size_t nrows; size_t ncols; size_t ndep; const size_t* dep; size_t nentries; const size_t* entries; const size_t* binding; double trial_rcond; size_t jvp_max_outputs; size_t row_max_outputs; } RmcChart;
 static const RmcChart rmc_charts[RMC_NCHARTS] = {
 {%- for c in me.switching %}
-    { {{ c.nrows }}, {{ c.ncols }}, {{ c.ndep }}, RMC_P({{ c.dep }}), {{ c.nentries }}, RMC_P({{ c.entries }}), RMC_P({{ c.binding }}), {{ c.jvp_max_outputs }}, {{ c.row_max_outputs }} },
+    { {{ c.nrows }}, {{ c.ncols }}, {{ c.ndep }}, RMC_P({{ c.dep }}), {{ c.nentries }}, RMC_P({{ c.entries }}), RMC_P({{ c.binding }}), {{ c.trial_rcond }}, {{ c.jvp_max_outputs }}, {{ c.row_max_outputs }} },
 {%- endfor %}
 };
 /* nalgebra blas.rs: dotx over one dynamic column, eight accumulators per full
@@ -1383,11 +1383,14 @@ static int rmc_chart_sigma(ModelInstance* m, const RmcChart* c, double* sigma, d
     RMC_RELEASE;
     return 0;
 }
-/* chart_switch.rs: detect_basis_change_request with dynamic_chart.rs: decide.
-   The accepted point is settled from the current coordinate by the active
-   chart's uncertified refresh into scratch; every chart's conditioning is
-   read there, and the coordinate itself is left as it was. A switch latches
-   the target and the settled coordinate for Event Mode. */
+/* chart_switch.rs: detect_basis_change_request with dynamic_chart.rs:
+   decide_lazily and decide. The accepted point is settled from the current
+   coordinate by the active chart's uncertified refresh into scratch, and the
+   coordinate itself is left as it was. The active chart's conditioning is
+   read there first; only when it falls below the keep threshold (a fraction
+   of its reference) or its regular bound are the alternates read. A switch
+   latches the target, its conditioning (its reference once active), and the
+   settled coordinate for Event Mode. */
 static {{ prefix }}Status rmc_chart_completed(ModelInstance* m, bool* request) {
     double saved[Y_LEN]; double sigma[RMC_NCHARTS]; double threshold[RMC_NCHARTS];
     *request = false;
@@ -1397,20 +1400,25 @@ static {{ prefix }}Status rmc_chart_completed(ModelInstance* m, bool* request) {
     {{ prefix }}Status status = refresh_algebraics(m);
     m->rmc_certify = certify;
     if (status != {{ prefix }}OK) goto fail;
-    for (size_t c = 0; c < RMC_NCHARTS; ++c) {
-        if (rmc_chart_sigma(m, &rmc_charts[c], &sigma[c], &threshold[c]) != 0) { RMC_LOG(m, "reduced-chart conditioning failed"); goto fail; }
-    }
     size_t active = m->rmc_chart, target = RMC_NCHARTS;
+    double keep = RMC_CHART_SWITCH_KEEP * m->rmc_chart_reference;
+    if (rmc_chart_sigma(m, &rmc_charts[active], &sigma[active], &threshold[active]) != 0) { RMC_LOG(m, "reduced-chart conditioning failed"); goto fail; }
     double current = sigma[active];
-    if (current < threshold[active] * RMC_CHART_REGULAR_MULTIPLE) { RMC_LOG(m, "the active reduced chart crossed its fold before a basis change could be requested"); goto fail; }
-    if (!(current >= RMC_CHART_SWITCH_KEEP)) {
+    double regular = threshold[active] * RMC_CHART_REGULAR_MULTIPLE;
+    if (!(current >= keep && current >= regular)) {
         for (size_t c = 0; c < RMC_NCHARTS; ++c) {
-            bool qualifies = c != active && sigma[c] > RMC_CHART_SWITCH_IMPROVEMENT * current && sigma[c] >= threshold[c] * RMC_CHART_REGULAR_MULTIPLE;
-            if (qualifies && (target == RMC_NCHARTS || sigma[c] > sigma[target])) target = c;
+            if (c != active && rmc_chart_sigma(m, &rmc_charts[c], &sigma[c], &threshold[c]) != 0) { RMC_LOG(m, "reduced-chart conditioning failed"); goto fail; }
+        }
+        if (current < regular) { RMC_LOG(m, "the active reduced chart crossed its fold before a basis change could be requested"); goto fail; }
+        if (!(current >= keep)) {
+            for (size_t c = 0; c < RMC_NCHARTS; ++c) {
+                bool qualifies = c != active && sigma[c] > RMC_CHART_SWITCH_IMPROVEMENT * current && sigma[c] >= threshold[c] * RMC_CHART_REGULAR_MULTIPLE;
+                if (qualifies && (target == RMC_NCHARTS || sigma[c] > sigma[target])) target = c;
+            }
         }
     }
     m->rmc_chart_pending = target < RMC_NCHARTS;
-    if (m->rmc_chart_pending) { memcpy(m->rmc_chart_y, m->y, sizeof(m->rmc_chart_y)); m->rmc_chart_target = target; *request = true; }
+    if (m->rmc_chart_pending) { memcpy(m->rmc_chart_y, m->y, sizeof(m->rmc_chart_y)); m->rmc_chart_target = target; m->rmc_chart_target_reference = sigma[target]; *request = true; }
     memcpy(m->y, saved, sizeof(saved));
     return {{ prefix }}OK;
 fail:
@@ -1421,7 +1429,8 @@ fail:
    transaction: each state recovers the target chart's source value through
    its identity row at the latched coordinate, the target's certified
    refresh re-establishes every constraint from that coordinate, and only then
-   is the target adopted. A failed transfer restores the chart and the
+   is the target adopted, with its keep reference: its conditioning at the
+   request, or the construction conditioning for the primary basis. A failed transfer restores the chart and the
    coordinate. */
 static {{ prefix }}Status rmc_chart_transfer(ModelInstance* m, bool* values_changed) {
     double before[Y_LEN]; double states[STATE_LEN];
@@ -1446,6 +1455,7 @@ static {{ prefix }}Status rmc_chart_transfer(ModelInstance* m, bool* values_chan
     m->rmc_certify = certify;
     if (status != {{ prefix }}OK) goto fail;
     RMC_RELEASE;
+    m->rmc_chart_reference = m->rmc_chart != 0 ? m->rmc_chart_target_reference : rmc_charts[0].trial_rcond;
     *values_changed = memcmp(before, m->y, {{ solve.solve_layout.state_scalar_count }} * sizeof(double)) != 0;
     return {{ prefix }}OK;
 fail:

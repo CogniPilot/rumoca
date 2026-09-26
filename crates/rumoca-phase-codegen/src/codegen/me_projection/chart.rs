@@ -143,6 +143,8 @@ pub(super) struct ChartRecord {
     /// Per state coordinate, the (residual function, output offset) of its
     /// identity row `state - source`.
     binding: usize,
+    /// The chart's conditioning at construction: the primary's keep reference.
+    trial_rcond: String,
     /// Largest outputs of one entry's or one binding row's program.
     jvp_max_outputs: usize,
     row_max_outputs: usize,
@@ -196,6 +198,7 @@ pub(super) fn chart_record(
         ncols: cols.len(),
         ndep: dependent.len(),
         dep: table.push(dependent),
+        trial_rcond: format!("{:?}", chart.trial_rcond),
         ..ChartRecord::default()
     };
     record_entries(
