@@ -975,8 +975,10 @@ RMC_COLD static int rmc_nudge(ModelInstance* m, const RmcBlock* b, const double*
     size_t* live = rmc_salloc(m, b->n);
     if (!live) { RMC_RELEASE; return rmc_exhausted(m); }
     for (size_t p = 0; p < b->nnz; ++p) if (jac[p] != 0.0) live[b->col_idx[p]] = 1;
+    bool vanished_row = false;
+    for (size_t row = 0; row < b->n; ++row) { bool zero = true; for (size_t p = b->row_ptr[row]; p < b->row_ptr[row + 1]; ++p) zero &= jac[p] == 0.0; vanished_row |= zero; }
     for (size_t col = 0; col < b->n; ++col) {
-        if (m->y[b->y[col]] != 0.0 || live[col]) continue;
+        if (m->y[b->y[col]] != 0.0 || (live[col] && !vanished_row)) continue;
         m->y[b->y[col]] = (isfinite(vscale[col]) && vscale[col] > 0.0) ? vscale[col] : 1.0;
         nudged = 1;
     }
