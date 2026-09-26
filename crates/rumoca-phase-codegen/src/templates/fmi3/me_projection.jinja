@@ -256,6 +256,7 @@ typedef struct {
     size_t nguards; const size_t* guards; const size_t* guard_step; size_t elim_capacity;
     const size_t* iso_default; const size_t* iso_start; const size_t* iso_entries;
     size_t nlane_calls; const size_t* lane_calls; size_t lane_max_outputs; size_t lane_max;
+    size_t nsplit; const size_t* split; const size_t* row_split; size_t inv_len;
 } RmcBlock;
 static const size_t rmc_pool[{{ me.table.pool|length }}] = {
 {%- for chunk in me.table.pool|batch(24) %}
@@ -265,7 +266,7 @@ static const size_t rmc_pool[{{ me.table.pool|length }}] = {
 #define RMC_P(offset) (rmc_pool + (offset))
 static const RmcBlock rmc_blocks[{{ me.blocks|length }}] = {
 {%- for b in me.blocks %}
-    { {{ b.canonical }}, {{ b.n }}, RMC_P({{ b.y }}), RMC_P({{ b.row_target }}), RMC_P({{ b.row_program }}), RMC_P({{ b.row_offset }}), {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, RMC_P({{ b.row_ptr }}), RMC_P({{ b.col_idx }}), {{ b.nnz }}, {{ b.ncolors }}, RMC_P({{ b.colors }}), RMC_P({{ b.color_seeds }}), RMC_P({{ b.color_calls }}), RMC_P({{ b.placements }}), {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, RMC_P({{ b.tear_col }}), RMC_P({{ b.residual_row }}), {{ b.ncausal }}, {{ b.ncruns }}, RMC_P({{ b.cruns }}), RMC_P({{ b.causal_target }}), RMC_P({{ b.causal_col }}), RMC_P({{ b.tear_deps }}), {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, RMC_P({{ b.elim_row }}), RMC_P({{ b.elim_col }}), {{ b.nelim_tear }}, RMC_P({{ b.elim_residual }}), RMC_P({{ b.elim_tear }}), {{ b.nguards }}, RMC_P({{ b.guards }}), RMC_P({{ b.guard_step }}), {{ b.elim_capacity }}, RMC_P({{ b.iso_default }}), RMC_P({{ b.iso_start }}), RMC_P({{ b.iso_entries }}), {{ b.nlane_calls }}, RMC_P({{ b.lane_calls }}), {{ b.lane_max_outputs }}, {{ b.lane_max }} },
+    { {{ b.canonical }}, {{ b.n }}, RMC_P({{ b.y }}), RMC_P({{ b.row_target }}), RMC_P({{ b.row_program }}), RMC_P({{ b.row_offset }}), {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, RMC_P({{ b.row_ptr }}), RMC_P({{ b.col_idx }}), {{ b.nnz }}, {{ b.ncolors }}, RMC_P({{ b.colors }}), RMC_P({{ b.color_seeds }}), RMC_P({{ b.color_calls }}), RMC_P({{ b.placements }}), {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, RMC_P({{ b.tear_col }}), RMC_P({{ b.residual_row }}), {{ b.ncausal }}, {{ b.ncruns }}, RMC_P({{ b.cruns }}), RMC_P({{ b.causal_target }}), RMC_P({{ b.causal_col }}), RMC_P({{ b.tear_deps }}), {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, RMC_P({{ b.elim_row }}), RMC_P({{ b.elim_col }}), {{ b.nelim_tear }}, RMC_P({{ b.elim_residual }}), RMC_P({{ b.elim_tear }}), {{ b.nguards }}, RMC_P({{ b.guards }}), RMC_P({{ b.guard_step }}), {{ b.elim_capacity }}, RMC_P({{ b.iso_default }}), RMC_P({{ b.iso_start }}), RMC_P({{ b.iso_entries }}), {{ b.nlane_calls }}, RMC_P({{ b.lane_calls }}), {{ b.lane_max_outputs }}, {{ b.lane_max }}, {{ b.nsplit }}, RMC_P({{ b.split }}), RMC_P({{ b.row_split }}), {{ b.inv_len }} },
 {%- endfor %}
 };
 /* projection_policy::finite_difference_perturbation */
@@ -288,16 +289,33 @@ static int rmc_row(ModelInstance* m, const RmcBlock* b, size_t row, double* valu
     *value = out[b->row_offset[row]];
     return 0;
 }
-/* projection.rs: implicit_selected_residuals */
-static int rmc_rows(ModelInstance* m, const RmcBlock* b, double* residual) {
+/* projection.rs: implicit_selected_residuals; with the invariant values `inv`
+   of an affine projection call (block_residual_split.rs), a split row's
+   dependent part evaluates its program; one that fails hands the pass to
+   the unsplit program, which raises its own error. */
+static int rmc_rows_split(ModelInstance* m, const RmcBlock* b, const double* inv, double* residual) {
     /* Consecutive rows of one multi-output program read one evaluation. */
     double out[{{ me.table.row_max_outputs }}]; size_t last = SIZE_MAX;
     for (size_t row = 0; row < b->n; ++row) {
         size_t program = b->row_program[row];
-        if (program != last && rmc_row_fn[program](m, out) != 0) return -1;
+        if (program != last) {
+            size_t dependent = inv ? b->row_split[row] : 0;
+            if (!(dependent && rmc_dep_fn[dependent - 1](m, inv, out) == 0) && rmc_row_fn[program](m, out) != 0) return -1;
+        }
         last = program; residual[row] = out[b->row_offset[row]];
     }
     return 0;
+}
+static int rmc_rows(ModelInstance* m, const RmcBlock* b, double* residual) { return rmc_rows_split(m, b, NULL, residual); }
+/* block_residual_split.rs: begin_block_residual_split; NULL when the block has
+   no split or an invariant part fails, which reports nothing. */
+static const double* rmc_block_invariants(ModelInstance* m, const RmcBlock* b) {
+    if (b->nsplit == 0) return NULL;
+    double* inv = rmc_dalloc_raw(m, b->inv_len + 1);
+    if (!inv) return NULL;
+    for (size_t s = 0; s < b->nsplit; ++s)
+        if (rmc_inv_fn[b->split[2 * s]](m, inv + b->split[2 * s + 1]) != 0) return NULL;
+    return inv;
 }
 /* initial.rs: algebraic_block_jacobian through the issued colored application */
 /* tangent_lanes.rs: ColoredTangentEvaluator::eval; lane j of a call seeds
@@ -733,7 +751,7 @@ static int rmc_eliminate_solve(ModelInstance* m, const RmcBlock* b, const RmcEli
     RMC_RELEASE; return result;
 }
 typedef struct {
-    const RmcBlock* block; const double* jac; const double* rscale; const double* vscale; const double* magnitudes; const size_t* derived;
+    const RmcBlock* block; const double* jac; const double* rscale; const double* vscale; const double* magnitudes; const size_t* derived; const double* inv;
     bool prefer_torn; bool used_torn; RmcElimination elimination; bool factored; RmcDenseFactor dense;
 } RmcAffineSystem;
 /* affine.rs: AffineBlockSystem::solve with the block's cached factors; the
@@ -809,13 +827,13 @@ static int rmc_affine_project(ModelInstance* m, RmcAffineSystem* s) {
     const RmcBlock* b = s->block; size_t n = b->n; int result = 0;
     double* residual = rmc_dalloc_raw(m, n); double* delta = rmc_dalloc_raw(m, n);
     if (!residual || !delta) return rmc_exhausted(m);
-    if (rmc_rows(m, b, residual) != 0) return -1;
+    if (rmc_rows_split(m, b, s->inv, residual) != 0) return -1;
     int solved = rmc_affine_solve(m, s, residual, delta);
     if (solved <= 0) return solved;
     for (size_t i = 0; i < n; ++i) m->y[b->y[i]] = delta[i];
     for (int iteration = 0; iteration < RMC_REFINE_ITERS; ++iteration) {
         bool converged = false, zero = true;
-        if (rmc_rows(m, b, residual) != 0 || rmc_origin_converged(m, b, s, residual, &converged) != 0) { result = -1; break; }
+        if (rmc_rows_split(m, b, s->inv, residual) != 0 || rmc_origin_converged(m, b, s, residual, &converged) != 0) { result = -1; break; }
         for (size_t i = 0; i < n; ++i) if (residual[i] != 0.0) zero = false;
         if (converged && (iteration > 0 || zero)) { result = 1; break; }
         solved = rmc_affine_solve(m, s, residual, delta);
@@ -839,12 +857,15 @@ static int rmc_project_affine(ModelInstance* m, const RmcBlock* b, RmcUpdate* up
     size_t* derived = rmc_salloc(m, n);
     if (!original || !rscale || !vscale || !jac || !magnitudes || !derived) { RMC_RELEASE; return rmc_exhausted(m); }
     rmc_save(m, b, original);
+    /* The call moves only the block's unknowns: the invariant parts of its
+       residual programs hold for every pass (SPEC_0043 §6a). */
+    const double* inv = rmc_block_invariants(m, b);
     for (size_t i = 0; i < n; ++i) m->y[b->y[i]] = 0.0;
     result = rmc_jacobian(m, b, jac);
     if (result == 0) result = rmc_block_scales(m, b, jac, rscale, vscale);
     if (result == 0) {
         rmc_row_magnitudes(b, jac, vscale, magnitudes, derived);
-        RmcAffineSystem system = { b, jac, rscale, vscale, magnitudes, derived, true, false, { -1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL }, false, { 0, NULL, NULL, NULL, NULL, NULL } };
+        RmcAffineSystem system = { b, jac, rscale, vscale, magnitudes, derived, inv, true, false, { -1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL }, false, { 0, NULL, NULL, NULL, NULL, NULL } };
         result = rmc_affine_project(m, &system);
         if (result == 0 && system.used_torn) {
             system.prefer_torn = false;
@@ -1511,6 +1532,13 @@ typedef int (*RmcProgram)(ModelInstance* m, double* out);
 typedef int (*RmcJvpProgram)(ModelInstance* m, const double* seed, double* out);
 typedef int (*RmcCausalProgram)(ModelInstance* m, const size_t* targets);
 RMC_API extern const RmcProgram rmc_row_fn[{{ me.table.rows.programs|length }}];
+{%- if me.table.inv.programs|length > 0 %}
+RMC_API extern const RmcProgram rmc_inv_fn[{{ me.table.inv.programs|length }}];
+RMC_API extern const RmcJvpProgram rmc_dep_fn[{{ me.table.dep.programs|length }}];
+{%- else %}
+#define rmc_inv_fn ((const RmcProgram*)0)
+#define rmc_dep_fn ((const RmcJvpProgram*)0)
+{%- endif %}
 {%- if me.table.jvp.programs|length > 0 %}
 RMC_API extern const RmcJvpProgram rmc_jvp_fn[{{ me.table.jvp.programs|length }}];
 {%- else %}
@@ -1545,6 +1573,16 @@ RMC_API extern const RmcCausalProgram rmc_causal_fn[{{ me.table.causal.programs|
 {{ program_function("rmc_row_p" ~ loop.index0, program, "ModelInstance* m, double* o", false) }}
 {%- endfor %}
 RMC_API const RmcProgram rmc_row_fn[{{ me.table.rows.programs|length }}] = { {% for program in me.table.rows.programs %}rmc_row_p{{ loop.index0 }},{% endfor %} };
+{%- for program in me.table.inv.programs %}
+{{ program_function("rmc_inv_p" ~ loop.index0, program, "ModelInstance* m, double* o", false) }}
+{%- endfor %}
+{%- for program in me.table.dep.programs %}
+{{ program_function("rmc_dep_p" ~ loop.index0, program, "ModelInstance* m, const double* seed, double* o", true) }}
+{%- endfor %}
+{%- if me.table.inv.programs|length > 0 %}
+RMC_API const RmcProgram rmc_inv_fn[{{ me.table.inv.programs|length }}] = { {% for program in me.table.inv.programs %}rmc_inv_p{{ loop.index0 }},{% endfor %} };
+RMC_API const RmcJvpProgram rmc_dep_fn[{{ me.table.dep.programs|length }}] = { {% for program in me.table.dep.programs %}rmc_dep_p{{ loop.index0 }},{% endfor %} };
+{%- endif %}
 {%- endif %}
 {%- endmacro %}
 

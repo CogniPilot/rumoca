@@ -118,7 +118,7 @@ fn model_c(model: &str, source: &str, target: &str) -> String {
 }
 
 /// `RmcBlock` field names in their C initializer order.
-const FIELDS: [&str; 47] = [
+const FIELDS: [&str; 51] = [
     "canonical",
     "n",
     "y",
@@ -166,6 +166,10 @@ const FIELDS: [&str; 47] = [
     "lane_calls",
     "lane_max_outputs",
     "lane_max",
+    "nsplit",
+    "split",
+    "row_split",
+    "inv_len",
 ];
 
 const ISOLATION_KINDS: std::ops::RangeInclusive<usize> = 0..=2;

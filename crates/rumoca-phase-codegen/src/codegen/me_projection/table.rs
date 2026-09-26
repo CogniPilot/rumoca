@@ -91,6 +91,12 @@ pub(super) struct ProgramTable {
     /// Multi-lane forward Jacobian programs, one per colored application
     /// program ([`solve::ColoredTangentPlan`]).
     pub(super) lanes: LaneFamily,
+    /// Invariant parts of block residual splits keyed by (block, program):
+    /// each stores its live-out registers as its outputs.
+    pub(super) inv: FunctionFamily<(usize, usize)>,
+    /// Dependent parts of block residual splits keyed by (block, program):
+    /// each reads the block's live-out values from its seed vector.
+    pub(super) dep: FunctionFamily<(usize, usize)>,
     /// Target isolators keyed by (program, output offset, target).
     pub(super) isolators: IsolatorCatalog,
     /// Causal isolation chains keyed by (program, ordered (output, target) pairs).
@@ -144,6 +150,8 @@ impl ProgramTable {
             rows => self.rows.into_plan()?,
             jvp => self.jvp.into_plan()?,
             lanes => self.lanes.into_plan()?,
+            inv => self.inv.into_plan()?,
+            dep => self.dep.into_plan()?,
             isolators => isolators.into_plan()?,
             causal => self.causal.into_plan()?,
             isolator_group => isolator_group,

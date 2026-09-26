@@ -89,6 +89,13 @@ pub(super) struct BlockRecord {
     lane_calls: usize,
     lane_max_outputs: usize,
     lane_max: usize,
+    /// Block residual splits: `(invariant function, live-out offset)` pairs.
+    nsplit: usize,
+    split: usize,
+    /// Per row, its split's dependent function plus one, or zero.
+    row_split: usize,
+    /// Live-out values of every split of the block.
+    inv_len: usize,
 }
 
 pub(super) fn refuse(canonical: usize, reason: &str) -> CodegenError {
@@ -187,6 +194,9 @@ pub(super) fn block_record(
         ..BlockRecord::default()
     };
     record_rows(sources, table, canonical, &positions, &mut record)?;
+    if affine && n > 1 {
+        record_splits(sources, table, canonical, (block, &positions), &mut record)?;
+    }
     let csr = Csr::new(structure.pattern(), n);
     record.row_ptr = table.push(csr.row_ptr.iter().copied());
     record.col_idx = table.push(csr.col_idx.iter().copied());
@@ -252,6 +262,52 @@ fn row_positions(
                 .ok_or_else(|| refuse(canonical, "has a residual row without a scalar view"))
         })
         .collect()
+}
+
+/// The block residual splits (SPEC_0043 §6a) of an affine block's residual
+/// programs: one invariant function per split program, evaluated once per
+/// affine projection call into the block's live-out values, and one
+/// dependent function, which each residual pass evaluates over them in place
+/// of the row program. The C kernel evaluates every program eagerly, so every
+/// program with invariant work splits.
+fn record_splits(
+    sources: &BlockSources<'_>,
+    table: &mut ProgramTable,
+    canonical: usize,
+    (block, positions): (&solve::AlgebraicProjectionBlock, &[(usize, usize)]),
+    record: &mut BlockRecord,
+) -> Result<(), CodegenError> {
+    let source = sources.implicit.block();
+    let mut dependent_of = BTreeMap::new();
+    let mut splits = Vec::new();
+    for &(program, _) in positions {
+        if dependent_of.contains_key(&program) {
+            continue;
+        }
+        let ops = &source.programs()[program];
+        let Some(split) = solve::BlockResidualSplit::derive(ops, &block.y_indices) else {
+            dependent_of.insert(program, 0);
+            continue;
+        };
+        split
+            .check(ops, &block.y_indices)
+            .map_err(|_| refuse(canonical, "has a residual split its checker rejects"))?;
+        let span = program_span(source, canonical, program)?;
+        let offset = record.inv_len;
+        let invariant = table.inv.intern((canonical, program), || {
+            Ok((split.invariant_program(), span))
+        })?;
+        let dependent = table.dep.intern((canonical, program), || {
+            Ok((split.dependent_program(offset), span))
+        })?;
+        record.inv_len += split.live_out().len();
+        splits.extend([invariant, offset]);
+        dependent_of.insert(program, dependent + 1);
+    }
+    record.nsplit = splits.len() / 2;
+    record.split = table.push(splits);
+    record.row_split = table.push(positions.iter().map(|(program, _)| dependent_of[program]));
+    Ok(())
 }
 
 fn record_rows(
@@ -838,6 +894,7 @@ impl BlockRecord {
             + 4 * k * k
             + 24 * (k + 1)
             + self.max_outputs
+            + self.inv_len
             + self.jvp_max_outputs
             + self.lane_max_outputs
             + seed_len
