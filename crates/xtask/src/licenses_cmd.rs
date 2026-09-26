@@ -92,7 +92,13 @@ fn render(root: &Path) -> Result<String> {
     if text.trim().is_empty() {
         bail!("cargo-about produced no output");
     }
-    Ok(text)
+    Ok(repository_typography(&text))
+}
+
+/// The repository carries no em dash (U+2014); the rendered notices use one only
+/// as a separator line, which a hyphen reproduces.
+pub(crate) fn repository_typography(text: &str) -> String {
+    text.replace('\u{2014}', "-")
 }
 
 pub(crate) fn run(root: &Path, args: &LicensesArgs) -> Result<()> {
@@ -126,6 +132,11 @@ mod tests {
             panic!("licenses");
         };
         assert_eq!(args, LicensesArgs { check: true });
+    }
+
+    #[test]
+    fn rendered_notices_carry_no_em_dash() {
+        assert_eq!(repository_typography("a\n\u{2014}\nb"), "a\n-\nb");
     }
 
     #[test]

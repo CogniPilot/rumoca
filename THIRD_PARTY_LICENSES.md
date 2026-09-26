@@ -11711,7 +11711,7 @@ authorization of the copyright holder.
 
 SPDX-License-Identifier: Unicode-3.0
 
-—
+-
 
 Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
