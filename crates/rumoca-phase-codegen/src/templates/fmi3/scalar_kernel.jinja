@@ -295,9 +295,17 @@ static bool rmc_set_text(ModelInstance* m, size_t index, const char* value) {
 static void rmc_release_text(ModelInstance* m) {
     for (size_t k = 0; k < {{ texts|length }}; ++k) { free(m->text_owned[k]); m->text_owned[k] = NULL; m->text[k] = rmc_text_start[k]; }
 }
+/* After a bytewise copy of `src` into `dst`, give `dst` its own copies of the
+   texts `src` owns; on a failed copy `dst` keeps only start texts. */
+static inline bool rmc_own_text(ModelInstance* dst, const ModelInstance* src) {
+    for (size_t k = 0; k < {{ texts|length }}; ++k) { dst->text_owned[k] = NULL; dst->text[k] = rmc_text_start[k]; }
+    for (size_t k = 0; k < {{ texts|length }}; ++k) if (src->text_owned[k] && !rmc_set_text(dst, k, src->text_owned[k])) { rmc_release_text(dst); return false; }
+    return true;
+}
 {%- else %}
 static const char* rmc_text(const ModelInstance* m, size_t index) { (void)m; (void)index; return NULL; }
 static bool rmc_set_text(ModelInstance* m, size_t index, const char* value) { (void)m; (void)index; (void)value; return false; }
 static void rmc_release_text(ModelInstance* m) { (void)m; }
+static inline bool rmc_own_text(ModelInstance* dst, const ModelInstance* src) { (void)dst; (void)src; return true; }
 {%- endif %}
 {%- endmacro %}

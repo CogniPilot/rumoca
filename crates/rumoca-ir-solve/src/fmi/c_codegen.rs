@@ -162,6 +162,13 @@ impl FmiCCodegenView {
             Profile::StaticAssertions(v) => &v.model.pure_calls,
         }
     }
+    /// The retained kernel's instantiation point: its initial solver vector
+    /// and parameter values, the point at which the linked kernel resolves
+    /// each reduced chart's state-binding rows.
+    pub fn instantiation_point(&self) -> (&[f64], &[f64]) {
+        let model = self.model();
+        (&model.initial_y, &model.parameters)
+    }
 }
 
 impl Serialize for FmiCCodegenView {

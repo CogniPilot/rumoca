@@ -12,6 +12,7 @@
 
 mod assign;
 mod block;
+mod chart;
 mod initial;
 #[cfg(test)]
 mod lane_render_tests;
@@ -104,11 +105,13 @@ fn algebraic_refresh_covers(
 }
 
 /// The runtime projection shapes the shared kernel does not execute: a block
-/// with alternate reduced charts or a reduced chart set with an executable
-/// alternate (the linked kernel switches charts when the active one folds), and
-/// a retained state-manifold projection (the linked kernel projects accepted
-/// states onto lower-order constraints). A model carrying any is refused rather
-/// than integrated on one chart or without the manifold correction.
+/// with alternate reduced charts (the first-integral mirrors the linked kernel
+/// selects per block) and a retained state-manifold projection (the linked
+/// kernel projects accepted states onto lower-order constraints). A model
+/// carrying either is refused rather than integrated on one chart or without
+/// the manifold correction. A reduced chart set with executable alternates is
+/// executed: the generated kernel switches among its charts exactly as the
+/// linked kernel does (SPEC_0040 STRUCT-T07 constraint-fold chart rows).
 fn unsupported_runtime_shape(problem: &solve::SolveProblem) -> Option<&'static str> {
     let continuous = &problem.continuous;
     if continuous
@@ -119,33 +122,14 @@ fn unsupported_runtime_shape(problem: &solve::SolveProblem) -> Option<&'static s
     {
         return Some("a projection block carries alternate reduced charts");
     }
-    // A reduced chart set with an executable alternate switches basis at a fold
-    // (SPEC_0040 STRUCT-T07 constraint-fold chart rows); the generated kernel does
-    // not mirror that switch yet.
-    if continuous
-        .reduced_chart_set
-        .charts
-        .iter()
-        .any(|chart| chart.plan.is_some())
-    {
-        return Some("the reduced chart set carries alternate charts the kernel switches between");
-    }
     if !continuous.manifold_projection_plan.is_empty() {
         return Some("the model retains a state-manifold projection");
     }
     None
 }
 
-/// Solve-only admissibility of the staged ME refresh for a target that
-/// executes algebraic projection stages.
-#[must_use]
-pub fn me_refresh_admissible(problem: &solve::SolveProblem) -> bool {
-    if problem.validate().is_err() {
-        return false;
-    }
-    if unsupported_runtime_shape(problem).is_some() {
-        return false;
-    }
+/// Whether every dispatch of one chart's refresh plans is executable.
+fn refresh_plans_admissible(problem: &solve::SolveProblem) -> bool {
     let owners = &problem.continuous.refresh_owners;
     component_plans(owners).into_iter().all(|(label, plan)| {
         plan.possible_stage_schedules().iter().all(|&schedule| {
@@ -158,13 +142,34 @@ pub fn me_refresh_admissible(problem: &solve::SolveProblem) -> bool {
     })
 }
 
-/// Canonical blocks referenced by any step or complete-plan fallback, each
-/// described once over the shared program table.
+/// Solve-only admissibility of the staged ME refresh for a target that
+/// executes algebraic projection stages: the primary's plans and those of
+/// every executable alternate chart.
+#[must_use]
+pub fn me_refresh_admissible(problem: &solve::SolveProblem) -> bool {
+    if problem.validate().is_err() {
+        return false;
+    }
+    if unsupported_runtime_shape(problem).is_some() {
+        return false;
+    }
+    refresh_plans_admissible(problem)
+        && problem
+            .continuous
+            .reduced_chart_set
+            .charts
+            .iter()
+            .filter_map(|chart| chart.plan.as_ref())
+            .all(|plan| refresh_plans_admissible(&chart::alternate_problem(problem, plan)))
+}
+
+/// Canonical blocks of one chart referenced by any step or complete-plan
+/// fallback, each described once over the shared program table.
 struct BlockCatalog<'a> {
     sources: BlockSources<'a>,
-    table: ProgramTable,
+    table: &'a mut ProgramTable,
     ids: BTreeMap<usize, usize>,
-    records: Vec<BlockRecord>,
+    records: &'a mut Vec<BlockRecord>,
 }
 
 impl BlockCatalog<'_> {
@@ -172,7 +177,7 @@ impl BlockCatalog<'_> {
         if let Some(&id) = self.ids.get(&canonical) {
             return Ok(id);
         }
-        let record = block_record(&self.sources, &mut self.table, canonical)?;
+        let record = block_record(&self.sources, self.table, canonical)?;
         let id = self.records.len();
         self.records.push(record);
         self.ids.insert(canonical, id);
@@ -230,7 +235,6 @@ const STEP_PROJECT: usize = 2;
 /// the complete simultaneous projection the linked kernel falls back to when a
 /// seed or an exact-assignment stage yields a non-finite coordinate.
 fn plan_value(
-    problem: &solve::SolveProblem,
     plan: &solve::RefreshPlan,
     steps: &[solve::StagedRefreshStep<'_>],
     catalog: &mut BlockCatalog<'_>,
@@ -243,7 +247,8 @@ fn plan_value(
             solve::StagedRefreshStep::ProjectComplete => [STEP_COMPLETE, 0, 0, 0, 0, 0, 0, 0],
             solve::StagedRefreshStep::Assignments(schedule) => {
                 fallback = true;
-                let (first, count) = assignments.schedule(problem, schedule)?;
+                let (first, count) = assignments
+                    .schedule((catalog.sources.chart, catalog.sources.problem), schedule)?;
                 [STEP_ASSIGN, first, count, 0, 0, 0, 0, 0]
             }
             solve::StagedRefreshStep::Project {
@@ -256,7 +261,8 @@ fn plan_value(
                 let (seed_first, seed_count) = match seeds {
                     Some(schedule) => {
                         fallback = true;
-                        assignments.schedule(problem, schedule)?
+                        assignments
+                            .schedule((catalog.sources.chart, catalog.sources.problem), schedule)?
                     }
                     None => (0, 0),
                 };
@@ -310,20 +316,13 @@ fn require_settleable_bindings(
     ))
 }
 
-/// The complete ME refresh view of one checked FMI C component.
-pub(super) fn me_refresh_value(
-    component: &solve::fmi::FmiCCodegenView,
-) -> Result<Value, CodegenError> {
-    let problem = component.problem();
-    let artifacts = component.artifacts();
-    require_settleable_bindings(component)?;
+/// One chart's staged refresh plans (derivative, then algebraic), with the
+/// algebraic plan's coverage of every algebraic coordinate proved.
+fn chart_plans<'a>(
+    problem: &'a solve::SolveProblem,
+    artifacts: &solve::SolveArtifacts,
+) -> Result<Vec<(&'a solve::RefreshPlan, Vec<solve::StagedRefreshStep<'a>>)>, CodegenError> {
     let owners = &problem.continuous.refresh_owners;
-    if let Some(reason) = unsupported_runtime_shape(problem) {
-        return Err(CodegenError::dae_preparation_failed(
-            format!("unsupported-feature:algebraic_projection: {reason}"),
-            None,
-        ));
-    }
     let structural = &artifacts.continuous.structural;
     let mut plans = Vec::with_capacity(2);
     for (label, plan) in component_plans(owners) {
@@ -347,42 +346,166 @@ pub(super) fn me_refresh_value(
             None,
         ));
     }
-    let implicit = PreparedScalarProgramBlock::new(
+    Ok(plans)
+}
+
+/// The implicit-residual block one chart's projection blocks read.
+fn prepared_implicit(
+    problem: &solve::SolveProblem,
+) -> Result<PreparedScalarProgramBlock, CodegenError> {
+    PreparedScalarProgramBlock::new(
         to_scalar_program_projection(&problem.continuous.implicit_rhs)?.into_block(),
     )
-    .map_err(|error| CodegenError::template(error.to_string()))?;
-    let y_len = problem.solve_layout.solver_scalar_count();
-    let seed_len = y_len + problem.layout.p_scalars();
+    .map_err(|error| CodegenError::template(error.to_string()))
+}
+
+/// The derivative kernel of an alternate chart, which the component evaluates
+/// in place of the primary's while that chart is active.
+fn alternate_derivative(problem: &solve::SolveProblem) -> Result<Value, CodegenError> {
+    let scalar = rumoca_eval_solve::to_scalar_program_block(&problem.continuous.derivative_rhs)?;
+    if problem.uses_linear_solve_component()
+        || super::scalar_program_block_uses_linear_solve_component(&scalar)
+    {
+        return Err(CodegenError::dae_preparation_failed(
+            "built-in FMI templates do not implement tensor linear-solve components",
+            None,
+        ));
+    }
+    Ok(Value::from_object(
+        super::scalar_program_plan::ScalarProgramPlan::new(std::sync::Arc::new(scalar))?,
+    ))
+}
+
+/// Shared tables every chart's view is interned into.
+struct ComponentTables {
+    table: ProgramTable,
+    assignments: AssignmentCatalog,
+    records: Vec<BlockRecord>,
+}
+
+/// The step tables, blocks, and (for an alternate) derivative kernel of one
+/// chart.
+fn chart_value(
+    system: &chart::ChartSystem<'_>,
+    (chart, implicit, seed_len): (usize, &PreparedScalarProgramBlock, usize),
+    tables: &mut ComponentTables,
+) -> Result<Value, CodegenError> {
+    let plans = chart_plans(&system.problem, &system.artifacts)?;
     let mut catalog = BlockCatalog {
         sources: BlockSources {
-            problem,
-            artifacts,
-            implicit: &implicit,
+            problem: &system.problem,
+            artifacts: &system.artifacts,
+            implicit,
             seed_len,
+            chart,
         },
-        table: ProgramTable::default(),
+        table: &mut tables.table,
         ids: BTreeMap::new(),
+        records: &mut tables.records,
+    };
+    let assignments = &mut tables.assignments;
+    let derivative = plan_value(plans[0].0, &plans[0].1, &mut catalog, assignments)?;
+    let algebraic = plan_value(plans[1].0, &plans[1].1, &mut catalog, assignments)?;
+    let rhs = if chart == 0 {
+        None
+    } else {
+        Some(alternate_derivative(&system.problem)?)
+    };
+    Ok(minijinja::context! {
+        derivative => derivative,
+        algebraic => algebraic,
+        rhs => rhs,
+    })
+}
+
+/// The switching descriptors of every chart, in chart order.
+fn chart_records(
+    component: &solve::fmi::FmiCCodegenView,
+    systems: &[chart::ChartSystem<'_>],
+    (implicits, seed_len): (&[PreparedScalarProgramBlock], usize),
+    table: &mut ProgramTable,
+) -> Result<Vec<chart::ChartRecord>, CodegenError> {
+    let problem = component.problem();
+    let (y, p) = component.instantiation_point();
+    let point = chart::BindingPoint {
+        y,
+        p,
+        pure_calls: component.pure_calls(),
+        state_count: problem.solve_layout.state_scalar_count(),
+        seed_len,
+    };
+    systems
+        .iter()
+        .zip(implicits)
+        .enumerate()
+        .map(|(chart, (system, implicit))| {
+            let sources = chart::ChartSources {
+                chart,
+                system,
+                implicit,
+                set: &problem.continuous.reduced_chart_set,
+            };
+            chart::chart_record(&sources, &point, table)
+        })
+        .collect()
+}
+
+/// The complete ME refresh view of one checked FMI C component.
+pub(super) fn me_refresh_value(
+    component: &solve::fmi::FmiCCodegenView,
+) -> Result<Value, CodegenError> {
+    let problem = component.problem();
+    let artifacts = component.artifacts();
+    require_settleable_bindings(component)?;
+    if let Some(reason) = unsupported_runtime_shape(problem) {
+        return Err(CodegenError::dae_preparation_failed(
+            format!("unsupported-feature:algebraic_projection: {reason}"),
+            None,
+        ));
+    }
+    let systems = chart::chart_systems(problem, artifacts);
+    let switching = systems.len() > 1;
+    let implicits = systems
+        .iter()
+        .map(|system| prepared_implicit(&system.problem))
+        .collect::<Result<Vec<_>, _>>()?;
+    let y_len = problem.solve_layout.solver_scalar_count();
+    let seed_len = y_len + problem.layout.p_scalars();
+    let mut tables = ComponentTables {
+        table: ProgramTable::default(),
+        assignments: AssignmentCatalog::default(),
         records: Vec::new(),
     };
-    let mut assignments = AssignmentCatalog::default();
-    let derivative = plan_value(
-        problem,
-        plans[0].0,
-        &plans[0].1,
-        &mut catalog,
-        &mut assignments,
-    )?;
-    let algebraic = plan_value(
-        problem,
-        plans[1].0,
-        &plans[1].1,
-        &mut catalog,
-        &mut assignments,
-    )?;
+    if switching {
+        tables.table.share_contents();
+        tables.assignments.share_contents();
+    }
+    let charts = systems
+        .iter()
+        .zip(&implicits)
+        .enumerate()
+        .map(|(chart, (system, implicit))| {
+            chart_value(system, (chart, implicit, seed_len), &mut tables)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let switch_records = if switching {
+        chart_records(
+            component,
+            &systems,
+            (&implicits, seed_len),
+            &mut tables.table,
+        )?
+    } else {
+        Vec::new()
+    };
     let variable_scales = (0..y_len)
         .map(|index| float_literal(component.solver_variable_scale(index)))
         .collect::<Vec<_>>();
-    let BlockCatalog { table, records, .. } = catalog;
+    let ComponentTables {
+        table,
+        assignments,
+        records,
+    } = tables;
     let lane_max = records.iter().map(BlockRecord::lane_max).max().unwrap_or(0);
     let (block_doubles, block_sizes) = records
         .iter()
@@ -390,18 +513,27 @@ pub(super) fn me_refresh_value(
         .fold((1, 1), |(doubles, sizes), (d, s)| {
             (doubles.max(d), sizes.max(s))
         });
+    let chart_doubles = switch_records
+        .iter()
+        .map(chart::ChartRecord::workspace)
+        .max()
+        .unwrap_or(0);
     let (init, init_doubles) = initial::initialization_value(problem, artifacts)?;
     let init_sizes = init.get_attr("sizes")?.as_usize().unwrap_or(0);
     let kernel = !records.is_empty() || init_doubles > 0;
-    let table = table.into_value(&implicit)?;
+    let table = table.into_value(&implicits)?;
     // The initialization frames hold the algebraic refresh, whose deepest
-    // block frame and isolator outputs nest inside them.
+    // block frame and isolator outputs nest inside them; a chart
+    // conditioning or transfer frame holds no other.
     let doubles =
-        block_doubles + table.get_attr("iso_max_outputs")?.as_usize().unwrap_or(1) + init_doubles;
+        (block_doubles + table.get_attr("iso_max_outputs")?.as_usize().unwrap_or(1) + init_doubles)
+            .max(chart_doubles);
     let sizes = block_sizes + init_sizes;
     Ok(minijinja::context! {
-        derivative => derivative,
-        algebraic => algebraic,
+        derivative => charts[0].get_attr("derivative")?,
+        algebraic => charts[0].get_attr("algebraic")?,
+        charts => charts,
+        switching => switching.then(|| Value::from_serialize(&switch_records)),
         blocks => Value::from_serialize(&records),
         table => table,
         kernel => kernel,
@@ -427,5 +559,8 @@ fn policy_value() -> Value {
         torn_iters => policy::TORN_OUTER_MAX_ITERS,
         torn_backtracks => policy::TORN_BACKTRACK_STEPS,
         fd_step => float_literal(policy::FINITE_DIFFERENCE_RELATIVE_STEP),
+        chart_regular_multiple => float_literal(policy::CHART_REGULAR_MULTIPLE),
+        chart_switch_keep => float_literal(policy::CHART_SWITCH_KEEP),
+        chart_switch_improvement => float_literal(policy::CHART_SWITCH_IMPROVEMENT),
     }
 }

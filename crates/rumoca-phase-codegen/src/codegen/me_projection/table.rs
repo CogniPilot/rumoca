@@ -18,9 +18,15 @@ use super::super::scalar_program_plan::ScalarProgramPlan;
 use crate::errors::CodegenError;
 
 /// One interned family of single-program C functions.
+///
+/// A component that switches reduced charts keys its programs by chart, and
+/// every alternate repeats most of the primary's programs unchanged. Such a
+/// family also interns by content, so an unchanged program keeps one C
+/// function.
 #[derive(Default)]
 pub(super) struct FunctionFamily<K> {
     ids: BTreeMap<K, usize>,
+    contents: Option<BTreeMap<String, usize>>,
     programs: Vec<(Vec<solve::LinearOp>, Span)>,
 }
 
@@ -34,10 +40,24 @@ impl<K: Ord> FunctionFamily<K> {
         if let Some(&id) = self.ids.get(&key) {
             return Ok(id);
         }
-        let id = self.programs.len();
-        self.programs.push(build()?);
+        let program = build()?;
+        let content = self.contents.as_ref().map(|_| format!("{:?}", program.0));
+        let known = content
+            .as_ref()
+            .and_then(|content| self.contents.as_ref()?.get(content).copied());
+        let id = known.unwrap_or(self.programs.len());
+        if known.is_none() {
+            self.programs.push(program);
+            if let (Some(contents), Some(content)) = (self.contents.as_mut(), content) {
+                contents.insert(content, id);
+            }
+        }
         self.ids.insert(key, id);
         Ok(id)
+    }
+
+    fn share_contents(&mut self) {
+        self.contents.get_or_insert_with(BTreeMap::new);
     }
 
     pub(super) fn output_count(&self, id: usize) -> usize {
@@ -81,32 +101,48 @@ impl LaneFamily {
     }
 }
 
+/// (chart, residual program, ordered (output, target) pairs).
+type CausalKey = (usize, usize, Vec<(usize, usize)>);
+
 /// Shared function families and the index pool of one component.
 #[derive(Default)]
 pub(super) struct ProgramTable {
-    /// Implicit-residual programs keyed by their scalar-projection row.
-    pub(super) rows: FunctionFamily<usize>,
+    /// Implicit-residual programs keyed by (chart, scalar-projection row).
+    pub(super) rows: FunctionFamily<(usize, usize)>,
     /// Forward Jacobian programs keyed by (application source, program).
     pub(super) jvp: FunctionFamily<(usize, usize)>,
     /// Multi-lane forward Jacobian programs, one per colored application
     /// program ([`solve::ColoredTangentPlan`]).
     pub(super) lanes: LaneFamily,
-    /// Invariant parts of block residual splits keyed by (block, program):
-    /// each stores its live-out registers as its outputs.
-    pub(super) inv: FunctionFamily<(usize, usize)>,
-    /// Dependent parts of block residual splits keyed by (block, program):
-    /// each reads the block's live-out values from its seed vector.
-    pub(super) dep: FunctionFamily<(usize, usize)>,
-    /// Target isolators keyed by (program, output offset, target).
+    /// Invariant parts of block residual splits keyed by (chart, block,
+    /// program): each stores its live-out registers as its outputs.
+    pub(super) inv: FunctionFamily<(usize, usize, usize)>,
+    /// Dependent parts of block residual splits keyed by (chart, block,
+    /// program): each reads the block's live-out values from its seed vector.
+    pub(super) dep: FunctionFamily<(usize, usize, usize)>,
+    /// Target isolators keyed by (chart, program, output offset, target).
     pub(super) isolators: IsolatorCatalog,
-    /// Causal isolation chains keyed by (program, ordered (output, target) pairs).
-    pub(super) causal: FunctionFamily<(usize, Vec<(usize, usize)>)>,
+    /// Causal isolation chains keyed by (chart, program, ordered (output,
+    /// target) pairs).
+    pub(super) causal: FunctionFamily<CausalKey>,
     /// Distinct Jacobian application sources, compared by owner identity.
     pub(super) jvp_sources: Vec<solve::ScalarProgramBlock>,
     pool: Vec<usize>,
 }
 
 impl ProgramTable {
+    /// Intern every program family by content as well as by key: the table of
+    /// a component whose alternate reduced charts repeat the primary's
+    /// programs.
+    pub(super) fn share_contents(&mut self) {
+        self.rows.share_contents();
+        self.jvp.share_contents();
+        self.inv.share_contents();
+        self.dep.share_contents();
+        self.causal.share_contents();
+        self.isolators.share_contents = true;
+    }
+
     /// Append `values` to the pool and return their start offset.
     pub(super) fn push(&mut self, values: impl IntoIterator<Item = usize>) -> usize {
         let start = self.pool.len();
@@ -127,11 +163,13 @@ impl ProgramTable {
         self.jvp_sources.len() - 1
     }
 
+    /// The emitted table; `implicits` are the implicit-residual blocks of the
+    /// component's charts, in chart order.
     pub(super) fn into_value(
         self,
-        implicit: &rumoca_eval_solve::PreparedScalarProgramBlock,
+        implicits: &[rumoca_eval_solve::PreparedScalarProgramBlock],
     ) -> Result<Value, CodegenError> {
-        let (isolators, isolator_group, isolator_slot) = self.isolators.into_groups(implicit)?;
+        let (isolators, isolator_group, isolator_slot) = self.isolators.into_groups(implicits)?;
         let row_max_outputs = (0..self.rows.programs.len())
             .map(|id| self.rows.output_count(id))
             .max()
@@ -163,7 +201,7 @@ impl ProgramTable {
     }
 }
 
-/// Target isolators interned per (program, output offset, target) and
+/// Target isolators interned per (chart, program, output offset, target) and
 /// emitted as one function per residual program and isolator prefix length:
 /// that prefix of the row is evaluated once and every requested isolation
 /// over it is stored. Grouping only equal prefixes keeps each group's
@@ -171,13 +209,17 @@ impl ProgramTable {
 /// fails an isolation the evaluator answers.
 #[derive(Default)]
 pub(super) struct IsolatorCatalog {
-    ids: BTreeMap<(usize, usize, usize), usize>,
-    keys: Vec<(usize, usize, usize)>,
+    ids: BTreeMap<IsolatorKey, usize>,
+    keys: Vec<IsolatorKey>,
+    share_contents: bool,
 }
 
+/// (chart, program, output offset, target).
+type IsolatorKey = (usize, usize, usize, usize);
+
 impl IsolatorCatalog {
-    /// The isolator id of one (program, output offset, target) pair.
-    pub(super) fn intern(&mut self, key: (usize, usize, usize)) -> usize {
+    /// The isolator id of one (chart, program, output offset, target).
+    pub(super) fn intern(&mut self, key: IsolatorKey) -> usize {
         if let Some(&id) = self.ids.get(&key) {
             return id;
         }
@@ -191,27 +233,38 @@ impl IsolatorCatalog {
     /// output slot.
     fn into_groups(
         self,
-        implicit: &rumoca_eval_solve::PreparedScalarProgramBlock,
+        implicits: &[rumoca_eval_solve::PreparedScalarProgramBlock],
     ) -> Result<IsolatorGroups, CodegenError> {
-        let mut by_prefix = BTreeMap::<(usize, usize), Vec<usize>>::new();
-        for (id, &(program, output, target)) in self.keys.iter().enumerate() {
-            let prefix = implicit
+        let implicit = |chart: usize| {
+            implicits
+                .get(chart)
+                .ok_or_else(|| CodegenError::template("a target isolator names an unknown chart"))
+        };
+        let mut by_prefix = BTreeMap::<(usize, usize, usize), Vec<usize>>::new();
+        for (id, &(chart, program, output, target)) in self.keys.iter().enumerate() {
+            let prefix = implicit(chart)?
                 .target_isolation_prefix_len(program, output, target)
                 .ok_or_else(|| {
                     CodegenError::template("a target isolator has no assignment shape")
                 })?;
-            by_prefix.entry((program, prefix)).or_default().push(id);
+            by_prefix
+                .entry((chart, program, prefix))
+                .or_default()
+                .push(id);
         }
         let mut groups = FunctionFamily::default();
+        if self.share_contents {
+            groups.share_contents();
+        }
         let mut group_of = vec![0; self.keys.len()];
         let mut slot_of = vec![0; self.keys.len()];
-        for ((program, prefix), ids) in by_prefix {
+        for ((chart, program, prefix), ids) in by_prefix {
             let pairs = ids
                 .iter()
-                .map(|&id| (self.keys[id].1, self.keys[id].2))
+                .map(|&id| (self.keys[id].2, self.keys[id].3))
                 .collect::<Vec<_>>();
-            let group = groups.intern((program, prefix), || {
-                group_program(implicit, program, &pairs)
+            let group = groups.intern((chart, program, prefix), || {
+                group_program(implicit(chart)?, program, &pairs)
             })?;
             for (slot, id) in ids.into_iter().enumerate() {
                 group_of[id] = group;
@@ -223,7 +276,11 @@ impl IsolatorCatalog {
 }
 
 /// Grouped isolator functions plus, per isolator id, its group and slot.
-type IsolatorGroups = (FunctionFamily<(usize, usize)>, Vec<usize>, Vec<usize>);
+type IsolatorGroups = (
+    FunctionFamily<(usize, usize, usize)>,
+    Vec<usize>,
+    Vec<usize>,
+);
 
 fn group_program(
     implicit: &rumoca_eval_solve::PreparedScalarProgramBlock,

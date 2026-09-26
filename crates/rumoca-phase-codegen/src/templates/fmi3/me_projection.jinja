@@ -43,11 +43,13 @@ static int {{ name }}({{ signature }}) {
 {%- if me.kernel %} double rmc_d[{{ me.work.doubles }}]; size_t rmc_s[{{ me.work.sizes }}]; size_t rmc_dtop; size_t rmc_stop; double rmc_tol; bool rmc_certify;{% endif -%}
 {%- if me.blocks|length > 0 %} double rmc_seed[{{ me.seed_len if me.seed_len > 0 else 1 }}];{% endif -%}
 {%- if me.lane_max > 0 %} double rmc_lane_seed[{{ (me.seed_len if me.seed_len > 0 else 1) * me.lane_max }}];{% endif -%}
+{%- if me.switching %} size_t rmc_chart; size_t rmc_chart_target; bool rmc_chart_pending; double rmc_chart_y[Y_LEN];{% endif -%}
 {%- endmacro %}
 {%- macro workspace_reset(me) -%}
 {%- if me.kernel %} m->rmc_dtop = 0; m->rmc_stop = 0; m->rmc_tol = {{ me.policy.tolerance }}; m->rmc_certify = true;{% endif -%}
 {%- if me.blocks|length > 0 %} memset(m->rmc_seed, 0, sizeof(m->rmc_seed));{% endif -%}
 {%- if me.lane_max > 0 %} memset(m->rmc_lane_seed, 0, sizeof(m->rmc_lane_seed));{% endif -%}
+{%- if me.switching %} m->rmc_chart = 0; m->rmc_chart_target = 0; m->rmc_chart_pending = false;{% endif -%}
 {%- endmacro %}
 
 {#- ── generic kernel ─────────────────────────────────────────────────────── -#}
@@ -1249,9 +1251,211 @@ static {{ prefix }}Status refresh_parameters(ModelInstance* m) {
 }
 {{ projection_kernel(me) }}
 {{ refresh_kernel(me, prefix) }}
+{%- if me.switching %}
+{%- for chart in me.charts %}
+{{ refresh_function("refresh_derivative_values_c" ~ loop.index0, chart.derivative, prefix) }}
+{{ refresh_function("refresh_algebraics_c" ~ loop.index0, chart.algebraic, prefix) }}
+{%- endfor %}
+{{ chart_dispatch("refresh_derivative_values", me, prefix) }}
+{{ chart_dispatch("refresh_algebraics", me, prefix) }}
+{%- else %}
 {{ refresh_function("refresh_derivative_values", me.derivative, prefix) }}
 {{ refresh_function("refresh_algebraics", me.algebraic, prefix) }}
+{%- endif %}
 {{ initialization_kernel(me, prefix) }}
+{{- chart_kernel(solve, me, prefix) }}
+{%- endmacro %}
+
+{#- The active chart's plan (kernel.rs: the component's runtime is the active
+    chart's; SPEC_0040 STRUCT-T07 constraint-fold chart rows). -#}
+{%- macro chart_dispatch(name, me, prefix) %}
+static {{ prefix }}Status {{ name }}(ModelInstance* m) {
+    switch (m->rmc_chart) {
+{%- for chart in me.charts %}
+    case {{ loop.index0 }}: return {{ name }}_c{{ loop.index0 }}(m);
+{%- endfor %}
+    default: return {{ prefix }}Error;
+    }
+}
+{%- endmacro %}
+
+{#- Reduced-chart switching (dynamic_chart.rs and chart_switch.rs): every
+    chart's conditioning at an accepted step, the decision with its tie break
+    and hysteresis, and the Event-Mode basis transfer. The conditioning is the
+    dense_basis.rs `dependent_conditioning` of the chart's slope matrix, with
+    nalgebra's column-pivoted QR reproduced operation for operation. -#}
+{%- macro chart_kernel(solve, me, prefix) %}
+{%- if me.switching %}
+#define RMC_NCHARTS {{ me.switching|length }}
+#define RMC_CHART_REGULAR_MULTIPLE {{ me.policy.chart_regular_multiple }}
+#define RMC_CHART_SWITCH_KEEP {{ me.policy.chart_switch_keep }}
+#define RMC_CHART_SWITCH_IMPROVEMENT {{ me.policy.chart_switch_improvement }}
+typedef struct { size_t nrows; size_t ncols; size_t ndep; const size_t* dep; size_t nentries; const size_t* entries; const size_t* binding; size_t jvp_max_outputs; size_t row_max_outputs; } RmcChart;
+static const RmcChart rmc_charts[RMC_NCHARTS] = {
+{%- for c in me.switching %}
+    { {{ c.nrows }}, {{ c.ncols }}, {{ c.ndep }}, RMC_P({{ c.dep }}), {{ c.nentries }}, RMC_P({{ c.entries }}), RMC_P({{ c.binding }}), {{ c.jvp_max_outputs }}, {{ c.row_max_outputs }} },
+{%- endfor %}
+};
+/* nalgebra blas.rs: dotx over one dynamic column, eight accumulators per full
+   chunk, then the tail in order; norm.rs: norm_squared adds it to zero. */
+static double rmc_qr_dot(const double* a, const double* b, size_t n) {
+    double res = 0.0, acc0 = 0.0, acc1 = 0.0, acc2 = 0.0, acc3 = 0.0, acc4 = 0.0, acc5 = 0.0, acc6 = 0.0, acc7 = 0.0;
+    size_t i = 0;
+    while (n - i >= 8) {
+        acc0 += a[i] * b[i]; acc1 += a[i + 1] * b[i + 1]; acc2 += a[i + 2] * b[i + 2]; acc3 += a[i + 3] * b[i + 3];
+        acc4 += a[i + 4] * b[i + 4]; acc5 += a[i + 5] * b[i + 5]; acc6 += a[i + 6] * b[i + 6]; acc7 += a[i + 7] * b[i + 7];
+        i += 8;
+    }
+    res += acc0 + acc4; res += acc1 + acc5; res += acc2 + acc6; res += acc3 + acc7;
+    for (size_t k = i; k < n; ++k) res += a[k] * b[k];
+    return res;
+}
+static double rmc_qr_norm_squared(const double* x, size_t n) { return 0.0 + rmc_qr_dot(x, x, n); }
+/* householder.rs: reflection_axis_mut, whose sign is simba's to_exp (zero
+   counts as positive). Returns the reflection norm; `nonzero` reports whether
+   `x` became the unit reflection axis. */
+static double rmc_reflection_axis(double* x, size_t n, bool* nonzero) {
+    double sq = rmc_qr_norm_squared(x, n), norm = sqrt(sq);
+    double modulus = x[0] >= 0.0 ? x[0] : -x[0], sign = x[0] >= 0.0 ? 1.0 : -1.0;
+    double signed_norm = sign * norm, factor = (sq + modulus * norm) * 2.0;
+    x[0] += signed_norm;
+    *nonzero = factor != 0.0;
+    if (!*nonzero) return signed_norm;
+    double root = sqrt(factor);
+    for (size_t k = 0; k < n; ++k) x[k] = x[k] / root;
+    double unit = sqrt(rmc_qr_norm_squared(x, n));
+    for (size_t k = 0; k < n; ++k) x[k] = x[k] / unit;
+    return -signed_norm;
+}
+/* col_piv_qr.rs: ColPivQR::new on the column-major nrows x ncols `a`, with
+   householder.rs: clear_column_unchecked and reflection.rs:
+   reflect_with_sign; `diag` receives the moduli of R's diagonal. */
+static void rmc_col_piv_qr(double* a, size_t nrows, size_t ncols, double* diag) {
+    size_t n = nrows < ncols ? nrows : ncols;
+    for (size_t i = 0; i < n; ++i) {
+        size_t pivot = i; double best = fabs(a[i * nrows + i]);
+        for (size_t j = i; j < ncols; ++j) for (size_t r = i; r < nrows; ++r) { double value = fabs(a[j * nrows + r]); if (value > best) { best = value; pivot = j; } }
+        if (pivot != i) for (size_t r = 0; r < nrows; ++r) { double swap = a[i * nrows + r]; a[i * nrows + r] = a[pivot * nrows + r]; a[pivot * nrows + r] = swap; }
+        double* axis = a + i * nrows + i; size_t len = nrows - i; bool nonzero = false;
+        double reflection = rmc_reflection_axis(axis, len, &nonzero);
+        diag[i] = fabs(reflection);
+        if (!nonzero) continue;
+        double sign = isnan(reflection) ? reflection : copysign(1.0, reflection);
+        for (size_t j = i + 1; j < ncols; ++j) {
+            double* column = a + j * nrows + i;
+            double factor = (rmc_qr_dot(axis, column, len) - 0.0) * (sign * -2.0);
+            for (size_t k = 0; k < len; ++k) column[k] = factor * axis[k] + sign * column[k];
+        }
+    }
+}
+/* refresh_projection.rs: reduced_chart_dependent_conditioning (the entries
+   the implicit pattern does not prove zero, each a unit-seeded row Jacobian)
+   and dense_basis.rs: DenseStageMatrix::new, which rejects a non-finite
+   entry, then dependent_conditioning: the chart block's smallest pivot over
+   the stage's leading pivot, whose modulus is the norm of the column holding
+   the stage's largest entry. 0 settled, -1 failed. */
+static int rmc_chart_sigma(ModelInstance* m, const RmcChart* c, double* sigma, double* threshold) {
+    RMC_MARK;
+    size_t nr = c->nrows, nc = c->ncols, nd = c->ndep, npiv = nr < nd ? nr : nd;
+    double* a = rmc_dalloc(m, nr * nc);
+    double* block = rmc_dalloc_raw(m, nr * nd);
+    double* diag = rmc_dalloc_raw(m, npiv + 1);
+    double* out = rmc_dalloc_raw(m, c->jvp_max_outputs);
+    if (!a || !block || !diag || !out) { RMC_RELEASE; return rmc_exhausted(m); }
+    for (size_t e = 0; e < c->nentries; ++e) {
+        const size_t* entry = c->entries + 5 * e;
+        m->rmc_seed[entry[2]] = 1.0;
+        int result = rmc_jvp_fn[entry[3]](m, m->rmc_seed, out);
+        m->rmc_seed[entry[2]] = 0.0;
+        if (result != 0) { RMC_RELEASE; return -1; }
+        a[entry[1] * nr + entry[0]] = out[entry[4]];
+    }
+    if (!rmc_all_finite(a, nr * nc)) { RMC_RELEASE; return -1; }
+    size_t pivot = 0; double best = fabs(a[0]);
+    for (size_t j = 0; j < nc; ++j) for (size_t r = 0; r < nr; ++r) { double value = fabs(a[j * nr + r]); if (value > best) { best = value; pivot = j; } }
+    double stage = sqrt(rmc_qr_norm_squared(a + pivot * nr, nr));
+    for (size_t k = 0; k < nd; ++k) memcpy(block + k * nr, a + c->dep[k] * nr, nr * sizeof(double));
+    rmc_col_piv_qr(block, nr, nd, diag);
+    double smallest = INFINITY;
+    for (size_t k = 0; k < npiv; ++k) smallest = fmin(smallest, diag[k]);
+    *sigma = stage > 0.0 && isfinite(smallest) ? smallest / stage : 0.0;
+    *threshold = (double)(nr > nc ? nr : nc) * DBL_EPSILON;
+    RMC_RELEASE;
+    return 0;
+}
+/* chart_switch.rs: detect_basis_change_request with dynamic_chart.rs: decide.
+   The accepted point is settled from the current coordinate by the active
+   chart's uncertified refresh into scratch; every chart's conditioning is
+   read there, and the coordinate itself is left as it was. A switch latches
+   the target and the settled coordinate for Event Mode. */
+static {{ prefix }}Status rmc_chart_completed(ModelInstance* m, bool* request) {
+    double saved[Y_LEN]; double sigma[RMC_NCHARTS]; double threshold[RMC_NCHARTS];
+    *request = false;
+    memcpy(saved, m->y, sizeof(saved));
+    bool certify = m->rmc_certify;
+    m->rmc_certify = false;
+    {{ prefix }}Status status = refresh_algebraics(m);
+    m->rmc_certify = certify;
+    if (status != {{ prefix }}OK) goto fail;
+    for (size_t c = 0; c < RMC_NCHARTS; ++c) {
+        if (rmc_chart_sigma(m, &rmc_charts[c], &sigma[c], &threshold[c]) != 0) { RMC_LOG(m, "reduced-chart conditioning failed"); goto fail; }
+    }
+    size_t active = m->rmc_chart, target = RMC_NCHARTS;
+    double current = sigma[active];
+    if (current < threshold[active] * RMC_CHART_REGULAR_MULTIPLE) { RMC_LOG(m, "the active reduced chart crossed its fold before a basis change could be requested"); goto fail; }
+    if (!(current >= RMC_CHART_SWITCH_KEEP)) {
+        for (size_t c = 0; c < RMC_NCHARTS; ++c) {
+            bool qualifies = c != active && sigma[c] > RMC_CHART_SWITCH_IMPROVEMENT * current && sigma[c] >= threshold[c] * RMC_CHART_REGULAR_MULTIPLE;
+            if (qualifies && (target == RMC_NCHARTS || sigma[c] > sigma[target])) target = c;
+        }
+    }
+    m->rmc_chart_pending = target < RMC_NCHARTS;
+    if (m->rmc_chart_pending) { memcpy(m->rmc_chart_y, m->y, sizeof(m->rmc_chart_y)); m->rmc_chart_target = target; *request = true; }
+    memcpy(m->y, saved, sizeof(saved));
+    return {{ prefix }}OK;
+fail:
+    memcpy(m->y, saved, sizeof(saved));
+    return {{ prefix }}Error;
+}
+/* chart_switch.rs: run_basis_change_boundary and basis_transfer, one atomic
+   transaction: each state recovers the target chart's source value through
+   its identity row at the latched coordinate, the target's certified
+   refresh re-establishes every constraint from that coordinate, and only then
+   is the target adopted. A failed transfer restores the chart and the
+   coordinate. */
+static {{ prefix }}Status rmc_chart_transfer(ModelInstance* m, bool* values_changed) {
+    double before[Y_LEN]; double states[STATE_LEN];
+    const RmcChart* target = &rmc_charts[m->rmc_chart_target];
+    size_t active = m->rmc_chart;
+    bool certify = m->rmc_certify;
+    *values_changed = false;
+    m->rmc_chart_pending = false;
+    memcpy(before, m->y, sizeof(before));
+    RMC_MARK;
+    double* out = rmc_dalloc_raw(m, target->row_max_outputs);
+    if (!out) { RMC_RELEASE; (void)rmc_exhausted(m); return {{ prefix }}Error; }
+    memcpy(m->y, m->rmc_chart_y, sizeof(before));
+    for (size_t k = 0; k < {{ solve.solve_layout.state_scalar_count }}; ++k) {
+        if (rmc_row_fn[target->binding[2 * k]](m, out) != 0) goto fail;
+        states[k] = before[k] - out[target->binding[2 * k + 1]];
+    }
+    for (size_t k = 0; k < {{ solve.solve_layout.state_scalar_count }}; ++k) m->y[k] = states[k];
+    m->rmc_chart = m->rmc_chart_target;
+    m->rmc_certify = true;
+    {{ prefix }}Status status = refresh_algebraics(m);
+    m->rmc_certify = certify;
+    if (status != {{ prefix }}OK) goto fail;
+    RMC_RELEASE;
+    *values_changed = memcmp(before, m->y, {{ solve.solve_layout.state_scalar_count }} * sizeof(double)) != 0;
+    return {{ prefix }}OK;
+fail:
+    RMC_RELEASE;
+    m->rmc_chart = active;
+    memcpy(m->y, before, sizeof(before));
+    RMC_LOG(m, "the reduced-chart basis transfer did not establish the target chart");
+    return {{ prefix }}Error;
+}
+{%- endif %}
 {%- endmacro %}
 
 {#- The MLS §8.6 initialization of solve_runtime/initial_projection.rs:

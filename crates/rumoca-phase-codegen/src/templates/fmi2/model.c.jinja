@@ -21,6 +21,41 @@ static void log_assertion(ModelInstance* m, const char* message) { if (m->callba
 {{ refresh_values(solve, me_refresh, "fmi2") }}
 {{ assertion_lifecycle("fmi2") }}
 
+{%- if me_refresh.switching %}
+{#- Each chart's derivative kernel; the active chart's runs (kernel.rs: the
+    component's runtime is the active chart's). #}
+{%- for chart in me_refresh.charts %}
+{%- set plan = solve_blocks.continuous.derivative_rhs.scalar_plan if loop.first else chart.rhs %}
+static fmi2Status rmc_derivative_c{{ loop.index0 }}(ModelInstance* m) {
+{%- for program in plan.programs %}
+    {
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}];
+    (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "m->derivative", "fmi2Error") }}
+{%- endfor %}
+    }
+{%- endfor %}
+    return fmi2OK;
+}
+{%- endfor %}
+static fmi2Status evaluate_derivatives(ModelInstance* m) {
+    fmi2Status status = fmi2Error;
+    if (settle_derivative_values(m) != fmi2OK) return fmi2Error;
+    switch (m->rmc_chart) {
+{%- for chart in me_refresh.charts %}
+    case {{ loop.index0 }}: status = rmc_derivative_c{{ loop.index0 }}(m); break;
+{%- endfor %}
+    default: break;
+    }
+    if (status != fmi2OK) return status;
+    for (size_t i = 0; i < {{ solve.solve_layout.state_scalar_count }}; ++i) {
+        if (!isfinite(m->derivative[i])) return fmi2Error;
+    }
+    return fmi2OK;
+}
+{%- else %}
+
 static fmi2Status evaluate_derivatives(ModelInstance* m) {
     if (settle_derivative_values(m) != fmi2OK) return fmi2Error;
 {%- set plan = solve_blocks.continuous.derivative_rhs.scalar_plan %}
@@ -38,6 +73,7 @@ static fmi2Status evaluate_derivatives(ModelInstance* m) {
     }
     return fmi2OK;
 }
+{%- endif %}
 
 static fmi2Status integrate_rk4(ModelInstance* m, fmi2Real start, fmi2Real step) {
     double initial[STATE_LEN];
@@ -187,13 +223,13 @@ FMI_EXPORT fmi2Status fmi2SetString(fmi2Component c, const fmi2ValueReference vr
 FMI_EXPORT fmi2Status fmi2SetTime(fmi2Component c, fmi2Real time) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || !isfinite(time)) return fmi2Error; m->time = time; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2SetContinuousStates(fmi2Component c, const fmi2Real x[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || nx != {{ solve.solve_layout.state_scalar_count }} || (!x && nx)) return fmi2Error; for (size_t i = 0; i < nx; ++i) if (!isfinite(x[i])) return fmi2Error; for (size_t i = 0; i < nx; ++i) m->y[i] = x[i]; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2GetContinuousStates(fmi2Component c, fmi2Real x[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state == MODEL_INSTANTIATED || m->state == MODEL_STEP || nx != {{ solve.solve_layout.state_scalar_count }} || (!x && nx)) return fmi2Error; for (size_t i = 0; i < nx; ++i) x[i] = m->y[i]; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2GetDerivatives(fmi2Component c, fmi2Real dx[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state == MODEL_INSTANTIATED || m->state == MODEL_STEP || nx != {{ solve.solve_layout.state_scalar_count }} || (!dx && nx) || evaluate_derivatives(m) != fmi2OK) return fmi2Error; for (size_t i = 0; i < nx; ++i) dx[i] = m->derivative[i]; return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2GetDerivatives(fmi2Component c, fmi2Real dx[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state == MODEL_INSTANTIATED || m->state == MODEL_STEP || nx != {{ solve.solve_layout.state_scalar_count }} || (!dx && nx){% if not me_refresh.switching %} || evaluate_derivatives(m) != fmi2OK{% endif %}) return fmi2Error; {% if me_refresh.switching %}if (evaluate_derivatives(m) != fmi2OK) return fmi2Discard; {% endif %}for (size_t i = 0; i < nx; ++i) dx[i] = m->derivative[i]; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2GetNominalsOfContinuousStates(fmi2Component c, fmi2Real values[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || nx != {{ solve.solve_layout.state_scalar_count }} || (!values && nx)) return fmi2Error; for (size_t i = 0; i < nx; ++i) values[i] = 1.0; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2GetEventIndicators(fmi2Component c, fmi2Real values[], size_t ni) { ModelInstance* m = c; (void)values; return m && m->type == fmi2ModelExchange && m->state != MODEL_INSTANTIATED && m->state != MODEL_STEP && ni == 0 ? fmi2OK : fmi2Error; }
 FMI_EXPORT fmi2Status fmi2EnterEventMode(fmi2Component c) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || (m->state != MODEL_EVENT && m->state != MODEL_CONTINUOUS)) return fmi2Error; m->state = MODEL_EVENT; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2NewDiscreteStates(fmi2Component c, fmi2EventInfo* info) { ModelInstance* m = c; if (!m || !info || m->state != MODEL_EVENT) return fmi2Error; if (settle_assertion_event(m) != fmi2OK) return fmi2Error; memset(info, 0, sizeof(*info)); return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2NewDiscreteStates(fmi2Component c, fmi2EventInfo* info) { ModelInstance* m = c; if (!m || !info || m->state != MODEL_EVENT) return fmi2Error; {% if me_refresh.switching %}bool changed = false; if (m->rmc_chart_pending ? rmc_chart_transfer(m, &changed) != fmi2OK : settle_assertion_event(m) != fmi2OK) return fmi2Error; memset(info, 0, sizeof(*info)); info->valuesOfContinuousStatesChanged = changed; {% else %}if (settle_assertion_event(m) != fmi2OK) return fmi2Error; memset(info, 0, sizeof(*info)); {% endif %}return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2EnterContinuousTimeMode(fmi2Component c) { ModelInstance* m = c; if (!m || m->state != MODEL_EVENT) return fmi2Error; m->state = MODEL_CONTINUOUS; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2CompletedIntegratorStep(fmi2Component c, fmi2Boolean noSetState, fmi2Boolean* enterEventMode, fmi2Boolean* terminate) { ModelInstance* m = c; (void)noSetState; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || !enterEventMode || !terminate) return fmi2Error; *enterEventMode = 0; *terminate = 0; return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2CompletedIntegratorStep(fmi2Component c, fmi2Boolean noSetState, fmi2Boolean* enterEventMode, fmi2Boolean* terminate) { ModelInstance* m = c; (void)noSetState; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || !enterEventMode || !terminate) return fmi2Error; *enterEventMode = 0; *terminate = 0; {% if me_refresh.switching %}bool request = false; if (rmc_chart_completed(m, &request) != fmi2OK) return fmi2Error; *enterEventMode = request; {% endif %}return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2GetFMUstate(fmi2Component c, fmi2FMUstate* s) { (void)c; (void)s; return fmi2Error; }
 FMI_EXPORT fmi2Status fmi2SetFMUstate(fmi2Component c, fmi2FMUstate s) { (void)c; (void)s; return fmi2Error; }
 FMI_EXPORT fmi2Status fmi2FreeFMUstate(fmi2Component c, fmi2FMUstate* s) { (void)c; (void)s; return fmi2Error; }
@@ -215,6 +251,14 @@ FMI_EXPORT fmi2Status fmi2DoStep(fmi2Component c, fmi2Real current, fmi2Real ste
         m->time = current;
         return fmi2Error;
     }
+{%- if me_refresh.switching %}
+    bool request = false, changed = false;
+    if (rmc_chart_completed(m, &request) != fmi2OK || (request && rmc_chart_transfer(m, &changed) != fmi2OK)) {
+        for (size_t i = 0; i < Y_LEN; ++i) m->y[i] = old_y[i];
+        m->time = current;
+        return fmi2Error;
+    }
+{%- endif %}
     return fmi2OK;
 }
 FMI_EXPORT fmi2Status fmi2CancelStep(fmi2Component c) { (void)c; return fmi2Error; }

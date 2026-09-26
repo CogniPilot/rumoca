@@ -5,8 +5,8 @@
   modelName="{{ model_name | xml_escape }}"
   generationTool="Rumoca"
   instantiationToken="{{ artifact.identities.fmu }}">
-  <ModelExchange modelIdentifier="{{ model_identifier }}"/>
-  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true"/>
+  <ModelExchange modelIdentifier="{{ model_identifier }}"{% if me_refresh.switching %} needsCompletedIntegratorStep="true"{% endif %} canGetAndSetFMUState="true"/>
+  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true" canGetAndSetFMUState="true"/>
   <UnitDefinitions>
     <Unit name="s">
       <BaseUnit s="1"/>

@@ -24,6 +24,8 @@ pub(super) struct BlockSources<'a> {
     pub(super) artifacts: &'a solve::SolveArtifacts,
     pub(super) implicit: &'a PreparedScalarProgramBlock,
     pub(super) seed_len: usize,
+    /// The reduced chart these owners belong to; zero is the primary basis.
+    pub(super) chart: usize,
 }
 
 /// Isolation kinds as the C kernel encodes them.
@@ -294,10 +296,10 @@ fn record_splits(
             .map_err(|_| refuse(canonical, "has a residual split its checker rejects"))?;
         let span = program_span(source, canonical, program)?;
         let offset = record.inv_len;
-        let invariant = table.inv.intern((canonical, program), || {
+        let invariant = table.inv.intern((sources.chart, canonical, program), || {
             Ok((split.invariant_program(), span))
         })?;
-        let dependent = table.dep.intern((canonical, program), || {
+        let dependent = table.dep.intern((sources.chart, canonical, program), || {
             Ok((split.dependent_program(offset), span))
         })?;
         record.inv_len += split.live_out().len();
@@ -321,7 +323,7 @@ fn record_rows(
     let mut functions = Vec::with_capacity(positions.len());
     record.max_outputs = 1;
     for &(program, _) in positions {
-        let function = table.rows.intern(program, || {
+        let function = table.rows.intern((sources.chart, program), || {
             Ok((
                 source.programs()[program].clone(),
                 program_span(source, canonical, program)?,
@@ -705,27 +707,31 @@ fn push_run(
     if let [(offset, target)] = pairs[..] {
         runs.extend([
             RUN_ISOLATOR,
-            table.isolators.intern((program, offset, target)),
+            table
+                .isolators
+                .intern((sources.chart, program, offset, target)),
             first,
             1,
         ]);
         return Ok(());
     }
-    let function = table.causal.intern((program, pairs.clone()), || {
-        let operations = sources
-            .implicit
-            .target_isolation_chain_program(program, &pairs)
-            .ok_or_else(|| {
-                refuse(
-                    canonical,
-                    "recovers through an isolator chain that does not materialize",
-                )
-            })?;
-        Ok((
-            operations,
-            program_span(sources.implicit.block(), canonical, program)?,
-        ))
-    })?;
+    let function = table
+        .causal
+        .intern((sources.chart, program, pairs.clone()), || {
+            let operations = sources
+                .implicit
+                .target_isolation_chain_program(program, &pairs)
+                .ok_or_else(|| {
+                    refuse(
+                        canonical,
+                        "recovers through an isolator chain that does not materialize",
+                    )
+                })?;
+            Ok((
+                operations,
+                program_span(sources.implicit.block(), canonical, program)?,
+            ))
+        })?;
     runs.extend([RUN_CHAIN, function, first, count]);
     Ok(())
 }
@@ -813,7 +819,11 @@ fn record_isolation(
                 &sources
                     .implicit
                     .target_isolation_output_program(program, offset, target),
-                || table.isolators.intern((program, offset, target)),
+                || {
+                    table
+                        .isolators
+                        .intern((sources.chart, program, offset, target))
+                },
             )?;
             kinds.push((column, kind));
         }

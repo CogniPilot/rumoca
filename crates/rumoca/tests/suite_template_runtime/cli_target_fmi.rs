@@ -9,6 +9,7 @@ mod affine_promotion;
 mod algebraic;
 mod array_bounds;
 mod assertions;
+mod chart_switching;
 mod derivative_kinks;
 mod lifecycle;
 mod projection;
