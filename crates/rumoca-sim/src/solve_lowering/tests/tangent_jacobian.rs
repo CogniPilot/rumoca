@@ -405,6 +405,19 @@ fn check_colored_block(
     assert_close(&format!("{label} colored"), &values, &difference);
 }
 
+/// The number of multi-color block applications the lowered plan issues.
+fn multi_color_applications(model: &solve::SolveModel) -> usize {
+    model
+        .artifacts
+        .continuous
+        .structural
+        .algebraic_projection()
+        .iter()
+        .filter_map(solve::JacobianStructure::jacobian_application)
+        .filter(|application| application.colors().len() >= 2)
+        .count()
+}
+
 /// Check every multi-color block application of `model`; returns the blocks
 /// checked.
 fn check_colored_blocks(label: &str, model: &solve::SolveModel) -> usize {
@@ -456,8 +469,22 @@ fn fourbar1_tangent_jacobians_match_finite_differences() {
         "TangentFourbar1",
         &[root],
     );
-    // One of the seven torn blocks meets a vanished causal pivot at a random
-    // point, where the plan declines as the torn solve does.
-    assert_eq!(check_torn_blocks("Fourbar1", &model, 3), (7, 6));
-    assert_eq!(check_colored_blocks("Fourbar1", &model), 7);
+    // The block table moves with structural levers, so the expected counts
+    // come from the lowered plan. Every torn block is either checked against
+    // the finite difference at every point or declined at a vanished causal
+    // pivot, which `check_torn_block` asserts; every multi-color application
+    // is checked.
+    let (torn, checked) = check_torn_blocks("Fourbar1", &model, 3);
+    let colored = multi_color_applications(&model);
+    eprintln!(
+        "Fourbar1: {torn} torn blocks ({checked} checked, {} declined at a vanished pivot), \
+         {colored} colored blocks",
+        torn - checked
+    );
+    assert!(
+        torn > 0 && checked > 0,
+        "Fourbar1 exercises the torn tangent plan"
+    );
+    assert!(colored > 0, "Fourbar1 exercises the colored tangent plan");
+    assert_eq!(check_colored_blocks("Fourbar1", &model), colored);
 }

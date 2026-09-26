@@ -165,6 +165,7 @@ fn generated_affine_elimination_kernel_matches_a_dense_solve_across_promotion_pa
     checked_output(
         Command::new("cc")
             .arg("-std=c11")
+            .arg("-ffp-contract=off")
             .arg("-Wall")
             .arg("-Wextra")
             .arg("-Werror")

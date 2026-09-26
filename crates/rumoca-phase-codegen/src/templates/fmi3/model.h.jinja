@@ -12,6 +12,12 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+/* The generated kernel reproduces the linked kernel's arithmetic operation for
+   operation, so no multiply and add may fuse. GCC in ISO C mode and MSVC do
+   not contract by default; Clang does unless told otherwise. */
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
 #define FMI3_FUNCTION_PREFIX {{ model_identifier }}_
 #include "fmi3Functions.h"
 #define FMI_EXPORT FMI3_Export

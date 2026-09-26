@@ -156,7 +156,15 @@ fn run_c(source: &str) -> Vec<f64> {
     std::fs::write(&path, source).expect("write the harness");
     let binary = directory.path().join("lanes");
     let compile = std::process::Command::new("cc")
-        .args(["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-Wvla"])
+        .args([
+            "-std=c11",
+            "-O2",
+            "-ffp-contract=off",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-Wvla",
+        ])
         .arg(&path)
         .args(["-lm", "-o"])
         .arg(&binary)
