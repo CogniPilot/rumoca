@@ -1440,6 +1440,29 @@ impl SolveRuntime {
         self.model.problem.continuous.implicit_row_targets.len()
     }
 
+    /// The one solver-Y coordinate other than `state` that implicit residual
+    /// `row` reads, when it reads exactly one: the source coordinate a
+    /// state-binding row `state - source` integrates.
+    pub(crate) fn binding_row_source(&self, row: usize, state: usize) -> Option<usize> {
+        let (program, _) = self.implicit_scalar_rhs.row_output_position(row)?;
+        let mut sources = self
+            .implicit_scalar_rhs
+            .block()
+            .program(program)?
+            .iter()
+            .filter_map(|op| match op {
+                solve::LinearOp::LoadY { index, .. } if *index != state => Some(*index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        sources.sort_unstable();
+        sources.dedup();
+        match sources.as_slice() {
+            [source] => Some(*source),
+            _ => None,
+        }
+    }
+
     /// For each generated state coordinate (solver-Y `0..state_count`), the
     /// unique implicit residual row whose value is its identity `state - source`,
     /// i.e. the row whose Jacobian with respect to that state column is a unit

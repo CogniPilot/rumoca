@@ -12,6 +12,22 @@ impl SolveMeKernel {
         self.reduced_charts.is_some()
     }
 
+    /// The nominal of generated state coordinate `index` under the active
+    /// chart: the scale of the source coordinate that chart integrates.
+    pub(super) fn active_state_nominal(&self, index: usize) -> f64 {
+        self.reduced_charts
+            .as_ref()
+            .and_then(|charts| charts.built_state_nominals(self.active_chart))
+            .and_then(|nominals| nominals.get(index).copied())
+            .unwrap_or_else(|| self.runtime.model.solver_variable_scale(index))
+    }
+
+    fn active_state_nominals(&self) -> Vec<f64> {
+        (0..self.state_count)
+            .map(|index| self.active_state_nominal(index))
+            .collect()
+    }
+
     /// Snapshot the mutable numerical state of every built reduced-chart
     /// runtime, in chart index order; an alternate never built has no state. A
     /// model with no chart set has one runtime, so the vector is a single
@@ -177,6 +193,7 @@ impl SolveMeKernel {
         let t = self.continuous_eval_time();
         let solver_y = self.basis_transfer(&target_runtime, &binding_rows, &change, t)?;
 
+        let nominals_before = self.active_state_nominals();
         self.active_chart = target;
         self.active_reference = (target != 0).then_some(change.target_reference);
         self.runtime = target_runtime;
@@ -184,7 +201,13 @@ impl SolveMeKernel {
         *self.solver_y_guess.borrow_mut() = solver_y;
         self.clear_runtime_caches();
         self.invalidate_continuous_linearization();
-        self.discrete_states_after_update(continuous_state_values_changed(&before, &self.states))
+        let mut discrete = self
+            .discrete_states_after_update(continuous_state_values_changed(&before, &self.states))?;
+        // A state that now integrates another source carries that source's
+        // nominal (FMI `nominalsOfContinuousStatesChanged`).
+        discrete.nominals_of_continuous_states_changed =
+            self.active_state_nominals() != nominals_before;
+        Ok(discrete)
     }
 
     /// The full solver coordinate of a basis change, computed on the target
@@ -231,3 +254,6 @@ impl SolveMeKernel {
         Ok(solver_y)
     }
 }
+
+#[cfg(test)]
+mod tests;

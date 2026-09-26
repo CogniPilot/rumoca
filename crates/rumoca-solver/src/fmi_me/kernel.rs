@@ -296,7 +296,7 @@ impl SolveMeKernel {
             )));
         }
         for (index, slot) in nominals.iter_mut().enumerate() {
-            *slot = self.runtime.model.solver_variable_scale(index);
+            *slot = self.active_state_nominal(index);
         }
         Ok(())
     }

@@ -59,6 +59,10 @@ pub(super) struct KernelChart {
 pub(super) struct BuiltChart {
     pub(super) runtime: Rc<SolveRuntime>,
     pub(super) binding_rows: Vec<usize>,
+    /// The nominal of each generated state coordinate under this chart: the
+    /// scale of the source coordinate it integrates. A state whose source the
+    /// chart shares with the primary basis keeps the primary's nominal.
+    pub(super) state_nominals: Vec<f64>,
 }
 
 /// Every runtime-executable reduced chart of one continuous system, index zero
@@ -97,10 +101,26 @@ impl ReducedChartRuntimes {
             &runtime.model.parameters,
             self.state_count,
         )?;
+        let state_nominals = if index == 0 {
+            (0..self.state_count)
+                .map(|state| runtime.model.solver_variable_scale(state))
+                .collect()
+        } else {
+            alternate_state_nominals(self.built(0)?, &runtime, &binding_rows)
+        };
         Ok(chart.built.get_or_init(|| BuiltChart {
             runtime,
             binding_rows,
+            state_nominals,
         }))
+    }
+
+    /// The state nominals of chart `index` if it has been built.
+    pub(super) fn built_state_nominals(&self, index: usize) -> Option<&[f64]> {
+        self.charts
+            .get(index)
+            .and_then(|chart| chart.built.get())
+            .map(|built| built.state_nominals.as_slice())
     }
 
     /// The runtime of chart `index` if it has been built.
@@ -304,6 +324,34 @@ fn alternate_chart_model(model: &SolveModel, chart_index: usize) -> Option<Solve
     };
     alternate.artifacts.continuous = plan.artifacts.clone();
     Some(alternate)
+}
+
+/// The state nominals of an alternate chart: a state whose binding row
+/// integrates another source than the primary's takes that source's scale;
+/// one that integrates the same source, or whose source is not a single
+/// coordinate, keeps the primary's nominal.
+fn alternate_state_nominals(
+    primary: &BuiltChart,
+    runtime: &SolveRuntime,
+    binding_rows: &[usize],
+) -> Vec<f64> {
+    binding_rows
+        .iter()
+        .enumerate()
+        .map(|(state, &row)| {
+            let source = runtime.binding_row_source(row, state);
+            let primary_source = primary
+                .binding_rows
+                .get(state)
+                .and_then(|&row| primary.runtime.binding_row_source(row, state));
+            match source {
+                Some(source) if Some(source) != primary_source => {
+                    runtime.model.solver_variable_scale(source)
+                }
+                _ => primary.state_nominals[state],
+            }
+        })
+        .collect()
 }
 
 /// The slope geometry of one chart: the rows and unknowns of every projection
