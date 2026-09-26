@@ -7,6 +7,7 @@
 mod affine_guard_harness;
 mod affine_promotion;
 mod algebraic;
+mod array_bounds;
 mod assertions;
 mod derivative_kinks;
 mod lifecycle;

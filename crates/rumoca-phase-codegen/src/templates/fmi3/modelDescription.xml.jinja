@@ -21,11 +21,15 @@
     <{{ element }} name="{{ variable.name | xml_escape }}" valueReference="{{ variable.value_reference_fmi3 }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.initial %} initial="{{ variable.initial }}"{% endif %}
 {%- if variable.start is defined and kind != "String" %} start="{% for value in variable.start %}{% if kind == "Real" %}{{ value }}{% elif kind == "Boolean" %}{{ "true" if value != 0 else "false" }}{% else %}{{ value | int }}{% endif %}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}
 {%- if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}
+{#- FMI 3.0 min, max, and nominal are single values that apply to every
+    element of an array variable. Per-element bounds are declared by their
+    loosest element (the smallest min, the largest max), which every element
+    satisfies; a nominal is declared only when every element shares it. -#}
 {%- if kind in ["Real", "Integer", "Enumeration"] %}
-{%- if variable.minimum %} min="{% for value in variable.minimum %}{{ value if kind == "Real" else value | int }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}
-{%- if variable.maximum %} max="{% for value in variable.maximum %}{{ value if kind == "Real" else value | int }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}
+{%- if variable.minimum %} min="{% set value = variable.minimum | min %}{{ value if kind == "Real" else value | int }}"{% endif %}
+{%- if variable.maximum %} max="{% set value = variable.maximum | max %}{{ value if kind == "Real" else value | int }}"{% endif %}
 {%- endif %}
-{%- if kind == "Real" and variable.nominal %} nominal="{% for value in variable.nominal %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}>
+{%- if kind == "Real" and variable.nominal and (variable.nominal | unique | list | length) == 1 %} nominal="{{ variable.nominal[0] }}"{% endif %}>
 {%- for extent in variable.dimensions %}
       <Dimension start="{{ extent }}"/>
 {%- endfor %}
