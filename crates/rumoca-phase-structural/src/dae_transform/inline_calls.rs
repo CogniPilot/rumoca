@@ -8,7 +8,9 @@
 //! annotation, so structural differentiation still reaches the supplied
 //! derivative (MLS §12.7.1). `InlineAfterIndexReduction=true` inlines only
 //! after formal-derivative construction. Calls of at most parameter variability
-//! are settled once and stay calls, as does every refused call.
+//! are settled once and stay calls, as does every refused call. A function
+//! from which a call-graph cycle is reachable can recurse and is never
+//! inlined.
 //!
 //! A body is admitted only when substitution keeps evaluation meaning: it may
 //! not contain a relation, conditional, or event-generating operator, because
@@ -83,18 +85,63 @@ pub fn inline_formal_calls(
 
 /// One flag per source expression: whether that call node is inlined.
 pub(super) fn inline_plan(view: dae::DaeView<'_>, stage: InlineStage) -> Vec<bool> {
+    let recursive = recursive_functions(view);
     (0..view.expression_count())
         .map(|index| {
             view.expression_id(index)
-                .is_some_and(|id| admits_call(view, id, stage))
+                .is_some_and(|id| admits_call(view, id, stage, &recursive))
         })
         .collect()
+}
+
+/// Per function index, whether the function can recurse: a call-graph cycle
+/// is reachable from it, so it calls itself directly or through other
+/// functions. Recursive groups are constructed as their own function
+/// instances, so a model-level callee can reach a cycle without lying on it.
+/// Such a function is never inlined, whatever frame a call of it appears in.
+fn recursive_functions(view: dae::DaeView<'_>) -> Vec<bool> {
+    let edges = (0..view.expression_count())
+        .filter_map(|index| view.expression(view.expression_id(index)?))
+        .filter_map(|node| match (node.function_scope(), node.operation()) {
+            (Some(caller), dae::ExpressionOperation::Call { function, .. }) => {
+                Some((caller.index() as usize, function.index() as usize))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let count = edges
+        .iter()
+        .map(|&(caller, callee)| caller.max(callee) + 1)
+        .max()
+        .unwrap_or(0);
+    let mut calls = vec![Vec::new(); count];
+    for (caller, callee) in edges {
+        calls[caller].push(callee);
+    }
+    let mut recursive = vec![false; count];
+    // Tarjan emits components callees first, so every callee outside a
+    // component is settled before the component itself.
+    for component in crate::tarjan::tarjan_scc(count, &calls) {
+        let cyclic = component.len() > 1
+            || component
+                .first()
+                .is_some_and(|&function| calls[function].contains(&function));
+        let reaches = cyclic
+            || component
+                .iter()
+                .any(|&function| calls[function].iter().any(|&callee| recursive[callee]));
+        for function in component {
+            recursive[function] = reaches;
+        }
+    }
+    recursive
 }
 
 fn admits_call<'dae>(
     view: dae::DaeView<'dae>,
     call: dae::ExprId<'dae>,
     stage: InlineStage,
+    recursive: &[bool],
 ) -> bool {
     let Some(node) = view.expression(call) else {
         return false;
@@ -132,7 +179,14 @@ fn admits_call<'dae>(
                 | rumoca_core::InlineAnnotation::AfterIndexReduction
         ),
     };
-    if !requested || callee.is_external() || callee.result_types().len() != 1 {
+    if !requested
+        || callee.is_external()
+        || callee.result_types().len() != 1
+        || recursive
+            .get(function.index() as usize)
+            .copied()
+            .unwrap_or(false)
+    {
         return false;
     }
     let Some((result, context)) = FunctionCallContext::default().call_result(view, call) else {

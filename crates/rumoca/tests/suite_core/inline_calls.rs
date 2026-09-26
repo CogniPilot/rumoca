@@ -248,3 +248,54 @@ fn an_inline_after_index_reduction_call_is_differentiated_before_it_is_inlined()
         }
     }
 }
+
+const MUTUAL: &str = r#"
+package InlineMutual
+  function even
+    input Real x;
+    output Real y;
+  algorithm
+    y := odd(x);
+    annotation(Inline = true);
+  end even;
+  function odd
+    input Real x;
+    output Real y;
+  algorithm
+    y := if x > 1 then even(x - 1) else x;
+    annotation(Inline = true);
+  end odd;
+  function plain
+    input Real x;
+    output Real y;
+  algorithm
+    y := 2 * x;
+    annotation(Inline = true);
+  end plain;
+  model M
+    Real x(start = 1, fixed = true);
+    Real a;
+    Real b;
+  equation
+    der(x) = -x;
+    a = even(x);
+    b = plain(x);
+  end M;
+end InlineMutual;"#;
+
+#[test]
+fn a_mutually_recursive_straight_line_function_is_not_inlined() {
+    let source = compile(MUTUAL, "InlineMutual.M");
+    let Some(inlined) = inline_annotated_calls(&source).unwrap() else {
+        panic!("plain is admitted");
+    };
+    let after = called_functions(&inlined);
+    assert!(
+        after.iter().any(|called| called.ends_with("even")),
+        "even recurses through odd and stays a call: {after:?}"
+    );
+    assert!(
+        !after.iter().any(|called| called.ends_with("plain")),
+        "plain is inlined: {after:?}"
+    );
+}
