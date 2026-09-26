@@ -20,6 +20,7 @@ use std::rc::Rc;
 use nalgebra::{DMatrix, DVector};
 use rumoca_ir_solve as solve;
 
+use super::fallbacks::ProjectionFallback;
 use super::solve_ops::RuntimeSolveError;
 use initial_diagnostics::initial_projection_error;
 pub(crate) use scaling::scaled_newton_delta_with_tearing;
@@ -253,6 +254,12 @@ pub(crate) trait ImplicitProjectionModel {
         _block_index: usize,
         _system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
+        None
+    }
+
+    /// The canonical projection block that fallback counts attribute block
+    /// `block_index` of this model's plan to; `None` leaves it uncounted.
+    fn projection_site(&self, _block_index: usize) -> Option<usize> {
         None
     }
 
@@ -701,6 +708,20 @@ fn block_residual_or_seed<M: ImplicitProjectionModel>(
         .then_some(residual))
 }
 
+/// Count a fallback of block `block_index` at its canonical projection site.
+pub(super) fn note_block_fallback<M: ImplicitProjectionModel + ?Sized>(
+    model: &M,
+    block_index: usize,
+    fallback: ProjectionFallback,
+) {
+    if let Some(canonical) = model.projection_site(block_index) {
+        super::fallbacks::note_fallback(
+            super::fallbacks::ProjectionSite::Block(canonical),
+            fallback,
+        );
+    }
+}
+
 /// Solve a coupled block by its constructor-provided tearing when one is
 /// present. The torn solve iterates Newton over the tear variables and recovers
 /// the rest by exact back-substitution; it either converges the block or
@@ -740,6 +761,12 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
         ..
     } = policy;
     require_square_projection_block(block.rows.len(), block.y_indices.len(), "algebraic")?;
+    let _call = model.projection_site(block_index).map(|canonical| {
+        super::fallbacks::begin_call(
+            super::fallbacks::ProjectionSite::Block(canonical),
+            block.rows.len(),
+        )
+    });
     if block.rows.is_empty() || block.y_indices.is_empty() {
         return Ok(ProjectionBlockUpdate {
             changed: false,
@@ -777,6 +804,9 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
     if let Some(update) = try_torn_algebraic_block(model, y, p, t, block, tol, certify_coordinates)?
     {
         return Ok(update);
+    }
+    if block.tearing.is_some() {
+        note_block_fallback(model, block_index, ProjectionFallback::TornToDense);
     }
     if !singleton_was_tried
         && let Some(update) = project_algebraic_singleton_assignment(model, y, p, t, block, tol)?
@@ -844,6 +874,7 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
         },
     );
     let Some(delta) = delta else {
+        note_block_fallback(model, block_index, ProjectionFallback::JacobianDeclined);
         if !residual_converged && nudge_singular_zero_seed(y, block, &jacobian, &variable_scales) {
             return Ok(ProjectionBlockUpdate {
                 changed: true,

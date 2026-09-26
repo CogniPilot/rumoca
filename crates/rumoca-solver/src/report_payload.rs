@@ -24,10 +24,42 @@ pub struct SimulationRunMetrics {
     pub typecheck_seconds: Option<f64>,
     pub flatten_seconds: Option<f64>,
     pub todae_seconds: Option<f64>,
+    /// The projection fallback counts of the run (SPEC_0044 ME-PROJ-003).
+    pub projection_fallbacks: Option<crate::ProjectionFallbackReport>,
+}
+
+/// Each projection site's calls, fallbacks by kind, rate, and whether the rate
+/// exceeds the reporting threshold.
+pub fn projection_fallbacks_value(report: &crate::ProjectionFallbackReport) -> Value {
+    Value::Array(
+        report
+            .sites
+            .iter()
+            .map(|(site, counts)| {
+                let block = match site {
+                    crate::ProjectionSite::Block(block) => Some(*block),
+                    crate::ProjectionSite::CompletePlan => None,
+                };
+                let fallbacks = crate::ProjectionFallback::ALL
+                    .iter()
+                    .map(|fallback| (fallback.label().to_string(), json!(counts.count(*fallback))))
+                    .collect::<serde_json::Map<_, _>>();
+                json!({
+                    "block": block,
+                    "rows": counts.rows,
+                    "calls": counts.calls,
+                    "fallbacks": fallbacks,
+                    "rate": counts.rate(),
+                    "overThreshold": counts.over_threshold(),
+                })
+            })
+            .collect(),
+    )
 }
 
 pub fn build_simulation_metrics_value(sim: &SimResult, metrics: &SimulationRunMetrics) -> Value {
     json!({
+        "projectionFallbacks": metrics.projection_fallbacks.as_ref().map(projection_fallbacks_value),
         "compileSeconds": metrics.compile_seconds,
         "simulateSeconds": metrics.simulate_seconds,
         "points": sim.times.len(),

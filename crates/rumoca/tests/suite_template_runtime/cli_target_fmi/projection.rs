@@ -308,6 +308,7 @@ fn packaged_fmi_runs_the_complete_plan_after_a_failed_rescue() {
         .model("FallbackFails")
         .compile_str(FALLBACK_FAILS, "FallbackFails.mo")
         .expect("compile FallbackFails");
+    rumoca_sim::reset_projection_fallbacks();
     let linked = rumoca_sim::simulate_dae_with_diagnostics(
         &compiled.dae,
         &rumoca_sim::SimOptions {
@@ -319,6 +320,23 @@ fn packaged_fmi_runs_the_complete_plan_after_a_failed_rescue() {
     assert!(
         linked.is_err(),
         "the linked ME kernel fails once the block has no real solution"
+    );
+    // The failed rescue and the complete-plan fallback are counted, never
+    // silent (SPEC_0044 ME-PROJ-003).
+    let counts = rumoca_sim::projection_fallbacks();
+    let rescues: u64 = counts
+        .sites
+        .values()
+        .map(|site| site.count(rumoca_sim::ProjectionFallback::SeedRescue))
+        .sum();
+    let complete: u64 = counts
+        .sites
+        .values()
+        .map(|site| site.count(rumoca_sim::ProjectionFallback::CompletePlan))
+        .sum();
+    assert!(
+        rescues > 0 && complete > 0 && counts.over_threshold().count() > 0,
+        "the linked kernel counts its rescue and complete-plan fallbacks: {counts:?}"
     );
 
     let work = tempdir().expect("fallback FMI work directory");
@@ -343,8 +361,13 @@ fn packaged_fmi_runs_the_complete_plan_after_a_failed_rescue() {
         .expect("run the fallback driver");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        output.status.success() && stdout.contains("FAILED") && stdout.contains(FALLBACK_MESSAGE),
-        "the FMU must fail through its complete-plan fallback:\n{stdout}\n{}",
+        output.status.success()
+            && stdout.contains("FAILED")
+            && stdout.contains(FALLBACK_MESSAGE)
+            && stdout
+                .lines()
+                .any(|line| line.starts_with("projection: ") && line.contains("fell back on")),
+        "the FMU must fail through its complete-plan fallback and log it under `projection`:\n{stdout}\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -355,7 +378,8 @@ from fmpy import simulate_fmu
 
 messages = []
 def logger(environment, status, category, message):
-    messages.append(message.decode() if isinstance(message, bytes) else str(message))
+    text = lambda value: value.decode() if isinstance(value, bytes) else str(value)
+    messages.append(text(category) + ': ' + text(message))
 
 try:
     simulate_fmu(sys.argv[1], fmi_type='ModelExchange', start_time=0.0, stop_time=3.0,
@@ -470,8 +494,16 @@ fn generated_fixed_state_values(driver: &Path, fmu: &BuiltFmu, names: &[&str]) -
             .arg(names.join(",")),
         &format!("{} fixed-state values", fmu.version),
     );
-    String::from_utf8_lossy(&output.stdout)
+    parse_fixed_state_values(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The value rows `FIXED_STATE_DRIVER` prints. The component's log (a
+/// projection fallback report, say) shares stdout with them, so the rows carry
+/// their own prefix.
+pub(super) fn parse_fixed_state_values(stdout: &str) -> Vec<Vec<f64>> {
+    stdout
         .lines()
+        .filter_map(|line| line.strip_prefix("values "))
         .map(|line| {
             line.split(',')
                 .map(|value| value.parse::<f64>().expect("numeric refresh value"))
@@ -530,7 +562,7 @@ else:
 for state in states:
     value = (ctypes.c_double * 1)(float(state))
     model.setContinuousStates(value, 1)
-    print(','.join(repr(float(v)) for v in read(refs)))
+    print('values ' + ','.join(repr(float(v)) for v in read(refs)))
 model.terminate()
 model.freeInstance()
 "#;

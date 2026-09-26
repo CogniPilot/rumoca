@@ -41,13 +41,13 @@ static int {{ name }}({{ signature }}) {
     tolerance and uncertified refresh during initialization. -#}
 {%- macro workspace_fields(me) -%}
 {%- if me.kernel %} double rmc_d[{{ me.work.doubles }}]; size_t rmc_s[{{ me.work.sizes }}]; size_t rmc_dtop; size_t rmc_stop; double rmc_tol; bool rmc_certify;{% endif -%}
-{%- if me.blocks|length > 0 %} double rmc_seed[{{ me.seed_len if me.seed_len > 0 else 1 }}];{% endif -%}
+{%- if me.blocks|length > 0 %} double rmc_seed[{{ me.seed_len if me.seed_len > 0 else 1 }}]; size_t rmc_fb_calls[{{ me.blocks|length + 1 }}]; size_t rmc_fb_count[{{ me.blocks|length + 1 }}]; size_t rmc_fb_mark[{{ me.blocks|length + 1 }}]; bool rmc_fb_active[{{ me.blocks|length + 1 }}]; bool rmc_fb_reported[{{ me.blocks|length + 1 }}];{% endif -%}
 {%- if me.lane_max > 0 %} double rmc_lane_seed[{{ (me.seed_len if me.seed_len > 0 else 1) * me.lane_max }}];{% endif -%}
 {%- if me.switching %} size_t rmc_chart; size_t rmc_chart_target; bool rmc_chart_pending; double rmc_chart_reference; double rmc_chart_target_reference; bool rmc_chart_log; double rmc_chart_y[Y_LEN];{% endif -%}
 {%- endmacro %}
 {%- macro workspace_reset(me) -%}
 {%- if me.kernel %} m->rmc_dtop = 0; m->rmc_stop = 0; m->rmc_tol = {{ me.policy.tolerance }}; m->rmc_certify = true;{% endif -%}
-{%- if me.blocks|length > 0 %} memset(m->rmc_seed, 0, sizeof(m->rmc_seed));{% endif -%}
+{%- if me.blocks|length > 0 %} memset(m->rmc_seed, 0, sizeof(m->rmc_seed)); memset(m->rmc_fb_calls, 0, sizeof(m->rmc_fb_calls)); memset(m->rmc_fb_count, 0, sizeof(m->rmc_fb_count)); memset(m->rmc_fb_mark, 0, sizeof(m->rmc_fb_mark)); memset(m->rmc_fb_active, 0, sizeof(m->rmc_fb_active)); memset(m->rmc_fb_reported, 0, sizeof(m->rmc_fb_reported));{% endif -%}
 {%- if me.lane_max > 0 %} memset(m->rmc_lane_seed, 0, sizeof(m->rmc_lane_seed));{% endif -%}
 {%- if me.switching %} m->rmc_chart = 0; m->rmc_chart_target = 0; m->rmc_chart_pending = false; m->rmc_chart_reference = {{ me.switching[0].trial_rcond }}; m->rmc_chart_target_reference = 0.0;{% endif -%}
 {%- endmacro %}
@@ -271,6 +271,24 @@ static const RmcBlock rmc_blocks[{{ me.blocks|length }}] = {
     { {{ b.canonical }}, {{ b.n }}, RMC_P({{ b.y }}), RMC_P({{ b.row_target }}), RMC_P({{ b.row_program }}), RMC_P({{ b.row_offset }}), {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, RMC_P({{ b.row_ptr }}), RMC_P({{ b.col_idx }}), {{ b.nnz }}, {{ b.ncolors }}, RMC_P({{ b.colors }}), RMC_P({{ b.color_seeds }}), RMC_P({{ b.color_calls }}), RMC_P({{ b.placements }}), {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, RMC_P({{ b.tear_col }}), RMC_P({{ b.residual_row }}), {{ b.ncausal }}, {{ b.ncruns }}, RMC_P({{ b.cruns }}), RMC_P({{ b.causal_target }}), RMC_P({{ b.causal_col }}), {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, RMC_P({{ b.elim_row }}), RMC_P({{ b.elim_col }}), {{ b.nelim_tear }}, RMC_P({{ b.elim_residual }}), RMC_P({{ b.elim_tear }}), {{ b.nguards }}, RMC_P({{ b.guards }}), RMC_P({{ b.guard_step }}), {{ b.elim_capacity }}, RMC_P({{ b.iso_default }}), RMC_P({{ b.iso_start }}), RMC_P({{ b.iso_entries }}), {{ b.nlane_calls }}, RMC_P({{ b.lane_calls }}), {{ b.lane_max_outputs }}, {{ b.lane_max }}, {{ b.nsplit }}, RMC_P({{ b.split }}), RMC_P({{ b.row_split }}), {{ b.inv_len }}, {{ b.tangent_lanes }}, {{ "true" if b.tangent_directional else "false" }}, {{ b.ntangent_steps }}, RMC_P({{ b.tangent_steps }}), RMC_P({{ b.tangent_residuals }}) },
 {%- endfor %}
 };
+#define RMC_FB_PLAN {{ me.blocks|length }}
+#define RMC_FALLBACK_RATE {{ me.policy.fallback_rate }}
+/* projection_fallbacks.rs: note_fallback. A call counts once however many
+   fallbacks it takes, and a fallback ahead of a site's next call (a seed
+   rescue) belongs to that call. The first time the share of calls that fell
+   back exceeds the policy rate, the site is logged under `projection`. */
+RMC_COLD static void rmc_fb_note(ModelInstance* m, size_t site) {
+    size_t call = m->rmc_fb_calls[site] + (m->rmc_fb_active[site] ? 0 : 1);
+    if (m->rmc_fb_mark[site] == call) return;
+    m->rmc_fb_mark[site] = call; m->rmc_fb_count[site] += 1;
+    size_t calls = m->rmc_fb_calls[site] > 0 ? m->rmc_fb_calls[site] : 1;
+    if (m->rmc_fb_reported[site] || (double)m->rmc_fb_count[site] <= RMC_FALLBACK_RATE * (double)calls) return;
+    m->rmc_fb_reported[site] = true;
+    char message[192];
+    if (site == RMC_FB_PLAN) snprintf(message, sizeof message, "the staged algebraic refresh fell back on %zu of %zu calls", m->rmc_fb_count[site], calls);
+    else snprintf(message, sizeof message, "projection block %zu (%zu rows) fell back on %zu of %zu calls", rmc_blocks[site].canonical, rmc_blocks[site].n, m->rmc_fb_count[site], calls);
+    RMC_LOG_AT(m, "projection", message);
+}
 static bool rmc_all_zero(const double* values, size_t n) {
     for (size_t i = 0; i < n; ++i) if (values[i] != 0.0) return false;
     return true;
@@ -837,7 +855,9 @@ static int rmc_affine_solve(ModelInstance* m, RmcAffineSystem* s, const double* 
             int solved = rmc_eliminate_solve(m, b, &s->elimination, residual, s->rscale, s->vscale, delta);
             if (solved < 0) return -1;
             if (solved == 1 && rmc_all_finite(delta, b->n)) { s->used_torn = true; return 1; }
+            if (solved == 0) rmc_fb_note(m, (size_t)(b - rmc_blocks));
         }
+        else rmc_fb_note(m, (size_t)(b - rmc_blocks));
     }
     if (!s->factored) {
         double* dense = rmc_dalloc(m, b->n * b->n);
@@ -1081,7 +1101,7 @@ static int rmc_project_dense(ModelInstance* m, const RmcBlock* b, RmcUpdate* upd
     RMC_RELEASE; return result;
 }
 /* projection.rs: project_algebraic_block; -1 error */
-static int rmc_project_block(ModelInstance* m, const RmcBlock* b, RmcUpdate* update) {
+static int rmc_project_block_paths(ModelInstance* m, const RmcBlock* b, RmcUpdate* update) {
     bool singleton_tried = !b->has_tearing; int handled;
     if (singleton_tried && (handled = rmc_project_singleton(m, b, update)) != 0) return handled < 0 ? -1 : 0;
     if (b->affine) {
@@ -1089,8 +1109,17 @@ static int rmc_project_block(ModelInstance* m, const RmcBlock* b, RmcUpdate* upd
         return rmc_project_affine(m, b, update);
     }
     if (b->torn && (handled = rmc_project_torn(m, b, update)) != 0) return handled < 0 ? -1 : 0;
+    if (b->torn) rmc_fb_note(m, (size_t)(b - rmc_blocks));
     if (!singleton_tried && (handled = rmc_project_singleton(m, b, update)) != 0) return handled < 0 ? -1 : 0;
     return rmc_project_dense(m, b, update);
+}
+/* projection_fallbacks.rs: begin_call around the block projection */
+static int rmc_project_block(ModelInstance* m, const RmcBlock* b, RmcUpdate* update) {
+    size_t site = (size_t)(b - rmc_blocks);
+    m->rmc_fb_calls[site] += 1; m->rmc_fb_active[site] = true;
+    int result = rmc_project_block_paths(m, b, update);
+    m->rmc_fb_active[site] = false;
+    return result;
 }
 /* projection.rs: the uncertified end of project_algebraics_with_plan_inner.
    Sweeps that stop unsettled are accepted when the plan's residual converges
@@ -1209,6 +1238,10 @@ static {{ prefix }}Status rmc_refresh(ModelInstance* m, const RmcStep* steps, si
     if (refresh_parameters(m) != {{ prefix }}OK) return {{ prefix }}Error;
     memcpy(incoming, m->y, sizeof(incoming));
     (void)complete; (void)ncomplete;
+{%- if blocks and assigns %}
+    size_t failed_site = RMC_FB_PLAN; (void)failed_site;
+    if (complete) { m->rmc_fb_calls[RMC_FB_PLAN] += 1; m->rmc_fb_active[RMC_FB_PLAN] = true; }
+{%- endif %}
     for (size_t s = 0; s < nsteps; ++s) {
         const RmcStep* step = &steps[s]; int result = 0; (void)result;
         switch (step->kind) {
@@ -1230,7 +1263,9 @@ static {{ prefix }}Status rmc_refresh(ModelInstance* m, const RmcStep* steps, si
                 if (result < 0) goto fail;
                 if (result > 0) {
                     for (size_t e = 0; e < step->nrescue; ++e) { size_t index = rmc_pool[step->rescue + e]; m->y[index] = incoming[index]; }
+                    rmc_fb_note(m, step->block);
                     if (rmc_project_stage(m, &rmc_blocks[step->block]) == 0) break;
+                    failed_site = step->block;
                     goto failure;
                 }
             }
@@ -1241,11 +1276,15 @@ static {{ prefix }}Status rmc_refresh(ModelInstance* m, const RmcStep* steps, si
         default: goto fail;
         }
     }
+{%- if blocks and assigns %}
+    m->rmc_fb_active[RMC_FB_PLAN] = false;
+{%- endif %}
     return {{ prefix }}OK;
 {%- if assigns %}
 failure:
 {%- if blocks %}
     if (complete) {
+        rmc_fb_note(m, failed_site); m->rmc_fb_active[RMC_FB_PLAN] = false;
         memcpy(m->y, incoming, sizeof(incoming));
         if (rmc_project_complete(m, complete, ncomplete) == 0) return {{ prefix }}OK;
         RMC_LOG(m, "complete algebraic projection did not establish coordinate convergence");
@@ -1254,6 +1293,9 @@ failure:
 {%- endif %}
 fail:
     memcpy(m->y, incoming, sizeof(incoming));
+{%- if blocks and assigns %}
+    m->rmc_fb_active[RMC_FB_PLAN] = false;
+{%- endif %}
     return {{ prefix }}Error;
 }
 {%- endif %}

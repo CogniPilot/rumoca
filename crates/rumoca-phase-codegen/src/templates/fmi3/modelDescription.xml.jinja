@@ -12,6 +12,10 @@
       <BaseUnit s="1"/>
     </Unit>
   </UnitDefinitions>
+  <LogCategories>
+    <Category name="error" description="Failures of the generated kernel"/>
+    <Category name="projection" description="Algebraic projection sites whose fallback rate exceeds the reporting threshold"/>
+  </LogCategories>
   <ModelVariables>
     <Float64 name="time" valueReference="0" causality="independent" variability="continuous" unit="s"/>
 {%- set state_ordinal = namespace(value=0) %}

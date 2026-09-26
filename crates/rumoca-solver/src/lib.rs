@@ -20,12 +20,16 @@ mod verification;
 #[cfg(not(kani))]
 pub use report_payload::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
-    build_simulation_payload,
+    build_simulation_payload, projection_fallbacks_value,
 };
 #[cfg(not(kani))]
 pub use runtime::eval_at::{EvalAtReport, EvalAtSlot};
 #[cfg(not(kani))]
 pub use runtime::event_newton::{CoupledEventNewtonModel, solve_coupled_event_newton};
+pub use runtime::fallbacks::{
+    ProjectionFallback, ProjectionFallbackCounts, ProjectionFallbackReport, ProjectionSite,
+    projection_fallbacks, reset_projection_fallbacks,
+};
 #[cfg(not(kani))]
 pub use runtime::jacobian::{
     JacobianReport, ObjectiveGradientReport, ParameterJacobianReport, SteadyStateSensitivityReport,

@@ -7,6 +7,11 @@
 //! tear-promotion capacity, so a generated component cannot converge under
 //! a different policy than the linked kernel it is compared against.
 
+/// Fallback rate (fallbacks per projection call) above which a projection
+/// block is reported: in a run's warnings, its provenance, and the generated
+/// component's `projection` log (SPEC_0044 ME-PROJ-003).
+pub const PROJECTION_FALLBACK_REPORT_RATE: f64 = 0.05;
+
 /// Scaled residual and correction tolerance of every continuous algebraic
 /// refresh issued by the ME component.
 pub const ALGEBRAIC_REFRESH_TOLERANCE: f64 = 1.0e-10;

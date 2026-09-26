@@ -14,7 +14,8 @@
 use rumoca_eval_solve::projection_policy::torn_promotion_capacity;
 
 use super::projection::{
-    DRIVER, FIXED_STATE_DRIVER, assert_projection_trace, compile_packaged_sources, in_process_trace,
+    DRIVER, FIXED_STATE_DRIVER, assert_projection_trace, compile_packaged_sources,
+    in_process_trace, parse_fixed_state_values,
 };
 use super::*;
 
@@ -309,12 +310,5 @@ fn generated_values(driver: &Path, fmu: &BuiltFmu, names: &[&str]) -> Vec<Vec<f6
             .arg(names.join(",")),
         &format!("{} fixed-state values", fmu.version),
     );
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| {
-            line.split(',')
-                .map(|value| value.parse::<f64>().expect("numeric refresh value"))
-                .collect()
-        })
-        .collect()
+    parse_fixed_state_values(&String::from_utf8_lossy(&output.stdout))
 }

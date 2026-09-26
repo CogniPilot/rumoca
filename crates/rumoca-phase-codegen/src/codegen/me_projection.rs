@@ -575,6 +575,7 @@ pub(super) fn me_refresh_value(
 fn policy_value() -> Value {
     minijinja::context! {
         tolerance => float_literal(policy::ALGEBRAIC_REFRESH_TOLERANCE),
+        fallback_rate => float_literal(policy::PROJECTION_FALLBACK_REPORT_RATE),
         refresh_iters => policy::ALGEBRAIC_REFRESH_MAX_ITERS
             * policy::ALGEBRAIC_PROJECTION_ITER_FACTOR,
         refine_iters => policy::ALGEBRAIC_PROJECTION_MAX_ITERS,

@@ -17,6 +17,7 @@ static void initialize_values(ModelInstance* m) {
 static void log_assertion(ModelInstance* m, const char* message) { if (m->callbacks.logger) m->callbacks.logger(m->callbacks.componentEnvironment, "Rumoca", fmi2Error, "assertion", "%s", message); }
 {% endif %}
 #define RMC_LOG(m, message) do { if ((m)->callbacks.logger) (m)->callbacks.logger((m)->callbacks.componentEnvironment, "Rumoca", fmi2Error, "error", "%s", (message)); } while (0)
+#define RMC_LOG_AT(m, category, message) do { if ((m)->callbacks.logger) (m)->callbacks.logger((m)->callbacks.componentEnvironment, "Rumoca", fmi2Warning, (category), "%s", (message)); } while (0)
 {%- if me_refresh.switching %}
 #define RMC_INFO(m, category, message) do { if ((m)->callbacks.logger) (m)->callbacks.logger((m)->callbacks.componentEnvironment, "Rumoca", fmi2OK, (category), "%s", (message)); } while (0)
 {%- endif %}

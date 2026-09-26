@@ -14,6 +14,7 @@ use rumoca_eval_solve::dense_basis::{DenseStageMatrix, DependentConditioning};
 use rumoca_eval_solve::{PreparedTornSweep, TornSweepStatus};
 
 use super::*;
+use crate::runtime::fallbacks::{self, ProjectionFallback, ProjectionSite};
 
 /// Prepared batched torn-block sweeps, keyed by the address of the plan's
 /// `BlockTearing`. The tearing lives inside the runtime's immutable
@@ -759,6 +760,10 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         })
     }
 
+    fn projection_site(&self, block_index: usize) -> Option<usize> {
+        self.block_indices.get(block_index).copied()
+    }
+
     fn solve_affine_torn_delta(
         &self,
         block_index: usize,
@@ -772,11 +777,18 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .get(block_index)?
             .affine_elimination()?;
         let cache = self.runtime.algebraic_newton_caches.get(block_index)?;
-        crate::runtime::projection::scaled_newton_delta_with_tearing(
+        let delta = crate::runtime::projection::scaled_newton_delta_with_tearing(
             system,
             &mut cache.borrow_mut(),
             layout,
-        )
+        );
+        if delta.is_none() {
+            fallbacks::note_fallback(
+                ProjectionSite::Block(block_index),
+                ProjectionFallback::AffineFullSystem,
+            );
+        }
+        delta
     }
 
     fn solve_algebraic_newton_delta(
@@ -1140,6 +1152,7 @@ impl SolveRuntime {
         incoming: &[f64],
     ) -> Result<(), RuntimeSolveError> {
         self.prepare_static_refresh_cache(args.params, args.solver_y.len());
+        let _call = fallbacks::begin_call(ProjectionSite::CompletePlan, 0);
         for stage in &plan.value_stages {
             if !self.execute_refresh_stage(stage, plan, args, incoming)? {
                 return Ok(());
@@ -1216,6 +1229,10 @@ impl SolveRuntime {
         if seeded {
             return Ok(true);
         }
+        fallbacks::note_fallback(
+            ProjectionSite::CompletePlan,
+            ProjectionFallback::CompletePlan,
+        );
         self.project_refresh_slots(complete_plan, args, true)?;
         Ok(false)
     }
@@ -1247,6 +1264,10 @@ impl SolveRuntime {
             for index in solve::projection_seed_rescue_targets(seed.rows, block) {
                 args.solver_y[index] = incoming[index];
             }
+            fallbacks::note_fallback(
+                ProjectionSite::Block(block_index),
+                ProjectionFallback::SeedRescue,
+            );
             tracing::debug!(
                 target: "rumoca_eval_solve::refresh",
                 block_index,
@@ -1256,6 +1277,10 @@ impl SolveRuntime {
                 return Ok(true);
             }
         }
+        fallbacks::note_fallback(
+            ProjectionSite::Block(block_index),
+            ProjectionFallback::CompletePlan,
+        );
         restore_after_causal_seed_error(error, args.solver_y, incoming)?;
         self.project_refresh_slots(complete_plan, args, true)?;
         Ok(false)

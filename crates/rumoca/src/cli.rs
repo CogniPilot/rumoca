@@ -16,6 +16,7 @@ mod cli_report_tests;
 mod cli_tests;
 mod compile_selectors;
 mod model_resolution;
+mod projection_report;
 pub(crate) mod sim_defaults;
 mod value;
 use sim_defaults::{direct_sim_window, sim_window};
@@ -1885,8 +1886,6 @@ struct SimulationRun<'a> {
 }
 
 fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
-    use rumoca_sim::simulate_with_diagnostics_auto_nan_trace;
-
     // Validate the report path before spending a full solve on it: `sim`'s
     // --output is the HTML report *file*, not a directory.
     if let Some(output) = run.output
@@ -1921,13 +1920,14 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
     // On a non-finite-suggestive failure (e.g. a model divide-by-zero showing up
     // as "step size too small"), this re-runs once with NaN tracing so the
     // offending variable(s) are named for the user.
-    let sim = simulate_with_diagnostics_auto_nan_trace(run.dae, &opts)
+    let sim = projection_report::simulate(run.dae, &opts)
         .map_err(|error| simulation_failure_error(&error))?;
     eprintln!(
         "Simulation complete: {} time points, {} variables",
         sim.times.len(),
         sim.names.len()
     );
+    let projection_fallbacks = projection_report::report_projection_fallbacks();
 
     let out_path = match run.output {
         Some(p) => PathBuf::from(p),
@@ -1961,7 +1961,7 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         rtol: opts.rtol,
         atol: opts.atol,
     };
-    let metrics = SimulationRunMetrics::default();
+    let metrics = projection_report::run_metrics(projection_fallbacks);
     rumoca_sim::report::write_html_report(
         &sim,
         run.model,

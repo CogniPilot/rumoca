@@ -582,6 +582,7 @@ impl ModelicaLanguageServer {
             typecheck_seconds: Some(metrics.typecheck_seconds),
             flatten_seconds: Some(metrics.flatten_seconds),
             todae_seconds: Some(metrics.todae_seconds),
+            projection_fallbacks: None,
         }
     }
 

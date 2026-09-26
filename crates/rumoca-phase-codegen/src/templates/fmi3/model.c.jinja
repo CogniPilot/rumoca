@@ -14,6 +14,7 @@ static void initialize_values(ModelInstance* m) {
 static void log_assertion(ModelInstance* m, const char* message) { if (m->logger) m->logger(m->environment, fmi3Error, "assertion", message); }
 {% endif %}
 #define RMC_LOG(m, message) do { if ((m)->logger) (m)->logger((m)->environment, fmi3Error, "error", (message)); } while (0)
+#define RMC_LOG_AT(m, category, message) do { if ((m)->logger) (m)->logger((m)->environment, fmi3Warning, (category), (message)); } while (0)
 {%- if me_refresh.switching %}
 #define RMC_INFO(m, category, message) do { if ((m)->logger) (m)->logger((m)->environment, fmi3OK, (category), (message)); } while (0)
 {%- endif %}

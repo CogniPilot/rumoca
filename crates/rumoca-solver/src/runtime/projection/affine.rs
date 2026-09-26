@@ -191,9 +191,18 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             self.used_torn.set(true);
             return Some(delta);
         }
-        self.model
+        let delta = self
+            .model
             .solve_algebraic_newton_delta(self.block_index, system)
-            .filter(finite)
+            .filter(finite);
+        if delta.is_none() {
+            super::note_block_fallback(
+                self.model,
+                self.block_index,
+                ProjectionFallback::JacobianDeclined,
+            );
+        }
+        delta
     }
 
     fn refine(&self, y: &mut [f64]) -> Result<bool, RuntimeSolveError> {
