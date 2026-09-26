@@ -69,8 +69,12 @@ fn demanded_function_call_issues_one_typed_owner() {
             let z = expressions
                 .at(owner)
                 .coordinate(dae::CoordinateInput::Algebraic(algebraic))?;
-            let two = expressions.at(owner).literal(dae::DaeLiteral::Real(2.0))?;
-            let call = expressions.at(owner).call(function, 0, [two])?;
+            // A time-varying argument keeps the call a call (a constant one
+            // folds to a literal at construction).
+            let time = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Time)?;
+            let call = expressions.at(owner).call(function, 0, [time])?;
             expressions
                 .at(owner)
                 .binary(dae::BinaryOperator::Subtract, z, call)
@@ -925,7 +929,7 @@ fn function_two_assertions_solve() -> crate::LoweredSolvePackage {
                 .coordinate(dae::CoordinateInput::Algebraic(algebraic))?;
             let argument = expressions
                 .at(equation_at)
-                .literal(dae::DaeLiteral::Real(-1.0))?;
+                .coordinate(dae::CoordinateInput::Time)?;
             let call = expressions.at(equation_at).call(function, 0, [argument])?;
             expressions
                 .at(equation_at)
