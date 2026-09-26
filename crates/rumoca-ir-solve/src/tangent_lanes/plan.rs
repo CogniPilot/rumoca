@@ -5,11 +5,13 @@
 use super::{TangentLaneError, TangentLaneProgram};
 use crate::{
     BlockTearing, LinearOp, MAX_TENSOR_LANES, ProjectionJacobianApplication, ScalarProgramBlock,
+    StructuralPattern,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Where one row's tangents come from: output `output` of lane program
-/// `program` of the plan.
+/// `program` of the plan, or of JVP program `program` for a plan evaluated one
+/// direction at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TangentRowSource {
     pub program: usize,
@@ -29,6 +31,9 @@ pub struct TornTangentStep {
     pub source: TangentRowSource,
     /// Tear columns whose tangents reach the step through the rows it reads.
     pub reached: Box<[usize]>,
+    /// Steps answered by one evaluation of this step's program, counting
+    /// itself; zero when an earlier step's evaluation answers it.
+    pub group: usize,
 }
 
 /// One reduced residual row of a torn block.
@@ -36,20 +41,33 @@ pub struct TornTangentStep {
 pub struct TornTangentResidual {
     pub row: usize,
     pub source: TangentRowSource,
+    /// Rows answered by one evaluation of this row's program, counting
+    /// itself; zero when an earlier row's evaluation answers it.
+    pub group: usize,
 }
 
-/// Reduced tear Jacobian of one torn block from multi-lane tangents.
+/// Reduced tear Jacobian of one torn block from tangents.
 ///
 /// Lanes `0..tears` carry the tangents of the tear columns; the last lane
 /// seeds a causal step's own target to obtain its coefficient. Each causal
 /// step's tangent follows from the implicit function theorem on its row in
 /// sweep order, reading earlier steps' tangents through the seeds, and the
 /// reduced residual rows then give the Jacobian columns directly.
+///
+/// The lanes are evaluated together by multi-lane programs when every row's
+/// JVP program widens and the lanes fit; otherwise the plan evaluates each lane
+/// as its own direction through the rows' JVP programs, first every step's
+/// coefficient and then one tear column at a time. Each lane equals its
+/// one-direction evaluation, so both forms give the same Jacobian. A plan
+/// refuses only a row with no JVP program.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TornTangentPlan {
     tear_targets: Box<[usize]>,
     lanes: usize,
+    /// Multi-lane programs; empty when the plan evaluates one direction at a
+    /// time through the JVP programs.
     programs: Vec<TangentLaneProgram>,
+    directional: bool,
     steps: Vec<TornTangentStep>,
     residuals: Vec<TornTangentResidual>,
 }
@@ -67,6 +85,54 @@ fn output_positions(block: &ScalarProgramBlock) -> BTreeMap<usize, (usize, usize
         }
     }
     positions
+}
+
+/// Group consecutive causal steps of one program whose outputs depend on no
+/// other group member's target. One evaluation then answers the group: the
+/// coefficient lane seeds every member's target and each member's output
+/// reads only its own, and no member's tangent reaches another member's
+/// output, so each member's lanes equal its own evaluation's bit for bit.
+fn group_steps(steps: &mut [TornTangentStep], dependencies: &[Option<BTreeSet<usize>>]) {
+    let mut start = 0;
+    while start < steps.len() {
+        let mut end = start + 1;
+        while end < steps.len()
+            && steps[end].source.program == steps[start].source.program
+            && (start..end).all(|member| {
+                let independent = |reader: usize, target: usize| {
+                    dependencies[reader]
+                        .as_ref()
+                        .is_some_and(|reads| !reads.contains(&target))
+                };
+                independent(end, steps[member].target) && independent(member, steps[end].target)
+            })
+        {
+            end += 1;
+        }
+        steps[start].group = end - start;
+        for step in &mut steps[start + 1..end] {
+            step.group = 0;
+        }
+        start = end;
+    }
+}
+
+/// Group consecutive reduced rows of one program: they write no seed, so one
+/// evaluation answers them all.
+fn group_residuals(residuals: &mut [TornTangentResidual]) {
+    let mut start = 0;
+    while start < residuals.len() {
+        let program = residuals[start].source.program;
+        let end = residuals[start..]
+            .iter()
+            .position(|residual| residual.source.program != program)
+            .map_or(residuals.len(), |offset| start + offset);
+        residuals[start].group = end - start;
+        for residual in &mut residuals[start + 1..end] {
+            residual.group = 0;
+        }
+        start = end;
+    }
 }
 
 /// Solver-Y indices whose seed a JVP program reads.
@@ -88,16 +154,38 @@ fn seed_reads(program: &[LinearOp]) -> Vec<usize> {
     reads
 }
 
-/// Lane programs built on demand, one per distinct source program.
+/// Lane programs built on demand, one per distinct source program; with
+/// `directional`, the sources name the JVP programs themselves.
 struct LanePrograms<'a> {
     jvp: &'a ScalarProgramBlock,
     lanes: usize,
+    directional: bool,
     positions: BTreeMap<usize, (usize, usize)>,
     built: BTreeMap<usize, usize>,
     programs: Vec<TangentLaneProgram>,
+    /// Per-output seed dependencies of each JVP program read so far; `None`
+    /// when the program's dependencies are not derivable.
+    dependencies: BTreeMap<usize, Option<Vec<BTreeSet<usize>>>>,
 }
 
 impl LanePrograms<'_> {
+    /// The seeds output `output` of JVP program `program` depends on; `None`
+    /// when not derivable.
+    fn output_dependencies(&mut self, program: usize, output: usize) -> Option<BTreeSet<usize>> {
+        let jvp = self.jvp;
+        self.dependencies
+            .entry(program)
+            .or_insert_with(|| {
+                StructuralPattern::derive_output_seed_index_dependencies(
+                    &jvp.programs()[program],
+                    None,
+                )
+                .ok()
+            })
+            .as_ref()
+            .and_then(|outputs| outputs.get(output).cloned())
+    }
+
     /// The tangent source of implicit row `row` and the seeds its program
     /// reads; a row without a JVP program, or whose program does not widen,
     /// declines the plan.
@@ -108,6 +196,9 @@ impl LanePrograms<'_> {
             .ok_or(TangentLaneError::NoTangent { row })?;
         let ops = &self.jvp.programs()[program];
         let reads = seed_reads(ops);
+        if self.directional {
+            return Ok((TangentRowSource { program, output }, reads));
+        }
         let built = match self.built.get(&program) {
             Some(&built) => built,
             None => {
@@ -130,22 +221,54 @@ impl LanePrograms<'_> {
 
 impl TornTangentPlan {
     /// Build the plan of `tearing` over the solver-Y JVP rows `jvp`, whose
-    /// output `i` is the tangent of implicit row `i`.
+    /// output `i` is the tangent of implicit row `i`: multi-lane when every
+    /// program widens and the lanes fit, one direction at a time otherwise.
     pub fn derive(
         tearing: &BlockTearing,
         jvp: &ScalarProgramBlock,
     ) -> Result<Self, TangentLaneError> {
         let tears = tearing.tear_y_indices.len();
-        let lanes = tears + 1;
-        if tears == 0 || lanes >= MAX_TENSOR_LANES {
-            return Err(TangentLaneError::LaneCount { lanes });
+        if tears == 0 {
+            return Err(TangentLaneError::LaneCount { lanes: 1 });
         }
+        if tears + 1 < MAX_TENSOR_LANES {
+            match Self::derive_form(tearing, jvp, false) {
+                Err(TangentLaneError::NoTangent { row }) => {
+                    return Err(TangentLaneError::NoTangent { row });
+                }
+                Err(_) => {}
+                built => return built,
+            }
+        }
+        Self::derive_form(tearing, jvp, true)
+    }
+
+    /// Build the one-direction form of the plan of `tearing`, for an evaluator
+    /// whose one-direction JVP programs are cheaper than their lane widening.
+    pub fn derive_directional(
+        tearing: &BlockTearing,
+        jvp: &ScalarProgramBlock,
+    ) -> Result<Self, TangentLaneError> {
+        if tearing.tear_y_indices.is_empty() {
+            return Err(TangentLaneError::LaneCount { lanes: 1 });
+        }
+        Self::derive_form(tearing, jvp, true)
+    }
+
+    fn derive_form(
+        tearing: &BlockTearing,
+        jvp: &ScalarProgramBlock,
+        directional: bool,
+    ) -> Result<Self, TangentLaneError> {
+        let lanes = tearing.tear_y_indices.len() + 1;
         let mut builder = LanePrograms {
             jvp,
             lanes,
+            directional,
             positions: output_positions(jvp),
             built: BTreeMap::new(),
             programs: Vec::new(),
+            dependencies: BTreeMap::new(),
         };
         let mut reached_by: BTreeMap<usize, Vec<usize>> = tearing
             .tear_y_indices
@@ -154,6 +277,7 @@ impl TornTangentPlan {
             .map(|(column, &target)| (target, vec![column]))
             .collect();
         let mut steps = Vec::with_capacity(tearing.causal_steps.len());
+        let mut dependencies = Vec::with_capacity(tearing.causal_steps.len());
         for step in &tearing.causal_steps {
             let (source, reads) = builder.source(step.row)?;
             // A row that does not read its own target has no coefficient.
@@ -170,30 +294,47 @@ impl TornTangentPlan {
             reached.sort_unstable();
             reached.dedup();
             reached_by.insert(step.y_index, reached.clone());
+            let &(program, output) = builder
+                .positions
+                .get(&step.row)
+                .ok_or(TangentLaneError::NoTangent { row: step.row })?;
+            dependencies.push(builder.output_dependencies(program, output));
             steps.push(TornTangentStep {
                 row: step.row,
                 target: step.y_index,
                 source,
                 reached: reached.into_boxed_slice(),
+                group: 1,
             });
         }
-        let residuals = tearing
+        let mut residuals = tearing
             .residual_rows
             .iter()
             .map(|&row| {
                 Ok(TornTangentResidual {
                     row,
                     source: builder.source(row)?.0,
+                    group: 1,
                 })
             })
-            .collect::<Result<_, TangentLaneError>>()?;
+            .collect::<Result<Vec<_>, TangentLaneError>>()?;
+        group_steps(&mut steps, &dependencies);
+        group_residuals(&mut residuals);
         Ok(Self {
             tear_targets: tearing.tear_y_indices.clone().into_boxed_slice(),
             lanes,
             programs: builder.programs,
+            directional,
             steps,
             residuals,
         })
+    }
+
+    /// Whether the plan evaluates one direction at a time through the JVP
+    /// programs instead of multi-lane programs.
+    #[must_use]
+    pub const fn directional(&self) -> bool {
+        self.directional
     }
 
     /// Solver-Y index of each tear column.

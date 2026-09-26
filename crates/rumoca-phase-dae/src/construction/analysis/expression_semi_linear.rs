@@ -115,7 +115,9 @@
 //! `smooth(0, ...)`, and §3.7.5 leaves a tool free not to generate events for
 //! relations inside `smooth`; rumoca already takes that freedom for the
 //! operator itself, and keeps taking it for the relation the rule lifts out of
-//! it. OMC resolves it the same way: in its generated C for
+//! it. The rule is derived from those specification sections, not from any
+//! other tool's implementation; OMC is cited below only as an observed second
+//! opinion on a model. OMC resolves it the same way: in its output for
 //! `FluidHeatFlow.Examples.PumpDropOut` the Rule 1 selectors appear as ordinary
 //! equations (`tmp = GreaterEq(pipe.flowPort_a.m_flow, 0.0)` feeding
 //! `pump.flowPort_b.h`), while the model's zero-crossing table lists only the

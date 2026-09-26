@@ -13,6 +13,8 @@ mod input_batches;
 mod jacobian_source_trajectories;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod parameter_bindings;
+mod probe_jacobian;
+mod settled_initial_tangent;
 mod structure_report;
 mod tangent_jacobian;
 #[cfg(feature = "solver-rk45")]

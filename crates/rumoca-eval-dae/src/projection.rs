@@ -1,8 +1,10 @@
 mod array_update;
+mod literal_bindings;
 mod scalar_selection;
 #[cfg(test)]
 mod tests;
 mod zero_coefficients;
+pub use literal_bindings::{LiteralBinding, literal_bindings};
 pub use zero_coefficients::ZeroCoefficients;
 
 use std::collections::{HashMap, HashSet};

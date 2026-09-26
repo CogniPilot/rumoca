@@ -12,9 +12,9 @@ use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{
     AliasQuotientReport, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
     FormalStateCoordinate, PreparedDae, ReducedSelectionChart, StateSelection, StructuralError,
-    construct_formal_derivatives, fold_evaluable_parameters, formal_alias_quotient_report,
-    inline_annotated_calls, inline_formal_calls, prepare_for_solve, quotient_aliases,
-    quotient_formal_aliases,
+    construct_formal_derivatives, fold_constant_values, fold_evaluable_parameters,
+    formal_alias_quotient_report, inline_annotated_calls, inline_formal_calls, prepare_for_solve,
+    quotient_aliases, quotient_formal_aliases,
 };
 
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
@@ -56,8 +56,9 @@ struct AlternateSelections {
 }
 
 /// Prepare the executable selection of `model` after its STRUCT-T10(a)
-/// evaluable-parameter folding, STRUCT-T10(b) annotated call inlining, and
-/// STRUCT-T02 alias quotient. A model no transform changes prepares unchanged; otherwise the owned reconstruction is
+/// evaluable-parameter folding, STRUCT-T10(b) annotated call inlining,
+/// STRUCT-T02 alias quotient, and SPEC_0043 §4 constant-call folding and
+/// literal propagation. A model no transform changes prepares unchanged; otherwise the owned reconstruction is
 /// prepared, which keeps every source declaration, so later stages read the
 /// same variables and names.
 pub(crate) fn prepare<'source>(
@@ -66,12 +67,10 @@ pub(crate) fn prepare<'source>(
 ) -> Result<PreparedSelection<'source>, StructuralError> {
     let folded = fold_evaluable_parameters(model)?;
     let inlined = inline_annotated_calls(folded.as_ref().unwrap_or(model))?.or(folded);
-    match (
-        quotient_aliases(inlined.as_ref().unwrap_or(model))?,
-        inlined,
-    ) {
-        (None, None) => prepare_source(model, overrides),
-        (Some(quotient), _) | (None, Some(quotient)) => prepare_quotient(quotient, overrides),
+    let quotient = quotient_aliases(inlined.as_ref().unwrap_or(model))?.or(inlined);
+    match fold_constant_values(quotient.as_ref().unwrap_or(model))?.or(quotient) {
+        None => prepare_source(model, overrides),
+        Some(transformed) => prepare_quotient(transformed, overrides),
     }
 }
 

@@ -238,9 +238,12 @@ pub struct AlgebraicProjectionBlock {
     pub y_indices: Vec<usize>,
     /// Structural tearing of this coupled block. When present, the runtime
     /// projection iterates Newton only over the tear variables and recovers
-    /// the remaining unknowns by ordered back-substitution, matching the
-    /// causalized solve OpenModelica performs. Absence selects the dense
-    /// block Newton over every unknown.
+    /// the remaining unknowns by ordered back-substitution, in the sense of
+    /// Elmqvist and Otter, ESM'94, and Cellier and Kofman, "Continuous System
+    /// Simulation", chapter 7. OpenModelica causalizes the same loops the same
+    /// way, which makes it a behavioural cross-reference rather than the
+    /// authority for the method. Absence selects the dense block Newton over
+    /// every unknown.
     #[serde(default)]
     pub tearing: Option<BlockTearing>,
     /// Additional admissible reconstruction charts for this block. Each chart
@@ -304,6 +307,28 @@ pub struct BlockTearing {
 pub struct CausalStep {
     pub row: usize,
     pub y_index: usize,
+    /// Why the step's isolated coefficient is bounded away from zero; set by
+    /// construction and trusted by every executor (SPEC_0043 §4).
+    #[serde(default, skip_serializing_if = "causal_coefficient_unproven")]
+    pub coefficient: CausalCoefficient,
+}
+
+/// The construction proof that a causal step's isolated coefficient is
+/// bounded away from zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub enum CausalCoefficient {
+    /// No proof: the step is not admissible as a causal step.
+    #[default]
+    Unproven,
+    /// The target enters with a unit coefficient (up to sign and a nonzero
+    /// literal output scale).
+    Unit,
+    /// The coefficient is a nonzero literal.
+    Literal,
+}
+
+fn causal_coefficient_unproven(coefficient: &CausalCoefficient) -> bool {
+    *coefficient == CausalCoefficient::Unproven
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -329,6 +354,23 @@ pub struct InitializationProjectionBlock {
 pub struct SolveArtifacts {
     pub continuous: ContinuousSolveArtifacts,
     pub initialization: InitializationSolveArtifacts,
+    pub discrete: DiscreteSolveArtifacts,
+}
+
+/// Forward-mode JVPs of the discrete event rows over `[solver-y | parameter]`
+/// seeds, through which the coupled event Newton differentiates the rows it
+/// solves. Each is `None` when one of its rows has no derivative lowering.
+#[derive(Clone, Debug, Default)]
+pub struct DiscreteSolveArtifacts {
+    /// Row-aligned with [`DiscreteSolveSystem::rhs`].
+    pub rhs_jacobian_v: Option<ScalarProgramBlock>,
+    /// Row-aligned with [`DiscreteSolveSystem::runtime_assignment_rhs`].
+    pub runtime_assignment_jacobian_v: Option<ScalarProgramBlock>,
+    /// Program `i` differentiates guarded assignment `i`, output for output.
+    pub guarded_jacobian_v: Option<ScalarProgramBlock>,
+    /// Row-aligned with the scalar view of
+    /// [`DiscreteSolveSystem::structured_rhs`].
+    pub structured_jacobian_v: Option<ScalarProgramBlock>,
 }
 
 #[derive(Clone, Debug)]
@@ -540,6 +582,11 @@ pub struct InitializationSolveArtifacts {
     /// Constructor-derived metadata; canonical Solve replay reconstructs it.
     pub structural: InitializationStructuralArtifacts,
     pub residual_jacobian_v: ComputeBlock,
+    /// Forward-mode JVP of the initialization update rows over
+    /// `[solver-y | parameter]` seeds, row-aligned with `update_rhs`. It carries
+    /// a seed through the bindings of the settled initialization view; `None`
+    /// when a row has no derivative lowering.
+    pub update_jacobian_v: Option<ScalarProgramBlock>,
 }
 
 /// What the MLS §8.6 initialization projection does with one residual row.

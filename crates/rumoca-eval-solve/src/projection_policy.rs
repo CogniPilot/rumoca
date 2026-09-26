@@ -3,7 +3,7 @@
 //! The in-process ME kernel (`rumoca-solver`) and every generated C component
 //! (`rumoca-phase-codegen`) solve the same construction-issued projection
 //! stages. They share this one owner for every iteration budget, step bound,
-//! finite-difference rule, and the torn affine elimination's admission and
+//! Jacobian source, and the torn affine elimination's admission and
 //! tear-promotion capacity, so a generated component cannot converge under
 //! a different policy than the linked kernel it is compared against.
 
@@ -31,19 +31,6 @@ pub const TORN_OUTER_MAX_ITERS: usize = 64;
 /// Maximum step halvings in the reduced Newton line search.
 pub const TORN_BACKTRACK_STEPS: usize = 24;
 
-/// Whether the reduced Newton takes its tear Jacobian from the block's issued
-/// tangent plan (`rumoca_ir_solve::TornTangentPlan`): each causal step's
-/// tangent follows from the implicit function theorem on its row in sweep
-/// order, evaluated from multi-lane tangent programs. A block without a plan,
-/// or a point where the plan declines, differences the causal sweep.
-///
-/// The exact tear Jacobian is an accuracy option: each tangent lane costs about
-/// a primal pass, so it is costlier than the partial finite-difference columns
-/// of the causal sweep, and it changes Newton iterates and so trajectories at
-/// the refresh tolerance level. It is off, so the linked kernel and the
-/// generated C share one Jacobian source.
-pub const TORN_TANGENT_JACOBIAN: bool = false;
-
 /// Whether a colored projection Jacobian evaluates each application program
 /// once with one tangent lane per color that calls it
 /// (`rumoca_ir_solve::ColoredTangentPlan`) instead of once per color. Each
@@ -53,11 +40,10 @@ pub const COLORED_TANGENT_LANES: bool = true;
 
 /// The projection Jacobian sources an evaluator is built with: the policy
 /// constants unless a caller evaluates another choice with
-/// [`with_jacobian_sources`].
+/// [`with_jacobian_sources`]. A torn block's tear Jacobian always comes from
+/// its tangent plan; it is not a choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JacobianSources {
-    /// [`TORN_TANGENT_JACOBIAN`]
-    pub torn_tangent: bool,
     /// [`COLORED_TANGENT_LANES`]
     pub colored_lanes: bool,
 }
@@ -65,7 +51,6 @@ pub struct JacobianSources {
 impl JacobianSources {
     /// The sources this policy selects.
     pub const POLICY: Self = Self {
-        torn_tangent: TORN_TANGENT_JACOBIAN,
         colored_lanes: COLORED_TANGENT_LANES,
     };
 }
@@ -95,18 +80,6 @@ pub fn with_jacobian_sources<R>(sources: JacobianSources, body: impl FnOnce() ->
     }
     let _restore = Restore(JACOBIAN_SOURCES.with(|current| current.replace(sources)));
     body()
-}
-
-/// Relative step of the reduced finite-difference Jacobian.
-pub const FINITE_DIFFERENCE_RELATIVE_STEP: f64 = 1.0e-7;
-
-/// A finite, sign-stable finite-difference perturbation scaled to the larger
-/// of the variable's magnitude, its declared scale, and one.
-#[must_use]
-pub fn finite_difference_perturbation(value: f64, scale: f64) -> f64 {
-    let magnitude = value.abs().max(scale.abs()).max(1.0);
-    let step = magnitude * FINITE_DIFFERENCE_RELATIVE_STEP;
-    if value < 0.0 { -step } else { step }
 }
 
 /// Growth factor of the torn affine elimination's tear capacity over its
@@ -158,22 +131,28 @@ pub const CHART_SWITCH_IMPROVEMENT: f64 = 1.5;
 pub const CHART_REGULAR_MULTIPLE: f64 = 1.0e6;
 
 /// Admission of the torn affine elimination, shared by the linked kernel and
-/// every generated C component: the block is a sparse candidate, its issued
-/// reduced system is small and dense, and a promotion capacity exists. The
-/// result is that capacity.
+/// every generated C component: the block is a sparse candidate or a small
+/// dense system its issued tearing reduces (fewer tears than unknowns), its
+/// issued reduced system is small and dense, and a promotion capacity exists.
+/// The result is that capacity. A small block the tearing reduces is
+/// eliminated like a large one, so the construction's causal order is what
+/// every call executes.
 #[must_use]
 pub fn affine_elimination_capacity(
     layout: &rumoca_ir_solve::AffineEliminationLayout,
 ) -> Option<usize> {
     use crate::tensor_policy::{LinearSolveKernel, select_linear_solve_kernel};
     let n = layout.pattern().rows() as usize;
-    let admitted = matches!(
-        select_linear_solve_kernel(n, layout.pattern()),
-        Ok(LinearSolveKernel::SparseCandidate)
-    ) && matches!(
-        select_linear_solve_kernel(layout.tears().len(), layout.reduced_pattern()),
-        Ok(LinearSolveKernel::SmallDense)
-    );
+    let block_admitted = match select_linear_solve_kernel(n, layout.pattern()) {
+        Ok(LinearSolveKernel::SparseCandidate) => true,
+        Ok(LinearSolveKernel::SmallDense) => layout.tears().len() < n,
+        _ => false,
+    };
+    let admitted = block_admitted
+        && matches!(
+            select_linear_solve_kernel(layout.tears().len(), layout.reduced_pattern()),
+            Ok(LinearSolveKernel::SmallDense)
+        );
     admitted
         .then(|| torn_promotion_capacity(layout.tears().len()))
         .flatten()
@@ -182,13 +161,6 @@ pub fn affine_elimination_capacity(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn perturbation_follows_the_sign_and_the_largest_magnitude() {
-        assert_eq!(finite_difference_perturbation(0.0, 0.0), 1.0e-7);
-        assert_eq!(finite_difference_perturbation(-2.0, 0.5), -2.0e-7);
-        assert_eq!(finite_difference_perturbation(0.5, 4.0), 4.0e-7);
-    }
 
     #[test]
     fn promotion_capacity_doubles_small_tear_sets_up_to_the_limit() {

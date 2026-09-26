@@ -1,6 +1,7 @@
 {
   "name": "@cognipilot/rumoca-playground",
   "description": "Static Rumoca playground app and browser integration smoke tests; not a JavaScript library.",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "devDependencies": {

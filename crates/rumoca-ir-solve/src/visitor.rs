@@ -5,9 +5,9 @@
 
 use crate::{
     ComputeBlock, ComputeNode, ContinuousSolveArtifacts, ContinuousSolveSystem,
-    DiscreteSolveSystem, EventTransactionProgram, InitializationSolveArtifacts,
-    InitializationSolveSystem, LinearOp, ScalarProgramBlock, SolveArtifacts, SolveClockPartition,
-    SolveEventPartition, SolveModel, SolveProblem,
+    DiscreteSolveArtifacts, DiscreteSolveSystem, EventTransactionProgram,
+    InitializationSolveArtifacts, InitializationSolveSystem, LinearOp, ScalarProgramBlock,
+    SolveArtifacts, SolveClockPartition, SolveEventPartition, SolveModel, SolveProblem,
 };
 use rumoca_core::Span;
 
@@ -192,7 +192,26 @@ pub fn walk_solve_artifacts<V: SolveVisitor + ?Sized>(
     artifacts: &SolveArtifacts,
 ) -> Result<(), V::Error> {
     visitor.visit_continuous_artifacts(&artifacts.continuous)?;
-    visitor.visit_initialization_artifacts(&artifacts.initialization)
+    visitor.visit_initialization_artifacts(&artifacts.initialization)?;
+    walk_discrete_artifacts(visitor, &artifacts.discrete)
+}
+
+pub fn walk_discrete_artifacts<V: SolveVisitor + ?Sized>(
+    visitor: &mut V,
+    artifacts: &DiscreteSolveArtifacts,
+) -> Result<(), V::Error> {
+    for block in [
+        &artifacts.rhs_jacobian_v,
+        &artifacts.runtime_assignment_jacobian_v,
+        &artifacts.guarded_jacobian_v,
+        &artifacts.structured_jacobian_v,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        visitor.visit_scalar_program_block(block)?;
+    }
+    Ok(())
 }
 
 pub fn walk_continuous_system<V: SolveVisitor + ?Sized>(
@@ -268,7 +287,11 @@ pub fn walk_initialization_artifacts<V: SolveVisitor + ?Sized>(
     visitor: &mut V,
     artifacts: &InitializationSolveArtifacts,
 ) -> Result<(), V::Error> {
-    visitor.visit_compute_block(&artifacts.residual_jacobian_v)
+    visitor.visit_compute_block(&artifacts.residual_jacobian_v)?;
+    match &artifacts.update_jacobian_v {
+        Some(block) => visitor.visit_scalar_program_block(block),
+        None => Ok(()),
+    }
 }
 
 pub fn walk_compute_block<V: SolveVisitor + ?Sized>(

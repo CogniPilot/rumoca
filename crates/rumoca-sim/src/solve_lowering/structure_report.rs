@@ -19,7 +19,10 @@ pub fn structural_report_for_dae(
     let model = folded.as_ref().unwrap_or(model);
     let aliases = rumoca_phase_structural::alias_quotient_report(model);
     let quotient = rumoca_phase_structural::quotient_aliases(model).map_err(structural_error)?;
-    let analyzed = quotient.as_ref().unwrap_or(model);
+    let literal = rumoca_phase_structural::fold_constant_values(quotient.as_ref().unwrap_or(model))
+        .map_err(structural_error)?
+        .or(quotient);
+    let analyzed = literal.as_ref().unwrap_or(model);
     let prepared =
         rumoca_phase_structural::prepare_for_solve(analyzed).map_err(structural_error)?;
     let mut report = prepared.structural_report();
@@ -75,7 +78,10 @@ pub fn diagnose_structural_singularity(
         rumoca_phase_structural::fold_evaluable_parameters(model).map_err(structural_error)?;
     let model = folded.as_ref().unwrap_or(model);
     let quotient = rumoca_phase_structural::quotient_aliases(model).map_err(structural_error)?;
-    let model = quotient.as_ref().unwrap_or(model);
+    let literal = rumoca_phase_structural::fold_constant_values(quotient.as_ref().unwrap_or(model))
+        .map_err(structural_error)?
+        .or(quotient);
+    let model = literal.as_ref().unwrap_or(model);
     let error = match rumoca_phase_structural::prepare_for_solve(model) {
         Ok(_) => return Ok(None),
         Err(error) => error,

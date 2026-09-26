@@ -609,6 +609,26 @@ pub fn lower_scalar_program_block_ad(
     )
 }
 
+/// The forward-mode JVP of `block` over `[solver-y | parameter]` seeds whose
+/// parameter seeds start at `p_seed_offset`, row-aligned with `block`.
+pub fn lower_scalar_program_block_full_jvp(
+    block: &rumoca_ir_solve::ScalarProgramBlock,
+    p_seed_offset: usize,
+) -> Result<rumoca_ir_solve::ScalarProgramBlock, LowerError> {
+    let rows = lower_scalar_program_rows_ad(
+        block.programs(),
+        block.program_spans(),
+        SeedMode::SolverYAndP { p_seed_offset },
+        "full scalar program JVP row count",
+    )?;
+    rumoca_ir_solve::ScalarProgramBlock::with_output_indices(
+        rows,
+        block.program_spans().to_vec(),
+        block.output_indices().to_vec(),
+    )
+    .map_err(LowerError::from)
+}
+
 pub fn lower_scalar_program_block_full_ad_with_spans(
     primal_rows: &[Vec<LinearOp>],
     row_spans: &[rumoca_core::Span],

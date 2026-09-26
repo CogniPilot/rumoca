@@ -158,6 +158,7 @@ fn lowered(
     };
     let tangents = block(basis.tangents.clone(), "chart_jvp.mo");
     let mut artifacts = solve::SolveArtifacts {
+        discrete: Default::default(),
         continuous: solve::ContinuousSolveArtifacts {
             implicit_jacobian_v: solve::ComputeBlock::from_scalar_program_block(tangents.clone()),
             implicit_jacobian_v_scalar: tangents,
@@ -230,6 +231,7 @@ fn two_chart_model(solvable_alternate: bool) -> solve::SolveModel {
     solve::SolveModel {
         problem,
         artifacts: solve::SolveArtifacts {
+            discrete: Default::default(),
             continuous: artifacts,
             ..Default::default()
         },

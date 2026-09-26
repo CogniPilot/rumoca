@@ -33,6 +33,12 @@ pub(crate) struct MslParityBudgetArgs {
 }
 
 impl MslParityBudgetArgs {
+    /// Set the solver and per-phase wall budgets of an isolated rerun.
+    pub(crate) fn set_wall_budgets(&mut self, secs: u64) {
+        self.sim_timeout_secs = Some(secs);
+        self.model_attempt_timeout_secs = Some(secs);
+    }
+
     /// Write the explicitly set budgets into the harness config map.
     pub(crate) fn insert_into(&self, config: &mut Map<String, Value>) {
         for (key, value) in [

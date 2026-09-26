@@ -1,14 +1,17 @@
-//! Tangent-lane Jacobians of projection blocks against finite differences.
+//! Tangent-lane Jacobians of projection blocks against an exact dense
+//! reference.
 //!
-//! The reduced tear Jacobian of each torn block, evaluated from multi-lane
-//! tangent programs, must match a central finite difference of the block's
-//! reduced residual through an independent causal sweep (each causal row
-//! solved for its target by a scalar Newton iteration on the primal row), and
-//! the recovered-coordinate sensitivities must match the sweep's causal
-//! coordinates, both to 1e-6 relative at random points. Each block's colored
-//! Jacobian from one multi-lane evaluation must match a central difference of
-//! its rows per column to 1e-6 relative and the one-direction colored JVP
-//! passes bit for bit.
+//! The reference differentiates every implicit row of a block in one
+//! direction per block unknown through the solver-Y JVP rows, giving the dense
+//! block Jacobian. For a torn block it then applies the implicit function
+//! theorem by a pivoted dense solve over the causal rows and targets: the
+//! recovered sensitivities are `-A^-1 B` for the causal-row slopes `A` in the
+//! causal targets and `B` in the tears, and the reduced tear Jacobian is
+//! `R_t + R_c (-A^-1 B)` over the residual rows. The tangent plan, which
+//! instead sweeps the causal steps in order, must agree to 1e-9 relative at
+//! random points. Each block's colored Jacobian from one multi-lane
+//! evaluation must match the dense reference to 1e-9 relative and the
+//! one-direction colored JVP passes bit for bit.
 
 use std::path::PathBuf;
 
@@ -22,7 +25,7 @@ use rumoca_ir_solve::{self as solve, ColoredTangentPlan, TornTangentPlan};
 use super::super::entry::lower_dae_for_simulation;
 use crate::SimOptions;
 
-const TOLERANCE: f64 = 1e-6;
+const TOLERANCE: f64 = 1e-9;
 
 /// Two coupled nonlinear loops torn at one or two unknowns each.
 pub(super) const LOOPS: &str = "model TangentLoops
@@ -109,9 +112,9 @@ impl Random {
 
 struct Rows<'a> {
     model: &'a solve::SolveModel,
-    primal: PreparedScalarProgramBlock,
     /// The solver-Y JVP rows the runtime projection differentiates.
     jvp: solve::ScalarProgramBlock,
+    prepared_jvp: PreparedScalarProgramBlock,
 }
 
 impl Rows<'_> {
@@ -123,46 +126,34 @@ impl Rows<'_> {
         }
     }
 
-    fn value(&self, row: usize, y: &[f64]) -> f64 {
-        let (program, offset) = self.primal.row_output_position(row).expect("a scalar row");
-        self.primal
+    /// The derivative of implicit row `row` in unknown `column` at `y`.
+    fn slope(&self, row: usize, column: usize, y: &[f64]) -> f64 {
+        let mut seed = vec![0.0; y.len() + self.model.parameters.len()];
+        seed[column] = 1.0;
+        let (program, offset) = self
+            .prepared_jvp
+            .row_output_position(row)
+            .expect("a scalar JVP row");
+        self.prepared_jvp
             .eval_row_output_unchecked_with_context(
                 program,
                 offset,
                 y,
                 &self.model.parameters,
                 0.0,
-                self.context(),
+                RowEvalContext {
+                    seed: Some(&seed),
+                    ..self.context()
+                },
             )
-            .expect("evaluate the primal row")
+            .expect("evaluate the JVP row")
     }
 
-    /// Solve row `row` for `y[target]` by Newton with a difference slope.
-    fn isolate(&self, row: usize, target: usize, y: &mut [f64]) {
-        for _ in 0..50 {
-            let residual = self.value(row, y);
-            let scale = y[target].abs().max(1.0);
-            let step = 1e-7 * scale;
-            y[target] += step;
-            let slope = (self.value(row, y) - residual) / step;
-            y[target] -= step;
-            let correction = residual / slope;
-            y[target] -= correction;
-            if correction.abs() <= 1e-15 * scale {
-                return;
-            }
-        }
-    }
-
-    /// The reduced residual after the causal sweep of `tearing` from `y`.
-    fn sweep(&self, tearing: &solve::BlockTearing, y: &mut [f64]) -> Vec<f64> {
-        for step in &tearing.causal_steps {
-            self.isolate(step.row, step.y_index, y);
-        }
-        tearing
-            .residual_rows
-            .iter()
-            .map(|&row| self.value(row, y))
+    /// The dense Jacobian of `rows` in `columns`, row-major.
+    fn dense(&self, rows: &[usize], columns: &[usize], y: &[f64]) -> Vec<f64> {
+        rows.iter()
+            .flat_map(|&row| columns.iter().map(move |&column| (row, column)))
+            .map(|(row, column)| self.slope(row, column, y))
             .collect()
     }
 }
@@ -174,7 +165,7 @@ fn assert_close(label: &str, exact: &[f64], reference: &[f64]) {
     for (index, (exact, reference)) in exact.iter().zip(reference).enumerate() {
         assert!(
             (exact - reference).abs() <= TOLERANCE * scale,
-            "{label} entry {index}: tangent {exact:e} vs difference {reference:e} (scale {scale:e})"
+            "{label} entry {index}: tangent {exact:e} vs dense {reference:e} (scale {scale:e})"
         );
     }
 }
@@ -190,15 +181,12 @@ fn random_point(model: &solve::SolveModel, random: &mut Random) -> Vec<f64> {
 }
 
 fn prepared_rows(model: &solve::SolveModel) -> Rows<'_> {
+    let jvp = to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)
+        .expect("scalarize the solver-Y JVP");
     Rows {
         model,
-        primal: PreparedScalarProgramBlock::new(
-            to_scalar_program_block(&model.problem.continuous.implicit_rhs)
-                .expect("scalarize the implicit rows"),
-        )
-        .expect("prepare the implicit rows"),
-        jvp: to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)
-            .expect("scalarize the solver-Y JVP"),
+        prepared_jvp: PreparedScalarProgramBlock::new(jvp.clone()).expect("prepare the JVP rows"),
+        jvp,
     }
 }
 
@@ -211,38 +199,73 @@ fn point<'a>(rows: &'a Rows<'a>, y: &'a [f64]) -> TangentPoint<'a> {
     }
 }
 
-/// Central differences of the reduced residual and the causal coordinates
-/// through the sweep, one column per tear, both row-major.
-fn sweep_difference(
+/// Solve `a x = b` for the `n` by `n` row-major `a` and the `n` by `m`
+/// row-major `b` by Gaussian elimination with partial pivoting.
+fn dense_solve(mut a: Vec<f64>, mut b: Vec<f64>, n: usize, m: usize) -> Vec<f64> {
+    for pivot in 0..n {
+        let best = (pivot..n)
+            .max_by(|&i, &j| a[i * n + pivot].abs().total_cmp(&a[j * n + pivot].abs()))
+            .expect("a pivot row");
+        for column in 0..n {
+            a.swap(pivot * n + column, best * n + column);
+        }
+        for column in 0..m {
+            b.swap(pivot * m + column, best * m + column);
+        }
+        for row in pivot + 1..n {
+            let factor = a[row * n + pivot] / a[pivot * n + pivot];
+            for column in pivot..n {
+                a[row * n + column] -= factor * a[pivot * n + column];
+            }
+            for column in 0..m {
+                b[row * m + column] -= factor * b[pivot * m + column];
+            }
+        }
+    }
+    for row in (0..n).rev() {
+        for column in 0..m {
+            let tail: f64 = (row + 1..n)
+                .map(|k| a[row * n + k] * b[k * m + column])
+                .sum();
+            b[row * m + column] = (b[row * m + column] - tail) / a[row * n + row];
+        }
+    }
+    b
+}
+
+/// The reduced tear Jacobian and the recovered sensitivities, both row-major
+/// over the tears, by the implicit function theorem on the dense block
+/// Jacobian at `y`.
+fn dense_reference(
     rows: &Rows<'_>,
     tearing: &solve::BlockTearing,
     y: &[f64],
 ) -> (Vec<f64>, Vec<f64>) {
-    let tears = tearing.tear_y_indices.len();
-    let mut residual = vec![0.0; tears * tears];
-    let mut recovered = vec![0.0; tearing.causal_steps.len() * tears];
-    for (column, &tear) in tearing.tear_y_indices.iter().enumerate() {
-        let step = 1e-7 * y[tear].abs().max(1.0);
-        let mut plus = y.to_vec();
-        plus[tear] += step;
-        let plus_residual = rows.sweep(tearing, &mut plus);
-        let mut minus = y.to_vec();
-        minus[tear] -= step;
-        let minus_residual = rows.sweep(tearing, &mut minus);
-        let quotient = |plus: f64, minus: f64| (plus - minus) / (2.0 * step);
-        let targets = tearing.causal_steps.iter().map(|causal| causal.y_index);
-        let causal = targets.map(|index| quotient(plus[index], minus[index]));
-        let reduced = plus_residual
-            .iter()
-            .zip(&minus_residual)
-            .map(|(plus, minus)| quotient(*plus, *minus));
-        for (row, value) in reduced.enumerate() {
-            residual[row * tears + column] = value;
-        }
-        for (row, value) in causal.enumerate() {
-            recovered[row * tears + column] = value;
-        }
-    }
+    let tears = &tearing.tear_y_indices;
+    let causal_rows: Vec<usize> = tearing.causal_steps.iter().map(|step| step.row).collect();
+    let targets: Vec<usize> = tearing
+        .causal_steps
+        .iter()
+        .map(|step| step.y_index)
+        .collect();
+    let (k, n) = (tears.len(), targets.len());
+    let a = rows.dense(&causal_rows, &targets, y);
+    let b = rows.dense(&causal_rows, tears, y);
+    let recovered: Vec<f64> = dense_solve(a, b, n, k)
+        .into_iter()
+        .map(|value| -value)
+        .collect();
+    let direct = rows.dense(&tearing.residual_rows, tears, y);
+    let through = rows.dense(&tearing.residual_rows, &targets, y);
+    let residual = (0..tearing.residual_rows.len())
+        .flat_map(|row| (0..k).map(move |column| (row, column)))
+        .map(|(row, column)| {
+            let chained: f64 = (0..n)
+                .map(|step| through[row * n + step] * recovered[step * k + column])
+                .sum();
+            direct[row * k + column] + chained
+        })
+        .collect();
     (residual, recovered)
 }
 
@@ -256,33 +279,27 @@ fn check_torn_block(
     points: usize,
 ) -> bool {
     let plan = TornTangentPlan::derive(tearing, &rows.jvp).expect("the tear Jacobian plan");
-    let evaluator = TornTangentEvaluator::new(plan);
+    let evaluator =
+        TornTangentEvaluator::new(plan, &rows.jvp).expect("prepare the tear Jacobian plan");
     for _ in 0..points {
-        let mut y = random_point(rows.model, random);
-        rows.sweep(tearing, &mut y);
+        let y = random_point(rows.model, random);
         let exact = evaluator
             .eval(point(rows, &y))
             .expect("evaluate the tangent Jacobian");
         let Some(exact) = exact else {
-            // The plan declines only at a vanished causal pivot, which the
-            // torn solve cannot isolate either: some causal row has a
-            // vanishing slope in its target (a vanished slope leaves the
-            // sweep undefined, not a number, as well).
-            let mut vanished = false;
-            for step in &tearing.causal_steps {
-                let mut plus = y.to_vec();
-                let delta = 1e-7 * y[step.y_index].abs().max(1.0);
-                plus[step.y_index] += delta;
-                let slope = (rows.value(step.row, &plus) - rows.value(step.row, &y)) / delta;
-                vanished |= slope.is_nan() || slope.abs() <= 1e-9;
-            }
+            // The plan declines only at a vanished causal pivot: some causal
+            // row has a zero or undefined slope in its own target.
+            let vanished = tearing.causal_steps.iter().any(|step| {
+                let slope = rows.slope(step.row, step.y_index, &y);
+                !slope.is_finite() || slope == 0.0
+            });
             assert!(
                 vanished,
                 "{label}: the tangent plan declined at regular pivots"
             );
             return false;
         };
-        let (residual, recovered) = sweep_difference(rows, tearing, &y);
+        let (residual, recovered) = dense_reference(rows, tearing, &y);
         assert_close(&format!("{label} reduced"), &exact.residual, &residual);
         assert_close(&format!("{label} recovered"), &exact.recovered, &recovered);
     }
@@ -375,7 +392,7 @@ fn check_colored_block(
         )
         .expect("evaluate the colored tangents");
     let n = block.rows.len();
-    let (mut values, mut difference) = (Vec::new(), Vec::new());
+    let (mut values, mut dense) = (Vec::new(), Vec::new());
     for (destination, dual) in one_direction_values(rows, application, &y)
         .into_iter()
         .enumerate()
@@ -390,19 +407,14 @@ fn check_colored_block(
             block.rows[destination % n],
             block.y_indices[destination / n],
         );
-        let step = 1e-7 * y[column].abs().max(1.0);
-        let mut plus = y.clone();
-        plus[column] += step;
-        let mut minus = y.clone();
-        minus[column] -= step;
         values.push(value);
-        difference.push((rows.value(row, &plus) - rows.value(row, &minus)) / (2.0 * step));
+        dense.push(rows.slope(row, column, &y));
     }
     assert!(
         !values.is_empty(),
         "{label}: the application places entries"
     );
-    assert_close(&format!("{label} colored"), &values, &difference);
+    assert_close(&format!("{label} colored"), &values, &dense);
 }
 
 /// The number of multi-color block applications the lowered plan issues.
@@ -442,13 +454,13 @@ fn check_colored_blocks(label: &str, model: &solve::SolveModel) -> usize {
 }
 
 #[test]
-fn torn_tangent_jacobians_match_finite_differences_of_the_causal_sweep() {
+fn torn_tangent_jacobians_match_the_dense_implicit_function_reference() {
     let model = lower_source(LOOPS, "TangentLoops", &[]);
     assert_eq!(check_torn_blocks("TangentLoops", &model, 8), (2, 2));
 }
 
 #[test]
-fn colored_tangent_jacobians_match_finite_differences_and_the_one_direction_passes() {
+fn colored_tangent_jacobians_match_the_dense_reference_and_the_one_direction_passes() {
     let model = lower_source(&affine_chain(), "TangentChain", &[]);
     assert!(check_colored_blocks("TangentChain", &model) >= 1);
 }
@@ -460,7 +472,7 @@ pub(super) fn msl_root() -> Option<PathBuf> {
 }
 
 #[test]
-fn fourbar1_tangent_jacobians_match_finite_differences() {
+fn fourbar1_tangent_jacobians_match_the_dense_reference() {
     let Some(root) = msl_root() else {
         return;
     };
@@ -471,7 +483,7 @@ fn fourbar1_tangent_jacobians_match_finite_differences() {
     );
     // The block table moves with structural levers, so the expected counts
     // come from the lowered plan. Every torn block is either checked against
-    // the finite difference at every point or declined at a vanished causal
+    // the dense reference at every point or declined at a vanished causal
     // pivot, which `check_torn_block` asserts; every multi-color application
     // is checked.
     let (torn, checked) = check_torn_blocks("Fourbar1", &model, 3);

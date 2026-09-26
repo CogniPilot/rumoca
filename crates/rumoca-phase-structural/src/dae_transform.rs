@@ -5,12 +5,27 @@
 //! scalar state is directly defined by a differentiable constraint. The
 //! replacement DAE demotes that state and substitutes the exact symbolic
 //! derivative of its definition at every derivative occurrence.
+//!
+//! # References
+//!
+//! Structural index reduction by differentiating a structurally singular
+//! subset and rematching is C. C. Pantelides, "The consistent initialization of
+//! differential-algebraic systems", SIAM Journal on Scientific and Statistical
+//! Computing 9(2):213-231, 1988, doi:10.1137/0909014. Demoting a state whose
+//! derivative the differentiated constraint now determines, rather than adding
+//! the derivative as a new unknown, is the dummy-derivative method of S. E.
+//! Mattsson and G. Soderlind, "Index reduction in differential-algebraic
+//! equations using dummy derivatives", SIAM Journal on Scientific Computing
+//! 14(3):677-692, 1993, doi:10.1137/0914043. Textbook treatment of both, in the
+//! Modelica setting: F. E. Cellier and E. Kofman, "Continuous System
+//! Simulation", Springer 2006, chapter 7.
 
 mod alias_quotient;
 mod auxiliary_blocks;
 mod builtin_profiles;
 mod component_constraint;
 mod component_projection;
+mod constant_values;
 mod constraints;
 mod declarations;
 mod demotion_bounds;
@@ -67,6 +82,7 @@ pub use self::alias_quotient::{
     QuotientScope as AliasQuotientScope, alias_quotient_report, formal_alias_quotient_report,
     inspect_quotient_aliases, quotient_aliases, quotient_formal_aliases,
 };
+pub use self::constant_values::fold_constant_values;
 pub use self::evaluable_parameters::fold_evaluable_parameters;
 pub use self::formal_derivatives::{
     FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,

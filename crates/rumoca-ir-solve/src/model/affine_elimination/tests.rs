@@ -13,10 +13,12 @@ fn fixture() -> (AlgebraicProjectionBlock, StructuralPattern) {
                 CausalStep {
                     row: 30,
                     y_index: 12,
+                    ..Default::default()
                 },
                 CausalStep {
                     row: 10,
                     y_index: 11,
+                    ..Default::default()
                 },
             ],
         }),

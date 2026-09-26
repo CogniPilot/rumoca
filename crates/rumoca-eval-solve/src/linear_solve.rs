@@ -1,3 +1,13 @@
+//! Dense linear solve for the interpreter's `LinearSolveComponent` op.
+//!
+//! Gaussian elimination with partial pivoting, the standard method and its
+//! standard stability argument: G. H. Golub and C. F. Van Loan, "Matrix
+//! Computations", 4th ed., Johns Hopkins University Press 2013, sections 3.2
+//! (triangular solve and elimination) and 3.4 (partial pivoting and its growth
+//! factor). Row interchange by largest pivot magnitude is what section 3.4.1
+//! prescribes; the interpreter matches the pivoting order of the compiled
+//! backends so the two agree bit for bit.
+
 use crate::tensor_policy::LinearSolveKernel;
 use crate::{EvalSolveError, get};
 use rumoca_ir_solve::StructuralPattern;
@@ -328,6 +338,10 @@ impl AugmentedMatrix {
     }
 }
 
+/// Reduce the augmented matrix in place by Gaussian elimination with partial
+/// pivoting, returning `None` when the pivot column is numerically singular.
+///
+/// Golub and Van Loan, "Matrix Computations", 4th ed., algorithm 3.4.1.
 pub fn gaussian_eliminate(matrix: &mut AugmentedMatrix) -> Option<()> {
     let n = matrix.n;
     for col in 0..n {

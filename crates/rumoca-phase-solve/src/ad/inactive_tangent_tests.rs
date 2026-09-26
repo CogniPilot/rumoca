@@ -397,7 +397,7 @@ fn inactive_tangent_does_not_replace_invalid_primal_arithmetic() {
 }
 
 #[test]
-fn bilinear_tangents_match_primal_finite_differences_for_either_active_factor() {
+fn bilinear_tangents_match_the_product_rule_for_either_active_factor() {
     for kind in 0..3 {
         for swap in [false, true] {
             for parameter_seeds in [false, true] {
@@ -495,9 +495,9 @@ fn check_bilinear_tangents(kind: usize, swap: bool, parameter_seeds: bool) {
         &mut actual,
     )
     .unwrap();
-    let evaluate = |step: f64| {
-        let y = std::array::from_fn::<_, 4, _>(|i| y[i] + step * dy[i]);
-        let p = std::array::from_fn::<_, 4, _>(|i| p[i] + step * dp[i]);
+    // The primal is bilinear in its P and Y factors, so its exact tangent is
+    // F(dp, y) + F(p, dy).
+    let evaluate = |y: &[f64], p: &[f64]| {
         let mut out = vec![0.0; count];
         rumoca_eval_solve::eval_scalar_program_block(
             &primal,
@@ -510,14 +510,14 @@ fn check_bilinear_tangents(kind: usize, swap: bool, parameter_seeds: bool) {
         .unwrap();
         out
     };
-    let expected = evaluate(0.0);
-    let plus = evaluate(1e-6);
-    let minus = evaluate(-1e-6);
+    let expected = evaluate(&y, &p);
+    let through_p = evaluate(&y, &dp);
+    let through_y = evaluate(&dy, &p);
     for i in 0..count {
         assert_eq!(actual[2 * i], expected[i]);
-        let slope = (plus[i] - minus[i]) / 2e-6;
+        let tangent = through_p[i] + through_y[i];
         assert!(
-            (actual[2 * i + 1] - slope).abs() < 1e-8,
+            (actual[2 * i + 1] - tangent).abs() <= 1e-12 * tangent.abs().max(1.0),
             "kind={kind} swap={swap} parameters={parameter_seeds} component={i}"
         );
     }

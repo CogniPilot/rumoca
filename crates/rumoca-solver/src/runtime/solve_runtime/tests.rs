@@ -241,6 +241,7 @@ fn runtime_new_reports_invalid_native_stride_metadata() {
     assert_eq!(error.source_span(), Some(span));
 }
 
+mod coupled_event_newton;
 mod event_iteration;
 #[test]
 fn derivative_refresh_keeps_coupled_dependency_block_but_drops_unrelated_output() {

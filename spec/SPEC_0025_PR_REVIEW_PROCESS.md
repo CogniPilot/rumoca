@@ -84,6 +84,16 @@ fn flatten_if_equation(...) { ... }
 Run every command below under `CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4`
 (SPEC_0033 §6a).
 
+Pre-landing gate (every tip that lands MUST pass it, with coverage):
+
+```bash
+cargo xtask verify gate --rev <tip> --coverage
+```
+
+It snapshots the committed revision, runs the blocking steps below with CI's
+flags in a fresh Cargo target directory, and prints one `GATE_OK` or
+`GATE_FAILED` line naming the revision and its log.
+
 Standard verification commands (all merged code MUST pass):
 
 ```bash
@@ -193,6 +203,7 @@ net_added_lines:
 
 | Rule | Why |
 |---|---|
+| The landed tip passed `cargo xtask verify gate --rev <tip> --coverage` (GATE_OK) before landing | The gate runs CI's blocking steps and the coverage trim gate over a committed snapshot, so a landing is never the first run of a blocking check |
 | At least one approving review | Two-eyes on every merge |
 | All CI checks passing | CI gates (incl. `architecture_hardening_test`, `spec_budget_test`) are the non-negotiables |
 | Capability PRs show Tier 1 evidence and source every parity number | SPEC_0033 §6a cadence must be checkable at review |

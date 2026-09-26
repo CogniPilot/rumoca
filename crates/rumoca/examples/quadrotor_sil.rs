@@ -48,7 +48,15 @@ fn hover_omega() -> f64 {
 }
 
 // ===========================================================================
-// Cerebri flatbuffer protocol (Rust port of topic_flatbuffer.c)
+// Cerebri flatbuffer protocol
+//
+// Wire layout only: the byte offsets, vtable sizes, and field order of the
+// FlatBuffers messages Cerebri exchanges over its SIL socket, taken from the
+// schema as it is realized in `topic_flatbuffer.c` of
+// https://github.com/CogniPilot/cerebri. Cerebri is Apache-2.0, Copyright
+// CogniPilot Foundation, the same license this repository is under. What is
+// reproduced here is interface information, not algorithm: it is what any
+// writer of a compatible peer has to reproduce for the two ends to agree.
 // ===========================================================================
 
 mod cerebri_fb {

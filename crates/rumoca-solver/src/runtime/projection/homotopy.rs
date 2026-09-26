@@ -1,3 +1,19 @@
+//! Continuation for the `homotopy` initialization operator.
+//!
+//! The operator's semantics are MLS 3.6 section 3.7.4.3; the numerical method
+//! that follows the path from the simplified system to the actual one is
+//! ordinary predictor-free natural-parameter continuation with adaptive step
+//! control. E. L. Allgower and K. Georg, "Introduction to Numerical
+//! Continuation Methods", SIAM Classics in Applied Mathematics 45, 2003,
+//! chapters 1 to 3, is the reference for the method and for why a step that
+//! fails is retried at a smaller lambda increment rather than abandoned. The
+//! Modelica-specific use of it, and the reliability evidence for it on large
+//! initialization systems, is M. Sielemann, F. Casella, M. Otter, C. Clauss,
+//! J. Eborn, S. E. Mattsson and H. Olsson, "Robust Initialization of
+//! Differential-Algebraic Equations Using Homotopy", Proceedings of the 8th
+//! International Modelica Conference, 2011, pp. 75-85,
+//! doi:10.3384/ecp1106375.
+
 use super::{AlgebraicProjectionModel, RuntimeSolveError, project_initial_variables_with_plan};
 
 const INITIAL_CONTINUATION_STEP: f64 = 0.125;

@@ -369,6 +369,9 @@ pub(crate) enum KernelAnswer {
     Done,
     ColoredEntries(JacobianEntries),
     TornJacobian(rumoca_eval_solve::TornTangentJacobian),
+    /// The torn block's tangent plan found a vanished causal coefficient: the
+    /// reduced Newton has no Jacobian at this point.
+    TornJacobianSingular,
 }
 
 pub(crate) trait AlgebraicProjectionModel: ImplicitProjectionModel {
@@ -714,7 +717,12 @@ fn try_torn_algebraic_block<M: ImplicitProjectionModel>(
     let Some(tearing) = block.tearing.as_ref() else {
         return Ok(None);
     };
-    tearing::project_torn_algebraic_block(model, y, p, t, tearing, tol, certify_coordinates)
+    let update =
+        tearing::project_torn_algebraic_block(model, y, p, t, tearing, tol, certify_coordinates)?;
+    if update.is_none() {
+        super::hotpath_stats::inc_torn_decline();
+    }
+    Ok(update)
 }
 
 fn project_algebraic_block<M: ImplicitProjectionModel>(
@@ -898,9 +906,11 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
 /// tie by advancing off zero toward the positive branch (its default `start = 0`
 /// lands on `+sqrt(c)`, a negative start on `-sqrt(c)`); mirror that by seeding
 /// each such unknown to `+scale`, leaving the sign convention for nonzero seeds
-/// untouched. Only unknowns resting exactly at zero with a vanished column are
-/// advanced, so a determined zero (live column) and every non-stalled block are
-/// left unchanged. Returns whether any unknown moved.
+/// untouched. A row whose Jacobian vanishes (`s` and `w` in `s*s + w*w = c` at
+/// `s = w = 0`) stalls Newton the same way, so then every unknown of the block
+/// resting at zero advances. Only unknowns resting exactly at zero with a
+/// vanished column, or in a block with a vanished row, are advanced, so every
+/// non-stalled block is left unchanged. Returns whether any unknown moved.
 fn nudge_singular_zero_seed(
     y: &mut [f64],
     block: &solve::AlgebraicProjectionBlock,
@@ -910,6 +920,9 @@ fn nudge_singular_zero_seed(
     if jacobian.ncols() != block.y_indices.len() {
         return false;
     }
+    let vanished_row = jacobian
+        .row_iter()
+        .any(|row| row.iter().all(|entry| *entry == 0.0));
     let mut nudged = false;
     for (column, y_index) in block.y_indices.iter().copied().enumerate() {
         let Some(slot) = y.get_mut(y_index) else {
@@ -918,7 +931,7 @@ fn nudge_singular_zero_seed(
         if *slot != 0.0 {
             continue;
         }
-        if jacobian.column(column).iter().any(|entry| *entry != 0.0) {
+        if !vanished_row && jacobian.column(column).iter().any(|entry| *entry != 0.0) {
             continue;
         }
         let scale = variable_scales.get(column).copied().unwrap_or(1.0);

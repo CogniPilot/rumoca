@@ -252,7 +252,9 @@ fn exact_aggregate_call_projections_share_one_multi_output_program() {
             ))
         })?;
         let (first, second, independent) = model.expressions(|expressions| {
-            let input = expressions.at(at).literal(dae::DaeLiteral::Real(2.0))?;
+            // A time-varying argument keeps the call a call (a constant one
+            // folds to a literal at construction).
+            let input = expressions.at(at).coordinate(dae::CoordinateInput::Time)?;
             let shared_call = expressions.at(at).call(function, 0, [input])?;
             let independent_call = expressions.at(at).call(function, 0, [input])?;
             let one = expressions.at(at).literal(dae::DaeLiteral::Integer(1))?;

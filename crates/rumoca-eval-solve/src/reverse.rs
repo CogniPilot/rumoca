@@ -1,5 +1,15 @@
 //! Scalar reverse-mode AD (vector-Jacobian product).
 //!
+//! The method is reverse-mode (adjoint) algorithmic differentiation: A.
+//! Griewank and A. Walther, "Evaluating Derivatives: Principles and Techniques
+//! of Algorithmic Differentiation", 2nd ed., SIAM 2008,
+//! doi:10.1137/1.9780898717761, chapter 4. The cost result that motivates it,
+//! a full gradient for a small constant multiple of one function evaluation
+//! regardless of input count, is B. Speelpenning, "Compiling Fast Partial
+//! Derivatives of Functions Given by Algorithms", PhD thesis, University of
+//! Illinois at Urbana-Champaign, 1980. The adjoint of a linear solve used by
+//! `LinearSolveComponent` is Griewank and Walther, section 3.4.
+//!
 //! For a scalar Solve-IR program `f`, the reverse sweep computes `Jᵀλ` for an
 //! output cotangent `λ` in a single pass, where `J = ∂f/∂(inputs)`. It records
 //! each row's primal register values on a forward pass, then walks the ops
@@ -850,9 +860,10 @@ mod tests {
 
     /// Reverse VJP through a `LinearSolveComponent` (`x = A⁻¹ b`). The 2x2 system's
     /// `A`/`b` are loaded from solver-y, so `x[0]` is a function of `y`; the reverse
-    /// `∂x0/∂y` must match a finite-difference of the forward solve.
+    /// `∂x0/∂y` must match the analytic derivative of the solve: `∂x/∂b = A⁻¹` and
+    /// `∂x/∂A_ij = -A⁻¹ e_i x_j`.
     #[test]
-    fn reverse_linear_solve_component_matches_finite_difference() {
+    fn reverse_linear_solve_component_matches_the_analytic_derivative() {
         // regs: 0..4 = A row-major [[A00,A01],[A10,A11]], 4..6 = b, 6 = x[0].
         let row = vec![
             LinearOp::LoadY { dst: 0, index: 0 },
@@ -928,17 +939,13 @@ mod tests {
         )
         .expect("reverse sweep");
 
-        // Central finite differences of the forward solve.
-        let h = 1.0e-6;
-        for i in 0..6 {
-            let mut yp = y;
-            let mut ym = y;
-            yp[i] += h;
-            ym[i] -= h;
-            let fd = (forward_x0(&yp) - forward_x0(&ym)) / (2.0 * h);
+        // A⁻¹ = [[3, -1], [-1, 2]] / 5, so row 0 of A⁻¹ is [0.6, -0.2], and y is
+        // ordered [A00, A01, A10, A11, b0, b1].
+        let expected = [-0.24, -0.12, 0.08, 0.04, 0.6, -0.2];
+        for (i, expected) in expected.iter().enumerate() {
             assert!(
-                (cot_y[i] - fd).abs() < 1.0e-6,
-                "∂x0/∂y[{i}]: reverse={}, finite-diff={fd}",
+                (cot_y[i] - expected).abs() < 1.0e-12,
+                "∂x0/∂y[{i}]: reverse={}, analytic={expected}",
                 cot_y[i]
             );
         }

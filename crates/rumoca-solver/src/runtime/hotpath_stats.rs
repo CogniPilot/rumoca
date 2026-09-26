@@ -44,6 +44,25 @@ pub fn snapshot() -> Option<HotpathStatsSnapshot> {
     })
 }
 
+thread_local! {
+    static TORN_DECLINES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Coupled blocks this thread projected through the dense block Newton after
+/// their constructor tearing declined, since [`reset_torn_declines`].
+#[must_use]
+pub fn torn_declines() -> u64 {
+    TORN_DECLINES.with(std::cell::Cell::get)
+}
+
+pub fn reset_torn_declines() {
+    TORN_DECLINES.with(|count| count.set(0));
+}
+
+pub(crate) fn inc_torn_decline() {
+    TORN_DECLINES.with(|count| count.set(count.get() + 1));
+}
+
 pub(crate) fn inc_solver_step() {
     bump(&SOLVER_STEPS);
 }

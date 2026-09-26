@@ -112,10 +112,12 @@ pub struct JacobianProbe {
 }
 
 /// Lower `dae_model` and assemble the dense state Jacobian
-/// `∂(der(state))/∂(state)` at `(state, t)` by finite difference, naming every
-/// row/column (by qualified name) and flagging structurally-singular columns and zero
-/// pivots. States are addressed by name (`state_overrides`); unset states keep
-/// their model initial value. Backs the `rumoca sim --inspect jacobian` debug dump.
+/// `∂(der(state))/∂(state)` at `(state, t)` from the kernel's exact
+/// forward-mode JVP (one state unit seed at a time, through the algebraic
+/// projection's seed linearization), naming every row/column (by qualified
+/// name) and flagging structurally-singular columns and zero pivots. States
+/// are addressed by name (`state_overrides`); unset states keep their model
+/// initial value. Backs the `rumoca sim --inspect jacobian` debug dump.
 pub fn jacobian_for_dae(
     dae_model: &dae::Dae,
     opts: &SimOptions,
