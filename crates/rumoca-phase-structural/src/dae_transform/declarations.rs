@@ -57,12 +57,15 @@ fn rebuild_record_type<'source, 'target>(
             .expect("checked record field type precedes its record owner");
         (name.clone(), field_type)
     });
-    types.record(
+    // An array of records keeps its extents; only its element layout is
+    // rebuilt field by field.
+    types.record_array(
         value_type
             .record_name()
             .expect("checked record has a canonical name")
             .clone(),
         fields,
+        value_type.dimensions(),
         provenance,
     )
 }
