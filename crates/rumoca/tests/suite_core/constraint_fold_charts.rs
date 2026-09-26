@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use rumoca::Compiler;
 use rumoca_ir_solve::{ChartCoordinate, ChartExchangeStatus, SolveModel};
+use rumoca_sim::SimSolverMode;
 
 const SPLIT_CIRCLE_CHART: &str = include_str!("../fixtures/index_reduction/SplitCircleChart.mo");
 
@@ -255,6 +256,15 @@ fn simulate(
     t_end: f64,
     tolerance: f64,
 ) -> Result<rumoca_sim::SimResult, rumoca_sim::SimulationDiagnosticError> {
+    simulate_with(source, model, (t_end, tolerance), SimSolverMode::Auto)
+}
+
+fn simulate_with(
+    source: &str,
+    model: &str,
+    (t_end, tolerance): (f64, f64),
+    solver_mode: SimSolverMode,
+) -> Result<rumoca_sim::SimResult, rumoca_sim::SimulationDiagnosticError> {
     let compiled = Compiler::new()
         .model(model)
         .compile_str(source, "constraint_fold_charts.mo")
@@ -266,6 +276,7 @@ fn simulate(
             dt: Some(0.01),
             rtol: tolerance,
             atol: tolerance,
+            solver_mode,
             ..Default::default()
         },
     )
@@ -302,6 +313,46 @@ fn a_split_circle_switches_charts_and_completes_its_revolution_on_the_physical_b
         worst < 1e-4,
         "the switched trajectory stays on the physical branch: worst error {worst}"
     );
+}
+
+/// Diffsol's BDF discards a trial point the active chart cannot evaluate past
+/// its fold, including a trial it formed from the discarded values, and retries
+/// a smaller step. A fast circle at a coarse tolerance takes steps long enough
+/// to reach past a fold, and still completes on the physical branch.
+#[test]
+fn diffsol_retries_a_discarded_trial_past_a_fold() {
+    let fast = SPLIT_CIRCLE_CHART.replace("vy(start = 1,", "vy(start = 3,");
+    rumoca_solver::fmi_me::reset_trial_discard_count();
+    let result = simulate_with(&fast, "SplitCircleChart", (20.0, 2e-2), SimSolverMode::Bdf)
+        .expect("BDF retries each discarded trial");
+    assert!(
+        rumoca_solver::fmi_me::trial_discard_count() > 0,
+        "a trial reached past a fold"
+    );
+    // The coarse tolerance lets the phase and speed drift, so the branch is
+    // checked by continuity: on the circle, and each output displacement is
+    // the one the velocity carries, never a jump to a mirror root.
+    let columns = ["x", "y", "vx", "vy"].map(|name| column(&result, name));
+    let value = |slot: usize, index: usize| result.data[columns[slot]][index];
+    for (index, &time) in result.times.iter().enumerate() {
+        let radius = value(0, index).hypot(value(1, index));
+        assert!((radius - 1.0).abs() < 1e-6, "at {time}: radius {radius}");
+        if index > 0 {
+            let step = time - result.times[index - 1];
+            let slip = [0, 1]
+                .map(|axis| {
+                    let moved = value(axis, index) - value(axis, index - 1);
+                    let carried = 0.5 * (value(axis + 2, index) + value(axis + 2, index - 1));
+                    moved - carried * step
+                })
+                .into_iter()
+                .fold(0.0_f64, |worst, slip| worst.max(slip.abs()));
+            assert!(
+                slip < 0.05,
+                "at {time}: jumped {slip} off the velocity's path"
+            );
+        }
+    }
 }
 
 #[test]

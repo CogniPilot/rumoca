@@ -36,7 +36,9 @@ mod derivative;
 pub mod time_only;
 
 pub(super) use derivative::MeDerivativeController;
-pub use derivative::{MeDerivativeHandle, MeDerivativeRefused};
+pub use derivative::{
+    MeDerivativeHandle, MeDerivativeRefused, reset_trial_discard_count, trial_discard_count,
+};
 
 #[cfg(test)]
 pub(super) use derivative::{DerivativeClosure, detached_handle};

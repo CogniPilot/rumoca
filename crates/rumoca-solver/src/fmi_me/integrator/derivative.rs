@@ -28,6 +28,22 @@ use std::{
 use super::MeIntegrationError;
 use crate::fmi_me::{MeError, MeTime, SolveMeKernel};
 
+thread_local! {
+    static TRIAL_DISCARDS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Recoverable trial discards recorded on this thread since the last
+/// [`reset_trial_discard_count`]: failed evaluations of a chart-switching
+/// component that an integrator rejected and retried.
+#[must_use]
+pub fn trial_discard_count() -> u64 {
+    TRIAL_DISCARDS.with(Cell::get)
+}
+
+pub fn reset_trial_discard_count() {
+    TRIAL_DISCARDS.with(|count| count.set(0));
+}
+
 /// What a handle actually evaluates.
 ///
 /// Host-private, so the concrete component source and its constructor are not
@@ -168,6 +184,7 @@ impl DerivativeCell {
             *discard = Some(error);
         }
         self.discard_taken.set(false);
+        TRIAL_DISCARDS.with(|count| count.set(count.get() + 1));
         MeDerivativeRefused
     }
 
@@ -178,6 +195,15 @@ impl DerivativeCell {
         out: &mut [f64],
     ) -> Result<(), MeIntegrationError> {
         self.require_active("a state-derivative evaluation")?;
+        // A method that retries after a discard can form its next trial from
+        // the discarded NaN values. For a discarding component that trial is
+        // one more point it cannot evaluate, not a contract failure.
+        if self.component.discards_failed_trials() && !states.iter().all(|value| value.is_finite())
+        {
+            return Err(MeIntegrationError::from(MeError::Evaluation {
+                message: format!("trial state at t={time} is not finite"),
+            }));
+        }
         self.component
             .derivatives_into(time, states, self.event_boundary.get(), out)
             .map_err(MeIntegrationError::from)
