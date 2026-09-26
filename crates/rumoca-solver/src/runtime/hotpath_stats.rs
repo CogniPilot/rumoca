@@ -44,23 +44,21 @@ pub fn snapshot() -> Option<HotpathStatsSnapshot> {
     })
 }
 
-thread_local! {
-    static TORN_DECLINES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
 /// Coupled blocks this thread projected through the dense block Newton after
-/// their constructor tearing declined, since [`reset_torn_declines`].
+/// their constructor tearing declined, since [`reset_torn_declines`]: the
+/// torn-to-dense fallbacks the projection fallback counts record.
 #[must_use]
 pub fn torn_declines() -> u64 {
-    TORN_DECLINES.with(std::cell::Cell::get)
+    super::fallbacks::projection_fallbacks()
+        .sites
+        .values()
+        .map(|counts| counts.count(super::fallbacks::ProjectionFallback::TornToDense))
+        .sum()
 }
 
+/// Reset the projection fallback counts [`torn_declines`] reads.
 pub fn reset_torn_declines() {
-    TORN_DECLINES.with(|count| count.set(0));
-}
-
-pub(crate) fn inc_torn_decline() {
-    TORN_DECLINES.with(|count| count.set(count.get() + 1));
+    super::fallbacks::reset_projection_fallbacks();
 }
 
 pub(crate) fn inc_solver_step() {
