@@ -245,3 +245,93 @@ fn a_copy_names_the_value_it_copies_and_a_gathered_range_checks() {
     );
     ScalarProgramRegisterFlow::derive(segment.ops()).expect("the segment is a valid program");
 }
+
+/// `y[target] = sin(<load>) + k`.
+fn sine_of(load: LinearOp, k: f64) -> Vec<LinearOp> {
+    vec![
+        load,
+        LinearOp::Unary {
+            dst: 1,
+            op: UnaryOp::Sin,
+            arg: 0,
+        },
+        LinearOp::Const { dst: 2, value: k },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Add,
+            lhs: 1,
+            rhs: 2,
+        },
+        LinearOp::StoreOutput { src: 3 },
+    ]
+}
+
+/// SPEC_0043 §6a variability: a value of parameter slots alone (parameter
+/// variability) and one of a solver slot (continuous) are each computed once
+/// per call, and every load still reads its slot, so a value is recomputed at
+/// every call from the slots as they then are.
+#[test]
+fn parameter_and_continuous_values_are_computed_once_per_call() {
+    for load in [
+        LinearOp::LoadP { dst: 0, index: 4 },
+        LinearOp::LoadY { dst: 0, index: 4 },
+    ] {
+        let rows = [
+            (sine_of(load.clone(), 1.0), vec![10]),
+            (sine_of(load.clone(), 2.0), vec![11]),
+        ];
+        let programs = programs(&rows);
+        let shared = SharedValueSegments::derive(&programs);
+        shared.check(&programs).unwrap();
+        let [segment] = shared.segments() else {
+            panic!("one segment");
+        };
+        assert_eq!(
+            count(segment.ops(), "Unary"),
+            1,
+            "{load:?}: one sine per call"
+        );
+        assert_eq!(
+            count(segment.ops(), load.kind_name()),
+            1,
+            "{load:?}: its slot is read at every call"
+        );
+    }
+}
+
+/// SPEC_0043 §6a variability: a discrete or previous value lives in its
+/// memory slot, and the segment reads that slot at every call; a store to a
+/// slot earlier in the same call is read from its register, so the segment
+/// sees exactly the memory an unshared sequence sees and keeps nothing across
+/// calls, hence across no event boundary.
+#[test]
+fn a_discrete_memory_value_is_read_from_its_slot_at_every_call() {
+    let pre = LinearOp::LoadP { dst: 0, index: 7 };
+    let rows = [
+        (sine_of(pre.clone(), 1.0), vec![20]),
+        (
+            vec![
+                LinearOp::LoadY { dst: 0, index: 20 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![21],
+        ),
+        (sine_of(pre, 2.0), vec![22]),
+    ];
+    let programs = programs(&rows);
+    let shared = SharedValueSegments::derive(&programs);
+    shared.check(&programs).unwrap();
+    let [segment] = shared.segments() else {
+        panic!("one segment");
+    };
+    assert_eq!(
+        count(segment.ops(), "LoadP"),
+        1,
+        "the memory slot is read at every call"
+    );
+    assert_eq!(
+        count(segment.ops(), "LoadY"),
+        0,
+        "the stored value is forwarded"
+    );
+}
