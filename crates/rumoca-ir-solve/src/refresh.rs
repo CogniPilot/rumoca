@@ -723,59 +723,61 @@ impl ContinuousRefreshOwners {
             return Ok(());
         }
         self.validate_sources_against(implicit_rhs)?;
+        // The first exact program owning each row, with the row's position in
+        // it: one pass over the inventory instead of one search per row.
+        let mut owned = BTreeMap::new();
+        for program in &self.exact_assignment_programs {
+            for (position, owner) in program.row_owners.iter().enumerate() {
+                owned.entry(*owner).or_insert((program, position));
+            }
+        }
         for plan in [&self.algebraic, &self.derivative, &self.root, &self.event]
             .into_iter()
             .chain(self.clock_events.iter())
         {
             for row in &plan.rows {
-                self.validate_row_assignment_program(row)?;
+                validate_row_assignment_program(row, owned.get(&row.owner_id).copied())?;
             }
         }
         Ok(())
     }
+}
 
-    /// Checks that one refresh row and the exact assignment program inventory
-    /// agree on whether the row replays as an exact assignment.
-    fn validate_row_assignment_program(
-        &self,
-        row: &AlgebraicRefreshRow,
-    ) -> Result<(), ContinuousRefreshConstructionError> {
-        let program = self
-            .exact_assignment_programs
-            .iter()
-            .find(|program| program.row_owners.contains(&row.owner_id));
-        if !row.exact_assignment_certified {
-            if program.is_some() {
-                return refresh_error(
-                    "non-exact continuous refresh row owns an exact assignment program".to_string(),
-                );
-            }
-            return Ok(());
-        }
-        let Some(program) = program else {
+/// Checks that one refresh row and the exact assignment program inventory
+/// agree on whether the row replays as an exact assignment: `owned` is the
+/// first exact program owning the row, with the row's position in it.
+fn validate_row_assignment_program(
+    row: &AlgebraicRefreshRow,
+    owned: Option<(&ExactRefreshAssignmentProgram, usize)>,
+) -> Result<(), ContinuousRefreshConstructionError> {
+    let program = owned.map(|(program, _)| program);
+    if !row.exact_assignment_certified {
+        if program.is_some() {
             return refresh_error(
-                "exact continuous refresh row has no constructed assignment program".to_string(),
-            );
-        };
-        let Some(position) = program
-            .row_owners
-            .iter()
-            .position(|owner| *owner == row.owner_id)
-        else {
-            return refresh_error(
-                "exact continuous refresh program lost its row owner".to_string(),
-            );
-        };
-        if program.source != row.source
-            || program.target_indices.get(position) != Some(&row.target_index)
-        {
-            return refresh_error(
-                "exact continuous refresh program does not replay its row owner".to_string(),
+                "non-exact continuous refresh row owns an exact assignment program".to_string(),
             );
         }
-        Ok(())
+        return Ok(());
     }
+    let Some(program) = program else {
+        return refresh_error(
+            "exact continuous refresh row has no constructed assignment program".to_string(),
+        );
+    };
+    let Some((_, position)) = owned else {
+        return refresh_error("exact continuous refresh program lost its row owner".to_string());
+    };
+    if program.source != row.source
+        || program.target_indices.get(position) != Some(&row.target_index)
+    {
+        return refresh_error(
+            "exact continuous refresh program does not replay its row owner".to_string(),
+        );
+    }
+    Ok(())
+}
 
+impl ContinuousRefreshOwners {
     pub fn exact_assignment_program(
         &self,
         id: ExactRefreshAssignmentProgramId,

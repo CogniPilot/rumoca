@@ -70,6 +70,7 @@ use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp,
     ScalarProgramBlock, StructuralPattern, TargetAssignmentShape, TensorOutputMap,
 };
+pub(crate) use support::non_causal_linear_op;
 use support::*;
 pub use torn_sweep::{PreparedTornSweep, TornSweepComposite, TornSweepStatus};
 
@@ -83,24 +84,6 @@ pub(crate) fn assignment_shape_for_program_output(
         .find_map(|(output, shape)| {
             (output == output_offset && shape.target_y_index() == target_y_index).then_some(shape)
         }))
-}
-
-pub(crate) fn program_can_evaluate_declared_target(
-    program: &[LinearOp],
-    output_offset: usize,
-    target_y_index: usize,
-) -> Result<bool, EvalSolveError> {
-    let shapes = target_assignment_shapes_with_output_offsets(program)?;
-    let selected = shapes.iter().find_map(|(output, shape)| {
-        (*output == output_offset && shape.target_y_index() == target_y_index).then_some(shape)
-    });
-    Ok(match selected {
-        Some(_) => true,
-        None => {
-            !shapes.iter().any(|(output, _)| *output == output_offset)
-                && !row_output_depends_on_y_index(program, output_offset, target_y_index)
-        }
-    })
 }
 
 pub(crate) fn program_certifies_direct_target(

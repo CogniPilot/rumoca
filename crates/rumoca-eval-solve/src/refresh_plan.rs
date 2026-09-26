@@ -31,7 +31,9 @@ use capacity::{
 };
 use dependency_domain::{CompactYDependencyError, CompactYDependencySet};
 use event_dependencies::event_consumer_dependencies;
-use row_analysis::{AssignmentCertificates, PriorRowAnalysis, analyze_refresh_row};
+use row_analysis::{
+    AssignmentCertificates, PriorRowAnalysis, RowAnalysisCache, analyze_refresh_row,
+};
 
 use rumoca_ir_solve::{
     AlgebraicRefreshRow, RefreshPlan, RefreshRowOwnerId, RefreshRowSelection, RefreshRows,
@@ -188,6 +190,7 @@ fn build_canonical_algebraic_refresh_plan(
         "canonical refresh target owners",
         span,
     )?;
+    let mut cache = RowAnalysisCache::default();
     for (equation_index, target) in problem.continuous.implicit_row_targets.iter().enumerate() {
         let Some(solve::ScalarSlot::Y {
             index: target_index,
@@ -209,8 +212,14 @@ fn build_canonical_algebraic_refresh_plan(
         };
         let Some(analysis) = analyze_refresh_row(
             program,
-            (equation_index, position.output_offset, *target_index),
+            (
+                position.program_index,
+                equation_index,
+                position.output_offset,
+                *target_index,
+            ),
             prior,
+            &mut cache,
         )?
         else {
             continue;

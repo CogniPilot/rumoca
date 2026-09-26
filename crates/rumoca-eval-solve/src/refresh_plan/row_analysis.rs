@@ -126,14 +126,46 @@ impl AssignmentCertificates {
     }
 }
 
+/// The assignment shapes and causality of one canonical program, derived once
+/// for every output row it owns.
+struct ProgramFacts {
+    shapes: Vec<(usize, solve::TargetAssignmentShape)>,
+    causal: bool,
+}
+
+/// Per-program facts of one refresh-plan construction, by catalog index.
+#[derive(Default)]
+pub(super) struct RowAnalysisCache {
+    programs: Vec<Option<ProgramFacts>>,
+}
+
+impl RowAnalysisCache {
+    fn facts(&mut self, index: usize, operations: &[solve::LinearOp]) -> &ProgramFacts {
+        if self.programs.len() <= index {
+            self.programs.resize_with(index + 1, || None);
+        }
+        self.programs[index].get_or_insert_with(|| ProgramFacts {
+            shapes: solve::derive_target_assignment_shapes(operations),
+            causal: !operations.iter().any(crate::prepared::non_causal_linear_op),
+        })
+    }
+}
+
 /// The assignment shape and certificates of the refresh row solving `program`'s
 /// output `output_offset` for `target_index`: the primary's analysis when
 /// `prior` issued it for the same program, offset, and target, else analyzed
-/// here. `None` when the program cannot evaluate the declared target.
+/// here from the program's facts, derived once per program. `None` when the
+/// program cannot evaluate the declared target.
+///
+/// A shape for this output and target makes the row evaluable; a shapeless
+/// one is evaluable only when no shape claims the output and the output does
+/// not read the target. The exact certificate requires a causal program and a
+/// shape; the direct one also requires the shape to be direct.
 pub(super) fn analyze_refresh_row(
     program: &CanonicalScalarProgram<'_>,
-    (equation_index, output_offset, target_index): (usize, usize, usize),
+    (program_index, equation_index, output_offset, target_index): (usize, usize, usize, usize),
     prior: Option<&PriorRowAnalysis<'_>>,
+    cache: &mut RowAnalysisCache,
 ) -> Result<Option<RowAnalysis>, EvalSolveError> {
     if let Some(reused) = prior.and_then(|prior| {
         prior.reuse(
@@ -145,31 +177,32 @@ pub(super) fn analyze_refresh_row(
     }) {
         return Ok(Some(reused));
     }
-    let shape = crate::prepared::assignment_shape_for_program_output(
-        program.operations,
-        output_offset,
-        target_index,
-    )?;
-    // A program with an assignment shape for this output and target can
-    // always evaluate it; only a shapeless one needs the full check.
-    if !(shape.is_some()
-        || crate::prepared::program_can_evaluate_declared_target(
-            program.operations,
-            output_offset,
-            target_index,
-        )?)
-    {
+    let facts = cache.facts(program_index, program.operations);
+    let shape = facts
+        .shapes
+        .iter()
+        .find(|(output, shape)| *output == output_offset && shape.target_y_index() == target_index)
+        .map(|(_, shape)| shape.clone());
+    let evaluable = shape.is_some()
+        || (!facts
+            .shapes
+            .iter()
+            .any(|(output, _)| *output == output_offset)
+            && !crate::prepared::row_output_depends_on_y_index(
+                program.operations,
+                output_offset,
+                target_index,
+            ));
+    if !evaluable {
         return Ok(None);
     }
-    let certificates = AssignmentCertificates::for_shape(
-        program.operations,
-        output_offset,
-        target_index,
-        shape.as_ref(),
-    )?;
+    let causal = facts.causal;
     Ok(Some(RowAnalysis {
+        direct: causal
+            && shape
+                .as_ref()
+                .is_some_and(solve::TargetAssignmentShape::is_direct),
+        exact: causal && shape.is_some(),
         shape,
-        direct: certificates.direct,
-        exact: certificates.exact,
     }))
 }
