@@ -1,4 +1,5 @@
 mod acceptance_surface;
+mod ad_only_jacobians;
 mod architecture_hardening_support;
 mod build_resource_budget;
 mod commit_messages;

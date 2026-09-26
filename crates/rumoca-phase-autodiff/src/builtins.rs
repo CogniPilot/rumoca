@@ -1,8 +1,8 @@
 //! Tangent rules for builtin operators.
 //!
 //! Three sets partition the builtins this engine meets: operators with a
-//! tangent rule, operators whose result cannot move with a Real perturbation,
-//! and operators that are stated non-differentiable and refuse. A name in none
+//! tangent rule, operators whose result cannot move with a change of a Real
+//! input, and operators that are stated non-differentiable and refuse. A name in none
 //! of the three is not a builtin at all and is looked up as a function.
 //!
 //! **Shape of the rule text (JAC-T2).** A rule that joins two terms whose
@@ -15,7 +15,7 @@
 
 use rumoca_ir_ast as ast;
 
-/// Builtins whose value cannot move under a Real perturbation.
+/// Builtins whose value cannot move with a change of a Real input.
 ///
 /// `String`, `Integer` and `Boolean` are not here. They return a String, an
 /// Integer and a Boolean, so no Real expression can contain one, and a claim

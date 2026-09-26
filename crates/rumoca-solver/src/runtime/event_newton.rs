@@ -2,7 +2,6 @@ use nalgebra::{DMatrix, DVector};
 
 use super::solve_ops::RuntimeSolveError;
 
-const FINITE_DIFFERENCE_RELATIVE_STEP: f64 = 1.490_116_119_384_765_6e-8;
 const NEWTON_LINE_SEARCH_STEPS: usize = 16;
 
 /// Backend-neutral residual interface for a discrete-frozen event solve.
@@ -17,6 +16,14 @@ pub trait CoupledEventNewtonModel {
         residual: &mut [f64],
     ) -> Result<(), RuntimeSolveError>;
 
+    /// The residual's directional derivative at `unknowns` along `direction`.
+    fn eval_jacobian_v(
+        &self,
+        unknowns: &[f64],
+        direction: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError>;
+
     fn variable_scale(&self, _index: usize) -> f64 {
         1.0
     }
@@ -28,9 +35,9 @@ pub trait CoupledEventNewtonModel {
 
 /// Solve a square event residual system by scaled Newton iteration.
 ///
-/// This is a recovery path after ordinary event fixed-point iteration stalls,
-/// so a numerical Jacobian keeps the interface independent of evaluator/AD
-/// implementation details. The incoming unknown vector is restored on failure.
+/// This is a recovery path after ordinary event fixed-point iteration stalls.
+/// Its Jacobian is the model's directional derivative, one unit direction per
+/// column. The incoming unknown vector is restored on failure.
 pub fn solve_coupled_event_newton<M: CoupledEventNewtonModel>(
     model: &M,
     unknowns: &mut [f64],
@@ -65,7 +72,7 @@ fn solve_coupled_event_newton_inner<M: CoupledEventNewtonModel>(
     let mut residual = vec![0.0; count];
     for iteration in 0..max_iters {
         eval_finite_residual(model, unknowns, &mut residual)?;
-        let jacobian = finite_difference_jacobian(model, unknowns, &residual, &variable_scales)?;
+        let jacobian = exact_jacobian(model, unknowns)?;
         let row_scales = jacobian_row_scales(&jacobian, &variable_scales, &fallback_scales);
         if scaled_residual_norm(&residual, &row_scales) <= tolerance {
             tracing::debug!(
@@ -90,7 +97,7 @@ fn solve_coupled_event_newton_inner<M: CoupledEventNewtonModel>(
         }
     }
     eval_finite_residual(model, unknowns, &mut residual)?;
-    let jacobian = finite_difference_jacobian(model, unknowns, &residual, &variable_scales)?;
+    let jacobian = exact_jacobian(model, unknowns)?;
     let row_scales = jacobian_row_scales(&jacobian, &variable_scales, &fallback_scales);
     if scaled_residual_norm(&residual, &row_scales) <= tolerance {
         return Ok(());
@@ -127,56 +134,26 @@ fn eval_finite_residual<M: CoupledEventNewtonModel>(
     ))
 }
 
-fn finite_difference_jacobian<M: CoupledEventNewtonModel>(
+fn exact_jacobian<M: CoupledEventNewtonModel>(
     model: &M,
     unknowns: &[f64],
-    residual: &[f64],
-    variable_scales: &[f64],
 ) -> Result<DMatrix<f64>, RuntimeSolveError> {
     let count = unknowns.len();
     let mut jacobian = DMatrix::zeros(count, count);
-    let mut probe = unknowns.to_vec();
-    let mut probe_residual = vec![0.0; count];
+    let mut direction = vec![0.0; count];
+    let mut column_values = vec![0.0; count];
     for column in 0..count {
-        let step = finite_difference_step(unknowns[column], variable_scales[column]);
-        probe[column] = unknowns[column] + step;
-        let forward = eval_finite_residual(model, &probe, &mut probe_residual);
-        let direction = if let Err(forward_error) = forward {
-            probe[column] = unknowns[column] - step;
-            if eval_finite_residual(model, &probe, &mut probe_residual).is_err() {
-                return Err(forward_error);
-            }
-            -1.0
-        } else {
-            1.0
-        };
-        write_finite_difference_column(
-            &mut jacobian,
-            column,
-            &probe_residual,
-            residual,
-            direction * step,
-        );
-        probe[column] = unknowns[column];
+        direction[column] = 1.0;
+        model.eval_jacobian_v(unknowns, &direction, &mut column_values)?;
+        direction[column] = 0.0;
+        if column_values.iter().any(|value| !value.is_finite()) {
+            return Err(coupled_event_error(
+                "Jacobian evaluation produced a non-finite value",
+            ));
+        }
+        jacobian.set_column(column, &DVector::from_column_slice(&column_values));
     }
     Ok(jacobian)
-}
-
-fn write_finite_difference_column(
-    jacobian: &mut DMatrix<f64>,
-    column: usize,
-    probe_residual: &[f64],
-    residual: &[f64],
-    step: f64,
-) {
-    for row in 0..jacobian.nrows() {
-        jacobian[(row, column)] = (probe_residual[row] - residual[row]) / step;
-    }
-}
-
-fn finite_difference_step(value: f64, scale: f64) -> f64 {
-    let magnitude = value.abs().max(valid_scale(scale));
-    FINITE_DIFFERENCE_RELATIVE_STEP * magnitude
 }
 
 fn jacobian_row_scales(
@@ -306,6 +283,17 @@ mod tests {
             residual[1] = d - (2.0 - z);
             Ok(())
         }
+
+        fn eval_jacobian_v(
+            &self,
+            _unknowns: &[f64],
+            direction: &[f64],
+            out: &mut [f64],
+        ) -> Result<(), RuntimeSolveError> {
+            out[0] = direction[0] - direction[1];
+            out[1] = direction[1] + direction[0];
+            Ok(())
+        }
     }
 
     #[test]
@@ -328,6 +316,16 @@ mod tests {
             residual: &mut [f64],
         ) -> Result<(), RuntimeSolveError> {
             residual.fill(1.0);
+            Ok(())
+        }
+
+        fn eval_jacobian_v(
+            &self,
+            _unknowns: &[f64],
+            _direction: &[f64],
+            out: &mut [f64],
+        ) -> Result<(), RuntimeSolveError> {
+            out.fill(0.0);
             Ok(())
         }
     }

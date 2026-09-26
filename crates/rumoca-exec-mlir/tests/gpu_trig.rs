@@ -229,6 +229,7 @@ fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::
         },
         pure_calls: rumoca_ir_solve::SolvePureCallTable::default(),
         artifacts: rumoca_ir_solve::SolveArtifacts {
+            discrete: Default::default(),
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {
                 structural: rumoca_ir_solve::ContinuousStructuralArtifacts::default(),
                 mass_matrix: rumoca_ir_solve::MassMatrix::Identity,

@@ -399,7 +399,12 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             } if self.jacobian_v.is_solver_y_only() => self
                 .runtime
                 .torn_tangent_jacobian(tearing, y, p, t)?
-                .map_or(KernelAnswer::Declined, KernelAnswer::TornJacobian),
+                .map_or(KernelAnswer::Declined, |jacobian| {
+                    jacobian.map_or(
+                        KernelAnswer::TornJacobianSingular,
+                        KernelAnswer::TornJacobian,
+                    )
+                }),
             KernelRequest::TornJacobian { .. } => KernelAnswer::Declined,
         })
     }

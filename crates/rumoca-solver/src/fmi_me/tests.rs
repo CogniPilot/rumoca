@@ -231,6 +231,7 @@ fn harmonic_oscillator() -> solve::SolveModel {
             ..Default::default()
         },
         artifacts: solve::SolveArtifacts {
+            discrete: Default::default(),
             continuous: solve::ContinuousSolveArtifacts {
                 full_jacobian_v: jacobian_v,
                 ..Default::default()
@@ -344,6 +345,7 @@ fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
             ..Default::default()
         },
         artifacts: solve::SolveArtifacts {
+            discrete: Default::default(),
             continuous: solve::ContinuousSolveArtifacts {
                 implicit_jacobian_v: solve::ComputeBlock::from_scalar_program_block(
                     implicit_jvp.clone(),

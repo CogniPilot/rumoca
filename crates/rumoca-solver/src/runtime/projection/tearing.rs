@@ -12,8 +12,8 @@
 //! exact explicit assignment for its unknown: prepare-time tearing
 //! normalization promotes any step that is not exact into the reduced Newton
 //! (its unknown becomes a tear variable and its row a reduced residual), so all
-//! nonlinearity and multi-root robustness is carried by the reduced Newton's
-//! finite-difference Jacobian and line search rather than a fragile isolated 1D
+//! nonlinearity and multi-root robustness is carried by the reduced Newton.s
+//! tangent-plan Jacobian and line search rather than a fragile isolated 1D
 //! solve. A causal step therefore never runs an inner iteration; it evaluates
 //! the certified target isolator once. The runtime still fails closed: if the
 //! exactness invariant is ever violated it declines the step rather than
@@ -38,11 +38,10 @@ use super::scaling::{
 };
 use super::{
     ImplicitProjectionModel, KernelAnswer, KernelRequest, ProjectionBlockUpdate, RuntimeSolveError,
+    implicit_selected_jacobian_v_rows,
 };
 
-use rumoca_eval_solve::projection_policy::{
-    TORN_BACKTRACK_STEPS, TORN_OUTER_MAX_ITERS, finite_difference_perturbation,
-};
+use rumoca_eval_solve::projection_policy::{TORN_BACKTRACK_STEPS, TORN_OUTER_MAX_ITERS};
 
 /// Attempt the torn solve of one coupled block.
 ///
@@ -157,7 +156,7 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
 ) -> Result<TornStep, RuntimeSolveError> {
     // A residual that is exactly zero rowwise satisfies every positive scaled
     // tolerance (`scaled_tolerance` never falls below `f64::MIN_POSITIVE`),
-    // so the fresh finite-difference Jacobian's row scales could only confirm
+    // so the fresh tangent Jacobian's row scales could only confirm
     // what is already proven; settle without paying the Jacobian sweeps. This
     // mirrors the dense block's exact-zero shortcut and, like it, settles
     // without probing the Jacobian at the solved point. It stays out of
@@ -170,18 +169,7 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
         return Ok(TornStep::Settled);
     }
     let base = TornValues::save(tearing, y);
-    let Some(jacobian) = reduced_jacobian(
-        model,
-        y,
-        p,
-        t,
-        tearing,
-        residual,
-        variable_scales,
-        &base,
-        certify_coordinates,
-    )?
-    else {
+    let Some(jacobian) = reduced_jacobian(model, (&*y, p, t), tearing, certify_coordinates)? else {
         return Ok(TornStep::Decline);
     };
     let row_scales =
@@ -303,77 +291,92 @@ struct ReducedJacobian {
     recovered: DMatrix<f64>,
 }
 
-/// Total finite-difference Jacobian of the reduced residual with respect to the
-/// tear variables, back-substituting through each perturbation so the causal
-/// unknowns track their tear dependence. Certification retains their derivatives
-/// from the same sweeps, before a Newton correction can round away in `base`.
-// SPEC_0021: Exception - a total FD Jacobian needs model, storage, tearing, the base residual, scales, and the base point together.
-#[allow(clippy::too_many_arguments)]
+/// The reduced residual's Jacobian with respect to the tear variables and the
+/// causal unknowns' sensitivities at the swept point `y`, from the block's
+/// tangent plan. A model that evaluates no plan takes the same tangents one
+/// direction at a time through its row JVPs. A singular point or a vanished
+/// row or column declines the torn solve.
 fn reduced_jacobian<M: ImplicitProjectionModel>(
     model: &M,
-    y: &mut [f64],
-    p: &[f64],
-    t: f64,
+    (y, p, t): (&[f64], &[f64], f64),
     tearing: &solve::BlockTearing,
-    residual: &[f64],
-    variable_scales: &[f64],
-    base: &TornValues,
     certify_coordinates: bool,
 ) -> Result<Option<ReducedJacobian>, RuntimeSolveError> {
-    let rows = tearing.residual_rows.len();
-    let columns = tearing.tear_y_indices.len();
-    if let KernelAnswer::TornJacobian(exact) = model.linked_kernel(KernelRequest::TornJacobian {
+    let shape = (tearing.residual_rows.len(), tearing.tear_y_indices.len());
+    let exact = match model.linked_kernel(KernelRequest::TornJacobian {
         tearing,
-        point: (&*y, p, t),
-    })? && let Some(jacobian) =
-        tangent_reduced_jacobian(&exact, (rows, columns), tearing, certify_coordinates)
-    {
-        return Ok(Some(jacobian));
-    }
-    let mut jacobian = DMatrix::zeros(rows, columns);
-    let recovered_rows = if certify_coordinates {
-        tearing.causal_steps.len()
-    } else {
-        0
+        point: (y, p, t),
+    })? {
+        KernelAnswer::TornJacobian(exact) => exact,
+        KernelAnswer::TornJacobianSingular => return Ok(None),
+        _ => match model_torn_tangent(model, (y, p, t), tearing)? {
+            Some(exact) => exact,
+            None => return Ok(None),
+        },
     };
-    let mut recovered = DMatrix::zeros(recovered_rows, columns);
-    let mut perturbed = Vec::with_capacity(rows);
-    for (column, &tear_index) in tearing.tear_y_indices.iter().enumerate() {
-        base.restore(tearing, y);
-        let h = finite_difference_perturbation(base.tear(column), variable_scales[column]);
-        y[tear_index] = base.tear(column) + h;
-        if !model.torn_block_sweep(tearing, y, p, t, &mut perturbed)? || !all_finite(&perturbed) {
-            base.restore(tearing, y);
+    Ok(tangent_reduced_jacobian(
+        &exact,
+        shape,
+        tearing,
+        certify_coordinates,
+    ))
+}
+
+/// The torn tangent of a model without a tangent plan, one direction at a time
+/// (`TornTangentEvaluator`'s one-direction form): every causal step's
+/// coefficient with its target seeded alone, then each tear column through the
+/// steps in sweep order and the reduced rows. `None` when a coefficient
+/// vanishes.
+fn model_torn_tangent<M: ImplicitProjectionModel>(
+    model: &M,
+    (y, p, t): (&[f64], &[f64], f64),
+    tearing: &solve::BlockTearing,
+) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
+    let tears = tearing.tear_y_indices.len();
+    let steps = &tearing.causal_steps;
+    let mut seed = vec![0.0; y.len()];
+    let tangent = |seed: &[f64], row: usize| -> Result<f64, RuntimeSolveError> {
+        let values =
+            implicit_selected_jacobian_v_rows(model, y, p, t, seed, &[row], "torn block tangent")?;
+        Ok(values[0])
+    };
+    let mut coefficients = Vec::with_capacity(steps.len());
+    for step in steps {
+        seed[step.y_index] = 1.0;
+        let coefficient = tangent(&seed, step.row)?;
+        seed[step.y_index] = 0.0;
+        if coefficient == 0.0 || !coefficient.is_finite() {
             return Ok(None);
         }
-        for row in 0..rows {
-            jacobian[(row, column)] = (perturbed[row] - residual[row]) / h;
+        coefficients.push(coefficient);
+    }
+    let mut recovered = vec![0.0; steps.len() * tears];
+    let mut residual = vec![0.0; tears * tears];
+    for (column, &tear) in tearing.tear_y_indices.iter().enumerate() {
+        seed[tear] = 1.0;
+        for (index, (step, coefficient)) in steps.iter().zip(&coefficients).enumerate() {
+            let value = -tangent(&seed, step.row)? / coefficient;
+            seed[step.y_index] = value;
+            recovered[index * tears + column] = value;
         }
-        for row in 0..recovered_rows {
-            let index = tearing.causal_steps[row].y_index;
-            recovered[(row, column)] = (y[index] - base.causal(row)) / h;
+        for (row, &residual_row) in tearing.residual_rows.iter().enumerate() {
+            residual[row * tears + column] = tangent(&seed, residual_row)?;
+        }
+        seed[tear] = 0.0;
+        for step in steps {
+            seed[step.y_index] = 0.0;
         }
     }
-    base.restore(tearing, y);
-    if jacobian
-        .iter()
-        .chain(recovered.iter())
-        .all(|value| value.is_finite())
-    {
-        Ok(Some(ReducedJacobian {
-            residual: jacobian,
-            recovered,
-        }))
-    } else {
-        Ok(None)
-    }
+    Ok(Some(rumoca_eval_solve::TornTangentJacobian {
+        residual,
+        recovered,
+    }))
 }
 
 /// The reduced Jacobian of a tangent plan, when every entry is finite and no
 /// row or column vanishes. A vanished row or column (a slope that is exactly
 /// zero at a symmetric start, such as a squared norm at the origin) leaves the
-/// Newton system singular; the finite-difference Jacobian's perturbation
-/// reaches the nearby nonzero slope instead.
+/// Newton system singular, and the block declines to its dense solve.
 fn tangent_reduced_jacobian(
     exact: &rumoca_eval_solve::TornTangentJacobian,
     (rows, columns): (usize, usize),

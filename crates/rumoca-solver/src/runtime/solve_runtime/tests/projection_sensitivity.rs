@@ -129,15 +129,10 @@ fn exact_dependency_owner_keeps_primal_and_jvp_consistent_below_projection_toler
     );
 
     let x = 3.0;
-    let step = 1.0e-7;
     let tolerance = 1.0e-6;
-    let base = runtime
+    let primal = runtime
         .eval_state_derivatives(0.0, &[x], &[], tolerance, 8)
-        .expect("base primal should evaluate");
-    let perturbed = runtime
-        .eval_state_derivatives(0.0, &[x + step], &[], tolerance, 8)
-        .expect("perturbed primal should evaluate");
-    let finite_difference = (perturbed[0] - base[0]) / step;
+        .expect("the primal should evaluate");
 
     let mut jvp = [0.0];
     runtime
@@ -156,8 +151,10 @@ fn exact_dependency_owner_keeps_primal_and_jvp_consistent_below_projection_toler
         )
         .expect("exact projection-owner JVP should evaluate");
 
-    assert!((finite_difference - k).abs() <= 1.0e-8);
-    assert!((jvp[0] - finite_difference).abs() <= 1.0e-8);
+    // The exact owner a = k*x settles the primal to roundoff and gives the
+    // JVP k, far inside the projection tolerance.
+    assert!((primal[0] - k * x).abs() <= 1.0e-12, "primal {}", primal[0]);
+    assert!((jvp[0] - k).abs() <= 1.0e-12, "jvp {}", jvp[0]);
 }
 
 fn parameter_projection_residual() -> solve::ComputeBlock {

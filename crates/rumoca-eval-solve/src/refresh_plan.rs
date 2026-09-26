@@ -650,7 +650,7 @@ fn build_refresh_owners(
 /// construction, so any causal step that is not a compiler-certified exact
 /// target assignment is promoted into the reduced Newton here: its unknown
 /// becomes a tear variable and its row a reduced residual. The reduced Newton
-/// (with a finite-difference Jacobian and line search over the tear variables)
+/// (with the tangent-plan Jacobian and line search over the tear variables)
 /// then carries that nonlinearity, and the remaining causal steps stay exact.
 fn normalize_algebraic_projection_tearing(
     problem: &mut solve::SolveProblem,

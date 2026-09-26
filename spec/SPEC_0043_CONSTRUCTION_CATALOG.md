@@ -319,14 +319,51 @@ declines. A torn block's tangent plan constructs from its checked
 `BlockTearing` and the solver-Y JVP rows: each causal step names its row, its
 target, its coefficient source (a lane seeded on the target alone), and the
 tear columns its reads reach; each reduced residual row names its tangent
-source; a row without a widened program, or a causal row without a
-coefficient in its target, declines the plan.
-Evaluation follows the sweep order and declines at a vanished coefficient. A
+source; a row without a JVP program, or a causal row without a coefficient in
+its target, declines the plan. The plan takes the multi-lane form (one lane
+per tear and one coefficient lane) when that lane count is below
+`MAX_TENSOR_LANES` and every program widens; otherwise it takes the
+directional form, which evaluates every step's coefficient first and then one
+tear column at a time through the one-direction JVP programs, equal to the
+multi-lane form bit for bit. Consecutive causal steps of one program whose
+outputs depend on no other member's target (the program's exact per-output
+seed dependencies) form a group that one evaluation answers, its coefficient
+lane or direction seeding every member target; consecutive reduced rows of one
+program share one evaluation. Each member then reads exactly the values its
+own evaluation would give. Evaluation follows the sweep order and declines
+at a vanished or non-finite coefficient. The plan is the only source of a
+torn block's tear Jacobian in the linked kernel and the generated C: a
+declined plan, a non-finite entry, or a reduced row or column that is exactly
+zero declines the torn solve to the dense block Newton, never to a difference
+quotient. A
 block's colored tangent plan constructs from its issued colored Jacobian
 application: each distinct program runs once with one lane per color that
 calls it, and each placement takes the value that color's call would write.
 Plans are derived views, rebuilt by each consumer from the same construction,
 never canonical IR.
+
+Algorithmic differentiation is the only Jacobian source. Every Jacobian,
+tangent, and sensitivity that Solve construction, the linked kernel, and the
+generated C form comes from a forward-mode JVP program or its reverse: the
+torn tear Jacobian from the block's tangent plan, block Jacobians from the
+solver-Y JVP rows and their colored application, the settled initialization
+Jacobian from the initialization residual's JVP along the settled view's
+tangent (the initialization update rows' JVP and the seed projection of the
+complete algebraic plan), the coupled event Newton from the discrete event
+rows' JVPs (scalar rows, runtime assignments, guarded programs, and
+structured maps, lowered as discrete Solve artifacts), and the `--inspect
+jacobian` probe from the state JVP. No path differences a residual. The
+continuous and initialization residual JVPs are lowered with the model, so a
+row without one fails construction; the update and event rows' JVPs are
+optional artifacts, and a solve that would read a missing one reports the
+missing derivative. A pure callee whose body admits no directional owner
+fails the JVP lowering, and Solve lowering refuses every external C or
+Fortran callee because the runtime executes none, so no callee needs a
+difference quotient; native table operators carry their exact slopes. A
+`derivative` annotation feeds structural index reduction, while the JVP
+differentiates the callee body. `architecture_hardening_test`'s
+`ad_only_jacobians` scan fails when a source or code template names a
+difference quotient outside its listed AD verification batteries.
 
 A torn sweep's runs construct from its checked causal steps and the certified
 isolators of their rows (`torn_sweep_runs`): consecutive causal steps of one

@@ -329,6 +329,23 @@ pub struct InitializationProjectionBlock {
 pub struct SolveArtifacts {
     pub continuous: ContinuousSolveArtifacts,
     pub initialization: InitializationSolveArtifacts,
+    pub discrete: DiscreteSolveArtifacts,
+}
+
+/// Forward-mode JVPs of the discrete event rows over `[solver-y | parameter]`
+/// seeds, through which the coupled event Newton differentiates the rows it
+/// solves. Each is `None` when one of its rows has no derivative lowering.
+#[derive(Clone, Debug, Default)]
+pub struct DiscreteSolveArtifacts {
+    /// Row-aligned with [`DiscreteSolveSystem::rhs`].
+    pub rhs_jacobian_v: Option<ScalarProgramBlock>,
+    /// Row-aligned with [`DiscreteSolveSystem::runtime_assignment_rhs`].
+    pub runtime_assignment_jacobian_v: Option<ScalarProgramBlock>,
+    /// Program `i` differentiates guarded assignment `i`, output for output.
+    pub guarded_jacobian_v: Option<ScalarProgramBlock>,
+    /// Row-aligned with the scalar view of
+    /// [`DiscreteSolveSystem::structured_rhs`].
+    pub structured_jacobian_v: Option<ScalarProgramBlock>,
 }
 
 #[derive(Clone, Debug)]
@@ -540,6 +557,11 @@ pub struct InitializationSolveArtifacts {
     /// Constructor-derived metadata; canonical Solve replay reconstructs it.
     pub structural: InitializationStructuralArtifacts,
     pub residual_jacobian_v: ComputeBlock,
+    /// Forward-mode JVP of the initialization update rows over
+    /// `[solver-y | parameter]` seeds, row-aligned with `update_rhs`. It carries
+    /// a seed through the bindings of the settled initialization view; `None`
+    /// when a row has no derivative lowering.
+    pub update_jacobian_v: Option<ScalarProgramBlock>,
 }
 
 /// What the MLS §8.6 initialization projection does with one residual row.

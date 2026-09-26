@@ -833,6 +833,7 @@ impl SolveRuntime {
             torn_tangents: torn_tangent_evaluators(
                 &model.problem.continuous.algebraic_projection_plan,
                 &implicit_projection_scalar_jacobian,
+                compiled_implicit_projection_jacobian_v.is_some(),
             ),
             // A backend-compiled JVP evaluates the colors natively, so the
             // colored lanes are built only for the interpreted runtime.
@@ -1227,16 +1228,18 @@ impl SolveRuntime {
         }
     }
 
-    /// The reduced tear Jacobian of a planned torn block (see
-    /// [`KernelRequest::TornJacobian`](crate::runtime::projection::KernelRequest)).
+    /// The reduced tear Jacobian of a torn block from its tangent plan (see
+    /// [`KernelRequest::TornJacobian`](crate::runtime::projection::KernelRequest)):
+    /// `None` when the block has no plan, and a singular answer when a causal
+    /// coefficient vanishes at this point.
     pub(crate) fn torn_tangent_jacobian(
         &self,
         tearing: &solve::BlockTearing,
         y: &[f64],
         p: &[f64],
         t: f64,
-    ) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
-        if self.torn_tangents.is_empty() || self.torn_tangents.iter().all(Option::is_none) {
+    ) -> Result<Option<Option<rumoca_eval_solve::TornTangentJacobian>>, RuntimeSolveError> {
+        if self.torn_tangents.iter().all(Option::is_none) {
             return Ok(None);
         }
         // Projection blocks are borrowed from this runtime's plan, so a block
@@ -1267,13 +1270,31 @@ impl SolveRuntime {
         let Some(evaluator) = evaluator else {
             return Ok(None);
         };
-        evaluator
-            .eval(rumoca_eval_solve::TangentPoint {
-                y,
-                p,
-                t,
-                context: self.row_eval_context(),
+        let tables = self.model.external_tables.as_slice();
+        let compiled = self.compiled_implicit_projection_jacobian_v.as_deref();
+        let mut call = |program: usize, seed: &[f64], out: &mut Vec<f64>| {
+            compiled.is_some_and(|compiled| {
+                compiled
+                    .call_program_outputs(
+                        program,
+                        solve_eval::JacobianEvalInputs { y, p, t, seed },
+                        tables,
+                        out,
+                    )
+                    .unwrap_or(false)
             })
+        };
+        evaluator
+            .eval_through(
+                rumoca_eval_solve::TangentPoint {
+                    y,
+                    p,
+                    t,
+                    context: self.row_eval_context(),
+                },
+                &mut call,
+            )
+            .map(Some)
             .map_err(Into::into)
     }
 
@@ -1920,17 +1941,21 @@ mod tests;
 fn torn_tangent_evaluators(
     plan: &solve::AlgebraicProjectionPlan,
     jvp: &solve::ScalarProgramBlock,
+    compiled: bool,
 ) -> Rc<[Option<rumoca_eval_solve::TornTangentEvaluator>]> {
-    // With the exact torn Jacobian off, no block carries an evaluator and the
-    // table stays empty, so a torn solve declines the request at once.
-    if !rumoca_eval_solve::projection_policy::jacobian_sources().torn_tangent {
-        return Rc::from([]);
-    }
     plan.blocks
         .iter()
         .map(|block| {
-            let plan = solve::TornTangentPlan::derive(block.tearing.as_ref()?, jvp).ok()?;
-            Some(rumoca_eval_solve::TornTangentEvaluator::new(plan))
+            let tearing = block.tearing.as_ref()?;
+            // A backend-compiled JVP answers each direction natively, faster
+            // than the interpreted lane widening and with the same values.
+            let plan = if compiled {
+                solve::TornTangentPlan::derive_directional(tearing, jvp)
+            } else {
+                solve::TornTangentPlan::derive(tearing, jvp)
+            }
+            .ok()?;
+            rumoca_eval_solve::TornTangentEvaluator::new(plan, jvp).ok()
         })
         .collect()
 }

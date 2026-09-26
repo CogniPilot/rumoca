@@ -852,6 +852,21 @@ impl StructuralPattern {
         .collect()
     }
 
+    /// Exact AD seed dependencies of every output of one checked scalar
+    /// program, in output order.
+    pub fn derive_output_seed_index_dependencies(
+        program: &[LinearOp],
+        span: Option<Span>,
+    ) -> Result<Vec<BTreeSet<usize>>, StructuralPatternError> {
+        program_output_dependencies(program, span)?
+            .into_iter()
+            .map(|dependencies| {
+                let DependencyState::Known(indices) = dependencies;
+                Ok(indices)
+            })
+            .collect()
+    }
+
     /// Whether each output of one checked scalar program depends on an AD
     /// seed input.
     pub fn derive_output_seed_dependencies(
