@@ -1,4 +1,4 @@
-//! Constant pure-call folding and literal propagation (SPEC_0043 §3).
+//! Constant pure-call folding and literal propagation (SPEC_0043 §4).
 //!
 //! A model-level expression of constant variability that contains a call of a
 //! pure Modelica function, so every argument is a compile-time constant

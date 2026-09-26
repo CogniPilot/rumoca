@@ -57,7 +57,7 @@ struct AlternateSelections {
 
 /// Prepare the executable selection of `model` after its STRUCT-T10(a)
 /// evaluable-parameter folding, STRUCT-T10(b) annotated call inlining,
-/// STRUCT-T02 alias quotient, and SPEC_0043 §3 constant-call folding and
+/// STRUCT-T02 alias quotient, and SPEC_0043 §4 constant-call folding and
 /// literal propagation. A model no transform changes prepares unchanged; otherwise the owned reconstruction is
 /// prepared, which keeps every source declaration, so later stages read the
 /// same variables and names.

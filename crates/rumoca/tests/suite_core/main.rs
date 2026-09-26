@@ -51,6 +51,7 @@ mod component_redeclare_constraints;
 mod component_redeclare_dimensions;
 mod connection_normalization_golden;
 mod constant_folding;
+mod constant_values;
 mod constraint_fold_charts;
 mod coupled_refresh_schedule;
 mod derivative_alias_initial_acceleration;

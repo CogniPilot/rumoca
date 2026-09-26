@@ -182,7 +182,7 @@ pub enum StructuralError {
         span: Span,
         other_span: Span,
     },
-    /// A constant pure call (SPEC_0043 §3) whose evaluation at construction
+    /// A constant pure call (SPEC_0043 §4) whose evaluation at construction
     /// fails: an assertion, or a non-finite or out-of-range value. The same
     /// evaluation would fail at every instant the model runs it.
     #[error("constant call of `{call}` cannot be evaluated: {reason}")]
