@@ -46,6 +46,7 @@ pub(crate) fn lower_solve_artifacts(
         problem.solve_layout.solver_scalar_count(),
     )
     .ok();
+    let discrete = lower_discrete_artifacts(problem);
     let mut artifacts = solve::SolveArtifacts {
         continuous: solve::ContinuousSolveArtifacts {
             structural: solve::ContinuousStructuralArtifacts::default(),
@@ -60,6 +61,7 @@ pub(crate) fn lower_solve_artifacts(
             residual_jacobian_v: initialization_jacobian_v,
             update_jacobian_v,
         },
+        discrete,
     };
     let (continuous, initialization) = rumoca_eval_solve::derive_solve_structural_artifacts(
         problem, &artifacts,
@@ -72,6 +74,40 @@ pub(crate) fn lower_solve_artifacts(
     artifacts.initialization.structural = initialization;
     specialize_algebraic_jacobians(problem, &implicit_rhs, &mut artifacts.continuous.structural)?;
     Ok(artifacts)
+}
+
+/// The discrete event rows' JVPs; a family whose rows do not all lower is
+/// left without one, which only the coupled event Newton would need.
+fn lower_discrete_artifacts(problem: &solve::SolveProblem) -> solve::DiscreteSolveArtifacts {
+    let offset = problem.solve_layout.solver_scalar_count();
+    let discrete = &problem.discrete;
+    let jvp =
+        |block: &solve::ScalarProgramBlock| lower_scalar_program_block_full_jvp(block, offset).ok();
+    let guarded = &discrete.guarded_assignments;
+    let guarded_primal = solve::ScalarProgramBlock::with_output_indices(
+        guarded
+            .iter()
+            .map(|owner| owner.program().to_vec())
+            .collect(),
+        guarded
+            .iter()
+            .map(solve::GuardedAssignmentProgram::span)
+            .collect(),
+        (0..guarded
+            .iter()
+            .map(solve::GuardedAssignmentProgram::output_count)
+            .sum())
+            .collect(),
+    );
+    solve::DiscreteSolveArtifacts {
+        rhs_jacobian_v: jvp(&discrete.rhs),
+        runtime_assignment_jacobian_v: jvp(&discrete.runtime_assignment_rhs),
+        guarded_jacobian_v: guarded_primal.ok().as_ref().and_then(jvp),
+        structured_jacobian_v: rumoca_eval_solve::to_scalar_program_block(&discrete.structured_rhs)
+            .ok()
+            .as_ref()
+            .and_then(jvp),
+    }
 }
 
 fn specialize_algebraic_jacobians(

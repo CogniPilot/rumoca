@@ -128,6 +128,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
         },
         pure_calls: rumoca_ir_solve::SolvePureCallTable::default(),
         artifacts: rumoca_ir_solve::SolveArtifacts {
+            discrete: Default::default(),
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {
                 structural: rumoca_ir_solve::ContinuousStructuralArtifacts::default(),
                 mass_matrix: rumoca_ir_solve::MassMatrix::Identity,

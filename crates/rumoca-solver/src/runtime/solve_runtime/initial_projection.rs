@@ -586,7 +586,7 @@ impl SolveRuntime {
 /// Write the update rows' tangents `values` into the seed entries of their
 /// `targets` (parameters follow the `y_len` solver coordinates); whether any
 /// entry changed.
-fn write_update_tangents(
+pub(super) fn write_update_tangents(
     targets: &[solve::ScalarSlot],
     values: &[f64],
     y_len: usize,
@@ -846,6 +846,7 @@ mod tests {
                 ..Default::default()
             },
             artifacts: solve::SolveArtifacts {
+                discrete: Default::default(),
                 continuous: solve::ContinuousSolveArtifacts {
                     implicit_jacobian_v: jacobian.clone(),
                     implicit_jacobian_v_scalar: to_scalar_program_block(&jacobian)
@@ -936,6 +937,7 @@ mod tests {
                 ..Default::default()
             },
             artifacts: solve::SolveArtifacts {
+                discrete: Default::default(),
                 initialization: solve::InitializationSolveArtifacts {
                     residual_jacobian_v: jacobian,
                     ..Default::default()
@@ -1073,6 +1075,7 @@ mod tests {
                 ..Default::default()
             },
             artifacts: solve::SolveArtifacts {
+                discrete: Default::default(),
                 continuous: solve::ContinuousSolveArtifacts {
                     implicit_jacobian_v: implicit_jacobian.clone(),
                     implicit_jacobian_v_scalar: implicit_full_jacobian,

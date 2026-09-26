@@ -10,6 +10,9 @@ use super::event_update::{
 };
 use super::guarded_assignments::guarded_target_at;
 
+mod tangent;
+use tangent::CoupledEventJvps;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CoupledEventUnknown {
     Y(usize),
@@ -41,6 +44,7 @@ struct CoupledEventInventory {
 
 struct CoupledEventSystem<'a> {
     runtime: &'a SolveRuntime,
+    jvps: &'a CoupledEventJvps,
     snapshot: &'a DiscretePreSnapshot<'a>,
     base_y: &'a [f64],
     base_p: &'a [f64],
@@ -70,8 +74,10 @@ impl SolveRuntime {
         let before_y = input.y.to_vec();
         let before_p = input.p.to_vec();
         let mut unknowns = read_unknowns(&inventory.unknowns, input.y, input.p)?;
+        let jvps = CoupledEventJvps::prepare(&self.model.artifacts.discrete)?;
         let system = CoupledEventSystem {
             runtime: self,
+            jvps: &jvps,
             snapshot,
             base_y: input.y,
             base_p: input.p,
@@ -294,23 +300,22 @@ impl CoupledEventNewtonModel for CoupledEventSystem<'_> {
                 "coupled event residual buffer does not match the event inventory",
             ));
         }
-        let mut y = self.base_y.to_vec();
-        let mut p = self.base_p.to_vec();
-        write_unknowns(&self.inventory.unknowns, unknowns, &mut y, &mut p)?;
-        self.runtime.apply_root_relation_memory_overrides(
-            self.snapshot.root_relation_overrides,
-            &mut y,
-            &mut p,
-            self.tol,
-        )?;
-        self.runtime.apply_runtime_assignments_until_stable(
-            &mut y,
-            &mut p,
-            self.t,
-            self.tol,
-            self.max_iters,
-        )?;
+        let (y, p) = self.settled_point(unknowns)?;
         self.eval_residual_rows(&y, &p, residual)
+    }
+
+    fn eval_jacobian_v(
+        &self,
+        unknowns: &[f64],
+        direction: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if out.len() != self.inventory.residuals.len() {
+            return Err(RuntimeSolveError::solve_ir(
+                "coupled event tangent buffer does not match the event inventory",
+            ));
+        }
+        self.residual_tangent(unknowns, direction, out)
     }
 
     fn variable_scale(&self, index: usize) -> f64 {
@@ -327,6 +332,29 @@ impl CoupledEventNewtonModel for CoupledEventSystem<'_> {
 }
 
 impl CoupledEventSystem<'_> {
+    /// The event coordinates the residual rows read: the unknowns written in,
+    /// the root relation overrides pinned, and the runtime assignments applied
+    /// until stable.
+    fn settled_point(&self, unknowns: &[f64]) -> Result<(Vec<f64>, Vec<f64>), RuntimeSolveError> {
+        let mut y = self.base_y.to_vec();
+        let mut p = self.base_p.to_vec();
+        write_unknowns(&self.inventory.unknowns, unknowns, &mut y, &mut p)?;
+        self.runtime.apply_root_relation_memory_overrides(
+            self.snapshot.root_relation_overrides,
+            &mut y,
+            &mut p,
+            self.tol,
+        )?;
+        self.runtime.apply_runtime_assignments_until_stable(
+            &mut y,
+            &mut p,
+            self.t,
+            self.tol,
+            self.max_iters,
+        )?;
+        Ok((y, p))
+    }
+
     fn eval_residual_rows(
         &self,
         y: &[f64],
@@ -612,6 +640,54 @@ mod tests {
         rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
     }
 
+    /// The fixture's JVP programs: the implicit row over `[z | d, mode]` and over
+    /// `z` alone, and the discrete rows.
+    fn coupled_event_tangents() -> (ScalarProgramBlock, ScalarProgramBlock, ScalarProgramBlock) {
+        let block = |rows: Vec<Vec<LinearOp>>| {
+            ScalarProgramBlock::with_source_span(
+                rows,
+                fixture_span()
+                    .require_provenance("coupled-event tangent fixture")
+                    .expect("fixture span is source-backed"),
+            )
+            .expect("fixture program is computable")
+        };
+        // d(z - d)/d(z, d) over [z | d, mode] seeds; d(2 - z)/dz; d(1) = 0.
+        let implicit_full = block(vec![vec![
+            LinearOp::LoadSeed { dst: 0, index: 0 },
+            LinearOp::LoadSeed { dst: 1, index: 1 },
+            LinearOp::Binary {
+                dst: 2,
+                op: BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ]]);
+        let implicit_y = block(vec![vec![
+            LinearOp::LoadSeed { dst: 0, index: 0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        let discrete_jvp = block(vec![
+            vec![
+                LinearOp::LoadSeed { dst: 0, index: 0 },
+                LinearOp::Const { dst: 1, value: 0.0 },
+                LinearOp::Binary {
+                    dst: 2,
+                    op: BinaryOp::Sub,
+                    lhs: 1,
+                    rhs: 0,
+                },
+                LinearOp::StoreOutput { src: 2 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 0.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        ]);
+        (implicit_full, implicit_y, discrete_jvp)
+    }
+
     fn coupled_event_test_model() -> solve::SolveModel {
         let implicit = ScalarProgramBlock::with_source_span(
             vec![vec![
@@ -653,6 +729,7 @@ mod tests {
                 .expect("fixture span is source-backed"),
         )
         .expect("fixture program is computable");
+        let (implicit_full, implicit_y, discrete_jvp) = coupled_event_tangents();
         solve::SolveModel {
             problem: solve::SolveProblem {
                 solve_layout: solve::SolveLayout {
@@ -692,6 +769,18 @@ mod tests {
                     observation_refresh: vec![false, false],
                     integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
                     clock_owners: vec![None, None],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            artifacts: solve::SolveArtifacts {
+                continuous: solve::ContinuousSolveArtifacts {
+                    implicit_jacobian_v: solve::ComputeBlock::from_scalar_program_block(implicit_y),
+                    implicit_jacobian_v_scalar: implicit_full,
+                    ..Default::default()
+                },
+                discrete: solve::DiscreteSolveArtifacts {
+                    rhs_jacobian_v: Some(discrete_jvp),
                     ..Default::default()
                 },
                 ..Default::default()

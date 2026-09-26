@@ -125,6 +125,7 @@ fn steep_algebraic_time_event_model() -> solve::SolveModel {
             ..Default::default()
         },
         artifacts: solve::SolveArtifacts {
+            discrete: Default::default(),
             continuous: solve::ContinuousSolveArtifacts {
                 implicit_jacobian_v: solve::ComputeBlock::from_scalar_program_block(
                     implicit_jvp.clone(),
