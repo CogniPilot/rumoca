@@ -1227,16 +1227,18 @@ impl SolveRuntime {
         }
     }
 
-    /// The reduced tear Jacobian of a planned torn block (see
-    /// [`KernelRequest::TornJacobian`](crate::runtime::projection::KernelRequest)).
+    /// The reduced tear Jacobian of a torn block from its tangent plan (see
+    /// [`KernelRequest::TornJacobian`](crate::runtime::projection::KernelRequest)):
+    /// `None` when the block has no plan, and a singular answer when a causal
+    /// coefficient vanishes at this point.
     pub(crate) fn torn_tangent_jacobian(
         &self,
         tearing: &solve::BlockTearing,
         y: &[f64],
         p: &[f64],
         t: f64,
-    ) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
-        if self.torn_tangents.is_empty() || self.torn_tangents.iter().all(Option::is_none) {
+    ) -> Result<Option<Option<rumoca_eval_solve::TornTangentJacobian>>, RuntimeSolveError> {
+        if self.torn_tangents.iter().all(Option::is_none) {
             return Ok(None);
         }
         // Projection blocks are borrowed from this runtime's plan, so a block
@@ -1274,6 +1276,7 @@ impl SolveRuntime {
                 t,
                 context: self.row_eval_context(),
             })
+            .map(Some)
             .map_err(Into::into)
     }
 
@@ -1921,16 +1924,11 @@ fn torn_tangent_evaluators(
     plan: &solve::AlgebraicProjectionPlan,
     jvp: &solve::ScalarProgramBlock,
 ) -> Rc<[Option<rumoca_eval_solve::TornTangentEvaluator>]> {
-    // With the exact torn Jacobian off, no block carries an evaluator and the
-    // table stays empty, so a torn solve declines the request at once.
-    if !rumoca_eval_solve::projection_policy::jacobian_sources().torn_tangent {
-        return Rc::from([]);
-    }
     plan.blocks
         .iter()
         .map(|block| {
             let plan = solve::TornTangentPlan::derive(block.tearing.as_ref()?, jvp).ok()?;
-            Some(rumoca_eval_solve::TornTangentEvaluator::new(plan))
+            rumoca_eval_solve::TornTangentEvaluator::new(plan, jvp).ok()
         })
         .collect()
 }

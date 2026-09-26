@@ -369,6 +369,9 @@ pub(crate) enum KernelAnswer {
     Done,
     ColoredEntries(JacobianEntries),
     TornJacobian(rumoca_eval_solve::TornTangentJacobian),
+    /// The torn block's tangent plan found a vanished causal coefficient: the
+    /// reduced Newton has no Jacobian at this point.
+    TornJacobianSingular,
 }
 
 pub(crate) trait AlgebraicProjectionModel: ImplicitProjectionModel {

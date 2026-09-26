@@ -319,9 +319,18 @@ declines. A torn block's tangent plan constructs from its checked
 `BlockTearing` and the solver-Y JVP rows: each causal step names its row, its
 target, its coefficient source (a lane seeded on the target alone), and the
 tear columns its reads reach; each reduced residual row names its tangent
-source; a row without a widened program, or a causal row without a
-coefficient in its target, declines the plan.
-Evaluation follows the sweep order and declines at a vanished coefficient. A
+source; a row without a JVP program, or a causal row without a coefficient in
+its target, declines the plan. The plan takes the multi-lane form (one lane
+per tear and one coefficient lane) when that lane count is below
+`MAX_TENSOR_LANES` and every program widens; otherwise it takes the
+directional form, which evaluates every step's coefficient first and then one
+tear column at a time through the one-direction JVP programs, equal to the
+multi-lane form bit for bit. Evaluation follows the sweep order and declines
+at a vanished or non-finite coefficient. The plan is the only source of a
+torn block's tear Jacobian in the linked kernel and the generated C: a
+declined plan, a non-finite entry, or a reduced row or column that is exactly
+zero declines the torn solve to the dense block Newton, never to a difference
+quotient. A
 block's colored tangent plan constructs from its issued colored Jacobian
 application: each distinct program runs once with one lane per color that
 calls it, and each placement takes the value that color's call would write.

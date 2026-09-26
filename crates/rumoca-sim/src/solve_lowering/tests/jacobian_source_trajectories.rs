@@ -2,10 +2,8 @@
 //!
 //! The colored tangent lanes equal the one-direction colored calls bit for
 //! bit, and a block whose program does not widen keeps the one-direction
-//! calls, so a trajectory is bit-identical with the lanes on or off. The
-//! exact torn tear Jacobian is an accuracy option that changes Newton
-//! iterates, so its trajectory differs from the finite-difference one at the
-//! tolerance level only.
+//! calls, so a trajectory is bit-identical with the lanes on or off.
+//! The torn tear Jacobian always comes from the tangent plan.
 
 use rumoca_eval_solve::projection_policy::{JacobianSources, with_jacobian_sources};
 use rumoca_ir_solve::{self as solve, ColoredTangentPlan};
@@ -64,7 +62,6 @@ fn assert_colored_lanes_exact(label: &str, dae: &rumoca_ir_dae::Dae, t_end: f64)
         t_end,
         JacobianSources {
             colored_lanes: false,
-            ..JacobianSources::POLICY
         },
     );
     assert_eq!(lanes.times, one_direction.times, "{label}: output times");
@@ -75,38 +72,6 @@ fn assert_colored_lanes_exact(label: &str, dae: &rumoca_ir_dae::Dae, t_end: f64)
     colored_plan_counts(dae)
 }
 
-/// The largest difference of two trajectories relative to `max(|x|, 1)`.
-fn scaled_difference(exact: &SimResult, finite: &SimResult) -> f64 {
-    exact
-        .data
-        .iter()
-        .zip(&finite.data)
-        .flat_map(|(a, b)| a.iter().zip(b))
-        .map(|(a, b)| (a - b).abs() / b.abs().max(1.0))
-        .fold(0.0, f64::max)
-}
-
-/// The exact torn Jacobian moves the trajectory by no more than the
-/// integrator's relative tolerance; returns the scaled difference.
-fn assert_torn_tangent_bounded(label: &str, dae: &rumoca_ir_dae::Dae, t_end: f64) -> f64 {
-    let finite = simulate(dae, t_end, JacobianSources::POLICY);
-    let exact = simulate(
-        dae,
-        t_end,
-        JacobianSources {
-            torn_tangent: true,
-            ..JacobianSources::POLICY
-        },
-    );
-    assert_eq!(exact.times, finite.times, "{label}: output times");
-    let difference = scaled_difference(&exact, &finite);
-    assert!(
-        difference <= options(t_end).rtol,
-        "{label}: the exact torn Jacobian moves the trajectory by {difference:e}"
-    );
-    difference
-}
-
 #[test]
 fn fixture_trajectories_under_each_jacobian_source() {
     let loops = compile_with_roots(LOOPS, "TangentLoops", &[]);
@@ -114,7 +79,6 @@ fn fixture_trajectories_under_each_jacobian_source() {
     let (_, widened) = assert_colored_lanes_exact("TangentChain", &chain, 1.0);
     assert!(widened >= 1, "the chain block widens");
     assert_colored_lanes_exact("TangentLoops", &loops, 1.0);
-    assert_torn_tangent_bounded("TangentLoops", &loops, 1.0);
 }
 
 /// End time of the MSL runs, long enough to cross many refreshes of every block.
@@ -142,7 +106,7 @@ const MSL_MODELS: [(&str, &str); 4] = [
 
 /// The models whose colored applications refuse to widen keep the exact
 /// one-direction Jacobian, so their interpreter trajectories match the
-/// one-direction build bit for bit; Fourbar1 bounds the exact torn Jacobian.
+/// one-direction build bit for bit.
 #[test]
 fn msl_trajectories_under_each_jacobian_source() {
     let Some(root) = msl_root() else {
@@ -155,9 +119,6 @@ fn msl_trajectories_under_each_jacobian_source() {
         let dae = compile_with_roots(&source, &wrapper, std::slice::from_ref(&root));
         let (refused, _) = assert_colored_lanes_exact(short, &dae, MSL_END);
         refused_blocks += refused;
-        if short == "Fourbar1" {
-            assert_torn_tangent_bounded(short, &dae, MSL_END);
-        }
     }
     assert!(
         refused_blocks > 0,

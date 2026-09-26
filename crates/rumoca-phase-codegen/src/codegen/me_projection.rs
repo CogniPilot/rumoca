@@ -391,6 +391,9 @@ fn chart_value(
     tables: &mut ComponentTables,
 ) -> Result<Value, CodegenError> {
     let plans = chart_plans(&system.problem, &system.artifacts)?;
+    let tangent_jvp = rumoca_eval_solve::to_scalar_program_block(
+        &system.artifacts.continuous.implicit_jacobian_v,
+    )?;
     let mut catalog = BlockCatalog {
         sources: BlockSources {
             problem: &system.problem,
@@ -398,6 +401,7 @@ fn chart_value(
             implicit,
             seed_len,
             chart,
+            tangent_jvp: &tangent_jvp,
         },
         table: &mut tables.table,
         ids: BTreeMap::new(),
@@ -560,7 +564,6 @@ fn policy_value() -> Value {
         trust_fraction => float_literal(policy::ALGEBRAIC_PROJECTION_TRUST_FRACTION),
         torn_iters => policy::TORN_OUTER_MAX_ITERS,
         torn_backtracks => policy::TORN_BACKTRACK_STEPS,
-        fd_step => float_literal(policy::FINITE_DIFFERENCE_RELATIVE_STEP),
         chart_regular_multiple => float_literal(policy::CHART_REGULAR_MULTIPLE),
         chart_switch_keep => float_literal(policy::CHART_SWITCH_KEEP),
         chart_switch_improvement => float_literal(policy::CHART_SWITCH_IMPROVEMENT),

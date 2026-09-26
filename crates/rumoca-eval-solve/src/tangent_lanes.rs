@@ -89,18 +89,32 @@ pub struct TornTangentJacobian {
 pub struct TornTangentEvaluator {
     plan: TornTangentPlan,
     programs: Vec<PreparedTangentLaneProgram>,
+    /// The JVP rows a one-direction plan evaluates.
+    directions: Option<crate::PreparedScalarProgramBlock>,
 }
 
 impl TornTangentEvaluator {
-    #[must_use]
-    pub fn new(plan: TornTangentPlan) -> Self {
+    /// Prepare `plan` over the JVP rows `jvp` it was derived from.
+    pub fn new(
+        plan: TornTangentPlan,
+        jvp: &rumoca_ir_solve::ScalarProgramBlock,
+    ) -> Result<Self, EvalSolveError> {
         let programs = plan
             .programs()
             .iter()
             .cloned()
             .map(PreparedTangentLaneProgram::new)
             .collect();
-        Self { plan, programs }
+        let directions = if plan.directional() {
+            Some(crate::PreparedScalarProgramBlock::new(jvp.clone())?)
+        } else {
+            None
+        };
+        Ok(Self {
+            plan,
+            programs,
+            directions,
+        })
     }
 
     #[must_use]
@@ -115,6 +129,9 @@ impl TornTangentEvaluator {
         &self,
         point: TangentPoint<'_>,
     ) -> Result<Option<TornTangentJacobian>, EvalSolveError> {
+        if let Some(directions) = &self.directions {
+            return self.eval_directions(directions, point);
+        }
         let lanes = self.plan.lanes();
         let tears = lanes - 1;
         let mut seed = vec![0.0; point.y.len() * lanes];
@@ -141,6 +158,66 @@ impl TornTangentEvaluator {
         for (row, entry) in self.plan.residuals().iter().enumerate() {
             let tangents = self.row_tangents(point, &seed, entry.source, &mut out)?;
             residual[row * tears..(row + 1) * tears].copy_from_slice(&tangents[..tears]);
+        }
+        Ok(Some(TornTangentJacobian {
+            residual,
+            recovered,
+        }))
+    }
+
+    /// The one-direction form: every step's coefficient with its target seeded
+    /// alone, then each tear column's tangents through the steps in sweep
+    /// order and the reduced rows. Each value equals its lane in the
+    /// multi-lane form.
+    fn eval_directions(
+        &self,
+        directions: &crate::PreparedScalarProgramBlock,
+        point: TangentPoint<'_>,
+    ) -> Result<Option<TornTangentJacobian>, EvalSolveError> {
+        let tears = self.plan.lanes() - 1;
+        let steps = self.plan.steps();
+        let mut seed = vec![0.0; point.y.len()];
+        let mut out = Vec::new();
+        let mut direction = |seed: &[f64], source: TangentRowSource| {
+            directions.eval_row_outputs_unchecked_with_context(
+                source.program,
+                point.y,
+                point.p,
+                point.t,
+                RowEvalContext {
+                    seed: Some(seed),
+                    ..point.context
+                },
+                &mut out,
+            )?;
+            Ok::<f64, EvalSolveError>(out[source.output])
+        };
+        let mut coefficients = Vec::with_capacity(steps.len());
+        for step in steps {
+            seed[step.target] = 1.0;
+            let coefficient = direction(&seed, step.source)?;
+            seed[step.target] = 0.0;
+            if coefficient == 0.0 || !coefficient.is_finite() {
+                return Ok(None);
+            }
+            coefficients.push(coefficient);
+        }
+        let mut recovered = vec![0.0; steps.len() * tears];
+        let mut residual = vec![0.0; tears * tears];
+        for (column, &tear) in self.plan.tear_targets().iter().enumerate() {
+            seed[tear] = 1.0;
+            for (index, (step, coefficient)) in steps.iter().zip(&coefficients).enumerate() {
+                let value = -direction(&seed, step.source)? / coefficient;
+                seed[step.target] = value;
+                recovered[index * tears + column] = value;
+            }
+            for (row, entry) in self.plan.residuals().iter().enumerate() {
+                residual[row * tears + column] = direction(&seed, entry.source)?;
+            }
+            seed[tear] = 0.0;
+            for step in steps {
+                seed[step.target] = 0.0;
+            }
         }
         Ok(Some(TornTangentJacobian {
             residual,

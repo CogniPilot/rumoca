@@ -118,7 +118,7 @@ fn model_c(model: &str, source: &str, target: &str) -> String {
 }
 
 /// `RmcBlock` field names in their C initializer order.
-const FIELDS: [&str; 51] = [
+const FIELDS: [&str; 55] = [
     "canonical",
     "n",
     "y",
@@ -147,7 +147,6 @@ const FIELDS: [&str; 51] = [
     "cruns",
     "causal_target",
     "causal_col",
-    "tear_deps",
     "elimination",
     "nelim",
     "elim_row",
@@ -170,6 +169,11 @@ const FIELDS: [&str; 51] = [
     "split",
     "row_split",
     "inv_len",
+    "tangent_lanes",
+    "tangent_directional",
+    "ntangent_steps",
+    "tangent_steps",
+    "tangent_residuals",
 ];
 
 const ISOLATION_KINDS: std::ops::RangeInclusive<usize> = 0..=2;
@@ -391,23 +395,26 @@ fn assert_tearing(model: &str, tables: &Tables, block: &Block) {
         next, ncausal,
         "{model}: causal runs cover every causal step"
     );
-    // Per tear, the ascending runs and reduced residual rows its perturbation
-    // reaches; every tear reaches some residual row.
-    let ncruns = block.get("ncruns");
-    for &list in block.range(tables, "tear_deps", k) {
-        let runs = tables.pool[list];
-        let rows = tables.pool[list + 1 + runs];
-        let run_ids = &tables.pool[list + 1..list + 1 + runs];
-        let row_ids = &tables.pool[list + 2 + runs..list + 2 + runs + rows];
-        assert!(run_ids.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(run_ids.iter().all(|&run| run < ncruns));
-        assert!(row_ids.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(row_ids.iter().all(|&row| row < k));
-        assert!(
-            rows > 0,
-            "{model}: a tear perturbation reaches a residual row"
-        );
-    }
+    // The tear Jacobian comes from the block's tangent plan: one step per
+    // causal step, in the issued order, and one reduced row per tear.
+    assert_eq!(
+        block.get("tangent_lanes"),
+        k + 1,
+        "{model}: tears plus the coefficient lane"
+    );
+    assert_eq!(
+        block.get("ntangent_steps"),
+        ncausal,
+        "{model}: one tangent step per causal step"
+    );
+    let steps = block.range(tables, "tangent_steps", 4 * ncausal);
+    let targets = block.range(tables, "causal_target", ncausal);
+    assert_eq!(
+        steps.chunks(4).map(|step| step[3]).collect::<Vec<_>>(),
+        targets,
+        "{model}: the tangent steps follow the causal order"
+    );
+    assert_eq!(block.range(tables, "tangent_residuals", 3 * k).len(), 3 * k);
 }
 
 /// The elimination covers the block and carries the shared capacity.
@@ -562,8 +569,7 @@ fn has_seeded_projection_step(source: &str) -> bool {
     })
 }
 
-/// Two coupled loops torn into one block: a perturbation of some tears
-/// reaches none of its causal runs.
+/// Two coupled loops torn into one block with two tears.
 const TWO_TEARS: &str = "model TwoTears
   Real x(start=1, fixed=true);
   Real u(start=1);
@@ -580,117 +586,6 @@ equation
   z = 0.3*s*s + 0.1*u + 0.2*sin(z);
 end TwoTears;";
 
-/// Every Y index a program reads, nested fold and conditional bodies included.
-fn program_y_reads(program: &[rumoca_ir_solve::LinearOp], reads: &mut Vec<usize>) {
-    use rumoca_ir_solve::{LinearOp, TensorInputKind};
-    for op in program {
-        match op {
-            LinearOp::LoadY { index, .. } => reads.push(*index),
-            LinearOp::TensorLoad {
-                input: TensorInputKind::Y,
-                input_start,
-                count,
-                ..
-            } => reads.extend(*input_start..input_start + count),
-            LinearOp::FunctionFold { program, .. }
-            | LinearOp::GuardedFunctionFold { program, .. }
-            | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                program_y_reads(&program.update, reads);
-            }
-            LinearOp::FunctionConditional { program, .. } => {
-                for arm in &program.arms {
-                    program_y_reads(&arm.condition, reads);
-                    program_y_reads(&arm.result, reads);
-                }
-                program_y_reads(&program.fallback, reads);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// The partial perturbation sweep skips work: some tear's run list is shorter
-/// than the block's run count, and every tear's runs and reduced rows equal
-/// the closure recomputed here from the lowered row programs' Y reads.
-#[test]
-fn tear_dependencies_skip_unreached_runs_and_match_the_row_reads() {
-    let (_, tables) = rendered("TwoTears", TWO_TEARS);
-    assert_well_formed("TwoTears", &tables);
-    let block = tables
-        .blocks
-        .iter()
-        .find(|block| block.flag("torn"))
-        .expect("the coupled loops are torn");
-    let (k, ncruns, ncausal) = (block.get("k"), block.get("ncruns"), block.get("ncausal"));
-    let compiled = Compiler::new()
-        .model("TwoTears")
-        .compile_str(TWO_TEARS, "TwoTears.mo")
-        .expect("compile TwoTears");
-    let model =
-        rumoca_sim::lower_dae_for_simulation(&compiled.dae, &rumoca_sim::SimOptions::default())
-            .expect("lower TwoTears");
-    let plan_block =
-        &model.problem.continuous.algebraic_projection_plan.blocks[block.get("canonical")];
-    let tearing = plan_block.tearing.as_ref().expect("the block is torn");
-    let targets = block.range(&tables, "causal_target", ncausal);
-    assert_eq!(
-        targets,
-        tearing
-            .causal_steps
-            .iter()
-            .map(|step| step.y_index)
-            .collect::<Vec<_>>(),
-        "the descriptor keeps the issued causal order"
-    );
-    let implicit = rumoca_eval_solve::PreparedScalarProgramBlock::new(
-        rumoca_eval_solve::to_scalar_program_projection(&model.problem.continuous.implicit_rhs)
-            .expect("scalarize the implicit rows")
-            .into_block(),
-    )
-    .expect("prepare the implicit rows");
-    let reads = |row: usize| {
-        let (program, _) = implicit.row_output_position(row).expect("a scalar row");
-        let mut reads = Vec::new();
-        program_y_reads(&implicit.block().programs()[program], &mut reads);
-        reads
-    };
-    let runs = block.range(&tables, "cruns", 4 * ncruns);
-    let mut skipped = false;
-    for (tear, &list) in block.range(&tables, "tear_deps", k).iter().enumerate() {
-        let mut dirty = vec![tearing.tear_y_indices[tear]];
-        let mut expected_runs = Vec::new();
-        for (index, run) in runs.chunks(4).enumerate() {
-            let steps = &tearing.causal_steps[run[2]..run[2] + run[3]];
-            if steps
-                .iter()
-                .any(|step| reads(step.row).iter().any(|y| dirty.contains(y)))
-            {
-                expected_runs.push(index);
-                dirty.extend(steps.iter().map(|step| step.y_index));
-            }
-        }
-        let expected_rows = tearing
-            .residual_rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| reads(**row).iter().any(|y| dirty.contains(y)))
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        let listed_runs = tables.pool[list];
-        let listed_rows = tables.pool[list + 1 + listed_runs];
-        assert_eq!(
-            &tables.pool[list + 1..list + 1 + listed_runs],
-            expected_runs.as_slice()
-        );
-        assert_eq!(
-            &tables.pool[list + 2 + listed_runs..list + 2 + listed_runs + listed_rows],
-            expected_rows.as_slice()
-        );
-        skipped |= listed_runs < ncruns;
-    }
-    assert!(skipped, "some tear's perturbation skips a causal run");
-}
-
 /// With the colored lanes scoped off, a block's Jacobian renders as the
 /// one-direction colored calls: colors and placements, no lane calls.
 #[test]
@@ -698,7 +593,6 @@ fn torn_loop_descriptor_renders_one_direction_colors_without_lanes() {
     use rumoca_eval_solve::projection_policy::{JacobianSources, with_jacobian_sources};
     let sources = JacobianSources {
         colored_lanes: false,
-        ..JacobianSources::POLICY
     };
     let (_, tables) = with_jacobian_sources(sources, || rendered("TornLoop", TORN));
     assert_well_formed("TornLoop", &tables);
@@ -784,4 +678,29 @@ fn the_linked_fixed_step_drive_switches_the_split_circle() {
             "a switch precedes its fold: {switch:?}"
         );
     }
+}
+
+/// The two-tear block takes its tear Jacobian from the tangent plan the
+/// linked kernel evaluates: the rendered steps name the issued causal targets
+/// and each reduced row reads one lane function.
+#[test]
+fn two_tears_render_the_torn_tangent_plan() {
+    let (_, tables) = rendered("TwoTears", TWO_TEARS);
+    assert_well_formed("TwoTears", &tables);
+    let block = tables
+        .blocks
+        .iter()
+        .find(|block| block.flag("torn"))
+        .expect("the coupled loops are torn");
+    let k = block.get("k");
+    assert!(k >= 2, "two loops tear two coordinates");
+    assert_eq!(block.get("tangent_lanes"), k + 1);
+    assert!(
+        !block.flag("tangent_directional"),
+        "every row's JVP program widens"
+    );
+    assert!(
+        block.get("lane_max") > k,
+        "the lane seed holds the torn lanes"
+    );
 }

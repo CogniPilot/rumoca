@@ -26,6 +26,9 @@ pub(super) struct BlockSources<'a> {
     pub(super) seed_len: usize,
     /// The reduced chart these owners belong to; zero is the primary basis.
     pub(super) chart: usize,
+    /// The solver-Y JVP rows the linked kernel derives torn tangent plans
+    /// over (`solve_runtime.rs: torn_tangent_evaluators`).
+    pub(super) tangent_jvp: &'a solve::ScalarProgramBlock,
 }
 
 /// Isolation kinds as the C kernel encodes them.
@@ -72,7 +75,6 @@ pub(super) struct BlockRecord {
     cruns: usize,
     causal_target: usize,
     causal_col: usize,
-    tear_deps: usize,
     elimination: bool,
     nelim: usize,
     elim_row: usize,
@@ -98,6 +100,18 @@ pub(super) struct BlockRecord {
     row_split: usize,
     /// Live-out values of every split of the block.
     inv_len: usize,
+    /// Lanes of the torn tangent plan: its tears plus the coefficient lane.
+    tangent_lanes: usize,
+    /// Whether the plan evaluates one direction at a time through JVP
+    /// functions instead of lane functions.
+    tangent_directional: bool,
+    /// Causal steps of the torn tangent plan: `(lane function, lane outputs,
+    /// output offset, solver-Y target)` per step.
+    ntangent_steps: usize,
+    tangent_steps: usize,
+    /// Reduced residual rows of the torn tangent plan: `(lane function, lane
+    /// outputs, output offset)` per tear row.
+    tangent_residuals: usize,
 }
 
 pub(super) fn refuse(canonical: usize, reason: &str) -> CodegenError {
@@ -586,63 +600,98 @@ fn record_torn(
     record.ncruns = runs.len() / 4;
     record.cruns = table.push(runs.iter().copied());
     record.causal_target = table.push(causal.iter().map(|&(_, y)| y));
-    record.tear_deps = tear_dependencies(sources, table, tearing, &runs, &causal);
     record.causal_col = table.push(causal_col);
+    record_torn_tangent(sources, table, canonical, tearing, record)
+}
+
+/// The block's torn tangent plan (`rumoca_ir_solve::TornTangentPlan`), the
+/// one construction both kernels evaluate the tear Jacobian and the causal
+/// sensitivities from: multi-lane programs, or the JVP programs one direction
+/// at a time when the plan takes that form.
+fn record_torn_tangent(
+    sources: &BlockSources<'_>,
+    table: &mut ProgramTable,
+    canonical: usize,
+    tearing: &solve::BlockTearing,
+    record: &mut BlockRecord,
+) -> Result<(), CodegenError> {
+    let plan = solve::TornTangentPlan::derive(tearing, sources.tangent_jvp)
+        .map_err(|_| refuse(canonical, "has a torn row without a directional derivative"))?;
+    let lanes = plan.lanes();
+    let functions = if plan.directional() {
+        record.tangent_directional = true;
+        tangent_directions(sources, table, canonical, &plan, record)?
+    } else {
+        tangent_lanes(sources, table, canonical, &plan, record)?
+    };
+    let steps = plan.steps().iter().flat_map(|step| {
+        let (function, outputs) = functions[&step.source.program];
+        [function, outputs, step.source.output, step.target]
+    });
+    record.tangent_steps = table.push(steps.collect::<Vec<_>>());
+    record.ntangent_steps = plan.steps().len();
+    let residuals = plan.residuals().iter().flat_map(|entry| {
+        let (function, outputs) = functions[&entry.source.program];
+        [function, outputs, entry.source.output]
+    });
+    record.tangent_residuals = table.push(residuals.collect::<Vec<_>>());
+    record.tangent_lanes = lanes;
     Ok(())
 }
 
-/// Per tear column, the causal runs and reduced residual rows a perturbation
-/// of that tear can change: a run is dependent when its residual program reads
-/// the tear or a target of an earlier dependent run, and a residual row when
-/// its program reads any of those. The reads are those of the whole residual
-/// program, a superset of every isolation prefix. A perturbation sweep of the
-/// reduced Jacobian re-evaluates only these; every other run and row reads the
-/// same values as the base sweep and so has the base result, bit for bit.
-/// Returns the pool offset of `k` entries, each the pool offset of one list
-/// `[nruns, runs.., nrows, rows..]`.
-fn tear_dependencies(
+/// The plan's multi-lane programs as lane functions: `(function, lane
+/// outputs)` per plan program.
+fn tangent_lanes(
     sources: &BlockSources<'_>,
     table: &mut ProgramTable,
-    tearing: &solve::BlockTearing,
-    runs: &[usize],
-    causal: &[(usize, usize)],
-) -> usize {
-    let program = |row: usize| sources.implicit.row_output_position(row).map(|(p, _)| p);
-    let reads = |row: usize, dirty: &std::collections::BTreeSet<usize>| {
-        program(row).is_none_or(|p| dirty.iter().any(|&y| sources.implicit.row_reads_y(p, y)))
-    };
-    let lists = tearing
-        .tear_y_indices
+    canonical: usize,
+    plan: &solve::TornTangentPlan,
+    record: &mut BlockRecord,
+) -> Result<BTreeMap<usize, (usize, usize)>, CodegenError> {
+    let lanes = plan.lanes();
+    let span = program_span(sources.tangent_jvp, canonical, 0)?;
+    let mut functions = BTreeMap::new();
+    for (index, program) in plan.programs().iter().enumerate() {
+        check_seed_loads(canonical, program.ops(), sources.seed_len, lanes)?;
+        let outputs = program.lane_outputs();
+        record.lane_max_outputs = record.lane_max_outputs.max(lanes * outputs);
+        functions.insert(index, (table.lanes.push(program.clone(), span), outputs));
+    }
+    record.lane_max = record.lane_max.max(lanes);
+    Ok(functions)
+}
+
+/// The JVP programs a one-direction plan reads as JVP functions: `(function,
+/// outputs)` per JVP program.
+fn tangent_directions(
+    sources: &BlockSources<'_>,
+    table: &mut ProgramTable,
+    canonical: usize,
+    plan: &solve::TornTangentPlan,
+    record: &mut BlockRecord,
+) -> Result<BTreeMap<usize, (usize, usize)>, CodegenError> {
+    let jvp = sources.tangent_jvp;
+    let source_id = table.jvp_source(jvp);
+    let programs = plan
+        .steps()
         .iter()
-        .map(|&tear| {
-            let mut dirty = std::collections::BTreeSet::from([tear]);
-            let mut dependent_runs = Vec::new();
-            for (index, run) in runs.chunks(4).enumerate() {
-                let steps = &causal[run[2]..run[2] + run[3]];
-                if steps.iter().any(|&(row, _)| reads(row, &dirty)) {
-                    dependent_runs.push(index);
-                    dirty.extend(steps.iter().map(|&(_, target)| target));
-                }
-            }
-            let rows = tearing
-                .residual_rows
-                .iter()
-                .enumerate()
-                .filter(|&(_, &row)| reads(row, &dirty))
-                .map(|(index, _)| index)
-                .collect::<Vec<_>>();
-            let mut list = vec![dependent_runs.len()];
-            list.extend(dependent_runs);
-            list.push(rows.len());
-            list.extend(rows);
-            list
-        })
-        .collect::<Vec<_>>();
-    let starts = lists
-        .into_iter()
-        .map(|list| table.push(list))
-        .collect::<Vec<_>>();
-    table.push(starts)
+        .map(|step| step.source.program)
+        .chain(plan.residuals().iter().map(|entry| entry.source.program));
+    let mut functions = BTreeMap::new();
+    for program in programs {
+        if functions.contains_key(&program) {
+            continue;
+        }
+        let function = table.jvp.intern((source_id, program), || {
+            let operations = jvp.programs()[program].clone();
+            check_seed_loads(canonical, &operations, sources.seed_len, 1)?;
+            Ok((operations, program_span(jvp, canonical, program)?))
+        })?;
+        let outputs = table.jvp.output_count(function);
+        record.jvp_max_outputs = record.jvp_max_outputs.max(outputs);
+        functions.insert(program, (function, outputs));
+    }
+    Ok(functions)
 }
 
 /// The causal sweep as runs of consecutive steps recovered from one residual

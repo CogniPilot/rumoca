@@ -61,7 +61,6 @@ static int {{ name }}({{ signature }}) {
 #define RMC_TRUST_FRACTION {{ me.policy.trust_fraction }}
 #define RMC_TORN_ITERS {{ me.policy.torn_iters }}
 #define RMC_TORN_BACKTRACKS {{ me.policy.torn_backtracks }}
-#define RMC_FD_STEP {{ me.policy.fd_step }}
 #define RMC_SEED_LEN {{ me.seed_len if me.seed_len > 0 else 1 }}
 #define RMC_DWORK {{ me.work.doubles }}
 #define RMC_SWORK {{ me.work.sizes }}
@@ -252,13 +251,14 @@ typedef struct {
     size_t ncolors; const size_t* colors; const size_t* color_seeds; const size_t* color_calls;
     const size_t* placements; size_t jvp_max_outputs;
     bool torn; size_t k; const size_t* tear_col; const size_t* residual_row;
-    size_t ncausal; size_t ncruns; const size_t* cruns; const size_t* causal_target; const size_t* causal_col; const size_t* tear_deps;
+    size_t ncausal; size_t ncruns; const size_t* cruns; const size_t* causal_target; const size_t* causal_col;
     bool elimination; size_t nelim; const size_t* elim_row; const size_t* elim_col;
     size_t nelim_tear; const size_t* elim_residual; const size_t* elim_tear;
     size_t nguards; const size_t* guards; const size_t* guard_step; size_t elim_capacity;
     const size_t* iso_default; const size_t* iso_start; const size_t* iso_entries;
     size_t nlane_calls; const size_t* lane_calls; size_t lane_max_outputs; size_t lane_max;
     size_t nsplit; const size_t* split; const size_t* row_split; size_t inv_len;
+    size_t tangent_lanes; bool tangent_directional; size_t ntangent_steps; const size_t* tangent_steps; const size_t* tangent_residuals;
 } RmcBlock;
 static const size_t rmc_pool[{{ me.table.pool|length }}] = {
 {%- for chunk in me.table.pool|batch(24) %}
@@ -268,15 +268,9 @@ static const size_t rmc_pool[{{ me.table.pool|length }}] = {
 #define RMC_P(offset) (rmc_pool + (offset))
 static const RmcBlock rmc_blocks[{{ me.blocks|length }}] = {
 {%- for b in me.blocks %}
-    { {{ b.canonical }}, {{ b.n }}, RMC_P({{ b.y }}), RMC_P({{ b.row_target }}), RMC_P({{ b.row_program }}), RMC_P({{ b.row_offset }}), {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, RMC_P({{ b.row_ptr }}), RMC_P({{ b.col_idx }}), {{ b.nnz }}, {{ b.ncolors }}, RMC_P({{ b.colors }}), RMC_P({{ b.color_seeds }}), RMC_P({{ b.color_calls }}), RMC_P({{ b.placements }}), {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, RMC_P({{ b.tear_col }}), RMC_P({{ b.residual_row }}), {{ b.ncausal }}, {{ b.ncruns }}, RMC_P({{ b.cruns }}), RMC_P({{ b.causal_target }}), RMC_P({{ b.causal_col }}), RMC_P({{ b.tear_deps }}), {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, RMC_P({{ b.elim_row }}), RMC_P({{ b.elim_col }}), {{ b.nelim_tear }}, RMC_P({{ b.elim_residual }}), RMC_P({{ b.elim_tear }}), {{ b.nguards }}, RMC_P({{ b.guards }}), RMC_P({{ b.guard_step }}), {{ b.elim_capacity }}, RMC_P({{ b.iso_default }}), RMC_P({{ b.iso_start }}), RMC_P({{ b.iso_entries }}), {{ b.nlane_calls }}, RMC_P({{ b.lane_calls }}), {{ b.lane_max_outputs }}, {{ b.lane_max }}, {{ b.nsplit }}, RMC_P({{ b.split }}), RMC_P({{ b.row_split }}), {{ b.inv_len }} },
+    { {{ b.canonical }}, {{ b.n }}, RMC_P({{ b.y }}), RMC_P({{ b.row_target }}), RMC_P({{ b.row_program }}), RMC_P({{ b.row_offset }}), {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, RMC_P({{ b.row_ptr }}), RMC_P({{ b.col_idx }}), {{ b.nnz }}, {{ b.ncolors }}, RMC_P({{ b.colors }}), RMC_P({{ b.color_seeds }}), RMC_P({{ b.color_calls }}), RMC_P({{ b.placements }}), {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, RMC_P({{ b.tear_col }}), RMC_P({{ b.residual_row }}), {{ b.ncausal }}, {{ b.ncruns }}, RMC_P({{ b.cruns }}), RMC_P({{ b.causal_target }}), RMC_P({{ b.causal_col }}), {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, RMC_P({{ b.elim_row }}), RMC_P({{ b.elim_col }}), {{ b.nelim_tear }}, RMC_P({{ b.elim_residual }}), RMC_P({{ b.elim_tear }}), {{ b.nguards }}, RMC_P({{ b.guards }}), RMC_P({{ b.guard_step }}), {{ b.elim_capacity }}, RMC_P({{ b.iso_default }}), RMC_P({{ b.iso_start }}), RMC_P({{ b.iso_entries }}), {{ b.nlane_calls }}, RMC_P({{ b.lane_calls }}), {{ b.lane_max_outputs }}, {{ b.lane_max }}, {{ b.nsplit }}, RMC_P({{ b.split }}), RMC_P({{ b.row_split }}), {{ b.inv_len }}, {{ b.tangent_lanes }}, {{ "true" if b.tangent_directional else "false" }}, {{ b.ntangent_steps }}, RMC_P({{ b.tangent_steps }}), RMC_P({{ b.tangent_residuals }}) },
 {%- endfor %}
 };
-/* projection_policy::finite_difference_perturbation */
-static double rmc_perturbation(double value, double scale) {
-    double magnitude = fmax(fmax(fabs(value), fabs(scale)), 1.0);
-    double step = magnitude * RMC_FD_STEP;
-    return value < 0.0 ? -step : step;
-}
 static bool rmc_all_zero(const double* values, size_t n) {
     for (size_t i = 0; i < n; ++i) if (values[i] != 0.0) return false;
     return true;
@@ -473,40 +467,95 @@ static int rmc_torn_sweep(ModelInstance* m, const RmcBlock* b, double* residual)
     for (size_t i = 0; i < b->k; ++i) if (rmc_torn_residual(m, b, i, residual) != 0) return -1;
     return 1;
 }
-/* The same sweep after perturbing tear `col` of a consistent base point:
-   only the runs and residual rows the tear reaches are re-evaluated; the
-   others keep their base values, which a full sweep would recompute from the
-   same inputs bit for bit. */
-static int rmc_torn_sweep_from(ModelInstance* m, const RmcBlock* b, size_t col, const double* base_residual, double* residual) {
-    const size_t* deps = rmc_pool + b->tear_deps[col];
-    const size_t* rows = deps + 1 + deps[0];
-    for (size_t r = 0; r < deps[0]; ++r) { int result = rmc_torn_run(m, b, deps[1 + r]); if (result != 1) return result; }
-    for (size_t i = 0; i < b->k; ++i) residual[i] = base_residual[i];
-    for (size_t r = 0; r < rows[0]; ++r) if (rmc_torn_residual(m, b, rows[1 + r], residual) != 0) return -1;
-    return 1;
-}
-/* tearing.rs: reduced_jacobian; the recovered rows matter only when
-   certifying. -1 error, 0 declined, 1 ok */
-static int rmc_reduced_jacobian(ModelInstance* m, const RmcBlock* b, const double* residual, const double* vscale, const double* base, double* jac, double* recovered) {
-    RMC_MARK; size_t k = b->k; int result = 1;
-    double* perturbed = rmc_dalloc(m, k + 1);
-    if (!perturbed) { RMC_RELEASE; return rmc_exhausted(m); }
-    for (size_t col = 0; col < k && result == 1; ++col) {
-        rmc_restore(m, b, base);
-        size_t tear = b->tear_col[col];
-        double h = rmc_perturbation(base[tear], vscale[col]);
-        m->y[b->y[tear]] = base[tear] + h;
-        int swept = rmc_torn_sweep_from(m, b, col, residual, perturbed);
-        if (swept < 0) { result = -1; break; }
-        if (swept == 0 || !rmc_all_finite(perturbed, k)) { rmc_restore(m, b, base); result = 0; break; }
-        for (size_t row = 0; row < k; ++row) jac[row * k + col] = (perturbed[row] - residual[row]) / h;
-        for (size_t i = 0; i < b->ncausal; ++i) recovered[i * k + col] = (m->y[b->causal_target[i]] - base[b->causal_col[i]]) / h;
+{%- if me.lane_max > 0 %}
+/* tangent_lanes.rs: TornTangentEvaluator::eval on the swept base point. Lanes
+   0..tears seed the tear columns and the last lane a causal step's own target;
+   each step's tangent is minus its row's tangent over the coefficient, written
+   back as that target's seed for the steps after it. The reduced rows then give
+   the Jacobian row-major. The lane seed is all zero on entry and on return.
+   -1 error, 0 a vanished causal coefficient, 1 ok */
+static int rmc_torn_tangent(ModelInstance* m, const RmcBlock* b, double* jac, double* recovered) {
+    RMC_MARK; size_t lanes = b->tangent_lanes, tears = lanes - 1; int result = 1;
+    double* out = rmc_dalloc_raw(m, b->lane_max_outputs + 1);
+    if (!out) { RMC_RELEASE; return rmc_exhausted(m); }
+    double* seed = m->rmc_lane_seed;
+    for (size_t c = 0; c < tears; ++c) seed[b->y[b->tear_col[c]] * lanes + c] = 1.0;
+    for (size_t done = 0; done < b->ntangent_steps && result == 1; ++done) {
+        const size_t* step = b->tangent_steps + 4 * done;
+        size_t target = step[3] * lanes;
+        seed[target + tears] = 1.0;
+        if (rmc_lane_fn[step[0]](m, seed, out) != 0) { seed[target + tears] = 0.0; result = -1; break; }
+        double coefficient = out[tears * step[1] + step[2]];
+        seed[target + tears] = 0.0;
+        if (coefficient == 0.0 || !isfinite(coefficient)) { result = 0; break; }
+        for (size_t lane = 0; lane < tears; ++lane) {
+            double value = -out[lane * step[1] + step[2]] / coefficient;
+            seed[target + lane] = value;
+            recovered[done * tears + lane] = value;
+        }
     }
-    if (result == 1) {
-        rmc_restore(m, b, base);
-        result = rmc_all_finite(jac, k * k) && (!m->rmc_certify || rmc_all_finite(recovered, b->ncausal * k)) ? 1 : 0;
+    for (size_t row = 0; row < tears && result == 1; ++row) {
+        const size_t* entry = b->tangent_residuals + 3 * row;
+        if (rmc_lane_fn[entry[0]](m, seed, out) != 0) { result = -1; break; }
+        for (size_t lane = 0; lane < tears; ++lane) jac[row * tears + lane] = out[lane * entry[1] + entry[2]];
+    }
+    for (size_t c = 0; c < tears; ++c) seed[b->y[b->tear_col[c]] * lanes + c] = 0.0;
+    for (size_t s = 0; s < b->ntangent_steps; ++s) for (size_t lane = 0; lane < lanes; ++lane) seed[b->tangent_steps[4 * s + 3] * lanes + lane] = 0.0;
+    RMC_RELEASE; return result;
+}
+{%- endif %}
+/* tangent_lanes.rs: TornTangentEvaluator::eval_directions, the one-direction
+   form through the JVP functions: every step's coefficient with its target
+   seeded alone, then each tear column through the steps and the reduced rows.
+   The seed is all zero on entry and on return. -1 error, 0 a vanished causal
+   coefficient, 1 ok */
+static int rmc_torn_directions(ModelInstance* m, const RmcBlock* b, double* jac, double* recovered) {
+    RMC_MARK; size_t tears = b->tangent_lanes - 1; int result = 1;
+    double* out = rmc_dalloc_raw(m, b->jvp_max_outputs + 1); double* coefficient = rmc_dalloc_raw(m, b->ntangent_steps + 1);
+    if (!out || !coefficient) { RMC_RELEASE; return rmc_exhausted(m); }
+    double* seed = m->rmc_seed;
+    for (size_t s = 0; s < b->ntangent_steps && result == 1; ++s) {
+        const size_t* step = b->tangent_steps + 4 * s;
+        seed[step[3]] = 1.0;
+        if (rmc_jvp_fn[step[0]](m, seed, out) != 0) result = -1;
+        else if (out[step[2]] == 0.0 || !isfinite(out[step[2]])) result = 0;
+        else coefficient[s] = out[step[2]];
+        seed[step[3]] = 0.0;
+    }
+    for (size_t c = 0; c < tears && result == 1; ++c) {
+        seed[b->y[b->tear_col[c]]] = 1.0;
+        for (size_t s = 0; s < b->ntangent_steps && result == 1; ++s) {
+            const size_t* step = b->tangent_steps + 4 * s;
+            if (rmc_jvp_fn[step[0]](m, seed, out) != 0) { result = -1; break; }
+            double value = -out[step[2]] / coefficient[s];
+            seed[step[3]] = value;
+            recovered[s * tears + c] = value;
+        }
+        for (size_t row = 0; row < tears && result == 1; ++row) {
+            const size_t* entry = b->tangent_residuals + 3 * row;
+            if (rmc_jvp_fn[entry[0]](m, seed, out) != 0) { result = -1; break; }
+            jac[row * tears + c] = out[entry[2]];
+        }
+        seed[b->y[b->tear_col[c]]] = 0.0;
+        for (size_t s = 0; s < b->ntangent_steps; ++s) seed[b->tangent_steps[4 * s + 3]] = 0.0;
     }
     RMC_RELEASE; return result;
+}
+/* tearing.rs: reduced_jacobian from the block's tangent plan; the recovered
+   rows matter only when certifying. A singular point or a vanished row or
+   column declines the torn solve. -1 error, 0 declined, 1 ok */
+static int rmc_reduced_jacobian(ModelInstance* m, const RmcBlock* b, double* jac, double* recovered) {
+    size_t k = b->k;
+{%- if me.lane_max > 0 %}
+    int result = b->tangent_directional ? rmc_torn_directions(m, b, jac, recovered) : rmc_torn_tangent(m, b, jac, recovered);
+{%- else %}
+    int result = rmc_torn_directions(m, b, jac, recovered);
+{%- endif %}
+    if (result != 1) return result;
+    if (!rmc_all_finite(jac, k * k) || (m->rmc_certify && !rmc_all_finite(recovered, b->ncausal * k))) return 0;
+    for (size_t row = 0; row < k; ++row) { bool zero = true; for (size_t col = 0; col < k; ++col) zero &= jac[row * k + col] == 0.0; if (zero) return 0; }
+    for (size_t col = 0; col < k; ++col) { bool zero = true; for (size_t row = 0; row < k; ++row) zero &= jac[row * k + col] == 0.0; if (zero) return 0; }
+    return 1;
 }
 /* tearing.rs: line_search_step; -1 error, 0 rejected, 1 accepted */
 static int rmc_torn_trial(ModelInstance* m, const RmcBlock* b, const double* base, const double* delta, double alpha, const double* rscale, double before, double* residual) {
@@ -574,7 +623,7 @@ static int rmc_torn_newton(ModelInstance* m, const RmcBlock* b, double* residual
     double* jac = rmc_dalloc(m, k * k + 1); double* recovered = rmc_dalloc(m, b->ncausal * k + 1);
     if (!base || !rscale || !delta || !jac || !recovered) { RMC_RELEASE; return rmc_exhausted(m); }
     rmc_save(m, b, base);
-    result = rmc_reduced_jacobian(m, b, residual, vscale, base, jac, recovered);
+    result = rmc_reduced_jacobian(m, b, jac, recovered);
     if (result == 1) {
         for (size_t row = 0; row < k; ++row) {
             double scale = 0.0;
