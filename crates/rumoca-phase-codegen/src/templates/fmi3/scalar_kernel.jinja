@@ -134,7 +134,9 @@
 {%- elif op.operator == "Mul" %}
         c[0] = a * b; for (size_t l=1; l<{{ w }}; ++l) c[l] = r[x+l] * b + a * r[y+l];
 {%- else %}
-        c[0] = (b == 0.0 && a == 0.0) ? 0.0 : a / b; for (size_t l=1; l<{{ w }}; ++l) c[l] = b == 0.0 ? 0.0 : (r[x+l] * b - a * r[y+l]) / (b * b);
+        /* reverse.rs division_tangent: each local partial when finite, else zero */
+        double pa = 1.0 / b, pb = -a / (b * b); pa = isfinite(pa) ? pa : 0.0; pb = isfinite(pb) ? pb : 0.0;
+        c[0] = (b == 0.0 && a == 0.0) ? 0.0 : a / b; for (size_t l=1; l<{{ w }}; ++l) c[l] = r[x+l] * pa + r[y+l] * pb;
 {%- endif %}
         for (size_t l=0; l<{{ w }}; ++l) r[z+l] = c[l];
     }
