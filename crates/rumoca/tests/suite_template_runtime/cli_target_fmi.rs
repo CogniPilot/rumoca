@@ -13,6 +13,7 @@ mod derivative_kinks;
 mod lifecycle;
 mod projection;
 mod reported_models;
+mod residual_split_harness;
 mod tensor_algebra;
 mod typed_functions;
 

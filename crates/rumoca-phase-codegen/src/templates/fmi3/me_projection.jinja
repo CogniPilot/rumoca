@@ -308,7 +308,9 @@ static int rmc_rows_split(ModelInstance* m, const RmcBlock* b, const double* inv
 }
 static int rmc_rows(ModelInstance* m, const RmcBlock* b, double* residual) { return rmc_rows_split(m, b, NULL, residual); }
 /* block_residual_split.rs: begin_block_residual_split; NULL when the block has
-   no split or an invariant part fails, which reports nothing. */
+   no split, an invariant part fails, or the arena has no room for the
+   invariant values. Each disables the split for this call and reports
+   nothing: the rows run their unsplit programs, which raise any error. */
 static const double* rmc_block_invariants(ModelInstance* m, const RmcBlock* b) {
     if (b->nsplit == 0) return NULL;
     double* inv = rmc_dalloc_raw(m, b->inv_len + 1);

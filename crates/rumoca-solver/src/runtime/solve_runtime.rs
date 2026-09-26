@@ -1108,7 +1108,7 @@ impl SolveRuntime {
         p: &[f64],
         t: f64,
     ) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
-        if self.torn_tangents.is_empty() {
+        if self.torn_tangents.is_empty() || self.torn_tangents.iter().all(Option::is_none) {
             return Ok(None);
         }
         // Projection blocks are borrowed from this runtime's plan, so a block
