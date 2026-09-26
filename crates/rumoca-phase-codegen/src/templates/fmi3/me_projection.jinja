@@ -1705,13 +1705,20 @@ RMC_COLD static int rmc_tan_rows(ModelInstance* m, const size_t* entries, size_t
 #define RMC_TAN_ROWS {{ tan.nrows }}
 #define RMC_TAN_MAX_N {{ tan.max_n }}
 /* seed_linearization.rs: SeedBlockLinearization::build: the block Jacobian
-   at the settled point and its partial-pivot LU. -1 error */
-RMC_COLD static int rmc_tan_factor(ModelInstance* m, const RmcBlock* b, double* jac, double* lu, size_t* ipiv, size_t* columns) {
+   at the settled point, one column per unknown from the block rows' full JVP
+   (`unit` is all zero on entry and on return), into the block pattern `jac`
+   and its partial-pivot LU. -1 error */
+RMC_COLD static int rmc_tan_factor(ModelInstance* m, const RmcBlock* b, const size_t* rows, double* unit, double* out, double* column, double* jac, double* lu, size_t* ipiv, size_t* columns) {
     size_t n = b->n;
-    if (rmc_jacobian(m, b, jac) != 0) return -1;
-    for (size_t i = 0; i < n * n; ++i) lu[i] = 0.0;
+    for (size_t col = 0; col < n; ++col) {
+        unit[b->y[col]] = 1.0;
+        int evaluated = rmc_tan_rows(m, rows, n, 2, unit, out, column);
+        unit[b->y[col]] = 0.0;
+        if (evaluated != 0) return -1;
+        for (size_t row = 0; row < n; ++row) lu[row * n + col] = column[row];
+    }
     for (size_t row = 0; row < n; ++row)
-        for (size_t e = b->row_ptr[row]; e < b->row_ptr[row + 1]; ++e) lu[row * n + b->col_idx[e]] = jac[e];
+        for (size_t e = b->row_ptr[row]; e < b->row_ptr[row + 1]; ++e) jac[e] = lu[row * n + b->col_idx[e]];
     rmc_lu(lu, n, ipiv, columns);
     return 0;
 }
@@ -1719,11 +1726,11 @@ RMC_COLD static int rmc_tan_factor(ModelInstance* m, const RmcBlock* b, double* 
    linearized rows at the current seed, `J x + base` (equal to nalgebra's
    product up to the sign of zero); zero when every entry vanishes, else one
    LU correction. -1 error */
-RMC_COLD static int rmc_tan_refine(ModelInstance* m, const RmcBlock* b, const size_t* rows, double* seed, double* inputs, double* out, double* scratch, double* lu, size_t* ipiv, size_t* columns) {
-    size_t n = b->n; double* base = scratch; double* jac = scratch + n; double* correction = scratch + n + n * n;
+RMC_COLD static int rmc_tan_refine(ModelInstance* m, const RmcBlock* b, const size_t* rows, double* seed, double* inputs, double* unit, double* out, double* scratch, double* lu, size_t* ipiv, size_t* columns) {
+    size_t n = b->n; double* base = scratch; double* jac = scratch + n; double* correction = scratch + n + n * n; double* column = correction + n;
     memcpy(inputs, seed, RMC_SEED_LEN * sizeof(double));
     for (size_t i = 0; i < n; ++i) inputs[b->y[i]] = 0.0;
-    if (rmc_tan_rows(m, rows, n, 2, inputs, out, base) != 0 || rmc_tan_factor(m, b, jac, lu, ipiv, columns) != 0) return -1;
+    if (rmc_tan_rows(m, rows, n, 2, inputs, out, base) != 0 || rmc_tan_factor(m, b, rows, unit, out, column, jac, lu, ipiv, columns) != 0) return -1;
     bool zero = true;
     for (size_t row = 0; row < n; ++row) {
         double acc = 0.0;
@@ -1750,14 +1757,14 @@ RMC_COLD static int rmc_tan_refresh(ModelInstance* m, double* seed) {
     const size_t* rows = rmc_init_pool + {{ tan.rows }};
     double* rscale = rmc_dalloc(m, RMC_TAN_ROWS + 1); double* residual = rmc_dalloc(m, RMC_TAN_ROWS + 1);
     double* out = rmc_dalloc(m, RMC_TAN_OUTPUTS + 1); double* inputs = rmc_dalloc(m, RMC_SEED_LEN);
-    double* vscale = rmc_dalloc(m, n_max); double* scratch = rmc_dalloc(m, 2 * n_max + n_max * n_max); double* lu = rmc_dalloc(m, n_max * n_max);
+    double* vscale = rmc_dalloc(m, n_max); double* scratch = rmc_dalloc(m, 3 * n_max + n_max * n_max + 1); double* unit = rmc_dalloc(m, RMC_SEED_LEN); double* column = rmc_dalloc(m, n_max); double* lu = rmc_dalloc(m, n_max * n_max);
     size_t* ipiv = rmc_salloc(m, n_max); size_t* columns = rmc_salloc(m, n_max);
-    if (!rscale || !residual || !out || !inputs || !vscale || !scratch || !lu || !ipiv || !columns) { RMC_RELEASE; return rmc_exhausted(m); }
+    if (!rscale || !residual || !out || !inputs || !vscale || !scratch || !unit || !column || !lu || !ipiv || !columns) { RMC_RELEASE; return rmc_exhausted(m); }
     for (size_t k = 0; k < RMC_TAN_BLOCKS; ++k) { const RmcBlock* b = &rmc_blocks[blocks[k]]; for (size_t i = 0; i < b->n; ++i) seed[b->y[i]] = 0.0; }
     size_t offset = 0;
     for (size_t k = 0; k < RMC_TAN_BLOCKS && result == 0; ++k) {
         const RmcBlock* b = &rmc_blocks[blocks[k]]; size_t n = b->n; double* rhs = scratch; double* jac = scratch + n;
-        if (rmc_tan_rows(m, rows + 2 * offset, n, 2, seed, out, rhs) != 0 || rmc_tan_factor(m, b, jac, lu, ipiv, columns) != 0) { result = -1; break; }
+        if (rmc_tan_rows(m, rows + 2 * offset, n, 2, seed, out, rhs) != 0 || rmc_tan_factor(m, b, rows + 2 * offset, unit, out, column, jac, lu, ipiv, columns) != 0) { result = -1; break; }
         for (size_t i = 0; i < n; ++i) rhs[i] = -rhs[i];
         if (!rmc_lu_solve(lu, n, ipiv, rhs)) { RMC_LOG(m, "algebraic projection sensitivity matrix is singular"); result = -1; break; }
         for (size_t i = 0; i < n && result == 0; ++i) {
@@ -1774,7 +1781,7 @@ RMC_COLD static int rmc_tan_refresh(ModelInstance* m, double* seed) {
         offset = 0;
         for (size_t k = 0; k < RMC_TAN_BLOCKS && result == 0; ++k) {
             const RmcBlock* b = &rmc_blocks[blocks[k]];
-            if (rmc_tan_refine(m, b, rows + 2 * offset, seed, inputs, out, scratch, lu, ipiv, columns) != 0) result = -1;
+            if (rmc_tan_refine(m, b, rows + 2 * offset, seed, inputs, unit, out, scratch, lu, ipiv, columns) != 0) result = -1;
             else if (rmc_block_scales_at(m, b, scratch + b->n, seed, rscale + offset, vscale) != 0) result = -1;
             offset += b->n;
         }

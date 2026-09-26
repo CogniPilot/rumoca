@@ -501,8 +501,9 @@ fn torn_loop_descriptor_carries_its_tearing_and_colored_jacobian() {
     assert_eq!(block.get("n"), 3);
     assert!(block.flag("torn") && !block.flag("affine") && !block.flag("elimination"));
     assert!(
-        block.get("nlane_calls") > 0 && block.get("ncolors") == 0,
-        "the torn block keeps its JVP, emitted once as multi-lane calls"
+        block.get("nlane_calls") == 0 && block.get("ncolors") > 0,
+        "the torn block's dense fallback runs its one-direction colored calls; its hot \
+         Newton reads the tangent plan"
     );
     assert_eq!(block.get("nnz"), 6);
 }

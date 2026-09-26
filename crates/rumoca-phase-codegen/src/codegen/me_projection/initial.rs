@@ -11,7 +11,7 @@
 //! Admission (`rumoca_ir_solve::fmi` C profile) has already refused every
 //! initialization shape this view does not describe.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use minijinja::Value;
@@ -239,18 +239,21 @@ fn tangent_value(
     pool: &mut Vec<usize>,
 ) -> Result<(Value, usize), CodegenError> {
     let init = &problem.initialization;
-    let y_len = problem.solve_layout.solver_scalar_count();
     let mut max_outputs = 1;
-    let mut entry = |table: &mut ProgramTable, rows: &JvpRows<'_>, output: usize, what: &str| {
-        let (entry, outputs) = rows.entry(table, output, what)?;
-        max_outputs = max_outputs.max(outputs);
-        Ok::<_, CodegenError>(entry)
-    };
     let full = JvpRows::new(
         table,
         &artifacts.continuous.implicit_jacobian_v_scalar,
         seed_len,
     );
+    let residual_block =
+        rumoca_eval_solve::to_scalar_program_block(&artifacts.initialization.residual_jacobian_v)?;
+    let cone = tangent_cone(problem, artifacts, seed_blocks, &residual_block)?;
+    let seed_blocks = seed_blocks
+        .iter()
+        .zip(&cone.blocks)
+        .filter_map(|(block, kept)| kept.then_some(*block))
+        .collect::<Vec<_>>();
+    let seed_blocks = seed_blocks.as_slice();
     let mut rows = Vec::new();
     let mut nrows = 0;
     for &(_, canonical) in seed_blocks {
@@ -261,30 +264,22 @@ fn tangent_value(
             .get(canonical)
             .ok_or_else(|| refuse("the algebraic plan names a block outside the projection"))?;
         for &row in &block.rows {
-            rows.extend(entry(table, &full, row, "an algebraic row")?);
+            rows.extend(jvp_entry(
+                table,
+                &full,
+                row,
+                "an algebraic row",
+                &mut max_outputs,
+            )?);
             nrows += 1;
         }
     }
-    let targets = init.update_targets();
-    let mut updates = Vec::with_capacity(3 * targets.len());
-    if !targets.is_empty() {
-        let block = artifacts
-            .initialization
-            .update_jacobian_v
-            .as_ref()
-            .ok_or_else(|| refuse("an initialization update row has no directional derivative"))?;
-        let update = JvpRows::new(table, block, seed_len);
-        for (row, target) in targets.iter().enumerate() {
-            updates.extend(entry(table, &update, row, "an initialization update row")?);
-            updates.push(match *target {
-                solve::ScalarSlot::Y { index, .. } => index + 1,
-                solve::ScalarSlot::P { index, .. } => y_len + index + 1,
-                solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => 0,
-            });
-        }
-    }
-    let residual_block =
-        rumoca_eval_solve::to_scalar_program_block(&artifacts.initialization.residual_jacobian_v)?;
+    let (updates, nupdates) = tangent_updates(
+        problem,
+        artifacts,
+        (table, &cone.updates, seed_len),
+        &mut max_outputs,
+    )?;
     let residual_rows = JvpRows::new(table, &residual_block, seed_len);
     let count = init
         .residual()
@@ -292,11 +287,12 @@ fn tangent_value(
         .map_err(|error| refuse(&error.to_string()))?;
     let mut residual = Vec::with_capacity(2 * count);
     for row in 0..count {
-        residual.extend(entry(
+        residual.extend(jvp_entry(
             table,
             &residual_rows,
             row,
             "an initialization residual row",
+            &mut max_outputs,
         )?);
     }
     let max_n = seed_blocks
@@ -311,13 +307,13 @@ fn tangent_value(
         .map(|block| block.rows.len())
         .max()
         .unwrap_or(1);
-    // The tangent frame: its seed, update values, all plan rows' residual and
-    // scales, one block's right-hand side, Jacobian, dense matrix and factor,
-    // and one JVP output buffer.
-    let doubles = seed_len
-        + targets.len()
+    // The tangent frame: its seed and unit direction, update values, all plan
+    // rows' residual and scales, one block's right-hand side, column,
+    // Jacobian, dense matrix and factor, and one JVP output buffer.
+    let doubles = 2 * seed_len
+        + nupdates
         + 3 * nrows
-        + 3 * max_n
+        + 5 * max_n
         + 3 * max_n * max_n
         + max_outputs
         + count
@@ -328,7 +324,7 @@ fn tangent_value(
             blocks => push(pool, seed_blocks.iter().map(|&(id, _)| id)),
             rows => push(pool, rows),
             nrows => nrows,
-            nupdates => targets.len(),
+            nupdates => nupdates,
             updates => push(pool, updates),
             residual => push(pool, residual),
             max_outputs => max_outputs,
@@ -336,4 +332,226 @@ fn tangent_value(
         },
         doubles,
     ))
+}
+
+/// The seed indices (solver-Y, then parameters after `y_len`) each output of
+/// `block` depends on, by output index.
+fn output_seed_reads(block: &solve::ScalarProgramBlock) -> BTreeMap<usize, BTreeSet<usize>> {
+    let mut reads = BTreeMap::new();
+    for (output, (program, offset)) in output_positions(block) {
+        let dependencies = solve::StructuralPattern::derive_output_seed_index_dependencies(
+            &block.programs()[program],
+            None,
+        )
+        .ok()
+        .and_then(|outputs| outputs.get(offset).cloned());
+        reads.insert(output, dependencies);
+    }
+    reads
+        .into_iter()
+        .map(|(output, dependencies)| (output, dependencies.unwrap_or_default()))
+        .collect()
+}
+
+/// The part of the settled initialization tangent that can reach the
+/// initialization residual: the plan blocks and update rows both reachable
+/// from an initialization unknown and read, through the plan and the
+/// bindings, by a residual row. Every other block's tangent is exactly zero or
+/// unread, so its rows need no directional derivative.
+struct TangentCone {
+    blocks: Vec<bool>,
+    updates: Vec<bool>,
+}
+
+fn meets(set: &BTreeSet<usize>, values: impl IntoIterator<Item = usize>) -> bool {
+    values.into_iter().any(|value| set.contains(&value))
+}
+
+/// One pass of the forward closure from the initialization unknowns through the
+/// bindings and the plan; whether it grew.
+fn forward_pass(inputs: &ConeInputs<'_>, forward: &mut BTreeSet<usize>) -> bool {
+    let before = forward.len();
+    for (target, reads) in &inputs.updates {
+        let reached = meets(forward, reads.iter().copied());
+        forward.extend(target.filter(|_| reached));
+    }
+    for (unknowns, reads) in &inputs.blocks {
+        let reached = meets(forward, reads.iter().copied())
+            || meets(&inputs.unknowns, unknowns.iter().copied());
+        forward.extend(unknowns.iter().copied().filter(|_| reached));
+    }
+    forward.len() != before
+}
+
+/// One pass of the backward closure from the residual rows' reads; whether it
+/// grew.
+fn backward_pass(inputs: &ConeInputs<'_>, backward: &mut BTreeSet<usize>) -> bool {
+    let before = backward.len();
+    for (unknowns, reads) in inputs.blocks.iter().rev() {
+        let read = meets(backward, unknowns.iter().copied());
+        backward.extend(reads.iter().copied().filter(|_| read));
+    }
+    for (target, reads) in &inputs.updates {
+        let read = target.is_some_and(|target| backward.contains(&target));
+        backward.extend(reads.iter().copied().filter(|_| read));
+    }
+    backward.len() != before
+}
+
+struct ConeInputs<'a> {
+    unknowns: BTreeSet<usize>,
+    residual_reads: BTreeSet<usize>,
+    blocks: Vec<(&'a [usize], BTreeSet<usize>)>,
+    updates: Vec<(Option<usize>, BTreeSet<usize>)>,
+}
+
+impl TangentCone {
+    fn derive(inputs: &ConeInputs<'_>) -> Self {
+        let mut forward = inputs.unknowns.clone();
+        while forward_pass(inputs, &mut forward) {}
+        let mut backward = inputs.residual_reads.clone();
+        while backward_pass(inputs, &mut backward) {}
+        Self {
+            blocks: inputs
+                .blocks
+                .iter()
+                .map(|(unknowns, _)| {
+                    meets(&forward, unknowns.iter().copied())
+                        && meets(&backward, unknowns.iter().copied())
+                })
+                .collect(),
+            updates: inputs
+                .updates
+                .iter()
+                .map(|(target, reads)| {
+                    target.is_some_and(|target| backward.contains(&target))
+                        && meets(&forward, reads.iter().copied())
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The cone of the settled initialization tangent over the primary chart's
+/// complete algebraic plan (`seed_blocks`).
+fn tangent_cone(
+    problem: &solve::SolveProblem,
+    artifacts: &solve::SolveArtifacts,
+    seed_blocks: &[(usize, usize)],
+    residual_block: &solve::ScalarProgramBlock,
+) -> Result<TangentCone, CodegenError> {
+    let init = &problem.initialization;
+    let y_len = problem.solve_layout.solver_scalar_count();
+    let combined = |slot: solve::ScalarSlot| match slot {
+        solve::ScalarSlot::Y { index, .. } => Some(index),
+        solve::ScalarSlot::P { index, .. } => Some(y_len + index),
+        solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => None,
+    };
+    let row_reads = output_seed_reads(&artifacts.continuous.implicit_jacobian_v_scalar);
+    let plan = &problem.continuous.algebraic_projection_plan;
+    let blocks = seed_blocks
+        .iter()
+        .map(|&(_, canonical)| {
+            let block = plan
+                .blocks
+                .get(canonical)
+                .ok_or_else(|| refuse("the algebraic plan names a block outside the projection"))?;
+            let reads = block
+                .rows
+                .iter()
+                .filter_map(|row| row_reads.get(row))
+                .flatten()
+                .copied()
+                .collect();
+            Ok((block.y_indices.as_slice(), reads))
+        })
+        .collect::<Result<Vec<_>, CodegenError>>()?;
+    let update_reads = artifacts
+        .initialization
+        .update_jacobian_v
+        .as_ref()
+        .map(output_seed_reads)
+        .unwrap_or_default();
+    let updates = init
+        .update_targets()
+        .iter()
+        .enumerate()
+        .map(|(row, target)| {
+            let reads = update_reads.get(&row).cloned().unwrap_or_default();
+            (combined(*target), reads)
+        })
+        .collect();
+    let residual_reads = output_seed_reads(residual_block)
+        .into_values()
+        .flatten()
+        .collect();
+    let unknowns = init
+        .projection_plan()
+        .blocks
+        .iter()
+        .flat_map(|block| block.unknowns.iter().copied())
+        .filter_map(combined)
+        .collect();
+    Ok(TangentCone::derive(&ConeInputs {
+        unknowns,
+        residual_reads,
+        blocks,
+        updates,
+    }))
+}
+
+/// One JVP output's `(function, offset)` pool entry; `max_outputs` keeps the
+/// widest function's output count.
+fn jvp_entry(
+    table: &mut ProgramTable,
+    rows: &JvpRows<'_>,
+    output: usize,
+    what: &str,
+    max_outputs: &mut usize,
+) -> Result<[usize; 2], CodegenError> {
+    let (entry, outputs) = rows.entry(table, output, what)?;
+    *max_outputs = (*max_outputs).max(outputs);
+    Ok(entry)
+}
+
+/// The kept update rows' `(function, offset, combined target + 1)` entries
+/// and their count.
+fn tangent_updates(
+    problem: &solve::SolveProblem,
+    artifacts: &solve::SolveArtifacts,
+    (table, kept, seed_len): (&mut ProgramTable, &[bool], usize),
+    max_outputs: &mut usize,
+) -> Result<(Vec<usize>, usize), CodegenError> {
+    let y_len = problem.solve_layout.solver_scalar_count();
+    let targets = problem.initialization.update_targets();
+    let mut updates = Vec::new();
+    if !kept.contains(&true) {
+        return Ok((updates, 0));
+    }
+    let block = artifacts
+        .initialization
+        .update_jacobian_v
+        .as_ref()
+        .ok_or_else(|| refuse("an initialization update row has no directional derivative"))?;
+    let update = JvpRows::new(table, block, seed_len);
+    let mut count = 0;
+    for (row, target) in targets.iter().enumerate() {
+        if !kept[row] {
+            continue;
+        }
+        count += 1;
+        updates.extend(jvp_entry(
+            table,
+            &update,
+            row,
+            "an initialization update row",
+            max_outputs,
+        )?);
+        updates.push(match *target {
+            solve::ScalarSlot::Y { index, .. } => index + 1,
+            solve::ScalarSlot::P { index, .. } => y_len + index + 1,
+            solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => 0,
+        });
+    }
+    Ok((updates, count))
 }

@@ -405,7 +405,6 @@ fn chart_value(
             seed_len,
             chart,
             tangent_jvp: &tangent_jvp,
-            linearize_all: chart == 0 && seed_blocks.is_some(),
         },
         table: &mut tables.table,
         ids: BTreeMap::new(),
