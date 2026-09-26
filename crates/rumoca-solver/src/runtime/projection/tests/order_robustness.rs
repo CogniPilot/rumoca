@@ -34,6 +34,16 @@ fn permeability(flux_density: f64) -> f64 {
     1.0 + (MU_I - 1.0 + C_A * b_n) / (1.0 + C_B * b_n + b_n.powf(N))
 }
 
+/// `d permeability / d flux_density`, away from `flux_density = 0`.
+fn permeability_slope(flux_density: f64) -> f64 {
+    let b_n = (flux_density / B_MY_MAX).abs();
+    let d_b_n = flux_density.signum() / B_MY_MAX;
+    let numerator = MU_I - 1.0 + C_A * b_n;
+    let denominator = 1.0 + C_B * b_n + b_n.powf(N);
+    let d_denominator = C_B + N * b_n.powf(N - 1.0);
+    (C_A * denominator - numerator * d_denominator) / (denominator * denominator) * d_b_n
+}
+
 /// The saturating-reluctance loop with its five logical unknowns
 /// `[B, mu_r, G_m, R_m, V_m]` and five equations placed at caller-chosen solver
 /// slots and residual rows, so one physical system can be projected under many
@@ -110,6 +120,25 @@ impl PermutedReluctance {
         ]
     }
 
+    /// The exact directional derivative of `logical_residuals` at `y` along `v`.
+    fn logical_tangents(&self, y: &[f64], v: &[f64]) -> [f64; 5] {
+        let at = |logical: usize| (y[self.slots[logical]], v[self.slots[logical]]);
+        let (flux_density, d_flux_density) = at(0);
+        let (_, d_permeability) = at(1);
+        let (permeance, d_permeance) = at(2);
+        let (reluctance, d_reluctance) = at(3);
+        let (_, d_magnetic_potential) = at(4);
+        let d_iron_flux = d_flux_density * AREA;
+        [
+            -d_iron_flux * LEAKAGE_RELUCTANCE
+                - (d_iron_flux * AIR_GAP_RELUCTANCE + d_magnetic_potential),
+            d_permeability - permeability_slope(flux_density) * d_flux_density,
+            d_permeance - MU_0 * d_permeability * AREA / LENGTH,
+            d_reluctance + d_permeance / (permeance * permeance),
+            d_magnetic_potential - (d_iron_flux * reluctance + flux_density * AREA * d_reluctance),
+        ]
+    }
+
     fn logical_equation_of_row(&self, row_idx: usize) -> Option<usize> {
         self.rows.iter().position(|&row| row == row_idx)
     }
@@ -168,20 +197,9 @@ impl ImplicitProjectionModel for PermutedReluctance {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        // A directional finite difference of the residual. The torn solve never
-        // asks for this (it differences the reduced residual itself); it exists
-        // only so the dense fallback the trait promises stays well defined.
-        let base = self.logical_residuals(y);
-        let norm = v.iter().fold(0.0_f64, |acc, value| acc.max(value.abs()));
-        let step = if norm > 0.0 { 1.0e-7 / norm } else { 1.0e-7 };
-        let bumped: Vec<f64> = y
-            .iter()
-            .zip(v.iter())
-            .map(|(value, direction)| value + step * direction)
-            .collect();
-        let bumped = self.logical_residuals(&bumped);
+        let tangents = self.logical_tangents(y, v);
         for (equation, &row) in self.rows.iter().enumerate() {
-            out[row] = (bumped[equation] - base[equation]) / step;
+            out[row] = tangents[equation];
         }
         Ok(())
     }

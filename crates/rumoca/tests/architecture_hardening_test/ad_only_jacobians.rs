@@ -6,10 +6,10 @@
 //! code differences a residual. This scan fails when a Rust source or a code
 //! template under `crates/` names a difference quotient, a perturbation step,
 //! or a finite difference. The only files that may are the AD verification
-//! batteries listed in `VERIFICATION_BATTERIES`, which check the lowered
-//! derivatives against differences taken independently (in this compiler's
-//! primal and under OpenModelica), and the one projection test double that
-//! predates the rule.
+//! batteries listed in `VERIFICATION_BATTERIES` with their purpose: a test that
+//! checks the lowered derivatives against a difference taken independently (in
+//! this compiler's primal or under OpenModelica) is the one legitimate use, and
+//! the admission table those batteries are generated from names it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -54,10 +54,6 @@ const VERIFICATION_BATTERIES: &[(&str, &str)] = &[
     (
         "crates/rumoca-phase-autodiff/src/builtins.rs",
         "names which builtins the batteries can check",
-    ),
-    (
-        "crates/rumoca-solver/src/runtime/projection/tests/order_robustness.rs",
-        "a projection test double's residual JVP",
     ),
 ];
 
