@@ -19,6 +19,8 @@ mod isolation_program;
 mod isolation_program_tests;
 #[cfg(test)]
 mod prepared_compute_block_tests;
+#[cfg(test)]
+mod replaced_programs_tests;
 mod support;
 mod tensor_affine_assignment;
 #[cfg(test)]
@@ -56,6 +58,7 @@ use assignment_shape::checked_expr_eval_len;
 use assignment_shape::eval_assignment_shape;
 use assignment_shape::target_assignment_shapes_with_output_offsets;
 pub use assignment_shape::{target_assignment_shape, target_assignment_shapes};
+pub use construction::replaced_programs;
 use dependency::{parameter_static_y_gradient, row_parameter_indices};
 pub(crate) use dependency::{row_reads_y_index, row_y_input_ranges};
 pub use isolation_program::{TargetIsolationProgram, TornSweepRun};

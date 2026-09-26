@@ -47,8 +47,8 @@ pub(super) struct KernelChart {
     /// Index of this chart in the model's reduced chart set.
     set_index: usize,
     /// The chart's runtime and state-binding rows, built on first use: an
-    /// alternate is needed only near a fold, and building its runtime costs as
-    /// much as building the primary's.
+    /// alternate is needed only near a fold. Its runtime shares the primary's
+    /// prepared and compiled programs and prepares only the replaced ones.
     built: OnceCell<BuiltChart>,
 }
 
@@ -85,7 +85,7 @@ impl ReducedChartRuntimes {
         } else {
             let alternate = alternate_chart_model(&self.primary.model, chart.set_index)
                 .ok_or_else(|| RuntimeSolveError::solve_ir("reduced chart carries no plan"))?;
-            Rc::new(SolveRuntime::new(&alternate).map_err(|error| {
+            Rc::new(self.primary.new_alternate(&alternate).map_err(|error| {
                 RuntimeSolveError::solve_ir(format!(
                     "alternate reduced chart is not runtime-executable: {error:?}"
                 ))

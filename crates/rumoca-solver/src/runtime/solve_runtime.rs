@@ -38,6 +38,8 @@ mod block_residual_split;
 pub use block_residual_split::{
     BlockResidualSplitCounts, block_residual_split_counts, reset_block_residual_split_counts,
 };
+mod chart_sharing;
+use chart_sharing::BlockReuse;
 mod coupled_event;
 mod discrete_rows;
 mod event_transactions;
@@ -82,10 +84,11 @@ use refresh_execution::static_refresh_parameter_indices;
 use refresh_projection::*;
 use seed_linearization::SeedProjectionCache;
 use support::{
-    build_visible_name_index, copy_runtime_values, copy_runtime_values_into,
-    fill_inactive_root_output, optional_compiled, reserve_runtime_index_map_capacity,
-    reserve_runtime_vec_capacity, resize_runtime_values, validate_finite_runtime_output,
-    validate_runtime_output_len, visible_value_index_error, zero_runtime_values,
+    build_visible_name_index, compiled_expression, compiled_jacobian, copy_runtime_values,
+    copy_runtime_values_into, fill_inactive_root_output, optional_compiled,
+    reserve_runtime_index_map_capacity, reserve_runtime_vec_capacity, resize_runtime_values,
+    validate_finite_runtime_output, validate_runtime_output_len, visible_value_index_error,
+    zero_runtime_values,
 };
 
 /// Backend-neutral callable produced from one checked Solve-IR expression
@@ -487,12 +490,39 @@ impl SolveRuntime {
         Self::new(&model)
     }
 
-    // SPEC_0021: Exception - construction-issued owner binding stays contiguous for auditability.
-    #[allow(clippy::too_many_lines)]
     pub fn new_with_execution_backend(
         model: &solve::SolveModel,
         execution_backend: Option<Rc<dyn SolveExecutionBackend>>,
     ) -> Result<Self, EvalSolveError> {
+        Self::construct(model, execution_backend, None)
+    }
+
+    /// The runtime of an alternate reduced chart over `model`, sharing this
+    /// primary runtime's prepared and compiled programs wherever `model`
+    /// carries the same ones (see [`chart_sharing`]).
+    pub(crate) fn new_alternate(&self, model: &solve::SolveModel) -> Result<Self, EvalSolveError> {
+        Self::construct(model, self.execution_backend.clone(), Some(self))
+    }
+
+    // SPEC_0021: Exception - construction-issued owner binding stays contiguous for auditability.
+    #[allow(clippy::too_many_lines)]
+    fn construct(
+        model: &solve::SolveModel,
+        execution_backend: Option<Rc<dyn SolveExecutionBackend>>,
+        primary: Option<&SolveRuntime>,
+    ) -> Result<Self, EvalSolveError> {
+        let prepare = |pick: fn(&SolveRuntime) -> &PreparedScalarProgramBlock,
+                       block: solve::ScalarProgramBlock| {
+            let base = primary.map(pick);
+            BlockReuse::of(base, &block).prepared(base, block)
+        };
+        let prepare_compute =
+            |pick: fn(&SolveRuntime) -> &PreparedComputeBlock,
+             block: &solve::ComputeBlock,
+             label: &'static str| match primary.map(pick) {
+                Some(base) => PreparedComputeBlock::with_shared_programs(base, block, label),
+                None => PreparedComputeBlock::new_with_label(block, label),
+            };
         if !model.problem.continuous.refresh_owners.is_issued() {
             return Err(EvalSolveError::InvalidRow {
                 message: "Solve model has no construction-issued continuous refresh owners"
@@ -529,41 +559,80 @@ impl SolveRuntime {
             &implicit_scalar_programs,
             &continuous_structural,
         )?;
-        let compiled_implicit_rhs = execution_backend.as_ref().and_then(|backend| {
-            optional_compiled(
-                "implicit_rhs",
-                backend.compile_selectable_expression(&implicit_scalar_programs),
-            )
-        });
+        let implicit_reuse = BlockReuse::of(
+            primary.map(|primary| &primary.implicit_scalar_rhs),
+            &implicit_scalar_programs,
+        );
+        let compiled_implicit_rhs = implicit_reuse.expression(
+            primary.and_then(|primary| primary.compiled_implicit_rhs.as_ref()),
+            &implicit_scalar_programs,
+            &mut |block| {
+                execution_backend.as_ref().and_then(|backend| {
+                    optional_compiled("implicit_rhs", backend.compile_selectable_expression(block))
+                })
+            },
+        );
         let implicit_projection_scalar_jacobian = refresh_projection::projection_jacobian_source(
             &model.artifacts.continuous.implicit_jacobian_v,
             &continuous_structural,
         )?;
-        let compiled_implicit_projection_jacobian_v =
-            execution_backend.as_ref().and_then(|backend| {
-                optional_compiled(
+        let projection_reuse = BlockReuse::of(
+            primary.map(|primary| &primary.implicit_projection_scalar_jacobian_v),
+            &implicit_projection_scalar_jacobian,
+        );
+        let compiled_implicit_projection_jacobian_v = projection_reuse.jacobian(
+            primary.and_then(|primary| primary.compiled_implicit_projection_jacobian_v.as_ref()),
+            &implicit_projection_scalar_jacobian,
+            &mut |block| {
+                compiled_jacobian(
+                    execution_backend.as_ref(),
                     "implicit_projection_jacobian_v",
-                    backend.compile_jacobian_expression(&implicit_projection_scalar_jacobian),
+                    block,
                 )
-            });
+            },
+        );
         let implicit_full_jacobian_v = model
             .artifacts
             .continuous
             .implicit_jacobian_v_scalar
             .clone();
-        let compiled_implicit_full_jacobian_v = execution_backend.as_ref().and_then(|backend| {
-            optional_compiled(
-                "implicit_full_jacobian_v",
-                backend.compile_jacobian_expression(&implicit_full_jacobian_v),
-            )
-        });
-        let implicit_scalar_rhs = PreparedScalarProgramBlock::new(implicit_scalar_programs)?;
-        let compiled_algebraic_jacobians = refresh_projection::prepare_projection_jacobians(
-            &continuous_structural,
-            &implicit_scalar_rhs,
-            &implicit_projection_scalar_jacobian,
-            compiled_implicit_projection_jacobian_v.as_deref(),
+        let full_reuse = BlockReuse::of(
+            primary.map(|primary| &primary.implicit_jacobian_v),
+            &implicit_full_jacobian_v,
+        );
+        let compiled_implicit_full_jacobian_v = full_reuse.jacobian(
+            primary.and_then(|primary| primary.compiled_implicit_full_jacobian_v.as_ref()),
+            &implicit_full_jacobian_v,
+            &mut |block| {
+                compiled_jacobian(
+                    execution_backend.as_ref(),
+                    "implicit_full_jacobian_v",
+                    block,
+                )
+            },
+        );
+        let replaced_rows = implicit_reuse
+            .replaced_outputs(&implicit_scalar_programs)
+            .into_iter()
+            .chain(projection_reuse.replaced_outputs(&implicit_projection_scalar_jacobian))
+            .collect::<BTreeSet<_>>();
+        let implicit_scalar_rhs = implicit_reuse.prepared(
+            primary.map(|primary| &primary.implicit_scalar_rhs),
+            implicit_scalar_programs,
         )?;
+        let compiled_algebraic_jacobians = match primary {
+            Some(primary) => chart_sharing::shared_projection_jacobians(
+                primary,
+                &continuous_structural,
+                &replaced_rows,
+            ),
+            None => refresh_projection::prepare_projection_jacobians(
+                &continuous_structural,
+                &implicit_scalar_rhs,
+                &implicit_projection_scalar_jacobian,
+                compiled_implicit_projection_jacobian_v.as_deref(),
+            )?,
+        };
         let manifold = manifold_execution::PreparedManifoldProjection::new(
             model,
             execution_backend.as_deref(),
@@ -613,12 +682,15 @@ impl SolveRuntime {
                 })
             })
             .collect();
-        let compiled_derivative_rhs = execution_backend.as_ref().and_then(|backend| {
-            optional_compiled(
-                "derivative_rhs",
-                backend.compile_expression(&derivative_scalar_rhs),
-            )
-        });
+        let compiled_derivative_rhs = BlockReuse::of(
+            primary.map(|primary| &primary.derivative_scalar),
+            &derivative_scalar_rhs,
+        )
+        .expression(
+            primary.and_then(|primary| primary.compiled_derivative_rhs.as_ref()),
+            &derivative_scalar_rhs,
+            &mut |block| compiled_expression(execution_backend.as_ref(), "derivative_rhs", block),
+        );
         let refresh_owners = &model.problem.continuous.refresh_owners;
         let algebraic_refresh = refresh_owners.algebraic().clone();
         let derivative_refresh = refresh_owners.derivative().clone();
@@ -674,32 +746,51 @@ impl SolveRuntime {
         trace_reverse_projection_coverage(model, &implicit_scalar_rhs);
         let visible_value_plan = visible_value_plan(model);
         let root_condition_plan = root_condition_plan(model, &root_refresh);
-        let compiled_root_conditions = execution_backend.as_ref().and_then(|backend| {
-            optional_compiled(
-                "root_conditions",
-                backend.compile_expression(&model.problem.events.root_conditions),
-            )
-        });
+        let compiled_root_conditions = BlockReuse::of(
+            primary.map(|primary| &primary.root_condition_rows),
+            &model.problem.events.root_conditions,
+        )
+        .expression(
+            primary.and_then(|primary| primary.compiled_root_conditions.as_ref()),
+            &model.problem.events.root_conditions,
+            &mut |block| compiled_expression(execution_backend.as_ref(), "root_conditions", block),
+        );
         let (initial_scalar_residual, initial_continuation) =
             InitialContinuationCoverage::certify_runtime_blocks(
                 model,
                 &implicit_scalar_rhs,
                 &algebraic_refresh,
             )?;
-        let compiled_initial_residual = execution_backend.as_ref().and_then(|backend| {
-            optional_compiled(
-                "initial_residual",
-                backend.compile_expression(&initial_scalar_residual),
-            )
-        });
+        let compiled_initial_residual = BlockReuse::of(
+            primary.map(|primary| &primary.initial_scalar_residual),
+            &initial_scalar_residual,
+        )
+        .expression(
+            primary.and_then(|primary| primary.compiled_initial_residual.as_ref()),
+            &initial_scalar_residual,
+            &mut |block| compiled_expression(execution_backend.as_ref(), "initial_residual", block),
+        );
         let initial_scalar_jacobian =
             to_scalar_program_block(&model.artifacts.initialization.residual_jacobian_v)?;
-        let compiled_initial_residual_jacobian_v = execution_backend.as_ref().and_then(|backend| {
-            optional_compiled(
-                "initial_residual_jacobian_v",
-                backend.compile_jacobian_expression(&initial_scalar_jacobian),
-            )
-        });
+        let primary_initial_jacobian = primary
+            .map(|primary| {
+                to_scalar_program_block(&primary.model.artifacts.initialization.residual_jacobian_v)
+            })
+            .transpose()?;
+        let compiled_initial_residual_jacobian_v =
+            BlockReuse::of_programs(primary_initial_jacobian.as_ref(), &initial_scalar_jacobian)
+                .jacobian(
+                    primary
+                        .and_then(|primary| primary.compiled_initial_residual_jacobian_v.as_ref()),
+                    &initial_scalar_jacobian,
+                    &mut |block| {
+                        compiled_jacobian(
+                            execution_backend.as_ref(),
+                            "initial_residual_jacobian_v",
+                            block,
+                        )
+                    },
+                );
         let delay_runtime = DelayRuntime::new(&model.problem.events.delays)?;
         let root_condition_count =
             total_root_condition_count(model, delay_runtime.event_root_count())?;
@@ -722,11 +813,13 @@ impl SolveRuntime {
             model: model.clone(),
             state_count: model.state_scalar_count(),
             solver_count: model.solver_scalar_count(),
-            implicit_rhs: PreparedComputeBlock::new_with_label(
+            implicit_rhs: prepare_compute(
+                |primary| &primary.implicit_rhs,
                 &model.problem.continuous.implicit_rhs,
                 "runtime_implicit_rhs",
             )?,
-            implicit_projection_jacobian_v: PreparedComputeBlock::new_with_label(
+            implicit_projection_jacobian_v: prepare_compute(
+                |primary| &primary.implicit_projection_jacobian_v,
                 &model.artifacts.continuous.implicit_jacobian_v,
                 "runtime_implicit_projection_jacobian_v",
             )?,
@@ -734,14 +827,21 @@ impl SolveRuntime {
                 &model.problem.continuous.algebraic_projection_plan,
                 &implicit_projection_scalar_jacobian,
             ),
-            colored_tangents: colored_tangent_evaluators(
-                &model.problem.continuous.algebraic_projection_plan,
-                &continuous_structural,
-            ),
+            // A backend-compiled JVP evaluates the colors natively, so the
+            // colored lanes are built only for the interpreted runtime.
+            colored_tangents: if compiled_implicit_projection_jacobian_v.is_some() {
+                Rc::from(Vec::new())
+            } else {
+                colored_tangent_evaluators(
+                    &model.problem.continuous.algebraic_projection_plan,
+                    &continuous_structural,
+                )
+            },
             block_splits,
             active_split: std::cell::Cell::new(None),
             split_row_scratch: std::cell::RefCell::new(Vec::new()),
-            implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock::new(
+            implicit_projection_scalar_jacobian_v: projection_reuse.prepared(
+                primary.map(|primary| &primary.implicit_projection_scalar_jacobian_v),
                 implicit_projection_scalar_jacobian,
             )?,
             implicit_scalar_rhs,
@@ -755,7 +855,10 @@ impl SolveRuntime {
                 &model.artifacts.initialization.residual_jacobian_v,
                 "runtime_initial_residual_jacobian_v",
             )?,
-            initial_scalar_residual: PreparedScalarProgramBlock::new(initial_scalar_residual)?,
+            initial_scalar_residual: prepare(
+                |primary| &primary.initial_scalar_residual,
+                initial_scalar_residual,
+            )?,
             compiled_implicit_rhs,
             compiled_implicit_projection_jacobian_v,
             compiled_algebraic_jacobians,
@@ -767,11 +870,18 @@ impl SolveRuntime {
                 "runtime_derivative_rhs",
             )?,
             compiled_derivative_rhs,
-            derivative_jacobian_v: PreparedScalarProgramBlock::new(
+            derivative_jacobian_v: prepare(
+                |primary| &primary.derivative_jacobian_v,
                 model.artifacts.continuous.full_jacobian_v.clone(),
             )?,
-            derivative_scalar: PreparedScalarProgramBlock::new(derivative_scalar_rhs)?,
-            implicit_jacobian_v: PreparedScalarProgramBlock::new(implicit_full_jacobian_v)?,
+            derivative_scalar: prepare(
+                |primary| &primary.derivative_scalar,
+                derivative_scalar_rhs,
+            )?,
+            implicit_jacobian_v: full_reuse.prepared(
+                primary.map(|primary| &primary.implicit_jacobian_v),
+                implicit_full_jacobian_v,
+            )?,
             continuous_structural,
             initialization_structural,
             algebraic_newton_caches,
@@ -783,20 +893,26 @@ impl SolveRuntime {
             root_refresh_after_derivative,
             clock_event_refresh_after_event,
             initial_continuation,
-            root_condition_rows: PreparedScalarProgramBlock::new(
+            root_condition_rows: prepare(
+                |primary| &primary.root_condition_rows,
                 model.problem.events.root_conditions.clone(),
             )?,
             compiled_root_conditions,
-            event_action_conditions: PreparedScalarProgramBlock::new(
+            event_action_conditions: prepare(
+                |primary| &primary.event_action_conditions,
                 model.problem.events.action_conditions.clone(),
             )?,
             event_action_active_row_indices: RefCell::new(Vec::new()),
             root_condition_plan,
-            discrete_rhs: PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())?,
+            discrete_rhs: prepare(
+                |primary| &primary.discrete_rhs,
+                model.problem.discrete.rhs.clone(),
+            )?,
             observation_refresh_scalar_rows,
             observation_refresh_p_scratch: RefCell::new(Vec::new()),
             observation_refresh_values_scratch: RefCell::new(Vec::new()),
-            clock_partition_intermediates: PreparedScalarProgramBlock::new(
+            clock_partition_intermediates: prepare(
+                |primary| &primary.clock_partition_intermediates,
                 model.problem.discrete.clock_partition_intermediates.clone(),
             )?,
             clock_partition_clocks,
@@ -806,16 +922,21 @@ impl SolveRuntime {
             guarded_assignment_programs,
             event_transaction_programs,
             event_transaction_coverage,
-            runtime_assignment_rhs: PreparedScalarProgramBlock::new(
+            runtime_assignment_rhs: prepare(
+                |primary| &primary.runtime_assignment_rhs,
                 model.problem.discrete.runtime_assignment_rhs.clone(),
             )?,
-            post_commit_assignment_rhs: PreparedScalarProgramBlock::new(
+            post_commit_assignment_rhs: prepare(
+                |primary| &primary.post_commit_assignment_rhs,
                 model.problem.discrete.post_commit_assignment_rhs.clone(),
             )?,
             update_values_scratch: RefCell::new(Vec::new()),
             structured_discrete_rows,
             visible_name_index: build_visible_name_index(model),
-            visible_value_rows: PreparedScalarProgramBlock::new(model.visible_value_rows.clone())?,
+            visible_value_rows: prepare(
+                |primary| &primary.visible_value_rows,
+                model.visible_value_rows.clone(),
+            )?,
             visible_value_plan,
             visible_scratch: RefCell::new(Vec::new()),
             refresh_snapshot_scratch: RefCell::new(Vec::new()),

@@ -3,6 +3,9 @@ use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
+use std::rc::Rc;
+
+use super::{CompiledSolveExpression, CompiledSolveJacobianExpression, SolveExecutionBackend};
 
 pub(super) fn optional_compiled<T>(label: &str, result: Result<T, String>) -> Option<T> {
     match result {
@@ -17,6 +20,24 @@ pub(super) fn optional_compiled<T>(label: &str, result: Result<T, String>) -> Op
             None
         }
     }
+}
+
+/// `block` compiled by `backend` as a whole-block expression, if it compiles.
+pub(super) fn compiled_expression(
+    backend: Option<&Rc<dyn SolveExecutionBackend>>,
+    label: &str,
+    block: &solve::ScalarProgramBlock,
+) -> Option<Rc<dyn CompiledSolveExpression>> {
+    backend.and_then(|backend| optional_compiled(label, backend.compile_expression(block)))
+}
+
+/// `block` compiled by `backend` as a forward-mode Jacobian, if it compiles.
+pub(super) fn compiled_jacobian(
+    backend: Option<&Rc<dyn SolveExecutionBackend>>,
+    label: &str,
+    block: &solve::ScalarProgramBlock,
+) -> Option<Rc<dyn CompiledSolveJacobianExpression>> {
+    backend.and_then(|backend| optional_compiled(label, backend.compile_jacobian_expression(block)))
 }
 
 pub(super) fn zero_runtime_values(

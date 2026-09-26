@@ -10,6 +10,11 @@ pub(super) fn record_causality_visit() {
     CAUSALITY_VISITS.set(CAUSALITY_VISITS.get() + 1);
 }
 
+/// Causality visits on this thread since the last call.
+pub(super) fn take_causality_visits() -> usize {
+    CAUSALITY_VISITS.replace(0)
+}
+
 fn fixture() -> PreparedScalarProgramBlock {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("prepared_capabilities.mo"),
