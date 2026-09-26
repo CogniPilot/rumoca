@@ -845,6 +845,7 @@ mod tests {
     mod affinity;
     mod block_split;
     mod dependencies;
+    mod shared_values;
     mod value_projections;
     mod views;
 

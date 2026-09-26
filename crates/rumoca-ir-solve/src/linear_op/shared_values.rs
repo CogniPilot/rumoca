@@ -566,7 +566,8 @@ impl ProgramBuilder<'_, '_> {
 }
 
 /// `ops` without every operation whose written registers no later operation
-/// reads; output stores and operations writing nothing are kept.
+/// reads; output stores, operations writing nothing, and calls (whose body may
+/// reach an external function) are kept.
 fn without_dead_operations(ops: Vec<LinearOp>) -> Vec<LinearOp> {
     let mut live: HashSet<Reg> = HashSet::new();
     let mut keep = vec![false; ops.len()];
@@ -577,7 +578,9 @@ fn without_dead_operations(ops: Vec<LinearOp>) -> Vec<LinearOp> {
                 .collect::<Vec<_>>(),
             None => Vec::new(),
         };
-        let needed = written.is_empty() || written.iter().any(|register| live.contains(register));
+        let needed = written.is_empty()
+            || matches!(op, LinearOp::PureCall { .. })
+            || written.iter().any(|register| live.contains(register));
         for register in &written {
             live.remove(register);
         }
