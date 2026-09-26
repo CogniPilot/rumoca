@@ -4,6 +4,7 @@ mod coverage_analysis;
 mod coverage_gate;
 mod crate_dag_cmd;
 mod docs_cmd;
+mod licenses_cmd;
 mod lsp_benchmark_cmd;
 #[cfg(test)]
 mod main_tests;
@@ -77,6 +78,8 @@ enum Commands {
     Repo(RepoArgs),
     /// Read-only views of the hosted CI (through the `gh` CLI)
     Ci(ci_cmd::CiArgs),
+    /// Regenerate or check THIRD_PARTY_LICENSES.md with cargo-about
+    Licenses(licenses_cmd::LicensesArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -462,6 +465,7 @@ fn main() -> Result<()> {
         Commands::Docs(args) => docs_cmd::run(args, &repo_root()),
         Commands::Repo(args) => cmd_repo(args),
         Commands::Ci(args) => ci_cmd::run(args),
+        Commands::Licenses(args) => licenses_cmd::run(&repo_root(), &args),
     }
 }
 
