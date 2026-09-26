@@ -19,6 +19,8 @@ mod seed_domain;
 #[cfg(test)]
 mod seed_domain_tests;
 mod tensor_packing;
+#[cfg(test)]
+mod variability_tests;
 pub(crate) use seed_domain::lower_projection_domain;
 
 use crate::LowerError;

@@ -273,6 +273,38 @@ mod tests {
         ));
     }
 
+    /// Only a construction literal certifies a seed coefficient: a register,
+    /// whether it holds a solver value or a tunable parameter (MLS 3.7 §4.5, whose
+    /// value can change between runs), is refused even when its value is nonzero
+    /// now. An evaluable parameter reaches the shape as a literal once folded.
+    #[test]
+    fn a_seed_coefficient_is_certified_only_as_a_construction_literal() {
+        let direct = solve::TargetAssignmentShape::Direct {
+            target_y_index: 0,
+            expr_reg: 0,
+            target_scale: -2.0,
+            expr_eval_len: 1,
+        };
+        let literal = solve::TargetAssignmentShape::Affine {
+            target_y_index: 0,
+            offset_reg: 0,
+            coefficient_reg: None,
+            offset_scale: 1.0,
+            coefficient_scale: 3.0,
+            expr_eval_len: 1,
+        };
+        let register = solve::TargetAssignmentShape::Affine {
+            target_y_index: 0,
+            offset_reg: 0,
+            coefficient_reg: Some(1),
+            offset_scale: 1.0,
+            coefficient_scale: 1.0,
+            expr_eval_len: 2,
+        };
+        assert!(direct.constant_coefficient() && literal.constant_coefficient());
+        assert!(!register.constant_coefficient());
+    }
+
     #[test]
     fn only_constant_coefficient_assignments_seed_a_projection() {
         let block = solve::AlgebraicProjectionBlock {
