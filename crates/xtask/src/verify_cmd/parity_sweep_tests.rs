@@ -136,3 +136,53 @@ fn the_sweep_table_is_found_outside_the_rerun_directory() {
         Some(run.join("msl_band_table.json"))
     );
 }
+
+/// The sweep runs under the host lock, reruns each timed-out model alone, and
+/// writes the merged table; the diff action reads two tables.
+#[test]
+fn a_sweep_reruns_its_timeouts_alone_and_merges_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let results = dir.path().join("sweep");
+    let mut args = parity(&["--serialize", "--rerun-timeouts-alone", "90"]).unwrap();
+    args.results_dir = Some(results.clone());
+    let mut runs = Vec::new();
+    let mut gate = |_: &std::path::Path, run: &VerifyMslParityArgs| -> anyhow::Result<()> {
+        let dir = run.results_dir.clone().unwrap();
+        let table = if run.sim_match.is_empty() {
+            fixture()
+        } else {
+            json!({ "rows": [{ "model_name": run.sim_match[0], "band": "high", "channel_deviation_count": 0 }] })
+        };
+        std::fs::create_dir_all(dir.join("run")).unwrap();
+        std::fs::write(dir.join("run/msl_band_table.json"), table.to_string()).unwrap();
+        runs.push(run.sim_match.clone());
+        Ok(())
+    };
+    super::parity_sweep::run(dir.path(), &args, &mut gate).unwrap();
+    // The diff action reads two tables and runs no sweep.
+    let diff = parity(&[
+        "diff",
+        results.join("merged_band_table.json").to_str().unwrap(),
+        results.join("run/msl_band_table.json").to_str().unwrap(),
+    ])
+    .unwrap();
+    super::parity_sweep::run(dir.path(), &diff, &mut gate).unwrap();
+    assert_eq!(
+        runs,
+        [
+            vec![],
+            vec!["C.Slow".to_string()],
+            vec!["D.Lowering".to_string()]
+        ]
+    );
+    let merged = super::parity_sweep::load(&results.join("merged_band_table.json")).unwrap();
+    assert_eq!(
+        merged["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| strict_high(row))
+            .count(),
+        3
+    );
+}

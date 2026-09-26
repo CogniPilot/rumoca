@@ -464,8 +464,10 @@ fn main() -> Result<()> {
         Commands::Coverage(args) => cmd_coverage(args),
         Commands::Docs(args) => docs_cmd::run(args, &repo_root()),
         Commands::Repo(args) => cmd_repo(args),
-        Commands::Ci(args) => ci_cmd::run(args),
-        Commands::Licenses(args) => licenses_cmd::run(&repo_root(), &args),
+        Commands::Ci(args) => ci_cmd::run(args, &mut ci_cmd::gh),
+        Commands::Licenses(args) => {
+            licenses_cmd::run(&repo_root(), &args, &mut licenses_cmd::render)
+        }
     }
 }
 

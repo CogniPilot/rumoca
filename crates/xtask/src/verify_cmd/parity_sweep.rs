@@ -44,10 +44,9 @@ impl SweepLock {
             .truncate(false)
             .write(true)
             .open(&path)
-            .with_context(|| format!("open {}", path.display()))?;
+            .context(format!("open {}", path.display()))?;
         println!("waiting for the parity sweep lock {}", path.display());
-        file.lock()
-            .with_context(|| format!("lock {}", path.display()))?;
+        file.lock().context(format!("lock {}", path.display()))?;
         Ok(Self { _file: file })
     }
 }
@@ -158,26 +157,38 @@ fn text<'a>(row: &'a Value, field: &str) -> &'a str {
     row[field].as_str().unwrap_or_default()
 }
 
-/// Run `verify msl-parity`: the diff action, or the gate under the optional
+/// One parity run: the MSL quality gate for the given arguments.
+pub(crate) type ParityRunner<'a> = dyn FnMut(&Path, &super::VerifyMslParityArgs) -> Result<()> + 'a;
+
+/// Run `verify msl-parity`: the diff action, or `gate` under the optional
 /// host lock followed by the optional isolated reruns of timeouts.
-pub(crate) fn run(root: &Path, args: &super::VerifyMslParityArgs) -> Result<()> {
+pub(crate) fn run(
+    root: &Path,
+    args: &super::VerifyMslParityArgs,
+    gate: &mut ParityRunner<'_>,
+) -> Result<()> {
     if let Some(MslParityAction::Diff(diff)) = &args.action {
         return run_diff(diff);
     }
     let _lock = args.serialize.then(SweepLock::acquire).transpose()?;
-    let result = super::run_msl_quality_gate(root, args);
+    let result = gate(root, args);
     if let Some(secs) = args.rerun_timeouts_alone {
-        rerun_timeouts_alone(root, args, secs)?;
+        rerun_timeouts_alone(root, args, secs, gate)?;
     }
     result
 }
 
 /// Rerun every timed-out model of the finished sweep alone, then merge.
-fn rerun_timeouts_alone(root: &Path, args: &super::VerifyMslParityArgs, secs: u64) -> Result<()> {
-    let results = args
-        .results_dir
-        .clone()
-        .unwrap_or_else(|| root.join("target/msl/results"));
+fn rerun_timeouts_alone(
+    root: &Path,
+    args: &super::VerifyMslParityArgs,
+    secs: u64,
+    gate: &mut ParityRunner<'_>,
+) -> Result<()> {
+    let results = match &args.results_dir {
+        Some(results) => results.clone(),
+        None => root.join("target/msl/results"),
+    };
     let Some(table) = find_band_table(&results) else {
         bail!("no {BAND_TABLE} under {}", results.display());
     };
@@ -185,7 +196,7 @@ fn rerun_timeouts_alone(root: &Path, args: &super::VerifyMslParityArgs, secs: u6
     for model in &models {
         println!("rerun alone: {model}");
         let rerun = isolated_rerun_args(args, &results, model, secs);
-        if let Err(error) = super::run_msl_quality_gate(root, &rerun) {
+        if let Err(error) = gate(root, &rerun) {
             eprintln!("rerun of {model}: {error:#}");
         }
     }
@@ -220,8 +231,8 @@ pub(crate) fn run_diff(args: &MslParityDiffArgs) -> Result<()> {
 }
 
 pub(crate) fn load(path: &Path) -> Result<Value> {
-    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
+    let text = fs::read_to_string(path).context(format!("read {}", path.display()))?;
+    serde_json::from_str(&text).context(format!("parse {}", path.display()))
 }
 
 /// The sweep's own band table under `results`, outside the rerun directory.

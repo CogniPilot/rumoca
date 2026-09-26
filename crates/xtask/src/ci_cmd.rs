@@ -83,13 +83,17 @@ pub(crate) fn failed_jobs(json: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-pub(crate) fn run(args: CiArgs) -> Result<()> {
+/// One `gh` invocation: its standard output.
+pub(crate) type GhRunner<'a> = dyn FnMut(&[&str]) -> Result<String> + 'a;
+
+pub(crate) fn run(args: CiArgs, gh: &mut GhRunner<'_>) -> Result<()> {
     match args.command {
-        CiCommand::Watch(args) => watch(&args),
+        CiCommand::Watch(args) => watch(&args, gh),
     }
 }
 
-fn gh(args: &[&str]) -> Result<String> {
+/// Run the GitHub CLI.
+pub(crate) fn gh(args: &[&str]) -> Result<String> {
     let output = Command::new("gh")
         .args(args)
         .output()
@@ -104,7 +108,7 @@ fn gh(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn watch(args: &CiWatchArgs) -> Result<()> {
+fn watch(args: &CiWatchArgs, gh: &mut GhRunner<'_>) -> Result<()> {
     loop {
         let runs = parse_runs(&gh(&[
             "run",
@@ -127,11 +131,11 @@ fn watch(args: &CiWatchArgs) -> Result<()> {
             std::thread::sleep(Duration::from_secs(args.interval_secs));
             continue;
         }
-        return report(&runs);
+        return report(&runs, gh);
     }
 }
 
-fn report(runs: &[CiRun]) -> Result<()> {
+fn report(runs: &[CiRun], gh: &mut GhRunner<'_>) -> Result<()> {
     if runs.is_empty() {
         bail!("no run on main for this commit");
     }

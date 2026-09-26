@@ -66,18 +66,12 @@ pub(crate) fn first_difference(committed: &str, fresh: &str) -> Option<usize> {
     }
 }
 
-fn cargo_about_installed() -> bool {
-    Command::new("cargo")
-        .args(["about", "--version"])
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
-fn render(root: &Path) -> Result<String> {
-    let launcher = if cargo_about_installed() {
-        AboutLauncher::CargoSubcommand
-    } else {
-        AboutLauncher::NixRun
+/// Render the notices with cargo-about: the installed Cargo subcommand, or
+/// `nix run` when it is not installed.
+pub(crate) fn render(root: &Path) -> Result<String> {
+    let launcher = match Command::new("cargo").args(["about", "--version"]).output() {
+        Ok(output) if output.status.success() => AboutLauncher::CargoSubcommand,
+        _ => AboutLauncher::NixRun,
     };
     let output = launcher.command(root).output().context(
         "run cargo-about (install it with `cargo install cargo-about`, or make `nix` available)",
@@ -89,10 +83,7 @@ fn render(root: &Path) -> Result<String> {
         );
     }
     let text = String::from_utf8(output.stdout).context("cargo-about wrote non-UTF-8 output")?;
-    if text.trim().is_empty() {
-        bail!("cargo-about produced no output");
-    }
-    Ok(repository_typography(&text))
+    Ok(text)
 }
 
 /// The repository carries no em dash (U+2014); the rendered notices use one only
@@ -101,8 +92,16 @@ pub(crate) fn repository_typography(text: &str) -> String {
     text.replace('\u{2014}', "-")
 }
 
-pub(crate) fn run(root: &Path, args: &LicensesArgs) -> Result<()> {
-    let fresh = render(root)?;
+/// Write or check the notices `render` produces for `root`.
+pub(crate) fn run(
+    root: &Path,
+    args: &LicensesArgs,
+    render: &mut dyn FnMut(&Path) -> Result<String>,
+) -> Result<()> {
+    let fresh = repository_typography(&render(root)?);
+    if fresh.trim().is_empty() {
+        bail!("cargo-about produced no output");
+    }
     let path = root.join(OUTPUT);
     if args.check {
         let committed = fs::read_to_string(&path).unwrap_or_default();
@@ -112,7 +111,7 @@ pub(crate) fn run(root: &Path, args: &LicensesArgs) -> Result<()> {
         println!("{OUTPUT} is current.");
         return Ok(());
     }
-    fs::write(&path, fresh).with_context(|| format!("write {}", path.display()))?;
+    fs::write(&path, fresh).context(format!("write {}", path.display()))?;
     println!("wrote {}", path.display());
     Ok(())
 }
@@ -132,6 +131,28 @@ mod tests {
             panic!("licenses");
         };
         assert_eq!(args, LicensesArgs { check: true });
+    }
+
+    /// Writing, then checking against the same rendering, then against a
+    /// changed one; an empty rendering is refused.
+    #[test]
+    fn the_notices_are_written_and_checked_against_a_fresh_rendering() {
+        let root = tempfile::tempdir().unwrap();
+        let mut render = |_: &Path| -> Result<String> { Ok("a\n\u{2014}\n".to_string()) };
+        run(root.path(), &LicensesArgs { check: true }, &mut render)
+            .expect_err("a missing file is stale");
+        run(root.path(), &LicensesArgs { check: false }, &mut render).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(OUTPUT)).unwrap(),
+            "a\n-\n"
+        );
+        run(root.path(), &LicensesArgs { check: true }, &mut render).unwrap();
+        let mut changed = |_: &Path| -> Result<String> { Ok("b\n".to_string()) };
+        let stale = run(root.path(), &LicensesArgs { check: true }, &mut changed)
+            .expect_err("a changed rendering is stale");
+        assert!(stale.to_string().contains("line 1"), "{stale}");
+        let mut empty = |_: &Path| -> Result<String> { Ok(" \n".to_string()) };
+        assert!(run(root.path(), &LicensesArgs { check: false }, &mut empty).is_err());
     }
 
     #[test]

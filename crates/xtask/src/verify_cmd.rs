@@ -642,7 +642,7 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
         VerifyCommand::Quick(args) => run_verify_suite(root, VerifySuite::Quick, args.early_exit),
         VerifyCommand::Binaries => test_cmd::run_workspace_binary_build(root),
         VerifyCommand::Docs => test_cmd::run_workspace_docs(root),
-        VerifyCommand::MslParity(args) => parity_sweep::run(root, &args),
+        VerifyCommand::MslParity(args) => parity_sweep::run(root, &args, &mut run_msl_quality_gate),
         VerifyCommand::Gate(args) => gate::run(root, &args),
         VerifyCommand::MslHotspots => run_msl_hotspot_flamegraphs(root),
         VerifyCommand::Fuzz(args) => fuzz::run(&args, root),
