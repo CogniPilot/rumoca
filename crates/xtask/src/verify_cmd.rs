@@ -1,6 +1,9 @@
 mod corpus_pin;
 mod embedded;
 mod fuzz;
+mod gate;
+#[cfg(test)]
+mod gate_tests;
 mod kani;
 mod msl_cargo_setup_timing;
 mod msl_local_run;
@@ -8,6 +11,9 @@ mod msl_quality_baseline;
 mod msl_results_cleanup;
 mod parity_budgets;
 mod parity_comparator;
+mod parity_sweep;
+#[cfg(test)]
+mod parity_sweep_tests;
 #[cfg(test)]
 mod template_runtime_tests;
 #[cfg(test)]
@@ -133,6 +139,7 @@ pub(crate) enum TemplateRuntimeBackend {
 }
 
 #[derive(Debug, Args, Clone, PartialEq, Eq, Default)]
+#[command(args_conflicts_with_subcommands = true)]
 pub(crate) struct VerifyMslParityArgs {
     /// Emit periodic CPU/disk/memory resource samples at this interval in seconds (0 disables monitoring)
     #[arg(long, default_value_t = 0)]
@@ -228,6 +235,16 @@ pub(crate) struct VerifyMslParityArgs {
     /// the command. Without it, an unmeasured cohort run is an error.
     #[arg(long)]
     allow_unmeasured_parity: bool,
+    /// Hold a host-wide lock for the whole run, so two sweeps never overlap
+    /// on one host
+    #[arg(long)]
+    serialize: bool,
+    /// After the run, rerun each non-high model that ran out of a wall budget
+    /// alone, with this budget in seconds, and write the merged band table
+    #[arg(long, value_name = "SECS")]
+    rerun_timeouts_alone: Option<u64>,
+    #[command(subcommand)]
+    action: Option<parity_sweep::MslParityAction>,
 }
 
 impl VerifyMslParityArgs {
@@ -449,6 +466,8 @@ pub(crate) enum VerifyCommand {
     Docs,
     /// Full MSL/OMC parity gate harness
     MslParity(Box<VerifyMslParityArgs>),
+    /// Pre-landing gate: CI's blocking steps over a committed snapshot
+    Gate(gate::VerifyGateArgs),
     /// Generate real flamegraph SVGs for the hottest compile and sim models from the latest MSL run
     MslHotspots,
     /// Bounded libFuzzer run of the standalone `infra/fuzz/` parser fuzz target
@@ -623,7 +642,8 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
         VerifyCommand::Quick(args) => run_verify_suite(root, VerifySuite::Quick, args.early_exit),
         VerifyCommand::Binaries => test_cmd::run_workspace_binary_build(root),
         VerifyCommand::Docs => test_cmd::run_workspace_docs(root),
-        VerifyCommand::MslParity(args) => run_msl_quality_gate(root, &args),
+        VerifyCommand::MslParity(args) => parity_sweep::run(root, &args),
+        VerifyCommand::Gate(args) => gate::run(root, &args),
         VerifyCommand::MslHotspots => run_msl_hotspot_flamegraphs(root),
         VerifyCommand::Fuzz(args) => fuzz::run(&args, root),
         VerifyCommand::CorpusPin(args) => corpus_pin::run(root, &args),

@@ -1,3 +1,4 @@
+mod ci_cmd;
 mod completion_cmd;
 mod coverage_analysis;
 mod coverage_gate;
@@ -74,6 +75,8 @@ enum Commands {
     Docs(DocsArgs),
     /// Repository maintenance, packaging, and release workflows
     Repo(RepoArgs),
+    /// Read-only views of the hosted CI (through the `gh` CLI)
+    Ci(ci_cmd::CiArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -458,6 +461,7 @@ fn main() -> Result<()> {
         Commands::Coverage(args) => cmd_coverage(args),
         Commands::Docs(args) => docs_cmd::run(args, &repo_root()),
         Commands::Repo(args) => cmd_repo(args),
+        Commands::Ci(args) => ci_cmd::run(args),
     }
 }
 
