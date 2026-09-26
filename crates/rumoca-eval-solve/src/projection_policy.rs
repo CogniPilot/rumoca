@@ -12,6 +12,10 @@
 /// component's `projection` log (SPEC_0044 ME-PROJ-003).
 pub const PROJECTION_FALLBACK_REPORT_RATE: f64 = 0.05;
 
+/// Projection calls a block must have made before its fallback rate is judged,
+/// so a fallback on a block's first few calls is not read as a rate.
+pub const PROJECTION_FALLBACK_REPORT_MIN_CALLS: u64 = 20;
+
 /// Scaled residual and correction tolerance of every continuous algebraic
 /// refresh issued by the ME component.
 pub const ALGEBRAIC_REFRESH_TOLERANCE: f64 = 1.0e-10;

@@ -73,6 +73,12 @@ fn source() -> String {
 const HARNESS: &str = r#"#include "model.c"
 #include <stdio.h>
 #include <stdint.h>
+static int logged; static char logged_category[32]; static char logged_message[256];
+static void capture(fmi3InstanceEnvironment environment, fmi3Status status, fmi3String category, fmi3String message) {
+    (void)environment; (void)status; logged += 1;
+    snprintf(logged_category, sizeof logged_category, "%s", category);
+    snprintf(logged_message, sizeof logged_message, "%s", message);
+}
 static void bits(const char* tag, const double* values, size_t n) {
     printf("%s", tag);
     for (size_t k = 0; k < n; ++k) { uint64_t word; memcpy(&word, &values[k], sizeof word); printf(" %016llx", (unsigned long long)word); }
@@ -108,6 +114,14 @@ int main(void) {
         free(jac);
         free(recovered);
     }
+    /* projection_fallbacks.rs: a site is logged once, under `projection`, the
+       first time its share of fallen-back calls exceeds the policy rate. */
+    m->logger = capture;
+    m->rmc_fb_calls[0] = 0; m->rmc_fb_count[0] = 0; m->rmc_fb_mark[0] = 0; m->rmc_fb_reported[0] = false;
+    for (int call = 0; call < 40; ++call) { m->rmc_fb_calls[0] += 1; m->rmc_fb_active[0] = true; if (call == 0) rmc_fb_note(m, 0); m->rmc_fb_active[0] = false; }
+    int below = logged;
+    for (int call = 0; call < 3; ++call) { m->rmc_fb_calls[0] += 1; m->rmc_fb_active[0] = true; rmc_fb_note(m, 0); rmc_fb_note(m, 0); m->rmc_fb_active[0] = false; }
+    printf("fallback-log %d %d %s | %s\n", below, logged, logged_category, logged_message);
     free(m);
     return 0;
 }
@@ -158,6 +172,9 @@ fn parse(stdout: &str) -> Report {
     let mut blocks = Vec::new();
     let mut rest = stdout.lines().skip(3);
     while let Some(header) = rest.next() {
+        if header.starts_with("fallback-log ") {
+            break;
+        }
         let header = header.strip_prefix("block ").expect("a block line");
         let (head, targets) = header.split_once('|').expect("tears | targets");
         let head = indices(head);
@@ -296,7 +313,20 @@ fn generated_torn_tangent_matches_the_linked_plan_bit_for_bit() {
         "compile the torn tangent harness",
     );
     let output = checked_output(&mut Command::new(&binary), "run the torn tangent harness");
-    let report = parse(&String::from_utf8_lossy(&output.stdout));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // One fallback in the first forty calls stays below the rate; three calls
+    // that each fall back twice cross it, and the site is logged once, under
+    // `projection` (SPEC_0044 ME-PROJ-003).
+    let fallback_log = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("fallback-log "))
+        .expect("the harness reports its fallback log");
+    assert!(
+        fallback_log.starts_with("0 1 projection | projection block ")
+            && fallback_log.contains("fell back on 3 of 42 calls"),
+        "{fallback_log}"
+    );
+    let report = parse(&stdout);
     let lanes = report
         .blocks
         .iter()

@@ -12,7 +12,9 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use rumoca_eval_solve::projection_policy::PROJECTION_FALLBACK_REPORT_RATE;
+use rumoca_eval_solve::projection_policy::{
+    PROJECTION_FALLBACK_REPORT_MIN_CALLS, PROJECTION_FALLBACK_REPORT_RATE,
+};
 
 /// A path the projection takes when its preferred solve declines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -94,10 +96,12 @@ impl ProjectionFallbackCounts {
         (self.fallback_calls as f64 / self.calls as f64).min(1.0)
     }
 
-    /// Whether the rate exceeds the reporting threshold.
+    /// Whether the rate exceeds the reporting threshold over at least the
+    /// policy's minimum number of calls.
     #[must_use]
     pub fn over_threshold(&self) -> bool {
-        self.rate() > PROJECTION_FALLBACK_REPORT_RATE
+        self.calls >= PROJECTION_FALLBACK_REPORT_MIN_CALLS
+            && self.rate() > PROJECTION_FALLBACK_REPORT_RATE
     }
 
     #[must_use]
@@ -281,7 +285,7 @@ mod tests {
     fn a_site_over_the_rate_is_warned_by_name() {
         reset_projection_fallbacks();
         let site = ProjectionSite::Block(11);
-        for _ in 0..10 {
+        for _ in 0..20 {
             let _call = begin_call(site, 5);
             note_fallback(site, ProjectionFallback::AffineFullSystem);
         }
@@ -293,7 +297,7 @@ mod tests {
         assert_eq!(
             report.warnings(),
             [
-                "projection block 11 (5 rows) fell back on 100.0% of 10 calls (affine_full_system 10)"
+                "projection block 11 (5 rows) fell back on 100.0% of 20 calls (affine_full_system 20)"
             ]
         );
         reset_projection_fallbacks();

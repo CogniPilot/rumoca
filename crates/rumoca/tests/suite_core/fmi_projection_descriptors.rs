@@ -43,7 +43,7 @@ equation
   log(u) + v*v*v + v = x;
 end DenseSeeded;";
 
-const SINGULAR: &str = "model SingularSeed
+const SINGULAR: &str = "model SeededLoop
   Real x(start=0, fixed=true);
   output Real y(start=1, fixed=true);
   output Real t(start=1);
@@ -52,10 +52,10 @@ const SINGULAR: &str = "model SingularSeed
 equation
   der(x) = 0;
   der(y) = -0.2*t - 0.1*y;
-  sin(x)*t + s = 1 + 0.5*y;
+  t + s = 1 + sqrt(y);
   t + u*u*u = 3;
   s - u*u = 0.5;
-end SingularSeed;";
+end SeededLoop;";
 
 fn affine_promote() -> String {
     let mut source = String::from("model AffinePromote\n  parameter Real e = 0;\n");
@@ -527,7 +527,7 @@ fn small_affine_loop_is_eliminated_along_its_tearing() {
 
 #[test]
 fn seeded_blocks_emit_isolators_and_the_block_rescue() {
-    for (model, source) in [("DenseSeeded", DENSE), ("SingularSeed", SINGULAR)] {
+    for (model, source) in [("DenseSeeded", DENSE), ("SeededLoop", SINGULAR)] {
         let (model_c, tables) = rendered(model, source);
         assert_well_formed(model, &tables);
         let block = single_block(model, &tables);

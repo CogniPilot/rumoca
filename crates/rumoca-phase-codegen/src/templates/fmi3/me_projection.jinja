@@ -273,6 +273,7 @@ static const RmcBlock rmc_blocks[{{ me.blocks|length }}] = {
 };
 #define RMC_FB_PLAN {{ me.blocks|length }}
 #define RMC_FALLBACK_RATE {{ me.policy.fallback_rate }}
+#define RMC_FALLBACK_MIN_CALLS {{ me.policy.fallback_min_calls }}
 /* projection_fallbacks.rs: note_fallback. A call counts once however many
    fallbacks it takes, and a fallback ahead of a site's next call (a seed
    rescue) belongs to that call. The first time the share of calls that fell
@@ -282,7 +283,7 @@ RMC_COLD static void rmc_fb_note(ModelInstance* m, size_t site) {
     if (m->rmc_fb_mark[site] == call) return;
     m->rmc_fb_mark[site] = call; m->rmc_fb_count[site] += 1;
     size_t calls = m->rmc_fb_calls[site] > 0 ? m->rmc_fb_calls[site] : 1;
-    if (m->rmc_fb_reported[site] || (double)m->rmc_fb_count[site] <= RMC_FALLBACK_RATE * (double)calls) return;
+    if (m->rmc_fb_reported[site] || calls < RMC_FALLBACK_MIN_CALLS || (double)m->rmc_fb_count[site] <= RMC_FALLBACK_RATE * (double)calls) return;
     m->rmc_fb_reported[site] = true;
     char message[192];
     if (site == RMC_FB_PLAN) snprintf(message, sizeof message, "the staged algebraic refresh fell back on %zu of %zu calls", m->rmc_fb_count[site], calls);
@@ -647,8 +648,9 @@ static int rmc_torn_line_search(ModelInstance* m, const RmcBlock* b, const doubl
     RMC_RELEASE; return result;
 }
 /* tearing.rs: advance_torn_newton; an exactly zero residual settles an
-   uncertified refresh. -1 error, 0 declined, 1 settled, 2 advanced */
-static int rmc_torn_newton(ModelInstance* m, const RmcBlock* b, double* residual, const double* vscale) {
+   uncertified refresh. An advanced step leaves its row scales in `step_scales`.
+   -1 error, 0 declined, 1 settled, 2 advanced */
+static int rmc_torn_newton(ModelInstance* m, const RmcBlock* b, double* residual, const double* vscale, double* step_scales) {
     if (!m->rmc_certify && rmc_all_zero(residual, b->k)) return 1;
     RMC_MARK; size_t k = b->k; int result = 0;
     double* base = rmc_dalloc(m, b->n); double* rscale = rmc_dalloc(m, k + 1); double* delta = rmc_dalloc(m, k + 1);
@@ -673,6 +675,7 @@ static int rmc_torn_newton(ModelInstance* m, const RmcBlock* b, double* residual
             else if (converged && rmc_scaled_converged(m->rmc_tol, delta, vscale, k) && rmc_recovered_converged(m->rmc_tol, b, base, recovered, delta))
                 result = rmc_causal_converged(m, b, base, delta, rscale, before);
             if (result == 0) result = rmc_torn_line_search(m, b, base, delta, rscale, before, residual);
+            if (result == 2) memcpy(step_scales, rscale, k * sizeof(double));
         }
     }
     RMC_RELEASE; return result;
@@ -680,8 +683,9 @@ static int rmc_torn_newton(ModelInstance* m, const RmcBlock* b, double* residual
 /* tearing.rs: project_torn_algebraic_block; -1 error, 0 declined (y restored), 1 settled */
 static int rmc_project_torn(ModelInstance* m, const RmcBlock* b, RmcUpdate* update) {
     RMC_MARK; size_t k = b->k; int result = 0;
-    double* snapshot = rmc_dalloc(m, b->n); double* residual = rmc_dalloc(m, k + 1); double* vscale = rmc_dalloc(m, k + 1);
-    if (!snapshot || !residual || !vscale) { RMC_RELEASE; return rmc_exhausted(m); }
+    double* snapshot = rmc_dalloc(m, b->n); double* residual = rmc_dalloc(m, k + 1); double* vscale = rmc_dalloc(m, k + 1); double* step_scales = rmc_dalloc(m, k + 1);
+    if (!snapshot || !residual || !vscale || !step_scales) { RMC_RELEASE; return rmc_exhausted(m); }
+    bool stepped = false;
     rmc_save(m, b, snapshot);
     int swept = rmc_torn_sweep(m, b, residual);
     if (swept < 0) { RMC_RELEASE; return -1; }
@@ -689,7 +693,11 @@ static int rmc_project_torn(ModelInstance* m, const RmcBlock* b, RmcUpdate* upda
         for (size_t c = 0; c < k; ++c) vscale[c] = rmc_model_scale(b->y[b->tear_col[c]], m->y[b->y[b->tear_col[c]]]);
         if (rmc_all_finite(residual, k)) {
             for (int iteration = 0; iteration < RMC_TORN_ITERS; ++iteration) {
-                int step = rmc_torn_newton(m, b, residual, vscale);
+                /* After an exact Newton step its row scales license the residual
+                   check at the new point of an uncertified refresh, without
+                   forming the Jacobian again. */
+                int step = !m->rmc_certify && stepped && rmc_scaled_converged(m->rmc_tol, residual, step_scales, k) ? 1 : rmc_torn_newton(m, b, residual, vscale, step_scales);
+                if (step == 2) stepped = true;
                 if (step < 0) { RMC_RELEASE; return -1; }
                 if (step == 1) {
                     update->changed = false;

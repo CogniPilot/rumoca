@@ -93,7 +93,24 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
         return Ok(None);
     }
 
+    let mut step_scales: Option<Vec<f64>> = None;
     for _ in 0..TORN_OUTER_MAX_ITERS {
+        // After an exact Newton step, the step's own row scales license the
+        // residual check at the new point: it settles an uncertified refresh
+        // without forming the Jacobian again. Certification still checks the
+        // recovered coordinates' corrections, which a residual that meets
+        // tolerance through an ill-conditioned recovery does not bound.
+        if !certify_coordinates
+            && step_scales
+                .as_ref()
+                .is_some_and(|scales| scaled_residual_converged(&residual, scales, tol))
+        {
+            let changed = snapshot.changed(tearing, y);
+            return Ok(Some(ProjectionBlockUpdate {
+                changed,
+                settled: true,
+            }));
+        }
         match advance_torn_newton(
             model,
             y,
@@ -112,7 +129,10 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
                     settled: true,
                 }));
             }
-            TornStep::Advanced(next) => residual = next,
+            TornStep::Advanced(next, scales) => {
+                residual = next;
+                step_scales = Some(scales);
+            }
             TornStep::Decline => {
                 snapshot.restore(tearing, y);
                 return Ok(None);
@@ -131,8 +151,9 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
 enum TornStep {
     /// The reduced residual meets tolerance; the block is solved.
     Settled,
-    /// A step was accepted; carries the reduced residual at the new point.
-    Advanced(Vec<f64>),
+    /// An exact Newton step was accepted; carries the reduced residual at the
+    /// new point and the row scales of the Jacobian the step solved.
+    Advanced(Vec<f64>, Vec<f64>),
     /// The torn solve cannot proceed; the caller falls back to the dense solve.
     Decline,
 }
@@ -213,7 +234,7 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
         return Ok(TornStep::Settled);
     }
     match line_search(model, y, p, t, tearing, step)? {
-        Some(next) => Ok(TornStep::Advanced(next)),
+        Some(next) => Ok(TornStep::Advanced(next, row_scales)),
         None => Ok(TornStep::Decline),
     }
 }
