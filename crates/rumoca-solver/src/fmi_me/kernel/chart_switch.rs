@@ -91,9 +91,10 @@ impl SolveMeKernel {
                 settle.max_iters,
             )
             .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
-        let conditioning = dynamic_chart::chart_conditioning(charts, t, &solver_y, &self.params)
-            .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
-        match dynamic_chart::decide(&conditioning, self.active_chart) {
+        let (decision, conditioning) =
+            dynamic_chart::decide_at(charts, self.active_chart, t, &solver_y, &self.params)
+                .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
+        match decision {
             dynamic_chart::ChartDecision::Switch(target) => {
                 // A switch is needless when the active chart is still far from
                 // its fold: conditioning above a tenth of its construction-time

@@ -127,24 +127,49 @@ pub(super) fn chart_conditioning(
     solver_y: &[f64],
     params: &[f64],
 ) -> Result<Vec<DependentConditioning>, RuntimeSolveError> {
-    charts
-        .runtimes
-        .iter()
-        .zip(&charts.charts)
-        .map(|(runtime, chart)| {
-            let mut conditioning = runtime.reduced_chart_dependent_conditioning(
-                t,
-                solver_y,
-                params,
-                &chart.slope_rows,
-                &chart.slope_cols,
-                std::slice::from_ref(&chart.slope_dependent_positions),
-            )?;
-            conditioning.pop().ok_or_else(|| {
-                RuntimeSolveError::solve_ir("reduced-chart conditioning returned no chart")
-            })
-        })
+    (0..charts.charts.len())
+        .map(|index| one_chart_conditioning(charts, index, t, solver_y, params))
         .collect()
+}
+
+/// The decision at one accepted point, evaluating the active chart first: a
+/// chart kept by its own conditioning needs no alternate evaluated, which is
+/// the common case away from a fold. Otherwise every chart is evaluated and
+/// [`decide`] chooses.
+pub(super) fn decide_at(
+    charts: &ReducedChartRuntimes,
+    active: usize,
+    t: f64,
+    solver_y: &[f64],
+    params: &[f64],
+) -> Result<(ChartDecision, Vec<DependentConditioning>), RuntimeSolveError> {
+    let current = one_chart_conditioning(charts, active, t, solver_y, params)?;
+    if current.rcond >= CHART_SWITCH_KEEP && current.rcond >= regular_bound(&current) {
+        return Ok((ChartDecision::Keep, Vec::new()));
+    }
+    let conditioning = chart_conditioning(charts, t, solver_y, params)?;
+    Ok((decide(&conditioning, active), conditioning))
+}
+
+fn one_chart_conditioning(
+    charts: &ReducedChartRuntimes,
+    index: usize,
+    t: f64,
+    solver_y: &[f64],
+    params: &[f64],
+) -> Result<DependentConditioning, RuntimeSolveError> {
+    let (runtime, chart) = (&charts.runtimes[index], &charts.charts[index]);
+    let mut conditioning = runtime.reduced_chart_dependent_conditioning(
+        t,
+        solver_y,
+        params,
+        &chart.slope_rows,
+        &chart.slope_cols,
+        std::slice::from_ref(&chart.slope_dependent_positions),
+    )?;
+    conditioning
+        .pop()
+        .ok_or_else(|| RuntimeSolveError::solve_ir("reduced-chart conditioning returned no chart"))
 }
 
 /// Splice one alternate reduced chart's carried plan and artifacts into the
