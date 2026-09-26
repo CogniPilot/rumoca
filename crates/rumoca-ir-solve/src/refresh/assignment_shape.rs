@@ -109,6 +109,35 @@ pub fn derive_target_assignment_shapes(
     shapes
 }
 
+/// Whether solver-Y `target_y_index` enters output `output_offset` of
+/// `program` as an affine term whose coefficient is a literal zero, which no
+/// isolator solves for (SPEC_0032).
+#[must_use]
+pub fn isolates_through_zero_coefficient(
+    program: &[LinearOp],
+    output_offset: usize,
+    target_y_index: usize,
+) -> bool {
+    let Some((output, store_position)) = store_output_registers(program).nth(output_offset) else {
+        return false;
+    };
+    let Some(producers) = program.get(..store_position).and_then(UniqueProgram::new) else {
+        return false;
+    };
+    let prefix = producers.view();
+    let (output, _) = strip_affine_output_wrappers(prefix, output);
+    let Some((BinaryOp::Add | BinaryOp::Sub, lhs, rhs)) = binary_operands(prefix, output) else {
+        return false;
+    };
+    [lhs, rhs]
+        .into_iter()
+        .flat_map(|side| affine_target_terms(prefix, side).into_iter().flatten())
+        .any(|(target, coefficient)| {
+            target_load(prefix, target).is_some_and(|load| load.index == target_y_index)
+                && coefficient.is_some_and(|register| zero_constant(prefix, register))
+        })
+}
+
 #[must_use]
 pub fn derive_target_assignment_shape_for_output(
     program: &[LinearOp],

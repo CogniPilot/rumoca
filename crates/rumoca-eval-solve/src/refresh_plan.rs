@@ -663,7 +663,7 @@ fn normalize_algebraic_projection_tearing(
     )?;
     for block in &mut problem.continuous.algebraic_projection_plan.blocks {
         if let Some(tearing) = block.tearing.as_mut() {
-            promote_inexact_causal_steps(tearing, &implicit_scalar_rhs);
+            promote_inexact_causal_steps(tearing, &implicit_scalar_rhs)?;
         }
     }
     Ok(())
@@ -678,20 +678,42 @@ fn normalize_algebraic_projection_tearing(
 /// variable before back-substitution runs. When every step is promoted the
 /// block degenerates to a dense reduced Newton over all its unknowns, which is
 /// exactly what an empty `causal_steps` drives.
-fn promote_inexact_causal_steps(
+///
+/// A causal step whose row reads its unknown only through a coefficient proven
+/// zero is a construction error: the zero-coefficient proof omits that term
+/// from structural incidence, so matching could not have chosen the step, and
+/// the step can never isolate its unknown.
+pub(super) fn promote_inexact_causal_steps(
     tearing: &mut solve::BlockTearing,
     implicit_scalar_rhs: &PreparedScalarProgramBlock,
-) {
+) -> Result<(), EvalSolveError> {
     let mut retained = Vec::with_capacity(tearing.causal_steps.len());
     for step in std::mem::take(&mut tearing.causal_steps) {
         if causal_step_certifies_exact_assignment(implicit_scalar_rhs, step.row, step.y_index) {
             retained.push(step);
-        } else {
-            tearing.tear_y_indices.push(step.y_index);
-            tearing.residual_rows.push(step.row);
+            continue;
         }
+        if let Some((program, output)) = implicit_scalar_rhs.row_output_position(step.row)
+            && implicit_scalar_rhs
+                .block()
+                .program(program)
+                .is_some_and(|ops| {
+                    solve::isolates_through_zero_coefficient(ops, output, step.y_index)
+                })
+        {
+            return Err(EvalSolveError::InvalidRow {
+                message: format!(
+                    "the causal step for solver slot {} reads it only through a coefficient proven zero; the structural incidence omits that term (SPEC_0032), so this step cannot come from matching",
+                    step.y_index
+                ),
+                span: implicit_scalar_rhs.block().program_span(program),
+            });
+        }
+        tearing.tear_y_indices.push(step.y_index);
+        tearing.residual_rows.push(step.row);
     }
     tearing.causal_steps = retained;
+    Ok(())
 }
 
 /// Whether evaluating `row`'s target isolator and writing its value satisfies

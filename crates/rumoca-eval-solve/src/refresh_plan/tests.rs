@@ -1,6 +1,68 @@
 use super::*;
 use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
 
+/// A causal step whose row reads its unknown only through a literal-zero
+/// coefficient is refused at construction with a diagnostic naming the slot,
+/// while a step with a certified isolator stays causal.
+#[test]
+fn a_causal_step_through_a_proven_zero_coefficient_is_a_construction_error() {
+    let row = |coefficient: f64| {
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::LoadY { dst: 1, index: 1 },
+            solve::LinearOp::Const {
+                dst: 2,
+                value: coefficient,
+            },
+            solve::LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::Mul,
+                lhs: 2,
+                rhs: 1,
+            },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 3,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ]
+    };
+    let prepared = |coefficient: f64| {
+        PreparedScalarProgramBlock::new(
+            solve::ScalarProgramBlock::with_source_span(
+                vec![row(coefficient)],
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name("zero_coefficient_step.mo"),
+                    0,
+                    1,
+                )
+                .require_provenance("zero-coefficient causal step fixture")
+                .expect("fixture span is source-backed"),
+            )
+            .expect("the fixture row is computable"),
+        )
+        .expect("the fixture row prepares")
+    };
+    let tearing = || solve::BlockTearing {
+        tear_y_indices: vec![0],
+        residual_rows: vec![],
+        causal_steps: vec![solve::CausalStep { row: 0, y_index: 1 }],
+    };
+    let mut refused = tearing();
+    let error = promote_inexact_causal_steps(&mut refused, &prepared(0.0))
+        .expect_err("a zero coefficient isolates nothing");
+    assert!(error.to_string().contains("solver slot 1"), "{error}");
+    let mut kept = tearing();
+    promote_inexact_causal_steps(&mut kept, &prepared(2.0)).unwrap();
+    assert_eq!(
+        kept.causal_steps.len(),
+        1,
+        "a certified isolator stays causal"
+    );
+}
+
 fn checked(program: Vec<solve::LinearOp>) -> Vec<solve::LinearOp> {
     solve::ScalarProgramRegisterFlow::derive(&program)
         .expect("parameter-static fixture must be a checked register program");
@@ -626,7 +688,7 @@ fn tearing_normalization_promotes_only_the_inexact_causal_step() {
             solve::CausalStep { row: 1, y_index: 3 },
         ],
     };
-    promote_inexact_causal_steps(&mut tearing, &implicit_scalar_rhs);
+    promote_inexact_causal_steps(&mut tearing, &implicit_scalar_rhs).unwrap();
 
     // The exact step is retained; the inexact step is promoted into the reduced
     // Newton, keeping `tear_y_indices.len() == residual_rows.len()`.
@@ -688,7 +750,7 @@ fn tearing_normalization_promotes_every_step_when_none_are_exact() {
         residual_rows: vec![6],
         causal_steps: vec![solve::CausalStep { row: 0, y_index: 0 }],
     };
-    promote_inexact_causal_steps(&mut tearing, &implicit_scalar_rhs);
+    promote_inexact_causal_steps(&mut tearing, &implicit_scalar_rhs).unwrap();
 
     // With no exact step to retain, back-substitution degenerates to a no-op and
     // the reduced Newton solves every unknown of the block.
