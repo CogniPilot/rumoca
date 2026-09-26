@@ -479,15 +479,15 @@ fn torn_loop_descriptor_carries_its_tearing_and_colored_jacobian() {
 }
 
 #[test]
-fn small_affine_loop_is_torn_without_the_elimination() {
+fn small_affine_loop_is_eliminated_along_its_tearing() {
     let (_, tables) = rendered("AffineLoop", AFFINE);
     assert_well_formed("AffineLoop", &tables);
     let block = single_block("AffineLoop", &tables);
     assert_eq!(block.get("n"), 2);
     assert!(block.flag("affine") && !block.flag("singleton_exact"));
     assert!(
-        !block.flag("elimination"),
-        "a two-unknown block is not a sparse candidate for the elimination"
+        block.flag("elimination"),
+        "a small block its tearing reduces is eliminated along the issued causal order"
     );
     assert_eq!(
         isolator_programs(&tables, block),

@@ -158,22 +158,28 @@ pub const CHART_SWITCH_IMPROVEMENT: f64 = 1.5;
 pub const CHART_REGULAR_MULTIPLE: f64 = 1.0e6;
 
 /// Admission of the torn affine elimination, shared by the linked kernel and
-/// every generated C component: the block is a sparse candidate, its issued
-/// reduced system is small and dense, and a promotion capacity exists. The
-/// result is that capacity.
+/// every generated C component: the block is a sparse candidate or a small
+/// dense system its issued tearing reduces (fewer tears than unknowns), its
+/// issued reduced system is small and dense, and a promotion capacity exists.
+/// The result is that capacity. A small block the tearing reduces is
+/// eliminated like a large one, so the construction's causal order is what
+/// every call executes.
 #[must_use]
 pub fn affine_elimination_capacity(
     layout: &rumoca_ir_solve::AffineEliminationLayout,
 ) -> Option<usize> {
     use crate::tensor_policy::{LinearSolveKernel, select_linear_solve_kernel};
     let n = layout.pattern().rows() as usize;
-    let admitted = matches!(
-        select_linear_solve_kernel(n, layout.pattern()),
-        Ok(LinearSolveKernel::SparseCandidate)
-    ) && matches!(
-        select_linear_solve_kernel(layout.tears().len(), layout.reduced_pattern()),
-        Ok(LinearSolveKernel::SmallDense)
-    );
+    let block_admitted = match select_linear_solve_kernel(n, layout.pattern()) {
+        Ok(LinearSolveKernel::SparseCandidate) => true,
+        Ok(LinearSolveKernel::SmallDense) => layout.tears().len() < n,
+        _ => false,
+    };
+    let admitted = block_admitted
+        && matches!(
+            select_linear_solve_kernel(layout.tears().len(), layout.reduced_pattern()),
+            Ok(LinearSolveKernel::SmallDense)
+        );
     admitted
         .then(|| torn_promotion_capacity(layout.tears().len()))
         .flatten()
