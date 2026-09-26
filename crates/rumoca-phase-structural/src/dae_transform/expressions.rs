@@ -69,7 +69,7 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     pub(super) scoped_cache: ScopedReconstructionCache<'source, 'target>,
     /// STRUCT-T10(b): source call nodes replaced by their substituted body.
     inline_calls: &'borrow [bool],
-    /// SPEC_0043 §3: source expressions replaced by their literal values.
+    /// SPEC_0043 §4: source expressions replaced by their literal values.
     literal_expressions:
         &'borrow [Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
     rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],

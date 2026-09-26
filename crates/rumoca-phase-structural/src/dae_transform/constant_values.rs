@@ -1,4 +1,4 @@
-//! Constant pure-call folding and literal propagation (SPEC_0043 §3).
+//! Constant pure-call folding and literal propagation (SPEC_0043 §4).
 //!
 //! A model-level expression of constant variability that contains a call of a
 //! pure Modelica function, so every argument is a compile-time constant
@@ -70,11 +70,11 @@ pub(super) fn constant_call_plan(view: dae::DaeView<'_>) -> Result<LiteralPlan, 
     let mut pending = continuous_roots(view);
     while let Some(expression) = pending.pop() {
         let node = view.expression(expression).expect("checked expression");
-        if foldable_call_expression(view, node) {
-            if let Some(value) = settle(view, &mut evaluator, expression)? {
-                plan[expression.index() as usize] = Some(value);
-                continue;
-            }
+        if foldable_call_expression(view, node)
+            && let Some(value) = settle(view, &mut evaluator, expression)?
+        {
+            plan[expression.index() as usize] = Some(value);
+            continue;
         }
         push_unconditional_operands(node, &mut pending);
     }
@@ -218,7 +218,7 @@ pub(super) fn literal_binding_plan(view: dae::DaeView<'_>) -> LiteralPlan {
     let mut plan = vec![None; view.expression_count()];
     let mut values: Vec<Option<Arc<FoldedValue>>> = vec![None; view.variable_count()];
     let mut evaluator = NumericEvaluator::new(view);
-    for index in 0..view.expression_count() {
+    for (index, slot) in plan.iter_mut().enumerate() {
         let Some(id) = view.expression_id(index) else {
             continue;
         };
@@ -240,7 +240,7 @@ pub(super) fn literal_binding_plan(view: dae::DaeView<'_>) -> LiteralPlan {
         if values[ordinal].is_none() {
             values[ordinal] = binding_value(view, &mut evaluator, binding);
         }
-        plan[index].clone_from(&values[ordinal]);
+        slot.clone_from(&values[ordinal]);
     }
     plan
 }

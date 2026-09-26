@@ -138,13 +138,13 @@ end checkSamples;
 model AssertionLoopSuccess
   Real state(start=0.0, fixed=true);
 equation
-  der(state) = checkSamples(3.0);
+  der(state) = checkSamples(3.0 + time);
 end AssertionLoopSuccess;
 
 model AssertionLoopFailure
   Real state(start=0.0, fixed=true);
 equation
-  der(state) = checkSamples(2.0);
+  der(state) = checkSamples(2.0 + time);
 end AssertionLoopFailure;
 "#;
 

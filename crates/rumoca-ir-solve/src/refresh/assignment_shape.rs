@@ -109,6 +109,106 @@ pub fn derive_target_assignment_shapes(
     shapes
 }
 
+/// The construction proof that the isolator of `target_y_index` in output
+/// `output_offset` of `program` divides by a coefficient bounded away from
+/// zero: a unit or literal-scaled target, a nonzero literal coefficient, a
+/// nonzero constant sum of weights, or a tensor projection with no product
+/// factor. A coefficient computed from run-time values has no proof.
+#[must_use]
+pub fn isolator_coefficient_proof(
+    program: &[LinearOp],
+    output_offset: usize,
+    target_y_index: usize,
+) -> crate::CausalCoefficient {
+    use crate::CausalCoefficient;
+    let nonzero = |value: f64| value != 0.0 && value.is_finite();
+    let Some((_, store_position)) = store_output_registers(program).nth(output_offset) else {
+        return CausalCoefficient::Unproven;
+    };
+    let Some(producers) = program.get(..store_position).and_then(UniqueProgram::new) else {
+        return CausalCoefficient::Unproven;
+    };
+    match canonical_assignment_shape_for_output(program, output_offset, target_y_index) {
+        Some(TargetAssignmentShape::Zero { .. }) => CausalCoefficient::Unit,
+        Some(TargetAssignmentShape::Direct { target_scale, .. }) if nonzero(target_scale) => {
+            CausalCoefficient::Unit
+        }
+        Some(TargetAssignmentShape::Affine {
+            coefficient_reg: None,
+            coefficient_scale,
+            ..
+        }) if nonzero(coefficient_scale) => CausalCoefficient::Literal,
+        Some(TargetAssignmentShape::Affine {
+            coefficient_reg: Some(register),
+            coefficient_scale,
+            ..
+        }) if nonzero(coefficient_scale)
+            && matches!(
+                producer(producers.view(), register),
+                Some(LinearOp::Const { value, .. }) if nonzero(*value)
+            ) =>
+        {
+            CausalCoefficient::Literal
+        }
+        Some(TargetAssignmentShape::Additive { coefficient, .. }) if nonzero(coefficient) => {
+            CausalCoefficient::Literal
+        }
+        Some(TargetAssignmentShape::TensorAffine { projection, .. })
+            if projection.steps.iter().all(|(_, rule)| {
+                !matches!(
+                    rule,
+                    tensor_affine::ProjectionRule::LeftProduct
+                        | tensor_affine::ProjectionRule::RightProduct
+                )
+            }) =>
+        {
+            CausalCoefficient::Unit
+        }
+        _ => CausalCoefficient::Unproven,
+    }
+}
+
+/// Whether output `output_offset` of `program` depends on solver-Y `y_index`.
+#[must_use]
+pub fn output_reads_y(program: &[LinearOp], output_offset: usize, y_index: usize) -> bool {
+    store_output_registers(program)
+        .nth(output_offset)
+        .and_then(|(output, store_position)| {
+            let prefix = program.get(..store_position)?;
+            Some(ScalarProgramYDependency::new(prefix).depends_on(output, y_index))
+        })
+        .unwrap_or(false)
+}
+
+/// Whether solver-Y `target_y_index` enters output `output_offset` of
+/// `program` as an affine term whose coefficient is a literal zero, which no
+/// isolator solves for (SPEC_0032).
+#[must_use]
+pub fn isolates_through_zero_coefficient(
+    program: &[LinearOp],
+    output_offset: usize,
+    target_y_index: usize,
+) -> bool {
+    let Some((output, store_position)) = store_output_registers(program).nth(output_offset) else {
+        return false;
+    };
+    let Some(producers) = program.get(..store_position).and_then(UniqueProgram::new) else {
+        return false;
+    };
+    let prefix = producers.view();
+    let (output, _) = strip_affine_output_wrappers(prefix, output);
+    let Some((BinaryOp::Add | BinaryOp::Sub, lhs, rhs)) = binary_operands(prefix, output) else {
+        return false;
+    };
+    [lhs, rhs]
+        .into_iter()
+        .flat_map(|side| affine_target_terms(prefix, side).into_iter().flatten())
+        .any(|(target, coefficient)| {
+            target_load(prefix, target).is_some_and(|load| load.index == target_y_index)
+                && coefficient.is_some_and(|register| zero_constant(prefix, register))
+        })
+}
+
 #[must_use]
 pub fn derive_target_assignment_shape_for_output(
     program: &[LinearOp],

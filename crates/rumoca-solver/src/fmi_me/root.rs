@@ -1,5 +1,13 @@
 //! Host-owned event-indicator scanning and root application (SPEC_0044 §6).
 //!
+//! The sign-change classification and the domains it uses are FMI 3.0 section
+//! 3. The method of locating the event by sampling the integrator's own
+//! continuous extension across the accepted step, rather than by rejecting and
+//! reducing the step, is L. F. Shampine, I. Gladwell and R. W. Brankin,
+//! "Reliable solution of special event location problems for ODEs", ACM
+//! Transactions on Mathematical Software 17(1):11-25, 1991,
+//! doi:10.1145/103147.103149.
+//!
 //! No root result crosses the numerical-plugin boundary. The host retains the
 //! full standard event-indicator vector from the previous completed step,
 //! samples the plugin's native continuous extension monotonically across each

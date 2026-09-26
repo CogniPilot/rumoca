@@ -23,8 +23,16 @@ impl ParallelResistances {
                         tear_y_indices: vec![0],
                         residual_rows: vec![2],
                         causal_steps: vec![
-                            solve::CausalStep { row: 0, y_index: 1 },
-                            solve::CausalStep { row: 1, y_index: 2 },
+                            solve::CausalStep {
+                                row: 0,
+                                y_index: 1,
+                                ..Default::default()
+                            },
+                            solve::CausalStep {
+                                row: 1,
+                                y_index: 2,
+                                ..Default::default()
+                            },
                         ],
                     }),
                     alternate_charts: Vec::new(),

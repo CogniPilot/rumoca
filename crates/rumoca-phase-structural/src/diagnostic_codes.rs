@@ -70,7 +70,7 @@ pub const ES013_CONFLICTING_STATED_INITIAL_VALUES: &str = "ES013";
 /// [`crate::StructuralError::source_span`], not by a second code.
 pub const ES014_CONTRACT_VIOLATION: &str = "ES014";
 /// [`crate::StructuralError::ConstantCallEvaluation`]: a constant pure call
-/// (SPEC_0043 §3) fails when it is evaluated at construction.
+/// (SPEC_0043 §4) fails when it is evaluated at construction.
 ///
 /// SPEC_0008 acceptance contract:
 ///

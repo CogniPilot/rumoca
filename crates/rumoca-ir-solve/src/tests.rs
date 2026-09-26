@@ -2269,7 +2269,11 @@ fn empty_alternate_charts_are_omitted_from_serialization() {
         tearing: Some(BlockTearing {
             tear_y_indices: vec![0],
             residual_rows: vec![0],
-            causal_steps: vec![CausalStep { row: 1, y_index: 1 }],
+            causal_steps: vec![CausalStep {
+                row: 1,
+                y_index: 1,
+                ..Default::default()
+            }],
         }),
         alternate_charts: Vec::new(),
     };

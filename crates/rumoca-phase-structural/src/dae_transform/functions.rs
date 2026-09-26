@@ -775,7 +775,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             source_fold.initial_values(),
         )?;
         let domain = self.identities.domains[source_fold.domain().index() as usize].id;
-        let mut loop_body = target.functions(|functions| {
+        let loop_body = target.functions(|functions| {
             functions.begin_loop_with_iteration_locals(
                 body,
                 domain,
@@ -791,7 +791,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             &targets,
             source_fold.parameter_values(),
         )?;
-        self.rebuild_loop_statements(target, function, &mut loop_body, statements)?;
+        let loop_body = self.rebuild_loop_statements(target, function, loop_body, statements)?;
         self.seed_current(
             target,
             loop_body.body(),
@@ -810,13 +810,80 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         Ok(body)
     }
 
+    /// Replay one loop nested in `parent`, as `rebuild_loop` replays a
+    /// top-level one, and return the enclosing loop.
+    fn rebuild_nested_loop(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        function: &RebuiltFunction<'target>,
+        parent: dae::FunctionLoop<'target>,
+        source_fold_id: dae::FunctionFoldId<'source>,
+        statements: dae::FunctionStatements<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::FunctionLoop<'target>, dae::DaeConstructionError> {
+        let source_fold = self
+            .source
+            .function_fold(source_fold_id)
+            .expect("checked function fold identity resolves");
+        let targets = source_fold
+            .targets()
+            .map(|target| function.values[target.ordinal() as usize])
+            .collect::<Vec<_>>();
+        let iteration_locals = source_fold
+            .iteration_locals()
+            .map(|target| function.values[target.ordinal() as usize])
+            .collect::<Vec<_>>();
+        self.seed_current(
+            target,
+            parent.body(),
+            source_fold.targets(),
+            &targets,
+            source_fold.initial_values(),
+        )?;
+        let domain = self.identities.domains[source_fold.domain().index() as usize].id;
+        let child = target.functions(|functions| {
+            functions.begin_nested_loop_with_iteration_locals(
+                parent,
+                domain,
+                targets.clone(),
+                iteration_locals,
+                source_fold.provenance(),
+            )
+        })?;
+        self.seed_current(
+            target,
+            child.body(),
+            source_fold.targets(),
+            &targets,
+            source_fold.parameter_values(),
+        )?;
+        let child = self.rebuild_loop_statements(target, function, child, statements)?;
+        self.seed_current(
+            target,
+            child.body(),
+            source_fold.targets(),
+            &targets,
+            source_fold.update_values(),
+        )?;
+        let parent =
+            target.functions(|functions| functions.finish_nested_loop(child, provenance))?;
+        self.seed_current(
+            target,
+            parent.body(),
+            source_fold.targets(),
+            &targets,
+            source_fold.output_values(),
+        )?;
+        Ok(parent)
+    }
+
     fn rebuild_loop_statements(
         &mut self,
         target: &mut dae::DaeConstruction<'target>,
         function: &RebuiltFunction<'target>,
-        loop_body: &mut dae::FunctionLoop<'target>,
+        mut loop_body: dae::FunctionLoop<'target>,
         statements: dae::FunctionStatements<'source>,
-    ) -> Result<(), dae::DaeConstructionError> {
+    ) -> Result<dae::FunctionLoop<'target>, dae::DaeConstructionError> {
         for statement in statements {
             let definition = match statement {
                 dae::FunctionStatementView::Assignment { definition } => definition,
@@ -827,14 +894,24 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                     self.rebuild_loop_assignment_group(
                         target,
                         function,
-                        loop_body,
+                        &mut loop_body,
                         definitions,
                         conditional,
                     )?;
                     continue;
                 }
+                dae::FunctionStatementView::For {
+                    fold,
+                    statements,
+                    provenance,
+                } => {
+                    loop_body = self.rebuild_nested_loop(
+                        target, function, loop_body, fold, statements, provenance,
+                    )?;
+                    continue;
+                }
                 statement => {
-                    self.rebuild_loop_assertion(target, loop_body, statement)?;
+                    self.rebuild_loop_assertion(target, &mut loop_body, statement)?;
                     continue;
                 }
             };
@@ -844,7 +921,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             let target_value = function.values[source_target.ordinal() as usize];
             let value = self.rebuild_expression(target, loop_body.body(), source_rhs)?;
             target.functions(|functions| {
-                functions.assign_loop(loop_body, target_value, value, provenance)
+                functions.assign_loop(&mut loop_body, target_value, value, provenance)
             })?;
             let target_definition = target.functions(|functions| {
                 functions.current_definition_id(loop_body.body(), target_value, provenance)
@@ -858,7 +935,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 target_definition,
             )?;
         }
-        Ok(())
+        Ok(loop_body)
     }
 
     fn rebuild_loop_assignment_group(
@@ -949,7 +1026,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             provenance,
         } = statement
         else {
-            unreachable!("checked function loops cannot contain nested loops")
+            unreachable!("a nested loop is replayed by rebuild_nested_loop")
         };
         let condition = self.rebuild_expression(target, loop_body.body(), condition)?;
         let message = self.rebuild_expression(target, loop_body.body(), message)?;

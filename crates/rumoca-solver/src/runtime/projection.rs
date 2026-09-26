@@ -717,7 +717,12 @@ fn try_torn_algebraic_block<M: ImplicitProjectionModel>(
     let Some(tearing) = block.tearing.as_ref() else {
         return Ok(None);
     };
-    tearing::project_torn_algebraic_block(model, y, p, t, tearing, tol, certify_coordinates)
+    let update =
+        tearing::project_torn_algebraic_block(model, y, p, t, tearing, tol, certify_coordinates)?;
+    if update.is_none() {
+        super::hotpath_stats::inc_torn_decline();
+    }
+    Ok(update)
 }
 
 fn project_algebraic_block<M: ImplicitProjectionModel>(

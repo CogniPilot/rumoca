@@ -62,18 +62,22 @@ impl PermutedReluctance {
                     solve::CausalStep {
                         row: rows[1],
                         y_index: slots[1],
+                        ..Default::default()
                     },
                     solve::CausalStep {
                         row: rows[2],
                         y_index: slots[2],
+                        ..Default::default()
                     },
                     solve::CausalStep {
                         row: rows[3],
                         y_index: slots[3],
+                        ..Default::default()
                     },
                     solve::CausalStep {
                         row: rows[4],
                         y_index: slots[4],
+                        ..Default::default()
                     },
                 ],
             }),

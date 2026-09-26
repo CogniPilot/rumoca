@@ -295,6 +295,13 @@ pub(super) fn solve_linear_equations(
     Ok(linear_solution_value(evaluator, solution))
 }
 
+/// Evaluate GALEC's `luFactorize` builtin.
+///
+/// LU factorization with partial pivoting: G. H. Golub and C. F. Van Loan,
+/// "Matrix Computations", 4th ed., sections 3.2 and 3.4. The eFMI-mandated
+/// behaviour on a singular matrix, qNaN values with the pivot vector still a
+/// well-formed Integer output, is section 3.2.6 of the GALEC specification and
+/// is what keeps the target-domain proof valid on the failure path.
 pub(super) fn lu_factorize_builtin(
     evaluator: &mut Evaluator<'_>,
     arguments: Vec<Value>,

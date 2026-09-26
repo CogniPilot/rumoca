@@ -1,5 +1,5 @@
 //! One checked reconstruction replacing planned expressions by their literal
-//! values (SPEC_0043 §3 constant calls and literal bindings).
+//! values (SPEC_0043 §4 constant calls and literal bindings).
 
 use rumoca_ir_dae as dae;
 

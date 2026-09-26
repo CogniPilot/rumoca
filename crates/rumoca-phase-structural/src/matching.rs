@@ -1,5 +1,18 @@
 //! Maximum matching via augmenting paths (Kuhn's algorithm).
 //!
+//! The augmenting-path characterization of a maximum matching is C. Berge,
+//! "Two theorems in graph theory", PNAS 43(9):842-844, 1957; the name "Kuhn's
+//! algorithm" for the one-augmentation-per-vertex form traces to H. W. Kuhn,
+//! "The Hungarian method for the assignment problem", Naval Research Logistics
+//! Quarterly 2(1-2):83-97, 1955, doi:10.1002/nav.3800020109, whose assignment
+//! problem is the weighted case. The asymptotically faster phased variant is
+//! J. E. Hopcroft and R. M. Karp, "An n^(5/2) algorithm for maximum matchings
+//! in bipartite graphs", SIAM Journal on Computing 2(4):225-231, 1973,
+//! doi:10.1137/0202019. For the sparse-matrix setting this matching serves,
+//! including the ordering heuristics: I. S. Duff, "On algorithms for obtaining
+//! a maximum transversal", ACM Transactions on Mathematical Software
+//! 7(3):315-330, 1981, doi:10.1145/355958.355963.
+//!
 //! The compatibility graph arrives as [`IncidenceRows`]: compressed sparse rows
 //! whose runs are already ascending. That is what makes the traversal both
 //! allocation-free and deterministic -- the old code re-collected and re-sorted

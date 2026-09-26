@@ -1,5 +1,15 @@
 //! Scalar reverse-mode AD (vector-Jacobian product).
 //!
+//! The method is reverse-mode (adjoint) algorithmic differentiation: A.
+//! Griewank and A. Walther, "Evaluating Derivatives: Principles and Techniques
+//! of Algorithmic Differentiation", 2nd ed., SIAM 2008,
+//! doi:10.1137/1.9780898717761, chapter 4. The cost result that motivates it,
+//! a full gradient for a small constant multiple of one function evaluation
+//! regardless of input count, is B. Speelpenning, "Compiling Fast Partial
+//! Derivatives of Functions Given by Algorithms", PhD thesis, University of
+//! Illinois at Urbana-Champaign, 1980. The adjoint of a linear solve used by
+//! `LinearSolveComponent` is Griewank and Walther, section 3.4.
+//!
 //! For a scalar Solve-IR program `f`, the reverse sweep computes `Jᵀλ` for an
 //! output cotangent `λ` in a single pass, where `J = ∂f/∂(inputs)`. It records
 //! each row's primal register values on a forward pass, then walks the ops

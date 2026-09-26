@@ -1,3 +1,18 @@
+//! Derive the sparsity pattern of a compute block's Jacobian.
+//!
+//! Propagating index sets forward through the operation list to obtain, for
+//! each output, the inputs it can depend on is the standard sparsity-pattern
+//! derivation of A. Griewank and A. Walther, "Evaluating Derivatives:
+//! Principles and Techniques of Algorithmic Differentiation", 2nd ed., SIAM
+//! 2008, doi:10.1137/1.9780898717761, chapter 7. The pattern this produces is
+//! structural, therefore conservative: an entry can be structurally present and
+//! numerically zero, never the reverse, which is exactly the guarantee the
+//! column coloring in `rumoca_ir_solve::StructuralPattern::column_coloring`
+//! needs. The bit-vector propagation form is C. H. Bischof, A. Carle, P.
+//! Khademi and A. Mauer, "ADIFOR 2.0: automatic differentiation of Fortran 77
+//! programs", IEEE Computational Science and Engineering 3(3):18-32, 1996,
+//! doi:10.1109/99.537089.
+
 use std::collections::BTreeSet;
 
 use rumoca_core::Span;

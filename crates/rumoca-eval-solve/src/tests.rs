@@ -1752,9 +1752,11 @@ fn prepared_target_assignment_attaches_span_to_singular_row() {
         12,
     );
     let block = ScalarProgramBlock::with_program_spans(
+        // The coefficient is a run-time value, zero at the evaluated point; a
+        // literal zero coefficient is refused at construction instead.
         vec![vec![
             LinearOp::LoadY { dst: 0, index: 0 },
-            LinearOp::Const { dst: 1, value: 0.0 },
+            LinearOp::LoadY { dst: 1, index: 1 },
             LinearOp::Binary {
                 dst: 2,
                 op: BinaryOp::Mul,
@@ -1777,7 +1779,14 @@ fn prepared_target_assignment_attaches_span_to_singular_row() {
         PreparedScalarProgramBlock::new(block).expect("affine singular row should prepare");
 
     let err = prepared
-        .eval_target_assignment_row_with_context(0, 0, &[2.0], &[], 0.0, RowEvalContext::default())
+        .eval_target_assignment_row_with_context(
+            0,
+            0,
+            &[2.0, 0.0],
+            &[],
+            0.0,
+            RowEvalContext::default(),
+        )
         .expect_err("singular target assignment should fail at row evaluation");
 
     assert_eq!(err.source_span(), Some(span));

@@ -55,3 +55,32 @@ fn complete_record_element_writes_form_one_array_and_evaluate() {
         .expect("result remains an observable algebraic");
     assert!((result.value - 1.0).abs() < 1.0e-12, "{:?}", result.value);
 }
+
+/// A structural reconstruction (here the folding of a `final` parameter)
+/// replays function-local record arrays with their extents, and the function
+/// still evaluates at run time.
+#[test]
+fn a_reconstructed_record_array_keeps_its_extents() {
+    let model = MODEL
+        .replace("function choose\n  output", "function choose\n  input Real scale;\n  output")
+        .replace("fill(1.0, 2)", "fill(scale, 2)")
+        .replace(
+            "  Real result;\nequation\n  result = choose();",
+            "  final parameter Real k = 2;\n  Real result;\n  Real z;\nequation\n  result = choose(1 + time);\n  z = k * time;",
+        );
+    assert!(model.contains("choose(1 + time)") && model.contains("fill(scale, 2)"));
+    let compiled = Compiler::new()
+        .model("FunctionRecordArray")
+        .compile_str(&model, "FunctionRecordArray.mo")
+        .expect("the scaled record-array function constructs");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the reconstructed record-array function evaluates");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    let result = probe
+        .report
+        .solver_y
+        .iter()
+        .find(|slot| slot.name == "result")
+        .expect("result remains an observable algebraic");
+    assert!((result.value - 1.0).abs() < 1.0e-12, "{:?}", result.value);
+}

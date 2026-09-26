@@ -1,5 +1,6 @@
 {
   "name": "rumoca-npm-tools",
+  "license": "Apache-2.0",
   "private": true,
   "scripts": {
     "build": "node ./build.mjs --profile release --variant core",

@@ -36,7 +36,11 @@ impl CyclicAffine {
                     residual_rows: vec![DIMENSION - 1],
                     causal_steps: (0..DIMENSION - 1)
                         .rev()
-                        .map(|row| solve::CausalStep { row, y_index: row })
+                        .map(|row| solve::CausalStep {
+                            row,
+                            y_index: row,
+                            ..Default::default()
+                        })
                         .collect(),
                 }),
                 alternate_charts: Vec::new(),

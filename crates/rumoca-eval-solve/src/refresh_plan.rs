@@ -6,6 +6,7 @@
 //! `rumoca-solver`'s runtime should construct or mutate a [`RefreshPlan`].
 
 mod capacity;
+mod causal_proofs;
 mod dependency_domain;
 mod event_dependencies;
 mod row_analysis;
@@ -24,6 +25,8 @@ use rumoca_ir_solve as solve;
 
 use crate::prepared::row_y_input_ranges;
 use crate::{EvalSolveError, PreparedScalarProgramBlock};
+use causal_proofs::causal_step_certifies_exact_assignment;
+pub use causal_proofs::{causal_step_coefficient_proof, causal_step_is_proven};
 
 use capacity::{
     reserve_refresh_deque_capacity, reserve_refresh_index_map_capacity,
@@ -663,7 +666,7 @@ fn normalize_algebraic_projection_tearing(
     )?;
     for block in &mut problem.continuous.algebraic_projection_plan.blocks {
         if let Some(tearing) = block.tearing.as_mut() {
-            promote_inexact_causal_steps(tearing, &implicit_scalar_rhs);
+            promote_inexact_causal_steps(tearing, &implicit_scalar_rhs)?;
         }
     }
     Ok(())
@@ -678,39 +681,51 @@ fn normalize_algebraic_projection_tearing(
 /// variable before back-substitution runs. When every step is promoted the
 /// block degenerates to a dense reduced Newton over all its unknowns, which is
 /// exactly what an empty `causal_steps` drives.
-fn promote_inexact_causal_steps(
+///
+/// A retained step also needs a proof that its isolated coefficient is bounded
+/// away from zero (SPEC_0043 §4), which it then carries; a step without one is
+/// promoted like an inexact one, so no executor divides by a coefficient the
+/// construction did not bound.
+///
+/// A causal step whose row reads its unknown only through a coefficient proven
+/// zero is a construction error: the zero-coefficient proof omits that term
+/// from structural incidence, so matching could not have chosen the step, and
+/// the step can never isolate its unknown.
+pub(super) fn promote_inexact_causal_steps(
     tearing: &mut solve::BlockTearing,
     implicit_scalar_rhs: &PreparedScalarProgramBlock,
-) {
+) -> Result<(), EvalSolveError> {
     let mut retained = Vec::with_capacity(tearing.causal_steps.len());
-    for step in std::mem::take(&mut tearing.causal_steps) {
-        if causal_step_certifies_exact_assignment(implicit_scalar_rhs, step.row, step.y_index) {
+    for mut step in std::mem::take(&mut tearing.causal_steps) {
+        let proof = causal_step_coefficient_proof(implicit_scalar_rhs, step.row, step.y_index);
+        if proof != solve::CausalCoefficient::Unproven
+            && causal_step_certifies_exact_assignment(implicit_scalar_rhs, step.row, step.y_index)
+        {
+            step.coefficient = proof;
             retained.push(step);
-        } else {
-            tearing.tear_y_indices.push(step.y_index);
-            tearing.residual_rows.push(step.row);
+            continue;
         }
+        if let Some((program, output)) = implicit_scalar_rhs.row_output_position(step.row)
+            && implicit_scalar_rhs
+                .block()
+                .program(program)
+                .is_some_and(|ops| {
+                    solve::isolates_through_zero_coefficient(ops, output, step.y_index)
+                })
+        {
+            return Err(EvalSolveError::InvalidRow {
+                message: format!(
+                    "the causal step for solver slot {} reads it only through a coefficient proven zero; the structural incidence omits that term (SPEC_0032), so this step cannot come from matching",
+                    step.y_index
+                ),
+                span: implicit_scalar_rhs.block().program_span(program),
+            });
+        }
+        tearing.tear_y_indices.push(step.y_index);
+        tearing.residual_rows.push(step.row);
     }
     tearing.causal_steps = retained;
-}
-
-/// Whether evaluating `row`'s target isolator and writing its value satisfies
-/// the scalar residual exactly for solver-Y unknown `y_index`. This mirrors the
-/// runtime `implicit_target_assignment_is_exact` predicate exactly.
-fn causal_step_certifies_exact_assignment(
-    implicit_scalar_rhs: &PreparedScalarProgramBlock,
-    row: usize,
-    y_index: usize,
-) -> bool {
-    implicit_scalar_rhs
-        .row_output_position(row)
-        .is_some_and(|(program_idx, output_offset)| {
-            implicit_scalar_rhs.certifies_exact_target_assignment_output(
-                program_idx,
-                output_offset,
-                y_index,
-            )
-        })
+    Ok(())
 }
 
 fn extend_scalar_block_dependencies(

@@ -338,6 +338,51 @@ fn direct_assignment_shape_rejects_target_dependent_expression() {
     assert_eq!(target_assignment_shape(&row).unwrap(), None);
 }
 
+/// A coefficient proven zero at construction is not an isolator: a causal
+/// step on it would divide by zero at every evaluation, so no shape reaches
+/// the runtime, while a coefficient loaded at run time still isolates.
+#[test]
+fn a_constant_zero_coefficient_isolates_no_target() {
+    let row = |coefficient: LinearOp| {
+        vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::LoadY { dst: 1, index: 1 },
+            coefficient,
+            LinearOp::Binary {
+                dst: 3,
+                op: BinaryOp::Mul,
+                lhs: 2,
+                rhs: 1,
+            },
+            LinearOp::Binary {
+                dst: 4,
+                op: BinaryOp::Sub,
+                lhs: 0,
+                rhs: 3,
+            },
+            LinearOp::StoreOutput { src: 4 },
+        ]
+    };
+    let isolates_target = |row: &[LinearOp]| {
+        rumoca_ir_solve::derive_target_assignment_shapes(row)
+            .iter()
+            .any(|(_, shape)| shape.target_y_index() == 1)
+    };
+    assert!(!isolates_target(&row(LinearOp::Const {
+        dst: 2,
+        value: 0.0
+    })));
+    assert!(!isolates_target(&row(LinearOp::Const {
+        dst: 2,
+        value: -0.0
+    })));
+    assert!(isolates_target(&row(LinearOp::Const {
+        dst: 2,
+        value: 2.0
+    })));
+    assert!(isolates_target(&row(LinearOp::LoadY { dst: 2, index: 2 })));
+}
+
 #[test]
 fn affine_shape_isolates_either_factor_of_two_solver_coordinates() {
     let row = vec![
