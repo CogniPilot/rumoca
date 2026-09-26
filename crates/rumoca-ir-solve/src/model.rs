@@ -306,14 +306,19 @@ pub struct JacobianStructure {
     jacobian_application: Option<ProjectionJacobianApplication>,
     affine_elimination: Option<AffineEliminationLayout>,
     linearization_repeatable: bool,
+    /// The pattern's rows per column, formed once for every colored
+    /// Jacobian evaluation that reads them.
+    column_rows: Vec<Vec<usize>>,
 }
 
 impl JacobianStructure {
     pub fn derived(pattern: StructuralPattern) -> Self {
         let coloring = pattern.column_coloring();
+        let column_rows = pattern.column_rows();
         Self {
             pattern,
             coloring,
+            column_rows,
             output_evaluations: Box::default(),
             residual_output_evaluation: None,
             jacobian_application: None,
@@ -328,6 +333,11 @@ impl JacobianStructure {
 
     pub const fn coloring(&self) -> &ColumnColoring {
         &self.coloring
+    }
+
+    /// [`StructuralPattern::column_rows`] of this structure's pattern.
+    pub fn column_rows(&self) -> &[Vec<usize>] {
+        &self.column_rows
     }
 
     pub fn output_evaluation(&self, color: usize) -> Option<&ProjectionJacobianOutputs> {

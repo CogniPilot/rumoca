@@ -64,13 +64,13 @@ impl ProjectionJacobianApplication {
             return None;
         }
         let output_len = block.rows.len().checked_mul(block.y_indices.len())?;
-        let column_rows = structure.pattern.column_rows();
+        let column_rows = structure.column_rows();
         let colors = structure
             .coloring
             .groups()
             .iter()
             .map(|group| {
-                let placements = color_placements(group, &column_rows, block);
+                let placements = color_placements(group, column_rows, block);
                 Some(ProjectionJacobianColor {
                     seed_indices: group
                         .iter()

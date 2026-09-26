@@ -191,7 +191,7 @@ fn color_rows(
     {
         return Vec::new();
     }
-    let column_rows = structure.pattern.column_rows();
+    let column_rows = structure.column_rows();
     structure
         .coloring
         .groups()

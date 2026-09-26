@@ -404,7 +404,7 @@ fn selected_manifold_jacobian<M: ManifoldProjectionModel>(
     structure: &solve::JacobianStructure,
 ) -> Result<Option<DMatrix<f64>>, RuntimeSolveError> {
     let mut jacobian = DMatrix::zeros(block.rows.len(), block.y_indices.len());
-    let column_rows = structure.pattern().column_rows();
+    let column_rows = structure.column_rows();
     let mut seed = vec![0.0; y.len()];
     let mut values = vec![0.0; block.rows.len()];
     for (color, group) in structure.coloring().groups().iter().enumerate() {

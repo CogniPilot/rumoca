@@ -998,11 +998,61 @@ fn fill_colored_algebraic_rows(
         }
         return Ok(());
     }
-    let column_rows = structure.pattern().column_rows();
+    let column_rows = structure.column_rows();
     // The tensor JVP certificate uses the canonical `[solver-y | parameter]`
     // seed layout. Projection colors activate only solver-y columns; parameter
     // lanes remain explicit zero seeds.
-    let mut seed = vec![0.0; y.len().saturating_add(p.len())];
+    with_zero_seed(y.len().saturating_add(p.len()), y_indices, |seed| {
+        fill_colored_groups(
+            jacobian,
+            block,
+            selected_rows,
+            structure,
+            (column_rows, seed),
+        )
+    })
+}
+
+thread_local! {
+    /// An all-zero seed kept between colored Jacobian evaluations: each one
+    /// sets its colors' columns and clears them again, so no evaluation zeroes
+    /// or allocates the full seed.
+    static ZERO_SEED: std::cell::Cell<Vec<f64>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// Run `body` with an all-zero seed of `len` entries, clearing `set` (the only
+/// entries `body` may set) afterwards on every exit. A nested evaluation finds
+/// the buffer taken and works on its own.
+fn with_zero_seed<R>(len: usize, set: &[usize], body: impl FnOnce(&mut [f64]) -> R) -> R {
+    let mut seed = ZERO_SEED.take();
+    if seed.len() < len {
+        seed.resize(len, 0.0);
+    }
+    let result = body(&mut seed[..len]);
+    for &index in set {
+        if let Some(value) = seed.get_mut(index) {
+            *value = 0.0;
+        }
+    }
+    ZERO_SEED.set(seed);
+    result
+}
+
+fn fill_colored_groups(
+    jacobian: &mut DMatrix<f64>,
+    block: AlgebraicBlockPoint<'_>,
+    selected_rows: &[bool],
+    structure: &solve::JacobianStructure,
+    (column_rows, seed): (&[Vec<usize>], &mut [f64]),
+) -> Result<(), RuntimeSolveError> {
+    let AlgebraicBlockPoint {
+        model,
+        y,
+        p,
+        t,
+        rows,
+        y_indices,
+    } = block;
     for (color, group) in structure.coloring().groups().iter().enumerate() {
         let mut has_dependency = false;
         for &column in group.iter() {
@@ -1024,12 +1074,12 @@ fn fill_colored_algebraic_rows(
                 block,
                 selected_rows,
                 prepared,
-                &seed,
+                seed,
                 group,
-                &column_rows,
+                column_rows,
             )?
         {
-            let active_rows = colored_group_entries(group, &column_rows, selected_rows)
+            let active_rows = colored_group_entries(group, column_rows, selected_rows)
                 .map(|(row, _)| rows[row])
                 .collect::<Vec<_>>();
             let jvp = implicit_selected_jacobian_v_rows(
@@ -1037,12 +1087,12 @@ fn fill_colored_algebraic_rows(
                 y,
                 p,
                 t,
-                &seed,
+                seed,
                 &active_rows,
                 "colored algebraic block Jacobian-vector product",
             )?;
             for ((row, column), value) in
-                colored_group_entries(group, &column_rows, selected_rows).zip(jvp)
+                colored_group_entries(group, column_rows, selected_rows).zip(jvp)
             {
                 jacobian[(row, column)] = value;
             }
