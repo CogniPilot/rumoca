@@ -140,10 +140,11 @@ pub fn torn_promotion_capacity(base: usize) -> Option<usize> {
 /// constraint-fold chart rows).
 pub const MAX_ALTERNATE_CHARTS_PER_GROUP: usize = 4;
 
-/// Reduced-chart conditioning at or above which the active chart is kept
-/// without testing an alternate. A chart's `sigma` falls smoothly toward zero
-/// as it approaches its fold, so requesting a change below this keeps the
-/// transfer strictly inside the regular regime.
+/// Fraction of its reference conditioning (its conditioning when it became
+/// active) at or above which the active chart is kept without testing an
+/// alternate. A chart's `sigma` falls smoothly toward zero as it approaches
+/// its fold, so requesting a change below this keeps the transfer strictly
+/// inside the regular regime.
 pub const CHART_SWITCH_KEEP: f64 = 0.5;
 
 /// Factor by which an alternate's conditioning must exceed the active chart's

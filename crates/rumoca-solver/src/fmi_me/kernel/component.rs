@@ -426,6 +426,7 @@ impl SolveMeKernel {
                 &state.settled_initialization_y,
             )
             && self.active_chart == state.active_chart
+            && self.active_reference.map(f64::to_bits) == state.active_reference.map(f64::to_bits)
             && self.chart_runtimes_match_snapshots(&state.runtimes)
     }
 
@@ -435,20 +436,14 @@ impl SolveMeKernel {
     #[cfg(test)]
     fn chart_runtimes_match_snapshots(
         &self,
-        snapshots: &[crate::runtime::solve_runtime::SolveRuntimeSnapshot],
+        snapshots: &[Option<crate::runtime::solve_runtime::SolveRuntimeSnapshot>],
     ) -> bool {
         match &self.reduced_charts {
             None => snapshots
                 .first()
+                .and_then(Option::as_ref)
                 .is_some_and(|snapshot| self.runtime.as_ref().matches_snapshot(snapshot)),
-            Some(charts) => {
-                charts.runtimes.len() == snapshots.len()
-                    && charts
-                        .runtimes
-                        .iter()
-                        .zip(snapshots)
-                        .all(|(runtime, snapshot)| runtime.as_ref().matches_snapshot(snapshot))
-            }
+            Some(charts) => charts.match_snapshots(snapshots),
         }
     }
 
@@ -571,6 +566,7 @@ impl SolveMeKernel {
         Ok(Self {
             reduced_charts,
             active_chart: 0,
+            active_reference: None,
             pending_basis_change: None,
             solver_y_guess: RefCell::new(runtime.model.initial_y.clone()),
             indicator_root_scratch: RefCell::new(scratch.indicator_root_scratch),

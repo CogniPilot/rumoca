@@ -132,6 +132,10 @@ pub struct SolveMeKernel {
     /// The index of the active chart within `reduced_charts`. Always zero (the
     /// primary basis) when `reduced_charts` is `None`.
     active_chart: usize,
+    /// The active chart's keep reference: its conditioning when it became
+    /// active. `None` while the primary basis is active, whose reference is its
+    /// construction conditioning.
+    active_reference: Option<f64>,
     /// A completed step's request to transfer to a better-conditioned chart,
     /// applied atomically in the following Event-Mode transition.
     pending_basis_change: Option<dynamic_chart::PendingBasisChange>,
@@ -238,10 +242,11 @@ pub(crate) struct MeKernelSnapshot {
     termination: Option<SimTermination>,
     settled_initialization_y: Option<Vec<f64>>,
     active_chart: usize,
+    active_reference: Option<f64>,
     pending_basis_change: Option<dynamic_chart::PendingBasisChange>,
     /// One snapshot per reduced-chart runtime, in chart index order; a single
     /// entry for a model with no folding first-integral group.
-    runtimes: Vec<SolveRuntimeSnapshot>,
+    runtimes: Vec<Option<SolveRuntimeSnapshot>>,
 }
 
 pub(super) fn event_right_limit_state_derivatives(
@@ -793,6 +798,7 @@ impl SolveMeKernel {
                 termination: self.termination.clone(),
                 settled_initialization_y: self.settled_initialization_y.clone(),
                 active_chart: self.active_chart,
+                active_reference: self.active_reference,
                 pending_basis_change: self.pending_basis_change.clone(),
                 runtimes: self.chart_runtime_snapshots(),
             },
@@ -857,6 +863,7 @@ impl SolveMeKernel {
         self.settled_initialization_y
             .clone_from(&state.settled_initialization_y);
         self.restore_chart_runtimes(state.active_chart, &state.runtimes)?;
+        self.active_reference = state.active_reference;
         self.pending_basis_change
             .clone_from(&state.pending_basis_change);
         self.lifecycle.restore(state.lifecycle);

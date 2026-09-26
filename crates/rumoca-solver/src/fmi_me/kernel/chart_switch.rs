@@ -12,18 +12,21 @@ impl SolveMeKernel {
         self.reduced_charts.is_some()
     }
 
-    /// Snapshot the mutable numerical state of every reduced-chart runtime, in
-    /// chart index order. A model with no folding first-integral group has one
-    /// runtime, so the vector is a single primary-basis snapshot.
+    /// Snapshot the mutable numerical state of every built reduced-chart
+    /// runtime, in chart index order; an alternate never built has no state. A
+    /// model with no chart set has one runtime, so the vector is a single
+    /// primary-basis snapshot.
     pub(super) fn chart_runtime_snapshots(
         &self,
-    ) -> Vec<crate::runtime::solve_runtime::SolveRuntimeSnapshot> {
+    ) -> Vec<Option<crate::runtime::solve_runtime::SolveRuntimeSnapshot>> {
         match &self.reduced_charts {
-            None => vec![self.runtime.snapshot()],
-            Some(charts) => charts
-                .runtimes
-                .iter()
-                .map(|runtime| runtime.snapshot())
+            None => vec![Some(self.runtime.snapshot())],
+            Some(charts) => (0..charts.len())
+                .map(|index| {
+                    charts
+                        .built_runtime(index)
+                        .map(|runtime| runtime.snapshot())
+                })
                 .collect(),
         }
     }
@@ -33,29 +36,31 @@ impl SolveMeKernel {
     pub(super) fn restore_chart_runtimes(
         &mut self,
         active_chart: usize,
-        snapshots: &[crate::runtime::solve_runtime::SolveRuntimeSnapshot],
+        snapshots: &[Option<crate::runtime::solve_runtime::SolveRuntimeSnapshot>],
     ) -> Result<(), MeError> {
         match &self.reduced_charts {
             None => {
                 let snapshot = snapshots
                     .first()
+                    .and_then(Option::as_ref)
                     .ok_or_else(|| contract("saved state carries no runtime snapshot"))?;
                 self.runtime.restore(snapshot);
                 self.active_chart = 0;
+                self.active_reference = None;
             }
             Some(charts) => {
-                if snapshots.len() != charts.runtimes.len() {
+                if snapshots.len() != charts.len() {
                     return Err(contract(
                         "saved state carries a different number of chart runtimes",
                     ));
                 }
-                let active = charts.runtimes.get(active_chart).ok_or_else(|| {
-                    contract("saved state names a chart index the component does not carry")
-                })?;
-                let active = Rc::clone(active);
-                for (runtime, snapshot) in charts.runtimes.iter().zip(snapshots) {
-                    runtime.restore(snapshot);
-                }
+                let active = Rc::clone(
+                    &charts
+                        .built(active_chart)
+                        .map_err(|error| MeError::from(error).at_stage(MeStage::EventIteration))?
+                        .runtime,
+                );
+                charts.restore_built(snapshots);
                 self.active_chart = active_chart;
                 self.runtime = active;
             }
@@ -91,16 +96,25 @@ impl SolveMeKernel {
                 settle.max_iters,
             )
             .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
-        let (decision, conditioning) =
-            dynamic_chart::decide_at(charts, self.active_chart, t, &solver_y, &self.params)
-                .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
+        let (decision, conditioning) = dynamic_chart::decide_at(
+            charts,
+            self.active_chart,
+            self.active_reference
+                .unwrap_or(charts.charts[self.active_chart].trial_rcond),
+            t,
+            &solver_y,
+            &self.params,
+        )
+        .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
         match decision {
             dynamic_chart::ChartDecision::Switch(target) => {
                 // A switch is needless when the active chart is still far from
-                // its fold: conditioning above a tenth of its construction-time
-                // value. The event lets a sweep count switches per run.
+                // its fold: conditioning above a tenth of its keep reference. The
+                // event lets a sweep count switches per run.
                 let active = conditioning[self.active_chart].rcond;
-                let constructed = charts.charts[self.active_chart].trial_rcond;
+                let constructed = self
+                    .active_reference
+                    .unwrap_or(charts.charts[self.active_chart].trial_rcond);
                 tracing::info!(
                     target: "rumoca_solver::chart_switch",
                     t,
@@ -108,13 +122,14 @@ impl SolveMeKernel {
                     to = target,
                     sigma_active = active,
                     sigma_target = conditioning[target].rcond,
-                    sigma_constructed = constructed,
+                    sigma_reference = constructed,
                     needless = active > 0.1 * constructed,
                     "reduced chart switch requested"
                 );
                 self.pending_basis_change = Some(dynamic_chart::PendingBasisChange {
                     target,
                     physical_solver_y: solver_y,
+                    target_reference: conditioning[target].rcond,
                 });
                 Ok(true)
             }
@@ -154,17 +169,16 @@ impl SolveMeKernel {
                 .reduced_charts
                 .as_ref()
                 .ok_or_else(|| contract("basis change requested without a reduced chart set"))?;
-            let runtime = charts
-                .runtimes
-                .get(target)
-                .ok_or_else(|| contract("basis change names an unknown chart index"))?;
-            let chart = &charts.charts[target];
-            (Rc::clone(runtime), chart.binding_rows.clone())
+            let built = charts
+                .built(target)
+                .map_err(|error| MeError::from(error).at_stage(MeStage::EventIteration))?;
+            (Rc::clone(&built.runtime), built.binding_rows.clone())
         };
         let t = self.continuous_eval_time();
         let solver_y = self.basis_transfer(&target_runtime, &binding_rows, &change, t)?;
 
         self.active_chart = target;
+        self.active_reference = (target != 0).then_some(change.target_reference);
         self.runtime = target_runtime;
         self.copy_states_from_solver_y(&solver_y);
         *self.solver_y_guess.borrow_mut() = solver_y;

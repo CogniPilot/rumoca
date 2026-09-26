@@ -14,6 +14,7 @@
 //! [`build_reduced_charts`] returns `None` and the component behaves exactly as
 //! it did before dynamic state selection existed.
 
+use std::cell::OnceCell;
 use std::rc::Rc;
 
 use rumoca_eval_solve::dense_basis::DependentConditioning;
@@ -23,7 +24,7 @@ use rumoca_eval_solve::projection_policy::{
 use rumoca_ir_solve::{AlgebraicProjectionPlan, ComputeBlock, ContinuousSolveSystem, SolveModel};
 
 use crate::runtime::solve_ops::RuntimeSolveError;
-use crate::runtime::solve_runtime::SolveRuntime;
+use crate::runtime::solve_runtime::{SolveRuntime, SolveRuntimeSnapshot};
 
 /// The compile-time geometry of one admissible reduced chart, resolved into the
 /// solver-Y index space shared by every chart of the group.
@@ -41,21 +42,104 @@ pub(super) struct KernelChart {
     pub(super) slope_cols: Vec<usize>,
     /// Positions within `slope_cols` of the slope blocks' unknowns.
     pub(super) slope_dependent_positions: Vec<usize>,
-    /// Per generated state coordinate, the implicit residual row whose value is
-    /// the identity `state - source`. `state[k] - residual[binding_rows[k]]`
-    /// recovers this chart's integrated source value for state coordinate `k`.
-    pub(super) binding_rows: Vec<usize>,
     /// The chart's conditioning at the construction trial point.
     pub(super) trial_rcond: f64,
+    /// Index of this chart in the model's reduced chart set.
+    set_index: usize,
+    /// The chart's runtime and state-binding rows, built on first use: an
+    /// alternate is needed only near a fold, and building its runtime costs as
+    /// much as building the primary's.
+    built: OnceCell<BuiltChart>,
+}
+
+/// A chart's executable runtime and, per generated state coordinate, the
+/// implicit residual row whose value is the identity `state - source`:
+/// `state[k] - residual[binding_rows[k]]` recovers this chart's integrated
+/// source value for state coordinate `k`.
+pub(super) struct BuiltChart {
+    pub(super) runtime: Rc<SolveRuntime>,
+    pub(super) binding_rows: Vec<usize>,
 }
 
 /// Every runtime-executable reduced chart of one continuous system, index zero
 /// being the primary basis executed by the enclosing continuous system.
 pub(super) struct ReducedChartRuntimes {
-    /// Chart index zero is `Rc::clone` of the enclosing runtime; higher indices
-    /// are the alternate bases spliced from their carried plans.
-    pub(super) runtimes: Vec<Rc<SolveRuntime>>,
+    /// The primary runtime, whose model carries every chart's plan.
+    primary: Rc<SolveRuntime>,
+    state_count: usize,
     pub(super) charts: Vec<KernelChart>,
+}
+
+impl ReducedChartRuntimes {
+    /// Chart `index`'s runtime and binding rows, built on first request.
+    pub(super) fn built(&self, index: usize) -> Result<&BuiltChart, RuntimeSolveError> {
+        let chart = self
+            .charts
+            .get(index)
+            .ok_or_else(|| RuntimeSolveError::solve_ir("reduced chart index is out of range"))?;
+        if let Some(built) = chart.built.get() {
+            return Ok(built);
+        }
+        let runtime = if index == 0 {
+            Rc::clone(&self.primary)
+        } else {
+            let alternate = alternate_chart_model(&self.primary.model, chart.set_index)
+                .ok_or_else(|| RuntimeSolveError::solve_ir("reduced chart carries no plan"))?;
+            Rc::new(SolveRuntime::new(&alternate).map_err(|error| {
+                RuntimeSolveError::solve_ir(format!(
+                    "alternate reduced chart is not runtime-executable: {error:?}"
+                ))
+            })?)
+        };
+        let binding_rows = runtime.implicit_state_binding_rows(
+            0.0,
+            &runtime.model.initial_y,
+            &runtime.model.parameters,
+            self.state_count,
+        )?;
+        Ok(chart.built.get_or_init(|| BuiltChart {
+            runtime,
+            binding_rows,
+        }))
+    }
+
+    /// The runtime of chart `index` if it has been built.
+    pub(super) fn built_runtime(&self, index: usize) -> Option<&Rc<SolveRuntime>> {
+        self.charts
+            .get(index)
+            .and_then(|chart| chart.built.get())
+            .map(|built| &built.runtime)
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.charts.len()
+    }
+
+    /// Restore every built runtime that has a saved snapshot. A runtime built
+    /// after the save carries no saved state; the next transfer onto it
+    /// re-establishes its reconstruction.
+    pub(super) fn restore_built(&self, snapshots: &[Option<SolveRuntimeSnapshot>]) {
+        for (index, snapshot) in snapshots.iter().enumerate() {
+            let runtime = self.built_runtime(index);
+            if let (Some(runtime), Some(snapshot)) = (runtime, snapshot) {
+                runtime.restore(snapshot);
+            }
+        }
+    }
+
+    /// Whether every built runtime matches its snapshot and no unbuilt one has
+    /// a snapshot.
+    #[cfg(test)]
+    pub(super) fn match_snapshots(&self, snapshots: &[Option<SolveRuntimeSnapshot>]) -> bool {
+        self.len() == snapshots.len()
+            && snapshots.iter().enumerate().all(|(index, snapshot)| {
+                match (self.built_runtime(index), snapshot) {
+                    (Some(runtime), Some(snapshot)) => runtime.as_ref().matches_snapshot(snapshot),
+                    (None, None) => true,
+                    _ => false,
+                }
+            })
+    }
 }
 
 /// A completed step requested a basis change: the target chart and the last
@@ -65,6 +149,8 @@ pub(super) struct ReducedChartRuntimes {
 pub(super) struct PendingBasisChange {
     pub(super) target: usize,
     pub(super) physical_solver_y: Vec<f64>,
+    /// The target's conditioning at the request: its keep reference once active.
+    pub(super) target_reference: f64,
 }
 
 /// What an accepted step decides about the active chart.
@@ -84,16 +170,29 @@ fn regular_bound(conditioning: &DependentConditioning) -> f64 {
     conditioning.singular_threshold * CHART_REGULAR_MULTIPLE
 }
 
+/// The conditioning below which the active chart is re-tested: a fraction
+/// `CHART_SWITCH_KEEP` of its reference, the conditioning it had when it became
+/// active (its construction value for the primary basis). A multi-row chart can
+/// be well conditioned far below an absolute threshold, so the keep test is
+/// relative to where the chart started.
+pub(super) fn keep_threshold(reference: f64) -> f64 {
+    CHART_SWITCH_KEEP * reference
+}
+
 /// Decide from every chart's conditioning at one accepted point.
 ///
-/// The active chart is kept while its `sigma` is at least `CHART_SWITCH_KEEP`.
-/// Below that, the chart with the largest `sigma` that exceeds the active one by
+/// The active chart is kept while its `sigma` is at least `keep` (see
+/// [`keep_threshold`]). Below that, the chart with the largest `sigma` that exceeds the active one by
 /// `CHART_SWITCH_IMPROVEMENT` and lies in its own regular region is requested;
 /// ties go to the lowest chart index. Because adopting `b` over `a` requires
 /// `sigma(b) > CHART_SWITCH_IMPROVEMENT * sigma(a)`, switching back needs the
 /// ratio to swing by the square of that factor: the hysteresis band. An active
 /// chart below its regular region has already folded.
-pub(super) fn decide(conditioning: &[DependentConditioning], active: usize) -> ChartDecision {
+pub(super) fn decide(
+    conditioning: &[DependentConditioning],
+    active: usize,
+    keep: f64,
+) -> ChartDecision {
     let current = conditioning[active];
     if current.rcond < regular_bound(&current) {
         return ChartDecision::Folded {
@@ -101,7 +200,7 @@ pub(super) fn decide(conditioning: &[DependentConditioning], active: usize) -> C
             regular: regular_bound(&current),
         };
     }
-    if current.rcond >= CHART_SWITCH_KEEP {
+    if current.rcond >= keep {
         return ChartDecision::Keep;
     }
     let mut best: Option<(usize, f64)> = None;
@@ -118,37 +217,47 @@ pub(super) fn decide(conditioning: &[DependentConditioning], active: usize) -> C
     })
 }
 
-/// Every chart's `sigma` at one settled physical coordinate, each evaluated
-/// through its own runtime's slope blocks. The coordinate is shared: every chart
-/// runs in the same solver-Y space and its slope rows read physical values.
-pub(super) fn chart_conditioning(
-    charts: &ReducedChartRuntimes,
-    t: f64,
-    solver_y: &[f64],
-    params: &[f64],
-) -> Result<Vec<DependentConditioning>, RuntimeSolveError> {
-    (0..charts.charts.len())
-        .map(|index| one_chart_conditioning(charts, index, t, solver_y, params))
-        .collect()
-}
-
-/// The decision at one accepted point, evaluating the active chart first: a
-/// chart kept by its own conditioning needs no alternate evaluated, which is
-/// the common case away from a fold. Otherwise every chart is evaluated and
-/// [`decide`] chooses.
+/// The decision at one accepted point. Every chart's `sigma` is evaluated
+/// through its own runtime's slope blocks at the shared solver-Y point, but
+/// lazily: see [`decide_lazily`].
 pub(super) fn decide_at(
     charts: &ReducedChartRuntimes,
     active: usize,
+    reference: f64,
     t: f64,
     solver_y: &[f64],
     params: &[f64],
 ) -> Result<(ChartDecision, Vec<DependentConditioning>), RuntimeSolveError> {
-    let current = one_chart_conditioning(charts, active, t, solver_y, params)?;
-    if current.rcond >= CHART_SWITCH_KEEP && current.rcond >= regular_bound(&current) {
+    decide_lazily(charts.len(), active, reference, &mut |index| {
+        one_chart_conditioning(charts, index, t, solver_y, params)
+    })
+}
+
+/// Evaluate the active chart first: a chart kept by its own conditioning needs
+/// no alternate evaluated, which is the common case away from a fold. Below
+/// its keep threshold or its regular region, every other chart is evaluated
+/// once and [`decide`] chooses.
+fn decide_lazily(
+    chart_count: usize,
+    active: usize,
+    reference: f64,
+    evaluate: &mut dyn FnMut(usize) -> Result<DependentConditioning, RuntimeSolveError>,
+) -> Result<(ChartDecision, Vec<DependentConditioning>), RuntimeSolveError> {
+    let keep = keep_threshold(reference);
+    let current = evaluate(active)?;
+    if current.rcond >= keep && current.rcond >= regular_bound(&current) {
         return Ok((ChartDecision::Keep, Vec::new()));
     }
-    let conditioning = chart_conditioning(charts, t, solver_y, params)?;
-    Ok((decide(&conditioning, active), conditioning))
+    let conditioning = (0..chart_count)
+        .map(|index| {
+            if index == active {
+                Ok(current)
+            } else {
+                evaluate(index)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((decide(&conditioning, active, keep), conditioning))
 }
 
 fn one_chart_conditioning(
@@ -158,7 +267,7 @@ fn one_chart_conditioning(
     solver_y: &[f64],
     params: &[f64],
 ) -> Result<DependentConditioning, RuntimeSolveError> {
-    let (runtime, chart) = (&charts.runtimes[index], &charts.charts[index]);
+    let (runtime, chart) = (&charts.built(index)?.runtime, &charts.charts[index]);
     let mut conditioning = runtime.reduced_chart_dependent_conditioning(
         t,
         solver_y,
@@ -254,57 +363,33 @@ pub(super) fn build_reduced_charts(
     // it is identical across charts, so chart zero defines it and every other
     // chart is required to match.
     let group_cols = chart_columns(&chart_set.charts[0]);
-
-    let mut runtimes = Vec::with_capacity(chart_set.charts.len());
     let mut charts = Vec::with_capacity(chart_set.charts.len());
     for (index, chart) in chart_set.charts.iter().enumerate() {
-        let chart_runtime = if index == 0 {
-            Rc::clone(runtime)
-        } else {
-            // An alternate may be admissible geometry without a lowered plan
-            // (a partition-only chart); such a chart cannot run and is not built,
-            // so the detector can only ever select a chart built here.
-            let Some(alternate) = alternate_chart_model(model, index) else {
-                continue;
-            };
-            Rc::new(SolveRuntime::new(&alternate).map_err(|error| {
-                RuntimeSolveError::solve_ir(format!(
-                    "alternate reduced chart is not runtime-executable: {error:?}"
-                ))
-            })?)
+        // An alternate may be admissible geometry without a lowered plan (a
+        // partition-only chart); it cannot run, so the detector never sees it.
+        let plan = match &chart.plan {
+            Some(plan) => &plan.algebraic_projection_plan,
+            None if index == 0 => &model.problem.continuous.algebraic_projection_plan,
+            None => continue,
         };
         if chart_columns(chart) != group_cols {
             return Err(RuntimeSolveError::solve_ir(
                 "reduced charts span different coordinate groups",
             ));
         }
-        let (slope_rows, slope_cols, slope_dependent_positions) = slope_geometry(
-            &chart_runtime
-                .model
-                .problem
-                .continuous
-                .algebraic_projection_plan,
-            &chart.dependent_y_indices,
-            &group_cols,
-        )
-        .ok_or_else(|| {
-            RuntimeSolveError::solve_ir(
-                "reduced chart has no reconstruction block for its dependent coordinate",
-            )
-        })?;
-        let binding_rows = chart_runtime.implicit_state_binding_rows(
-            0.0,
-            &chart_runtime.model.initial_y,
-            &chart_runtime.model.parameters,
-            state_count,
-        )?;
-        runtimes.push(chart_runtime);
+        let (slope_rows, slope_cols, slope_dependent_positions) =
+            slope_geometry(plan, &chart.dependent_y_indices, &group_cols).ok_or_else(|| {
+                RuntimeSolveError::solve_ir(
+                    "reduced chart has no reconstruction block for its dependent coordinate",
+                )
+            })?;
         charts.push(KernelChart {
             slope_rows,
             slope_cols,
             slope_dependent_positions,
-            binding_rows,
             trial_rcond: chart.trial_rcond,
+            set_index: index,
+            built: OnceCell::new(),
         });
     }
 
@@ -313,7 +398,14 @@ pub(super) fn build_reduced_charts(
     if charts.len() <= 1 {
         return Ok(None);
     }
-    Ok(Some(ReducedChartRuntimes { runtimes, charts }))
+    let charts = ReducedChartRuntimes {
+        primary: Rc::clone(runtime),
+        state_count,
+        charts,
+    };
+    // The primary is built now: its binding rows are checked at instantiation.
+    charts.built(0)?;
+    Ok(Some(charts))
 }
 
 /// The sorted union of a chart's independent and dependent columns.
@@ -335,6 +427,10 @@ mod tests {
 
     const THRESHOLD: f64 = 1.0e-15;
 
+    fn decide_abs(conditioning: &[DependentConditioning], active: usize) -> ChartDecision {
+        decide(conditioning, active, keep_threshold(1.0))
+    }
+
     fn sigma(rcond: f64) -> DependentConditioning {
         DependentConditioning {
             rcond,
@@ -342,25 +438,60 @@ mod tests {
         }
     }
 
+    /// The decision and the charts a lazy decision evaluates, in order.
+    fn lazily(sigmas: &[f64], active: usize, reference: f64) -> (ChartDecision, Vec<usize>) {
+        let mut evaluated = Vec::new();
+        let (decision, _) = decide_lazily(sigmas.len(), active, reference, &mut |index| {
+            evaluated.push(index);
+            Ok(sigma(sigmas[index]))
+        })
+        .unwrap();
+        (decision, evaluated)
+    }
+
+    #[test]
+    fn a_chart_within_its_keep_evaluates_no_alternate() {
+        // A multi-row chart constructed at 0.3 and now at 0.2 is within half of
+        // its reference, so no alternate slope is evaluated even though 0.2 is
+        // far below an absolute 0.5.
+        assert_eq!(
+            lazily(&[0.2, 0.9, 0.9], 0, 0.3),
+            (ChartDecision::Keep, vec![0])
+        );
+        // Degraded below half its reference, every chart is evaluated once.
+        assert_eq!(
+            lazily(&[0.1, 0.9, 0.2], 0, 0.3),
+            (ChartDecision::Switch(1), vec![0, 1, 2])
+        );
+        // An alternate's reference is its conditioning when it became active.
+        assert_eq!(lazily(&[0.9, 0.3], 1, 0.4), (ChartDecision::Keep, vec![1]));
+    }
+
     #[test]
     fn a_well_conditioned_active_chart_is_kept() {
-        assert_eq!(decide(&[sigma(0.6), sigma(1.0)], 0), ChartDecision::Keep);
+        assert_eq!(
+            decide_abs(&[sigma(0.6), sigma(1.0)], 0),
+            ChartDecision::Keep
+        );
     }
 
     #[test]
     fn a_chart_approaching_its_fold_switches_to_a_clearly_better_one() {
         assert_eq!(
-            decide(&[sigma(0.3), sigma(0.46)], 0),
+            decide_abs(&[sigma(0.3), sigma(0.46)], 0),
             ChartDecision::Switch(1)
         );
         // Not better by the improvement factor: keep.
-        assert_eq!(decide(&[sigma(0.3), sigma(0.44)], 0), ChartDecision::Keep);
+        assert_eq!(
+            decide_abs(&[sigma(0.3), sigma(0.44)], 0),
+            ChartDecision::Keep
+        );
     }
 
     #[test]
     fn the_best_qualifying_chart_wins_and_ties_go_to_the_lowest_index() {
         assert_eq!(
-            decide(&[sigma(0.1), sigma(0.4), sigma(0.8), sigma(0.8)], 0),
+            decide_abs(&[sigma(0.1), sigma(0.4), sigma(0.8), sigma(0.8)], 0),
             ChartDecision::Switch(2)
         );
     }
@@ -370,21 +501,30 @@ mod tests {
         // After a switch from chart 0 at (0.3, 0.46), chart 1 is active. The same
         // point, and every point until chart 0 exceeds chart 1 by the factor
         // again, keeps chart 1.
-        assert_eq!(decide(&[sigma(0.3), sigma(0.46)], 1), ChartDecision::Keep);
-        assert_eq!(decide(&[sigma(0.6), sigma(0.45)], 1), ChartDecision::Keep);
         assert_eq!(
-            decide(&[sigma(0.7), sigma(0.45)], 1),
+            decide_abs(&[sigma(0.3), sigma(0.46)], 1),
+            ChartDecision::Keep
+        );
+        assert_eq!(
+            decide_abs(&[sigma(0.6), sigma(0.45)], 1),
+            ChartDecision::Keep
+        );
+        assert_eq!(
+            decide_abs(&[sigma(0.7), sigma(0.45)], 1),
             ChartDecision::Switch(0)
         );
         // A well-conditioned active chart is kept however good the other is.
-        assert_eq!(decide(&[sigma(0.9), sigma(0.55)], 1), ChartDecision::Keep);
+        assert_eq!(
+            decide_abs(&[sigma(0.9), sigma(0.55)], 1),
+            ChartDecision::Keep
+        );
     }
 
     #[test]
     fn an_irregular_alternate_is_never_adopted() {
         let irregular = THRESHOLD * CHART_REGULAR_MULTIPLE * 0.5;
         assert_eq!(
-            decide(&[sigma(irregular * 3.0), sigma(irregular)], 0),
+            decide_abs(&[sigma(irregular * 3.0), sigma(irregular)], 0),
             ChartDecision::Keep
         );
     }
@@ -393,7 +533,7 @@ mod tests {
     fn an_active_chart_below_its_regular_region_has_folded() {
         let regular = THRESHOLD * CHART_REGULAR_MULTIPLE;
         assert_eq!(
-            decide(&[sigma(regular * 0.5), sigma(1.0)], 0),
+            decide_abs(&[sigma(regular * 0.5), sigma(1.0)], 0),
             ChartDecision::Folded {
                 sigma: regular * 0.5,
                 regular
