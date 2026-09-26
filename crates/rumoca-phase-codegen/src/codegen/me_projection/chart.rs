@@ -33,6 +33,17 @@ fn refuse(reason: &str) -> CodegenError {
     )
 }
 
+/// `result`, refusing with `reason` and the underlying error when it failed.
+fn refusing<T, E: std::fmt::Display>(
+    result: Result<T, E>,
+    reason: &str,
+) -> Result<T, CodegenError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(refuse(&format!("{reason}: {error}"))),
+    }
+}
+
 /// One executable chart of a component, as the continuous system and
 /// artifacts the linked kernel runs it with.
 pub(super) struct ChartSystem<'a> {
@@ -182,7 +193,7 @@ pub(super) fn chart_record(
     let chart = set
         .charts
         .get(sources.system.index)
-        .ok_or_else(|| refuse("a chart index is outside the reduced chart set"))?;
+        .ok_or(refuse("a chart index is outside the reduced chart set"))?;
     let group = chart_columns(&set.charts[0]);
     if chart_columns(chart) != group {
         return Err(refuse("reduced charts span different coordinate groups"));
@@ -192,12 +203,16 @@ pub(super) fn chart_record(
         &chart.dependent_y_indices,
         &group,
     )?;
-    let jvp_block = rumoca_eval_solve::to_scalar_program_block(
-        &sources.system.artifacts.continuous.implicit_jacobian_v,
-    )
-    .map_err(|error| refuse(&error.to_string()))?;
-    let jvp = PreparedScalarProgramBlock::new(jvp_block.clone())
-        .map_err(|error| refuse(&error.to_string()))?;
+    let jvp_block = refusing(
+        rumoca_eval_solve::to_scalar_program_block(
+            &sources.system.artifacts.continuous.implicit_jacobian_v,
+        ),
+        "the implicit Jacobian does not scalarize",
+    )?;
+    let jvp = refusing(
+        PreparedScalarProgramBlock::new(jvp_block.clone()),
+        "the implicit Jacobian does not prepare",
+    )?;
     let mut record = ChartRecord {
         nrows: rows.len(),
         ncols: cols.len(),
@@ -255,7 +270,9 @@ fn slope_geometry(
         .iter()
         .map(|unknown| cols.iter().position(|col| col == unknown))
         .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| refuse("a slope unknown is outside the conditioning columns"))?;
+        .ok_or(refuse(
+            "a slope unknown is outside the conditioning columns",
+        ))?;
     Ok((rows, cols, positions))
 }
 
@@ -283,7 +300,7 @@ fn record_entries(
     for (r, &row) in rows.iter().enumerate() {
         let (program, offset) = jvp
             .row_output_position(row)
-            .ok_or_else(|| refuse("a folding residual row has no scalar Jacobian view"))?;
+            .ok_or(refuse("a folding residual row has no scalar Jacobian view"))?;
         for (c, &col) in cols.iter().enumerate() {
             if pattern.is_some_and(|pattern| !pattern.contains(row as u32, col as u32)) {
                 continue;
@@ -293,7 +310,7 @@ fn record_entries(
                 check_seed_loads(row, &operations, point.seed_len, 1)?;
                 let span = jvp_block
                     .program_span(program)
-                    .ok_or_else(|| refuse("a folding Jacobian program has no provenance"))?;
+                    .ok_or(refuse("a folding Jacobian program has no provenance"))?;
                 Ok((operations, span))
             })?;
             record.jvp_max_outputs = record.jvp_max_outputs.max(table.jvp.output_count(function));
@@ -324,19 +341,19 @@ fn record_binding(
     for state in 0..point.state_count {
         let slot = seed
             .get_mut(state)
-            .ok_or_else(|| refuse("a state coordinate is out of solver range"))?;
+            .ok_or(refuse("a state coordinate is out of solver range"))?;
         *slot = 1.0;
         let row = unit_binding_row(jvp, row_count, point, &seed)?;
         seed[state] = 0.0;
         let (program, offset) = sources
             .implicit
             .row_output_position(row)
-            .ok_or_else(|| refuse("a state-binding row has no scalar view"))?;
+            .ok_or(refuse("a state-binding row has no scalar view"))?;
         let block = sources.implicit.block();
         let function = table.rows.intern((sources.chart, program), || {
             let span = block
                 .program_span(program)
-                .ok_or_else(|| refuse("a state-binding program has no provenance"))?;
+                .ok_or(refuse("a state-binding program has no provenance"))?;
             Ok((block.programs()[program].clone(), span))
         })?;
         record.row_max_outputs = record
@@ -413,9 +430,12 @@ fn unit_binding_row(
             pure_calls: Some(point.pure_calls),
             ..RowEvalContext::default()
         };
-        let value = jvp
-            .eval_row_output_unchecked_with_context(program, offset, point.y, point.p, 0.0, context)
-            .map_err(|error| refuse(&format!("a state-binding row does not evaluate: {error}")))?;
+        let value = refusing(
+            jvp.eval_row_output_unchecked_with_context(
+                program, offset, point.y, point.p, 0.0, context,
+            ),
+            "a state-binding row does not evaluate",
+        )?;
         if value.abs() > 0.5 {
             if binding.is_some() {
                 return Err(refuse(
@@ -425,5 +445,5 @@ fn unit_binding_row(
             binding = Some(row);
         }
     }
-    binding.ok_or_else(|| refuse("a state coordinate has no identity residual row"))
+    binding.ok_or(refuse("a state coordinate has no identity residual row"))
 }
