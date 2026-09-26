@@ -85,6 +85,10 @@ pub struct TornTangentJacobian {
     pub recovered: Vec<f64>,
 }
 
+/// Answers one JVP program of a one-direction plan: `(program, seed, out)`,
+/// `false` to decline.
+pub type DirectionCall<'a> = dyn FnMut(usize, &[f64], &mut Vec<f64>) -> bool + 'a;
+
 /// A [`TornTangentPlan`] prepared for repeated evaluation.
 pub struct TornTangentEvaluator {
     plan: TornTangentPlan,
@@ -129,8 +133,20 @@ impl TornTangentEvaluator {
         &self,
         point: TangentPoint<'_>,
     ) -> Result<Option<TornTangentJacobian>, EvalSolveError> {
+        self.eval_through(point, &mut |_, _, _| false)
+    }
+
+    /// [`Self::eval`] with `call` answering a one-direction plan's JVP
+    /// programs: `call(program, seed, out)` writes the program's outputs under
+    /// `seed` and returns `true`, or returns `false` to leave the program to
+    /// the prepared evaluator. It must give the prepared evaluator's values.
+    pub fn eval_through(
+        &self,
+        point: TangentPoint<'_>,
+        call: &mut DirectionCall<'_>,
+    ) -> Result<Option<TornTangentJacobian>, EvalSolveError> {
         if let Some(directions) = &self.directions {
-            return self.eval_directions(directions, point);
+            return self.eval_directions(directions, point, call);
         }
         let lanes = self.plan.lanes();
         let tears = lanes - 1;
@@ -183,12 +199,16 @@ impl TornTangentEvaluator {
         &self,
         directions: &crate::PreparedScalarProgramBlock,
         point: TangentPoint<'_>,
+        call: &mut DirectionCall<'_>,
     ) -> Result<Option<TornTangentJacobian>, EvalSolveError> {
         let tears = self.plan.lanes() - 1;
         let steps = self.plan.steps();
         let mut seed = vec![0.0; point.y.len()];
         let mut out = Vec::new();
-        let direction = |seed: &[f64], program: usize, out: &mut Vec<f64>| {
+        let mut direction = |seed: &[f64], program: usize, out: &mut Vec<f64>| {
+            if call(program, seed, out) {
+                return Ok(());
+            }
             directions.eval_row_outputs_unchecked_with_context(
                 program,
                 point.y,

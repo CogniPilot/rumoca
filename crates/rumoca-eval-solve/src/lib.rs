@@ -80,8 +80,8 @@ pub use table_runtime::{
     eval_table_lookup_value_in, eval_time_table_next_event_value_in,
 };
 pub use tangent_lanes::{
-    ColoredTangentEvaluator, PreparedTangentLaneProgram, TangentPoint, TornTangentEvaluator,
-    TornTangentJacobian,
+    ColoredTangentEvaluator, DirectionCall, PreparedTangentLaneProgram, TangentPoint,
+    TornTangentEvaluator, TornTangentJacobian,
 };
 pub use typed_program::{
     TypedProgramEvalError, TypedValue, TypedValueConstructionError, eval_pure_call,

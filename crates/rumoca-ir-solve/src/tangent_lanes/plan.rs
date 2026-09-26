@@ -243,6 +243,18 @@ impl TornTangentPlan {
         Self::derive_form(tearing, jvp, true)
     }
 
+    /// Build the one-direction form of the plan of `tearing`, for an evaluator
+    /// whose one-direction JVP programs are cheaper than their lane widening.
+    pub fn derive_directional(
+        tearing: &BlockTearing,
+        jvp: &ScalarProgramBlock,
+    ) -> Result<Self, TangentLaneError> {
+        if tearing.tear_y_indices.is_empty() {
+            return Err(TangentLaneError::LaneCount { lanes: 1 });
+        }
+        Self::derive_form(tearing, jvp, true)
+    }
+
     fn derive_form(
         tearing: &BlockTearing,
         jvp: &ScalarProgramBlock,
