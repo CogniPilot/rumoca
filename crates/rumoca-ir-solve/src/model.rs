@@ -215,6 +215,10 @@ pub struct ReducedChartPlan {
     /// serializer and defaults to empty until re-materialized.
     #[serde(skip)]
     pub artifacts: ContinuousSolveArtifacts,
+    /// The faithful wire delta of this plan against the primary system, issued
+    /// once by [`ChartPlanDelta::diff`] at construction or kept from decoding.
+    #[serde(skip)]
+    pub delta: Option<crate::ChartPlanDelta>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]

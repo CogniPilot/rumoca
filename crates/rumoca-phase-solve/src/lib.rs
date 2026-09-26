@@ -154,14 +154,17 @@ fn attach_alternate_chart_plans(
             derivative_rhs: alternate_continuous.derivative_rhs,
             refresh_owners: alternate_continuous.refresh_owners,
             artifacts: solve::ContinuousSolveArtifacts::default(),
+            delta: None,
         };
         // The wire carries each alternate as a delta against the primary; the
         // delta is issued only when patching the primary reproduces this plan.
-        if let Err(error) = solve::ChartPlanDelta::diff(&base.continuous, &plan) {
-            return Err(LowerError::unspanned_non_computable(format!(
-                "alternate reduced chart plan has no faithful delta: {error}"
-            )));
-        }
+        plan.delta = Some(
+            solve::ChartPlanDelta::diff(&base.continuous, &plan).map_err(|error| {
+                LowerError::unspanned_non_computable(format!(
+                    "alternate reduced chart plan has no faithful delta: {error}"
+                ))
+            })?,
+        );
         plan.artifacts = reduced_chart_continuous_artifacts(&base, &plan)?;
         problem.continuous.reduced_chart_set.charts[offset + 1].plan = Some(plan);
     }

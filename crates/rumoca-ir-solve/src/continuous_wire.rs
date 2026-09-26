@@ -86,7 +86,10 @@ impl Serialize for ContinuousSolveSystem {
                 let plan = chart
                     .plan
                     .as_ref()
-                    .map(|plan| ChartPlanDelta::diff(self, plan))
+                    .map(|plan| match &plan.delta {
+                        Some(delta) => Ok(delta.clone()),
+                        None => ChartPlanDelta::diff(self, plan),
+                    })
                     .transpose()
                     .map_err(S::Error::custom)?;
                 Ok(ChartWire { chart, plan })
