@@ -1173,6 +1173,16 @@ fn restore_block_values(y: &mut [f64], indices: &[usize], values: &[f64]) {
     }
 }
 
+/// Whether `y` differs from the values [`block_values`] saved.
+fn block_values_changed(y: &[f64], indices: &[usize], values: &[f64]) -> bool {
+    for (&index, &value) in indices.iter().zip(values) {
+        if y.get(index) != Some(&value) {
+            return true;
+        }
+    }
+    false
+}
+
 fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
     context: AlgebraicBlockDeltaContext<'_, M>,
     y: &mut [f64],

@@ -721,6 +721,7 @@ mod tests {
         let controller = folding(true);
         let handle = controller.issue_handle();
         let _window = controller.activate();
+        assert_eq!(handle.state_count(), 1);
         let mut out = [0.0];
         handle.derivatives_into(0.0, &[2.0], &mut out);
         assert!(out[0].is_nan(), "a discarded trial reports NaN");

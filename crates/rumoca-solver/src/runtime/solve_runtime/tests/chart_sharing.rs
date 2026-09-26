@@ -337,4 +337,12 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
         }
     }
     assert!(rows(&alternate).iter().flatten().count() >= 2);
+
+    // The fixture declines to compile a refresh assignment schedule, so the
+    // alternate refreshes through the interpreter onto its own rows.
+    let mut refreshed = [0.0; 3];
+    alternate
+        .full_solver_y_with_guess(0.0, &[], &[], &mut refreshed, 1e-12, 20)
+        .unwrap();
+    assert_eq!(refreshed, [0.0, 2.5, 0.0]);
 }

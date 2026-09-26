@@ -19,12 +19,7 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         super::restore_block_values(y, &block.y_indices, &incoming);
     }
     let settled = settled?;
-    let changed = settled
-        && block
-            .y_indices
-            .iter()
-            .zip(&incoming)
-            .any(|(&index, &value)| value != y[index]);
+    let changed = settled && super::block_values_changed(y, &block.y_indices, &incoming);
     Ok(ProjectionBlockUpdate { changed, settled })
 }
 

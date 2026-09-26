@@ -110,31 +110,10 @@ impl SolveMeKernel {
             return Ok(false);
         };
         let t = self.continuous_eval_time();
-        let settle = self.numerics_settle();
-        // Warm-start the reconstruction from the last settled continuous vector
-        // so the dependent first-integral coordinate stays on the physical
-        // branch rather than the mirror root a cold declaration guess selects.
-        let mut solver_y = self.solver_y_guess.borrow().clone();
-        self.runtime
-            .full_solver_y_with_guess(
-                t,
-                &self.states,
-                &self.params,
-                &mut solver_y,
-                settle.tol,
-                settle.max_iters,
-            )
-            .map_err(integration_error)?;
-        let (decision, conditioning) = dynamic_chart::decide_at(
-            charts,
-            self.active_chart,
-            self.active_reference
-                .unwrap_or(charts.charts[self.active_chart].trial_rcond),
-            t,
-            &solver_y,
-            &self.params,
-        )
-        .map_err(integration_error)?;
+        let (solver_y, decision, conditioning) = match self.settled_chart_decision(charts, t) {
+            Ok(decided) => decided,
+            Err(error) => return Err(MeError::from(error).at_stage(MeStage::Integration)),
+        };
         match decision {
             dynamic_chart::ChartDecision::Switch(target) => {
                 // A switch is needless when the active chart is still far from
@@ -175,6 +154,44 @@ impl SolveMeKernel {
             }
             .at_stage(MeStage::Integration)),
         }
+    }
+
+    /// The settled full physical vector at `t` and the chart decision there.
+    fn settled_chart_decision(
+        &self,
+        charts: &dynamic_chart::ReducedChartRuntimes,
+        t: f64,
+    ) -> Result<
+        (
+            Vec<f64>,
+            dynamic_chart::ChartDecision,
+            Vec<rumoca_eval_solve::dense_basis::DependentConditioning>,
+        ),
+        RuntimeSolveError,
+    > {
+        let settle = self.numerics_settle();
+        // Warm-start the reconstruction from the last settled continuous vector
+        // so the dependent first-integral coordinate stays on the physical
+        // branch rather than the mirror root a cold declaration guess selects.
+        let mut solver_y = self.solver_y_guess.borrow().clone();
+        self.runtime.full_solver_y_with_guess(
+            t,
+            &self.states,
+            &self.params,
+            &mut solver_y,
+            settle.tol,
+            settle.max_iters,
+        )?;
+        let (decision, conditioning) = dynamic_chart::decide_at(
+            charts,
+            self.active_chart,
+            self.active_reference
+                .unwrap_or(charts.charts[self.active_chart].trial_rcond),
+            t,
+            &solver_y,
+            &self.params,
+        )?;
+        Ok((solver_y, decision, conditioning))
     }
 
     /// Apply a latched basis change as one atomic Event-Mode transaction: swap
@@ -274,11 +291,6 @@ impl SolveMeKernel {
 /// A chart runtime failure in Event Mode.
 fn event_iteration_error(error: RuntimeSolveError) -> MeError {
     MeError::from(error).at_stage(MeStage::EventIteration)
-}
-
-/// A chart runtime failure at an accepted step.
-fn integration_error(error: RuntimeSolveError) -> MeError {
-    MeError::from(error).at_stage(MeStage::Integration)
 }
 
 #[cfg(test)]
