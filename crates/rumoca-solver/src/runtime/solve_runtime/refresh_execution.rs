@@ -586,7 +586,9 @@ impl SolveRuntime {
         solver_y: &mut [f64],
         params: &[f64],
     ) -> Result<(), RuntimeSolveError> {
-        if self.try_native_assignment_refresh(sequence, t, solver_y, params)? {
+        if self.try_native_assignment_refresh(sequence, t, solver_y, params)?
+            || self.try_interpreted_assignment_refresh(sequence, t, solver_y, params)?
+        {
             self.validate_refresh_values(plan, solver_y, params)?;
             return Ok(());
         }

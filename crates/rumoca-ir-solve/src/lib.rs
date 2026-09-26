@@ -55,6 +55,10 @@ pub use layout::{
     VarLayout, VarLayoutShapeContractError, scalar_slot_p, scalar_slot_y,
 };
 pub use linear_op::{
+    AssignmentProgram, CappedValue, SHARED_VALUE_REGISTER_CAP, SharedValueError,
+    SharedValueSegment, SharedValueSegments,
+};
+pub use linear_op::{
     BinaryOp, BlockResidualSplit, BlockResidualSplitError, CompareOp, FoldInitialSource,
     FoldTensorNode, FoldTensorUpdate, FoldTensorUpdateStore, FunctionConditionalArmProgram,
     FunctionConditionalOwnerId, FunctionConditionalProgram, FunctionFoldProgram, LinearOp,

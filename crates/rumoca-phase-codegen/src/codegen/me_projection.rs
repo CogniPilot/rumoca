@@ -493,7 +493,6 @@ pub(super) fn me_refresh_value(
     };
     if switching {
         tables.table.share_contents();
-        tables.assignments.share_contents();
     }
     // A settled initialization linearizes the primary chart's complete
     // algebraic plan.

@@ -1,4 +1,4 @@
-//! The exact-assignment programs of every refresh step, each emitted once.
+//! The shared-value segments of every refresh step, each emitted once.
 //!
 //! Both refresh plans replay construction-issued exact-assignment schedules;
 //! the derivative plan's programs are a subset of the algebraic plan's. The
@@ -18,11 +18,11 @@ use crate::errors::CodegenError;
 
 #[derive(Default)]
 pub(super) struct AssignmentCatalog {
-    /// Emitted functions keyed by (chart, issued program).
-    ids: BTreeMap<(usize, solve::ExactRefreshAssignmentProgramId), usize>,
-    /// With alternate charts, emitted functions keyed by their content, so a
-    /// program every chart issues keeps one function.
-    contents: Option<BTreeMap<String, usize>>,
+    /// Emitted segment functions of each (chart, issued schedule).
+    schedules: BTreeMap<(usize, solve::RefreshSequenceId), Vec<usize>>,
+    /// Emitted functions keyed by their content, so a segment every schedule
+    /// or chart issues keeps one function.
+    contents: BTreeMap<String, usize>,
     programs: Vec<Vec<solve::LinearOp>>,
     spans: Vec<rumoca_core::Span>,
     targets: Vec<usize>,
@@ -30,68 +30,53 @@ pub(super) struct AssignmentCatalog {
 }
 
 impl AssignmentCatalog {
-    /// Intern emitted programs by content as well as by chart.
-    pub(super) fn share_contents(&mut self) {
-        self.contents.get_or_insert_with(BTreeMap::new);
-    }
-
-    /// The call-sequence range (first, count) of one issued schedule of `chart`.
+    /// The call-sequence range (first, count) of one issued schedule of
+    /// `chart`: one call per shared-value segment (SPEC_0043 §6a).
     pub(super) fn schedule(
         &mut self,
         (chart, problem): (usize, &solve::SolveProblem),
         schedule: &solve::ExactRefreshAssignmentSchedule,
     ) -> Result<(usize, usize), CodegenError> {
         let first = self.sequence.len();
-        for &id in schedule.program_ids() {
-            let function = match self.ids.get(&(chart, id)) {
-                Some(&function) => function,
-                None => self.emit((chart, problem), id)?,
-            };
-            self.sequence.push(function);
-        }
+        let functions = match self.schedules.get(&(chart, schedule.sequence_id())) {
+            Some(functions) => functions.clone(),
+            None => self.emit((chart, problem), schedule)?,
+        };
+        self.sequence.extend(functions);
         Ok((first, self.sequence.len() - first))
     }
 
+    /// Emit the segments of one schedule, each once by content.
     fn emit(
         &mut self,
         (chart, problem): (usize, &solve::SolveProblem),
-        id: solve::ExactRefreshAssignmentProgramId,
-    ) -> Result<usize, CodegenError> {
-        let owners = &problem.continuous.refresh_owners;
-        let program = owners.exact_assignment_program(id).ok_or_else(|| {
-            CodegenError::template("issued algebraic assignment schedule has no program owner")
-        })?;
-        let block = program
-            .final_scalar_program(&problem.continuous.implicit_rhs)
+        schedule: &solve::ExactRefreshAssignmentSchedule,
+    ) -> Result<Vec<usize>, CodegenError> {
+        let shared = schedule
+            .shared_segments(
+                &problem.continuous.implicit_rhs,
+                &problem.continuous.refresh_owners,
+            )
             .map_err(|error| CodegenError::template(error.to_string()))?;
-        let [operations] = block.programs() else {
-            return Err(CodegenError::template(
-                "issued algebraic assignment owner is not one correlated program",
-            ));
-        };
-        let span = block.program_span(0).ok_or_else(|| {
-            CodegenError::template("issued algebraic assignment owner has no provenance")
-        })?;
-        let content = self
-            .contents
-            .as_ref()
-            .map(|_| format!("{:?}{:?}", program.target_indices(), operations));
-        if let Some(&function) = content
-            .as_ref()
-            .and_then(|content| self.contents.as_ref()?.get(content))
-        {
-            self.ids.insert((chart, id), function);
-            return Ok(function);
+        let mut functions = Vec::with_capacity(shared.segments().segments().len());
+        for (segment, &span) in shared.segments().segments().iter().zip(shared.spans()) {
+            let content = format!("{:?}{:?}", segment.targets(), segment.ops());
+            let function = match self.contents.get(&content) {
+                Some(&function) => function,
+                None => {
+                    let function = self.programs.len();
+                    self.programs.push(segment.ops().to_vec());
+                    self.spans.push(span);
+                    self.targets.extend_from_slice(segment.targets());
+                    self.contents.insert(content, function);
+                    function
+                }
+            };
+            functions.push(function);
         }
-        let function = self.programs.len();
-        self.programs.push(operations.clone());
-        self.spans.push(span);
-        self.targets.extend_from_slice(program.target_indices());
-        if let (Some(contents), Some(content)) = (self.contents.as_mut(), content) {
-            contents.insert(content, function);
-        }
-        self.ids.insert((chart, id), function);
-        Ok(function)
+        self.schedules
+            .insert((chart, schedule.sequence_id()), functions.clone());
+        Ok(functions)
     }
 
     /// The emitted programs (each storing into its solver-Y targets) and the

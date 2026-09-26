@@ -8,6 +8,7 @@ mod assignment_shape;
 mod dependency;
 mod materialization;
 mod projection;
+mod shared_schedule;
 mod source_outputs;
 mod staged_execution;
 
@@ -31,6 +32,7 @@ pub use materialization::{
     IsolatedDivisor, IsolatedTerm, IsolatedValue, eval_isolated_value,
     materialize_target_assignment, register_coefficient,
 };
+pub use shared_schedule::SharedAssignmentSchedule;
 pub use staged_execution::{
     RefreshStageSchedule, StagedRefreshRefusal, StagedRefreshStep, projection_seed_rescue_targets,
 };

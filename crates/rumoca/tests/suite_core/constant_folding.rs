@@ -38,8 +38,15 @@ fn fmi3_c(model: &str, source: &str) -> String {
         .join("\n")
 }
 
+/// The most occurrences of `pattern` in any one emitted function: each issued
+/// schedule runs its own fused functions, so a value two schedules compute
+/// appears once in each.
 fn count(source: &str, pattern: &str) -> usize {
-    source.matches(pattern).count()
+    source
+        .split("\nstatic ")
+        .map(|function| function.matches(pattern).count())
+        .max()
+        .unwrap_or(0)
 }
 
 #[test]
@@ -58,7 +65,10 @@ fn literal_arithmetic_leaves_no_foldable_store_or_product() {
         ("(-r[", 1),
     ] {
         let found = count(&source, pattern);
-        assert_eq!(found, expected, "`{pattern}` appears {found} times");
+        assert_eq!(
+            found, expected,
+            "`{pattern}` appears {found} times in one function"
+        );
     }
     let result = simulate_dae_with_diagnostics(
         &Compiler::new()

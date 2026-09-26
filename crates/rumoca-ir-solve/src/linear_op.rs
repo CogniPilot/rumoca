@@ -12,9 +12,14 @@ use crate::{SolvePureCallDirectionalSite, SolvePureCallSite, SolveValueType};
 mod block_split;
 mod dead_constants;
 mod seed_invariance;
+mod shared_values;
 
 pub use block_split::{BlockResidualSplit, BlockResidualSplitError};
 pub use dead_constants::prune_dead_constants;
+pub use shared_values::{
+    AssignmentProgram, CappedValue, SHARED_VALUE_REGISTER_CAP, SharedValueError,
+    SharedValueSegment, SharedValueSegments,
+};
 
 /// Register index in a lowered op sequence.
 pub type Reg = u32;

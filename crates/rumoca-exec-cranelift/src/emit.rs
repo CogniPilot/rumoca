@@ -770,34 +770,19 @@ pub(crate) fn compile_exact_assignment_schedule(
     schedule: &rumoca_ir_solve::ExactRefreshAssignmentSchedule,
     pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
 ) -> Result<CompiledAssignmentSchedule, CompileError> {
-    let mut blocks =
-        checked_vec_with_capacity(schedule.program_ids().len(), "exact assignment rows")?;
-    let mut targets = Vec::new();
-    for id in schedule.program_ids() {
-        let program = owners.exact_assignment_program(*id).ok_or_else(|| {
-            CompileError::Input(
-                "exact assignment schedule refers to a missing constructed program".to_string(),
-            )
-        })?;
-        let block = program.final_scalar_program(source).map_err(|error| {
-            CompileError::Input(format!("exact assignment final projection failed: {error}"))
-        })?;
-        let [_] = block.programs() else {
-            return Err(CompileError::Input(
-                "exact assignment owner must contain one program".to_string(),
-            ));
-        };
-        blocks.push(block);
-        targets
-            .try_reserve_exact(program.target_indices().len())
-            .map_err(|_| {
-                CompileError::Input("exact assignment targets exceed memory".to_string())
-            })?;
-        targets.extend_from_slice(program.target_indices());
-    }
-    let rows = blocks
+    // The schedule runs as its shared-value segments (SPEC_0043 §6a), each
+    // one row committing its targets before the next.
+    let shared = schedule.shared_segments(source, owners).map_err(|error| {
+        CompileError::Input(format!("exact assignment segments failed: {error}"))
+    })?;
+    let segments = shared.segments().segments();
+    let rows = segments
         .iter()
-        .map(|block| block.programs()[0].as_slice())
+        .map(|segment| segment.ops())
+        .collect::<Vec<_>>();
+    let targets = segments
+        .iter()
+        .flat_map(|segment| segment.targets().iter().copied())
         .collect::<Vec<_>>();
     compile_assignment_schedule_slices(&rows, &targets, pure_calls)
 }
