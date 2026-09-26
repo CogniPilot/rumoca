@@ -10,10 +10,8 @@
 use super::*;
 
 impl<'dae> ScalarCompiler<'_, 'dae> {
-    /// A small operand of constant variability, whose scalars lower to literal
-    /// registers that fold exactly when products and sums read them one at a
-    /// time instead of through a packed tensor op.
-    pub(super) fn is_literal_operand(&self, expression: dae::ExprId<'dae>) -> bool {
+    /// An operand of constant variability with at most 16 lanes.
+    pub(super) fn is_small_constant(&self, expression: dae::ExprId<'dae>) -> bool {
         const MAXIMUM_LITERAL_SCALARS: usize = 16;
         let node = self.node(expression);
         node.variability() == dae::ExpressionVariability::Constant
@@ -21,6 +19,21 @@ impl<'dae> ScalarCompiler<'_, 'dae> {
                 .value_type()
                 .scalar_count()
                 .is_some_and(|count| count <= MAXIMUM_LITERAL_SCALARS)
+    }
+
+    /// A small constant operand whose every lane is an exact `0`, `1`, or
+    /// `-1`. In a product or quotient, read one lane at a time, each such lane
+    /// either folds to the other operand or is dropped by the incidence proof,
+    /// so the scalar form is no larger than the packed tensor op. A factor with
+    /// any other lane stays packed: its lanes would each cost a scalar product.
+    pub(super) fn is_literal_operand(&self, expression: dae::ExprId<'dae>) -> bool {
+        self.is_small_constant(expression)
+            && (0..scalar_count(self.view, expression)).all(|scalar| {
+                matches!(
+                    self.exact_literal(expression, scalar),
+                    Some(value) if value == 0.0 || value.abs() == 1.0
+                )
+            })
     }
 
     pub(super) fn real_register(&self, register: solve::Reg) -> Option<f64> {

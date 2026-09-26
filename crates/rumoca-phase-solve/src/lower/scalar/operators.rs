@@ -247,8 +247,25 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let lhs_count = scalar_count(self.view, lhs);
         let rhs_count = scalar_count(self.view, rhs);
         let count = lhs_count.max(rhs_count);
-        // A literal operand lowers per scalar, where its lanes fold exactly.
-        if count <= 1 || self.is_literal_operand(lhs) || self.is_literal_operand(rhs) {
+        // A literal operand lowers per scalar, where its lanes fold exactly. A
+        // sum or difference with any small constant operand does too: each lane
+        // costs one scalar op either way, and packing the other operand would
+        // materialize lanes a product term already dropped.
+        let additive = matches!(
+            operator,
+            dae::BinaryOperator::Add
+                | dae::BinaryOperator::ElementwiseAdd
+                | dae::BinaryOperator::Subtract
+                | dae::BinaryOperator::ElementwiseSubtract
+        );
+        let per_scalar = |operand| {
+            if additive {
+                self.is_small_constant(operand)
+            } else {
+                self.is_literal_operand(operand)
+            }
+        };
+        if count <= 1 || per_scalar(lhs) || per_scalar(rhs) {
             return Ok(None);
         }
         let op = match operator {
