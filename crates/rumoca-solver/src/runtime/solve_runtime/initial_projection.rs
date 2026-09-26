@@ -292,33 +292,7 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         if self.refreshes_algebraic_reads {
             return self.eval_settled_initial_jacobian_v(y, p, t, v, out);
         }
-        if let Some(compiled) = self.runtime.compiled_initial_residual_jacobian_v.as_ref()
-            && compiled
-                .call(
-                    y,
-                    p,
-                    t,
-                    v,
-                    self.runtime.model.external_tables.as_slice(),
-                    out,
-                )
-                .is_ok()
-        {
-            return Ok(());
-        }
-        self.runtime
-            .initial_residual_jacobian_v
-            .eval_with_context(
-                y,
-                p,
-                t,
-                RowEvalContext {
-                    seed: Some(v),
-                    ..self.runtime.row_eval_context()
-                },
-                out,
-            )
-            .map_err(Into::into)
+        self.eval_partial_initial_jacobian_v(y, p, t, v, out)
     }
 
     fn eval_initial_target_value(
@@ -428,12 +402,10 @@ impl InitialProjectionModel<'_> {
     /// Total directional derivative of the initialization residual after the
     /// simultaneous continuous algebraics have been reconstructed.
     ///
-    /// The compiled AD block differentiates stored coordinates and therefore
-    /// cannot represent `d algebraic(y,p) / d(y,p)`. A symmetric perturbation of
-    /// the complete settled residual evaluates exactly that map. The projection
-    /// still verifies the unperturbed residual to its normal tolerance, so
-    /// finite-difference error can cause a typed solve failure but cannot certify
-    /// an incorrect initialization.
+    /// The compiled residual JVP differentiates stored coordinates and so
+    /// cannot see `d settled(y, p) / d(y, p)`. The direction is carried through
+    /// the fixed point that settles the view ([`SolveRuntime::settled_initial_tangent`])
+    /// and the residual JVP then reads that tangent at the settled point.
     fn eval_settled_initial_jacobian_v(
         &self,
         y: &[f64],
@@ -453,48 +425,186 @@ impl InitialProjectionModel<'_> {
                 v.len()
             )));
         }
-        let (v_y, v_p) = v.split_at(y.len());
-        let value_scale = y
-            .iter()
-            .chain(p)
-            .zip(v)
-            .filter(|(_, direction)| **direction != 0.0)
-            .map(|(value, _)| value.abs())
-            .fold(1.0_f64, f64::max);
-        let direction_scale = v.iter().map(|value| value.abs()).fold(0.0_f64, f64::max);
-        if direction_scale == 0.0 {
-            out.fill(0.0);
+        let (settled_y, settled_p) = self.settled_initial_coordinates(y, p, t)?;
+        let settle = AlgebraicSettle {
+            tol: self.tol,
+            max_iters: self.max_iters,
+        };
+        let seed = self
+            .runtime
+            .settled_initial_tangent(&settled_y, &settled_p, t, v, settle)?;
+        self.eval_partial_initial_jacobian_v(&settled_y, &settled_p, t, &seed, out)
+    }
+
+    /// The initialization residual's JVP in the stored coordinates.
+    fn eval_partial_initial_jacobian_v(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if let Some(compiled) = self.runtime.compiled_initial_residual_jacobian_v.as_ref()
+            && compiled
+                .call(
+                    y,
+                    p,
+                    t,
+                    v,
+                    self.runtime.model.external_tables.as_slice(),
+                    out,
+                )
+                .is_ok()
+        {
             return Ok(());
         }
-        // The settled residual includes algebraic projection solves. Their
-        // stopping tolerance is larger than floating-point roundoff, so a
-        // textbook cbrt(epsilon) probe can be swallowed by a converged inner
-        // solve. Keep the relative probe at least sqrt(tol); the final
-        // nonlinear residual check still certifies the converged solution.
-        let relative_step = f64::EPSILON.cbrt().max(self.tol.sqrt());
-        let step = relative_step * value_scale / direction_scale;
-        let mut plus_y = y.to_vec();
-        let mut minus_y = y.to_vec();
-        let mut plus_p = p.to_vec();
-        let mut minus_p = p.to_vec();
-        for ((plus, minus), direction) in plus_y.iter_mut().zip(&mut minus_y).zip(v_y) {
-            *plus += step * direction;
-            *minus -= step * direction;
-        }
-        for ((plus, minus), direction) in plus_p.iter_mut().zip(&mut minus_p).zip(v_p) {
-            *plus += step * direction;
-            *minus -= step * direction;
-        }
-        let mut plus = vec![0.0; out.len()];
-        let mut minus = vec![0.0; out.len()];
-        self.eval_initial_residual(&plus_y, &plus_p, t, &mut plus)?;
-        self.eval_initial_residual(&minus_y, &minus_p, t, &mut minus)?;
-        let denominator = 2.0 * step;
-        for ((output, plus), minus) in out.iter_mut().zip(plus).zip(minus) {
-            *output = (plus - minus) / denominator;
-        }
-        Ok(())
+        self.runtime
+            .initial_residual_jacobian_v
+            .eval_with_context(
+                y,
+                p,
+                t,
+                RowEvalContext {
+                    seed: Some(v),
+                    ..self.runtime.row_eval_context()
+                },
+                out,
+            )
+            .map_err(Into::into)
     }
+}
+
+impl SolveRuntime {
+    /// The initialization residual's directional derivative along `v` (over
+    /// `[solver-y | parameter]`) at `(y, p, t)`, as the initialization
+    /// projection forms it: through the settled view when a row reads a
+    /// continuous algebraic, in the stored coordinates otherwise.
+    pub fn eval_initial_residual_jacobian_v(
+        &self,
+        (y, p, t): (&[f64], &[f64], f64),
+        settle: AlgebraicSettle,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        InitialProjectionModel {
+            runtime: self,
+            tol: settle.tol,
+            max_iters: settle.max_iters,
+            refreshes_algebraic_reads: self.initial_rows_read_settled_view(),
+        }
+        .eval_initial_jacobian_v(y, p, t, v, out)
+    }
+
+    /// Whether an initialization row reads a continuous algebraic, so the
+    /// projection evaluates the rows on the settled view.
+    fn initial_rows_read_settled_view(&self) -> bool {
+        self.model
+            .problem
+            .initialization
+            .row_roles()
+            .iter()
+            .any(|role| {
+                matches!(
+                    role,
+                    solve::InitializationRowRole::UnownedCoordinate(
+                        solve::InitializationCoordinateKind::Algebraic
+                    ) | solve::InitializationRowRole::SolvedThroughAlgebraicRefresh
+                        | solve::InitializationRowRole::SurplusAlgebraicCheck
+                )
+            })
+    }
+
+    /// The tangent along `v` (over `[solver-y | parameter]`) of the settled
+    /// initialization view at its settled point `(y, p)`.
+    ///
+    /// The view alternates the initialization updates and the algebraic
+    /// refresh until the updates stop changing, so its tangent is the fixed
+    /// point of the same alternation, linearized: the update rows' JVP writes
+    /// the tangents of their targets, and the refresh's seed linearization
+    /// writes the tangents of every coordinate it solves, pass after pass
+    /// until the update tangents stop changing.
+    fn settled_initial_tangent(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+        settle: AlgebraicSettle,
+    ) -> Result<Vec<f64>, RuntimeSolveError> {
+        let initialization = &self.model.problem.initialization;
+        let targets = initialization.update_targets();
+        let updates = match (
+            targets.is_empty(),
+            &self.model.artifacts.initialization.update_jacobian_v,
+        ) {
+            (true, _) => None,
+            (false, Some(block)) => Some(block),
+            (false, None) => {
+                return Err(RuntimeSolveError::DirectionalDerivativeUnavailable {
+                    reason: "an initialization update row has no directional derivative"
+                        .to_string(),
+                });
+            }
+        };
+        let seed_len = (y.len() + p.len()).max(self.implicit_jacobian_v.requirements().seed_len);
+        let mut seed = vec![0.0; seed_len];
+        seed[..v.len()].copy_from_slice(v);
+        let lin = AlgebraicLinearization {
+            t,
+            params: p,
+            settle,
+        };
+        let mut values = vec![0.0; targets.len()];
+        for pass in 0..settle.max_iters {
+            let mut changed = false;
+            if let Some(block) = updates {
+                solve_eval::eval_scalar_program_block_with_context(
+                    block,
+                    y,
+                    p,
+                    t,
+                    RowEvalContext {
+                        seed: Some(&seed),
+                        ..self.row_eval_context()
+                    },
+                    &mut values,
+                )?;
+                changed = write_update_tangents(targets, &values, y.len(), &mut seed);
+            }
+            self.seed_refresh_with_plan(&self.algebraic_refresh, lin, y, &mut seed)?;
+            if pass > 0 && !changed {
+                return Ok(seed);
+            }
+        }
+        Err(RuntimeSolveError::solve_ir(format!(
+            "initial residual tangent did not converge at t={t}"
+        )))
+    }
+}
+
+/// Write the update rows' tangents `values` into the seed entries of their
+/// `targets` (parameters follow the `y_len` solver coordinates); whether any
+/// entry changed.
+fn write_update_tangents(
+    targets: &[solve::ScalarSlot],
+    values: &[f64],
+    y_len: usize,
+    seed: &mut [f64],
+) -> bool {
+    let mut changed = false;
+    for (target, value) in targets.iter().zip(values.iter().copied()) {
+        let index = match *target {
+            solve::ScalarSlot::Y { index, .. } => index,
+            solve::ScalarSlot::P { index, .. } => y_len + index,
+            solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => continue,
+        };
+        if seed[index].to_bits() != value.to_bits() {
+            seed[index] = value;
+            changed = true;
+        }
+    }
+    changed
 }
 
 impl SolveRuntime {
@@ -534,21 +644,7 @@ impl SolveRuntime {
                     runtime: self,
                     tol,
                     max_iters,
-                    refreshes_algebraic_reads: self
-                        .model
-                        .problem
-                        .initialization
-                        .row_roles()
-                        .iter()
-                        .any(|role| {
-                            matches!(
-                                role,
-                                solve::InitializationRowRole::UnownedCoordinate(
-                                    solve::InitializationCoordinateKind::Algebraic
-                                ) | solve::InitializationRowRole::SolvedThroughAlgebraicRefresh
-                                    | solve::InitializationRowRole::SurplusAlgebraicCheck
-                            )
-                        }),
+                    refreshes_algebraic_reads: self.initial_rows_read_settled_view(),
                 },
                 t,
                 plan: self.model.problem.initialization.projection_plan(),
@@ -865,6 +961,31 @@ mod tests {
         assert!((p[0] - 2.0).abs() <= 1.0e-10);
     }
 
+    /// The full implicit JVP over `[a | q, nested_q]` seeds and the update
+    /// row's JVP, which carry a `q` direction through `nested_q` into `a`.
+    fn fixed_algebraic_tangent_programs() -> (solve::ScalarProgramBlock, solve::ScalarProgramBlock)
+    {
+        let implicit_full_jacobian = block(vec![vec![
+            solve::LinearOp::LoadSeed { dst: 0, index: 0 },
+            solve::LinearOp::LoadSeed { dst: 1, index: 2 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]]);
+        let update_jacobian = block(vec![vec![
+            solve::LinearOp::LoadSeed { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]]);
+        let scalar = |block: &solve::ComputeBlock| {
+            to_scalar_program_block(block).expect("fixture tangent programs scalarize")
+        };
+        (scalar(&implicit_full_jacobian), scalar(&update_jacobian))
+    }
+
     fn fixed_algebraic_parameter_model() -> solve::SolveModel {
         // Continuous a = nested_q - 49; initialization update nested_q = q; initial
         // equation a = 0. The compiled partial JVP of the initial row w.r.t. q is
@@ -900,6 +1021,7 @@ mod tests {
         ]]);
         // The initial row's partial JVP is the same identity seed program.
         let partial_initial_jacobian = implicit_jacobian.clone();
+        let (implicit_full_jacobian, update_jacobian) = fixed_algebraic_tangent_programs();
         let dependent_update = block(vec![vec![
             solve::LinearOp::LoadP { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
@@ -953,12 +1075,12 @@ mod tests {
             artifacts: solve::SolveArtifacts {
                 continuous: solve::ContinuousSolveArtifacts {
                     implicit_jacobian_v: implicit_jacobian.clone(),
-                    implicit_jacobian_v_scalar: to_scalar_program_block(&implicit_jacobian)
-                        .expect("test Jacobian should scalarize"),
+                    implicit_jacobian_v_scalar: implicit_full_jacobian,
                     ..Default::default()
                 },
                 initialization: solve::InitializationSolveArtifacts {
                     residual_jacobian_v: partial_initial_jacobian,
+                    update_jacobian_v: Some(update_jacobian),
                     ..Default::default()
                 },
             },

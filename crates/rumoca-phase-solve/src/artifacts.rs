@@ -3,7 +3,7 @@ use rumoca_ir_solve as solve;
 use crate::LowerError;
 use crate::ad::{
     lower_compute_block_full_jvp, lower_compute_block_jvp,
-    lower_scalar_program_block_full_ad_with_spans,
+    lower_scalar_program_block_full_ad_with_spans, lower_scalar_program_block_full_jvp,
 };
 
 pub(crate) fn lower_solve_artifacts(
@@ -38,6 +38,14 @@ pub(crate) fn lower_solve_artifacts(
         problem.initialization.residual(),
         problem.solve_layout.solver_scalar_count(),
     )?;
+    // An update row without a derivative lowering leaves the settled
+    // initialization view without a tangent; only a model whose initialization
+    // rows read that view needs one, and it reports the missing derivative.
+    let update_jacobian_v = lower_scalar_program_block_full_jvp(
+        problem.initialization.update_rhs(),
+        problem.solve_layout.solver_scalar_count(),
+    )
+    .ok();
     let mut artifacts = solve::SolveArtifacts {
         continuous: solve::ContinuousSolveArtifacts {
             structural: solve::ContinuousStructuralArtifacts::default(),
@@ -50,6 +58,7 @@ pub(crate) fn lower_solve_artifacts(
         initialization: solve::InitializationSolveArtifacts {
             structural: solve::InitializationStructuralArtifacts::default(),
             residual_jacobian_v: initialization_jacobian_v,
+            update_jacobian_v,
         },
     };
     let (continuous, initialization) = rumoca_eval_solve::derive_solve_structural_artifacts(

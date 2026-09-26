@@ -540,6 +540,11 @@ pub struct InitializationSolveArtifacts {
     /// Constructor-derived metadata; canonical Solve replay reconstructs it.
     pub structural: InitializationStructuralArtifacts,
     pub residual_jacobian_v: ComputeBlock,
+    /// Forward-mode JVP of the initialization update rows over
+    /// `[solver-y | parameter]` seeds, row-aligned with `update_rhs`. It carries
+    /// a seed through the bindings of the settled initialization view; `None`
+    /// when a row has no derivative lowering.
+    pub update_jacobian_v: Option<ScalarProgramBlock>,
 }
 
 /// What the MLS §8.6 initialization projection does with one residual row.

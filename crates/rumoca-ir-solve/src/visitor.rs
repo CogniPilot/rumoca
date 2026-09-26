@@ -268,7 +268,11 @@ pub fn walk_initialization_artifacts<V: SolveVisitor + ?Sized>(
     visitor: &mut V,
     artifacts: &InitializationSolveArtifacts,
 ) -> Result<(), V::Error> {
-    visitor.visit_compute_block(&artifacts.residual_jacobian_v)
+    visitor.visit_compute_block(&artifacts.residual_jacobian_v)?;
+    match &artifacts.update_jacobian_v {
+        Some(block) => visitor.visit_scalar_program_block(block),
+        None => Ok(()),
+    }
 }
 
 pub fn walk_compute_block<V: SolveVisitor + ?Sized>(

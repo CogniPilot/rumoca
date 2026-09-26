@@ -384,11 +384,14 @@ struct ComponentTables {
 }
 
 /// The step tables, blocks, and (for an alternate) derivative kernel of one
-/// chart.
+/// chart. With `seed_blocks`, the blocks of the chart's complete algebraic
+/// plan, the ones the settled initialization tangent linearizes, are interned
+/// and recorded there as (block id, canonical block) in plan order.
 fn chart_value(
     system: &chart::ChartSystem<'_>,
     (chart, implicit, seed_len): (usize, &PreparedScalarProgramBlock, usize),
     tables: &mut ComponentTables,
+    seed_blocks: Option<&mut Vec<(usize, usize)>>,
 ) -> Result<Value, CodegenError> {
     let plans = chart_plans(&system.problem, &system.artifacts)?;
     let tangent_jvp = rumoca_eval_solve::to_scalar_program_block(
@@ -402,6 +405,7 @@ fn chart_value(
             seed_len,
             chart,
             tangent_jvp: &tangent_jvp,
+            linearize_all: chart == 0 && seed_blocks.is_some(),
         },
         table: &mut tables.table,
         ids: BTreeMap::new(),
@@ -410,6 +414,11 @@ fn chart_value(
     let assignments = &mut tables.assignments;
     let derivative = plan_value(plans[0].0, &plans[0].1, &mut catalog, assignments)?;
     let algebraic = plan_value(plans[1].0, &plans[1].1, &mut catalog, assignments)?;
+    if let Some(seed_blocks) = seed_blocks {
+        for &canonical in &plans[1].0.simultaneous_block_indices {
+            seed_blocks.push((catalog.intern(canonical)?, canonical));
+        }
+    }
     let rhs = if chart == 0 {
         None
     } else {
@@ -486,12 +495,21 @@ pub(super) fn me_refresh_value(
         tables.table.share_contents();
         tables.assignments.share_contents();
     }
+    // A settled initialization linearizes the primary chart's complete
+    // algebraic plan.
+    let settled_init = problem
+        .initialization
+        .residual()
+        .len()
+        .is_ok_and(|rows| rows > 0);
+    let mut seed_blocks = Vec::new();
     let charts = systems
         .iter()
         .zip(&implicits)
         .enumerate()
         .map(|(chart, (system, implicit))| {
-            chart_value(system, (chart, implicit, seed_len), &mut tables)
+            let seeds = (chart == 0 && settled_init).then_some(&mut seed_blocks);
+            chart_value(system, (chart, implicit, seed_len), &mut tables, seeds)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let switch_records = if switching {
@@ -508,7 +526,7 @@ pub(super) fn me_refresh_value(
         .map(|index| float_literal(component.solver_variable_scale(index)))
         .collect::<Vec<_>>();
     let ComponentTables {
-        table,
+        mut table,
         assignments,
         records,
     } = tables;
@@ -524,7 +542,8 @@ pub(super) fn me_refresh_value(
         .map(chart::ChartRecord::workspace)
         .max()
         .unwrap_or(0);
-    let (init, init_doubles) = initial::initialization_value(problem, artifacts)?;
+    let (init, init_doubles) =
+        initial::initialization_value(problem, artifacts, (&mut table, &seed_blocks, seed_len))?;
     let init_sizes = init.get_attr("sizes")?.as_usize().unwrap_or(0);
     let kernel = !records.is_empty() || init_doubles > 0;
     let table = table.into_value(&implicits)?;

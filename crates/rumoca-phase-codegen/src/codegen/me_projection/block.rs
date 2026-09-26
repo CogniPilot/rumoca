@@ -29,6 +29,9 @@ pub(super) struct BlockSources<'a> {
     /// The solver-Y JVP rows the linked kernel derives torn tangent plans
     /// over (`solve_runtime.rs: torn_tangent_evaluators`).
     pub(super) tangent_jvp: &'a solve::ScalarProgramBlock,
+    /// Whether the settled initialization tangent linearizes these blocks, so
+    /// an exact singleton records its Jacobian as well.
+    pub(super) linearize_all: bool,
 }
 
 /// Isolation kinds as the C kernel encodes them.
@@ -218,9 +221,9 @@ pub(super) fn block_record(
     record.row_ptr = table.push(csr.row_ptr.iter().copied());
     record.col_idx = table.push(csr.col_idx.iter().copied());
     record.nnz = csr.col_idx.len();
-    // An exact singleton settles or declines through its isolator alone; no
-    // path of the linked projection linearizes it.
-    if !singleton_exact {
+    // An exact singleton settles or declines through its isolator alone; only
+    // the settled initialization tangent linearizes it.
+    if !singleton_exact || sources.linearize_all {
         record_jacobian(
             sources,
             table,

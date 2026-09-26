@@ -11,6 +11,7 @@
 //! Admission (`rumoca_ir_solve::fmi` C profile) has already refused every
 //! initialization shape this view does not describe.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use minijinja::Value;
@@ -19,6 +20,8 @@ use rumoca_ir_solve as solve;
 use serde::Serialize;
 
 use super::super::scalar_program_plan::ScalarProgramPlan;
+use super::block::check_seed_loads;
+use super::table::ProgramTable;
 use crate::errors::CodegenError;
 
 /// One initialization block: pool offsets of its residual rows, combined
@@ -50,6 +53,7 @@ fn refuse(reason: &str) -> CodegenError {
 pub(super) fn initialization_value(
     problem: &solve::SolveProblem,
     artifacts: &solve::SolveArtifacts,
+    tangent: (&mut ProgramTable, &[(usize, usize)], usize),
 ) -> Result<(Value, usize), CodegenError> {
     let init = &problem.initialization;
     let rows = init
@@ -128,11 +132,13 @@ pub(super) fn initialization_value(
         unknown_count += n;
         blocks.push(record);
     }
+    let (tangent, tangent_doubles) = tangent_value(problem, artifacts, tangent, &mut pool)?;
     // The deepest initialization frame chain: the plan's parameter scales and
     // residual rows, one block's scaled Newton system with its dense factor
     // and SVD factors, the settled residual's saved coordinates, and slack.
     let doubles =
         y_len + 2 * problem.layout.p_scalars() + 5 * rows + 5 * max_n * max_n + 12 * max_n + 64;
+    let doubles = doubles + tangent_doubles;
     let pool = if pool.is_empty() { vec![0] } else { pool };
     Ok((
         minijinja::context! {
@@ -144,6 +150,7 @@ pub(super) fn initialization_value(
             unknown_count => unknown_count,
             row_targets => (0..rows).map(row_target).collect::<Vec<_>>(),
             sizes => 2 * max_n + 8,
+            tangent => tangent,
         },
         doubles,
     ))
@@ -153,4 +160,180 @@ fn push(pool: &mut Vec<usize>, values: impl IntoIterator<Item = usize>) -> usize
     let start = pool.len();
     pool.extend(values);
     start
+}
+
+/// Output position of every stored output of `block`: output index ->
+/// (program, offset).
+fn output_positions(block: &solve::ScalarProgramBlock) -> BTreeMap<usize, (usize, usize)> {
+    let mut positions = BTreeMap::new();
+    let mut ordinal = 0;
+    for (program, ops) in block.programs().iter().enumerate() {
+        for offset in 0..solve::ScalarProgramBlock::program_output_count(ops) {
+            if let Some(&output) = block.output_indices().get(ordinal) {
+                positions.insert(output, (program, offset));
+            }
+            ordinal += 1;
+        }
+    }
+    positions
+}
+
+/// The JVP functions of one directional-derivative block over
+/// `[solver-y | parameter]` seeds, interned into the component table.
+struct JvpRows<'a> {
+    block: &'a solve::ScalarProgramBlock,
+    source: usize,
+    positions: BTreeMap<usize, (usize, usize)>,
+    seed_len: usize,
+}
+
+impl<'a> JvpRows<'a> {
+    fn new(
+        table: &mut ProgramTable,
+        block: &'a solve::ScalarProgramBlock,
+        seed_len: usize,
+    ) -> Self {
+        Self {
+            source: table.jvp_source(block),
+            positions: output_positions(block),
+            block,
+            seed_len,
+        }
+    }
+
+    /// `(function, output offset)` of output `output`, and the function's
+    /// output count.
+    fn entry(
+        &self,
+        table: &mut ProgramTable,
+        output: usize,
+        what: &str,
+    ) -> Result<([usize; 2], usize), CodegenError> {
+        let &(program, offset) = self
+            .positions
+            .get(&output)
+            .ok_or_else(|| refuse(&format!("{what} has no directional derivative")))?;
+        let block = self.block;
+        let seed_len = self.seed_len;
+        let function = table.jvp.intern((self.source, program), || {
+            let operations = block.programs()[program].clone();
+            check_seed_loads(0, &operations, seed_len, 1)?;
+            let span = block
+                .program_span(program)
+                .ok_or_else(|| refuse(&format!("{what} has no source provenance")))?;
+            Ok((operations, span))
+        })?;
+        Ok(([function, offset], table.jvp.output_count(function)))
+    }
+}
+
+/// The settled initialization tangent: the primary chart's complete algebraic
+/// plan (`seed_blocks`, interned block ids in plan order) with each block
+/// row's JVP over `[solver-y | parameter]` seeds, the update rows' JVP with
+/// their combined targets (plus one, zero for none), and the residual rows'
+/// JVP, all as pool offsets.
+fn tangent_value(
+    problem: &solve::SolveProblem,
+    artifacts: &solve::SolveArtifacts,
+    (table, seed_blocks, seed_len): (&mut ProgramTable, &[(usize, usize)], usize),
+    pool: &mut Vec<usize>,
+) -> Result<(Value, usize), CodegenError> {
+    let init = &problem.initialization;
+    let y_len = problem.solve_layout.solver_scalar_count();
+    let mut max_outputs = 1;
+    let mut entry = |table: &mut ProgramTable, rows: &JvpRows<'_>, output: usize, what: &str| {
+        let (entry, outputs) = rows.entry(table, output, what)?;
+        max_outputs = max_outputs.max(outputs);
+        Ok::<_, CodegenError>(entry)
+    };
+    let full = JvpRows::new(
+        table,
+        &artifacts.continuous.implicit_jacobian_v_scalar,
+        seed_len,
+    );
+    let mut rows = Vec::new();
+    let mut nrows = 0;
+    for &(_, canonical) in seed_blocks {
+        let block = problem
+            .continuous
+            .algebraic_projection_plan
+            .blocks
+            .get(canonical)
+            .ok_or_else(|| refuse("the algebraic plan names a block outside the projection"))?;
+        for &row in &block.rows {
+            rows.extend(entry(table, &full, row, "an algebraic row")?);
+            nrows += 1;
+        }
+    }
+    let targets = init.update_targets();
+    let mut updates = Vec::with_capacity(3 * targets.len());
+    if !targets.is_empty() {
+        let block = artifacts
+            .initialization
+            .update_jacobian_v
+            .as_ref()
+            .ok_or_else(|| refuse("an initialization update row has no directional derivative"))?;
+        let update = JvpRows::new(table, block, seed_len);
+        for (row, target) in targets.iter().enumerate() {
+            updates.extend(entry(table, &update, row, "an initialization update row")?);
+            updates.push(match *target {
+                solve::ScalarSlot::Y { index, .. } => index + 1,
+                solve::ScalarSlot::P { index, .. } => y_len + index + 1,
+                solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => 0,
+            });
+        }
+    }
+    let residual_block =
+        rumoca_eval_solve::to_scalar_program_block(&artifacts.initialization.residual_jacobian_v)?;
+    let residual_rows = JvpRows::new(table, &residual_block, seed_len);
+    let count = init
+        .residual()
+        .len()
+        .map_err(|error| refuse(&error.to_string()))?;
+    let mut residual = Vec::with_capacity(2 * count);
+    for row in 0..count {
+        residual.extend(entry(
+            table,
+            &residual_rows,
+            row,
+            "an initialization residual row",
+        )?);
+    }
+    let max_n = seed_blocks
+        .iter()
+        .filter_map(|&(_, canonical)| {
+            problem
+                .continuous
+                .algebraic_projection_plan
+                .blocks
+                .get(canonical)
+        })
+        .map(|block| block.rows.len())
+        .max()
+        .unwrap_or(1);
+    // The tangent frame: its seed, update values, all plan rows' residual and
+    // scales, one block's right-hand side, Jacobian, dense matrix and factor,
+    // and one JVP output buffer.
+    let doubles = seed_len
+        + targets.len()
+        + 3 * nrows
+        + 3 * max_n
+        + 3 * max_n * max_n
+        + max_outputs
+        + count
+        + 64;
+    Ok((
+        minijinja::context! {
+            nblocks => seed_blocks.len(),
+            blocks => push(pool, seed_blocks.iter().map(|&(id, _)| id)),
+            rows => push(pool, rows),
+            nrows => nrows,
+            nupdates => targets.len(),
+            updates => push(pool, updates),
+            residual => push(pool, residual),
+            max_outputs => max_outputs,
+            max_n => max_n,
+        },
+        doubles,
+    ))
 }
