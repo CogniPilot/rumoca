@@ -452,7 +452,7 @@ pub fn update_relation_memory_slots(
 /// Numerical root finders detect sign changes, so an unqualified `0.0` at an
 /// accepted point cannot represent whether a strict or non-strict relation
 /// owns that point. Solve IR preserves that semantic distinction explicitly;
-/// the smallest ordinary dimensionless perturbation is enough to expose its
+/// the smallest ordinary dimensionless offset is enough to expose its
 /// sign without moving the mathematical root. A nonzero value remains a signed
 /// distance from the root even when it lies inside the solver's convergence
 /// tolerance; changing that sign would contradict the source relation.

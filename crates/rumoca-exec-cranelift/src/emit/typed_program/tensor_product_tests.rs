@@ -82,9 +82,9 @@ fn check_product(lhs_shape: &[u32], rhs_shape: &[u32]) {
     let compiled = CompiledPureCallTable::compile(&table).unwrap();
     let site = table.owners()[0].call_site();
     let shape = product_shape(lhs_shape, rhs_shape);
-    for perturbation in [0.0, 0.25, -2.0] {
+    for offset in [0.0, 0.25, -2.0] {
         let lhs = (0..shape.0 * shape.1)
-            .map(|i| [1e16, 1.0, -1e16, -0.0, -2.0][i % 5] + perturbation)
+            .map(|i| [1e16, 1.0, -1e16, -0.0, -2.0][i % 5] + offset)
             .collect::<Vec<_>>();
         let rhs = (0..shape.1 * shape.2)
             .map(|i| [1.0, -0.5, 0.25][i % 3])
@@ -109,7 +109,7 @@ fn check_product(lhs_shape: &[u32], rhs_shape: &[u32]) {
                 .into_iter()
                 .map(f64::to_bits)
                 .collect::<Vec<_>>(),
-            "{lhs_shape:?} * {rhs_shape:?}, perturbation {perturbation}"
+            "{lhs_shape:?} * {rhs_shape:?}, offset {offset}"
         );
     }
 }

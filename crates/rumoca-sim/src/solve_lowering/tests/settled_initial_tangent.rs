@@ -4,9 +4,8 @@
 //! solved by a nonlinear block, so the initialization projection evaluates
 //! its rows on the settled view: the parameter bindings and the algebraic
 //! refresh applied to a copy of the coordinates. At the settled start point,
-//! the derivative along every initialization unknown must match the values
-//! the symmetric difference of the settled residual gave for the same
-//! fixtures, to 1e-6 relative.
+//! the derivative along every initialization unknown must match the pinned
+//! reference values of the same fixtures to 1e-6 relative.
 
 use rumoca_ir_solve as solve;
 use rumoca_solver::{AlgebraicSettle, SolveRuntime};
@@ -126,7 +125,7 @@ fn assert_columns(name: &str, exact: &[Vec<f64>], reference: &[&[f64]]) {
 }
 
 #[test]
-fn settled_initial_jvp_matches_the_symmetric_difference_values_on_a_loop() {
+fn settled_initial_jvp_matches_the_reference_values_on_a_loop() {
     assert_columns(
         "SettledInitLoop",
         &settled_columns(LOOP, "SettledInitLoop"),
@@ -135,7 +134,7 @@ fn settled_initial_jvp_matches_the_symmetric_difference_values_on_a_loop() {
 }
 
 #[test]
-fn settled_initial_jvp_matches_the_symmetric_difference_values_on_an_implicit_row() {
+fn settled_initial_jvp_matches_the_reference_values_on_an_implicit_row() {
     assert_columns(
         "SettledInitImplicit",
         &settled_columns(IMPLICIT, "SettledInitImplicit"),

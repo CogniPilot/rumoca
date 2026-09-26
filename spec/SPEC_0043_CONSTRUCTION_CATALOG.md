@@ -342,6 +342,29 @@ calls it, and each placement takes the value that color's call would write.
 Plans are derived views, rebuilt by each consumer from the same construction,
 never canonical IR.
 
+Algorithmic differentiation is the only Jacobian source. Every Jacobian,
+tangent, and sensitivity that Solve construction, the linked kernel, and the
+generated C form comes from a forward-mode JVP program or its reverse: the
+torn tear Jacobian from the block's tangent plan, block Jacobians from the
+solver-Y JVP rows and their colored application, the settled initialization
+Jacobian from the initialization residual's JVP along the settled view's
+tangent (the initialization update rows' JVP and the seed projection of the
+complete algebraic plan), the coupled event Newton from the discrete event
+rows' JVPs (scalar rows, runtime assignments, guarded programs, and
+structured maps, lowered as discrete Solve artifacts), and the `--inspect
+jacobian` probe from the state JVP. No path differences a residual. The
+continuous and initialization residual JVPs are lowered with the model, so a
+row without one fails construction; the update and event rows' JVPs are
+optional artifacts, and a solve that would read a missing one reports the
+missing derivative. A pure callee whose body admits no directional owner
+fails the JVP lowering, and Solve lowering refuses every external C or
+Fortran callee because the runtime executes none, so no callee needs a
+difference quotient; native table operators carry their exact slopes. A
+`derivative` annotation feeds structural index reduction, while the JVP
+differentiates the callee body. `architecture_hardening_test`'s
+`ad_only_jacobians` scan fails when a source or code template names a
+difference quotient outside its listed AD verification batteries.
+
 A torn sweep's runs construct from its checked causal steps and the certified
 isolators of their rows (`torn_sweep_runs`): consecutive causal steps of one
 residual program form one run when one chain program answers them in order

@@ -378,8 +378,8 @@ impl<'a> TangentBuilder<'a> {
                 let [part] = comp.parts.as_slice() else {
                     return true;
                 };
-                // `size` and `ndims` read a shape, which no Real perturbation
-                // moves, so their arguments do not have to hold still.
+                // `size` and `ndims` read a shape, which no change of a Real
+                // input moves, so their arguments do not have to hold still.
                 !crate::builtins::is_constant(part.ident.text.as_ref())
                     && args.iter().any(|argument| self.moves(argument))
             }
