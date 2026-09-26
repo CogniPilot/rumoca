@@ -1108,7 +1108,7 @@ impl SolveRuntime {
         p: &[f64],
         t: f64,
     ) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
-        if self.torn_tangents.iter().all(Option::is_none) {
+        if self.torn_tangents.is_empty() {
             return Ok(None);
         }
         // Projection blocks are borrowed from this runtime's plan, so a block
@@ -1793,13 +1793,15 @@ fn torn_tangent_evaluators(
     plan: &solve::AlgebraicProjectionPlan,
     jvp: &solve::ScalarProgramBlock,
 ) -> Rc<[Option<rumoca_eval_solve::TornTangentEvaluator>]> {
+    // With the exact torn Jacobian off, no block carries an evaluator and the
+    // table stays empty, so a torn solve declines the request at once.
+    if !rumoca_eval_solve::projection_policy::jacobian_sources().torn_tangent {
+        return Rc::from([]);
+    }
     plan.blocks
         .iter()
         .map(|block| {
-            let tearing = block.tearing.as_ref().filter(|_| {
-                rumoca_eval_solve::projection_policy::jacobian_sources().torn_tangent
-            })?;
-            let plan = solve::TornTangentPlan::derive(tearing, jvp).ok()?;
+            let plan = solve::TornTangentPlan::derive(block.tearing.as_ref()?, jvp).ok()?;
             Some(rumoca_eval_solve::TornTangentEvaluator::new(plan))
         })
         .collect()
