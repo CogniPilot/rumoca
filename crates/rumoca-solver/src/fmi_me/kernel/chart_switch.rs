@@ -3,6 +3,7 @@
 //! constraint-fold chart rows).
 
 use super::*;
+use crate::RuntimeSolveError;
 
 impl SolveMeKernel {
     /// Whether this component switches among reduced charts. Such a component
@@ -12,8 +13,6 @@ impl SolveMeKernel {
         self.reduced_charts.is_some()
     }
 
-    /// The nominal of generated state coordinate `index` under the active
-    /// chart: the scale of the source coordinate that chart integrates.
     /// The basis change the last completed step latched: the active chart, the
     /// target, and their conditionings at the request.
     pub(crate) fn requested_chart_switch(&self) -> Option<(usize, usize, f64, f64)> {
@@ -27,6 +26,8 @@ impl SolveMeKernel {
         })
     }
 
+    /// The nominal of generated state coordinate `index` under the active
+    /// chart: the scale of the source coordinate that chart integrates.
     pub(super) fn active_state_nominal(&self, index: usize) -> f64 {
         self.reduced_charts
             .as_ref()
@@ -69,10 +70,9 @@ impl SolveMeKernel {
     ) -> Result<(), MeError> {
         match &self.reduced_charts {
             None => {
-                let snapshot = snapshots
-                    .first()
-                    .and_then(Option::as_ref)
-                    .ok_or_else(|| contract("saved state carries no runtime snapshot"))?;
+                let Some(snapshot) = snapshots.first().and_then(Option::as_ref) else {
+                    return Err(contract("saved state carries no runtime snapshot"));
+                };
                 self.runtime.restore(snapshot);
                 self.active_chart = 0;
                 self.active_reference = None;
@@ -86,7 +86,7 @@ impl SolveMeKernel {
                 let active = Rc::clone(
                     &charts
                         .built(active_chart)
-                        .map_err(|error| MeError::from(error).at_stage(MeStage::EventIteration))?
+                        .map_err(event_iteration_error)?
                         .runtime,
                 );
                 charts.restore_built(snapshots);
@@ -124,7 +124,7 @@ impl SolveMeKernel {
                 settle.tol,
                 settle.max_iters,
             )
-            .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
+            .map_err(integration_error)?;
         let (decision, conditioning) = dynamic_chart::decide_at(
             charts,
             self.active_chart,
@@ -134,7 +134,7 @@ impl SolveMeKernel {
             &solver_y,
             &self.params,
         )
-        .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
+        .map_err(integration_error)?;
         match decision {
             dynamic_chart::ChartDecision::Switch(target) => {
                 // A switch is needless when the active chart is still far from
@@ -189,19 +189,19 @@ impl SolveMeKernel {
     /// switch.
     pub(super) fn run_basis_change_boundary(&mut self) -> Result<MeDiscreteStates, MeError> {
         let before = self.states.clone();
-        let change = self
-            .pending_basis_change
-            .take()
-            .ok_or_else(|| contract("basis-change boundary requires a latched basis change"))?;
+        let Some(change) = self.pending_basis_change.take() else {
+            return Err(contract(
+                "basis-change boundary requires a latched basis change",
+            ));
+        };
         let target = change.target;
         let (target_runtime, binding_rows) = {
-            let charts = self
-                .reduced_charts
-                .as_ref()
-                .ok_or_else(|| contract("basis change requested without a reduced chart set"))?;
-            let built = charts
-                .built(target)
-                .map_err(|error| MeError::from(error).at_stage(MeStage::EventIteration))?;
+            let Some(charts) = self.reduced_charts.as_ref() else {
+                return Err(contract(
+                    "basis change requested without a reduced chart set",
+                ));
+            };
+            let built = charts.built(target).map_err(event_iteration_error)?;
             (Rc::clone(&built.runtime), built.binding_rows.clone())
         };
         let t = self.continuous_eval_time();
@@ -241,7 +241,7 @@ impl SolveMeKernel {
         // state coordinate from the identity residual `state - source`.
         let residuals = target_runtime
             .evaluate_implicit_residual_rows(t, physical, &self.params, binding_rows)
-            .map_err(|error| MeError::from(error).at_stage(MeStage::EventIteration))?;
+            .map_err(event_iteration_error)?;
         let mut new_states = self.states.clone();
         for (state, residual) in new_states.iter_mut().zip(&residuals) {
             *state -= residual;
@@ -251,9 +251,11 @@ impl SolveMeKernel {
         // the branch-limited certified projection stays on the physical branch
         // rather than the mirror root the fold shares.
         let mut solver_y = physical.clone();
-        let prefix = solver_y
-            .get_mut(..self.state_count)
-            .ok_or_else(|| contract("physical coordinate is shorter than the state prefix"))?;
+        let Some(prefix) = solver_y.get_mut(..self.state_count) else {
+            return Err(contract(
+                "physical coordinate is shorter than the state prefix",
+            ));
+        };
         prefix.copy_from_slice(&new_states);
         let settle = self.numerics_settle();
         target_runtime
@@ -264,9 +266,19 @@ impl SolveMeKernel {
                 settle.tol,
                 settle.max_iters,
             )
-            .map_err(|error| MeError::from(error).at_stage(MeStage::EventIteration))?;
+            .map_err(event_iteration_error)?;
         Ok(solver_y)
     }
+}
+
+/// A chart runtime failure in Event Mode.
+fn event_iteration_error(error: RuntimeSolveError) -> MeError {
+    MeError::from(error).at_stage(MeStage::EventIteration)
+}
+
+/// A chart runtime failure at an accepted step.
+fn integration_error(error: RuntimeSolveError) -> MeError {
+    MeError::from(error).at_stage(MeStage::Integration)
 }
 
 #[cfg(test)]

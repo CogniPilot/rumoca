@@ -305,6 +305,10 @@ fn a_saved_state_restores_with_an_alternate_that_was_never_built() {
         saved.component.runtimes[1].is_none(),
         "an alternate is built only on first use"
     );
+    assert!(
+        kernel.verification_matches_snapshot(&saved),
+        "a state matches its own snapshot, the unbuilt alternate included"
+    );
     assert_eq!(nominal(&kernel), 1.0);
 
     latch_alternate(&mut kernel);

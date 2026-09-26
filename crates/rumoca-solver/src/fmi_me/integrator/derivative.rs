@@ -76,9 +76,7 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
     /// failure: a component that switches reduced charts refuses a trial point
     /// its active chart cannot certify, and the plugin retries a smaller step
     /// (SPEC_0040 STRUCT-T07 constraint-fold chart rows).
-    fn discards_failed_trials(&self) -> bool {
-        false
-    }
+    fn discards_failed_trials(&self) -> bool;
 }
 
 /// The sole production derivative source: the one leased FMI component.
@@ -499,6 +497,10 @@ impl MeDerivativeComponent for ClosureDerivatives {
             reason: "a manufactured solution supplies no linearization".to_owned(),
         })
     }
+
+    fn discards_failed_trials(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -762,5 +764,20 @@ mod tests {
         assert!(handle.has_failed());
         assert!(!handle.take_discard());
         assert!(controller.take_error().is_some());
+    }
+
+    /// Only a failed state-derivative evaluation is a trial discard: an
+    /// unavailable directional derivative is latched even for a switching
+    /// component.
+    #[test]
+    fn a_directional_derivative_refusal_is_never_a_discard() {
+        let controller = folding(true);
+        let handle = controller.issue_handle();
+        let _window = controller.activate();
+        let mut out = [0.0];
+        handle.directional_derivative_into(0.0, &[0.5], &[1.0], &mut out);
+        assert!(out[0].is_nan());
+        assert!(handle.has_failed());
+        assert!(!handle.take_discard());
     }
 }

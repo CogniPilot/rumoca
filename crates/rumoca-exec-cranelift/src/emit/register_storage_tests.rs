@@ -134,3 +134,31 @@ fn large_tensor_rows_keep_loop_storage_and_reload_changed_inputs() {
         assert!(out.iter().all(|result| result.to_bits() == value.to_bits()));
     }
 }
+
+/// An identity tensor lowers to constant registers in a small row and to a
+/// loop over the register tape in a large one; both store one on the
+/// diagonal and zero elsewhere.
+#[test]
+fn identity_tensors_lower_statically_and_through_the_tape() {
+    for (size, tape) in [(3, false), (64, true)] {
+        let last = size * size;
+        let row = vec![
+            LinearOp::TensorIdentity {
+                dst_start: 1,
+                size,
+                lanes: 1,
+            },
+            LinearOp::StoreOutput { src: 1 },
+            LinearOp::StoreOutput { src: 2 },
+            LinearOp::StoreOutput {
+                src: (size + 2) as u32,
+            },
+            LinearOp::StoreOutput { src: last as u32 },
+        ];
+        assert_eq!(allocates_register_tape(&row), tape, "size {size}");
+        let compiled = compile_residual_rows(&[row]).unwrap();
+        let mut out = [f64::NAN; 4];
+        compiled.call(&[], &[], 0.0, &mut out).unwrap();
+        assert_eq!(out, [1.0, 0.0, 1.0, 1.0], "size {size}");
+    }
+}

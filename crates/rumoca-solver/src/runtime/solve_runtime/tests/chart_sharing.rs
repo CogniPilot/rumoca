@@ -14,12 +14,44 @@ struct Recorded {
 #[derive(Default)]
 struct RecordingBackend {
     expressions: RefCell<Vec<Recorded>>,
-    jacobians: RefCell<Vec<Vec<Vec<solve::LinearOp>>>>,
+    jacobians: RefCell<Vec<Recorded>>,
 }
 
+impl RecordingBackend {
+    fn record(list: &RefCell<Vec<Recorded>>, block: &solve::ScalarProgramBlock) -> Interpreted {
+        let calls = Rc::new(Cell::new(0));
+        list.borrow_mut().push(Recorded {
+            programs: block.programs().to_vec(),
+            calls: calls.clone(),
+        });
+        let block = PreparedScalarProgramBlock::new(block.clone()).expect("fixture block prepares");
+        Interpreted { block, calls }
+    }
+}
+
+/// A compiled block evaluated by the prepared interpreter, counting its calls.
 struct Interpreted {
     block: PreparedScalarProgramBlock,
     calls: Rc<Cell<usize>>,
+}
+
+impl Interpreted {
+    fn eval(
+        &self,
+        (y, p, t): (&[f64], &[f64], f64),
+        seed: Option<&[f64]>,
+        out: &mut [f64],
+    ) -> Result<(), String> {
+        self.calls.set(self.calls.get() + 1);
+        let context = RowEvalContext {
+            seed,
+            ..RowEvalContext::default()
+        };
+        self.block
+            .eval_with_context(y, p, t, context, out)
+            .expect("fixture block evaluates");
+        Ok(())
+    }
 }
 
 impl CompiledSolveExpression for Interpreted {
@@ -29,11 +61,11 @@ impl CompiledSolveExpression for Interpreted {
         y: &[f64],
         p: &[f64],
         t: f64,
-        tables: &[rumoca_core::ExternalTableData],
+        _tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
     ) -> Result<bool, String> {
         let mut values = vec![0.0; self.block.len()];
-        self.call(y, p, t, tables, &mut values)?;
+        self.eval((y, p, t), None, &mut values)?;
         out.clear();
         out.push(values[program]);
         Ok(true)
@@ -47,30 +79,26 @@ impl CompiledSolveExpression for Interpreted {
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), String> {
-        self.calls.set(self.calls.get() + 1);
-        self.block
-            .eval_with_context(y, p, t, RowEvalContext::default(), out)
-            .map_err(|error| error.to_string())
+        self.eval((y, p, t), None, out)
     }
 }
 
-struct UnevaluatedJacobian;
-
-impl CompiledSolveJacobianExpression for UnevaluatedJacobian {
+impl CompiledSolveJacobianExpression for Interpreted {
     fn call(
         &self,
-        _y: &[f64],
-        _p: &[f64],
-        _t: f64,
-        _seed: &[f64],
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        seed: &[f64],
         _tables: &[rumoca_core::ExternalTableData],
-        _out: &mut [f64],
+        out: &mut [f64],
     ) -> Result<(), String> {
-        Err("the sharing fixture does not evaluate Jacobians".into())
+        self.eval((y, p, t), Some(seed), out)
     }
 }
 
-struct BlockJacobian;
+/// A prepared block Jacobian whose value names its block.
+struct BlockJacobian(f64);
 
 impl CompiledSolveProjectionJacobian for BlockJacobian {
     fn call(
@@ -81,7 +109,7 @@ impl CompiledSolveProjectionJacobian for BlockJacobian {
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), String> {
-        out.fill(1.0);
+        out.fill(self.0);
         Ok(())
     }
 }
@@ -91,21 +119,14 @@ impl SolveExecutionBackend for RecordingBackend {
         &self,
         block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
-        let calls = Rc::new(Cell::new(0));
-        self.expressions.borrow_mut().push(Recorded {
-            programs: block.programs().to_vec(),
-            calls: calls.clone(),
-        });
-        let block = PreparedScalarProgramBlock::new(block.clone()).map_err(|e| e.to_string())?;
-        Ok(Rc::new(Interpreted { block, calls }))
+        Ok(Rc::new(Self::record(&self.expressions, block)))
     }
 
     fn compile_jacobian_expression(
         &self,
         block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        self.jacobians.borrow_mut().push(block.programs().to_vec());
-        Ok(Rc::new(UnevaluatedJacobian))
+        Ok(Rc::new(Self::record(&self.jacobians, block)))
     }
 
     fn compile_assignment_schedule(
@@ -114,19 +135,63 @@ impl SolveExecutionBackend for RecordingBackend {
         _owners: &solve::ContinuousRefreshOwners,
         _schedule: &solve::ExactRefreshAssignmentSchedule,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        Err("unused by the sharing fixture".into())
+        Err("the sharing fixture refreshes through the interpreter".into())
     }
 
     fn compile_event_transaction(
         &self,
         _program: &solve::EventTransactionProgram,
     ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("unused by the sharing fixture".into())
+        Err("the sharing fixture has no event transaction".into())
     }
 }
 
-/// Three decoupled algebraic rows `y[i] - offsets[i]`, one block each.
-fn offset_model(offsets: [f64; 3]) -> solve::SolveModel {
+/// `slope * y[index] - offset`, and its tangent `slope * seed[index]`.
+fn scaled_rows(index: usize, slope: f64, offset: f64) -> [Vec<solve::LinearOp>; 2] {
+    use solve::BinaryOp::{Mul, Sub};
+    use solve::LinearOp::{Binary, Const, LoadSeed, LoadY, StoreOutput};
+    let scaled = |load| {
+        vec![
+            load,
+            Const {
+                dst: 1,
+                value: slope,
+            },
+            Binary {
+                dst: 2,
+                op: Mul,
+                lhs: 0,
+                rhs: 1,
+            },
+        ]
+    };
+    let mut row = scaled(LoadY { dst: 0, index });
+    row.extend([
+        Const {
+            dst: 3,
+            value: offset,
+        },
+        Binary {
+            dst: 4,
+            op: Sub,
+            lhs: 2,
+            rhs: 3,
+        },
+        StoreOutput { src: 4 },
+    ]);
+    let mut tangent = scaled(LoadSeed { dst: 0, index });
+    tangent.push(StoreOutput { src: 2 });
+    [row, tangent]
+}
+
+/// Three decoupled algebraic rows `slopes[i] * y[i] - offsets[i]`, one block
+/// each.
+fn offset_model(slopes: [f64; 3], offsets: [f64; 3]) -> solve::SolveModel {
+    let [rows, tangents]: [Vec<_>; 2] = std::array::from_fn(|kind| {
+        (0..3)
+            .map(|index| scaled_rows(index, slopes[index], offsets[index])[kind].clone())
+            .collect()
+    });
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
             solve_layout: solve::SolveLayout {
@@ -139,9 +204,7 @@ fn offset_model(offsets: [f64; 3]) -> solve::SolveModel {
             },
             continuous: solve::ContinuousSolveSystem {
                 implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    (0..3)
-                        .map(|index| shifted_variable_residual_row(index, offsets[index]))
-                        .collect(),
+                    rows,
                     "chart_sharing.mo",
                 )),
                 implicit_row_targets: (0..3)
@@ -154,18 +217,7 @@ fn offset_model(offsets: [f64; 3]) -> solve::SolveModel {
         initial_y: vec![0.0; 3],
         ..Default::default()
     };
-    set_test_implicit_jvp(
-        &mut model,
-        (0..3)
-            .map(|index| {
-                vec![
-                    solve::LinearOp::LoadSeed { dst: 0, index },
-                    solve::LinearOp::StoreOutput { src: 0 },
-                ]
-            })
-            .collect(),
-        "chart_sharing_jvp.mo",
-    );
+    set_test_implicit_jvp(&mut model, tangents, "chart_sharing_jvp.mo");
     set_causal_test_projection_plan(&mut model);
     derive_test_structural_artifacts(&mut model);
     model.problem.continuous.refresh_owners =
@@ -173,47 +225,54 @@ fn offset_model(offsets: [f64; 3]) -> solve::SolveModel {
     model
 }
 
+/// The calls counter of the one recorded block with `programs` programs.
+fn calls_of(list: &RefCell<Vec<Recorded>>, programs: usize) -> Rc<Cell<usize>> {
+    list.borrow()
+        .iter()
+        .find(|recorded| recorded.programs.len() == programs)
+        .map(|recorded| recorded.calls.clone())
+        .expect("the block was compiled")
+}
+
 #[test]
 fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
     let backend = Rc::new(RecordingBackend::default());
-    let mut primary =
-        SolveRuntime::new_with_execution_backend(&offset_model([0.0; 3]), Some(backend.clone()))
-            .unwrap();
+    let mut primary = SolveRuntime::new_with_execution_backend(
+        &offset_model([1.0; 3], [0.0; 3]),
+        Some(backend.clone()),
+    )
+    .unwrap();
     // The primary's prepared block Jacobians, one per projection block.
-    primary.compiled_algebraic_jacobians = primary
-        .continuous_structural
-        .algebraic_projection()
-        .iter()
-        .map(|_| Some(Rc::new(BlockJacobian) as Rc<dyn CompiledSolveProjectionJacobian>))
-        .collect();
-    let primary_rhs_calls = backend
-        .expressions
-        .borrow()
-        .iter()
-        .find(|recorded| recorded.programs.len() == 3)
-        .map(|recorded| recorded.calls.clone())
-        .expect("the primary compiles its residual block");
+    primary.compiled_algebraic_jacobians =
+        (0..primary.continuous_structural.algebraic_projection().len())
+            .map(|index| Some(Rc::new(BlockJacobian(index as f64)) as Rc<_>))
+            .collect();
+    let primary_rhs_calls = calls_of(&backend.expressions, 3);
+    let primary_jvp_calls = calls_of(&backend.jacobians, 3);
     backend.expressions.borrow_mut().clear();
     backend.jacobians.borrow_mut().clear();
 
-    let replaced_row = shifted_variable_residual_row(1, 5.0);
+    // The alternate replaces row 1, `2*b - 5`, and its tangent.
+    let [replaced_row, replaced_tangent] = scaled_rows(1, 2.0, 5.0);
     let alternate = primary
-        .new_alternate(&offset_model([0.0, 5.0, 0.0]))
+        .new_alternate(&offset_model([1.0, 2.0, 1.0], [0.0, 5.0, 0.0]))
         .unwrap();
 
-    // Only the replaced program is compiled again; the Jacobian programs are
-    // the primary's.
-    let compiled = backend.expressions.borrow();
-    assert!(!compiled.is_empty());
-    assert!(
-        compiled
-            .iter()
-            .all(|recorded| recorded.programs == [replaced_row.clone()]),
-        "an alternate compiles no program it shares with the primary"
-    );
-    assert!(backend.jacobians.borrow().is_empty());
-    let replacement_calls = compiled[0].calls.clone();
-    drop(compiled);
+    // Only the replaced programs are compiled again.
+    for (list, replaced) in [
+        (&backend.expressions, &replaced_row),
+        (&backend.jacobians, &replaced_tangent),
+    ] {
+        let compiled = list.borrow();
+        assert!(!compiled.is_empty());
+        assert!(
+            compiled
+                .iter()
+                .all(|recorded| recorded.programs == [replaced.clone()]),
+            "an alternate compiles no program it shares with the primary"
+        );
+    }
+    let replacement_calls = backend.expressions.borrow()[0].calls.clone();
 
     // Unreplaced programs execute the primary's compiled instance.
     let native = alternate.compiled_implicit_rhs.as_ref().unwrap();
@@ -229,11 +288,24 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
             .call_program_outputs(1, &y, &[], 0.0, &[], &mut out)
             .unwrap()
     );
-    assert_eq!((out.as_slice(), replacement_calls.get()), (&[-3.0][..], 1));
+    assert_eq!((out.as_slice(), replacement_calls.get()), (&[-1.0][..], 1));
     let mut whole = [0.0; 3];
     native.call(&y, &[], 0.0, &[], &mut whole).unwrap();
-    assert_eq!(whole, [1.0, -3.0, 3.0]);
+    assert_eq!(whole, [1.0, -1.0, 3.0]);
     assert_eq!((primary_rhs_calls.get(), replacement_calls.get()), (2, 2));
+
+    // The whole Jacobian runs the primary's block, then overwrites the
+    // replaced row with the replacement's tangent.
+    let jacobian = alternate
+        .compiled_implicit_projection_jacobian_v
+        .as_ref()
+        .unwrap();
+    let mut tangent = [0.0; 3];
+    jacobian
+        .call(&y, &[], 0.0, &[1.0, 1.0, 1.0], &[], &mut tangent)
+        .unwrap();
+    assert_eq!(tangent, [1.0, 2.0, 1.0]);
+    assert_eq!(primary_jvp_calls.get(), 1);
 
     // The prepared block Jacobians of blocks that read no replaced row are
     // the primary's by identity; the replaced row's block has none.
@@ -249,12 +321,18 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
     for (index, rows) in rows(&alternate).iter().enumerate() {
         let shared = alternate.compiled_algebraic_jacobians[index].as_ref();
         match rows {
-            Some(rows) if !rows.contains(&1) => assert!(Rc::ptr_eq(
-                shared.unwrap(),
-                primary.compiled_algebraic_jacobians[index]
-                    .as_ref()
-                    .unwrap()
-            )),
+            Some(rows) if !rows.contains(&1) => {
+                let shared = shared.unwrap();
+                assert!(Rc::ptr_eq(
+                    shared,
+                    primary.compiled_algebraic_jacobians[index]
+                        .as_ref()
+                        .unwrap()
+                ));
+                let mut entry = [f64::NAN];
+                shared.call(&y, &[], 0.0, &[], &mut entry).unwrap();
+                assert_eq!(entry, [index as f64]);
+            }
             _ => assert!(shared.is_none()),
         }
     }

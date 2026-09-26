@@ -77,23 +77,29 @@ pub(super) struct ReducedChartRuntimes {
 impl ReducedChartRuntimes {
     /// Chart `index`'s runtime and binding rows, built on first request.
     pub(super) fn built(&self, index: usize) -> Result<&BuiltChart, RuntimeSolveError> {
-        let chart = self
-            .charts
-            .get(index)
-            .ok_or_else(|| RuntimeSolveError::solve_ir("reduced chart index is out of range"))?;
+        let Some(chart) = self.charts.get(index) else {
+            return Err(RuntimeSolveError::solve_ir(
+                "reduced chart index is out of range",
+            ));
+        };
         if let Some(built) = chart.built.get() {
             return Ok(built);
         }
         let runtime = if index == 0 {
             Rc::clone(&self.primary)
         } else {
-            let alternate = alternate_chart_model(&self.primary.model, chart.set_index)
-                .ok_or_else(|| RuntimeSolveError::solve_ir("reduced chart carries no plan"))?;
-            Rc::new(self.primary.new_alternate(&alternate).map_err(|error| {
-                RuntimeSolveError::solve_ir(format!(
-                    "alternate reduced chart is not runtime-executable: {error:?}"
-                ))
-            })?)
+            let Some(alternate) = alternate_chart_model(&self.primary.model, chart.set_index)
+            else {
+                return Err(RuntimeSolveError::solve_ir("reduced chart carries no plan"));
+            };
+            match self.primary.new_alternate(&alternate) {
+                Ok(runtime) => Rc::new(runtime),
+                Err(error) => {
+                    return Err(RuntimeSolveError::solve_ir(format!(
+                        "alternate reduced chart is not runtime-executable: {error:?}"
+                    )));
+                }
+            }
         };
         let binding_rows = runtime.implicit_state_binding_rows(
             0.0,
@@ -298,9 +304,12 @@ fn one_chart_conditioning(
         &chart.slope_cols,
         std::slice::from_ref(&chart.slope_dependent_positions),
     )?;
-    conditioning
-        .pop()
-        .ok_or_else(|| RuntimeSolveError::solve_ir("reduced-chart conditioning returned no chart"))
+    match conditioning.pop() {
+        Some(conditioning) => Ok(conditioning),
+        None => Err(RuntimeSolveError::solve_ir(
+            "reduced-chart conditioning returned no chart",
+        )),
+    }
 }
 
 /// Splice one alternate reduced chart's carried plan and artifacts into the
@@ -427,12 +436,13 @@ pub(super) fn build_reduced_charts(
                 "reduced charts span different coordinate groups",
             ));
         }
-        let (slope_rows, slope_cols, slope_dependent_positions) =
-            slope_geometry(plan, &chart.dependent_y_indices, &group_cols).ok_or_else(|| {
-                RuntimeSolveError::solve_ir(
-                    "reduced chart has no reconstruction block for its dependent coordinate",
-                )
-            })?;
+        let Some((slope_rows, slope_cols, slope_dependent_positions)) =
+            slope_geometry(plan, &chart.dependent_y_indices, &group_cols)
+        else {
+            return Err(RuntimeSolveError::solve_ir(
+                "reduced chart has no reconstruction block for its dependent coordinate",
+            ));
+        };
         charts.push(KernelChart {
             slope_rows,
             slope_cols,
