@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 
-use rumoca_ir_solve::{ColoredTangentPlan, TangentLaneProgram, TangentRowSource, TornTangentPlan};
+use rumoca_ir_solve::{ColoredTangentPlan, TangentLaneProgram, TornTangentPlan};
 
 use crate::{
     EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
@@ -134,30 +134,40 @@ impl TornTangentEvaluator {
         }
         let lanes = self.plan.lanes();
         let tears = lanes - 1;
+        let steps = self.plan.steps();
         let mut seed = vec![0.0; point.y.len() * lanes];
         for (column, &target) in self.plan.tear_targets().iter().enumerate() {
             seed[target * lanes + column] = 1.0;
         }
-        let mut recovered = Vec::with_capacity(self.plan.steps().len() * tears);
+        let mut recovered = Vec::with_capacity(steps.len() * tears);
         let mut out = Vec::new();
-        for step in self.plan.steps() {
-            seed[step.target * lanes + tears] = 1.0;
-            let tangents = self.row_tangents(point, &seed, step.source, &mut out)?;
-            let coefficient = tangents[tears];
+        let mut outputs = 0;
+        for (index, step) in steps.iter().enumerate() {
+            if step.group > 0 {
+                let group = &steps[index..index + step.group];
+                seed_group(&mut seed, group, (lanes, tears), 1.0);
+                outputs = self.eval_lanes(point, &seed, step.source.program, &mut out)?;
+                seed_group(&mut seed, group, (lanes, tears), 0.0);
+            }
+            let tangent = |lane: usize| out[lane * outputs + step.source.output];
+            let coefficient = tangent(tears);
             if coefficient == 0.0 || !coefficient.is_finite() {
                 return Ok(None);
             }
-            seed[step.target * lanes + tears] = 0.0;
-            for (lane, tangent) in tangents[..tears].iter().enumerate() {
-                let value = -tangent / coefficient;
+            for lane in 0..tears {
+                let value = -tangent(lane) / coefficient;
                 seed[step.target * lanes + lane] = value;
                 recovered.push(value);
             }
         }
         let mut residual = vec![0.0; tears * tears];
         for (row, entry) in self.plan.residuals().iter().enumerate() {
-            let tangents = self.row_tangents(point, &seed, entry.source, &mut out)?;
-            residual[row * tears..(row + 1) * tears].copy_from_slice(&tangents[..tears]);
+            if entry.group > 0 {
+                outputs = self.eval_lanes(point, &seed, entry.source.program, &mut out)?;
+            }
+            for lane in 0..tears {
+                residual[row * tears + lane] = out[lane * outputs + entry.source.output];
+            }
         }
         Ok(Some(TornTangentJacobian {
             residual,
@@ -178,9 +188,9 @@ impl TornTangentEvaluator {
         let steps = self.plan.steps();
         let mut seed = vec![0.0; point.y.len()];
         let mut out = Vec::new();
-        let mut direction = |seed: &[f64], source: TangentRowSource| {
+        let direction = |seed: &[f64], program: usize, out: &mut Vec<f64>| {
             directions.eval_row_outputs_unchecked_with_context(
-                source.program,
+                program,
                 point.y,
                 point.p,
                 point.t,
@@ -188,31 +198,45 @@ impl TornTangentEvaluator {
                     seed: Some(seed),
                     ..point.context
                 },
-                &mut out,
-            )?;
-            Ok::<f64, EvalSolveError>(out[source.output])
+                out,
+            )
         };
         let mut coefficients = Vec::with_capacity(steps.len());
-        for step in steps {
-            seed[step.target] = 1.0;
-            let coefficient = direction(&seed, step.source)?;
-            seed[step.target] = 0.0;
-            if coefficient == 0.0 || !coefficient.is_finite() {
+        for (index, step) in steps.iter().enumerate() {
+            if step.group == 0 {
+                continue;
+            }
+            let group = &steps[index..index + step.group];
+            seed_group(&mut seed, group, (1, 0), 1.0);
+            direction(&seed, step.source.program, &mut out)?;
+            seed_group(&mut seed, group, (1, 0), 0.0);
+            coefficients.extend(group.iter().map(|member| out[member.source.output]));
+            if coefficients[index..]
+                .iter()
+                .any(|coefficient| *coefficient == 0.0 || !coefficient.is_finite())
+            {
                 return Ok(None);
             }
-            coefficients.push(coefficient);
         }
         let mut recovered = vec![0.0; steps.len() * tears];
         let mut residual = vec![0.0; tears * tears];
         for (column, &tear) in self.plan.tear_targets().iter().enumerate() {
             seed[tear] = 1.0;
-            for (index, (step, coefficient)) in steps.iter().zip(&coefficients).enumerate() {
-                let value = -direction(&seed, step.source)? / coefficient;
+            for (index, step) in steps.iter().enumerate() {
+                let fresh = step.group > 0;
+                fresh
+                    .then(|| direction(&seed, step.source.program, &mut out))
+                    .transpose()?;
+                let value = -out[step.source.output] / coefficients[index];
                 seed[step.target] = value;
                 recovered[index * tears + column] = value;
             }
             for (row, entry) in self.plan.residuals().iter().enumerate() {
-                residual[row * tears + column] = direction(&seed, entry.source)?;
+                let fresh = entry.group > 0;
+                fresh
+                    .then(|| direction(&seed, entry.source.program, &mut out))
+                    .transpose()?;
+                residual[row * tears + column] = out[entry.source.output];
             }
             seed[tear] = 0.0;
             for step in steps {
@@ -225,19 +249,18 @@ impl TornTangentEvaluator {
         }))
     }
 
-    /// Every lane's tangent of the row `source` evaluates, under `seed`.
-    fn row_tangents(
+    /// Evaluate lane program `program` under `seed` into `out`; the number of
+    /// outputs per lane.
+    fn eval_lanes(
         &self,
         point: TangentPoint<'_>,
         seed: &[f64],
-        source: TangentRowSource,
+        program: usize,
         out: &mut Vec<f64>,
-    ) -> Result<Vec<f64>, EvalSolveError> {
-        let lanes = self.plan.lanes();
-        let TangentRowSource { program, output } = source;
+    ) -> Result<usize, EvalSolveError> {
         let prepared = &self.programs[program];
         let outputs = prepared.program().lane_outputs();
-        out.resize(lanes * outputs, 0.0);
+        out.resize(self.plan.lanes() * outputs, 0.0);
         prepared.eval(
             point.y,
             point.p,
@@ -248,13 +271,24 @@ impl TornTangentEvaluator {
             },
             out,
         )?;
-        Ok((0..lanes)
-            .map(|lane| out[lane * outputs + output])
-            .collect())
+        Ok(outputs)
     }
 }
 
 /// A [`ColoredTangentPlan`] prepared for repeated evaluation.
+/// Set lane `lane` of every member target of `group` in a seed with `stride`
+/// lanes per coordinate to `value`.
+fn seed_group(
+    seed: &mut [f64],
+    group: &[rumoca_ir_solve::TornTangentStep],
+    (stride, lane): (usize, usize),
+    value: f64,
+) {
+    for member in group {
+        seed[member.target * stride + lane] = value;
+    }
+}
+
 pub struct ColoredTangentEvaluator {
     plan: ColoredTangentPlan,
     programs: Vec<PreparedTangentLaneProgram>,

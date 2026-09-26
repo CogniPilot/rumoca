@@ -106,11 +106,12 @@ pub(super) struct BlockRecord {
     /// functions instead of lane functions.
     tangent_directional: bool,
     /// Causal steps of the torn tangent plan: `(lane function, lane outputs,
-    /// output offset, solver-Y target)` per step.
+    /// output offset, solver-Y target, group)` per step, the group counting
+    /// the steps its evaluation answers (zero for a follower).
     ntangent_steps: usize,
     tangent_steps: usize,
     /// Reduced residual rows of the torn tangent plan: `(lane function, lane
-    /// outputs, output offset)` per tear row.
+    /// outputs, output offset, group)` per tear row.
     tangent_residuals: usize,
 }
 
@@ -626,13 +627,19 @@ fn record_torn_tangent(
     };
     let steps = plan.steps().iter().flat_map(|step| {
         let (function, outputs) = functions[&step.source.program];
-        [function, outputs, step.source.output, step.target]
+        [
+            function,
+            outputs,
+            step.source.output,
+            step.target,
+            step.group,
+        ]
     });
     record.tangent_steps = table.push(steps.collect::<Vec<_>>());
     record.ntangent_steps = plan.steps().len();
     let residuals = plan.residuals().iter().flat_map(|entry| {
         let (function, outputs) = functions[&entry.source.program];
-        [function, outputs, entry.source.output]
+        [function, outputs, entry.source.output, entry.group]
     });
     record.tangent_residuals = table.push(residuals.collect::<Vec<_>>());
     record.tangent_lanes = lanes;

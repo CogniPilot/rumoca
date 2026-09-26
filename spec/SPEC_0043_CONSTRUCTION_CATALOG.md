@@ -325,7 +325,12 @@ per tear and one coefficient lane) when that lane count is below
 `MAX_TENSOR_LANES` and every program widens; otherwise it takes the
 directional form, which evaluates every step's coefficient first and then one
 tear column at a time through the one-direction JVP programs, equal to the
-multi-lane form bit for bit. Evaluation follows the sweep order and declines
+multi-lane form bit for bit. Consecutive causal steps of one program whose
+outputs depend on no other member's target (the program's exact per-output
+seed dependencies) form a group that one evaluation answers, its coefficient
+lane or direction seeding every member target; consecutive reduced rows of one
+program share one evaluation. Each member then reads exactly the values its
+own evaluation would give. Evaluation follows the sweep order and declines
 at a vanished or non-finite coefficient. The plan is the only source of a
 torn block's tear Jacobian in the linked kernel and the generated C: a
 declined plan, a non-finite entry, or a reduced row or column that is exactly

@@ -1,8 +1,9 @@
 //! The generated C kernel's tear Jacobian equals the linked kernel's tangent
 //! plan bit for bit (SPEC_0043 torn tangent row; SPEC_0044 ME-PROJ-001).
 //!
-//! `TornTangent` holds two coupled nonlinear loops torn at a few unknowns,
-//! whose tangent plans take the multi-lane form, and one fully coupled loop of
+//! `TornTangent` holds three coupled nonlinear loops torn at a few unknowns,
+//! whose tangent plans take the multi-lane form (one, over a vector equation,
+//! answers its three causal steps with one evaluation), and one fully coupled loop of
 //! 34 unknowns with two causal extras, whose 34 tears exceed the lane width,
 //! so its plan takes the directional form. A C harness includes the generated
 //! FMI 3 `model.c`, settles the start point, moves every coordinate off it,
@@ -32,6 +33,8 @@ fn source() -> String {
   Real v(start=0.5);
   Real w(start=0.5);
   Real q(start=0.2);
+  Real r[3](each start=0.3);
+  Real h(start=0.5);
 "
     );
     for k in 1..=WIDE {
@@ -52,6 +55,8 @@ fn source() -> String {
   v = u*u - 0.2*q + 0.3;
   w = exp(-0.5*v) + 0.2*u*q;
   q = 0.3*sin(w) + 0.1*v*v;
+  r = {0.1*sin(h), 0.2*cos(h), 0.3*h*h} + 0.01*x*{1, 2, 3};
+  h = 0.5 + 0.1*(r[1] + r[2] + r[3])^2 + 0.05*sin(h);
 ",
     );
     for k in 1..=WIDE {
@@ -191,14 +196,22 @@ fn linked_block<'a>(
         .unwrap_or_else(|| panic!("a linked block with tears {:?}", generated.tears))
 }
 
-fn assert_linked(model: &solve::SolveModel, report: &Report) {
+/// Check every reported block against the linked plan; the largest step group
+/// one evaluation answers.
+fn assert_linked(model: &solve::SolveModel, report: &Report) -> usize {
     let jvp =
         rumoca_eval_solve::to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)
             .expect("scalarize the solver-Y JVP");
+    let mut largest_group = 0;
     for generated in &report.blocks {
         let tearing = linked_block(model, generated);
         let plan = solve::TornTangentPlan::derive(tearing, &jvp).expect("the tangent plan");
         assert_eq!(plan.directional(), generated.directional);
+        largest_group = plan
+            .steps()
+            .iter()
+            .map(|step| step.group)
+            .fold(largest_group, usize::max);
         let evaluator = TornTangentEvaluator::new(plan, &jvp).expect("prepare the tangent plan");
         let point = TangentPoint {
             y: &report.y,
@@ -234,6 +247,7 @@ fn assert_linked(model: &solve::SolveModel, report: &Report) {
             generated.tears
         );
     }
+    largest_group
 }
 
 #[test]
@@ -306,5 +320,9 @@ fn generated_torn_tangent_matches_the_linked_plan_bit_for_bit() {
         lanes >= 2 && directional >= 1 && causal(false) >= 1 && causal(true) >= 1,
         "the fixture renders both forms: {lanes} lane, {directional} directional"
     );
-    assert_linked(component.runtime_view().model(), &report);
+    let largest_group = assert_linked(component.runtime_view().model(), &report);
+    assert!(
+        largest_group >= 3,
+        "one evaluation answers a group of the vector loop's steps: {largest_group}"
+    );
 }

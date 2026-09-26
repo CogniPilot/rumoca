@@ -407,14 +407,36 @@ fn assert_tearing(model: &str, tables: &Tables, block: &Block) {
         ncausal,
         "{model}: one tangent step per causal step"
     );
-    let steps = block.range(tables, "tangent_steps", 4 * ncausal);
+    let steps = block.range(tables, "tangent_steps", 5 * ncausal);
     let targets = block.range(tables, "causal_target", ncausal);
     assert_eq!(
-        steps.chunks(4).map(|step| step[3]).collect::<Vec<_>>(),
+        steps.chunks(5).map(|step| step[3]).collect::<Vec<_>>(),
         targets,
         "{model}: the tangent steps follow the causal order"
     );
-    assert_eq!(block.range(tables, "tangent_residuals", 3 * k).len(), 3 * k);
+    assert_groups(model, steps.chunks(5).map(|step| step[4]), "steps");
+    let residuals = block.range(tables, "tangent_residuals", 4 * k);
+    assert_groups(
+        model,
+        residuals.chunks(4).map(|entry| entry[3]),
+        "residuals",
+    );
+}
+
+/// Evaluation groups partition their entries in order: each group leader
+/// counts itself and its followers, and every follower counts zero.
+fn assert_groups(model: &str, groups: impl Iterator<Item = usize>, what: &str) {
+    let mut pending = 0;
+    for group in groups {
+        if pending == 0 {
+            assert!(group > 0, "{model}: the first {what} entry leads a group");
+            pending = group;
+        } else {
+            assert_eq!(group, 0, "{model}: a {what} follower counts zero");
+        }
+        pending -= 1;
+    }
+    assert_eq!(pending, 0, "{model}: the last {what} group is complete");
 }
 
 /// The elimination covers the block and carries the shared capacity.

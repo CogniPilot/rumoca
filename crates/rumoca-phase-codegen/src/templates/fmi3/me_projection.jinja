@@ -471,9 +471,10 @@ static int rmc_torn_sweep(ModelInstance* m, const RmcBlock* b, double* residual)
 /* tangent_lanes.rs: TornTangentEvaluator::eval on the swept base point. Lanes
    0..tears seed the tear columns and the last lane a causal step's own target;
    each step's tangent is minus its row's tangent over the coefficient, written
-   back as that target's seed for the steps after it. The reduced rows then give
-   the Jacobian row-major. The lane seed is all zero on entry and on return.
-   -1 error, 0 a vanished causal coefficient, 1 ok */
+   back as that target's seed for the steps after it. One evaluation answers a
+   step group, with the coefficient lane seeding every member target. The
+   reduced rows then give the Jacobian row-major. The lane seed is all zero on
+   entry and on return. -1 error, 0 a vanished causal coefficient, 1 ok */
 static int rmc_torn_tangent(ModelInstance* m, const RmcBlock* b, double* jac, double* recovered) {
     RMC_MARK; size_t lanes = b->tangent_lanes, tears = lanes - 1; int result = 1;
     double* out = rmc_dalloc_raw(m, b->lane_max_outputs + 1);
@@ -481,63 +482,69 @@ static int rmc_torn_tangent(ModelInstance* m, const RmcBlock* b, double* jac, do
     double* seed = m->rmc_lane_seed;
     for (size_t c = 0; c < tears; ++c) seed[b->y[b->tear_col[c]] * lanes + c] = 1.0;
     for (size_t done = 0; done < b->ntangent_steps && result == 1; ++done) {
-        const size_t* step = b->tangent_steps + 4 * done;
-        size_t target = step[3] * lanes;
-        seed[target + tears] = 1.0;
-        if (rmc_lane_fn[step[0]](m, seed, out) != 0) { seed[target + tears] = 0.0; result = -1; break; }
+        const size_t* step = b->tangent_steps + 5 * done;
+        if (step[4] > 0) {
+            for (size_t g = 0; g < step[4]; ++g) seed[step[5 * g + 3] * lanes + tears] = 1.0;
+            if (rmc_lane_fn[step[0]](m, seed, out) != 0) result = -1;
+            for (size_t g = 0; g < step[4]; ++g) seed[step[5 * g + 3] * lanes + tears] = 0.0;
+            if (result != 1) break;
+        }
         double coefficient = out[tears * step[1] + step[2]];
-        seed[target + tears] = 0.0;
         if (coefficient == 0.0 || !isfinite(coefficient)) { result = 0; break; }
         for (size_t lane = 0; lane < tears; ++lane) {
             double value = -out[lane * step[1] + step[2]] / coefficient;
-            seed[target + lane] = value;
+            seed[step[3] * lanes + lane] = value;
             recovered[done * tears + lane] = value;
         }
     }
     for (size_t row = 0; row < tears && result == 1; ++row) {
-        const size_t* entry = b->tangent_residuals + 3 * row;
-        if (rmc_lane_fn[entry[0]](m, seed, out) != 0) { result = -1; break; }
+        const size_t* entry = b->tangent_residuals + 4 * row;
+        if (entry[3] > 0 && rmc_lane_fn[entry[0]](m, seed, out) != 0) { result = -1; break; }
         for (size_t lane = 0; lane < tears; ++lane) jac[row * tears + lane] = out[lane * entry[1] + entry[2]];
     }
     for (size_t c = 0; c < tears; ++c) seed[b->y[b->tear_col[c]] * lanes + c] = 0.0;
-    for (size_t s = 0; s < b->ntangent_steps; ++s) for (size_t lane = 0; lane < lanes; ++lane) seed[b->tangent_steps[4 * s + 3] * lanes + lane] = 0.0;
+    for (size_t s = 0; s < b->ntangent_steps; ++s) for (size_t lane = 0; lane < lanes; ++lane) seed[b->tangent_steps[5 * s + 3] * lanes + lane] = 0.0;
     RMC_RELEASE; return result;
 }
 {%- endif %}
 /* tangent_lanes.rs: TornTangentEvaluator::eval_directions, the one-direction
-   form through the JVP functions: every step's coefficient with its target
-   seeded alone, then each tear column through the steps and the reduced rows.
-   The seed is all zero on entry and on return. -1 error, 0 a vanished causal
-   coefficient, 1 ok */
+   form through the JVP functions: every step group's coefficients with its
+   member targets seeded, then each tear column through the steps and the
+   reduced rows, one evaluation per group. The seed is all zero on entry and on
+   return. -1 error, 0 a vanished causal coefficient, 1 ok */
 static int rmc_torn_directions(ModelInstance* m, const RmcBlock* b, double* jac, double* recovered) {
     RMC_MARK; size_t tears = b->tangent_lanes - 1; int result = 1;
     double* out = rmc_dalloc_raw(m, b->jvp_max_outputs + 1); double* coefficient = rmc_dalloc_raw(m, b->ntangent_steps + 1);
     if (!out || !coefficient) { RMC_RELEASE; return rmc_exhausted(m); }
     double* seed = m->rmc_seed;
     for (size_t s = 0; s < b->ntangent_steps && result == 1; ++s) {
-        const size_t* step = b->tangent_steps + 4 * s;
-        seed[step[3]] = 1.0;
+        const size_t* step = b->tangent_steps + 5 * s;
+        if (step[4] == 0) continue;
+        for (size_t g = 0; g < step[4]; ++g) seed[step[5 * g + 3]] = 1.0;
         if (rmc_jvp_fn[step[0]](m, seed, out) != 0) result = -1;
-        else if (out[step[2]] == 0.0 || !isfinite(out[step[2]])) result = 0;
-        else coefficient[s] = out[step[2]];
-        seed[step[3]] = 0.0;
+        for (size_t g = 0; g < step[4]; ++g) seed[step[5 * g + 3]] = 0.0;
+        for (size_t g = 0; g < step[4] && result == 1; ++g) {
+            double value = out[step[5 * g + 2]];
+            if (value == 0.0 || !isfinite(value)) result = 0;
+            else coefficient[s + g] = value;
+        }
     }
     for (size_t c = 0; c < tears && result == 1; ++c) {
         seed[b->y[b->tear_col[c]]] = 1.0;
         for (size_t s = 0; s < b->ntangent_steps && result == 1; ++s) {
-            const size_t* step = b->tangent_steps + 4 * s;
-            if (rmc_jvp_fn[step[0]](m, seed, out) != 0) { result = -1; break; }
+            const size_t* step = b->tangent_steps + 5 * s;
+            if (step[4] > 0 && rmc_jvp_fn[step[0]](m, seed, out) != 0) { result = -1; break; }
             double value = -out[step[2]] / coefficient[s];
             seed[step[3]] = value;
             recovered[s * tears + c] = value;
         }
         for (size_t row = 0; row < tears && result == 1; ++row) {
-            const size_t* entry = b->tangent_residuals + 3 * row;
-            if (rmc_jvp_fn[entry[0]](m, seed, out) != 0) { result = -1; break; }
+            const size_t* entry = b->tangent_residuals + 4 * row;
+            if (entry[3] > 0 && rmc_jvp_fn[entry[0]](m, seed, out) != 0) { result = -1; break; }
             jac[row * tears + c] = out[entry[2]];
         }
         seed[b->y[b->tear_col[c]]] = 0.0;
-        for (size_t s = 0; s < b->ntangent_steps; ++s) seed[b->tangent_steps[4 * s + 3]] = 0.0;
+        for (size_t s = 0; s < b->ntangent_steps; ++s) seed[b->tangent_steps[5 * s + 3]] = 0.0;
     }
     RMC_RELEASE; return result;
 }
