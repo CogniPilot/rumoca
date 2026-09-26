@@ -159,8 +159,7 @@ All rows are mandatory; otherwise the gate reports `parity unmeasured`.
 | `models_compared > 0` | `MslParityMeasurement::measured` |
 | Every `sim_ok` is compared or has a typed boundary | `quantify_trace_differences` |
 | Band table has one row per target and binds its comparator output | `band_table::ensure_comparable` |
-| Table counts and digest match its rows | `band_table::ensure_comparable` |
-| A compared model whose run reported a projection block over the fallback rate (SPEC_0044 ME-PROJ-003) is banded `fallback` with its rate and the band its channels would take, never strict-high; the reference agreement counts include it under that band; a schema v2 table reads as fallback-free | `band_table::mark_fallbacks`, `BandTable::agreement_models` |
+| Table counts and digest match its rows; a fallback row is never strict-high | `band_table::ensure_comparable` |
 | Table bands equal the reference bands | `band_table_disagreement` |
 | Full cohort can identify every baseline-certified strict-high model | `certified_cohort_regression_reasons` |
 | No baseline-certified strict-high model departed or changed band | `certified_model_regression` |
