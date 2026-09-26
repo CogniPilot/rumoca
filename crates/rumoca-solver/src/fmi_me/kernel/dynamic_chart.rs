@@ -45,6 +45,8 @@ pub(super) struct KernelChart {
     /// the identity `state - source`. `state[k] - residual[binding_rows[k]]`
     /// recovers this chart's integrated source value for state coordinate `k`.
     pub(super) binding_rows: Vec<usize>,
+    /// The chart's conditioning at the construction trial point.
+    pub(super) trial_rcond: f64,
 }
 
 /// Every runtime-executable reduced chart of one continuous system, index zero
@@ -277,6 +279,7 @@ pub(super) fn build_reduced_charts(
             slope_cols,
             slope_dependent_positions,
             binding_rows,
+            trial_rcond: chart.trial_rcond,
         });
     }
 

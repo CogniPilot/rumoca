@@ -95,6 +95,22 @@ impl SolveMeKernel {
             .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
         match dynamic_chart::decide(&conditioning, self.active_chart) {
             dynamic_chart::ChartDecision::Switch(target) => {
+                // A switch is needless when the active chart is still far from
+                // its fold: conditioning above a tenth of its construction-time
+                // value. The event lets a sweep count switches per run.
+                let active = conditioning[self.active_chart].rcond;
+                let constructed = charts.charts[self.active_chart].trial_rcond;
+                tracing::info!(
+                    target: "rumoca_solver::chart_switch",
+                    t,
+                    from = self.active_chart,
+                    to = target,
+                    sigma_active = active,
+                    sigma_target = conditioning[target].rcond,
+                    sigma_constructed = constructed,
+                    needless = active > 0.1 * constructed,
+                    "reduced chart switch requested"
+                );
                 self.pending_basis_change = Some(dynamic_chart::PendingBasisChange {
                     target,
                     physical_solver_y: solver_y,
