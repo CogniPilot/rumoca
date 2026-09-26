@@ -71,7 +71,9 @@
 //! earlier workflow artifact is not certification evidence.
 
 use super::*;
-use rumoca_test_msl::msl_tools::band_table::{self, BandTable, BandTableRunScope, BandTransitions};
+use rumoca_test_msl::msl_tools::band_table::{
+    self, BandLabel, BandTable, BandTableRunScope, BandTransitions,
+};
 use std::sync::OnceLock;
 
 /// Fixed prefix every "no parity reading" line starts with. Operators and the
@@ -421,13 +423,17 @@ fn band_table_disagreement(
         ),
         (
             "strict-high models",
-            table.strict_high_models(),
+            table.agreement_models(BandLabel::High),
             stats.agreement_high,
         ),
-        ("near models", table.near_models(), stats.agreement_minor),
+        (
+            "near models",
+            table.agreement_models(BandLabel::Near),
+            stats.agreement_minor,
+        ),
         (
             "deviation models",
-            table.deviation_models(),
+            table.agreement_models(BandLabel::Deviation),
             stats.agreement_deviation,
         ),
     ];

@@ -107,7 +107,11 @@ const BAND_TABLE_TEMP_FILE: &str = "msl_band_table.json.tmp";
 /// instead of deserializing it into a table with zero rows.
 pub const BAND_TABLE_SCHEMA: &str = "msl_band_table";
 /// Schema version this build writes and accepts.
-pub const BAND_TABLE_SCHEMA_VERSION: u32 = 2;
+pub const BAND_TABLE_SCHEMA_VERSION: u32 = 3;
+
+/// The predecessor schema this build still reads. A v2 table predates
+/// projection fallback reporting, so its rows read as fallback-free.
+pub const BAND_TABLE_PREVIOUS_SCHEMA_VERSION: u32 = 2;
 
 const TRACE_COMPARISON_FILE: &str = "sim_trace_comparison.json";
 const MSL_RESULTS_FILE: &str = "msl_results.json";
@@ -126,6 +130,10 @@ pub enum BandLabel {
     Near,
     /// Measured deviation.
     Deviation,
+    /// Compared, but a projection block of the run fell back above the policy
+    /// rate (SPEC_0044 ME-PROJ-003); never quoted as strict-high parity,
+    /// whatever its channels.
+    Fallback,
     /// Not compared in this run; the row carries an [`ExitReason`].
     Absent,
 }
@@ -137,6 +145,7 @@ impl BandLabel {
             Self::High => "high",
             Self::Near => "near",
             Self::Deviation => "deviation",
+            Self::Fallback => "fallback",
             Self::Absent => "absent",
         }
     }
@@ -315,6 +324,17 @@ pub struct BandRow {
     /// Model-level bounded normalized L1 score.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bounded_normalized_l1_score: Option<f64>,
+    /// Worst fallback rate of the run's projection blocks, present exactly when
+    /// `band == BandLabel::Fallback`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_rate: Option<f64>,
+    /// The run's fallback warnings behind `fallback_rate`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_detail: Option<String>,
+    /// The band the comparator gave a `fallback` row's channels, which the
+    /// reference's agreement counts still include.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_of: Option<BandLabel>,
 }
 
 impl BandRow {
@@ -339,6 +359,9 @@ impl BandRow {
             max_channel_bounded_normalized_l1: Some(metric.max_channel_bounded_normalized_l1),
             mean_channel_bounded_normalized_l1: Some(metric.mean_channel_bounded_normalized_l1),
             bounded_normalized_l1_score: Some(metric.bounded_normalized_l1_score),
+            fallback_rate: None,
+            fallback_detail: None,
+            fallback_of: None,
         }
     }
 
@@ -356,6 +379,9 @@ impl BandRow {
             max_channel_bounded_normalized_l1: None,
             mean_channel_bounded_normalized_l1: None,
             bounded_normalized_l1_score: None,
+            fallback_rate: None,
+            fallback_detail: None,
+            fallback_of: None,
         }
     }
 
@@ -366,8 +392,23 @@ impl BandRow {
         fn metric(value: Option<f64>) -> String {
             value.map_or_else(|| "-".to_string(), |value| format!("{value:.12e}"))
         }
+        // A fallback-free row renders exactly as schema v2 did, so a v2 table's
+        // digest still verifies.
+        let fallback = match (
+            self.fallback_rate,
+            self.fallback_detail.as_deref(),
+            self.fallback_of,
+        ) {
+            (None, None, None) => String::new(),
+            (rate, detail, of) => format!(
+                "|{}|{}|{}",
+                metric(rate),
+                detail.unwrap_or("-"),
+                of.map_or("-", BandLabel::as_str)
+            ),
+        };
         format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}{fallback}\n",
             self.model_name,
             self.band.as_str(),
             self.exit_reason.map_or("-", ExitReason::as_str),
@@ -391,6 +432,14 @@ impl BandRow {
                 None => format!("absent ({})", reason.as_str()),
             },
             (BandLabel::Absent, None) => "absent (no reason recorded)".to_string(),
+            (BandLabel::Fallback, _) => format!(
+                "fallback (rate {:.1}%: {}; channels {}/{}/{})",
+                100.0 * self.fallback_rate.unwrap_or(f64::NAN),
+                self.fallback_detail.as_deref().unwrap_or("-"),
+                self.channel_high_count,
+                self.channel_minor_count,
+                self.channel_deviation_count
+            ),
             (band, _) => format!(
                 "{} (channels {}/{}/{}, max_dev={:.3e})",
                 band.as_str(),
@@ -411,6 +460,9 @@ pub struct BandTableCounts {
     pub high: usize,
     pub near: usize,
     pub deviation: usize,
+    /// Compared models banded `fallback`; zero for a schema v2 table.
+    #[serde(default)]
+    pub fallback: usize,
     pub absent: usize,
     #[serde(default)]
     pub absent_by_reason: BTreeMap<String, usize>,
@@ -536,6 +588,16 @@ impl BandTable {
             .count()
     }
 
+    /// Models whose channels the comparator placed in `band`, including the
+    /// `fallback` rows it would otherwise have banded there; the reference's
+    /// agreement counts read the same way.
+    pub fn agreement_models(&self, band: BandLabel) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| row.band == band || row.fallback_of == Some(band))
+            .count()
+    }
+
     /// Models in the compared set.
     pub fn models_compared(&self) -> usize {
         self.compared_rows().count()
@@ -623,6 +685,7 @@ fn count_rows(rows: &[BandRow]) -> BandTableCounts {
             BandLabel::High => counts.high += 1,
             BandLabel::Near => counts.near += 1,
             BandLabel::Deviation => counts.deviation += 1,
+            BandLabel::Fallback => counts.fallback += 1,
             BandLabel::Absent => {
                 counts.absent += 1;
                 let key = row
@@ -633,7 +696,7 @@ fn count_rows(rows: &[BandRow]) -> BandTableCounts {
             }
         }
     }
-    counts.compared_models = counts.high + counts.near + counts.deviation;
+    counts.compared_models = counts.high + counts.near + counts.deviation + counts.fallback;
     counts
 }
 
@@ -651,9 +714,11 @@ pub fn ensure_comparable(table: &BandTable) -> Result<()> {
             table.schema
         );
     }
-    if table.schema_version != BAND_TABLE_SCHEMA_VERSION {
+    if table.schema_version != BAND_TABLE_SCHEMA_VERSION
+        && table.schema_version != BAND_TABLE_PREVIOUS_SCHEMA_VERSION
+    {
         bail!(
-            "band table schema_version is {}, this build reads {BAND_TABLE_SCHEMA_VERSION}",
+            "band table schema_version is {}, this build reads {BAND_TABLE_SCHEMA_VERSION} and {BAND_TABLE_PREVIOUS_SCHEMA_VERSION}",
             table.schema_version
         );
     }
@@ -769,6 +834,12 @@ fn ensure_rows_well_formed(table: &BandTable) -> Result<()> {
                         row.model_name
                     );
                 }
+                if row.fallback_rate.is_some() {
+                    bail!(
+                        "band table row '{}' is absent but carries a fallback rate",
+                        row.model_name
+                    );
+                }
             }
             band => ensure_banded_row_well_formed(row, band)?,
         }
@@ -777,6 +848,20 @@ fn ensure_rows_well_formed(table: &BandTable) -> Result<()> {
 }
 
 fn ensure_banded_row_well_formed(row: &BandRow, band: BandLabel) -> Result<()> {
+    let fallback_of_compared = matches!(
+        row.fallback_of,
+        Some(BandLabel::High | BandLabel::Near | BandLabel::Deviation)
+    );
+    if (band == BandLabel::Fallback) != row.fallback_rate.is_some()
+        || (band == BandLabel::Fallback) != fallback_of_compared
+        || (band != BandLabel::Fallback && row.fallback_of.is_some())
+    {
+        bail!(
+            "band table row '{}' is banded '{}' but its fallback rate does not match its band",
+            row.model_name,
+            band.as_str()
+        );
+    }
     if row.exit_reason.is_some() {
         bail!(
             "band table row '{}' is banded '{}' but carries an exit reason",
@@ -803,6 +888,9 @@ struct SimAttempt {
     failure_detail: Option<String>,
     /// Why the run never simulated it (the phase it stopped at).
     unattempted_detail: String,
+    /// The run's worst projection fallback rate and its warnings, recorded only
+    /// when a block exceeded the policy rate.
+    fallback: Option<(f64, String)>,
 }
 
 /// Build a table from the comparator's trace-comparison payload plus the run's
@@ -868,6 +956,7 @@ pub fn derive_band_table(
         add_policy_absences(&mut rows, exclusions, roster, &attempts);
     }
     add_sim_absences(&mut rows, &attempts, roster.as_ref());
+    mark_fallbacks(&mut rows, &attempts);
     if let Some(roster) = roster.as_ref() {
         add_unrecorded_targets(&mut rows, roster);
     }
@@ -876,6 +965,25 @@ pub fn derive_band_table(
     rows.sort_by(|left, right| left.model_name.cmp(&right.model_name));
     let cohort_roster_models = roster.as_ref().map_or(0, BTreeSet::len);
     Ok(BandTable::with_rows(rows, cohort_roster_models, meta))
+}
+
+/// Band every compared model whose run reported a projection block over the
+/// fallback rate as `fallback`, never strict-high (SPEC_0044 ME-PROJ-003).
+fn mark_fallbacks(rows: &mut IndexMap<String, BandRow>, attempts: &BTreeMap<String, SimAttempt>) {
+    for (model_name, row) in rows.iter_mut() {
+        let Some((rate, detail)) = attempts
+            .get(model_name)
+            .and_then(|attempt| attempt.fallback.clone())
+        else {
+            continue;
+        };
+        if row.band.is_compared() {
+            row.fallback_of = Some(row.band);
+            row.band = BandLabel::Fallback;
+            row.fallback_rate = Some(rate);
+            row.fallback_detail = Some(detail);
+        }
+    }
 }
 
 fn in_cohort(roster: Option<&BTreeSet<String>>, model_name: &str) -> bool {
@@ -1002,6 +1110,16 @@ fn collect_sim_attempts(results: &Value) -> Result<BTreeMap<String, SimAttempt>>
                     .map(str::to_string),
                 failure_detail: sim_failure_detail(model),
                 unattempted_detail: compile_failure_detail(model),
+                fallback: model
+                    .get("projection_fallback_rate")
+                    .and_then(Value::as_f64)
+                    .map(|rate| {
+                        let detail = model
+                            .get("projection_fallback_detail")
+                            .and_then(Value::as_str)
+                            .unwrap_or("-");
+                        (rate, detail.to_string())
+                    }),
             },
         );
     }

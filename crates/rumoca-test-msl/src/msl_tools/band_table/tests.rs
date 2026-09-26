@@ -1528,3 +1528,67 @@ fn write_run(dir: &Path, artifacts: &RunArtifacts) {
     write_pretty_json(&dir.join(TRACE_COMPARISON_FILE), &artifacts.trace).expect("write trace");
     write_pretty_json(&dir.join(MSL_RESULTS_FILE), &artifacts.results).expect("write results");
 }
+
+#[test]
+fn a_compared_model_whose_run_fell_back_is_banded_fallback_not_high() {
+    let trace = trace_payload(
+        json!({ "Alpha": metric("Alpha", 9, 0, 0, 1e-4), "Beta": metric("Beta", 9, 0, 0, 1e-4) }),
+        json!({}),
+        json!({}),
+    );
+    let mut results = results_payload(&[("Alpha", Some("sim_ok")), ("Beta", Some("sim_ok"))]);
+    results["model_results"][0]["projection_fallback_rate"] = json!(1.0);
+    results["model_results"][0]["projection_fallback_detail"] = json!(
+        "projection block 897 (45 rows) fell back on 100.0% of 3055 calls (torn_to_dense 3055)"
+    );
+    let table = derive(&trace, &results);
+    ensure_comparable(&table).expect("a v3 table with a fallback row is comparable");
+    let alpha = table.row("Alpha").expect("Alpha row");
+    assert_eq!(alpha.band, BandLabel::Fallback);
+    assert_eq!(alpha.fallback_rate, Some(1.0));
+    assert_eq!(alpha.fallback_of, Some(BandLabel::High));
+    assert_eq!(table.agreement_models(BandLabel::High), 2);
+    assert!(
+        alpha
+            .describe()
+            .starts_with("fallback (rate 100.0%: projection block 897")
+    );
+    assert_eq!(table.row("Beta").expect("Beta row").band, BandLabel::High);
+    assert_eq!((table.counts.high, table.counts.fallback), (1, 1));
+    assert_eq!(table.counts.compared_models, 2);
+    assert_eq!(table.strict_high_models(), 1);
+}
+
+#[test]
+fn a_schema_v2_table_reads_as_fallback_free() {
+    let trace = trace_payload(
+        json!({ "Alpha": metric("Alpha", 9, 0, 0, 1e-4) }),
+        json!({}),
+        json!({}),
+    );
+    let table = derive(&trace, &results_payload(&[("Alpha", Some("sim_ok"))]));
+    // A v2 table: its rows and counts carry no fallback fields at all.
+    let mut wire = serde_json::to_value(&table).expect("serialize");
+    wire["schema_version"] = json!(BAND_TABLE_PREVIOUS_SCHEMA_VERSION);
+    wire["counts"]
+        .as_object_mut()
+        .expect("counts")
+        .remove("fallback");
+    let v2: BandTable = serde_json::from_value(wire).expect("a v2 table decodes");
+    ensure_comparable(&v2).expect("a v2 table's digest and counts still verify");
+    assert_eq!(v2.counts.fallback, 0);
+    assert!(v2.rows.iter().all(|row| row.fallback_rate.is_none()));
+}
+
+#[test]
+fn a_fallback_rate_on_a_row_of_another_band_is_refused() {
+    let trace = trace_payload(
+        json!({ "Alpha": metric("Alpha", 9, 0, 0, 1e-4) }),
+        json!({}),
+        json!({}),
+    );
+    let mut table = derive(&trace, &results_payload(&[("Alpha", Some("sim_ok"))]));
+    table.rows[0].fallback_rate = Some(0.5);
+    table.rows_digest = rows_digest(&table.rows);
+    assert!(ensure_comparable(&table).is_err());
+}
