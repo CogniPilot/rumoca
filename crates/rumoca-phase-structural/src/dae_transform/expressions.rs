@@ -69,6 +69,9 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     pub(super) scoped_cache: ScopedReconstructionCache<'source, 'target>,
     /// STRUCT-T10(b): source call nodes replaced by their substituted body.
     inline_calls: &'borrow [bool],
+    /// SPEC_0043 §3: source expressions replaced by their literal values.
+    literal_expressions:
+        &'borrow [Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
     rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
 }
 
@@ -175,6 +178,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             function_context: FunctionCallContext::default(),
             scoped_cache: ScopedReconstructionCache::default(),
             inline_calls: &[],
+            literal_expressions: &[],
             rebuilt,
         }
     }
@@ -191,6 +195,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     /// Replace the flagged source calls by their substituted bodies.
     pub(super) fn inlining_calls(mut self, inline_calls: &'borrow [bool]) -> Self {
         self.inline_calls = inline_calls;
+        self
+    }
+
+    /// Replace the planned source expressions by their literal values.
+    pub(super) fn replacing_literals(
+        mut self,
+        literal_expressions: &'borrow [Option<
+            std::sync::Arc<super::evaluable_parameters::FoldedValue>,
+        >],
+    ) -> Self {
+        self.literal_expressions = literal_expressions;
         self
     }
 
@@ -232,9 +247,15 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .expression(source_id)
             .expect("finalized expression identity resolves");
         let provenance = source.provenance();
-        let value_type = self.types[source.value_type_id().index() as usize];
-        let rebuilt =
-            self.rebuild_operation(source_id, source.operation(), provenance, value_type)?;
+        let rebuilt = match self.literal_expressions.get(index).cloned().flatten() {
+            Some(value) => {
+                super::evaluable_parameters::folded_literal(self.target, &value, provenance)?
+            }
+            None => {
+                let value_type = self.types[source.value_type_id().index() as usize];
+                self.rebuild_operation(source_id, source.operation(), provenance, value_type)?
+            }
+        };
         self.rebuilt[index] = Some(rebuilt);
         Ok(rebuilt)
     }

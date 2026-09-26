@@ -11,6 +11,7 @@ mod auxiliary_blocks;
 mod builtin_profiles;
 mod component_constraint;
 mod component_projection;
+mod constant_values;
 mod constraints;
 mod declarations;
 mod demotion_bounds;
@@ -67,6 +68,7 @@ pub use self::alias_quotient::{
     QuotientScope as AliasQuotientScope, alias_quotient_report, formal_alias_quotient_report,
     inspect_quotient_aliases, quotient_aliases, quotient_formal_aliases,
 };
+pub use self::constant_values::fold_constant_values;
 pub use self::evaluable_parameters::fold_evaluable_parameters;
 pub use self::formal_derivatives::{
     FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,

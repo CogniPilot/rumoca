@@ -182,6 +182,15 @@ pub enum StructuralError {
         span: Span,
         other_span: Span,
     },
+    /// A constant pure call (SPEC_0043 §3) whose evaluation at construction
+    /// fails: an assertion, or a non-finite or out-of-range value. The same
+    /// evaluation would fail at every instant the model runs it.
+    #[error("constant call of `{call}` cannot be evaluated: {reason}")]
+    ConstantCallEvaluation {
+        call: String,
+        reason: String,
+        span: Span,
+    },
     #[error("checked DAE scalar projection failed: {reason}")]
     Projection { reason: String, span: Span },
     #[error("invalid structural IR contract: {reason}")]
@@ -202,6 +211,7 @@ impl StructuralError {
             Self::ConflictingStatedInitialValues { .. } => {
                 codes::ES013_CONFLICTING_STATED_INITIAL_VALUES
             }
+            Self::ConstantCallEvaluation { .. } => codes::ES015_CONSTANT_CALL_EVALUATION,
             Self::Projection { .. }
             | Self::ContractViolation { .. }
             | Self::UnspannedContractViolation { .. } => codes::ES014_CONTRACT_VIOLATION,
@@ -217,6 +227,7 @@ impl StructuralError {
             } => unmatched_unknown_spans.first().copied(),
             Self::DroppedStatedInitialValue { span, .. }
             | Self::ConflictingStatedInitialValues { span, .. }
+            | Self::ConstantCallEvaluation { span, .. }
             | Self::Projection { span, .. }
             | Self::ContractViolation { span, .. }
                 if !span.is_dummy() =>
@@ -226,6 +237,7 @@ impl StructuralError {
             Self::EmptySystem
             | Self::DroppedStatedInitialValue { .. }
             | Self::ConflictingStatedInitialValues { .. }
+            | Self::ConstantCallEvaluation { .. }
             | Self::Projection { .. }
             | Self::ContractViolation { .. }
             | Self::UnspannedContractViolation { .. } => None,
@@ -242,6 +254,7 @@ impl PhaseError for StructuralError {
             Self::ConflictingStatedInitialValues { .. } => {
                 "this stated initial value contradicts the one below"
             }
+            Self::ConstantCallEvaluation { .. } => "this constant call fails whenever it runs",
             _ => "structural analysis failed here",
         };
         let mut diagnostic = match self.source_span() {

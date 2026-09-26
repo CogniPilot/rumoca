@@ -11,6 +11,8 @@
 
 mod alias_quotient;
 pub(super) use alias_quotient::rebuild_alias_quotient;
+mod constant_values;
+pub(super) use constant_values::rebuild_literal_expressions;
 mod evaluable_parameters;
 pub(super) use evaluable_parameters::rebuild_folded_parameters;
 mod inline_calls;
@@ -337,6 +339,8 @@ struct RebuildContext<'source, 'borrow, 'target> {
     facts: &'borrow DifferentiationFacts,
     candidate: Option<DirectStateConstraint>,
     inline_calls: &'borrow [bool],
+    literal_expressions:
+        &'borrow [Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
 }
 
 impl<'target> RebuildContext<'_, '_, 'target> {
@@ -378,6 +382,7 @@ struct RebuildRequest<'a> {
     value_aliases: &'a [Option<super::alias_quotient::AliasSubstitution>],
     folded_parameters: &'a [Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
     inline_calls: &'a [bool],
+    literal_expressions: &'a [Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
     source_functions_only: bool,
 }
 
@@ -491,6 +496,7 @@ fn prepare_rebuild<'source, 'target>(
         facts,
         candidate,
         inline_calls: request.inline_calls,
+        literal_expressions: request.literal_expressions,
     };
     let expressions = rebuild_expressions_and_static_variables(
         context,
@@ -749,7 +755,8 @@ fn rebuild_expression_segment<'source, 'target>(
                 context.candidate,
                 rebuilt,
             )
-            .inlining_calls(context.inline_calls);
+            .inlining_calls(context.inline_calls)
+            .replacing_literals(context.literal_expressions);
             let source_id = context
                 .source
                 .expression_id(index)

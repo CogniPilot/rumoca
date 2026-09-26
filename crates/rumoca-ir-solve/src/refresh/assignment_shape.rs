@@ -168,6 +168,13 @@ fn push_affine_assignment_shape(
     let Some(load) = target_load(program, target) else {
         return;
     };
+    // A coefficient proven zero at construction isolates nothing: the step
+    // would divide by zero at every evaluation (SPEC_0032).
+    if coefficient_scale == 0.0
+        || coefficient.is_some_and(|register| zero_constant(program, register))
+    {
+        return;
+    }
     let target_y_index = load.index;
     if dependencies.depends_on(offset, target_y_index)
         || coefficient.is_some_and(|register| dependencies.depends_on(register, target_y_index))
@@ -499,6 +506,10 @@ fn projected_input_register(operation: &LinearOp, register: u32) -> Option<u32> 
     starts
         .get(projection.0)?
         .checked_add(u32::try_from(projection.1).ok()?)
+}
+
+fn zero_constant(program: ProgramPrefix<'_>, register: u32) -> bool {
+    matches!(producer(program, register), Some(LinearOp::Const { value, .. }) if *value == 0.0)
 }
 
 fn producer(program: ProgramPrefix<'_>, register: u32) -> Option<&LinearOp> {

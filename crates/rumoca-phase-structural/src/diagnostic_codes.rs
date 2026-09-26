@@ -69,6 +69,20 @@ pub const ES013_CONFLICTING_STATED_INITIAL_VALUES: &str = "ES013";
 /// class, and whether an honest source span exists is reported by
 /// [`crate::StructuralError::source_span`], not by a second code.
 pub const ES014_CONTRACT_VIOLATION: &str = "ES014";
+/// [`crate::StructuralError::ConstantCallEvaluation`]: a constant pure call
+/// (SPEC_0043 §3) fails when it is evaluated at construction.
+///
+/// SPEC_0008 acceptance contract:
+///
+/// * **rejects** an unconditionally evaluated model-level call whose arguments
+///   are all compile-time constants and whose evaluation fails an assertion or
+///   yields a non-finite or out-of-range value;
+/// * **accepts**, and must keep accepting: a call the construction evaluator
+///   cannot settle (a foreign body, an unsupported operation), which stays a
+///   call, and any call inside a conditional branch;
+/// * **owner** `crate::dae_transform::constant_values::constant_call_plan`;
+/// * **evidence** `dae_transform::tests::constant_values`.
+pub const ES015_CONSTANT_CALL_EVALUATION: &str = "ES015";
 
 /// Every structural diagnostic code, in numeric order.
 ///
@@ -83,6 +97,7 @@ pub const STRUCTURAL_DIAGNOSTIC_CODES: &[&str] = &[
     ES012_DROPPED_STATED_INITIAL_VALUE,
     ES013_CONFLICTING_STATED_INITIAL_VALUES,
     ES014_CONTRACT_VIOLATION,
+    ES015_CONSTANT_CALL_EVALUATION,
 ];
 
 #[cfg(test)]
@@ -125,6 +140,11 @@ mod tests {
                 other: "y".to_string(),
                 span: structural_code_test_span(),
                 other_span: structural_code_test_span(),
+            },
+            StructuralError::ConstantCallEvaluation {
+                call: "f".to_string(),
+                reason: "assertion failed".to_string(),
+                span: structural_code_test_span(),
             },
             StructuralError::Projection {
                 reason: "dynamic index".to_string(),
@@ -193,9 +213,9 @@ mod tests {
             .collect();
         let unique: BTreeSet<&&str> = codes.iter().collect();
 
-        // Seven variants, five codes: all checked-contract failures share ES014.
-        assert_eq!(codes.len(), 7);
-        assert_eq!(unique.len(), 5, "unexpected code aliasing: {codes:?}");
+        // Eight variants, six codes: all checked-contract failures share ES014.
+        assert_eq!(codes.len(), 8);
+        assert_eq!(unique.len(), 6, "unexpected code aliasing: {codes:?}");
     }
 
     #[test]
@@ -207,6 +227,7 @@ mod tests {
         assert_eq!(ES012_DROPPED_STATED_INITIAL_VALUE, "ES012");
         assert_eq!(ES013_CONFLICTING_STATED_INITIAL_VALUES, "ES013");
         assert_eq!(ES014_CONTRACT_VIOLATION, "ES014");
+        assert_eq!(ES015_CONSTANT_CALL_EVALUATION, "ES015");
     }
 
     #[test]
