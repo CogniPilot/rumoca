@@ -709,3 +709,79 @@ fn torn_loop_descriptor_renders_one_direction_colors_without_lanes() {
     );
     assert_eq!(block.get("nnz"), 6);
 }
+
+const SPLIT_CIRCLE_CHART: &str = include_str!("../fixtures/index_reduction/SplitCircleChart.mo");
+
+/// A reduced chart set with an executable alternate renders both charts:
+/// their switching descriptors, keep references, and state nominals, one step
+/// table per chart and refresh plan, and one derivative kernel per chart
+/// (SPEC_0040 STRUCT-T07 constraint-fold chart rows; SPEC_0044 ME-PROJ-001).
+#[test]
+fn a_split_circle_renders_both_charts_for_switching() {
+    for target in ["fmi2", "fmi3"] {
+        let source = model_c("SplitCircleChart", SPLIT_CIRCLE_CHART, target);
+        assert!(source.contains("#define RMC_NCHARTS 2"), "{target}");
+        let charts = braced_body(&source, "static const RmcChart rmc_charts[RMC_NCHARTS] = {")
+            .expect("the chart descriptors");
+        assert_eq!(
+            charts.matches("RMC_P(").count(),
+            6,
+            "{target}: three pool ranges per chart"
+        );
+        let nominals = braced_body(
+            &source,
+            "static const double rmc_chart_nominals[RMC_NCHARTS][2] = {",
+        )
+        .expect("the chart state nominals");
+        assert_eq!(
+            nominals.matches('{').count(),
+            2,
+            "{target}: one nominal row per chart"
+        );
+        for plan in ["refresh_derivative_values", "refresh_algebraics"] {
+            for chart in 0..2 {
+                assert!(
+                    source.contains(&format!("case {chart}: return {plan}_c{chart}(m);")),
+                    "{target} {plan} {chart}"
+                );
+            }
+        }
+        assert!(
+            source.contains("rmc_derivative_c1(ModelInstance* m)"),
+            "{target}: the alternate's derivative kernel"
+        );
+    }
+}
+
+/// The fixed-step drive of the linked kernel switches charts before each
+/// quarter-turn fold and stays on the physical branch.
+#[test]
+fn the_linked_fixed_step_drive_switches_the_split_circle() {
+    let compiled = Compiler::new()
+        .model("SplitCircleChart")
+        .compile_str(SPLIT_CIRCLE_CHART, "SplitCircleChart.mo")
+        .expect("compile SplitCircleChart");
+    let component = rumoca_sim::lower_fmi_component(&compiled.dae).expect("lower SplitCircleChart");
+    let artifact = rumoca_solver::fmi_me::MeModelArtifact::new(component);
+    let step = 1.0e-2;
+    let stop = 679.0 * step;
+    let run = rumoca_solver::fmi_me::fixed_step::fixed_step_rk4(&artifact, step, stop)
+        .expect("fixed-step drive");
+    assert_eq!(run.states.len(), 679);
+    assert_eq!(run.switches.len(), 4, "{:?}", run.switches);
+    for (index, switch) in run.switches.iter().enumerate() {
+        assert_eq!(
+            (switch.from, switch.to),
+            if index % 2 == 0 { (0, 1) } else { (1, 0) }
+        );
+        assert!(
+            switch.sigma_target > 1.5 * switch.sigma_active,
+            "{switch:?}"
+        );
+        let quarter = (switch.time / std::f64::consts::FRAC_PI_2).fract();
+        assert!(
+            quarter > 0.5 && quarter < 0.9,
+            "a switch precedes its fold: {switch:?}"
+        );
+    }
+}
