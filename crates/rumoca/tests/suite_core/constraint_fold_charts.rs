@@ -439,3 +439,23 @@ fn msl_universal_constraint_alternates_travel_as_faithful_deltas() {
         "Modelica.Mechanics.MultiBody.Examples.Constraints.UniversalConstraint",
     ));
 }
+
+/// Lowering in a test build runs the from-scratch refresh-owner checker on
+/// every alternate, so each charted MSL model is lowered here under it.
+#[test]
+fn msl_revolute_and_prismatic_alternates_match_their_from_scratch_owners() {
+    let Some(root) = msl_root() else {
+        return;
+    };
+    for model in [
+        "Modelica.Mechanics.MultiBody.Examples.Constraints.RevoluteConstraint",
+        "Modelica.Mechanics.MultiBody.Examples.Constraints.PrismaticConstraint",
+    ] {
+        let lowered = lowered_msl(&root, model);
+        assert!(
+            lowered.problem.continuous.reduced_chart_set.charts.len() > 1,
+            "{model} issues alternates"
+        );
+        assert_chart_deltas_are_faithful(&lowered);
+    }
+}

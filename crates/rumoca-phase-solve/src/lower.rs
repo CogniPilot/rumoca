@@ -35,6 +35,7 @@ use scalar::{
 pub(crate) fn lower_solve_problem(
     prepared: structural::PreparedSystem<'_, '_>,
     overrides: &HashMap<String, f64>,
+    primary: Option<&solve::SolveProblem>,
 ) -> Result<(solve::SolveProblem, solve::SolvePureCallTable), LowerError> {
     let structural::PreparedSystem {
         view,
@@ -89,13 +90,11 @@ pub(crate) fn lower_solve_problem(
         events,
         clocks: clocks.partition,
     };
-    problem.continuous.refresh_owners =
-        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut problem).map_err(
-            |error| match error.source_span() {
-                Some(span) => LowerError::contract(error.to_string(), span),
-                None => LowerError::unspanned_non_computable(error.to_string()),
-            },
-        )?;
+    problem.continuous.refresh_owners = crate::continuous_refresh_owners(&mut problem, primary)
+        .map_err(|error| match error.source_span() {
+            Some(span) => LowerError::contract(error.to_string(), span),
+            None => LowerError::unspanned_non_computable(error.to_string()),
+        })?;
     solve::validate_problem_pure_call_sites(&problem, &pure_calls)?;
     Ok((problem, pure_calls))
 }

@@ -8,6 +8,7 @@
 mod capacity;
 mod dependency_domain;
 mod event_dependencies;
+mod row_analysis;
 mod schedule;
 mod source_catalog;
 mod static_domain;
@@ -30,6 +31,7 @@ use capacity::{
 };
 use dependency_domain::{CompactYDependencyError, CompactYDependencySet};
 use event_dependencies::event_consumer_dependencies;
+use row_analysis::{AssignmentCertificates, PriorRowAnalysis, analyze_refresh_row};
 
 use rumoca_ir_solve::{
     AlgebraicRefreshRow, RefreshPlan, RefreshRowOwnerId, RefreshRowSelection, RefreshRows,
@@ -163,57 +165,10 @@ fn construct_refresh_selection(
     })
 }
 
-/// Exact and direct assignment certificates of one program output, given the
-/// assignment shape already derived for it.
-///
-/// Both certificates require the shape and a causal program, and the direct
-/// one also requires the shape to be direct. With the shape known, one of the
-/// two certificates decides both: for a direct shape they coincide, for any
-/// other shape the direct certificate is false. A shapeless output derives
-/// nothing further.
-struct AssignmentCertificates {
-    exact: bool,
-    direct: bool,
-}
-
-impl AssignmentCertificates {
-    fn for_shape(
-        program: &[solve::LinearOp],
-        output_offset: usize,
-        target_index: usize,
-        shape: Option<&solve::TargetAssignmentShape>,
-    ) -> Result<Self, EvalSolveError> {
-        match shape {
-            None => Ok(Self {
-                exact: false,
-                direct: false,
-            }),
-            Some(shape) if shape.is_direct() => {
-                let direct = crate::prepared::program_certifies_direct_target(
-                    program,
-                    output_offset,
-                    target_index,
-                )?;
-                Ok(Self {
-                    exact: direct,
-                    direct,
-                })
-            }
-            Some(_) => Ok(Self {
-                exact: crate::prepared::program_certifies_exact_target(
-                    program,
-                    output_offset,
-                    target_index,
-                )?,
-                direct: false,
-            }),
-        }
-    }
-}
-
 fn build_canonical_algebraic_refresh_plan(
     problem: &solve::SolveProblem,
     catalog: &CanonicalScalarProgramCatalog<'_>,
+    prior: Option<&PriorRowAnalysis<'_>>,
 ) -> Result<RefreshPlan, EvalSolveError> {
     validate_canonical_implicit_output_inventory(problem, catalog)?;
     let state_count = problem.solve_layout.state_scalar_count();
@@ -252,29 +207,17 @@ fn build_canonical_algebraic_refresh_plan(
         let Some(program) = catalog.program(position.program_index) else {
             continue;
         };
-        let assignment_shape = crate::prepared::assignment_shape_for_program_output(
-            program.operations,
-            position.output_offset,
-            *target_index,
-        )?;
-        // A program with an assignment shape for this output and target can
-        // always evaluate it; only a shapeless one needs the full check.
-        if !(assignment_shape.is_some()
-            || crate::prepared::program_can_evaluate_declared_target(
-                program.operations,
-                position.output_offset,
-                *target_index,
-            )?)
-            || !claimed_targets.insert(*target_index)
-        {
+        let Some(analysis) = analyze_refresh_row(
+            program,
+            (equation_index, position.output_offset, *target_index),
+            prior,
+        )?
+        else {
+            continue;
+        };
+        if !claimed_targets.insert(*target_index) {
             continue;
         }
-        let certificates = AssignmentCertificates::for_shape(
-            program.operations,
-            position.output_offset,
-            *target_index,
-            assignment_shape.as_ref(),
-        )?;
         rows.push(construct_refresh_row(
             solve::AlgebraicRefreshRowDraft {
                 owner_id: RefreshRowOwnerId::checked(*target_index).ok_or_else(|| {
@@ -288,9 +231,9 @@ fn build_canonical_algebraic_refresh_plan(
                 output_offset: position.output_offset,
                 target_index: *target_index,
                 assignment_target: Some(*target_index),
-                assignment_shape,
-                direct_assignment_certified: certificates.direct,
-                exact_assignment_certified: certificates.exact,
+                assignment_shape: analysis.shape,
+                direct_assignment_certified: analysis.direct,
+                exact_assignment_certified: analysis.exact,
             },
             Some(program.span),
         )?);
@@ -598,6 +541,26 @@ pub fn build_derivative_refresh_plan(
 pub fn build_continuous_refresh_owners(
     problem: &mut solve::SolveProblem,
 ) -> Result<solve::ContinuousRefreshOwners, EvalSolveError> {
+    build_refresh_owners(problem, None)
+}
+
+/// The refresh owners of an alternate reduced chart's `problem`, constructed
+/// from `primary`'s (SPEC_0040 STRUCT-T07 constraint-fold chart rows): a row
+/// with the primary's program, output offset, and target carries the primary's
+/// analysis; every other step runs as [`build_continuous_refresh_owners`] does,
+/// which constructs the same owners from scratch.
+pub fn build_continuous_refresh_owners_from(
+    problem: &mut solve::SolveProblem,
+    primary: &solve::SolveProblem,
+) -> Result<solve::ContinuousRefreshOwners, EvalSolveError> {
+    let prior = PriorRowAnalysis::new(primary)?;
+    build_refresh_owners(problem, Some(&prior))
+}
+
+fn build_refresh_owners(
+    problem: &mut solve::SolveProblem,
+    prior: Option<&PriorRowAnalysis<'_>>,
+) -> Result<solve::ContinuousRefreshOwners, EvalSolveError> {
     // Make the canonical block tearing exact-only before any refresh plan clones
     // it, so every runtime projection (the refresh owners' `simultaneous_plan`
     // and `value_projection_plan`, the value-stage plans that must replay those
@@ -605,7 +568,7 @@ pub fn build_continuous_refresh_owners(
     // same exact-only tearing.
     normalize_algebraic_projection_tearing(problem)?;
     let catalog = CanonicalScalarProgramCatalog::construct(&problem.continuous.implicit_rhs)?;
-    let algebraic = build_canonical_algebraic_refresh_plan(problem, &catalog)?;
+    let algebraic = build_canonical_algebraic_refresh_plan(problem, &catalog, prior)?;
     let state_count = problem.solve_layout.state_scalar_count();
     let derivative_dependencies =
         compute_block_dependencies(&problem.continuous.derivative_rhs, state_count)?;

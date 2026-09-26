@@ -76,19 +76,20 @@ pub fn executes_reduced_state_selection(
 }
 
 /// Lower the primary basis and attach each alternate reduced chart's executable
-/// plan, re-lowered from its own prepared DAE. The primary problem is unchanged;
+/// plan, lowered once against the primary from its own prepared DAE. The primary problem is unchanged;
 /// a model with no alternate charts lowers exactly as before.
 pub(crate) fn lower_selection(
     selection: &state_selection::PreparedSelection<'_>,
     overrides: &std::collections::HashMap<String, f64>,
 ) -> Result<LoweredSolvePackage, LowerError> {
-    let mut package = lower_prepared_solve_package(&selection.primary, overrides)?;
+    let mut package = lower_prepared_solve_package(&selection.primary, overrides, None)?;
     package.problem.continuous.reduced_chart_set.exchanges = selection.exchanges.clone();
     attach_alternate_chart_plans(&mut package.problem, &selection.alternates, overrides)?;
     Ok(package)
 }
 
-/// Re-lower each alternate reduced chart's prepared DAE and carry its
+/// Lower each alternate reduced chart's prepared DAE against the primary (see
+/// [`continuous_refresh_owners`]) and carry its
 /// reconstruction kernel, derivative kernel, refresh owners, and runtime-executable
 /// solver artifacts on the matching chart. The alternates align positionally with
 /// reduced chart index one and above; chart zero is the primary basis and keeps no
@@ -130,7 +131,7 @@ fn attach_alternate_chart_plans(
             ));
             continue;
         };
-        let lowered = match lower_prepared_solve_package(alternate, overrides) {
+        let lowered = match lower_prepared_solve_package(alternate, overrides, Some(&base)) {
             Ok(lowered) => lowered.problem,
             Err(_) if exchange => {
                 withheld.push((
@@ -265,9 +266,10 @@ pub(crate) fn replay_reduced_chart_artifacts(
 fn lower_prepared_solve_package(
     prepared: &rumoca_phase_structural::PreparedDae<'_>,
     overrides: &std::collections::HashMap<String, f64>,
+    primary: Option<&solve::SolveProblem>,
 ) -> Result<LoweredSolvePackage, LowerError> {
     prepared
-        .inspect(|system| lower::lower_solve_problem(system, overrides))
+        .inspect(|system| lower::lower_solve_problem(system, overrides, primary))
         .map(|(problem, pure_calls)| LoweredSolvePackage {
             problem,
             pure_calls,
@@ -279,4 +281,35 @@ pub fn lower_solve_artifacts(
     problem: &solve::SolveProblem,
 ) -> Result<solve::SolveArtifacts, LowerError> {
     artifacts::lower_solve_artifacts(problem, solve::MassMatrix::Identity)
+}
+
+/// The continuous refresh owners of `problem`: from scratch for a primary
+/// basis, and from `primary`'s for an alternate reduced chart, which re-runs
+/// the per-row analysis only where its rows differ (SPEC_0040 STRUCT-T07
+/// constraint-fold chart rows). With debug assertions the from-scratch
+/// construction checks every alternate's owners and projection plan.
+pub(crate) fn continuous_refresh_owners(
+    problem: &mut solve::SolveProblem,
+    primary: Option<&solve::SolveProblem>,
+) -> Result<solve::ContinuousRefreshOwners, rumoca_eval_solve::EvalSolveError> {
+    use rumoca_eval_solve::refresh_plan::{
+        build_continuous_refresh_owners, build_continuous_refresh_owners_from,
+    };
+    let Some(primary) = primary else {
+        return build_continuous_refresh_owners(problem);
+    };
+    #[cfg(debug_assertions)]
+    let mut checked = problem.clone();
+    let owners = build_continuous_refresh_owners_from(problem, primary)?;
+    #[cfg(debug_assertions)]
+    {
+        let scratch = build_continuous_refresh_owners(&mut checked);
+        debug_assert!(
+            scratch.is_ok_and(|scratch| owners.issues_same_plans(&scratch))
+                && checked.continuous.algebraic_projection_plan
+                    == problem.continuous.algebraic_projection_plan,
+            "an alternate chart's refresh owners differ from their from-scratch construction"
+        );
+    }
+    Ok(owners)
 }

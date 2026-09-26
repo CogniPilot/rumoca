@@ -439,6 +439,14 @@ impl RefreshOwnersDelta {
     }
 }
 
+impl ContinuousRefreshOwners {
+    /// Whether `other` issues the same plans: every wire-visible field of
+    /// each refresh plan, the sequence identities aside.
+    pub fn issues_same_plans(&self, other: &Self) -> bool {
+        same_refresh_owners(self, other)
+    }
+}
+
 fn same_refresh_owners(a: &ContinuousRefreshOwners, b: &ContinuousRefreshOwners) -> bool {
     same_refresh_plan(a.algebraic(), b.algebraic())
         && same_refresh_plan(a.derivative(), b.derivative())
