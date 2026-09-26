@@ -889,7 +889,8 @@ jobs:
           ./target/debug/xtask coverage gate --enforce-trim-regressions \
             --allowed-zero-count-growth 2 \
             --allowed-dead-likely-growth 2 \
-            --allowed-total-candidate-growth 2
+            --allowed-total-candidate-growth 2 \
+            --allowed-needs-targeted-test-growth 2
 
   # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane. The
   # producer keeps the pinned OpenModelica closure in its own stable GitHub
