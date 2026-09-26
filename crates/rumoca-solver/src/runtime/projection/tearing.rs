@@ -72,11 +72,11 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
     if out_of_range {
         return Ok(None);
     }
-    let snapshot = y.to_vec();
+    let snapshot = TornValues::save(tearing, y);
 
     let mut residual = Vec::with_capacity(tearing.residual_rows.len());
     if !model.torn_block_sweep(tearing, y, p, t, &mut residual)? {
-        y.copy_from_slice(&snapshot);
+        snapshot.restore(tearing, y);
         return Ok(None);
     }
 
@@ -90,7 +90,7 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
         .collect::<Vec<_>>();
 
     if !all_finite(&residual) {
-        y.copy_from_slice(&snapshot);
+        snapshot.restore(tearing, y);
         return Ok(None);
     }
 
@@ -107,7 +107,7 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
             certify_coordinates,
         )? {
             TornStep::Settled => {
-                let changed = slices_differ(y, &snapshot);
+                let changed = snapshot.changed(tearing, y);
                 return Ok(Some(ProjectionBlockUpdate {
                     changed,
                     settled: true,
@@ -115,7 +115,7 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
             }
             TornStep::Advanced(next) => residual = next,
             TornStep::Decline => {
-                y.copy_from_slice(&snapshot);
+                snapshot.restore(tearing, y);
                 return Ok(None);
             }
         }
@@ -124,7 +124,7 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
     // The reduced Newton exhausted its iterations without meeting tolerance.
     // Restore the incoming values so the dense fallback starts exactly where it
     // would have without the torn attempt.
-    y.copy_from_slice(&snapshot);
+    snapshot.restore(tearing, y);
     Ok(None)
 }
 
@@ -169,7 +169,7 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
     if !certify_coordinates && residual.iter().all(|value| *value == 0.0) {
         return Ok(TornStep::Settled);
     }
-    let base = y.to_vec();
+    let base = TornValues::save(tearing, y);
     let Some(jacobian) = reduced_jacobian(
         model,
         y,
@@ -220,7 +220,7 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
                     delta.as_slice(),
                     tol,
                 )
-                && causal_correction_converged(model, p, t, tearing, &step)?))
+                && causal_correction_converged(model, y, (p, t), tearing, &step)?))
     {
         return Ok(TornStep::Settled);
     }
@@ -317,14 +317,14 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
     tearing: &solve::BlockTearing,
     residual: &[f64],
     variable_scales: &[f64],
-    base: &[f64],
+    base: &TornValues,
     certify_coordinates: bool,
 ) -> Result<Option<ReducedJacobian>, RuntimeSolveError> {
     let rows = tearing.residual_rows.len();
     let columns = tearing.tear_y_indices.len();
     if let KernelAnswer::TornJacobian(exact) = model.linked_kernel(KernelRequest::TornJacobian {
         tearing,
-        point: (base, p, t),
+        point: (&*y, p, t),
     })? && let Some(jacobian) =
         tangent_reduced_jacobian(&exact, (rows, columns), tearing, certify_coordinates)
     {
@@ -339,11 +339,11 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
     let mut recovered = DMatrix::zeros(recovered_rows, columns);
     let mut perturbed = Vec::with_capacity(rows);
     for (column, &tear_index) in tearing.tear_y_indices.iter().enumerate() {
-        y.copy_from_slice(base);
-        let h = finite_difference_perturbation(base[tear_index], variable_scales[column]);
-        y[tear_index] = base[tear_index] + h;
+        base.restore(tearing, y);
+        let h = finite_difference_perturbation(base.tear(column), variable_scales[column]);
+        y[tear_index] = base.tear(column) + h;
         if !model.torn_block_sweep(tearing, y, p, t, &mut perturbed)? || !all_finite(&perturbed) {
-            y.copy_from_slice(base);
+            base.restore(tearing, y);
             return Ok(None);
         }
         for row in 0..rows {
@@ -351,10 +351,10 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
         }
         for row in 0..recovered_rows {
             let index = tearing.causal_steps[row].y_index;
-            recovered[(row, column)] = (y[index] - base[index]) / h;
+            recovered[(row, column)] = (y[index] - base.causal(row)) / h;
         }
     }
-    y.copy_from_slice(base);
+    base.restore(tearing, y);
     if jacobian
         .iter()
         .chain(recovered.iter())
@@ -420,11 +420,11 @@ fn line_search<M: ImplicitProjectionModel>(
 ) -> Result<Option<Vec<f64>>, RuntimeSolveError> {
     for _ in 0..TORN_BACKTRACK_STEPS {
         // Halving cannot recover progress once every tear update rounds away.
-        if tearing
-            .tear_y_indices
+        if step
+            .delta
             .iter()
-            .zip(step.delta)
-            .all(|(&index, &delta)| step.base[index] + step.alpha * delta == step.base[index])
+            .enumerate()
+            .all(|(tear, &delta)| step.base.tear(tear) + step.alpha * delta == step.base.tear(tear))
         {
             break;
         }
@@ -433,14 +433,14 @@ fn line_search<M: ImplicitProjectionModel>(
         }
         step.alpha *= 0.5;
     }
-    y.copy_from_slice(step.base);
+    step.base.restore(tearing, y);
     Ok(None)
 }
 
 /// One backtracking candidate: the base point, Newton direction, acceptance
 /// scales, and the step fraction under trial.
 struct LineSearchStep<'a> {
-    base: &'a [f64],
+    base: &'a TornValues,
     delta: &'a [f64],
     row_scales: &'a [f64],
     before: f64,
@@ -450,7 +450,7 @@ struct LineSearchStep<'a> {
 
 fn recovered_correction_converged<M: ImplicitProjectionModel>(
     model: &M,
-    base: &[f64],
+    base: &TornValues,
     tearing: &solve::BlockTearing,
     jacobian: &DMatrix<f64>,
     delta: &[f64],
@@ -467,30 +467,36 @@ fn recovered_correction_converged<M: ImplicitProjectionModel>(
                 .zip(delta)
                 .map(|(a, b)| a * b)
                 .sum();
-            let scale = model_variable_scale(model, causal.y_index, base[causal.y_index]);
+            let scale = model_variable_scale(model, causal.y_index, base.causal(row));
             scaled_correction_converged(&[correction], &[scale], tol)
         })
 }
 
+/// Whether the undamped step moves every causal target within tolerance. The
+/// trial runs in `y`, which holds the step's base on entry and on return.
 fn causal_correction_converged<M: ImplicitProjectionModel>(
     model: &M,
-    p: &[f64],
-    t: f64,
+    y: &mut [f64],
+    (p, t): (&[f64], f64),
     tearing: &solve::BlockTearing,
     step: &LineSearchStep<'_>,
 ) -> Result<bool, RuntimeSolveError> {
     if tearing.causal_steps.is_empty() {
         return Ok(true);
     }
-    let mut trial = step.base.to_vec();
-    if line_search_step(model, &mut trial, p, t, tearing, step)?.is_none() {
-        return Ok(false);
-    }
-    Ok(tearing.causal_steps.iter().all(|causal| {
-        let index = causal.y_index;
-        let scale = model_variable_scale(model, index, step.base[index]);
-        scaled_correction_converged(&[trial[index] - step.base[index]], &[scale], step.tol)
-    }))
+    let accepted = line_search_step(model, y, p, t, tearing, step)?.is_some();
+    let converged = accepted
+        && tearing
+            .causal_steps
+            .iter()
+            .enumerate()
+            .all(|(row, causal)| {
+                let base = step.base.causal(row);
+                let scale = model_variable_scale(model, causal.y_index, base);
+                scaled_correction_converged(&[y[causal.y_index] - base], &[scale], step.tol)
+            });
+    step.base.restore(tearing, y);
+    Ok(converged)
 }
 
 /// Evaluate one backtracking candidate, returning its residual when accepted.
@@ -505,9 +511,14 @@ fn line_search_step<M: ImplicitProjectionModel>(
     tearing: &solve::BlockTearing,
     step: &LineSearchStep<'_>,
 ) -> Result<Option<Vec<f64>>, RuntimeSolveError> {
-    y.copy_from_slice(step.base);
-    for (&tear_index, &direction) in tearing.tear_y_indices.iter().zip(step.delta.iter()) {
-        let candidate = step.base[tear_index] + step.alpha * direction;
+    step.base.restore(tearing, y);
+    for (tear, (&tear_index, &direction)) in tearing
+        .tear_y_indices
+        .iter()
+        .zip(step.delta.iter())
+        .enumerate()
+    {
+        let candidate = step.base.tear(tear) + step.alpha * direction;
         if !candidate.is_finite() {
             return Ok(None);
         }
@@ -535,6 +546,50 @@ fn residual_row<M: ImplicitProjectionModel + ?Sized>(
         .filter(|value| value.is_finite()))
 }
 
-fn slices_differ(a: &[f64], b: &[f64]) -> bool {
-    a != b
+/// The coordinates a torn solve writes, as they were when saved: its tear
+/// coordinates, then its causal targets. The sweep writes only causal targets
+/// and the reduced Newton only tears, so restoring these restores `y`.
+struct TornValues {
+    values: Vec<f64>,
+    tears: usize,
+}
+
+impl TornValues {
+    fn save(tearing: &solve::BlockTearing, y: &[f64]) -> Self {
+        let mut values =
+            Vec::with_capacity(tearing.tear_y_indices.len() + tearing.causal_steps.len());
+        values.extend(tearing.tear_y_indices.iter().map(|&index| y[index]));
+        values.extend(tearing.causal_steps.iter().map(|step| y[step.y_index]));
+        Self {
+            values,
+            tears: tearing.tear_y_indices.len(),
+        }
+    }
+
+    fn tear(&self, tear: usize) -> f64 {
+        self.values[tear]
+    }
+
+    fn causal(&self, step: usize) -> f64 {
+        self.values[self.tears + step]
+    }
+
+    fn restore(&self, tearing: &solve::BlockTearing, y: &mut [f64]) {
+        for (&index, &value) in tearing.tear_y_indices.iter().zip(&self.values) {
+            y[index] = value;
+        }
+        for (step, &value) in tearing.causal_steps.iter().zip(&self.values[self.tears..]) {
+            y[step.y_index] = value;
+        }
+    }
+
+    /// Whether the solve moved a coordinate it writes.
+    fn changed(&self, tearing: &solve::BlockTearing, y: &[f64]) -> bool {
+        let tears = tearing.tear_y_indices.iter().copied();
+        let causal = tearing.causal_steps.iter().map(|step| step.y_index);
+        tears
+            .chain(causal)
+            .zip(&self.values)
+            .any(|(index, &value)| y[index] != value)
+    }
 }

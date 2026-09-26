@@ -11,18 +11,43 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
     block_index: usize,
     tol: f64,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
-    // Construction proves F(x) = A*x + b for this block. Evaluating b at
-    // x=0 and solving A*x=-b computes the coordinate itself. Accepting an
-    // incoming Newton iterate merely because its correction is below tol
-    // can retain the wrong side of a relation after a discrete branch change.
-    let mut candidate = y.to_vec();
+    // The solve runs in `y` itself, which it changes only in the block
+    // unknowns; they are restored when the block does not settle.
+    let incoming = super::block_values(y, &block.y_indices);
+    let settled = settle_affine_block(model, y, (p, t), block, block_index, tol);
+    if !matches!(settled, Ok(true)) {
+        super::restore_block_values(y, &block.y_indices, &incoming);
+    }
+    let settled = settled?;
+    let changed = settled
+        && block
+            .y_indices
+            .iter()
+            .zip(&incoming)
+            .any(|(&index, &value)| value != y[index]);
+    Ok(ProjectionBlockUpdate { changed, settled })
+}
+
+/// Solve the block's unknowns in `candidate` from the arithmetic origin.
+/// Construction proves F(x) = A*x + b for this block. Evaluating b at x=0 and
+/// solving A*x=-b computes the coordinate itself. Accepting an incoming Newton
+/// iterate merely because its correction is below tol can retain the wrong
+/// side of a relation after a discrete branch change.
+fn settle_affine_block<M: ImplicitProjectionModel>(
+    model: &M,
+    candidate: &mut [f64],
+    (p, t): (&[f64], f64),
+    block: &solve::AlgebraicProjectionBlock,
+    block_index: usize,
+    tol: f64,
+) -> Result<bool, RuntimeSolveError> {
     for &index in &block.y_indices {
         candidate[index] = 0.0;
     }
     let structure = model.algebraic_projection_block_structure(block_index);
     let jacobian = algebraic_block_jacobian(
         model,
-        &candidate,
+        candidate,
         p,
         t,
         &block.rows,
@@ -31,7 +56,7 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
     )?;
     let (row_scales, variable_scales) = algebraic_block_scales(
         model,
-        &candidate,
+        candidate,
         block,
         &jacobian,
         structure.map(solve::JacobianStructure::pattern),
@@ -78,29 +103,15 @@ pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
         prefer_torn: true,
         used_torn: std::cell::Cell::new(false),
     };
-    let mut settled = system.project(&mut candidate)?;
+    let mut settled = system.project(candidate)?;
     if !settled && system.used_torn.get() {
         system.prefer_torn = false;
         for &index in &block.y_indices {
             candidate[index] = 0.0;
         }
-        settled = system.project(&mut candidate)?;
+        settled = system.project(candidate)?;
     }
-    if !settled {
-        return Ok(ProjectionBlockUpdate {
-            changed: false,
-            settled: false,
-        });
-    }
-    let mut changed = false;
-    for &index in &block.y_indices {
-        changed |= y[index] != candidate[index];
-        y[index] = candidate[index];
-    }
-    Ok(ProjectionBlockUpdate {
-        changed,
-        settled: true,
-    })
+    Ok(settled)
 }
 
 struct AffineBlockSystem<'a, M> {

@@ -1155,6 +1155,24 @@ struct AlgebraicBlockDeltaContext<'a, M> {
     step_limit: StepLimit,
 }
 
+/// The values of `indices` in `y`; an index outside `y` holds NaN and is never
+/// restored.
+fn block_values(y: &[f64], indices: &[usize]) -> Vec<f64> {
+    indices
+        .iter()
+        .map(|&index| y.get(index).copied().unwrap_or(f64::NAN))
+        .collect()
+}
+
+/// Restore the values [`block_values`] saved.
+fn restore_block_values(y: &mut [f64], indices: &[usize], values: &[f64]) {
+    for (&index, &value) in indices.iter().zip(values) {
+        if let Some(slot) = y.get_mut(index) {
+            *slot = value;
+        }
+    }
+}
+
 fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
     context: AlgebraicBlockDeltaContext<'_, M>,
     y: &mut [f64],
@@ -1171,7 +1189,7 @@ fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
         variable_scales,
         step_limit,
     } = context;
-    let snapshot = y.to_vec();
+    let snapshot = block_values(y, &block.y_indices);
     if !before.is_finite() {
         return Ok(ProjectionBlockUpdate {
             changed: false,
@@ -1180,28 +1198,28 @@ fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
     }
     let mut alpha = step_limit.initial_alpha(y, &block.y_indices, delta, variable_scales);
     loop {
-        y.copy_from_slice(&snapshot);
+        restore_block_values(y, &block.y_indices, &snapshot);
         let mut changed = false;
         let mut step_at_resolution = true;
         for (y_idx, value) in block.y_indices.iter().copied().zip(delta.iter().copied()) {
             let step = alpha * value;
             if !step.is_finite() {
-                y.copy_from_slice(&snapshot);
+                restore_block_values(y, &block.y_indices, &snapshot);
                 return Ok(ProjectionBlockUpdate {
                     changed: false,
                     settled: false,
                 });
             }
             let Some(slot) = y.get_mut(y_idx) else {
-                y.copy_from_slice(&snapshot);
+                restore_block_values(y, &block.y_indices, &snapshot);
                 return Err(RuntimeSolveError::solve_ir(format!(
                     "algebraic projection references y index {y_idx}, but the model has only {} variables",
-                    snapshot.len()
+                    y.len()
                 )));
             };
             let candidate = *slot + step;
             if !candidate.is_finite() {
-                y.copy_from_slice(&snapshot);
+                restore_block_values(y, &block.y_indices, &snapshot);
                 return Ok(ProjectionBlockUpdate {
                     changed: false,
                     settled: false,
@@ -1212,7 +1230,7 @@ fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
             *slot = candidate;
         }
         if !changed {
-            y.copy_from_slice(&snapshot);
+            restore_block_values(y, &block.y_indices, &snapshot);
             return Ok(ProjectionBlockUpdate {
                 changed: false,
                 settled: false,
@@ -1235,7 +1253,7 @@ fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
         };
         alpha = next_alpha;
     }
-    y.copy_from_slice(&snapshot);
+    restore_block_values(y, &block.y_indices, &snapshot);
     Ok(ProjectionBlockUpdate {
         changed: false,
         settled: false,
