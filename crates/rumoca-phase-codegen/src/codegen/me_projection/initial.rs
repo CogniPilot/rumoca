@@ -336,20 +336,22 @@ fn tangent_value(
 
 /// The seed indices (solver-Y, then parameters after `y_len`) each output of
 /// `block` depends on, by output index.
-fn output_seed_reads(block: &solve::ScalarProgramBlock) -> BTreeMap<usize, BTreeSet<usize>> {
-    let mut reads = BTreeMap::new();
-    for (output, (program, offset)) in output_positions(block) {
-        let dependencies = solve::StructuralPattern::derive_output_seed_index_dependencies(
-            &block.programs()[program],
-            None,
-        )
-        .ok()
-        .and_then(|outputs| outputs.get(offset).cloned());
-        reads.insert(output, dependencies);
-    }
-    reads
+/// A directional derivative whose seed reads cannot be derived is refused.
+fn output_seed_reads(
+    block: &solve::ScalarProgramBlock,
+) -> Result<BTreeMap<usize, BTreeSet<usize>>, CodegenError> {
+    output_positions(block)
         .into_iter()
-        .map(|(output, dependencies)| (output, dependencies.unwrap_or_default()))
+        .map(|(output, (program, offset))| {
+            solve::StructuralPattern::derive_output_seed_index_dependencies(
+                &block.programs()[program],
+                None,
+            )
+            .ok()
+            .and_then(|outputs| outputs.get(offset).cloned())
+            .map(|reads| (output, reads))
+            .ok_or_else(|| refuse("a directional derivative's seed reads are not derivable"))
+        })
         .collect()
 }
 
@@ -447,7 +449,7 @@ fn tangent_cone(
         solve::ScalarSlot::P { index, .. } => Some(y_len + index),
         solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => None,
     };
-    let row_reads = output_seed_reads(&artifacts.continuous.implicit_jacobian_v_scalar);
+    let row_reads = output_seed_reads(&artifacts.continuous.implicit_jacobian_v_scalar)?;
     let plan = &problem.continuous.algebraic_projection_plan;
     let blocks = seed_blocks
         .iter()
@@ -466,22 +468,27 @@ fn tangent_cone(
             Ok((block.y_indices.as_slice(), reads))
         })
         .collect::<Result<Vec<_>, CodegenError>>()?;
-    let update_reads = artifacts
-        .initialization
-        .update_jacobian_v
-        .as_ref()
-        .map(output_seed_reads)
-        .unwrap_or_default();
-    let updates = init
-        .update_targets()
+    let targets = init.update_targets();
+    let update_reads = match &artifacts.initialization.update_jacobian_v {
+        Some(block) => output_seed_reads(block)?,
+        None if targets.is_empty() => BTreeMap::new(),
+        None => {
+            return Err(refuse(
+                "an initialization update row has no directional derivative",
+            ));
+        }
+    };
+    let updates = targets
         .iter()
         .enumerate()
         .map(|(row, target)| {
-            let reads = update_reads.get(&row).cloned().unwrap_or_default();
-            (combined(*target), reads)
+            let reads = update_reads.get(&row).cloned().ok_or_else(|| {
+                refuse("an initialization update row has no directional derivative")
+            })?;
+            Ok((combined(*target), reads))
         })
-        .collect();
-    let residual_reads = output_seed_reads(residual_block)
+        .collect::<Result<_, CodegenError>>()?;
+    let residual_reads = output_seed_reads(residual_block)?
         .into_values()
         .flatten()
         .collect();
