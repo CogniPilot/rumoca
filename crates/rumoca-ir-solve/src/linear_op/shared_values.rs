@@ -162,6 +162,37 @@ impl SharedValueSegments {
     }
 }
 
+/// One scalar program with each value computed once: the single-program
+/// segment of a fusible program when it has no more operations, and the
+/// program unchanged otherwise. Outputs keep their order, and no load reads
+/// one back, since a program's stores commit only after it runs.
+#[must_use]
+pub fn share_program_values(program: Vec<LinearOp>) -> Vec<LinearOp> {
+    let shared = {
+        let Some(fusible) = FusibleProgram::classify(&program) else {
+            return program;
+        };
+        let targets = (0..crate::ScalarProgramBlock::program_output_count(&program))
+            .map(|output| usize::MAX - output)
+            .collect::<Vec<_>>();
+        let mut builder = Builder::default();
+        builder.append(0, &targets, &fusible);
+        let shared = builder.finish();
+        debug_assert_eq!(
+            shared.check(&[AssignmentProgram {
+                ops: &program,
+                targets: &targets,
+            }]),
+            Ok(())
+        );
+        shared.segments.into_iter().next()
+    };
+    match shared {
+        Some(segment) if segment.ops.len() <= program.len() => segment.ops,
+        _ => program,
+    }
+}
+
 /// A program a segment may absorb, classified once: every operation is a
 /// load, a copy, an output store, or a renamable value, every register is
 /// written once, and the program's register flow validates.

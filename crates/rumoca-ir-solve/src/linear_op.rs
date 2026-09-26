@@ -18,7 +18,7 @@ pub use block_split::{BlockResidualSplit, BlockResidualSplitError};
 pub use dead_constants::prune_dead_constants;
 pub use shared_values::{
     AssignmentProgram, CappedValue, SHARED_VALUE_REGISTER_CAP, SharedValueError,
-    SharedValueSegment, SharedValueSegments,
+    SharedValueSegment, SharedValueSegments, share_program_values,
 };
 
 /// Register index in a lowered op sequence.

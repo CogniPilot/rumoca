@@ -8,7 +8,7 @@
 //! isolator; an output that another shape owns, or that reads the target
 //! without a shape, has no isolation; any other output is its own value.
 
-use rumoca_ir_solve::{LinearOp, materialize_target_assignment};
+use rumoca_ir_solve::{LinearOp, materialize_target_assignment, share_program_values};
 
 use super::{PreparedScalarProgramBlock, row_output_depends_on_y_index};
 
@@ -255,6 +255,7 @@ impl PreparedScalarProgramBlock {
             let (result, _) = materialize_target_assignment(shape, &mut program)?;
             program.push(LinearOp::StoreOutput { src: result });
         }
-        Some(program)
+        // Each value is computed once across the run (SPEC_0043 §6a).
+        Some(share_program_values(program))
     }
 }
