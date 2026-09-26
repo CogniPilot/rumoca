@@ -822,6 +822,13 @@ pub struct WorkerModelResult {
     pub sim_trace_file: Option<String>,
     pub sim_perf_profile_file: Option<String>,
     pub sim_trace_error: Option<String>,
+    /// The worst projection fallback rate of the run's blocks over the
+    /// policy rate (SPEC_0044 ME-PROJ-003); absent when none exceeded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_fallback_rate: Option<f64>,
+    /// The run's fallback warnings behind `projection_fallback_rate`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_fallback_detail: Option<String>,
     pub ir_dae_file: Option<String>,
     pub ir_solve_file: Option<String>,
     pub ir_solve_error: Option<String>,
@@ -916,6 +923,8 @@ impl WorkerModelResult {
             sim_trace_file: None,
             sim_perf_profile_file: None,
             sim_trace_error: None,
+            projection_fallback_rate: None,
+            projection_fallback_detail: None,
             ir_dae_file: None,
             ir_solve_file: None,
             ir_solve_error: None,

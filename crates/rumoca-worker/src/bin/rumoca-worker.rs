@@ -1302,6 +1302,19 @@ fn mark_trivial_static_success(row: &mut WorkerModelResult) {
     row.sim_wall_seconds = Some(0.0);
 }
 
+/// Record the run's worst projection fallback rate over the policy rate, and
+/// its warnings, on the row (SPEC_0044 ME-PROJ-003).
+fn record_projection_fallbacks(row: &mut WorkerModelResult) {
+    let report = rumoca_sim::projection_fallbacks();
+    row.projection_fallback_rate = report
+        .over_threshold()
+        .map(|(_, counts)| counts.rate())
+        .reduce(f64::max);
+    row.projection_fallback_detail = row
+        .projection_fallback_rate
+        .map(|_| report.warnings().join("; "));
+}
+
 fn run_and_classify_simulation(
     row: &mut WorkerModelResult,
     request: &ModelWorkerRequest,
@@ -1309,10 +1322,12 @@ fn run_and_classify_simulation(
     opts: &SimOptions,
     progress: &ProgressLog,
 ) {
+    rumoca_sim::reset_projection_fallbacks();
     let sim_start = Instant::now();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_simulation_pipeline(result.dae.as_ref(), opts, progress, request)
     }));
+    record_projection_fallbacks(row);
     let elapsed = sim_start.elapsed().as_secs_f64();
     match outcome {
         Ok(Ok(run)) => {
