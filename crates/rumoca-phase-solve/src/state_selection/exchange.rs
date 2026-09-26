@@ -465,6 +465,29 @@ mod tests {
     }
 
     #[test]
+    fn a_prefer_or_demoted_always_column_may_be_exchanged_out_but_a_forced_state_may_not() {
+        // MLS 3.7 §4.9.7.1 makes `prefer` and an `always` request on a
+        // coordinate that is not a genuine state preferences: each may be
+        // reconstructed by an alternate. A forced `always` state never is.
+        let prefer = ColumnChoice::Eligible(6);
+        let demoted_always = ColumnChoice::Eligible(8);
+        for incoming in [prefer, demoted_always] {
+            let ranked = rank_exchanges(&[STATE, incoming], &[1], all_shared);
+            assert_eq!(
+                ranked.issued,
+                vec![Exchange {
+                    dependent: 0,
+                    incoming: 1,
+                    shared: 1
+                }],
+                "{incoming:?}"
+            );
+        }
+        let ranked = rank_exchanges(&[STATE, ColumnChoice::Independent], &[1], all_shared);
+        assert_eq!(ranked, RankedExchanges::default());
+    }
+
+    #[test]
     fn an_uncoupled_pair_is_not_an_exchange() {
         let choices = [STATE, STATE, STATE];
         let ranked = rank_exchanges(&choices, &[1, 2], |_, incoming| usize::from(incoming == 2));
