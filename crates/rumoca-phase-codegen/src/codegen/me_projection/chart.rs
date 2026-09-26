@@ -145,6 +145,11 @@ pub(super) struct ChartRecord {
     binding: usize,
     /// The chart's conditioning at construction: the primary's keep reference.
     trial_rcond: String,
+    /// The nominal of each state while this chart is active.
+    nominals: Vec<String>,
+    /// Per state, the single source coordinate its binding row integrates.
+    #[serde(skip)]
+    sources: Vec<Option<usize>>,
     /// Largest outputs of one entry's or one binding row's program.
     jvp_max_outputs: usize,
     row_max_outputs: usize,
@@ -338,9 +343,57 @@ fn record_binding(
             .row_max_outputs
             .max(table.rows.output_count(function));
         functions.extend([function, offset]);
+        record
+            .sources
+            .push(binding_source(&block.programs()[program], state));
     }
     record.binding = table.push(functions);
     Ok(())
+}
+
+/// The one solver coordinate other than `state` a binding program reads, if
+/// it reads exactly one (`refresh_projection.rs: binding_row_source`).
+fn binding_source(program: &[solve::LinearOp], state: usize) -> Option<usize> {
+    let mut sources = program
+        .iter()
+        .filter_map(|op| match op {
+            solve::LinearOp::LoadY { index, .. } if *index != state => Some(*index),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    sources.sort_unstable();
+    sources.dedup();
+    match sources.as_slice() {
+        [source] => Some(*source),
+        _ => None,
+    }
+}
+
+/// Every chart's state nominals (`dynamic_chart.rs: alternate_state_nominals`):
+/// the primary's are the solver scales of its states; an alternate state whose
+/// binding row integrates another source than the primary's takes that
+/// source's scale and otherwise keeps the primary's nominal.
+pub(super) fn assign_nominals(records: &mut [ChartRecord], scale: impl Fn(usize) -> f64) {
+    let Some((primary, alternates)) = records.split_first_mut() else {
+        return;
+    };
+    let primary_nominals = (0..primary.sources.len()).map(&scale).collect::<Vec<_>>();
+    for record in alternates {
+        record.nominals = record
+            .sources
+            .iter()
+            .enumerate()
+            .map(|(state, &source)| match source {
+                Some(source) if Some(source) != primary.sources[state] => scale(source),
+                _ => primary_nominals[state],
+            })
+            .map(|value| format!("{value:?}"))
+            .collect();
+    }
+    primary.nominals = primary_nominals
+        .iter()
+        .map(|value| format!("{value:?}"))
+        .collect();
 }
 
 /// The one row whose seeded Jacobian exceeds one half in magnitude.

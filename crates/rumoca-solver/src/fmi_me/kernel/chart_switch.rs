@@ -14,6 +14,19 @@ impl SolveMeKernel {
 
     /// The nominal of generated state coordinate `index` under the active
     /// chart: the scale of the source coordinate that chart integrates.
+    /// The basis change the last completed step latched: the active chart, the
+    /// target, and their conditionings at the request.
+    pub(crate) fn requested_chart_switch(&self) -> Option<(usize, usize, f64, f64)> {
+        self.pending_basis_change.as_ref().map(|change| {
+            (
+                self.active_chart,
+                change.target,
+                change.active_conditioning,
+                change.target_reference,
+            )
+        })
+    }
+
     pub(super) fn active_state_nominal(&self, index: usize) -> f64 {
         self.reduced_charts
             .as_ref()
@@ -146,6 +159,7 @@ impl SolveMeKernel {
                     target,
                     physical_solver_y: solver_y,
                     target_reference: conditioning[target].rcond,
+                    active_conditioning: conditioning[self.active_chart].rcond,
                 });
                 Ok(true)
             }

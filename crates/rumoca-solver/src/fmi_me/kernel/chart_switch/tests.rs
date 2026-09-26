@@ -256,6 +256,7 @@ fn latch_alternate(kernel: &mut SolveMeKernel) {
         target: 1,
         physical_solver_y: physical,
         target_reference: 1.0,
+        active_conditioning: 0.0,
     });
 }
 

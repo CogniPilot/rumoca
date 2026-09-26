@@ -43,7 +43,7 @@ static int {{ name }}({{ signature }}) {
 {%- if me.kernel %} double rmc_d[{{ me.work.doubles }}]; size_t rmc_s[{{ me.work.sizes }}]; size_t rmc_dtop; size_t rmc_stop; double rmc_tol; bool rmc_certify;{% endif -%}
 {%- if me.blocks|length > 0 %} double rmc_seed[{{ me.seed_len if me.seed_len > 0 else 1 }}];{% endif -%}
 {%- if me.lane_max > 0 %} double rmc_lane_seed[{{ (me.seed_len if me.seed_len > 0 else 1) * me.lane_max }}];{% endif -%}
-{%- if me.switching %} size_t rmc_chart; size_t rmc_chart_target; bool rmc_chart_pending; double rmc_chart_reference; double rmc_chart_target_reference; double rmc_chart_y[Y_LEN];{% endif -%}
+{%- if me.switching %} size_t rmc_chart; size_t rmc_chart_target; bool rmc_chart_pending; double rmc_chart_reference; double rmc_chart_target_reference; bool rmc_chart_log; double rmc_chart_y[Y_LEN];{% endif -%}
 {%- endmacro %}
 {%- macro workspace_reset(me) -%}
 {%- if me.kernel %} m->rmc_dtop = 0; m->rmc_stop = 0; m->rmc_tol = {{ me.policy.tolerance }}; m->rmc_certify = true;{% endif -%}
@@ -1286,6 +1286,7 @@ static {{ prefix }}Status {{ name }}(ModelInstance* m) {
     nalgebra's column-pivoted QR reproduced operation for operation. -#}
 {%- macro chart_kernel(solve, me, prefix) %}
 {%- if me.switching %}
+#include <stdio.h>
 #define RMC_NCHARTS {{ me.switching|length }}
 #define RMC_CHART_REGULAR_MULTIPLE {{ me.policy.chart_regular_multiple }}
 #define RMC_CHART_SWITCH_KEEP {{ me.policy.chart_switch_keep }}
@@ -1294,6 +1295,12 @@ typedef struct { size_t nrows; size_t ncols; size_t ndep; const size_t* dep; siz
 static const RmcChart rmc_charts[RMC_NCHARTS] = {
 {%- for c in me.switching %}
     { {{ c.nrows }}, {{ c.ncols }}, {{ c.ndep }}, RMC_P({{ c.dep }}), {{ c.nentries }}, RMC_P({{ c.entries }}), RMC_P({{ c.binding }}), {{ c.trial_rcond }}, {{ c.jvp_max_outputs }}, {{ c.row_max_outputs }} },
+{%- endfor %}
+};
+/* dynamic_chart.rs: BuiltChart::state_nominals, per chart and state. */
+static const double rmc_chart_nominals[RMC_NCHARTS][{{ solve.solve_layout.state_scalar_count }}] = {
+{%- for c in me.switching %}
+    { {{ c.nominals|join(", ") }} },
 {%- endfor %}
 };
 /* nalgebra blas.rs: dotx over one dynamic column, eight accumulators per full
@@ -1418,7 +1425,15 @@ static {{ prefix }}Status rmc_chart_completed(ModelInstance* m, bool* request) {
         }
     }
     m->rmc_chart_pending = target < RMC_NCHARTS;
-    if (m->rmc_chart_pending) { memcpy(m->rmc_chart_y, m->y, sizeof(m->rmc_chart_y)); m->rmc_chart_target = target; m->rmc_chart_target_reference = sigma[target]; *request = true; }
+    if (m->rmc_chart_pending) {
+        memcpy(m->rmc_chart_y, m->y, sizeof(m->rmc_chart_y)); m->rmc_chart_target = target; m->rmc_chart_target_reference = sigma[target]; *request = true;
+        /* The chart_switch tracing event of the linked kernel. */
+        if (m->rmc_chart_log) {
+            char text[256];
+            snprintf(text, sizeof(text), "reduced chart switch requested t=%.17g from=%zu to=%zu sigma_active=%.17g sigma_target=%.17g sigma_reference=%.17g", m->time, active, target, current, sigma[target], m->rmc_chart_reference);
+            RMC_INFO(m, "chart", text);
+        }
+    }
     memcpy(m->y, saved, sizeof(saved));
     return {{ prefix }}OK;
 fail:
@@ -1430,14 +1445,16 @@ fail:
    its identity row at the latched coordinate, the target's certified
    refresh re-establishes every constraint from that coordinate, and only then
    is the target adopted, with its keep reference: its conditioning at the
-   request, or the construction conditioning for the primary basis. A failed transfer restores the chart and the
+   request, or the construction conditioning for the primary basis. A state
+   that now integrates another source reports its nominal change. A failed transfer restores the chart and the
    coordinate. */
-static {{ prefix }}Status rmc_chart_transfer(ModelInstance* m, bool* values_changed) {
+static {{ prefix }}Status rmc_chart_transfer(ModelInstance* m, bool* values_changed, bool* nominals_changed) {
     double before[Y_LEN]; double states[STATE_LEN];
     const RmcChart* target = &rmc_charts[m->rmc_chart_target];
     size_t active = m->rmc_chart;
     bool certify = m->rmc_certify;
     *values_changed = false;
+    *nominals_changed = false;
     m->rmc_chart_pending = false;
     memcpy(before, m->y, sizeof(before));
     RMC_MARK;
@@ -1456,6 +1473,7 @@ static {{ prefix }}Status rmc_chart_transfer(ModelInstance* m, bool* values_chan
     if (status != {{ prefix }}OK) goto fail;
     RMC_RELEASE;
     m->rmc_chart_reference = m->rmc_chart != 0 ? m->rmc_chart_target_reference : rmc_charts[0].trial_rcond;
+    for (size_t k = 0; k < {{ solve.solve_layout.state_scalar_count }}; ++k) *nominals_changed |= rmc_chart_nominals[active][k] != rmc_chart_nominals[m->rmc_chart][k];
     *values_changed = memcmp(before, m->y, {{ solve.solve_layout.state_scalar_count }} * sizeof(double)) != 0;
     return {{ prefix }}OK;
 fail:

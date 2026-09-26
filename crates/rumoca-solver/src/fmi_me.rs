@@ -62,6 +62,7 @@
 //!   host re-derive it from rendered text.
 
 pub mod driver;
+pub mod fixed_step;
 pub mod integrator;
 mod kernel;
 pub(crate) mod lifecycle;

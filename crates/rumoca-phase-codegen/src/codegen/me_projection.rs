@@ -434,7 +434,7 @@ fn chart_records(
         state_count: problem.solve_layout.state_scalar_count(),
         seed_len,
     };
-    systems
+    let mut records = systems
         .iter()
         .zip(implicits)
         .enumerate()
@@ -447,7 +447,9 @@ fn chart_records(
             };
             chart::chart_record(&sources, &point, table)
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    chart::assign_nominals(&mut records, |index| component.solver_variable_scale(index));
+    Ok(records)
 }
 
 /// The complete ME refresh view of one checked FMI C component.

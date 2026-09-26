@@ -171,6 +171,8 @@ pub(super) struct PendingBasisChange {
     pub(super) physical_solver_y: Vec<f64>,
     /// The target's conditioning at the request: its keep reference once active.
     pub(super) target_reference: f64,
+    /// The active chart's conditioning at the request.
+    pub(super) active_conditioning: f64,
 }
 
 /// What an accepted step decides about the active chart.
