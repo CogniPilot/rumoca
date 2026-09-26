@@ -143,6 +143,7 @@ mod parameter_relations;
 mod periodic_source_counter_regression;
 mod pipeline_test;
 mod prepared_vectors_refresh;
+mod proven_tearing;
 mod public_observation_convergence;
 mod receiver_function_redeclare;
 mod reduced_state_charts;

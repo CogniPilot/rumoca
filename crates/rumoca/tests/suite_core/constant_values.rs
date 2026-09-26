@@ -201,6 +201,7 @@ fn a_slider_loop_tears_into_two_angles_and_settles_without_dense_fallback() {
         .find(|block| block.y_indices.contains(&s))
         .expect("the slide is projected");
     assert_eq!(slide.y_indices, [s], "the slide is solved alone");
+    assert!(crate::proven_tearing::assert_every_step_is_proven(&model) > 0);
 
     let compiled = Compiler::new()
         .model("SliderLoop")

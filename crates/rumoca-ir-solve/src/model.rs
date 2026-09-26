@@ -307,6 +307,28 @@ pub struct BlockTearing {
 pub struct CausalStep {
     pub row: usize,
     pub y_index: usize,
+    /// Why the step's isolated coefficient is bounded away from zero; set by
+    /// construction and trusted by every executor (SPEC_0043 §4).
+    #[serde(default, skip_serializing_if = "causal_coefficient_unproven")]
+    pub coefficient: CausalCoefficient,
+}
+
+/// The construction proof that a causal step's isolated coefficient is
+/// bounded away from zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub enum CausalCoefficient {
+    /// No proof: the step is not admissible as a causal step.
+    #[default]
+    Unproven,
+    /// The target enters with a unit coefficient (up to sign and a nonzero
+    /// literal output scale).
+    Unit,
+    /// The coefficient is a nonzero literal.
+    Literal,
+}
+
+fn causal_coefficient_unproven(coefficient: &CausalCoefficient) -> bool {
+    *coefficient == CausalCoefficient::Unproven
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

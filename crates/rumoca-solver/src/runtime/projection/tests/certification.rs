@@ -155,7 +155,11 @@ fn certified_torn_projection_checks_recovered_coordinates() {
     let tearing = solve::BlockTearing {
         tear_y_indices: vec![0],
         residual_rows: vec![1],
-        causal_steps: vec![solve::CausalStep { row: 0, y_index: 1 }],
+        causal_steps: vec![solve::CausalStep {
+            row: 0,
+            y_index: 1,
+            ..Default::default()
+        }],
     };
     let model = AmplifiedCausalProjection {
         plan: solve::AlgebraicProjectionPlan {

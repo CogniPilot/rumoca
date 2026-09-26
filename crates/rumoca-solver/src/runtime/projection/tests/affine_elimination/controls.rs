@@ -10,7 +10,11 @@ fn a_large_reduced_system_retains_the_existing_sparse_policy() {
         residual_rows: (0..17).collect(),
         causal_steps: (17..DIMENSION)
             .rev()
-            .map(|row| solve::CausalStep { row, y_index: row })
+            .map(|row| solve::CausalStep {
+                row,
+                y_index: row,
+                ..Default::default()
+            })
             .collect(),
     });
     let dependencies = (0..DIMENSION)
@@ -180,7 +184,11 @@ fn reduced_affine_refinement_preserves_tiny_switching_voltage() {
     let causal_steps = [(0, 1), (2, 2), (1, 3)]
         .into_iter()
         .chain((4..DIMENSION).map(|i| (i, i)))
-        .map(|(row, y_index)| solve::CausalStep { row, y_index })
+        .map(|(row, y_index)| solve::CausalStep {
+            row,
+            y_index,
+            ..Default::default()
+        })
         .collect();
     let plan = solve::AlgebraicProjectionPlan {
         blocks: vec![solve::AlgebraicProjectionBlock {

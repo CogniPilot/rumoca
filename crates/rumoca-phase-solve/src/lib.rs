@@ -11,6 +11,7 @@ mod layout;
 mod lower;
 mod model_values;
 mod model_wire;
+mod proven_tearing;
 mod state_selection;
 
 pub mod ad;
@@ -295,6 +296,7 @@ pub(crate) fn continuous_refresh_owners(
     use rumoca_eval_solve::refresh_plan::{
         build_continuous_refresh_owners, build_continuous_refresh_owners_from,
     };
+    proven_tearing::retear_unproven_blocks(problem)?;
     let Some(primary) = primary else {
         return build_continuous_refresh_owners(problem);
     };

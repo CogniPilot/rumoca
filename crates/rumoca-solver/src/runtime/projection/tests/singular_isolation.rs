@@ -44,7 +44,11 @@ impl TornSingularIsolatorModel {
                     tearing: Some(solve::BlockTearing {
                         tear_y_indices: vec![0],
                         residual_rows: vec![0],
-                        causal_steps: vec![solve::CausalStep { row: 1, y_index: 1 }],
+                        causal_steps: vec![solve::CausalStep {
+                            row: 1,
+                            y_index: 1,
+                            ..Default::default()
+                        }],
                     }),
                     alternate_charts: Vec::new(),
                 }],

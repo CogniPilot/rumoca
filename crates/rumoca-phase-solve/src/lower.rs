@@ -206,7 +206,7 @@ fn algebraic_projection_blocks<'dae>(
 /// matched pairs by position, into the solver-index space carried by the
 /// projection plan. `rows[i]` and `y_indices[i]` are the residual row and
 /// solver-Y unknown of local position `i`.
-fn solve_block_tearing(
+pub(crate) fn solve_block_tearing(
     tearing: &structural::TearingResult,
     rows: &[usize],
     y_indices: &[usize],
@@ -228,6 +228,7 @@ fn solve_block_tearing(
             .map(|&(equation_local, variable_local)| solve::CausalStep {
                 row: rows[equation_local],
                 y_index: y_indices[variable_local],
+                coefficient: solve::CausalCoefficient::Unproven,
             })
             .collect(),
     }

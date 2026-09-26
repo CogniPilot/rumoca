@@ -1,6 +1,81 @@
 use super::*;
 use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
 
+/// A causal step divides by its isolated coefficient on every call, so only a
+/// construction proof that the coefficient is bounded away from zero admits
+/// it: a unit or nonzero-literal coefficient is proven and recorded on the
+/// step, and a coefficient read from a solver value is promoted to a tear.
+#[test]
+fn only_a_proven_coefficient_keeps_a_causal_step() {
+    let row = |coefficient: solve::LinearOp| {
+        vec![
+            coefficient,
+            solve::LinearOp::LoadY { dst: 1, index: 1 },
+            solve::LinearOp::LoadY { dst: 2, index: 2 },
+            solve::LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::Mul,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 3,
+                rhs: 2,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ]
+    };
+    let unit_row = vec![
+        solve::LinearOp::LoadY { dst: 0, index: 1 },
+        solve::LinearOp::LoadY { dst: 1, index: 2 },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Sub,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 2 },
+    ];
+    let prepared = |program: Vec<solve::LinearOp>| {
+        PreparedScalarProgramBlock::new(
+            solve::ScalarProgramBlock::with_source_span(
+                vec![program],
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name("proven_coefficient_step.mo"),
+                    0,
+                    1,
+                )
+                .require_provenance("proven coefficient fixture")
+                .expect("fixture span is source-backed"),
+            )
+            .expect("the fixture row is computable"),
+        )
+        .expect("the fixture row prepares")
+    };
+    let steps_after = |program: Vec<solve::LinearOp>| {
+        let mut tearing = solve::BlockTearing {
+            tear_y_indices: vec![2],
+            residual_rows: vec![],
+            causal_steps: vec![solve::CausalStep {
+                row: 0,
+                y_index: 1,
+                ..Default::default()
+            }],
+        };
+        promote_inexact_causal_steps(&mut tearing, &prepared(program)).unwrap();
+        (tearing.causal_steps, tearing.tear_y_indices)
+    };
+    let (steps, _) = steps_after(unit_row);
+    assert_eq!(steps[0].coefficient, solve::CausalCoefficient::Unit);
+    let (steps, _) = steps_after(row(solve::LinearOp::Const { dst: 0, value: 3.0 }));
+    assert_eq!(steps[0].coefficient, solve::CausalCoefficient::Literal);
+    let (steps, tears) = steps_after(row(solve::LinearOp::LoadY { dst: 0, index: 0 }));
+    assert!(steps.is_empty(), "a solver-value coefficient has no proof");
+    assert_eq!(tears, [2, 1], "the unproven step is promoted to a tear");
+}
+
 /// A causal step whose row reads its unknown only through a literal-zero
 /// coefficient is refused at construction with a diagnostic naming the slot,
 /// while a step with a certified isolator stays causal.
@@ -48,7 +123,11 @@ fn a_causal_step_through_a_proven_zero_coefficient_is_a_construction_error() {
     let tearing = || solve::BlockTearing {
         tear_y_indices: vec![0],
         residual_rows: vec![],
-        causal_steps: vec![solve::CausalStep { row: 0, y_index: 1 }],
+        causal_steps: vec![solve::CausalStep {
+            row: 0,
+            y_index: 1,
+            ..Default::default()
+        }],
     };
     let mut refused = tearing();
     let error = promote_inexact_causal_steps(&mut refused, &prepared(0.0))
@@ -627,11 +706,12 @@ fn tearing_normalization_promotes_only_the_inexact_causal_step() {
     .require_provenance("tearing normalization fixture")
     .expect("fixture span is source-backed");
 
-    // Output row 0: `y0*y1 - y2`, an exact isolator for solver-Y index 1.
+    // Output row 0: `y0 - y1*2`, an exact isolator for solver-Y index 1 whose
+    // coefficient is a nonzero literal.
     let exact_row = vec![
         LoadY { dst: 0, index: 0 },
         LoadY { dst: 1, index: 1 },
-        LoadY { dst: 2, index: 2 },
+        solve::LinearOp::Const { dst: 2, value: 2.0 },
         Binary {
             dst: 3,
             op: BinaryOp::Mul,
@@ -684,8 +764,16 @@ fn tearing_normalization_promotes_only_the_inexact_causal_step() {
         tear_y_indices: vec![7],
         residual_rows: vec![9],
         causal_steps: vec![
-            solve::CausalStep { row: 0, y_index: 1 },
-            solve::CausalStep { row: 1, y_index: 3 },
+            solve::CausalStep {
+                row: 0,
+                y_index: 1,
+                ..Default::default()
+            },
+            solve::CausalStep {
+                row: 1,
+                y_index: 3,
+                ..Default::default()
+            },
         ],
     };
     promote_inexact_causal_steps(&mut tearing, &implicit_scalar_rhs).unwrap();
@@ -694,7 +782,11 @@ fn tearing_normalization_promotes_only_the_inexact_causal_step() {
     // Newton, keeping `tear_y_indices.len() == residual_rows.len()`.
     assert_eq!(
         tearing.causal_steps,
-        vec![solve::CausalStep { row: 0, y_index: 1 }],
+        vec![solve::CausalStep {
+            row: 0,
+            y_index: 1,
+            coefficient: solve::CausalCoefficient::Literal,
+        }],
         "the exact causal step stays a back-substitution step"
     );
     assert_eq!(
@@ -748,7 +840,11 @@ fn tearing_normalization_promotes_every_step_when_none_are_exact() {
     let mut tearing = solve::BlockTearing {
         tear_y_indices: vec![5],
         residual_rows: vec![6],
-        causal_steps: vec![solve::CausalStep { row: 0, y_index: 0 }],
+        causal_steps: vec![solve::CausalStep {
+            row: 0,
+            y_index: 0,
+            ..Default::default()
+        }],
     };
     promote_inexact_causal_steps(&mut tearing, &implicit_scalar_rhs).unwrap();
 
