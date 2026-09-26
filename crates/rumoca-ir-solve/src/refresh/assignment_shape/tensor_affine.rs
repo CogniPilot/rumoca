@@ -33,6 +33,18 @@ impl AffineTensorProjection {
         self.output
     }
 
+    /// Whether the target's coefficient is a signed constant: every step on the
+    /// path from the target to the output is a sum or difference, never a
+    /// product with an independent factor.
+    pub fn constant_coefficient(&self) -> bool {
+        self.steps.iter().all(|(_, rule)| {
+            !matches!(
+                rule,
+                ProjectionRule::LeftProduct | ProjectionRule::RightProduct
+            )
+        })
+    }
+
     pub fn value_registers(&self) -> impl Iterator<Item = Reg> + '_ {
         self.independent_ranges.iter().flat_map(|&(start, count)| {
             (0..count).filter_map(move |offset| start.checked_add(u32::try_from(offset).ok()?))

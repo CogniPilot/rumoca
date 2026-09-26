@@ -104,6 +104,13 @@ fn push_causal_seed_sweep(
     Ok(())
 }
 
+/// The warm-start rows of a projection stage: the certified exact assignments
+/// of its block unknowns whose coefficient is a construction constant. A row
+/// that isolates its target through a solver-value
+/// coefficient (`frame_b.R.T = R_rel.T*frame_a.R.T` solved for `R_rel.T[1,1]`
+/// through `frame_a.R.T[1,1]`) is no seed: that coefficient can vanish, which
+/// would make the seed singular on every call. Its target keeps its incoming
+/// value for the block's projection.
 fn projection_seed_rows(
     block: &solve::AlgebraicProjectionBlock,
     rows: &[AlgebraicRefreshRow],
@@ -117,7 +124,13 @@ fn projection_seed_rows(
         rows.len(),
         rows.iter()
             .enumerate()
-            .filter(|(_, row)| block_targets.contains(&row.target_index()))
+            .filter(|(_, row)| {
+                block_targets.contains(&row.target_index())
+                    && row.exact_assignment_certified()
+                    && row
+                        .assignment_shape()
+                        .is_some_and(solve::TargetAssignmentShape::constant_coefficient)
+            })
             .map(|(index, _)| index),
     )
 }
@@ -255,10 +268,41 @@ mod tests {
                 RefreshStage::ExactAssignments { dynamic_rows: after, .. },
             ] if dynamic_rows.indices() == [0, 1, 2, 3]
                 && before.indices() == [0]
-                && seed_rows.len() == 2
-                && seed_rows.indices() == [1, 2]
+                && seed_rows.is_empty()
                 && after.indices() == [3]
         ));
+    }
+
+    #[test]
+    fn only_constant_coefficient_assignments_seed_a_projection() {
+        let block = solve::AlgebraicProjectionBlock {
+            rows: vec![0, 1],
+            y_indices: vec![0, 1],
+            tearing: None,
+            alternate_charts: Vec::new(),
+        };
+        // Row 1 isolates its target exactly, but divides by a solver value.
+        let solver_coefficient = AlgebraicRefreshRow::checked(solve::AlgebraicRefreshRowDraft {
+            owner_id: super::super::RefreshRowOwnerId::checked(1).unwrap(),
+            source: solve::RefreshScalarProgramSource::checked(0, 1).unwrap(),
+            equation_index: 1,
+            output_offset: 0,
+            target_index: 1,
+            assignment_target: Some(1),
+            assignment_shape: Some(solve::TargetAssignmentShape::Affine {
+                target_y_index: 1,
+                offset_reg: 0,
+                coefficient_reg: Some(1),
+                offset_scale: 1.0,
+                coefficient_scale: 1.0,
+                expr_eval_len: 2,
+            }),
+            direct_assignment_certified: false,
+            exact_assignment_certified: true,
+        })
+        .unwrap();
+        let seeds = projection_seed_rows(&block, &[exact_row(0), solver_coefficient]).unwrap();
+        assert_eq!(seeds.indices(), [0]);
     }
 
     #[test]

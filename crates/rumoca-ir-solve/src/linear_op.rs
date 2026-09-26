@@ -113,6 +113,20 @@ pub enum TargetAssignmentShape {
 }
 
 impl TargetAssignmentShape {
+    /// Whether the isolation divides by a construction constant (a nonzero
+    /// scale), never by a value of the solve, so its coefficient cannot vanish
+    /// at a point.
+    #[must_use]
+    pub fn constant_coefficient(&self) -> bool {
+        match self {
+            Self::Zero { .. } | Self::Direct { .. } | Self::Additive { .. } => true,
+            Self::Affine {
+                coefficient_reg, ..
+            } => coefficient_reg.is_none(),
+            Self::TensorAffine { projection, .. } => projection.constant_coefficient(),
+        }
+    }
+
     /// Source registers determining the isolated value, excluding its old target.
     pub fn value_registers(&self) -> impl Iterator<Item = Reg> + '_ {
         let (fixed, terms): ([Option<Reg>; 2], &[(Reg, f64)]) = match self {
