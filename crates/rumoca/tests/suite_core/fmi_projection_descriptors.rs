@@ -703,6 +703,45 @@ fn the_linked_fixed_step_drive_switches_the_split_circle() {
     }
 }
 
+/// One coupled loop whose every cubic row needs its own tear: more tears than
+/// a multi-lane program holds.
+const MANY_TEARS: &str = "model ManyTears
+  parameter Integer n = 34;
+  Real x(start=1, fixed=true);
+  Real u[n](each start=0.5);
+  Real v[n](each start=0.5);
+equation
+  der(x) = -0.1*u[1];
+  for i in 1:n loop
+    v[i] = 0.5*u[i] + 0.1*x;
+  end for;
+  for i in 1:n - 1 loop
+    u[i]^3 + u[i] + 0.1*sin(v[i + 1]) = 1;
+  end for;
+  u[n]^3 + u[n] + 0.1*sin(v[1]) = 1;
+end ManyTears;";
+
+/// A torn block with more tears than the lane limit renders its tangent plan
+/// in the one-direction form: every step and reduced row reads one JVP
+/// function, and the block has no lane functions.
+#[test]
+fn many_tears_render_the_one_direction_tangent_plan() {
+    let (_, tables) = rendered("ManyTears", MANY_TEARS);
+    assert_well_formed("ManyTears", &tables);
+    let block = tables
+        .blocks
+        .iter()
+        .find(|block| block.flag("torn"))
+        .expect("the coupled loop is torn");
+    let k = block.get("k");
+    assert!(
+        k + 1 >= rumoca_ir_solve::MAX_TENSOR_LANES,
+        "{k} tears exceed the lane limit"
+    );
+    assert!(block.flag("tangent_directional"));
+    assert_eq!(block.get("ntangent_steps"), block.get("ncausal"));
+}
+
 /// The two-tear block takes its tear Jacobian from the tangent plan the
 /// linked kernel evaluates: the rendered steps name the issued causal targets
 /// and each reduced row reads one lane function.

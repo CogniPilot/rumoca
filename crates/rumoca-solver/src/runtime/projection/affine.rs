@@ -197,8 +197,7 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             .filter(finite);
         if delta.is_none() {
             super::note_block_fallback(
-                self.model,
-                self.block_index,
+                self.model.projection_site(self.block_index),
                 ProjectionFallback::JacobianDeclined,
             );
         }

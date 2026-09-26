@@ -209,19 +209,18 @@ impl<'a> JvpRows<'a> {
         output: usize,
         what: &str,
     ) -> Result<([usize; 2], usize), CodegenError> {
-        let &(program, offset) = self
-            .positions
-            .get(&output)
-            .ok_or_else(|| refuse(&format!("{what} has no directional derivative")))?;
+        let Some(&(program, offset)) = self.positions.get(&output) else {
+            return Err(refuse(&format!("{what} has no directional derivative")));
+        };
         let block = self.block;
         let seed_len = self.seed_len;
         let function = table.jvp.intern((self.source, program), || {
             let operations = block.programs()[program].clone();
             check_seed_loads(0, &operations, seed_len, 1)?;
-            let span = block
-                .program_span(program)
-                .ok_or_else(|| refuse(&format!("{what} has no source provenance")))?;
-            Ok((operations, span))
+            match block.program_span(program) {
+                Some(span) => Ok((operations, span)),
+                None => Err(refuse(&format!("{what} has no source provenance"))),
+            }
         })?;
         Ok(([function, offset], table.jvp.output_count(function)))
     }
@@ -257,12 +256,7 @@ fn tangent_value(
     let mut rows = Vec::new();
     let mut nrows = 0;
     for &(_, canonical) in seed_blocks {
-        let block = problem
-            .continuous
-            .algebraic_projection_plan
-            .blocks
-            .get(canonical)
-            .ok_or_else(|| refuse("the algebraic plan names a block outside the projection"))?;
+        let block = plan_block(problem, canonical)?;
         for &row in &block.rows {
             rows.extend(jvp_entry(
                 table,
@@ -334,25 +328,47 @@ fn tangent_value(
     ))
 }
 
+/// Block `canonical` of the continuous algebraic plan.
+fn plan_block(
+    problem: &solve::SolveProblem,
+    canonical: usize,
+) -> Result<&solve::AlgebraicProjectionBlock, CodegenError> {
+    match problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .get(canonical)
+    {
+        Some(block) => Ok(block),
+        None => Err(refuse(
+            "the algebraic plan names a block outside the projection",
+        )),
+    }
+}
+
 /// The seed indices (solver-Y, then parameters after `y_len`) each output of
 /// `block` depends on, by output index.
 /// A directional derivative whose seed reads cannot be derived is refused.
 fn output_seed_reads(
     block: &solve::ScalarProgramBlock,
 ) -> Result<BTreeMap<usize, BTreeSet<usize>>, CodegenError> {
-    output_positions(block)
-        .into_iter()
-        .map(|(output, (program, offset))| {
-            solve::StructuralPattern::derive_output_seed_index_dependencies(
-                &block.programs()[program],
-                None,
-            )
+    let mut reads = BTreeMap::new();
+    for (output, (program, offset)) in output_positions(block) {
+        let outputs = solve::StructuralPattern::derive_output_seed_index_dependencies(
+            &block.programs()[program],
+            None,
+        );
+        let Some(output_reads) = outputs
             .ok()
             .and_then(|outputs| outputs.get(offset).cloned())
-            .map(|reads| (output, reads))
-            .ok_or_else(|| refuse("a directional derivative's seed reads are not derivable"))
-        })
-        .collect()
+        else {
+            return Err(refuse(
+                "a directional derivative's seed reads are not derivable",
+            ));
+        };
+        reads.insert(output, output_reads);
+    }
+    Ok(reads)
 }
 
 /// The part of the settled initialization tangent that can reach the
@@ -450,24 +466,18 @@ fn tangent_cone(
         solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => None,
     };
     let row_reads = output_seed_reads(&artifacts.continuous.implicit_jacobian_v_scalar)?;
-    let plan = &problem.continuous.algebraic_projection_plan;
-    let blocks = seed_blocks
-        .iter()
-        .map(|&(_, canonical)| {
-            let block = plan
-                .blocks
-                .get(canonical)
-                .ok_or_else(|| refuse("the algebraic plan names a block outside the projection"))?;
-            let reads = block
-                .rows
-                .iter()
-                .filter_map(|row| row_reads.get(row))
-                .flatten()
-                .copied()
-                .collect();
-            Ok((block.y_indices.as_slice(), reads))
-        })
-        .collect::<Result<Vec<_>, CodegenError>>()?;
+    let mut blocks = Vec::with_capacity(seed_blocks.len());
+    for &(_, canonical) in seed_blocks {
+        let block = plan_block(problem, canonical)?;
+        let reads = block
+            .rows
+            .iter()
+            .filter_map(|row| row_reads.get(row))
+            .flatten()
+            .copied()
+            .collect();
+        blocks.push((block.y_indices.as_slice(), reads));
+    }
     let targets = init.update_targets();
     let update_reads = match &artifacts.initialization.update_jacobian_v {
         Some(block) => output_seed_reads(block)?,
@@ -478,16 +488,15 @@ fn tangent_cone(
             ));
         }
     };
-    let updates = targets
-        .iter()
-        .enumerate()
-        .map(|(row, target)| {
-            let reads = update_reads.get(&row).cloned().ok_or_else(|| {
-                refuse("an initialization update row has no directional derivative")
-            })?;
-            Ok((combined(*target), reads))
-        })
-        .collect::<Result<_, CodegenError>>()?;
+    let mut updates = Vec::with_capacity(targets.len());
+    for (row, target) in targets.iter().enumerate() {
+        let Some(reads) = update_reads.get(&row) else {
+            return Err(refuse(
+                "an initialization update row has no directional derivative",
+            ));
+        };
+        updates.push((combined(*target), reads.clone()));
+    }
     let residual_reads = output_seed_reads(residual_block)?
         .into_values()
         .flatten()
@@ -535,11 +544,13 @@ fn tangent_updates(
     if !kept.contains(&true) {
         return Ok((updates, 0));
     }
-    let block = artifacts
-        .initialization
-        .update_jacobian_v
-        .as_ref()
-        .ok_or_else(|| refuse("an initialization update row has no directional derivative"))?;
+    // The cone keeps an update row only when its directional derivative
+    // exists, so a kept row always has one.
+    let Some(block) = artifacts.initialization.update_jacobian_v.as_ref() else {
+        return Err(refuse(
+            "an initialization update row has no directional derivative",
+        ));
+    };
     let update = JvpRows::new(table, block, seed_len);
     let mut count = 0;
     for (row, target) in targets.iter().enumerate() {

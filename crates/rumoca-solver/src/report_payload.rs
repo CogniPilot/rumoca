@@ -225,4 +225,42 @@ mod tests {
         assert_eq!(metrics["compilePhaseSeconds"]["strictResolve"], 0.4);
         assert_eq!(metrics["compilePhaseSeconds"]["todae"], 0.8);
     }
+
+    #[test]
+    fn metrics_list_each_projection_site_with_its_fallbacks() {
+        let mut report = crate::ProjectionFallbackReport::default();
+        report.sites.insert(
+            crate::ProjectionSite::Block(4),
+            crate::ProjectionFallbackCounts {
+                rows: 2,
+                calls: 40,
+                fallback_calls: 10,
+                fallbacks: [0, 0, 10, 0, 0],
+            },
+        );
+        report.sites.insert(
+            crate::ProjectionSite::CompletePlan,
+            crate::ProjectionFallbackCounts {
+                calls: 5,
+                ..crate::ProjectionFallbackCounts::default()
+            },
+        );
+        let metrics = build_simulation_metrics_value(
+            &sample_result(),
+            &SimulationRunMetrics {
+                projection_fallbacks: Some(report),
+                ..SimulationRunMetrics::default()
+            },
+        );
+
+        let sites = &metrics["projectionFallbacks"];
+        assert_eq!(sites[0]["block"], 4);
+        assert_eq!(sites[0]["rows"], 2);
+        assert_eq!(sites[0]["fallbacks"]["seed_rescue"], 10);
+        assert_eq!(sites[0]["fallbacks"]["torn_to_dense"], 0);
+        assert_eq!(sites[0]["rate"], 0.25);
+        assert_eq!(sites[0]["overThreshold"], true);
+        assert!(sites[1]["block"].is_null());
+        assert_eq!(sites[1]["overThreshold"], false);
+    }
 }

@@ -259,7 +259,10 @@ pub(crate) trait ImplicitProjectionModel {
 
     /// The canonical projection block that fallback counts attribute block
     /// `block_index` of this model's plan to; `None` leaves it uncounted.
-    fn projection_site(&self, _block_index: usize) -> Option<usize> {
+    fn projection_site(&self, _block_index: usize) -> Option<usize>
+    where
+        Self: Sized,
+    {
         None
     }
 
@@ -708,18 +711,24 @@ fn block_residual_or_seed<M: ImplicitProjectionModel>(
         .then_some(residual))
 }
 
-/// Count a fallback of block `block_index` at its canonical projection site.
-pub(super) fn note_block_fallback<M: ImplicitProjectionModel + ?Sized>(
-    model: &M,
-    block_index: usize,
-    fallback: ProjectionFallback,
-) {
-    if let Some(canonical) = model.projection_site(block_index) {
+/// Count a fallback at a block's canonical projection site (`None` leaves it
+/// uncounted).
+pub(super) fn note_block_fallback(site: Option<usize>, fallback: ProjectionFallback) {
+    if let Some(canonical) = site {
         super::fallbacks::note_fallback(
             super::fallbacks::ProjectionSite::Block(canonical),
             fallback,
         );
     }
+}
+
+/// Open a counted call at a block's canonical projection site.
+fn begin_block_call(site: Option<usize>, rows: usize) -> Option<super::fallbacks::ProjectionCall> {
+    let canonical = site?;
+    Some(super::fallbacks::begin_call(
+        super::fallbacks::ProjectionSite::Block(canonical),
+        rows,
+    ))
 }
 
 /// Solve a coupled block by its constructor-provided tearing when one is
@@ -756,12 +765,8 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
         ..
     } = policy;
     require_square_projection_block(block.rows.len(), block.y_indices.len(), "algebraic")?;
-    let _call = model.projection_site(block_index).map(|canonical| {
-        super::fallbacks::begin_call(
-            super::fallbacks::ProjectionSite::Block(canonical),
-            block.rows.len(),
-        )
-    });
+    let site = model.projection_site(block_index);
+    let _call = begin_block_call(site, block.rows.len());
     if block.rows.is_empty() || block.y_indices.is_empty() {
         return Ok(ProjectionBlockUpdate {
             changed: false,
@@ -801,7 +806,7 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
         return Ok(update);
     }
     if block.tearing.is_some() {
-        note_block_fallback(model, block_index, ProjectionFallback::TornToDense);
+        note_block_fallback(site, ProjectionFallback::TornToDense);
     }
     if !singleton_was_tried
         && let Some(update) = project_algebraic_singleton_assignment(model, y, p, t, block, tol)?
@@ -869,7 +874,10 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
         },
     );
     let Some(delta) = delta else {
-        note_block_fallback(model, block_index, ProjectionFallback::JacobianDeclined);
+        note_block_fallback(
+            model.projection_site(block_index),
+            ProjectionFallback::JacobianDeclined,
+        );
         if !residual_converged && nudge_singular_zero_seed(y, block, &jacobian, &variable_scales) {
             return Ok(ProjectionBlockUpdate {
                 changed: true,
@@ -1376,8 +1384,8 @@ fn implicit_selected_residuals<M: ImplicitProjectionModel + ?Sized>(
     Ok(selected)
 }
 
-fn implicit_selected_jacobian_v_rows<M: ImplicitProjectionModel + ?Sized>(
-    model: &M,
+fn implicit_selected_jacobian_v_rows(
+    model: &dyn ImplicitProjectionModel,
     y: &[f64],
     p: &[f64],
     t: f64,

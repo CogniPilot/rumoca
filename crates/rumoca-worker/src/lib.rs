@@ -865,6 +865,17 @@ pub struct WorkerModelResult {
 }
 
 impl WorkerModelResult {
+    /// Record the run's worst projection fallback rate over the policy rate,
+    /// and its warnings, on the row (SPEC_0044 ME-PROJ-003).
+    pub fn record_projection_fallbacks(&mut self, report: &rumoca_sim::ProjectionFallbackReport) {
+        let mut worst: Option<f64> = None;
+        for (_, counts) in report.over_threshold() {
+            worst = Some(worst.map_or(counts.rate(), |rate| rate.max(counts.rate())));
+        }
+        self.projection_fallback_rate = worst;
+        self.projection_fallback_detail = worst.map(|_| report.warnings().join("; "));
+    }
+
     pub fn phase_failure(
         model_name: String,
         phase_reached: impl Into<String>,
@@ -1036,6 +1047,37 @@ fn write_json_file<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projection_fallbacks_record_the_worst_rate_over_the_policy_rate() {
+        let counts = |calls, fallback_calls| rumoca_sim::ProjectionFallbackCounts {
+            rows: 3,
+            calls,
+            fallback_calls,
+            fallbacks: [fallback_calls, 0, 0, 0, 0],
+        };
+        let mut report = rumoca_sim::ProjectionFallbackReport::default();
+        report
+            .sites
+            .insert(rumoca_sim::ProjectionSite::Block(0), counts(40, 2));
+        let mut row = WorkerModelResult::phase_failure("M".to_string(), "sim", "", None);
+        row.record_projection_fallbacks(&report);
+        assert_eq!(row.projection_fallback_rate, None);
+        assert_eq!(row.projection_fallback_detail, None);
+
+        report
+            .sites
+            .insert(rumoca_sim::ProjectionSite::Block(1), counts(40, 10));
+        report
+            .sites
+            .insert(rumoca_sim::ProjectionSite::Block(2), counts(40, 20));
+        row.record_projection_fallbacks(&report);
+        assert_eq!(row.projection_fallback_rate, Some(0.5));
+        let detail = row.projection_fallback_detail.expect("fallback detail");
+        assert!(detail.contains("projection block 1 (3 rows)"), "{detail}");
+        assert!(detail.contains("projection block 2 (3 rows)"), "{detail}");
+        assert!(!detail.contains("projection block 0"), "{detail}");
+    }
 
     #[test]
     fn cpu_core_plan_has_one_entry_per_worker() {

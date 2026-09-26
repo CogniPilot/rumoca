@@ -100,11 +100,7 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
         // without forming the Jacobian again. Certification still checks the
         // recovered coordinates' corrections, which a residual that meets
         // tolerance through an ill-conditioned recovery does not bound.
-        if !certify_coordinates
-            && step_scales
-                .as_ref()
-                .is_some_and(|scales| scaled_residual_converged(&residual, scales, tol))
-        {
+        if settles_on_step_scales(certify_coordinates, step_scales.as_deref(), &residual, tol) {
             let changed = snapshot.changed(tearing, y);
             return Ok(Some(ProjectionBlockUpdate {
                 changed,
@@ -145,6 +141,20 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
     // would have without the torn attempt.
     snapshot.restore(tearing, y);
     Ok(None)
+}
+
+/// Whether an uncertified refresh settles on the row scales of the exact
+/// Newton step just taken (`None` before the first step).
+fn settles_on_step_scales(
+    certify_coordinates: bool,
+    step_scales: Option<&[f64]>,
+    residual: &[f64],
+    tol: f64,
+) -> bool {
+    match step_scales {
+        Some(scales) if !certify_coordinates => scaled_residual_converged(residual, scales, tol),
+        _ => false,
+    }
 }
 
 /// Outcome of one reduced Newton iteration over the tear variables.
@@ -348,8 +358,8 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
 /// coefficient with its target seeded alone, then each tear column through the
 /// steps in sweep order and the reduced rows. `None` when a coefficient
 /// vanishes.
-fn model_torn_tangent<M: ImplicitProjectionModel>(
-    model: &M,
+fn model_torn_tangent(
+    model: &dyn ImplicitProjectionModel,
     (y, p, t): (&[f64], &[f64], f64),
     tearing: &solve::BlockTearing,
 ) -> Result<Option<rumoca_eval_solve::TornTangentJacobian>, RuntimeSolveError> {
