@@ -104,7 +104,8 @@ pub(super) fn block_residual_splits(
     structures: &solve::ContinuousStructuralArtifacts,
     implicit: &PreparedScalarProgramBlock,
     backend: Option<&dyn SolveExecutionBackend>,
-) -> Box<[Option<BlockSplits>]> {
+    shared: Option<SharedSplits<'_>>,
+) -> Box<[Option<Rc<BlockSplits>>]> {
     plan.blocks
         .iter()
         .zip(structures.algebraic_projection())
@@ -113,29 +114,88 @@ pub(super) fn block_residual_splits(
             if block.rows.len() < 2 || !owners.algebraic_projection_block_is_affine(index) {
                 return None;
             }
-            let splits = block_splits(block, structure, implicit)?;
-            let mut offsets = vec![0];
-            for (_, split) in &splits {
-                offsets.push(offsets[offsets.len() - 1] + split.split().live_out().len());
+            if let Some(splits) = shared.as_ref().and_then(|shared| shared.splits_of(block)) {
+                return splits;
             }
-            let compiled = backend
-                .and_then(|backend| compile_block_splits(&splits, &offsets, implicit, backend));
-            let values = RefCell::new(vec![0.0; offsets[offsets.len() - 1]]);
-            let ordinals = splits
-                .iter()
-                .enumerate()
-                .map(|(ordinal, (program, _))| (*program, ordinal))
-                .collect();
-            Some(BlockSplits {
-                ordinals,
-                splits: splits.into_iter().map(|(_, split)| split).collect(),
-                compiled,
-                offsets,
-                values,
-                scratch: RefCell::new(Vec::new()),
-            })
+            let splits = block_splits(block, structure, implicit)?;
+            Some(Rc::new(prepared_block_splits(splits, implicit, backend)))
         })
         .collect()
+}
+
+/// The primary runtime's block splits an alternate chart reuses: a block with
+/// the primary's rows, unknowns, and tearing whose residual programs none of
+/// the alternate replaced evaluates exactly the primary's splits, program
+/// indices included.
+pub(super) struct SharedSplits<'a> {
+    plan: &'a solve::AlgebraicProjectionPlan,
+    splits: &'a [Option<Rc<BlockSplits>>],
+    replaced_rows: &'a std::collections::BTreeSet<usize>,
+    by_rows: std::collections::BTreeMap<&'a [usize], usize>,
+}
+
+impl<'a> SharedSplits<'a> {
+    pub(super) fn new(
+        plan: &'a solve::AlgebraicProjectionPlan,
+        splits: &'a [Option<Rc<BlockSplits>>],
+        replaced_rows: &'a std::collections::BTreeSet<usize>,
+    ) -> Self {
+        let by_rows = plan
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| (block.rows.as_slice(), index))
+            .collect();
+        Self {
+            plan,
+            splits,
+            replaced_rows,
+            by_rows,
+        }
+    }
+
+    /// The primary's splits of `block`, `None` when the block is not shared.
+    fn splits_of(
+        &self,
+        block: &solve::AlgebraicProjectionBlock,
+    ) -> Option<Option<Rc<BlockSplits>>> {
+        if block
+            .rows
+            .iter()
+            .any(|row| self.replaced_rows.contains(row))
+        {
+            return None;
+        }
+        let index = *self.by_rows.get(block.rows.as_slice())?;
+        (self.plan.blocks[index] == *block).then(|| self.splits.get(index).cloned())?
+    }
+}
+
+fn prepared_block_splits(
+    splits: Vec<(usize, PreparedBlockResidualSplit)>,
+    implicit: &PreparedScalarProgramBlock,
+    backend: Option<&dyn SolveExecutionBackend>,
+) -> BlockSplits {
+    let mut offsets = vec![0];
+    for (_, split) in &splits {
+        offsets.push(offsets[offsets.len() - 1] + split.split().live_out().len());
+    }
+    let compiled =
+        backend.and_then(|backend| compile_block_splits(&splits, &offsets, implicit, backend));
+    let values = RefCell::new(vec![0.0; offsets[offsets.len() - 1]]);
+    let ordinals = splits
+        .iter()
+        .enumerate()
+        .map(|(ordinal, (program, _))| (*program, ordinal))
+        .collect();
+    BlockSplits {
+        ordinals,
+        splits: splits.into_iter().map(|(_, split)| split).collect(),
+        compiled,
+        offsets,
+        values,
+        scratch: RefCell::new(Vec::new()),
+    }
 }
 
 fn block_splits(

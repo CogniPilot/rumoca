@@ -350,7 +350,7 @@ pub struct SolveRuntime {
     /// the block list and its structural artifacts.
     colored_tangents: Rc<[Option<rumoca_eval_solve::ColoredTangentEvaluator>]>,
     /// Block residual splits aligned with the projection plan's blocks.
-    block_splits: Rc<[Option<block_residual_split::BlockSplits>]>,
+    block_splits: Rc<[Option<Rc<block_residual_split::BlockSplits>>]>,
     /// Invariant values of the block projection call in progress.
     active_split: block_residual_split::ActiveSplitSlot,
     /// Output buffer of a single-row split evaluation.
@@ -807,6 +807,13 @@ impl SolveRuntime {
             &continuous_structural,
             &implicit_scalar_rhs,
             execution_backend.as_deref(),
+            primary.map(|primary| {
+                block_residual_split::SharedSplits::new(
+                    &primary.model.problem.continuous.algebraic_projection_plan,
+                    &primary.block_splits,
+                    &replaced_rows,
+                )
+            }),
         )
         .into();
         Ok(Self {
