@@ -1281,20 +1281,30 @@ static {{ prefix }}Status {{ name }}(ModelInstance* m) {
 /* relation_memory.rs: apply_initialization_updates. The checked parameter
    bindings run in dependency order, each reading only settled parameters and
    constants, so one pass reaches the runtime's repeated-sweep fixed point; a
-   change is a change of bits. The parameter-determined discrete equations
-   follow: they read only parameters, so they settle with them.
+   change is a change of bits. A state whose start reads a settable parameter
+   is assigned from it while initializing only (MLS §8.6: a start is an
+   initial value). The parameter-determined discrete equations follow: they
+   read only parameters, so they settle with them.
    -1 error, 0 unchanged, 1 changed */
-static int rmc_apply_updates(ModelInstance* m) {
+static int rmc_apply_updates(ModelInstance* m, bool initializing) {
+    (void)initializing;
 {%- if targets|length > 0 %}
     static const size_t targets[{{ targets|length }}] = {
 {%- for chunk in targets|batch(16) %}
-        {% for target in chunk %}{{ target.P.index }},{% endfor %}
+        {% for target in chunk %}{{ target.Y.index if target.Y is defined else target.P.index }},{% endfor %}
+{%- endfor %}
+    };
+    static const bool in_y[{{ targets|length }}] = {
+{%- for chunk in targets|batch(16) %}
+        {% for target in chunk %}{{ "true" if target.Y is defined else "false" }},{% endfor %}
 {%- endfor %}
     };
     double before[{{ targets|length }}];
-    for (size_t k = 0; k < {{ targets|length }}; ++k) before[k] = m->p[targets[k]];
+    for (size_t k = 0; k < {{ targets|length }}; ++k) before[k] = in_y[k] ? m->y[targets[k]] : m->p[targets[k]];
 {%- for index in fmi.update_order %}{% set program = solve.initialization.update_plan.programs[index] %}
-    {
+{%- set start = namespace(assigned=false) %}
+{%- for op in program.ops %}{% if op.kind == "StoreOutput" and targets[op.output_index].Y is defined %}{% set start.assigned = true %}{% endif %}{% endfor %}
+    {% if start.assigned %}if (initializing) {% endif %}{
     double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
 {%- for op in program.ops %}
 {{ scalar_op(op, "m->p", "-1", targets) }}
@@ -1302,7 +1312,10 @@ static int rmc_apply_updates(ModelInstance* m) {
     }
 {%- endfor %}
     if (update_discrete_equations(m) != {{ prefix }}OK) return -1;
-    for (size_t k = 0; k < {{ targets|length }}; ++k) if (memcmp(&before[k], &m->p[targets[k]], sizeof(double)) != 0) return 1;
+    for (size_t k = 0; k < {{ targets|length }}; ++k) {
+        const double after = in_y[k] ? m->y[targets[k]] : m->p[targets[k]];
+        if (memcmp(&before[k], &after, sizeof(double)) != 0) return 1;
+    }
     return 0;
 {%- else %}
     return update_discrete_equations(m) == {{ prefix }}OK ? 0 : -1;
@@ -1310,7 +1323,7 @@ static int rmc_apply_updates(ModelInstance* m) {
 }
 static {{ prefix }}Status refresh_parameters(ModelInstance* m) {
     if (!m->parameters_dirty) return {{ prefix }}OK;
-    if (rmc_apply_updates(m) < 0) return {{ prefix }}Error;
+    if (rmc_apply_updates(m, false) < 0) return {{ prefix }}Error;
     m->parameters_dirty = false;
     return {{ prefix }}OK;
 }
@@ -1603,7 +1616,7 @@ static double rmc_init_scale(const double* pscale, size_t combined, double value
    the bindings stop changing; the caller saves and restores them. -1 error */
 RMC_COLD static int rmc_init_settle_view(ModelInstance* m) {
     for (int pass = 0; pass < RMC_UPDATE_ITERS; ++pass) {
-        int changed = rmc_apply_updates(m);
+        int changed = rmc_apply_updates(m, true);
         m->parameters_dirty = false;
         if (changed < 0 || refresh_algebraics(m) != {{ prefix }}OK) break;
         if (pass > 0 && changed == 0) return 0;
@@ -1932,10 +1945,10 @@ RMC_COLD static {{ prefix }}Status rmc_initialize(ModelInstance* m, double toler
     {{ prefix }}Status status = {{ prefix }}Error;
     m->rmc_tol = tolerance > 0.0 ? tolerance : RMC_TOL; m->rmc_certify = false;
     for (int iteration = 0; iteration < RMC_UPDATE_ITERS; ++iteration) {
-        if (rmc_apply_updates(m) < 0) break;
+        if (rmc_apply_updates(m, true) < 0) break;
         m->parameters_dirty = false;
         if (rmc_init_project(m) != 0) break;
-        int changed = rmc_apply_updates(m);
+        int changed = rmc_apply_updates(m, true);
         if (changed < 0) break;
         if (changed == 0) { status = {{ prefix }}OK; break; }
     }

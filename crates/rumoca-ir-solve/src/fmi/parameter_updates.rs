@@ -34,6 +34,14 @@ pub(super) fn classify_metadata(problem: &SolveProblem, variables: &mut [FmiVari
             } else {
                 variable.initial = Some(super::FmiInitial::Approx);
             }
+        } else if variable.causality == FmiCausality::Parameter && variable.evaluable {
+            // MLS §4.5, §18.3: a final or `Evaluate = true` parameter keeps
+            // parameter variability, but its value is fixed at translation, so
+            // the environment may not set it: FMI's non-settable parameter
+            // form (FMI 3.0.2 §2.4.7.4).
+            variable.causality = FmiCausality::CalculatedParameter;
+            variable.initial = Some(super::FmiInitial::Calculated);
+            variable.start = None;
         }
     }
 }
@@ -41,8 +49,9 @@ pub(super) fn classify_metadata(problem: &SolveProblem, variables: &mut [FmiVari
 /// FMI 2.0.5 §2.2.7 and FMI 3.0.2 §2.4.7: a non-parameter coordinate whose
 /// start value the initialization may change is `approx` (a state or other
 /// coordinate the initialization projection solves for keeps its start as the
-/// guess), and one a discrete equation defines is `calculated` (its start is
-/// not its value).
+/// guess), and one a discrete equation defines or an initialization update
+/// assigns from a settable parameter is `calculated` (its start is not its
+/// value).
 fn classify_initialized_coordinates(problem: &SolveProblem, variables: &mut [FmiVariable]) {
     let projected: std::collections::BTreeSet<_> = problem
         .initialization
@@ -64,6 +73,16 @@ fn classify_initialized_coordinates(problem: &SolveProblem, variables: &mut [Fmi
             _ => None,
         })
         .collect();
+    // A state whose start reads a settable parameter is assigned from it.
+    let assigned: std::collections::BTreeSet<_> = problem
+        .initialization
+        .update_targets()
+        .iter()
+        .filter_map(|slot| match slot {
+            ScalarSlot::Y { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
     for variable in variables.iter_mut() {
         let Some(storage) = variable.backing.storage() else {
             continue;
@@ -77,7 +96,11 @@ fn classify_initialized_coordinates(problem: &SolveProblem, variables: &mut [Fmi
         }
         let range = storage.base()..storage.base() + storage.scalar_count();
         let column = storage.column();
-        if column == super::FmiStorageColumn::P && range.clone().any(|i| defined.contains(&i)) {
+        let calculated = match column {
+            super::FmiStorageColumn::P => range.clone().any(|i| defined.contains(&i)),
+            super::FmiStorageColumn::Y => range.clone().any(|i| assigned.contains(&i)),
+        };
+        if calculated {
             variable.initial = Some(super::FmiInitial::Calculated);
             variable.start = None;
         } else if column == super::FmiStorageColumn::Y
@@ -108,20 +131,22 @@ pub(super) fn validate(
     validate_projection(problem)?;
     let mut p = stable_parameters(problem);
     let y = vec![false; problem.layout.y_scalars()];
+    // A parameter target is settled once its binding runs; a state target is a
+    // start assigned from settled parameters, which no binding reads.
     let mut targets = Vec::with_capacity(init.update_targets().len());
     for slot in init.update_targets() {
-        let ScalarSlot::P { index, .. } = slot else {
-            return Err("C initialization can only assign parameter storage");
+        let target = match *slot {
+            ScalarSlot::P { index, .. }
+                if owns(problem, SolveVariableStorageRole::Parameter, slot) =>
+            {
+                Some(index)
+            }
+            ScalarSlot::Y { .. } if owns(problem, SolveVariableStorageRole::State, slot) => None,
+            _ => return Err("C initialization can only assign parameters and state starts"),
         };
-        if !problem.solve_layout.variable_storage_runs.iter().any(|run| {
-            run.role == SolveVariableStorageRole::Parameter && matches!(run.base,
-                ScalarSlot::P { index: base, .. } if *index >= base && *index - base < run.scalar_count)
-        }) {
-            return Err("C initialization can only assign parameters");
-        }
-        targets.push(*index);
+        targets.push(target);
     }
-    for target in &targets {
+    for target in targets.iter().flatten() {
         p[*target] = false;
     }
     let programs = init.update_rhs().programs();
@@ -138,7 +163,7 @@ pub(super) fn validate(
             .map(|output| targets.get(*output).copied())
             .collect::<Option<Vec<_>>>()
             .ok_or("missing parameter update target")?;
-        outputs.push(written);
+        outputs.push(written.into_iter().flatten().collect());
         cursor += count;
     }
     if cursor != targets.len() {
@@ -154,6 +179,24 @@ pub(super) fn validate(
             }
         },
     )
+}
+
+/// Whether `slot` lies in a storage run of `role`.
+fn owns(problem: &SolveProblem, role: SolveVariableStorageRole, slot: &ScalarSlot) -> bool {
+    problem
+        .solve_layout
+        .variable_storage_runs
+        .iter()
+        .any(|run| {
+            run.role == role
+                && match (run.base, slot) {
+                    (ScalarSlot::P { index: base, .. }, ScalarSlot::P { index, .. })
+                    | (ScalarSlot::Y { index: base, .. }, ScalarSlot::Y { index, .. }) => {
+                        *index >= base && *index - base < run.scalar_count
+                    }
+                    _ => false,
+                }
+        })
 }
 
 pub(super) fn stable_parameters(problem: &SolveProblem) -> Vec<bool> {

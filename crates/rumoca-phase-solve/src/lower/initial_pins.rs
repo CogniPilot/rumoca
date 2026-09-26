@@ -16,6 +16,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{InitialValuePin, InitialValueRole};
 
+use super::initial_given_states::{StartKnowledge, start_knowledge};
+
 use super::initial_parameters::InitializationParameterOwnership;
 use super::initial_projection::InitialRowIncidence;
 use super::{ScalarRows, variable_scalar_slot};
@@ -26,8 +28,16 @@ use crate::lower::scalar::ScalarCompiler;
 /// The initialization rows one set of transferred pins lowers to.
 #[derive(Default)]
 pub(super) struct TransferredInitialValues<'dae> {
-    /// Source-fixed starts proved independent of initialization unknowns.
+    /// Source-fixed starts proved independent of initialization unknowns and
+    /// fixed at translation.
     pub(super) given_state_indices: Vec<usize>,
+    /// Source-fixed starts that read a settable parameter: each state is
+    /// assigned its start from the parameter storage at initialization.
+    pub(super) assigned_state_indices: Vec<usize>,
+    /// The start assignment of each assigned state, positionally paired with
+    /// `start_update_targets`.
+    pub(super) start_updates: ScalarRows,
+    pub(super) start_update_targets: Vec<solve::ScalarSlot>,
     /// Residuals the initialization instant has to satisfy.
     pub(super) checks: ScalarRows,
     /// What each check row reads, positionally paired with `checks`, so the
@@ -194,19 +204,18 @@ fn lower_unrepresented_fixed_continuous_reals<'dae>(
                 let start_scalar = broadcast_start_scalar(start_count, scalar);
                 (expression, start_scalar)
             });
-            if variable.role() == dae::VariableRole::State
-                && super::initial_given_states::is_known(
-                    view,
-                    ownership,
-                    start,
-                    &mut projection_cache,
-                )
-            {
-                lowered.given_state_indices.push(index);
-                continue;
-            }
             let compiler = ScalarCompiler::new(view, layout, None)
                 .with_parameter_substitutions(ownership.substitutions());
+            let knowledge = match variable.role() {
+                dae::VariableRole::State => {
+                    start_knowledge(view, ownership, start, &mut projection_cache)
+                }
+                _ => StartKnowledge::Unknown,
+            };
+            if knowledge != StartKnowledge::Unknown {
+                lower_known_state_start(compiler, knowledge, (slot, index), start, span, lowered)?;
+                continue;
+            }
             let program = compiler.slot_start_residual_program(slot, start, span)?;
             let output = lowered.checks.len();
             lowered.checks.push(program, span, output);
@@ -230,6 +239,29 @@ fn lower_unrepresented_fixed_continuous_reals<'dae>(
             lowered.check_incidence.push(incidence);
         }
     }
+    Ok(())
+}
+
+/// A fixed state whose start is known before the initialization solve: a
+/// translation-time start seeds it, and a start reading a settable parameter
+/// becomes its initialization assignment from the parameter storage.
+fn lower_known_state_start<'dae>(
+    compiler: ScalarCompiler<'_, 'dae>,
+    knowledge: StartKnowledge,
+    (slot, index): (solve::ScalarSlot, usize),
+    start: Option<(dae::ExprId<'dae>, usize)>,
+    span: rumoca_core::Span,
+    lowered: &mut TransferredInitialValues<'dae>,
+) -> Result<(), LowerError> {
+    let (StartKnowledge::Parameters, Some((expression, start_scalar))) = (knowledge, start) else {
+        lowered.given_state_indices.push(index);
+        return Ok(());
+    };
+    let output = lowered.start_updates.len();
+    let program = compiler.program(expression, start_scalar)?;
+    lowered.start_updates.push(program, span, output);
+    lowered.start_update_targets.push(slot);
+    lowered.assigned_state_indices.push(index);
     Ok(())
 }
 

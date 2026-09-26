@@ -63,6 +63,7 @@ pub(super) fn derived_local(value_reference_fmi3: u32) -> FmiVariable {
         variability: FmiVariability::Continuous,
         initial: Some(FmiInitial::Calculated),
         tunable: false,
+        evaluable: false,
         declaration: None,
         value_reference_fmi3,
     }

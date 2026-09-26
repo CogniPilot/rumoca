@@ -18,6 +18,7 @@ mod residual_split_harness;
 mod tensor_algebra;
 mod torn_tangent_harness;
 mod typed_functions;
+mod variability;
 
 use std::fs;
 use std::io::{Read, Write};

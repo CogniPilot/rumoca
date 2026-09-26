@@ -85,6 +85,7 @@ fn state_input() -> solve::fmi::FmiVariableInput {
         causality: solve::fmi::FmiCausality::Local,
         variability: solve::fmi::FmiVariability::Continuous,
         tunable: false,
+        evaluable: false,
         declaration: fixture_span(),
         text_start: None,
     }
@@ -153,18 +154,18 @@ fn a_delay_bearing_component_reaches_no_renderer() {
     );
 }
 
-/// ME-PARAM-001: parameter initialization support does not admit state writes.
+/// ME-PARAM-001: a state start assignment renders; the state is published
+/// `initial="calculated"` without a start, since its value is assigned at
+/// initialization rather than set by the environment.
 #[test]
-fn a_state_initialization_bearing_component_reaches_no_renderer() {
+fn a_state_start_assignment_renders_as_a_calculated_state() {
     let view = event_free_view(component_with_initialization());
-    let error = SolveTemplateRenderer::new_owned_with_fmi(view)
-        .expect_err("state initialization cannot be rendered by the parameter-only C profile");
-    assert!(
-        error
-            .to_string()
-            .contains("C initialization can only assign parameter storage"),
-        "the rejected capability stays explicit: {error}"
-    );
+    let renderer = SolveTemplateRenderer::new_owned_with_fmi(view)
+        .expect("a state start assignment is admitted by the C profile");
+    let rendered = renderer
+        .render("{{ fmi.variables[0].initial }}|{{ fmi.variables[0].start is defined }}")
+        .expect("the narrowed view renders");
+    assert_eq!(rendered, "calculated|false");
 }
 
 /// The positive control for the case above: an event-free component narrows,

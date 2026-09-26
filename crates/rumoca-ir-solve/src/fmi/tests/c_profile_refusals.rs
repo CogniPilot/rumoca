@@ -233,8 +233,9 @@ fn assertion_on_parameter(model: &mut SolveModel) {
 }
 
 /// SPEC_0044 ME-PARAM-001: an assertion condition is a read that keeps a
-/// parameter settable, even when no other program reads it; the same
-/// assertion over a constant leaves the parameter folded.
+/// parameter settable; a parameter no program reads keeps its parameter
+/// variability too (MLS §4.5), since whether a program reads it does not
+/// change what it is.
 #[test]
 fn a_parameter_read_only_by_an_assertion_condition_stays_settable() {
     assert_eq!(published_causality(assertion_on_parameter), "parameter");
@@ -243,7 +244,7 @@ fn a_parameter_read_only_by_an_assertion_condition_stays_settable() {
             assertion_on_parameter(model);
             model.problem.events.action_conditions = rows(vec![constant_row(0.0)]);
         }),
-        "local"
+        "parameter"
     );
 }
 

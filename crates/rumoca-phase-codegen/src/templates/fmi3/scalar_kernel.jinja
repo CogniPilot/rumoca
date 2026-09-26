@@ -52,6 +52,15 @@
 {%- if pure_call_symbols is not defined %}{{ fail("internal: pure_call_symbols is not in the render context") }}{% endif -%}
 {{ pure_call_symbols[owner] }}
 {%- endmacro %}
+{#- The storage one output is written to: its target slot when a target list
+    is given (a state start target in the solver vector, any other in
+    `output`), else `output` at the output ordinal. -#}
+{%- macro store_target(output, targets, index) -%}
+{%- if targets is none %}{{ output }}[{{ index }}]
+{%- elif targets[index].Y is defined %}m->y[{{ targets[index].Y.index }}]
+{%- else %}{{ output }}[{{ targets[index].P.index }}]{% endif -%}
+{%- endmacro %}
+
 {%- macro scalar_op(op, output="m->derivative", error_status="fmi3Error", targets=none) %}
 {%- if op.kind == "Const" %}    r[{{ op.dst }}] = {{ scalar_const(op) }};
 {%- elif op.kind == "LoadTime" %}    r[{{ op.dst }}] = m->time;
@@ -170,8 +179,8 @@
         r[{{ op.dst }}+((e/{{ block }})*{{ result_axis * inner }}+{{ offset.value * inner }}+e%{{ block }})*{{ op.lanes }}+l] = r[{{ source.start }}+e*{{ op.lanes }}+l];
 {%- set offset.value = offset.value + source_axis %}
 {%- endfor %}
-{%- elif op.kind == "StoreOutput" %}    {{ output }}[{{ targets[op.output_index].P.index if targets is not none else op.output_index }}] = r[{{ op.src }}];
-{%- elif op.kind == "StoreOutputRange" %}{%- for output_index in op.output_indices %}    {{ output }}[{{ targets[output_index].P.index if targets is not none else output_index }}] = r[{{ op.start + loop.index0 * op.stride }}];
+{%- elif op.kind == "StoreOutput" %}    {{ store_target(output, targets, op.output_index) }} = r[{{ op.src }}];
+{%- elif op.kind == "StoreOutputRange" %}{%- for output_index in op.output_indices %}    {{ store_target(output, targets, output_index) }} = r[{{ op.start + loop.index0 * op.stride }}];
 {%- endfor %}
 {%- else %}{{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
 {%- endif %}

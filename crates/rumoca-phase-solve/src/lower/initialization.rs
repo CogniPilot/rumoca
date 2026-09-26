@@ -35,14 +35,21 @@ pub(super) fn lower_initialization<'dae>(
         initial_pins::lower_transferred_initial_values(view, layout, &ownership, pins)?;
     // MLS §8.6 solves the states and the `fixed = false` parameters together; the
     // space names which coordinate of each kind the projection may own, and which
-    // a declaration has already determined.
+    // a declaration has already determined: a seeded start, or one assigned
+    // from a settable parameter before the projection.
+    let known_states = transferred
+        .given_state_indices
+        .iter()
+        .chain(&transferred.assigned_state_indices)
+        .copied()
+        .collect::<Vec<_>>();
     let space = initial_projection::initialization_unknown_space(
         initial_projection::InitializationUnknownInputs {
             view,
             layout,
             ownership: &ownership,
             derivatives,
-            given_state_indices: &transferred.given_state_indices,
+            given_state_indices: &known_states,
         },
     )?;
     rows.extend(transferred.checks);
@@ -52,6 +59,8 @@ pub(super) fn lower_initialization<'dae>(
     let manifold_row_count = rows.len() - manifold_start;
     let plan = initial_projection::plan_initialization_projection(&space, &row_incidence)?;
     let mut updates = initial_discrete::lower_initial_discrete_values(view, layout)?;
+    updates.rows.extend(transferred.start_updates);
+    updates.targets.extend(transferred.start_update_targets);
     // MLS §8.6 orders these after the projection that solves the `fixed = false`
     // unknowns they read; `settle_initialization_system` iterates the whole set
     // to a fixed point, so the two row groups share one update block.

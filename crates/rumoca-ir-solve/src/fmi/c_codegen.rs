@@ -3,7 +3,6 @@
 use super::{FmiCodegenView, FmiEventFreeCodegenView, FmiMetadata};
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
-use std::collections::BTreeSet;
 
 #[derive(Debug, thiserror::Error)]
 #[error("FMI C profile: {0}")]
@@ -30,8 +29,6 @@ pub struct FmiCCodegenView {
     update_order: Vec<usize>,
     /// The dependency levels of the parameter bindings.
     update_levels: usize,
-    /// Inventory indices of the parameters no emitted program reads.
-    folded: BTreeSet<usize>,
     /// The evaluation orders of the parameter-determined discrete rows.
     discrete_order: super::static_assertions::DiscreteOrder,
 }
@@ -42,7 +39,6 @@ impl FmiCodegenView {
         let (update_order, update_levels) =
             super::parameter_updates::validate(&self.model.problem, &self.model.pure_calls)
                 .map_err(FmiCCodegenError)?;
-        let folded = folded_parameters(&self.metadata, &self.model.problem);
         if !self.event_indicators.sources().is_empty() {
             return Err(FmiCCodegenError(
                 "continuous event indicators require general event support; the C profile supports only event-free models and parameter-determined events",
@@ -55,7 +51,6 @@ impl FmiCodegenView {
                     profile: Profile::EventFree(value),
                     update_order,
                     update_levels,
-                    folded,
                     discrete_order: super::static_assertions::DiscreteOrder::default(),
                 })
                 .map_err(|_| FmiCCodegenError("event-free narrowing failed"));
@@ -66,7 +61,6 @@ impl FmiCodegenView {
             profile: Profile::StaticAssertions(self),
             update_order,
             update_levels,
-            folded,
             discrete_order,
         })
     }
@@ -79,12 +73,10 @@ impl TryFrom<FmiEventFreeCodegenView> for FmiCCodegenView {
         let (update_order, update_levels) =
             super::parameter_updates::validate(value.problem(), value.pure_calls())
                 .map_err(FmiCCodegenError)?;
-        let folded = folded_parameters(&value.metadata, value.problem());
         Ok(Self {
             profile: Profile::EventFree(value),
             update_order,
             update_levels,
-            folded,
             discrete_order: super::static_assertions::DiscreteOrder::default(),
         })
     }
@@ -179,8 +171,7 @@ impl Serialize for FmiCCodegenView {
         entries.serialize_entry("initial_parameters", &self.model().parameters)?;
         entries.serialize_entry(
             "variables",
-            &super::metadata::SerializedFmiVariables::borrowing(metadata.variables())
-                .with_constants(&self.folded),
+            &super::metadata::SerializedFmiVariables::borrowing(metadata.variables()),
         )?;
         entries.serialize_entry("state_variable_indices", metadata.state_variable_indices())?;
         entries.serialize_entry(
@@ -207,25 +198,4 @@ impl FmiCCodegenView {
     pub const fn parameter_binding_levels(&self) -> usize {
         self.update_levels
     }
-}
-
-/// The settable parameters whose values no emitted program reads: the
-/// compiler folded them into the programs that use them, so a set could not
-/// take effect. The C profile exports them as constants that cannot be set.
-fn folded_parameters(metadata: &FmiMetadata, problem: &crate::SolveProblem) -> BTreeSet<usize> {
-    let reads = crate::read_parameter_slots(problem);
-    metadata
-        .variables()
-        .iter()
-        .enumerate()
-        .filter(|(_, variable)| variable.causality() == super::FmiCausality::Parameter)
-        .filter(|(_, variable)| {
-            variable.storage().is_some_and(|storage| {
-                storage.column() == super::metadata::FmiStorageColumn::P
-                    && (storage.base()..storage.base() + storage.scalar_count())
-                        .all(|index| !reads.contains(&index))
-            })
-        })
-        .map(|(index, _)| index)
-        .collect()
 }

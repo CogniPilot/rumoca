@@ -52,6 +52,7 @@ fn variable_metadata_is_available_only_through_borrowed_views() {
         variability: FmiVariability::Continuous,
         initial: None,
         tunable: false,
+        evaluable: false,
         declaration: Some(span),
         value_reference_fmi3: 7,
     };
@@ -282,6 +283,7 @@ mod max_step_duration_local {
             causality: FmiCausality::Parameter,
             variability: FmiVariability::Fixed,
             tunable: false,
+            evaluable: false,
             declaration: fixture_span(),
             text_start: None,
         }

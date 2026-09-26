@@ -162,6 +162,7 @@ fn lower_variable<'dae>(
         causality: fmi_causality(variable.causality()),
         variability: fmi_variability(variable),
         tunable: variable.is_tunable(),
+        evaluable: variable.is_evaluable(),
         declaration: variable.declaration().span(),
         text_start: text_start(view, variable),
     })

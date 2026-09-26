@@ -766,6 +766,7 @@ fn checked_variable(
         variability: input.variability,
         initial,
         tunable: input.tunable,
+        evaluable: input.evaluable,
         declaration: Some(input.declaration),
         value_reference_fmi3,
     })
