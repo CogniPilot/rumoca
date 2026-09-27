@@ -32,8 +32,8 @@ impl SharedAssignmentSchedule {
 
 impl ExactRefreshAssignmentSchedule {
     /// The shared-value segments of this schedule's final programs, in
-    /// schedule order. The checker proves them equivalent to the programs in
-    /// debug builds; executors run the segments in order.
+    /// schedule order. The checker proves them equivalent to the programs at
+    /// construction; executors run the segments in order.
     pub fn shared_segments(
         &self,
         source: &ComputeBlock,
@@ -65,7 +65,13 @@ impl ExactRefreshAssignmentSchedule {
             })
             .collect::<Vec<_>>();
         let segments = SharedValueSegments::derive(&programs);
-        debug_assert_eq!(segments.check(&programs), Ok(()));
+        // The checker is the construction proof that the segments compute the
+        // programs' values; it runs once here, never while executing them.
+        if let Err(error) = segments.check(&programs) {
+            return Err(ContinuousRefreshConstructionError {
+                reason: format!("shared-value segments fail their proof: {error:?}"),
+            });
+        }
         let spans = segments
             .segments()
             .iter()

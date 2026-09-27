@@ -178,14 +178,15 @@ pub fn share_program_values(program: Vec<LinearOp>) -> Vec<LinearOp> {
         let mut builder = Builder::default();
         builder.append(0, &targets, &fusible);
         let shared = builder.finish();
-        debug_assert_eq!(
-            shared.check(&[AssignmentProgram {
-                ops: &program,
-                targets: &targets,
-            }]),
-            Ok(())
-        );
-        shared.segments.into_iter().next()
+        // Sharing is admitted only with its proof; the program as written is
+        // its own proof.
+        let proven = shared.check(&[AssignmentProgram {
+            ops: &program,
+            targets: &targets,
+        }]);
+        proven
+            .ok()
+            .and_then(|()| shared.segments.into_iter().next())
     };
     match shared {
         Some(segment) if segment.ops.len() <= program.len() => segment.ops,
