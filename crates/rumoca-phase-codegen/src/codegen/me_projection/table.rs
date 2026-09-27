@@ -47,17 +47,23 @@ impl<K: Ord> FunctionFamily<K> {
     /// Emit `program` under `key`, or reuse the function of an identical
     /// program when the family interns by content.
     fn insert(&mut self, key: K, program: (Vec<solve::LinearOp>, Span)) -> usize {
-        let content = self.contents.as_ref().map(|_| format!("{:?}", program.0));
-        let known = content
-            .as_ref()
-            .and_then(|content| self.contents.as_ref()?.get(content).copied());
-        let id = known.unwrap_or(self.programs.len());
-        if known.is_none() {
-            self.programs.push(program);
-            if let (Some(contents), Some(content)) = (self.contents.as_mut(), content) {
-                contents.insert(content, id);
+        let id = match self.contents.as_mut() {
+            Some(contents) => {
+                let content = format!("{:?}", program.0);
+                if let Some(&known) = contents.get(&content) {
+                    known
+                } else {
+                    let id = self.programs.len();
+                    contents.insert(content, id);
+                    self.programs.push(program);
+                    id
+                }
             }
-        }
+            None => {
+                self.programs.push(program);
+                self.programs.len() - 1
+            }
+        };
         self.ids.insert(key, id);
         id
     }

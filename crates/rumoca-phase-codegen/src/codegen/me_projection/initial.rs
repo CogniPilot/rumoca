@@ -440,6 +440,13 @@ impl TangentCone {
         while forward_pass(inputs, &mut forward) {}
         let mut backward = inputs.residual_reads.clone();
         while backward_pass(inputs, &mut backward) {}
+        let mut updates = Vec::with_capacity(inputs.updates.len());
+        for (target, reads) in &inputs.updates {
+            updates.push(match target {
+                Some(target) => backward.contains(target) && meets(&forward, reads.iter().copied()),
+                None => false,
+            });
+        }
         Self {
             blocks: inputs
                 .blocks
@@ -449,14 +456,7 @@ impl TangentCone {
                         && meets(&backward, unknowns.iter().copied())
                 })
                 .collect(),
-            updates: inputs
-                .updates
-                .iter()
-                .map(|(target, reads)| {
-                    target.is_some_and(|target| backward.contains(&target))
-                        && meets(&forward, reads.iter().copied())
-                })
-                .collect(),
+            updates,
         }
     }
 }
