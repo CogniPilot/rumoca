@@ -23,13 +23,22 @@ model VariabilityClasses
   parameter Real unused = 6;
   parameter Real x0 = 1;
   parameter Boolean on = true;
+  parameter Boolean useB = true;
+  parameter Boolean divide = false;
+  parameter Real dz = 0;
   Real a;
   Real x(start = x0, fixed = true);
   Real y;
+  Real b;
+  Real z;
+  Real w;
 equation
   a = 7;
   der(x) = -x;
   y = a + c + pe + pf + pc + twice(p) + twice(c) + (if on then 1 else 0);
+  b = 2 * x;
+  z = if useB then x else b;
+  w = if divide then x / dz else x;
 end VariabilityClasses;";
 
 const DISCRETE: &str = "
@@ -79,9 +88,13 @@ fn the_dae_keeps_each_declared_variability_class() {
         ("p", "parameter", "parameter", true, false),
         ("unused", "parameter", "parameter", true, false),
         ("x0", "parameter", "parameter", true, false),
-        // Interim (SPEC_0044 ME-PARAM-001): an equation guard is evaluated at
-        // translation, so the parameter it reads is fixed there.
-        ("on", "parameter", "parameter", false, true),
+        // SPEC_0040 DAE-C22: a guard over structurally equal arms stays a
+        // run-time branch, so its parameter stays tunable; one over arms
+        // reading different unknowns is a structural selection, fixed at
+        // translation.
+        ("on", "parameter", "parameter", true, false),
+        ("divide", "parameter", "parameter", true, false),
+        ("useB", "parameter", "parameter", false, true),
         ("a", "algebraic", "continuous", false, false),
         ("x", "state", "continuous", false, false),
     ] {
@@ -145,7 +158,9 @@ fn the_fmi3_description_classifies_each_variability_class() {
         ("pc", "calculatedParameter", "tunable", "calculated", false),
         ("unused", "parameter", "tunable", "exact", true),
         ("x0", "parameter", "tunable", "exact", true),
-        ("on", "calculatedParameter", "fixed", "calculated", false),
+        ("on", "parameter", "tunable", "exact", true),
+        ("divide", "parameter", "tunable", "exact", true),
+        ("useB", "calculatedParameter", "fixed", "calculated", false),
         ("a", "local", "continuous", "calculated", false),
         ("x", "local", "continuous", "calculated", false),
     ] {
@@ -184,26 +199,35 @@ fn column<'a>(result: &'a rumoca_sim::SimResult, name: &str) -> &'a [f64] {
 }
 
 /// A parameter set takes effect: the literal-bound `p` stays a run-time read
-/// through `pc` and the unfolded call `twice(p)`, and the state start `x0` is
-/// assigned at initialization, while the constant call `twice(c)` and the
-/// literal-bound algebraic `a` fold without losing `a` as a declaration.
+/// through `pc` and the unfolded call `twice(p)`, the state start `x0` is
+/// assigned at initialization, and the guard `on` selects its branch at run
+/// time, while the constant call `twice(c)` and the literal-bound algebraic
+/// `a` fold without losing `a` as a declaration. The unselected arm `x / dz`
+/// divides by zero, and only the selected arm's value is observed.
 #[test]
 fn parameter_sets_take_effect_and_folding_stops_at_parameters() {
     let base = simulate("VariabilityClasses", MODEL, &[]);
-    let set = simulate("VariabilityClasses", MODEL, &[("p", 6.0), ("x0", 3.0)]);
-    let folded = 7.0 + 2.0 + 3.0 + 4.0 + 4.0 + 1.0;
-    for (result, p, x0) in [(&base, 5.0, 1.0), (&set, 6.0, 3.0)] {
+    let set = simulate(
+        "VariabilityClasses",
+        MODEL,
+        &[("p", 6.0), ("x0", 3.0), ("on", 0.0)],
+    );
+    let folded = 7.0 + 2.0 + 3.0 + 4.0 + 4.0;
+    for (result, p, x0, on) in [(&base, 5.0, 1.0, 1.0), (&set, 6.0, 3.0, 0.0)] {
         for (row, &time) in result.times.iter().enumerate() {
+            let x = x0 * (-time).exp();
             let expected = [
                 ("a", 7.0),
-                ("y", folded + 4.0 * p),
-                ("x", x0 * (-time).exp()),
+                ("y", folded + 4.0 * p + on),
+                ("x", x),
+                ("z", x),
+                ("w", x),
             ];
             for (name, value) in expected {
                 let actual = column(result, name)[row];
                 assert!(
                     (actual - value).abs() < 1e-4 * value.abs().max(1.0),
-                    "{name} at {time} with p = {p}, x0 = {x0}: {actual} != {value}"
+                    "{name} at {time} with p = {p}, x0 = {x0}, on = {on}: {actual} != {value}"
                 );
             }
         }

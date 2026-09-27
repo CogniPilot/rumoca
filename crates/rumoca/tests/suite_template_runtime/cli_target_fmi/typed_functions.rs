@@ -68,13 +68,11 @@ assert types['doubled'] == 'Boolean' and types['label'] == 'String', types
 assert variables['label'].start == 'rumoca <typed>', variables['label'].start
 
 # Ordinary parameters stay settable parameters, read or not (label is read by
-# no numeric program). A parameter an equation guard reads is evaluated at
-# translation and exported as a non-settable calculated parameter.
-for name in ['n', 'gain', 'label']:
-    assert variables[name].causality == 'parameter', (name, variables[name].causality)
-for name in ['doubled', 'speed']:
+# no numeric program); the guards over doubled and speed select between
+# structurally equal arms, so they stay run-time branches (SPEC_0040 DAE-C22).
+for name in ['n', 'gain', 'label', 'doubled', 'speed']:
     v = variables[name]
-    assert (v.causality, v.variability, v.initial) == ('calculatedParameter', 'fixed', 'calculated'), (name, v.causality, v.variability, v.initial)
+    assert (v.causality, v.variability) == ('parameter', 'tunable'), (name, v.causality, v.variability)
 
 # The solved state keeps its start as a guess; the discrete equation defines k.
 assert variables['x'].initial == 'approx', variables['x'].initial
@@ -82,20 +80,15 @@ assert variables['k'].initial == 'calculated' and variables['k'].start is None, 
 initial_unknowns = {u.variable.name for u in md.initialUnknowns}
 assert 'x' in initial_unknowns, initial_unknowns
 
-# The component itself refuses to set a parameter fixed at translation.
+# The component accepts a set of every guard parameter.
 unzipdir = extract(path)
 fmu = instantiate_fmu(unzipdir, md, fmi_type='ModelExchange')
 vr = {name: v.valueReference for name, v in variables.items()}
 set_integer = fmu.setInteger if fmi2 else fmu.setInt32
 set_real = fmu.setReal if fmi2 else fmu.setFloat64
 set_real([vr['gain']], [1.0])
-for name, setter, value in [('doubled', fmu.setBoolean, [False]), ('speed', set_integer, [1])]:
-    try:
-        setter([vr[name]], value)
-    except FMICallException:
-        pass
-    else:
-        raise AssertionError((name, 'a translation-time parameter accepted a set'))
+fmu.setBoolean([vr['doubled']], [False])
+set_integer([vr['speed']], [1])
 fmu.freeInstance()
 
 lo, hi = 0.0, 1.0
@@ -105,11 +98,11 @@ for _ in range(200):
 x0 = 0.5 * (lo + hi)
 for interface in ['ModelExchange', 'CoSimulation']:
     finals = {}
-    for n, gain, expected_k in [(2, 1.0, 4), (3, 1.0, 6), (2, 2.0, 4)]:
+    for n, gain, doubled, expected_k in [(2, 1.0, True, 4), (3, 1.0, True, 6), (2, 2.0, True, 4), (3, 1.0, False, 3)]:
         result = simulate_fmu(path, fmi_type=interface, stop_time=0.5, output_interval=0.05,
-            start_values={'n': n, 'gain': gain}, output=['x', 'y', 'k', 'n', 'doubled'])
-        assert (result['k'] == expected_k).all(), (interface, n, result['k'])
-        assert (result['n'] == n).all() and result['doubled'].all(), result
+            start_values={'n': n, 'gain': gain, 'doubled': doubled}, output=['x', 'y', 'k', 'n', 'doubled'])
+        assert (result['k'] == expected_k).all(), (interface, n, doubled, result['k'])
+        assert (result['n'] == n).all() and (result['doubled'] == doubled).all(), result
         assert abs(result['x'][0] - x0) < 1e-8, (interface, result['x'][0], x0)
         assert abs(result['y'][0] - 0.5) < 1e-8, (interface, result['y'][0])
         finals[(n, gain)] = result['x'][-1]

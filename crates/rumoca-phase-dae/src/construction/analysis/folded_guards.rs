@@ -1,19 +1,22 @@
 //! Parameters whose conditional guards DAE construction evaluates at
-//! translation (SPEC_0044 ME-PARAM-001, interim).
+//! translation (SPEC_0040 DAE-C22, SPEC_0044 ME-PARAM-001).
 //!
-//! Equation lowering folds an MLS §3.6.5 conditional whose guard this scope
-//! proves, and a variable's attribute or binding value folds it only when an
-//! arm calls a user function. A guard that reads an ordinary parameter is then
-//! frozen at the parameter's translation-time value, so a later set of that
-//! parameter could not take effect. Each such parameter, and every parameter
-//! its binding reads, is therefore evaluable: fixed at translation and
-//! exported non-settable.
+//! An equation conditional whose guard reads an ordinary parameter stays a
+//! run-time branch when its arms are structurally equal; otherwise equation
+//! lowering folds it as a structural selection. A variable's attribute or
+//! binding value folds such a guard only when an arm calls a user function. A
+//! folded guard freezes the parameter at its translation-time value, so a
+//! later set of it could not take effect. Each such parameter, and every
+//! parameter its binding reads, is therefore evaluable: fixed at translation
+//! and exported non-settable.
 
 use std::collections::HashSet;
 
 use rumoca_core::{Expression, ExpressionVisitor};
 
-use super::super::expression::conditional_guards::conditional_calls_a_user_function;
+use super::super::expression::conditional_guards::{
+    GuardClasses, conditional_calls_a_user_function, retains_parameter_guard,
+};
 use super::super::function_shapes::{ProvenValue, ShapeEnvironment};
 use super::{ValueReads, VarName, Variability, flat};
 
@@ -65,12 +68,43 @@ impl GuardScan<'_> {
     fn ordinary_parameters(&self, expression: &Expression) -> Vec<VarName> {
         ordinary_parameters(self.flat, self.evaluable, expression)
     }
+
+    /// Whether an equation conditional stays a run-time branch (SPEC_0040
+    /// DAE-C22), classified over the flat variabilities.
+    fn retains(&self, branches: &[(Expression, Expression)], else_branch: &Expression) -> bool {
+        let variability = |name: &VarName| {
+            self.flat
+                .variables
+                .get(name)
+                .map(|variable| &variable.variability)
+        };
+        let tunable = |name: &VarName| {
+            !self.evaluable.contains(name)
+                && matches!(variability(name), Some(Variability::Parameter(_)))
+        };
+        let unknown = |name: &VarName| {
+            variability(name).is_some_and(|variability| {
+                !matches!(
+                    variability,
+                    Variability::Parameter(_) | Variability::Constant(_)
+                )
+            })
+        };
+        let classes = GuardClasses {
+            tunable_parameter: &tunable,
+            unknown: &unknown,
+        };
+        retains_parameter_guard(branches, else_branch, &classes)
+    }
 }
 
 impl ExpressionVisitor for GuardScan<'_> {
     fn visit_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
-        let folds =
-            !self.attribute_scope || conditional_calls_a_user_function(branches, else_branch);
+        let folds = if self.attribute_scope {
+            conditional_calls_a_user_function(branches, else_branch)
+        } else {
+            !self.retains(branches, else_branch)
+        };
         for (condition, _) in branches {
             let read = self.ordinary_parameters(condition);
             if folds

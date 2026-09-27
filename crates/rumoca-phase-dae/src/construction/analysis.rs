@@ -523,7 +523,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     // Fold the parameter fixed point before shape analysis: MLS §12.2 array
     // dimensions can depend on the settled parameter values from MLS §4.5.
     let constants = constant_context(flat)?;
-    let function_shapes = FunctionShapeAnalysis::analyze(flat, &constants)?;
+    let mut function_shapes = FunctionShapeAnalysis::analyze(flat, &constants)?;
     let record_array_fields = Arc::clone(function_shapes.record_array_fields());
     let function_plans = validate_functions(flat, &function_shapes)?;
     let record_equations = analyze_record_equation_sets(flat)?;
@@ -585,6 +585,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let folded =
         folded_guards::folded_guard_parameters(flat, function_shapes.model_values(), &evaluable);
     evaluable.extend(folded);
+    function_shapes.set_evaluable_parameters(&evaluable);
     Ok(Analysis {
         constants,
         delay_plans: expression_support.delays,

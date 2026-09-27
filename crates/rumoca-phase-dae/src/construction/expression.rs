@@ -7,7 +7,9 @@ use super::*;
 
 use calls::*;
 pub(super) use calls::{FunctionCallLowering, classify_function_call};
-use conditional_guards::{conditional_calls_a_user_function, guard_reads_tunable_parameter};
+use conditional_guards::{
+    conditional_calls_a_user_function, guard_reads_tunable_parameter, retains_equation_guard,
+};
 use operators::*;
 use temporal::*;
 
@@ -1673,11 +1675,19 @@ fn lower_conditional_expression<'dae>(
     // so preserving an arm whose call carries no shape certificate could not be
     // built. A structural guard, and any conditional with a call in an arm, keep
     // folding exactly as before.
-    let preserve_tunable_conditional = symbols.shapes.is_attribute_scope()
-        && !conditional_calls_a_user_function(branches, else_branch)
-        && branches
-            .iter()
-            .any(|(condition, _)| guard_reads_tunable_parameter(symbols.coordinates, condition));
+    // In an equation, such a guard is kept as a run-time branch when its arms
+    // are structurally equal (SPEC_0040 DAE-C22); only a structural selection
+    // is evaluated at translation.
+    let preserve_tunable_conditional = if symbols.shapes.is_attribute_scope() {
+        !conditional_calls_a_user_function(branches, else_branch)
+            && branches
+                .iter()
+                .any(|(condition, _)| guard_reads_tunable_parameter(symbols.coordinates, condition))
+    } else {
+        symbols.shapes.evaluable().is_some_and(|evaluable| {
+            retains_equation_guard(symbols.coordinates, evaluable, branches, else_branch)
+        })
+    };
     let mut lowered = Vec::with_capacity(branches.len());
     for (condition, value) in branches {
         let proven = if preserve_tunable_conditional {

@@ -147,6 +147,10 @@ pub(super) struct ShapeEnvironment {
     /// translation; only a guard that reads a tunable parameter is preserved.
     /// Equation and function-body lowering leave this `false` and fold as usual.
     attribute_scope: bool,
+    /// The model's parameters fixed at translation, known in the model scopes
+    /// once analysis settles them; a guard reading any other parameter is a
+    /// run-time guard under SPEC_0040 DAE-C22. `None` in function scopes.
+    evaluable: Option<Arc<std::collections::HashSet<VarName>>>,
 }
 
 impl ShapeEnvironment {
@@ -161,7 +165,13 @@ impl ShapeEnvironment {
             dimension_extents: HashMap::with_capacity(capacity),
             specialized: false,
             attribute_scope: false,
+            evaluable: None,
         }
+    }
+
+    /// The model's evaluable parameters, when this is a model scope.
+    pub(super) fn evaluable(&self) -> Option<&std::collections::HashSet<VarName>> {
+        self.evaluable.as_deref()
     }
 
     /// A clone of this environment marked as lowering a variable's attribute or
@@ -675,6 +685,16 @@ impl FunctionShapeAnalysis {
 
     pub(super) fn model_values(&self) -> &ShapeEnvironment {
         &self.model_values
+    }
+
+    /// Record the model's settled evaluable parameters in both model scopes.
+    pub(super) fn set_evaluable_parameters(
+        &mut self,
+        evaluable: &std::collections::HashSet<VarName>,
+    ) {
+        let evaluable = Arc::new(evaluable.clone());
+        self.model_values.evaluable = Some(Arc::clone(&evaluable));
+        self.attribute_values.evaluable = Some(evaluable);
     }
 
     /// The model environment for lowering a variable's attribute and binding
