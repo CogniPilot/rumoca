@@ -1640,6 +1640,7 @@ fn test_compile_to_json_uses_native_only_shape() {
 
 #[test]
 fn test_lsp_document_symbols_wrapper_returns_nested_outline() {
+    let _guard = session_test_guard();
     let source = r#"
 model Outline
   parameter Real k = 1;
@@ -1680,6 +1681,7 @@ end Outline;
 
 #[test]
 fn test_lsp_semantic_token_legend_wrapper_exposes_expected_entries() {
+    let _guard = session_test_guard();
     let legend_json =
         lsp_semantic_token_legend().expect("semantic token legend wrapper should serialize");
     let legend: lsp_types::SemanticTokensLegend =
@@ -1706,6 +1708,7 @@ fn test_lsp_semantic_token_legend_wrapper_exposes_expected_entries() {
 
 #[test]
 fn test_lsp_semantic_tokens_wrapper_highlights_keywords_and_functions() {
+    let _guard = session_test_guard();
     let source = r#"
 model Ball
   Real x(start=1);
@@ -1759,6 +1762,7 @@ end Ball;
 
 #[test]
 fn test_compile_to_json_recovers_after_syntax_diagnostics() {
+    let _guard = session_test_guard();
     let mut session = Session::default();
     let invalid = r#"
     model Ball
