@@ -78,3 +78,58 @@ fn scoped_candidates(
         })
         .collect()
 }
+
+/// Whether the branches of an if-equation are structurally equal: the same
+/// number of simple equations and, per position, the same variables and
+/// called operators (parameters and constants aside). Only then can its
+/// parameter guard stay a run-time branch (SPEC_0040 DAE-C22); any other
+/// parameter guard is selected at translation.
+pub(super) fn branches_structurally_equal(
+    ctx: &crate::Context,
+    cond_blocks: &[ast::EquationBlock],
+    else_block: &Option<Vec<ast::Equation>>,
+    prefix: &ast::QualifiedName,
+    span: rumoca_core::Span,
+) -> Result<bool, crate::errors::FlattenError> {
+    let empty = Vec::new();
+    let mut signature = None;
+    for equations in cond_blocks
+        .iter()
+        .map(|block| &block.eqs)
+        .chain(std::iter::once(else_block.as_ref().unwrap_or(&empty)))
+    {
+        let branch = super::expand_to_simple_equations(ctx, equations, prefix, span)?
+            .iter()
+            .map(|equation| {
+                let mut names = equation_structure(ctx, &equation.lhs, prefix);
+                names.extend(equation_structure(ctx, &equation.rhs, prefix));
+                names
+            })
+            .collect::<Vec<_>>();
+        match &signature {
+            None => signature = Some(branch),
+            Some(first) if *first != branch => return Ok(false),
+            Some(_) => {}
+        }
+    }
+    Ok(true)
+}
+
+fn equation_structure(
+    ctx: &crate::Context,
+    expression: &ast::Expression,
+    prefix: &ast::QualifiedName,
+) -> std::collections::BTreeSet<String> {
+    let mut names = ast::collect_component_refs(expression)
+        .iter()
+        .map(ToString::to_string)
+        .filter(|name| !crate::boolean_eval::names_parameter_or_constant(ctx, name, prefix))
+        .collect::<std::collections::BTreeSet<_>>();
+    let calls = std::cell::RefCell::new(Vec::new());
+    ast::contains_function_call(expression, |function, _| {
+        calls.borrow_mut().push(format!("{function}()"));
+        false
+    });
+    names.extend(calls.into_inner());
+    names
+}

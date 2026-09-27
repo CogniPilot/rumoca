@@ -215,6 +215,17 @@ pub(crate) fn reads_tunable_parameter(
         .any(|reference| scoped_set_contains(&ctx.tunable_params, &reference.to_string(), prefix))
 }
 
+/// Whether `name` denotes a parameter or a constant from `prefix`.
+pub(crate) fn names_parameter_or_constant(
+    ctx: &Context,
+    name: &str,
+    prefix: &ast::QualifiedName,
+) -> bool {
+    scoped_set_contains(&ctx.structural_params, name, prefix)
+        || scoped_set_contains(&ctx.non_structural_params, name, prefix)
+        || scoped_lookup_map(&ctx.constant_values, name, prefix).is_some()
+}
+
 /// Check if an expression only references structural parameters (Evaluate=true or final).
 ///
 /// Returns true if:

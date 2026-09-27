@@ -33,6 +33,7 @@ mod conditional_and_eval;
 mod der_divergent_branches;
 mod parameter_selections;
 use der_divergent_branches::{branches_differ_in_der_targets, try_select_parameter_branch};
+use parameter_selections::branches_structurally_equal;
 pub(crate) use parameter_selections::parameter_branch_selection;
 mod connections_graph;
 mod flattened_equations;
@@ -1453,6 +1454,28 @@ fn expand_if_equation(
     if let Some(selected_branch) = try_select_constant_branch(ctx, cond_blocks, else_block, prefix)
     {
         return flatten_equations_list(ctx, &selected_branch, prefix, span, origin, def_map);
+    }
+
+    // A guard over an ordinary parameter stays a run-time branch only when its
+    // branches are structurally equal (SPEC_0040 DAE-C22); otherwise it is a
+    // structural selection made here, recorded so the parameter is fixed.
+    if cond_blocks
+        .iter()
+        .any(|block| reads_tunable_parameter(ctx, &block.cond, prefix))
+        && !branches_structurally_equal(ctx, cond_blocks, else_block, prefix, span)?
+        && let Some(selected_branch) =
+            try_select_parameter_branch(cond_blocks, else_block, ctx, prefix)
+    {
+        let mut flattened =
+            flatten_equations_list(ctx, &selected_branch, prefix, span, origin, def_map)?;
+        flattened
+            .parameter_branch_selections
+            .push(parameter_branch_selection(
+                evaluated_conditions(ctx, cond_blocks, prefix),
+                prefix,
+                span,
+            ));
+        return Ok(flattened);
     }
 
     // MLS §8.3.4: branches that differ in which variables they differentiate
