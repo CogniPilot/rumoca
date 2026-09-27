@@ -6,7 +6,9 @@
 //! CI in order, stopping at the first failure. It prints one
 //! `GATE_OK <rev> (<log>)` or `GATE_FAILED <rev> (<log>)` line plus the
 //! failing step, and removes the target directory after a pass unless
-//! `--keep` is given. Uncommitted changes are never part of the snapshot.
+//! `--keep` is given. The coverage steps run under one host-wide lock, so two
+//! gates never build coverage at once. Uncommitted changes are never part of
+//! the snapshot.
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
@@ -17,6 +19,12 @@ use std::process::{Command, Stdio};
 
 /// The repository whose `main` branch decides which crates changed.
 const UPSTREAM: &str = "https://github.com/CogniPilot/rumoca";
+
+/// The host-wide lock the coverage steps hold, shared with every gate on the
+/// host (the scratch `gate.sh` takes the same file): each coverage build needs
+/// about 50 GB of target directory, so two at once can fill the disk. A fixed
+/// path, since `nix develop` points `TMPDIR` at a per-shell directory.
+const COVERAGE_LOCK: &str = "/tmp/rumoca-coverage.lock";
 
 /// Template targets whose Python packages a local shell need not provide;
 /// their failures are reported but do not fail the gate.
@@ -52,6 +60,9 @@ pub(crate) struct GateStep {
     pub(crate) env: Vec<(&'static str, &'static str)>,
     /// Template runtime tests: judged by their failing test names.
     pub(crate) template_runtime: bool,
+    /// Runs under the host-wide coverage lock, held from the first such step to
+    /// the end of the gate.
+    pub(crate) host_lock: bool,
 }
 
 impl GateStep {
@@ -62,6 +73,7 @@ impl GateStep {
             args: args.iter().map(|arg| (*arg).to_string()).collect(),
             env: Vec::new(),
             template_runtime: false,
+            host_lock: false,
         }
     }
 
@@ -174,7 +186,7 @@ pub(crate) fn gate_steps(packages: &[String], coverage: bool) -> Vec<GateStep> {
 }
 
 fn coverage_steps() -> Vec<GateStep> {
-    vec![
+    let steps = vec![
         GateStep::cargo(
             "coverage-run",
             &[
@@ -227,7 +239,27 @@ fn coverage_steps() -> Vec<GateStep> {
                 "2",
             ],
         ),
-    ]
+    ];
+    steps
+        .into_iter()
+        .map(|step| GateStep {
+            host_lock: true,
+            ..step
+        })
+        .collect()
+}
+
+/// Take the exclusive host-wide lock at `path`, waiting for any other holder;
+/// the lock is released when the returned file is dropped.
+pub(crate) fn lock_host(path: &Path) -> Result<fs::File> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .context(format!("open {}", path.display()))?;
+    file.lock().context(format!("lock {}", path.display()))?;
+    Ok(file)
 }
 
 /// The crates a change touches: the first path component under `crates/`.
@@ -404,7 +436,12 @@ pub(crate) fn run_steps(
     target: &Path,
     log: &mut fs::File,
 ) -> Result<Option<&'static str>> {
+    let mut host_lock = None;
     for step in steps {
+        if step.host_lock && host_lock.is_none() {
+            writeln!(log, "### waiting for {COVERAGE_LOCK}")?;
+            host_lock = Some(lock_host(Path::new(COVERAGE_LOCK))?);
+        }
         println!("### {}", step.name);
         writeln!(log, "### {}", step.name)?;
         let mut command = Command::new(step.program);

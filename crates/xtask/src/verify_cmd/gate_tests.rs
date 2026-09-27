@@ -1,7 +1,8 @@
 use super::VerifyCommand;
 use super::gate::{
     GateStep, VerifyGateArgs, blocking_template_failures, changed_crates, changed_packages,
-    extract_snapshot, gate_steps, link_shared_caches, resolve_rev, run, run_steps, upstream_main,
+    extract_snapshot, gate_steps, link_shared_caches, lock_host, resolve_rev, run, run_steps,
+    upstream_main,
 };
 use clap::Parser;
 use std::path::Path;
@@ -105,6 +106,7 @@ fn step(name: &'static str, args: &[&str], template_runtime: bool) -> GateStep {
         args: args.iter().map(|arg| (*arg).to_string()).collect(),
         env: vec![("GATE_FIXTURE", "1")],
         template_runtime,
+        host_lock: false,
     }
 }
 
@@ -268,5 +270,32 @@ fn only_required_template_targets_block_the_gate() {
     assert_eq!(
         blocking_template_failures(output),
         ["test fmi3::runtime ... FAILED"]
+    );
+}
+
+#[test]
+fn only_the_coverage_steps_hold_the_host_lock() {
+    for step in &gate_steps(&["alpha".to_string()], true) {
+        assert_eq!(
+            step.host_lock,
+            step.name.starts_with("coverage"),
+            "{}",
+            step.name
+        );
+    }
+    assert!(gate_steps(&[], false).iter().all(|step| !step.host_lock));
+}
+
+#[test]
+fn the_host_lock_excludes_a_second_holder_until_released() {
+    let work = tempfile::tempdir().unwrap();
+    let path = work.path().join("coverage.lock");
+    let held = lock_host(&path).unwrap();
+    let other = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    assert!(other.try_lock().is_err(), "a second holder must wait");
+    drop(held);
+    assert!(
+        other.try_lock().is_ok(),
+        "the lock is released with its file"
     );
 }
