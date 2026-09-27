@@ -202,6 +202,19 @@ pub(crate) fn try_eval_boolean_with_scope(
 /// quantities (e.g., parameters marked `Evaluate=true`, `final` parameters, and
 /// constants). Non-structural parameters must not be folded here.
 ///
+/// Whether `expr` reads an ordinary parameter (fixed, without `Evaluate=true`
+/// or `final`): a branch selection over it fixes that parameter, so it is
+/// left to DAE construction (SPEC_0040 DAE-C22).
+pub(crate) fn reads_tunable_parameter(
+    ctx: &Context,
+    expr: &ast::Expression,
+    prefix: &ast::QualifiedName,
+) -> bool {
+    ast::collect_component_refs(expr)
+        .iter()
+        .any(|reference| scoped_set_contains(&ctx.tunable_params, &reference.to_string(), prefix))
+}
+
 /// Check if an expression only references structural parameters (Evaluate=true or final).
 ///
 /// Returns true if:

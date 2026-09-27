@@ -15,6 +15,12 @@ model VariabilityClasses
   algorithm
     y := 2 * u;
   end twice;
+  function thrice
+    input Real u;
+    output Real y;
+  algorithm
+    y := 3 * u;
+  end thrice;
   constant Real c = 2;
   parameter Real pe = 3 annotation(Evaluate = true);
   final parameter Real pf = 4;
@@ -32,6 +38,7 @@ model VariabilityClasses
   Real b;
   Real z;
   Real w;
+  Real v;
 equation
   a = 7;
   der(x) = -x;
@@ -39,6 +46,7 @@ equation
   b = 2 * x;
   z = if useB then x else b;
   w = if divide then x / dz else x;
+  v = if on then twice(x) else thrice(x);
 end VariabilityClasses;";
 
 const DISCRETE: &str = "
@@ -222,6 +230,7 @@ fn parameter_sets_take_effect_and_folding_stops_at_parameters() {
                 ("x", x),
                 ("z", x),
                 ("w", x),
+                ("v", if on > 0.5 { 2.0 * x } else { 3.0 * x }),
             ];
             for (name, value) in expected {
                 let actual = column(result, name)[row];
@@ -231,6 +240,48 @@ fn parameter_sets_take_effect_and_folding_stops_at_parameters() {
                 );
             }
         }
+    }
+}
+
+const SELECTED_ARM: &str = "
+model SelectedArm
+  function positive
+    input Real u;
+    output Real y;
+  algorithm
+    assert(u > 0, \"positive requires a positive argument\");
+    y := u;
+  end positive;
+  parameter Boolean check = false;
+  Real x(start = 1, fixed = true);
+  Real s;
+equation
+  der(x) = -x;
+  s = if check then positive(x - 10) else x;
+end SelectedArm;";
+
+/// SPEC_0040 DAE-C22: a run-time guard over a call arm evaluates only the
+/// selected arm, so the unselected call's assertion, which fails for every
+/// state here, never fires, and the guard parameter stays settable.
+#[test]
+fn an_unselected_call_arm_is_not_evaluated() {
+    let result = compile("SelectedArm", SELECTED_ARM);
+    result.dae.inspect(|view| {
+        let check = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == "check")
+            .map(|(_, variable)| variable)
+            .expect("the guard parameter is declared");
+        assert!(
+            !check.is_evaluable(),
+            "the guard stays a run-time parameter"
+        );
+    });
+    let simulated = simulate("SelectedArm", SELECTED_ARM, &[]);
+    for (row, &time) in simulated.times.iter().enumerate() {
+        let expected = (-time).exp();
+        let actual = column(&simulated, "s")[row];
+        assert!((actual - expected).abs() < 1e-4, "s at {time}: {actual}");
     }
 }
 

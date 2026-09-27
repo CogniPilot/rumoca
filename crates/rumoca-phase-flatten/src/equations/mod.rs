@@ -19,8 +19,8 @@ use rumoca_ir_flat as flat;
 use tracing::{debug, warn};
 
 use crate::boolean_eval::{
-    is_structural_expression, try_eval_boolean_with_ctx_inner, try_eval_structural_boolean,
-    try_resolve_enum_value,
+    is_structural_expression, reads_tunable_parameter, try_eval_boolean_with_ctx_inner,
+    try_eval_structural_boolean, try_resolve_enum_value,
 };
 use crate::errors::FlattenError;
 use crate::static_subscripts::try_constant_integer;
@@ -31,7 +31,9 @@ pub(crate) mod array_family;
 mod assert_equations;
 mod conditional_and_eval;
 mod der_divergent_branches;
+mod parameter_selections;
 use der_divergent_branches::{branches_differ_in_der_targets, try_select_parameter_branch};
+pub(crate) use parameter_selections::parameter_branch_selection;
 mod connections_graph;
 mod flattened_equations;
 mod structured_domain;
@@ -499,6 +501,7 @@ pub(crate) fn flatten_equation_with_def_map(
                 definite_roots: vec![],
                 branches: vec![],
                 potential_roots: vec![],
+                parameter_branch_selections: vec![],
             })
         }
 
@@ -1460,7 +1463,16 @@ fn expand_if_equation(
         && let Some(selected_branch) =
             try_select_parameter_branch(cond_blocks, else_block, ctx, prefix)
     {
-        return flatten_equations_list(ctx, &selected_branch, prefix, span, origin, def_map);
+        let mut flattened =
+            flatten_equations_list(ctx, &selected_branch, prefix, span, origin, def_map)?;
+        flattened
+            .parameter_branch_selections
+            .push(parameter_branch_selection(
+                evaluated_conditions(ctx, cond_blocks, prefix),
+                prefix,
+                span,
+            ));
+        return Ok(flattened);
     }
 
     // Non-constant conditions: expand each branch to simple equations first
@@ -1542,6 +1554,11 @@ fn try_select_constant_branch(
     // Try to evaluate conditions using structural parameters only
     // This respects Evaluate=true annotation per MLS §18.3
     for (i, block) in cond_blocks.iter().enumerate() {
+        // An ordinary parameter guard is not structural: DAE construction keeps
+        // it as a run-time branch or selects it and fixes the parameter.
+        if reads_tunable_parameter(ctx, &block.cond, prefix) {
+            return None;
+        }
         let is_struct = is_structural_expression(ctx, &block.cond, prefix);
         let eval_result = try_eval_structural_boolean(ctx, &block.cond, prefix);
         let _ = (i, is_struct); // suppress unused warnings
@@ -1588,21 +1605,49 @@ fn try_select_branch_for_mismatched_if(
     origin: &rumoca_ir_flat::EquationOrigin,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<FlattenedEquations, FlattenError> {
+    let mut selected = None;
     for block in cond_blocks {
-        if let Some(true) = try_eval_boolean_with_ctx_inner(&block.cond, Some(ctx), prefix) {
-            return flatten_equations_list(ctx, &block.eqs, prefix, span, origin, def_map);
+        match try_eval_boolean_with_ctx_inner(&block.cond, Some(ctx), prefix) {
+            Some(true) => {
+                selected = Some(block.eqs.clone());
+                break;
+            }
+            Some(false) => {}
+            None => {
+                let description =
+                    mismatched_if_equation_description(ctx, cond_blocks, else_block, prefix, span)?;
+                return Err(FlattenError::unsupported_equation(description, span));
+            }
         }
-        if let Some(false) = try_eval_boolean_with_ctx_inner(&block.cond, Some(ctx), prefix) {
-            continue;
-        }
-        // Can't evaluate this condition at all
-        let description =
-            mismatched_if_equation_description(ctx, cond_blocks, else_block, prefix, span)?;
-        return Err(FlattenError::unsupported_equation(description, span));
     }
     // All conditions false, use else branch
-    let else_eqs = equations_from_optional_else(else_block);
-    flatten_equations_list(ctx, &else_eqs, prefix, span, origin, def_map)
+    let selected = selected.unwrap_or_else(|| equations_from_optional_else(else_block));
+    let mut flattened = flatten_equations_list(ctx, &selected, prefix, span, origin, def_map)?;
+    flattened
+        .parameter_branch_selections
+        .push(parameter_branch_selection(
+            evaluated_conditions(ctx, cond_blocks, prefix),
+            prefix,
+            span,
+        ));
+    Ok(flattened)
+}
+
+/// The conditions a translation-time selection evaluates: each one up to and
+/// including the first that holds.
+fn evaluated_conditions<'a>(
+    ctx: &Context,
+    cond_blocks: &'a [ast::EquationBlock],
+    prefix: &ast::QualifiedName,
+) -> Vec<&'a ast::Expression> {
+    let mut evaluated = Vec::new();
+    for block in cond_blocks {
+        evaluated.push(&block.cond);
+        if try_eval_boolean_with_ctx_inner(&block.cond, Some(ctx), prefix) == Some(true) {
+            break;
+        }
+    }
+    evaluated
 }
 
 fn mismatched_if_equation_description(

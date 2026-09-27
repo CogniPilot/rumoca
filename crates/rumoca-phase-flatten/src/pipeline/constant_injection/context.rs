@@ -74,6 +74,9 @@ pub(crate) struct Context {
     /// `Evaluate=true`. These must not be folded for structural branch
     /// selection, even when a provisional value is available.
     pub non_structural_params: std::collections::HashSet<String>,
+    /// Ordinary parameters: fixed, without `Evaluate=true` or `final`. A
+    /// branch selection that reads one is not structural (SPEC_0040 DAE-C22).
+    pub tunable_params: std::collections::HashSet<String>,
     /// User-defined function definitions for compile-time evaluation (MLS §12.3).
     /// Functions are looked up by qualified name during constant expression evaluation.
     pub functions: rustc_hash::FxHashMap<String, Function>,

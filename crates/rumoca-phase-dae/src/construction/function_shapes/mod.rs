@@ -5,6 +5,7 @@ mod integer_bounds;
 mod tests;
 mod value_relevance;
 
+use super::expression::conditional_guards::retains_flat_guard;
 use super::*;
 use derivatives::FunctionDerivativeCertificate;
 pub(in crate::construction) use expression_rules::{
@@ -151,6 +152,9 @@ pub(super) struct ShapeEnvironment {
     /// once analysis settles them; a guard reading any other parameter is a
     /// run-time guard under SPEC_0040 DAE-C22. `None` in function scopes.
     evaluable: Option<Arc<std::collections::HashSet<VarName>>>,
+    /// Equation conditionals whose run-time arms could not be certified, so
+    /// their parameter guard is a structural selection.
+    structural_selections: Arc<HashSet<Span>>,
 }
 
 impl ShapeEnvironment {
@@ -166,7 +170,14 @@ impl ShapeEnvironment {
             specialized: false,
             attribute_scope: false,
             evaluable: None,
+            structural_selections: Arc::default(),
         }
+    }
+
+    /// Whether the equation conditional at `span` is a structural selection
+    /// because an arm's calls could not be certified.
+    pub(super) fn is_structural_selection(&self, span: Span) -> bool {
+        self.structural_selections.contains(&span)
     }
 
     /// The model's evaluable parameters, when this is a model scope.
@@ -583,12 +594,29 @@ pub(super) struct FunctionShapeAnalysis {
     /// functions and denies a recursive call the repeated key it terminates on.
     value_read_inputs: ValueReadInputs,
     derivatives: Vec<FunctionDerivativeCertificate>,
+    /// Equation conditionals (by source span) whose parameter guard would stay
+    /// a run-time branch but an arm's calls cannot be certified, so the guard
+    /// is a structural selection (SPEC_0040 DAE-C22).
+    structural_selections: HashSet<Span>,
 }
 
 impl FunctionShapeAnalysis {
+    #[cfg(test)]
     pub(super) fn analyze(flat: &flat::Model, constants: &EvalContext) -> Result<Self, ToDaeError> {
+        Self::analyze_model(flat, constants, None)
+    }
+
+    /// Analyze with the model's evaluable parameters known, so discovery keeps
+    /// every arm of an equation conditional whose parameter guard stays a
+    /// run-time branch (SPEC_0040 DAE-C22).
+    pub(super) fn analyze_model(
+        flat: &flat::Model,
+        constants: &EvalContext,
+        evaluable: Option<&std::collections::HashSet<VarName>>,
+    ) -> Result<Self, ToDaeError> {
         let record_array_fields = Arc::new(analysis::analyze_record_array_field_plans(flat)?);
         let mut model_values = concrete_model_shapes(flat, constants)?;
+        model_values.evaluable = evaluable.map(|evaluable| Arc::new(evaluable.clone()));
         model_values.record_array_fields = Some(record_array_fields);
         let constructor_instances = flat
             .functions
@@ -639,12 +667,15 @@ impl FunctionShapeAnalysis {
                 declared_input_counts,
                 value_read_inputs,
                 derivatives: Vec::new(),
+                structural_selections: HashSet::new(),
             },
             active_specializations: Vec::new(),
         };
         analyzer.discover_model_calls()?;
         analyzer.discover_derivative_calls()?;
         let mut analysis = analyzer.analysis;
+        analysis.model_values.structural_selections =
+            Arc::new(analysis.structural_selections.clone());
         analysis.attribute_values = analysis.model_values.in_attribute_scope();
         Ok(analysis)
     }
@@ -881,6 +912,12 @@ impl FunctionShapeAnalysis {
     }
 }
 
+struct DiscoveryCheckpoint {
+    certificates: usize,
+    call_keys: HashSet<FunctionSpecializationKey>,
+    constructor_keys: HashSet<FunctionSpecializationKey>,
+}
+
 struct ShapeAnalyzer<'flat> {
     flat: &'flat flat::Model,
     analysis: FunctionShapeAnalysis,
@@ -890,8 +927,34 @@ struct ShapeAnalyzer<'flat> {
 impl ShapeAnalyzer<'_> {
     fn discover_model_calls(&mut self) -> Result<(), ToDaeError> {
         let values = self.analysis.model_values.clone();
-        for expression in all_model_expressions(self.flat) {
-            self.discover_calls(expression, &values)?;
+        // Only an equation keeps a parameter guard as a run-time branch; an
+        // attribute or a parameter binding prunes arms its guard proves dead.
+        let attribute_values = ShapeEnvironment {
+            evaluable: None,
+            ..values.clone()
+        };
+        for variable in self.flat.variables.values() {
+            let binding_is_equation = !matches!(
+                variable.variability,
+                Variability::Parameter(_) | Variability::Constant(_)
+            );
+            for expression in variable_attribute_expressions(variable) {
+                let equation = binding_is_equation
+                    && variable
+                        .binding
+                        .as_ref()
+                        .is_some_and(|binding| std::ptr::eq(binding, expression));
+                let scopes = [&attribute_values, &values];
+                self.discover_calls(expression, scopes[usize::from(equation)])?;
+            }
+        }
+        for equation in self
+            .flat
+            .equations
+            .iter()
+            .chain(&self.flat.initial_equations)
+        {
+            self.discover_calls(&equation.residual, &values)?;
         }
         for algorithm in self
             .flat
@@ -941,10 +1004,10 @@ impl ShapeAnalyzer<'_> {
         if let Expression::If {
             branches,
             else_branch,
-            ..
+            span,
         } = expression
         {
-            return self.discover_conditional_calls(branches, else_branch, values);
+            return self.discover_conditional_calls(branches, else_branch, *span, values);
         }
         for child in expression_children(expression) {
             self.discover_calls(child, values)?;
@@ -958,8 +1021,42 @@ impl ShapeAnalyzer<'_> {
         &mut self,
         branches: &[(Expression, Expression)],
         else_branch: &Expression,
+        span: Span,
         values: &ShapeEnvironment,
     ) -> Result<(), ToDaeError> {
+        // An equation conditional kept as a run-time branch (SPEC_0040 DAE-C22)
+        // can take any arm, so every arm's calls are certified. An arm whose
+        // calls cannot be certified makes the guard a structural selection:
+        // the attempt is rolled back and only the reachable arms are kept.
+        let run_time = !self.analysis.structural_selections.contains(&span)
+            && values.evaluable().is_some_and(|evaluable| {
+                retains_flat_guard(self.flat, evaluable, branches, else_branch)
+            });
+        if run_time {
+            let checkpoint = self.checkpoint();
+            let every_arm = branches
+                .iter()
+                .flat_map(|(condition, value)| [condition, value])
+                .chain(std::iter::once(else_branch))
+                .try_for_each(|arm| self.discover_calls(arm, values));
+            // A certified callee must also have a representable body.
+            let representable = every_arm.is_ok()
+                && self.analysis.certificates[checkpoint.certificates..]
+                    .iter()
+                    .all(|certificate| {
+                        analysis::validate_function_certificate(
+                            self.flat,
+                            &self.analysis,
+                            certificate,
+                        )
+                        .is_ok()
+                    });
+            if representable {
+                return Ok(());
+            }
+            self.restore(checkpoint);
+            self.analysis.structural_selections.insert(span);
+        }
         for (condition, value) in branches {
             self.discover_calls(condition, values)?;
             match values.proven_value(condition) {
@@ -1285,6 +1382,38 @@ impl ShapeAnalyzer<'_> {
             self.discover_calls(default, values)?;
         }
         Ok(())
+    }
+
+    /// The discovery state to roll an uncertifiable run-time arm back to.
+    fn checkpoint(&self) -> DiscoveryCheckpoint {
+        DiscoveryCheckpoint {
+            certificates: self.analysis.certificates.len(),
+            call_keys: self.analysis.call_certificates.keys().cloned().collect(),
+            constructor_keys: self
+                .analysis
+                .constructor_fields_by_key
+                .keys()
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn restore(&mut self, checkpoint: DiscoveryCheckpoint) {
+        let count = checkpoint.certificates;
+        self.analysis.certificates.truncate(count);
+        self.analysis.dependencies.truncate(count);
+        for dependencies in &mut self.analysis.dependencies {
+            dependencies.retain(|&dependency| dependency < count);
+        }
+        self.analysis
+            .certificate_by_key
+            .retain(|_, &mut index| index < count);
+        self.analysis
+            .call_certificates
+            .retain(|key, _| checkpoint.call_keys.contains(key));
+        self.analysis
+            .constructor_fields_by_key
+            .retain(|key, _| checkpoint.constructor_keys.contains(key));
     }
 
     fn record_dependency(&mut self, caller: Option<usize>, dependency: usize) {

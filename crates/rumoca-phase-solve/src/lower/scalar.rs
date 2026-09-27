@@ -9,6 +9,7 @@ mod functions;
 mod literal_values;
 mod operators;
 mod register_folding;
+mod selected_arm;
 mod selector;
 
 use std::cell::RefCell;
@@ -1349,6 +1350,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             }
             dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
                 self.binary_expression(operator, lhs, rhs, scalar, node.provenance().span())
+            }
+            dae::ExpressionOperation::Conditional(operands)
+                if node.function_scope().is_none() && !self.conditional_is_total(operands) =>
+            {
+                self.selected_arm_conditional(operands, scalar, node.provenance().span())
             }
             dae::ExpressionOperation::Conditional(operands) => {
                 self.conditional(operands, scalar, node.provenance().span())

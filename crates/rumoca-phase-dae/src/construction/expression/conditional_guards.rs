@@ -143,20 +143,18 @@ pub(in crate::construction) struct GuardClasses<'a> {
 }
 
 /// Whether a conditional whose guard reads a tunable parameter is kept as a
-/// run-time branch (SPEC_0040 DAE-C22, MLS 3.7 §8.3.4): its arms call no user
-/// function, so every arm is pure builtin arithmetic whose unselected value
-/// the selection discards, and they read the same unknowns in the same
-/// positions (derivative, `pre`, and subscripts included), so the branch
-/// changes no equation structure.
+/// run-time branch (SPEC_0040 DAE-C22, MLS 3.7 §8.3.4): its arms read the same
+/// unknowns in the same positions (derivative, `pre`, and subscripts
+/// included), so the branch changes no equation structure. Shape discovery
+/// certifies the calls of every arm of such a conditional.
 pub(in crate::construction) fn retains_parameter_guard(
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
     classes: &GuardClasses<'_>,
 ) -> bool {
-    if conditional_calls_a_user_function(branches, else_branch)
-        || !branches
-            .iter()
-            .any(|(condition, _)| reads_value_where(condition, classes.tunable_parameter))
+    if !branches
+        .iter()
+        .any(|(condition, _)| reads_value_where(condition, classes.tunable_parameter))
     {
         return false;
     }
@@ -237,4 +235,39 @@ impl rumoca_core::ExpressionVisitor for IncidenceScan<'_> {
         }
         self.operators.pop();
     }
+}
+
+/// [`retains_parameter_guard`] over the Flat variabilities, before DAE
+/// coordinates exist: a parameter outside `evaluable` is tunable, and a
+/// variable that is neither a parameter nor a constant is an unknown.
+pub(in crate::construction) fn retains_flat_guard(
+    flat: &flat::Model,
+    evaluable: &std::collections::HashSet<VarName>,
+    branches: &[(Expression, Expression)],
+    else_branch: &Expression,
+) -> bool {
+    let variability = |name: &VarName| {
+        flat.variables
+            .get(name)
+            .map(|variable| &variable.variability)
+    };
+    let tunable = |name: &VarName| {
+        !evaluable.contains(name) && matches!(variability(name), Some(Variability::Parameter(_)))
+    };
+    let unknown = |name: &VarName| {
+        variability(name).is_some_and(|variability| {
+            !matches!(
+                variability,
+                Variability::Parameter(_) | Variability::Constant(_)
+            )
+        })
+    };
+    retains_parameter_guard(
+        branches,
+        else_branch,
+        &GuardClasses {
+            tunable_parameter: &tunable,
+            unknown: &unknown,
+        },
+    )
 }

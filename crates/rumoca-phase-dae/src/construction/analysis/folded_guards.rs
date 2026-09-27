@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use rumoca_core::{Expression, ExpressionVisitor};
 
 use super::super::expression::conditional_guards::{
-    GuardClasses, conditional_calls_a_user_function, retains_parameter_guard,
+    conditional_calls_a_user_function, retains_flat_guard,
 };
 use super::super::function_shapes::{ProvenValue, ShapeEnvironment};
 use super::{ValueReads, VarName, Variability, flat};
@@ -45,6 +45,7 @@ pub(super) fn folded_guard_parameters(
         owner: None,
         found: HashSet::new(),
         selections: Vec::new(),
+        if_span: None,
     };
     for equation in flat.equations.iter().chain(&flat.initial_equations) {
         scan.owner = Some(equation.span);
@@ -66,6 +67,13 @@ pub(super) fn folded_guard_parameters(
             scan.visit_expression(start);
         }
     }
+    for selection in &flat.parameter_branch_selections {
+        let read = flatten_selection_parameters(flat, evaluable, selection);
+        if !read.is_empty() {
+            scan.owner = Some(selection.span);
+            scan.record(read);
+        }
+    }
     let selections = scan.selections;
     (close_over_bindings(flat, evaluable, scan.found), selections)
 }
@@ -79,6 +87,8 @@ struct GuardScan<'a> {
     owner: Option<rumoca_core::Span>,
     found: HashSet<VarName>,
     selections: Vec<StructuralSelection>,
+    /// The span of the conditional being visited.
+    if_span: Option<rumoca_core::Span>,
 }
 
 impl GuardScan<'_> {
@@ -98,42 +108,25 @@ impl GuardScan<'_> {
         }
         self.found.extend(read);
     }
-
-    /// Whether an equation conditional stays a run-time branch (SPEC_0040
-    /// DAE-C22), classified over the flat variabilities.
-    fn retains(&self, branches: &[(Expression, Expression)], else_branch: &Expression) -> bool {
-        let variability = |name: &VarName| {
-            self.flat
-                .variables
-                .get(name)
-                .map(|variable| &variable.variability)
-        };
-        let tunable = |name: &VarName| {
-            !self.evaluable.contains(name)
-                && matches!(variability(name), Some(Variability::Parameter(_)))
-        };
-        let unknown = |name: &VarName| {
-            variability(name).is_some_and(|variability| {
-                !matches!(
-                    variability,
-                    Variability::Parameter(_) | Variability::Constant(_)
-                )
-            })
-        };
-        let classes = GuardClasses {
-            tunable_parameter: &tunable,
-            unknown: &unknown,
-        };
-        retains_parameter_guard(branches, else_branch, &classes)
-    }
 }
 
 impl ExpressionVisitor for GuardScan<'_> {
+    fn visit_expression(&mut self, expression: &Expression) {
+        if let Expression::If { span, .. } = expression {
+            self.if_span = Some(*span);
+        }
+        self.walk_expression(expression);
+    }
+
     fn visit_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
+        let structural = self
+            .if_span
+            .take()
+            .is_some_and(|span| self.values.is_structural_selection(span));
         let folds = if self.attribute_scope {
             conditional_calls_a_user_function(branches, else_branch)
         } else {
-            !self.retains(branches, else_branch)
+            structural || !retains_flat_guard(self.flat, self.evaluable, branches, else_branch)
         };
         for (condition, _) in branches {
             let read = self.ordinary_parameters(condition);
@@ -196,4 +189,30 @@ fn close_over_bindings(
         }
     }
     closed
+}
+
+/// The ordinary parameters a flatten branch selection evaluated: for each
+/// reference its conditions read, the innermost flat name the model declares,
+/// when that is a parameter not already evaluable.
+fn flatten_selection_parameters(
+    flat: &flat::Model,
+    evaluable: &HashSet<VarName>,
+    selection: &flat::ParameterBranchSelection,
+) -> Vec<VarName> {
+    selection
+        .references
+        .iter()
+        .filter_map(|candidates| {
+            candidates
+                .iter()
+                .map(|candidate| VarName::new(candidate.as_str()))
+                .find(|name| flat.variables.contains_key(name))
+        })
+        .filter(|name| {
+            !evaluable.contains(name)
+                && flat.variables.get(name).is_some_and(|variable| {
+                    matches!(variable.variability, Variability::Parameter(_))
+                })
+        })
+        .collect()
 }

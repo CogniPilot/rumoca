@@ -763,6 +763,10 @@ pub struct ClassInstanceData {
     /// `Modelica.Constants.pi`) instead of incorrectly qualifying them with
     /// the component instance prefix.
     pub resolved_imports: Vec<(String, String)>,
+    /// If-equations whose branch instantiation selected by evaluating
+    /// component references (SPEC_0040 DAE-C22).
+    #[serde(default)]
+    pub parameter_branch_selections: Vec<InstanceBranchSelection>,
 }
 
 /// An equation in the instance tree.
@@ -777,6 +781,18 @@ pub struct InstanceEquation {
     /// Resolved lexical source scope containing this equation.
     pub source_scope_id: Option<ScopeId>,
     /// Source span for error reporting. Never loses source location.
+    pub span: Span,
+}
+
+/// An if-equation whose branch instantiation selected by evaluating
+/// component references in its conditions (SPEC_0040 DAE-C22).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceBranchSelection {
+    /// The conditions evaluated, up to and including the one that held.
+    pub conditions: Vec<Expression>,
+    /// Qualified name of the class instance the if-equation came from.
+    pub origin: QualifiedName,
+    /// The selected if-equation.
     pub span: Span,
 }
 

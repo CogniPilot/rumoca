@@ -121,6 +121,56 @@ fn append_instance_equations(
     Ok(())
 }
 
+/// The if-equations among `equations` (and the branches they select) whose
+/// branch instantiation selects by evaluating component references, each
+/// with the conditions it evaluated (SPEC_0040 DAE-C22).
+pub(super) fn parameter_branch_selections(
+    equations: &[ast::Equation],
+    origin: &ast::QualifiedName,
+    source_map: &rumoca_core::SourceMap,
+    eval_ctx: Option<&InstantiateEvalCtx<'_>>,
+) -> InstantiateResult<Vec<ast::InstanceBranchSelection>> {
+    let mut selections = Vec::new();
+    for equation in equations {
+        let Some(selected) = select_structural_if_branch(equation, eval_ctx) else {
+            continue;
+        };
+        if let ast::Equation::If { cond_blocks, .. } = equation {
+            let conditions = evaluated_conditions(cond_blocks, eval_ctx);
+            if conditions
+                .iter()
+                .any(|condition| !ast::collect_component_refs(condition).is_empty())
+            {
+                selections.push(ast::InstanceBranchSelection {
+                    conditions,
+                    origin: origin.clone(),
+                    span: equation_owner_span(equation, equation.get_location(), source_map)?,
+                });
+            }
+        }
+        selections.extend(parameter_branch_selections(
+            selected, origin, source_map, eval_ctx,
+        )?);
+    }
+    Ok(selections)
+}
+
+/// The conditions a selection evaluates: each up to and including the first
+/// that holds.
+fn evaluated_conditions(
+    cond_blocks: &[ast::EquationBlock],
+    eval_ctx: Option<&InstantiateEvalCtx<'_>>,
+) -> Vec<ast::Expression> {
+    let mut conditions = Vec::new();
+    for block in cond_blocks {
+        conditions.push(block.cond.clone());
+        if eval_ctx.and_then(|eval| evaluate_component_condition(eval, &block.cond)) == Some(true) {
+            break;
+        }
+    }
+    conditions
+}
+
 fn equation_owner_span(
     equation: &ast::Equation,
     location: Option<&rumoca_core::Location>,

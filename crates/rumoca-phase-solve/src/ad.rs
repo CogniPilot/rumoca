@@ -505,6 +505,13 @@ fn ops_reference_seeded_inputs(ops: &[LinearOp], seed_mode: SeedMode<'_>) -> boo
             || matches!(op, LinearOp::FunctionFold { program, .. }
                 | LinearOp::GuardedFunctionFold { program, .. }
                 if ops_reference_seeded_inputs(&program.update, seed_mode))
+            || matches!(op, LinearOp::FunctionConditional { program, .. }
+                if program
+                    .arms
+                    .iter()
+                    .flat_map(|arm| [&arm.condition, &arm.result])
+                    .chain(std::iter::once(&program.fallback))
+                    .any(|region| ops_reference_seeded_inputs(region, seed_mode)))
     })
 }
 

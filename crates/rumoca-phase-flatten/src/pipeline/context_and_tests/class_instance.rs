@@ -59,6 +59,17 @@ fn process_class_instance_body(
         override_aliases_for_component_path(&class_scope, component_override_map);
     let owner_instance_path = ctx.algorithm_owner_instance_path(class_data)?;
 
+    // Branch selections instantiation made by evaluating a parameter guard
+    // (SPEC_0040 DAE-C22), qualified like the equations of this instance.
+    for selection in &class_data.parameter_branch_selections {
+        flat.parameter_branch_selections
+            .push(equations::parameter_branch_selection(
+                &selection.conditions,
+                prefix,
+                selection.span,
+            ));
+    }
+
     // Convert regular equations.
     for inst_eq in &class_data.equations {
         set_class_instance_imports_for_scope(
@@ -106,6 +117,8 @@ fn process_class_instance_body(
         flat.definite_roots.extend(flattened.definite_roots);
         flat.branches.extend(flattened.branches);
         flat.potential_roots.extend(flattened.potential_roots);
+        flat.parameter_branch_selections
+            .extend(flattened.parameter_branch_selections);
     }
 
     // Convert initial equations (when-equations are rejected per EQN-006).
@@ -150,6 +163,8 @@ fn process_class_instance_body(
         }
         flat.initial_assert_equations
             .extend(flattened.assert_equations);
+        flat.parameter_branch_selections
+            .extend(flattened.parameter_branch_selections);
         if !flattened.when_chains.is_empty() {
             return Err(FlattenError::unsupported_equation(
                 "when-equations are not allowed in initial equations (MLS §8.6)",

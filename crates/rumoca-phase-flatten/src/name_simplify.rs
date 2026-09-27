@@ -40,6 +40,13 @@ pub(crate) fn simplify_flat_names(
     remap_algorithms(&mut flat.algorithms, &ctx)?;
     remap_algorithms(&mut flat.initial_algorithms, &ctx)?;
     remap_when_chains(&mut flat.when_chains, &ctx)?;
+    for selection in &mut flat.parameter_branch_selections {
+        for candidate in selection.references.iter_mut().flatten() {
+            if let Some(renamed) = rename_map.get(candidate.as_str()) {
+                candidate.clone_from(renamed);
+            }
+        }
+    }
     Ok(())
 }
 

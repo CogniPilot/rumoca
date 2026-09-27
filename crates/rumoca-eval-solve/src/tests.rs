@@ -1053,9 +1053,17 @@ fn function_conditional_evaluates_only_the_selected_correlated_region() {
         vec![fixture_span()],
     )
     .expect("inactive conditional row");
+    // A region's inputs belong to its row's input contract, so the caller
+    // sizes its buffers for them; the unselected region's value is not used.
+    assert_eq!(
+        row_input_requirements(&block.programs()[0])
+            .expect("row requirements")
+            .p_len,
+        1
+    );
     let mut output = [0.0];
-    eval_scalar_program_block(&block, &[], &[], 0.0, None, &mut output)
-        .expect("inactive region must not read its missing parameter");
+    eval_scalar_program_block(&block, &[], &[f64::NAN], 0.0, None, &mut output)
+        .expect("inactive conditional row evaluates");
     assert_eq!(output, [7.0]);
 
     let active = ScalarProgramBlock::with_program_spans(

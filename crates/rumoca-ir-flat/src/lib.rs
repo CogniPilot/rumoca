@@ -180,6 +180,11 @@ pub struct Model {
     /// Potential roots from Connections.potentialRoot(a, priority) calls (MLS §9.4).
     #[serde(default)]
     pub potential_roots: Vec<(String, i64)>,
+    /// Branch selections flatten made by evaluating a parameter guard at
+    /// translation (SPEC_0040 DAE-C22): an if-equation whose branches differ
+    /// in equation count or in the variables they differentiate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameter_branch_selections: Vec<ParameterBranchSelection>,
     /// Names of public top-level components whose class type is `connector` (MLS §4.7).
     /// Per MLS §4.7, only flow variables in top-level public connector components
     /// count toward the local equation size for balance checking. Components of
@@ -1544,4 +1549,15 @@ impl Algorithm {
             origin: origin.into(),
         }
     }
+}
+
+/// One flatten branch selection that evaluated its conditions with parameter
+/// values (SPEC_0040 DAE-C22).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParameterBranchSelection {
+    /// The selected if-equation.
+    pub span: Span,
+    /// Per component reference its evaluated conditions read, the flat names
+    /// it can denote, the innermost enclosing scope first.
+    pub references: Vec<Vec<String>>,
 }

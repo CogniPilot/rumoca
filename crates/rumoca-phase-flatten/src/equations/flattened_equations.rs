@@ -21,6 +21,8 @@ pub(crate) struct FlattenedEquations {
     /// Potential roots from Connections.potentialRoot(a, priority) calls (MLS §9.4).
     /// Each entry is (path, priority) where lower priority means more likely to be root.
     pub potential_roots: Vec<(String, i64)>,
+    /// Branch selections that evaluated a parameter guard (SPEC_0040 DAE-C22).
+    pub parameter_branch_selections: Vec<flat::ParameterBranchSelection>,
 }
 
 impl FlattenedEquations {
@@ -41,6 +43,8 @@ impl FlattenedEquations {
         self.definite_roots.append(&mut other.definite_roots);
         self.branches.append(&mut other.branches);
         self.potential_roots.append(&mut other.potential_roots);
+        self.parameter_branch_selections
+            .append(&mut other.parameter_branch_selections);
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -51,5 +55,6 @@ impl FlattenedEquations {
             && self.definite_roots.is_empty()
             && self.branches.is_empty()
             && self.potential_roots.is_empty()
+            && self.parameter_branch_selections.is_empty()
     }
 }

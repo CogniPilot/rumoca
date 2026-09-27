@@ -1807,7 +1807,7 @@ category = 'Equation'
 name = 'If-equation evaluable conditions'
 mls_ref = '§8.3.4'
 requirement = 'If-equations without exclusively evaluable switching conditions have the same number of equations in each branch; a parameter guard over equal branches stays a run-time branch'
-status = 'NotImplemented'
+status = 'Implemented'
 tier = 1
 
 [[contracts]]

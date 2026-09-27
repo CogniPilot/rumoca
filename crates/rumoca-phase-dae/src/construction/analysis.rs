@@ -84,6 +84,7 @@ use expression_validation::{
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
 pub(super) use function_bodies::function_assertion;
+pub(super) use function_bodies::validate_function_certificate;
 use function_bodies::{
     plan_function_statements, resolve_function_definitions,
     validate_function_expression_with_roles, validate_function_statements,
@@ -526,7 +527,9 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     // Fold the parameter fixed point before shape analysis: MLS §12.2 array
     // dimensions can depend on the settled parameter values from MLS §4.5.
     let constants = constant_context(flat)?;
-    let mut function_shapes = FunctionShapeAnalysis::analyze(flat, &constants)?;
+    let mut evaluable = evaluable_parameters(flat);
+    let mut function_shapes =
+        FunctionShapeAnalysis::analyze_model(flat, &constants, Some(&evaluable))?;
     let record_array_fields = Arc::clone(function_shapes.record_array_fields());
     let function_plans = validate_functions(flat, &function_shapes)?;
     let record_equations = analyze_record_equation_sets(flat)?;
@@ -584,7 +587,6 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &discrete_connection_ranks,
         &aggregate_discrete_connections,
     )?;
-    let mut evaluable = evaluable_parameters(flat);
     let (folded, structural_selections) =
         folded_guards::folded_guard_parameters(flat, function_shapes.model_values(), &evaluable);
     evaluable.extend(folded);

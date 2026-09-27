@@ -36,6 +36,18 @@ fn packaged_fmi_typed_variables_discrete_equations_and_settled_initialization() 
 const TYPED_SOURCE: &str = r#"
 model TypedPublic
  type Speed = enumeration(Slow, Fast);
+ function twice
+  input Real u;
+  output Real y;
+ algorithm
+  y := 2*u;
+ end twice;
+ function thrice
+  input Real u;
+  output Real y;
+ algorithm
+  y := 3*u;
+ end thrice;
  parameter Integer n = 2;
  parameter Real gain = 1;
  parameter Boolean doubled = true;
@@ -44,10 +56,12 @@ model TypedPublic
  Integer k = if doubled then 2*n else n;
  Real x(start = 0.3);
  Real y;
+ Real w;
 initial equation
  y = 0.5;
 equation
  y = x*x*x + x;
+ w = if doubled then twice(x) else thrice(x);
  der(x) = -gain*(if speed == Speed.Fast then 2 else 1)*k*x;
 end TypedPublic;
 "#;
@@ -100,9 +114,11 @@ for interface in ['ModelExchange', 'CoSimulation']:
     finals = {}
     for n, gain, doubled, expected_k in [(2, 1.0, True, 4), (3, 1.0, True, 6), (2, 2.0, True, 4), (3, 1.0, False, 3)]:
         result = simulate_fmu(path, fmi_type=interface, stop_time=0.5, output_interval=0.05,
-            start_values={'n': n, 'gain': gain, 'doubled': doubled}, output=['x', 'y', 'k', 'n', 'doubled'])
+            start_values={'n': n, 'gain': gain, 'doubled': doubled}, output=['x', 'y', 'k', 'n', 'doubled', 'w'])
         assert (result['k'] == expected_k).all(), (interface, n, doubled, result['k'])
         assert (result['n'] == n).all() and (result['doubled'] == doubled).all(), result
+        # The call arms run only when selected: w = 2x or 3x.
+        assert abs(result['w'] - (2 if doubled else 3) * result['x']).max() < 1e-12, (interface, doubled)
         assert abs(result['x'][0] - x0) < 1e-8, (interface, result['x'][0], x0)
         assert abs(result['y'][0] - 0.5) < 1e-8, (interface, result['y'][0])
         finals[(n, gain)] = result['x'][-1]

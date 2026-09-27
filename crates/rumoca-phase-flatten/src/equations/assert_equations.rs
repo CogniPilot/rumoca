@@ -95,6 +95,7 @@ fn assert_equation_result(assert_eq: flat::AssertEquation) -> FlattenedEquations
         definite_roots: vec![],
         branches: vec![],
         potential_roots: vec![],
+        parameter_branch_selections: vec![],
     }
 }
 

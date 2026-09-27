@@ -288,7 +288,11 @@ fn validate_output_count(store_count: usize, mapping_count: usize) -> Result<(),
     }
 }
 
-fn op_field(op: &solve::LinearOp, output_targets: Option<&[usize]>, key: &str) -> Option<Value> {
+pub(super) fn op_field(
+    op: &solve::LinearOp,
+    output_targets: Option<&[usize]>,
+    key: &str,
+) -> Option<Value> {
     match key {
         "kind" => return Some(Value::from(op.kind_name())),
         "dst" => return op.dst_register().map(|value| Value::from(value as usize)),
@@ -457,9 +461,16 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "capture_count" => Some(Value::from(program.capture_count)),
             "target_widths" => Some(Value::from_serialize(&program.target_widths)),
             "result_count" => Some(Value::from(program.result_count)),
-            "arms" => Some(Value::from_serialize(&program.arms)),
+            "arms" => Some(Value::from_object(
+                super::scalar_region_plan::PlanArmsValue {
+                    program: Arc::clone(program),
+                },
+            )),
             "fallback_register_count" => Some(Value::from(program.fallback_register_count)),
-            "fallback" => Some(Value::from_serialize(&program.fallback)),
+            "fallback" => Some(super::scalar_region_plan::region_value(
+                program,
+                super::scalar_region_plan::RegionPart::Fallback,
+            )),
             _ => None,
         },
         LinearOp::StoreOutputFoldTensorUpdate {
@@ -810,7 +821,7 @@ fn arithmetic_field(
 // used to enumerate every field exposed by the typed template object.
 // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #[allow(clippy::too_many_lines)]
-fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
+pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
     use solve::LinearOp;
     match op {
         LinearOp::Const { .. } => &["kind", "dst", "value", "value_class"],

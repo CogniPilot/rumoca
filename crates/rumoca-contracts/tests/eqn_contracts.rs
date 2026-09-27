@@ -1,6 +1,6 @@
 //! EQN (Equation) contract tests - MLS §8
 //!
-//! Tests for the 38 equation contracts defined in SPEC_0022.
+//! Tests for the 39 equation contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::{ExpressionOperation, FailedPhase, VariableRole};
 use rumoca_compile::{Session, SessionConfig};
@@ -1358,4 +1358,98 @@ fn discrete_for_loop_element_shape_mismatch_rejected() {
         FailedPhase::ToDae,
         "ED020",
     );
+}
+
+// =============================================================================
+// EQN-039: If-equation evaluable conditions
+// "The if-equations which do not have exclusively evaluable expressions as
+// switching conditions shall ... Have the same number of equations in each
+// branch"
+// =============================================================================
+
+/// The evaluability of parameter `name` in the compiled DAE.
+fn parameter_is_evaluable(source: &str, model: &str, name: &str) -> bool {
+    let result = expect_success(source, model);
+    let mut evaluable = None;
+    result.dae.inspect(|view| {
+        evaluable = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == name)
+            .map(|(_, variable)| variable.is_evaluable());
+    });
+    evaluable.unwrap_or_else(|| panic!("{name} is declared"))
+}
+
+/// Whether compiling `model` warns WD001 naming `name`.
+fn warns_translation_selection(source: &str, model: &str, name: &str) -> bool {
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("contract source parses");
+    session
+        .compile_model_diagnostics(model)
+        .diagnostics
+        .iter()
+        .any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("WD001")
+                && diagnostic.message.contains(&format!("parameter {name} "))
+        })
+}
+
+#[test]
+fn eqn_039_parameter_guard_over_equal_branches_stays_run_time() {
+    let source = r#"
+        model Test
+            parameter Boolean on = true;
+            Real x(start = 1, fixed = true);
+            Real y;
+        equation
+            der(x) = -x;
+            if on then
+                y = x;
+            else
+                y = 2 * x;
+            end if;
+        end Test;
+    "#;
+    assert!(!parameter_is_evaluable(source, "Test", "on"));
+    assert!(!warns_translation_selection(source, "Test", "on"));
+}
+
+#[test]
+fn eqn_039_mismatched_branch_counts_fix_the_parameter() {
+    let source = r#"
+        model Test
+            parameter Boolean two = true;
+            Real a;
+            Real b;
+        equation
+            if two then
+                a = 1;
+                b = 2;
+            else
+                a = 1;
+            end if;
+        end Test;
+    "#;
+    assert!(parameter_is_evaluable(source, "Test", "two"));
+    assert!(warns_translation_selection(source, "Test", "two"));
+}
+
+#[test]
+fn eqn_039_differentiated_branches_fix_the_parameter() {
+    let source = r#"
+        model Test
+            parameter Boolean dynamic = true;
+            Real z(start = 1);
+        equation
+            if dynamic then
+                der(z) = -z;
+            else
+                z = 0;
+            end if;
+        end Test;
+    "#;
+    assert!(parameter_is_evaluable(source, "Test", "dynamic"));
+    assert!(warns_translation_selection(source, "Test", "dynamic"));
 }

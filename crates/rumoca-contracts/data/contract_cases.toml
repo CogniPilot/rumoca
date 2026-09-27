@@ -3780,3 +3780,24 @@ case_id = 'ann_017_folded_parameters_keep_their_values_in_simulation'
 test_file = 'tests/ann_contracts.rs'
 kind = 'Sim'
 outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-039'
+case_id = 'eqn_039_parameter_guard_over_equal_branches_stays_run_time'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-039'
+case_id = 'eqn_039_mismatched_branch_counts_fix_the_parameter'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-039'
+case_id = 'eqn_039_differentiated_branches_fix_the_parameter'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'

@@ -428,13 +428,12 @@ fn lower_expression_node<'dae>(
         Expression::If {
             branches,
             else_branch,
-            ..
+            span,
         } => lower_conditional_expression(
             construction,
             symbols,
             binders,
-            branches,
-            else_branch,
+            (branches, else_branch, *span),
             provenance,
         ),
         Expression::Array { elements, kind, .. } => match kind {
@@ -1662,8 +1661,7 @@ fn lower_conditional_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
     binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    branches: &[(Expression, Expression)],
-    else_branch: &Expression,
+    (branches, else_branch, span): (&[(Expression, Expression)], &Expression, Span),
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     // A variable's attribute or binding value keeps a conditional whose guard
@@ -1684,9 +1682,10 @@ fn lower_conditional_expression<'dae>(
                 .iter()
                 .any(|(condition, _)| guard_reads_tunable_parameter(symbols.coordinates, condition))
     } else {
-        symbols.shapes.evaluable().is_some_and(|evaluable| {
-            retains_equation_guard(symbols.coordinates, evaluable, branches, else_branch)
-        })
+        !symbols.shapes.is_structural_selection(span)
+            && symbols.shapes.evaluable().is_some_and(|evaluable| {
+                retains_equation_guard(symbols.coordinates, evaluable, branches, else_branch)
+            })
     };
     let mut lowered = Vec::with_capacity(branches.len());
     for (condition, value) in branches {

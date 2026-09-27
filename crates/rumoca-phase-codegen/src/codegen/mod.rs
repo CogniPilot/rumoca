@@ -36,6 +36,7 @@ mod render_stmt;
 #[cfg(test)]
 mod scalar_plan_template_tests;
 mod scalar_program_plan;
+mod scalar_region_plan;
 mod solve_lazy;
 mod solve_renderer;
 #[cfg(test)]

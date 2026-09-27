@@ -4657,6 +4657,16 @@ fn input_requirements_for_op(op: LinearOp) -> Result<RowInputRequirements, EvalS
         | LinearOp::StoreOutputFunctionFold { program, .. } => {
             row_input_requirements(&program.update)
         }
+        // A region of a checked function conditional reads the same inputs as
+        // its row (a model conditional's arms load solver and seed values).
+        LinearOp::FunctionConditional { program, .. } => program
+            .arms
+            .iter()
+            .flat_map(|arm| [&arm.condition, &arm.result])
+            .chain(std::iter::once(&program.fallback))
+            .try_fold(RowInputRequirements::default(), |requirements, region| {
+                row_input_requirements(region).map(|region| requirements.merge(region))
+            }),
         _ => Ok(RowInputRequirements::default()),
     }
 }

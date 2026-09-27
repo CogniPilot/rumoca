@@ -98,7 +98,8 @@ pub(crate) use inner_outer::{
     SyntheticInnerError, handle_inner_outer, preregister_class_inners, retry_with_synthetic_inners,
 };
 use instance_sections::{
-    algorithms_to_instance, equations_to_instance_cloned, equations_to_instance_without_connections,
+    algorithms_to_instance, equations_to_instance_cloned,
+    equations_to_instance_without_connections, parameter_branch_selections,
 };
 use mod_env::{
     PopulateModEnvInput, RecordBindingProjection, populate_modification_environment,
@@ -998,6 +999,7 @@ fn instantiate_class(
             initial_algorithms: sections.initial_algorithms,
             connections,
             resolved_imports,
+            parameter_branch_selections: sections.parameter_branch_selections,
         };
         overlay.add_class(class_data);
 
@@ -1013,6 +1015,7 @@ fn instantiate_class(
 /// Instance-tree sections converted from one class template.
 struct ClassSections {
     equations: Vec<ast::InstanceEquation>,
+    parameter_branch_selections: Vec<ast::InstanceBranchSelection>,
     initial_equations: Vec<ast::InstanceEquation>,
     algorithms: Vec<Vec<ast::InstanceStatement>>,
     initial_algorithms: Vec<Vec<ast::InstanceStatement>>,
@@ -1057,6 +1060,20 @@ fn class_instance_sections(
     };
     // Convert regular equations in one pass without intermediate equation vectors.
     let mut sections = ClassSections {
+        parameter_branch_selections: parameter_branch_selections(
+            &template.effective_equations,
+            qualified_name,
+            source_map,
+            Some(&eval_ctx),
+        )?
+        .into_iter()
+        .chain(parameter_branch_selections(
+            &template.initial_equations,
+            qualified_name,
+            source_map,
+            Some(&eval_ctx),
+        )?)
+        .collect(),
         equations: equations_to_instance_without_connections(
             ctx,
             &template.effective_equations,

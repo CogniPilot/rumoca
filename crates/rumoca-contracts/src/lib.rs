@@ -226,6 +226,7 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "EQN-036",
     "EQN-037",
     "EQN-038",
+    "EQN-039",
     "EXPR-001",
     "EXPR-002",
     "EXPR-003",

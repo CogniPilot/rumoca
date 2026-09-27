@@ -182,6 +182,43 @@
 {%- elif op.kind == "StoreOutput" %}    {{ store_target(output, targets, op.output_index) }} = r[{{ op.src }}];
 {%- elif op.kind == "StoreOutputRange" %}{%- for output_index in op.output_indices %}    {{ store_target(output, targets, output_index) }} = r[{{ op.start + loop.index0 * op.stride }}];
 {%- endfor %}
+{%- elif op.kind == "LoadFunctionConditionalCapture" %}    r[{{ op.dst }}] = fc_captures[{{ op.index }}];
+{%- elif op.kind == "LoadFunctionConditionalCaptureRange" %}    for (size_t k=0; k<{{ op.count }}; ++k) r[{{ op.dst }}+k] = fc_captures[{{ op.index_start }}+k];
+{#- A checked function conditional runs each condition region in order and
+    only the selected result region, each in its own register file; the
+    captures are the enclosing registers the regions read. #}
+{%- elif op.kind == "FunctionConditional" %}    {
+        double *const fc_outer = r;
+        const double *const fc_captures = r + {{ op.capture_start }};
+        double fc_out[{{ op.result_count if op.result_count > 0 else 1 }}];
+        int fc_taken = 0;
+        (void)fc_captures;
+{%- for arm in op.arms %}
+        if (!fc_taken) {
+            double fc_cond[1];
+            {
+                double r[{{ arm.condition.register_count if arm.condition.register_count > 0 else 1 }}];
+{%- for region_op in arm.condition.ops %}
+{{ scalar_op(region_op, "fc_cond", error_status) }}
+{%- endfor %}
+            }
+            if (fc_cond[0] != 0.0) {
+                double r[{{ arm.result.register_count if arm.result.register_count > 0 else 1 }}];
+                fc_taken = 1;
+{%- for region_op in arm.result.ops %}
+{{ scalar_op(region_op, "fc_out", error_status) }}
+{%- endfor %}
+            }
+        }
+{%- endfor %}
+        if (!fc_taken) {
+            double r[{{ op.fallback.register_count if op.fallback.register_count > 0 else 1 }}];
+{%- for region_op in op.fallback.ops %}
+{{ scalar_op(region_op, "fc_out", error_status) }}
+{%- endfor %}
+        }
+        for (size_t k=0; k<{{ op.result_count }}; ++k) fc_outer[{{ op.dst }}+k] = fc_out[k];
+    }
 {%- else %}{{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
 {%- endif %}
 {%- endmacro %}

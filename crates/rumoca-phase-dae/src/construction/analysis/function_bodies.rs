@@ -16,7 +16,7 @@ pub(super) fn validate_functions(
     Ok(plans)
 }
 
-fn validate_function_certificate(
+pub(in crate::construction) fn validate_function_certificate(
     flat: &flat::Model,
     shapes: &FunctionShapeAnalysis,
     certificate: &FunctionShapeCertificate,
