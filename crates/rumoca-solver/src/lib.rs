@@ -26,6 +26,7 @@ pub use report_payload::{
 pub use runtime::eval_at::{EvalAtReport, EvalAtSlot};
 #[cfg(not(kani))]
 pub use runtime::event_newton::{CoupledEventNewtonModel, solve_coupled_event_newton};
+#[cfg(not(kani))]
 pub use runtime::fallbacks::{
     ProjectionFallback, ProjectionFallbackCounts, ProjectionFallbackReport, ProjectionSite,
     projection_fallbacks, reset_projection_fallbacks,

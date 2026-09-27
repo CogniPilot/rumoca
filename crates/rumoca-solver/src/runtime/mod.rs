@@ -5,6 +5,7 @@ pub mod eval_at;
 pub(crate) mod event_history;
 #[cfg(not(kani))]
 pub mod event_newton;
+#[cfg(not(kani))]
 pub mod fallbacks;
 #[cfg(not(kani))]
 pub mod hotpath_stats;
