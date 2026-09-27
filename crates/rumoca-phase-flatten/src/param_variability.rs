@@ -192,7 +192,7 @@ fn collect_assignment_dependence(
     graph: &mut DependenceGraph,
 ) {
     let is_der = |expr: &ast::Expression| {
-        contains_function_call(expr, |comp, _| {
+        contains_function_call(expr, &|comp, _| {
             comp.parts.len() == 1 && comp.parts[0].ident.text.as_ref() == "der"
         })
     };

@@ -126,7 +126,7 @@ fn equation_structure(
         .filter(|name| !crate::boolean_eval::names_parameter_or_constant(ctx, name, prefix))
         .collect::<std::collections::BTreeSet<_>>();
     let calls = std::cell::RefCell::new(Vec::new());
-    ast::contains_function_call(expression, |function, _| {
+    ast::contains_function_call(expression, &|function, _| {
         calls.borrow_mut().push(format!("{function}()"));
         false
     });

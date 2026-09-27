@@ -4,16 +4,19 @@ use rumoca_core::ComponentPath;
 use std::ops::ControlFlow::{self, Break, Continue};
 
 /// Check if an expression contains any component references matching a predicate.
-pub fn contains_component_ref<F>(expr: &Expression, predicate: F) -> bool
-where
-    F: Fn(&ComponentReference) -> bool,
-{
-    struct Finder<'a, F> {
-        predicate: &'a F,
+///
+/// The predicate is a trait object so every caller shares one visitor
+/// instance rather than instantiating the whole default walk per closure.
+pub fn contains_component_ref(
+    expr: &Expression,
+    predicate: &dyn Fn(&ComponentReference) -> bool,
+) -> bool {
+    struct Finder<'a> {
+        predicate: &'a dyn Fn(&ComponentReference) -> bool,
         found: bool,
     }
 
-    impl<F: Fn(&ComponentReference) -> bool> Visitor for Finder<'_, F> {
+    impl Visitor for Finder<'_> {
         fn visit_component_reference(&mut self, cr: &ComponentReference) -> ControlFlow<()> {
             if (self.predicate)(cr) {
                 self.found = true;
@@ -24,7 +27,7 @@ where
     }
 
     let mut finder = Finder {
-        predicate: &predicate,
+        predicate,
         found: false,
     };
     let _ = finder.visit_expression(expr);
@@ -32,16 +35,19 @@ where
 }
 
 /// Check if an expression contains a function call matching a predicate.
-pub fn contains_function_call<F>(expr: &Expression, predicate: F) -> bool
-where
-    F: Fn(&ComponentReference, &[Expression]) -> bool,
-{
-    struct Finder<'a, F> {
-        predicate: &'a F,
+///
+/// The predicate is a trait object so every caller shares one visitor
+/// instance rather than instantiating the whole default walk per closure.
+pub fn contains_function_call(
+    expr: &Expression,
+    predicate: &dyn Fn(&ComponentReference, &[Expression]) -> bool,
+) -> bool {
+    struct Finder<'a> {
+        predicate: &'a dyn Fn(&ComponentReference, &[Expression]) -> bool,
         found: bool,
     }
 
-    impl<F: Fn(&ComponentReference, &[Expression]) -> bool> Visitor for Finder<'_, F> {
+    impl Visitor for Finder<'_> {
         fn visit_expr_function_call(
             &mut self,
             comp: &ComponentReference,
@@ -56,7 +62,7 @@ where
     }
 
     let mut finder = Finder {
-        predicate: &predicate,
+        predicate,
         found: false,
     };
     let _ = finder.visit_expression(expr);

@@ -110,8 +110,8 @@ fn test_contains_component_ref() {
         rhs: Arc::new(make_int(1)),
         span: rumoca_core::Span::DUMMY,
     };
-    assert!(contains_component_ref(&expr, |cr| cr.to_string() == "x"));
-    assert!(!contains_component_ref(&expr, |cr| cr.to_string() == "y"));
+    assert!(contains_component_ref(&expr, &|cr| cr.to_string() == "x"));
+    assert!(!contains_component_ref(&expr, &|cr| cr.to_string() == "y"));
 }
 
 struct Renamer;
