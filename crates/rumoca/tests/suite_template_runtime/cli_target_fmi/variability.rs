@@ -33,7 +33,7 @@ end StartParameter;
     fs::write(&driver, DRIVER).expect("write independent importer driver");
     for (target, standard) in [("fmi2", &standards.0), ("fmi3", &standards.1)] {
         let fmu = build_named_fmu(work.path(), &compiled, target, VARIABILITY_MODEL);
-        validate_package(&fmu, standard);
+        validate_source_package(&fmu, standard);
         checked_output(
             Command::new("python3").arg(&driver).arg(&fmu.archive),
             &format!("execute {target} start-parameter sets"),
