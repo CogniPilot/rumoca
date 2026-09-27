@@ -19,6 +19,18 @@ pub(in crate::fmi) fn program_outputs(
     y: &[bool],
     p: &[bool],
 ) -> Option<Vec<bool>> {
+    region_outputs(table, program, y, p, &[])
+}
+
+/// [`program_outputs`] of a program whose function-conditional capture loads
+/// read `captures`.
+fn region_outputs(
+    table: &SolvePureCallTable,
+    program: &[Op],
+    y: &[bool],
+    p: &[bool],
+    captures: &[bool],
+) -> Option<Vec<bool>> {
     let mut outputs = Vec::new();
     let mut registers = Vec::new();
     for op in program {
@@ -26,7 +38,43 @@ pub(in crate::fmi) fn program_outputs(
             .dst_register()
             .map_or(0, |dst| dst as usize + op.dst_register_count());
         registers.resize(registers.len().max(end), false);
-        transfer(table, op, &mut registers, y, p, &mut outputs)?;
+        match op {
+            Op::LoadFunctionConditionalCapture { dst, index } => {
+                registers[*dst as usize] = *captures.get(*index)?;
+            }
+            Op::LoadFunctionConditionalCaptureRange {
+                dst_start,
+                index_start,
+                count,
+            } => registers
+                .get_mut(*dst_start as usize..*dst_start as usize + count)?
+                .copy_from_slice(captures.get(*index_start..*index_start + count)?),
+            Op::FunctionConditional {
+                dst_start,
+                capture_start,
+                program,
+            } => {
+                // Settled when every region settles over the settled captures.
+                let inner = registers
+                    .get(*capture_start as usize..*capture_start as usize + program.capture_count)?
+                    .to_vec();
+                let mut settled = true;
+                for region in program
+                    .arms
+                    .iter()
+                    .flat_map(|arm| [&arm.condition, &arm.result])
+                    .chain(std::iter::once(&program.fallback))
+                {
+                    settled &= region_outputs(table, region, y, p, &inner)?
+                        .iter()
+                        .all(|value| *value);
+                }
+                registers
+                    .get_mut(*dst_start as usize..*dst_start as usize + program.result_count)?
+                    .fill(settled);
+            }
+            _ => transfer(table, op, &mut registers, y, p, &mut outputs)?,
+        }
     }
     Some(outputs)
 }

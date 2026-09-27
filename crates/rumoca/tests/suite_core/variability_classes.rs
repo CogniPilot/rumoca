@@ -32,6 +32,9 @@ model VariabilityClasses
   parameter Boolean useB = true;
   parameter Boolean divide = false;
   parameter Real dz = 0;
+  parameter Real table[2] = {4, 5};
+  parameter Integer k = 2;
+  parameter Real pk = if on then table[k] else 0;
   Real a;
   Real x(start = x0, fixed = true);
   Real y;
@@ -166,6 +169,9 @@ fn the_fmi3_description_classifies_each_variability_class() {
         ("pc", "calculatedParameter", "tunable", "calculated", false),
         ("unused", "parameter", "tunable", "exact", true),
         ("x0", "parameter", "tunable", "exact", true),
+        // A binding whose guard selects a computed-subscript arm settles in
+        // the C profile through its selected-arm program.
+        ("pk", "calculatedParameter", "tunable", "calculated", false),
         ("on", "parameter", "tunable", "exact", true),
         ("divide", "parameter", "tunable", "exact", true),
         ("useB", "calculatedParameter", "fixed", "calculated", false),
