@@ -22,13 +22,14 @@ model VariabilityClasses
   parameter Real pc = 2 * p;
   parameter Real unused = 6;
   parameter Real x0 = 1;
+  parameter Boolean on = true;
   Real a;
   Real x(start = x0, fixed = true);
   Real y;
 equation
   a = 7;
   der(x) = -x;
-  y = a + c + pe + pf + pc + twice(p) + twice(c);
+  y = a + c + pe + pf + pc + twice(p) + twice(c) + (if on then 1 else 0);
 end VariabilityClasses;";
 
 const DISCRETE: &str = "
@@ -78,6 +79,9 @@ fn the_dae_keeps_each_declared_variability_class() {
         ("p", "parameter", "parameter", true, false),
         ("unused", "parameter", "parameter", true, false),
         ("x0", "parameter", "parameter", true, false),
+        // Interim (SPEC_0044 ME-PARAM-001): an equation guard is evaluated at
+        // translation, so the parameter it reads is fixed there.
+        ("on", "parameter", "parameter", false, true),
         ("a", "algebraic", "continuous", false, false),
         ("x", "state", "continuous", false, false),
     ] {
@@ -141,6 +145,7 @@ fn the_fmi3_description_classifies_each_variability_class() {
         ("pc", "calculatedParameter", "tunable", "calculated", false),
         ("unused", "parameter", "tunable", "exact", true),
         ("x0", "parameter", "tunable", "exact", true),
+        ("on", "calculatedParameter", "fixed", "calculated", false),
         ("a", "local", "continuous", "calculated", false),
         ("x", "local", "continuous", "calculated", false),
     ] {
@@ -186,7 +191,7 @@ fn column<'a>(result: &'a rumoca_sim::SimResult, name: &str) -> &'a [f64] {
 fn parameter_sets_take_effect_and_folding_stops_at_parameters() {
     let base = simulate("VariabilityClasses", MODEL, &[]);
     let set = simulate("VariabilityClasses", MODEL, &[("p", 6.0), ("x0", 3.0)]);
-    let folded = 7.0 + 2.0 + 3.0 + 4.0 + 4.0;
+    let folded = 7.0 + 2.0 + 3.0 + 4.0 + 4.0 + 1.0;
     for (result, p, x0) in [(&base, 5.0, 1.0), (&set, 6.0, 3.0)] {
         for (row, &time) in result.times.iter().enumerate() {
             let expected = [

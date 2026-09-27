@@ -1,5 +1,5 @@
 mod calls;
-mod conditional_guards;
+pub(super) mod conditional_guards;
 mod operators;
 mod temporal;
 

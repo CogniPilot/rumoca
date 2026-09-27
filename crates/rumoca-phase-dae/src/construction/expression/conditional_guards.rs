@@ -69,7 +69,7 @@ pub(super) fn guard_reads_tunable_parameter<'dae>(
 /// discovery removed carries no call-shape certificate. Preserving such an arm
 /// would try to build that uncertified call, so a conditional with a user-
 /// function call in any arm keeps folding rather than being preserved.
-pub(super) fn conditional_calls_a_user_function(
+pub(in crate::construction) fn conditional_calls_a_user_function(
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
 ) -> bool {

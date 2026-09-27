@@ -8,6 +8,7 @@ mod event_conditions;
 mod expression_events;
 mod expression_semi_linear;
 mod expression_validation;
+mod folded_guards;
 mod function_array_assemblies;
 mod function_bodies;
 mod function_conditionals;
@@ -580,6 +581,10 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &discrete_connection_ranks,
         &aggregate_discrete_connections,
     )?;
+    let mut evaluable = evaluable_parameters(flat);
+    let folded =
+        folded_guards::folded_guard_parameters(flat, function_shapes.model_values(), &evaluable);
+    evaluable.extend(folded);
     Ok(Analysis {
         constants,
         delay_plans: expression_support.delays,
@@ -601,7 +606,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         clocked_coordinate_owners: clock_domains.coordinate_owners,
         model_algorithm_plans,
         initial_parameters: initial.algorithms.parameters,
-        evaluable_parameters: evaluable_parameters(flat),
+        evaluable_parameters: evaluable,
         initial_discrete_values: initial.algorithms.discrete_values,
         initial_algorithm_assertions: initial.algorithms.assertions,
         function_plans,

@@ -67,12 +67,14 @@ assert types['n'] == integer and types['speed'] == integer and types['k'] == int
 assert types['doubled'] == 'Boolean' and types['label'] == 'String', types
 assert variables['label'].start == 'rumoca <typed>', variables['label'].start
 
-# Read parameters stay settable; folded ones are constants.
-for name in ['n', 'gain']:
+# Ordinary parameters stay settable parameters, read or not (label is read by
+# no numeric program). A parameter an equation guard reads is evaluated at
+# translation and exported as a non-settable calculated parameter.
+for name in ['n', 'gain', 'label']:
     assert variables[name].causality == 'parameter', (name, variables[name].causality)
-for name in ['doubled', 'speed', 'label']:
+for name in ['doubled', 'speed']:
     v = variables[name]
-    assert (v.causality, v.variability, v.initial) == ('local', 'constant', 'exact'), (name, v.causality, v.variability, v.initial)
+    assert (v.causality, v.variability, v.initial) == ('calculatedParameter', 'fixed', 'calculated'), (name, v.causality, v.variability, v.initial)
 
 # The solved state keeps its start as a guess; the discrete equation defines k.
 assert variables['x'].initial == 'approx', variables['x'].initial
@@ -80,20 +82,20 @@ assert variables['k'].initial == 'calculated' and variables['k'].start is None, 
 initial_unknowns = {u.variable.name for u in md.initialUnknowns}
 assert 'x' in initial_unknowns, initial_unknowns
 
-# The component itself refuses to set a folded parameter.
+# The component itself refuses to set a parameter fixed at translation.
 unzipdir = extract(path)
 fmu = instantiate_fmu(unzipdir, md, fmi_type='ModelExchange')
 vr = {name: v.valueReference for name, v in variables.items()}
 set_integer = fmu.setInteger if fmi2 else fmu.setInt32
 set_real = fmu.setReal if fmi2 else fmu.setFloat64
 set_real([vr['gain']], [1.0])
-for name, setter, value in [('doubled', fmu.setBoolean, [False]), ('speed', set_integer, [1]), ('label', fmu.setString, ['other'])]:
+for name, setter, value in [('doubled', fmu.setBoolean, [False]), ('speed', set_integer, [1])]:
     try:
         setter([vr[name]], value)
     except FMICallException:
         pass
     else:
-        raise AssertionError((name, 'a folded parameter accepted a set'))
+        raise AssertionError((name, 'a translation-time parameter accepted a set'))
 fmu.freeInstance()
 
 lo, hi = 0.0, 1.0
