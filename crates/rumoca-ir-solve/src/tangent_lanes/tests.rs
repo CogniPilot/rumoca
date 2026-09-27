@@ -199,7 +199,8 @@ fn select_conditional(dst: u32, capture: u32) -> LinearOp {
 
 /// Operations whose operands the lane walk does not enumerate (nested
 /// programs, random streams) run once, verbatim, over seed-independent
-/// scalars, and are refused when they read a seed-dependent register.
+/// scalars. A function conditional that reads a seed-dependent register
+/// instead runs once per lane, each copy reading its lane's captures.
 #[test]
 fn a_nested_program_runs_once_verbatim_only_over_seed_independent_scalars() {
     let mut program = product_jvp();
@@ -217,11 +218,6 @@ fn a_nested_program_runs_once_verbatim_only_over_seed_independent_scalars() {
     let mut seeded = product_jvp();
     // Reading the tangent `v0*y1 + y0*v1` (register 7) depends on the seed.
     seeded.insert(seeded.len() - 2, select_conditional(8, 7));
-    assert!(matches!(
-        TangentLaneProgram::replicate(&seeded, 3),
-        Err(TangentLaneError::Unsupported {
-            operation: "FunctionConditional",
-            ..
-        })
-    ));
+    let per_lane = TangentLaneProgram::replicate(&seeded, 3).expect("the conditional widens");
+    assert_eq!(count(&per_lane, "FunctionConditional"), 3, "one per lane");
 }

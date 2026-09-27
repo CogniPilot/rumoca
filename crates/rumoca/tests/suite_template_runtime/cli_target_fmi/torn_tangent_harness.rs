@@ -267,23 +267,27 @@ fn assert_linked(model: &solve::SolveModel, report: &Report) -> usize {
     largest_group
 }
 
-#[test]
-fn generated_torn_tangent_matches_the_linked_plan_bit_for_bit() {
+/// Whether the FMI conformance tools and the FMI 3 headers are available.
+fn harness_prerequisites() -> Option<std::path::PathBuf> {
     if !conformance_prerequisites_are_available() {
-        return;
+        return None;
     }
     let headers = standard_roots().1.root.join("headers");
-    if !headers.join("fmi3Functions.h").is_file() {
-        return;
-    }
+    headers.join("fmi3Functions.h").is_file().then_some(headers)
+}
+
+/// Build `model`'s FMI 3 kernel with the harness, run it, check its
+/// fallback log, and compare every torn block with the linked plan; the
+/// report and the largest step group.
+fn run_harness(model: &str, source: &str, headers: &std::path::Path) -> (Report, usize) {
     let compiled = rumoca::Compiler::new()
-        .model(MODEL)
-        .compile_str(&source(), &format!("{MODEL}.mo"))
-        .unwrap_or_else(|error| panic!("compile {MODEL}: {error:?}"));
+        .model(model)
+        .compile_str(source, &format!("{model}.mo"))
+        .unwrap_or_else(|error| panic!("compile {model}: {error:?}"));
     let component = rumoca_sim::lower_fmi_component(&compiled.dae)
-        .unwrap_or_else(|error| panic!("lower {MODEL}: {error:?}"));
+        .unwrap_or_else(|error| panic!("lower {model}: {error:?}"));
     let work = tempdir().expect("torn tangent harness work directory");
-    let fmu = build_named_fmu(work.path(), &compiled, "fmi3", MODEL);
+    let fmu = build_named_fmu(work.path(), &compiled, "fmi3", model);
     let sources = fmu.root.join("sources");
     let harness = work.path().join("torn_tangent_harness.c");
     fs::write(&harness, HARNESS).expect("write the torn tangent harness");
@@ -327,6 +331,16 @@ fn generated_torn_tangent_matches_the_linked_plan_bit_for_bit() {
         "{fallback_log}"
     );
     let report = parse(&stdout);
+    let largest_group = assert_linked(component.runtime_view().model(), &report);
+    (report, largest_group)
+}
+
+#[test]
+fn generated_torn_tangent_matches_the_linked_plan_bit_for_bit() {
+    let Some(headers) = harness_prerequisites() else {
+        return;
+    };
+    let (report, largest_group) = run_harness(MODEL, &source(), &headers);
     let lanes = report
         .blocks
         .iter()
@@ -350,9 +364,74 @@ fn generated_torn_tangent_matches_the_linked_plan_bit_for_bit() {
         lanes >= 2 && directional >= 1 && causal(false) >= 1 && causal(true) >= 1,
         "the fixture renders both forms: {lanes} lane, {directional} directional"
     );
-    let largest_group = assert_linked(component.runtime_view().model(), &report);
     assert!(
         largest_group >= 3,
         "one evaluation answers a group of the vector loop's steps: {largest_group}"
     );
+}
+
+/// A torn loop whose equation selects between two calls on a parameter guard
+/// (SPEC_0040 DAE-C22), with `on` defaulting to `on_default`.
+fn guarded_tear_source(on_default: bool) -> String {
+    format!(
+        "model GuardedTear
+  function f
+    input Real u;
+    output Real y;
+  algorithm
+    y := 0.3*sin(u) + 0.1*u*u;
+  end f;
+  function g
+    input Real u;
+    output Real y;
+  algorithm
+    y := 0.2*cos(u);
+  end g;
+  parameter Boolean on = {on_default};
+  Real x(start=1, fixed=true);
+  Real a(start=0.5);
+  Real b(start=0.5);
+  Real c(start=0.5);
+equation
+  der(x) = -a;
+  a = x + (if on then f(c) else g(c));
+  b = a*a + 0.1*c;
+  c = 0.5 + 0.2*sin(b) + 0.1*a*c;
+end GuardedTear;
+"
+    )
+}
+
+/// The tear Jacobian of a loop whose row is a selected-arm conditional over
+/// calls: the generated kernel's lane program runs the conditional once per
+/// lane and equals the linked plan bit for bit under either arm.
+#[test]
+fn a_selected_arm_conditional_in_a_torn_loop_matches_the_linked_plan() {
+    let Some(headers) = harness_prerequisites() else {
+        return;
+    };
+    for on in [true, false] {
+        let source = guarded_tear_source(on);
+        let compiled = rumoca::Compiler::new()
+            .model("GuardedTear")
+            .compile_str(&source, "GuardedTear.mo")
+            .unwrap_or_else(|error| panic!("compile GuardedTear: {error:?}"));
+        let component = rumoca_sim::lower_fmi_component(&compiled.dae)
+            .unwrap_or_else(|error| panic!("lower GuardedTear: {error:?}"));
+        let jvp = &component
+            .runtime_view()
+            .model()
+            .artifacts
+            .continuous
+            .implicit_jacobian_v;
+        assert!(
+            format!("{jvp:?}").contains("FunctionConditional"),
+            "the loop's tangent rows keep the selected-arm conditional"
+        );
+        let (report, _) = run_harness("GuardedTear", &source, &headers);
+        assert!(
+            report.blocks.iter().any(|block| !block.directional),
+            "on = {on}: the loop takes the multi-lane form"
+        );
+    }
 }

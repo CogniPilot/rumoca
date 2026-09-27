@@ -138,6 +138,15 @@ fn group_residuals(residuals: &mut [TornTangentResidual]) {
 /// Solver-Y indices whose seed a JVP program reads.
 fn seed_reads(program: &[LinearOp]) -> Vec<usize> {
     let mut reads = Vec::new();
+    collect_seed_reads(program, &mut reads);
+    reads.sort_unstable();
+    reads.dedup();
+    reads
+}
+
+/// Seed reads of `program`, including those of its nested programs: a fold
+/// update and each region of a function conditional read the same seeds.
+fn collect_seed_reads(program: &[LinearOp], reads: &mut Vec<usize>) {
     for op in program {
         match op {
             LinearOp::LoadSeed { index, .. } => reads.push(*index),
@@ -146,12 +155,21 @@ fn seed_reads(program: &[LinearOp]) -> Vec<usize> {
                 count,
                 ..
             } => reads.extend(*start..*start + *count),
+            LinearOp::FunctionFold { program, .. }
+            | LinearOp::GuardedFunctionFold { program, .. }
+            | LinearOp::StoreOutputFunctionFold { program, .. } => {
+                collect_seed_reads(&program.update, reads);
+            }
+            LinearOp::FunctionConditional { program, .. } => {
+                for arm in &program.arms {
+                    collect_seed_reads(&arm.condition, reads);
+                    collect_seed_reads(&arm.result, reads);
+                }
+                collect_seed_reads(&program.fallback, reads);
+            }
             _ => {}
         }
     }
-    reads.sort_unstable();
-    reads.dedup();
-    reads
 }
 
 /// Lane programs built on demand, one per distinct source program; with

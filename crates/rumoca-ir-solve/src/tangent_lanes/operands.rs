@@ -17,7 +17,7 @@ pub(super) enum Operand {
 }
 
 impl Operand {
-    const fn range(len: usize, lanes: usize) -> Self {
+    pub(super) const fn range(len: usize, lanes: usize) -> Self {
         Self::Strided {
             count: len,
             stride: 1,

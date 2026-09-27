@@ -151,6 +151,11 @@ impl Replication {
             }
             // A runtime-indexed seed has no element-major lane form.
             LinearOp::LoadIndexedSeed { .. } => Err(unsupported(op_index, op)),
+            LinearOp::FunctionConditional {
+                dst_start,
+                capture_start,
+                program,
+            } => self.push_conditional(op_index, op, (*dst_start, *capture_start), program),
             _ if aggregate_lanes(op) == Some(2) => self.push_aggregate(op_index, op),
             LinearOp::TensorConcatenate { .. } | LinearOp::TensorTranspose { .. }
                 if self.touches_region(op) =>
@@ -512,6 +517,51 @@ impl Replication {
         Ok(())
     }
 
+    /// Replicate a checked function conditional once per lane, like a
+    /// directional pure call: each lane's copy reads that lane's captures and
+    /// seeds and recomputes its primal, and only its selected region runs.
+    fn push_conditional(
+        &mut self,
+        op_index: usize,
+        op: &LinearOp,
+        (dst_start, capture_start): (Reg, Reg),
+        program: &std::sync::Arc<crate::FunctionConditionalProgram>,
+    ) -> Result<(), TangentLaneError> {
+        let captures = Operand::range(program.capture_count, 1)
+            .registers(capture_start)
+            .ok_or(TangentLaneError::RegisterOverflow)?;
+        if captures
+            .iter()
+            .any(|register| self.regions.slot(*register) != Slot::Scalar)
+        {
+            return Err(unsupported(op_index, op));
+        }
+        // A conditional over seed-independent values runs once.
+        if !captures.iter().any(|register| self.per_lane(*register))
+            && lane_seed_program(program, 1, 0).as_ref() == Some(program.as_ref())
+            && !reads_seed(program)
+        {
+            return self.push_verbatim(op_index, op);
+        }
+        for lane in 0..self.lanes {
+            let lane_program =
+                lane_seed_program(program, self.lanes, lane).ok_or(unsupported(op_index, op))?;
+            let capture = if captures.is_empty() {
+                capture_start
+            } else {
+                self.range_start(lane, &captures)
+            };
+            let dst = self.write_target(op_index, op, lane, dst_start)?;
+            self.ops.push(LinearOp::FunctionConditional {
+                dst_start: dst,
+                capture_start: capture,
+                program: std::sync::Arc::new(lane_program),
+            });
+        }
+        self.mark(op, true);
+        Ok(())
+    }
+
     /// The widened destination lane `lane` of a replicated operation writes.
     fn write_target(
         &self,
@@ -694,4 +744,70 @@ fn set_aggregate_lanes(op: &mut LinearOp, width: usize) {
         | LinearOp::TensorLoad { lanes, .. } => *lanes = width,
         _ => {}
     }
+}
+
+/// `program` reading lane `lane` of an element-major seed vector of `lanes`
+/// lanes: each seed index `i` becomes `i * lanes + lane`. `None` when a
+/// region reads seeds in a form with no per-lane rewrite (a runtime-indexed
+/// seed, a tensor seed range, or a nested program that reads seeds).
+fn lane_seed_program(
+    program: &crate::FunctionConditionalProgram,
+    lanes: usize,
+    lane: usize,
+) -> Option<crate::FunctionConditionalProgram> {
+    let mut lane_program = program.clone();
+    for arm in lane_program.arms.iter_mut() {
+        arm.condition = lane_seed_ops(&arm.condition, lanes, lane)?;
+        arm.result = lane_seed_ops(&arm.result, lanes, lane)?;
+    }
+    lane_program.fallback = lane_seed_ops(&program.fallback, lanes, lane)?;
+    Some(lane_program)
+}
+
+fn lane_seed_ops(ops: &[LinearOp], lanes: usize, lane: usize) -> Option<Vec<LinearOp>> {
+    ops.iter()
+        .map(|op| match op {
+            LinearOp::LoadSeed { dst, index } => Some(LinearOp::LoadSeed {
+                dst: *dst,
+                index: index.checked_mul(lanes)?.checked_add(lane)?,
+            }),
+            LinearOp::LoadIndexedSeed { .. }
+            | LinearOp::TensorLoad {
+                seed_start: Some(_),
+                ..
+            } => None,
+            LinearOp::FunctionConditional {
+                dst_start,
+                capture_start,
+                program,
+            } => Some(LinearOp::FunctionConditional {
+                dst_start: *dst_start,
+                capture_start: *capture_start,
+                program: std::sync::Arc::new(lane_seed_program(program, lanes, lane)?),
+            }),
+            LinearOp::FunctionFold { program, .. }
+            | LinearOp::GuardedFunctionFold { program, .. }
+            | LinearOp::StoreOutputFunctionFold { program, .. } => program
+                .update
+                .iter()
+                .all(|nested| {
+                    !matches!(
+                        nested,
+                        LinearOp::LoadSeed { .. }
+                            | LinearOp::LoadIndexedSeed { .. }
+                            | LinearOp::TensorLoad {
+                                seed_start: Some(_),
+                                ..
+                            }
+                    )
+                })
+                .then(|| op.clone()),
+            _ => Some(op.clone()),
+        })
+        .collect()
+}
+
+/// Whether any region of `program` loads a seed.
+fn reads_seed(program: &crate::FunctionConditionalProgram) -> bool {
+    lane_seed_program(program, 2, 1).as_ref() != Some(program)
 }
