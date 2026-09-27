@@ -500,7 +500,7 @@ static int rmc_torn_sweep(ModelInstance* m, const RmcBlock* b, double* residual)
    back as that target's seed for the steps after it. One evaluation answers a
    step group, with the coefficient lane seeding every member target. The
    reduced rows then give the Jacobian row-major. The lane seed is all zero on
-   entry and on return. -1 error, 0 a vanished causal coefficient, 1 ok */
+   entry and on return. -1 error, 0 a non-finite causal coefficient, 1 ok */
 static int rmc_torn_tangent(ModelInstance* m, const RmcBlock* b, double* jac, double* recovered) {
     RMC_MARK; size_t lanes = b->tangent_lanes, tears = lanes - 1; int result = 1;
     double* out = rmc_dalloc_raw(m, b->lane_max_outputs + 1);
@@ -516,7 +516,7 @@ static int rmc_torn_tangent(ModelInstance* m, const RmcBlock* b, double* jac, do
             if (result != 1) break;
         }
         double coefficient = out[tears * step[1] + step[2]];
-        if (coefficient == 0.0 || !isfinite(coefficient)) { result = 0; break; }
+        if (!isfinite(coefficient)) { result = 0; break; }
         for (size_t lane = 0; lane < tears; ++lane) {
             double value = -out[lane * step[1] + step[2]] / coefficient;
             seed[step[3] * lanes + lane] = value;
@@ -537,7 +537,7 @@ static int rmc_torn_tangent(ModelInstance* m, const RmcBlock* b, double* jac, do
    form through the JVP functions: every step group's coefficients with its
    member targets seeded, then each tear column through the steps and the
    reduced rows, one evaluation per group. The seed is all zero on entry and on
-   return. -1 error, 0 a vanished causal coefficient, 1 ok */
+   return. -1 error, 0 a non-finite causal coefficient, 1 ok */
 static int rmc_torn_directions(ModelInstance* m, const RmcBlock* b, double* jac, double* recovered) {
     RMC_MARK; size_t tears = b->tangent_lanes - 1; int result = 1;
     double* out = rmc_dalloc_raw(m, b->jvp_max_outputs + 1); double* coefficient = rmc_dalloc_raw(m, b->ntangent_steps + 1);
@@ -551,7 +551,7 @@ static int rmc_torn_directions(ModelInstance* m, const RmcBlock* b, double* jac,
         for (size_t g = 0; g < step[4]; ++g) seed[step[5 * g + 3]] = 0.0;
         for (size_t g = 0; g < step[4] && result == 1; ++g) {
             double value = out[step[5 * g + 2]];
-            if (value == 0.0 || !isfinite(value)) result = 0;
+            if (!isfinite(value)) result = 0;
             else coefficient[s + g] = value;
         }
     }

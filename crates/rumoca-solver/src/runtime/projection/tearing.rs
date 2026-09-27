@@ -356,8 +356,8 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
 /// The torn tangent of a model without a tangent plan, one direction at a time
 /// (`TornTangentEvaluator`'s one-direction form): every causal step's
 /// coefficient with its target seeded alone, then each tear column through the
-/// steps in sweep order and the reduced rows. `None` when a coefficient
-/// vanishes.
+/// steps in sweep order and the reduced rows. `None` when a coefficient is
+/// not finite.
 fn model_torn_tangent(
     model: &dyn ImplicitProjectionModel,
     (y, p, t): (&[f64], &[f64], f64),
@@ -376,7 +376,7 @@ fn model_torn_tangent(
         seed[step.y_index] = 1.0;
         let coefficient = tangent(&seed, step.row)?;
         seed[step.y_index] = 0.0;
-        if coefficient == 0.0 || !coefficient.is_finite() {
+        if !rumoca_eval_solve::causal_coefficient_is_finite(coefficient) {
             return Ok(None);
         }
         coefficients.push(coefficient);

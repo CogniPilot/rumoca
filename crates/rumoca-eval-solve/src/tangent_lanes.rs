@@ -128,7 +128,7 @@ impl TornTangentEvaluator {
 
     /// Evaluate the reduced tear Jacobian at `point`, whose causal
     /// coordinates hold the sweep of its tears. `None` when a causal
-    /// coefficient vanishes.
+    /// coefficient is not finite ([`causal_coefficient_is_finite`]).
     pub fn eval(
         &self,
         point: TangentPoint<'_>,
@@ -167,7 +167,7 @@ impl TornTangentEvaluator {
             }
             let tangent = |lane: usize| out[lane * outputs + step.source.output];
             let coefficient = tangent(tears);
-            if coefficient == 0.0 || !coefficient.is_finite() {
+            if !causal_coefficient_is_finite(coefficient) {
                 return Ok(None);
             }
             for lane in 0..tears {
@@ -233,7 +233,7 @@ impl TornTangentEvaluator {
             coefficients.extend(group.iter().map(|member| out[member.source.output]));
             if coefficients[index..]
                 .iter()
-                .any(|coefficient| *coefficient == 0.0 || !coefficient.is_finite())
+                .any(|coefficient| !causal_coefficient_is_finite(*coefficient))
             {
                 return Ok(None);
             }
@@ -295,7 +295,22 @@ impl TornTangentEvaluator {
     }
 }
 
-/// A [`ColoredTangentPlan`] prepared for repeated evaluation.
+/// Whether a causal step's evaluated coefficient admits the division that
+/// recovers its target. Construction proves every retained step's coefficient
+/// a nonzero constant (SPEC_0043 §4), and the forward tangent of a row
+/// whose other terms do not read the target equals that constant, so a zero
+/// here is a construction defect a debug build asserts against. Run-time
+/// values can still make it non-finite (a zero tangent times an infinite
+/// partial is NaN), which declines the torn solve.
+#[must_use]
+pub fn causal_coefficient_is_finite(coefficient: f64) -> bool {
+    debug_assert_ne!(
+        coefficient, 0.0,
+        "a causal step's coefficient is proven nonzero at construction"
+    );
+    coefficient.is_finite()
+}
+
 /// Set lane `lane` of every member target of `group` in a seed with `stride`
 /// lanes per coordinate to `value`.
 fn seed_group(
@@ -309,6 +324,7 @@ fn seed_group(
     }
 }
 
+/// A [`ColoredTangentPlan`] prepared for repeated evaluation.
 pub struct ColoredTangentEvaluator {
     plan: ColoredTangentPlan,
     programs: Vec<PreparedTangentLaneProgram>,

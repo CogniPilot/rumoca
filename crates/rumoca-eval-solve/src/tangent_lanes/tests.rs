@@ -277,3 +277,22 @@ fn every_lane_of_a_widened_function_conditional_equals_the_one_direction_program
         }
     }
 }
+
+/// A causal coefficient proven nonzero at construction admits its division
+/// unless run-time values made it non-finite, which declines the torn solve.
+#[test]
+fn a_causal_coefficient_declines_only_when_not_finite() {
+    assert!(super::causal_coefficient_is_finite(-2.5));
+    assert!(super::causal_coefficient_is_finite(f64::MIN_POSITIVE));
+    assert!(!super::causal_coefficient_is_finite(f64::NAN));
+    assert!(!super::causal_coefficient_is_finite(f64::INFINITY));
+}
+
+/// A zero coefficient contradicts the construction proof, which a debug
+/// build asserts instead of declining.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "proven nonzero at construction")]
+fn a_zero_causal_coefficient_is_a_construction_defect() {
+    let _ = super::causal_coefficient_is_finite(0.0);
+}
