@@ -21,46 +21,9 @@ pub(super) fn guard_reads_tunable_parameter<'dae>(
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     condition: &Expression,
 ) -> bool {
-    struct GuardScan<'a, 'dae> {
-        coordinates: &'a HashMap<VarName, Coordinate<'dae>>,
-        reads_parameter: bool,
-    }
-
-    impl rumoca_core::ExpressionVisitor for GuardScan<'_, '_> {
-        fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
-            if matches!(
-                self.coordinates.get(name.var_name()),
-                Some(Coordinate::Parameter(_))
-            ) {
-                self.reads_parameter = true;
-            }
-            self.walk_var_ref(name, subscripts);
-        }
-
-        fn visit_builtin_call(
-            &mut self,
-            function: &rumoca_core::BuiltinFunction,
-            args: &[Expression],
-        ) {
-            // `size(A, ...)` and `ndims(A)` read `A`'s shape, never its value, so
-            // the array operand `A` (the first argument) is skipped. A remaining
-            // argument (a `size` dimension index) is scanned like any other read.
-            let structural = matches!(
-                function,
-                rumoca_core::BuiltinFunction::Size | rumoca_core::BuiltinFunction::Ndims
-            );
-            for argument in args.iter().skip(usize::from(structural)) {
-                self.visit_expression(argument);
-            }
-        }
-    }
-
-    let mut scan = GuardScan {
-        coordinates,
-        reads_parameter: false,
-    };
-    rumoca_core::ExpressionVisitor::visit_expression(&mut scan, condition);
-    scan.reads_parameter
+    let parameter =
+        |name: &VarName| matches!(coordinates.get(name), Some(Coordinate::Parameter(_)));
+    reads_value_where(condition, &parameter)
 }
 
 /// Whether any guard or value of a conditional calls a user function.
@@ -73,31 +36,15 @@ pub(in crate::construction) fn conditional_calls_a_user_function(
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
 ) -> bool {
-    struct CallScan {
-        calls_user_function: bool,
-    }
-
-    impl rumoca_core::ExpressionVisitor for CallScan {
-        fn visit_function_call(
-            &mut self,
-            name: &rumoca_core::Reference,
-            args: &[Expression],
-            is_constructor: bool,
-        ) {
-            self.calls_user_function = true;
-            self.walk_function_call(name, args, is_constructor);
-        }
-    }
-
-    let mut scan = CallScan {
-        calls_user_function: false,
-    };
+    // Incidence mode walks every builtin argument, so a call inside the array
+    // operand of `size` is found too.
+    let mut scan = ArmScan::incidence(&|_| false);
     for (condition, value) in branches {
         rumoca_core::ExpressionVisitor::visit_expression(&mut scan, condition);
         rumoca_core::ExpressionVisitor::visit_expression(&mut scan, value);
     }
     rumoca_core::ExpressionVisitor::visit_expression(&mut scan, else_branch);
-    scan.calls_user_function
+    scan.calls_function
 }
 
 /// [`retains_parameter_guard`] over the DAE coordinates of an equation: a
@@ -159,11 +106,7 @@ pub(in crate::construction) fn retains_parameter_guard(
         return false;
     }
     let incidence = |arm: &Expression| {
-        let mut scan = IncidenceScan {
-            unknown: classes.unknown,
-            operators: Vec::new(),
-            reads: std::collections::BTreeSet::new(),
-        };
+        let mut scan = ArmScan::incidence(classes.unknown);
         rumoca_core::ExpressionVisitor::visit_expression(&mut scan, arm);
         scan.reads
     };
@@ -174,22 +117,62 @@ pub(in crate::construction) fn retains_parameter_guard(
 /// Whether `expression` reads, by value, a name `select` accepts; the array
 /// operand of `size`/`ndims` contributes its shape and is not a value read.
 fn reads_value_where(expression: &Expression, select: &dyn Fn(&VarName) -> bool) -> bool {
-    struct ValueScan<'a> {
-        select: &'a dyn Fn(&VarName) -> bool,
-        found: bool,
+    let mut scan = ArmScan::values(select);
+    rumoca_core::ExpressionVisitor::visit_expression(&mut scan, expression);
+    scan.found
+}
+
+/// One walk over a guard or an arm, shared by every classification here. In
+/// value mode it records whether a name `select` accepts is read by value
+/// (the array operand of `size`/`ndims` contributes its shape and is
+/// skipped); in incidence mode it records each name `select` accepts with its
+/// subscripts and the chain of builtin operators (`der`, `pre`, ...)
+/// enclosing it. Either mode notes a function call.
+struct ArmScan<'a> {
+    select: &'a dyn Fn(&VarName) -> bool,
+    /// The enclosing builtin operators; `None` in value mode.
+    operators: Option<Vec<String>>,
+    found: bool,
+    calls_function: bool,
+    reads: std::collections::BTreeSet<String>,
+}
+
+impl<'a> ArmScan<'a> {
+    fn values(select: &'a dyn Fn(&VarName) -> bool) -> Self {
+        Self {
+            select,
+            operators: None,
+            found: false,
+            calls_function: false,
+            reads: std::collections::BTreeSet::new(),
+        }
     }
 
-    impl rumoca_core::ExpressionVisitor for ValueScan<'_> {
-        fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
-            self.found |= (self.select)(name.var_name());
-            self.walk_var_ref(name, subscripts);
+    fn incidence(select: &'a dyn Fn(&VarName) -> bool) -> Self {
+        Self {
+            operators: Some(Vec::new()),
+            ..Self::values(select)
         }
+    }
+}
 
-        fn visit_builtin_call(
-            &mut self,
-            function: &rumoca_core::BuiltinFunction,
-            args: &[Expression],
-        ) {
+impl rumoca_core::ExpressionVisitor for ArmScan<'_> {
+    fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
+        if (self.select)(name.var_name()) {
+            self.found = true;
+            if let Some(operators) = &self.operators {
+                self.reads.insert(format!(
+                    "{}{}{subscripts:?}",
+                    operators.join("/"),
+                    name.var_name()
+                ));
+            }
+        }
+        self.walk_var_ref(name, subscripts);
+    }
+
+    fn visit_builtin_call(&mut self, function: &rumoca_core::BuiltinFunction, args: &[Expression]) {
+        let Some(operators) = &mut self.operators else {
             let structural = matches!(
                 function,
                 rumoca_core::BuiltinFunction::Size | rumoca_core::BuiltinFunction::Ndims
@@ -197,43 +180,25 @@ fn reads_value_where(expression: &Expression, select: &dyn Fn(&VarName) -> bool)
             for argument in args.iter().skip(usize::from(structural)) {
                 self.visit_expression(argument);
             }
-        }
-    }
-
-    let mut scan = ValueScan {
-        select,
-        found: false,
-    };
-    rumoca_core::ExpressionVisitor::visit_expression(&mut scan, expression);
-    scan.found
-}
-
-/// The unknown reads of one arm: each name with its subscripts and the chain
-/// of builtin operators (`der`, `pre`, ...) enclosing it.
-struct IncidenceScan<'a> {
-    unknown: &'a dyn Fn(&VarName) -> bool,
-    operators: Vec<String>,
-    reads: std::collections::BTreeSet<String>,
-}
-
-impl rumoca_core::ExpressionVisitor for IncidenceScan<'_> {
-    fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
-        if (self.unknown)(name.var_name()) {
-            self.reads.insert(format!(
-                "{}{}{subscripts:?}",
-                self.operators.join("/"),
-                name.var_name()
-            ));
-        }
-        self.walk_var_ref(name, subscripts);
-    }
-
-    fn visit_builtin_call(&mut self, function: &rumoca_core::BuiltinFunction, args: &[Expression]) {
-        self.operators.push(format!("{function:?}("));
+            return;
+        };
+        operators.push(format!("{function:?}("));
         for argument in args {
             self.visit_expression(argument);
         }
-        self.operators.pop();
+        if let Some(operators) = &mut self.operators {
+            operators.pop();
+        }
+    }
+
+    fn visit_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[Expression],
+        is_constructor: bool,
+    ) {
+        self.calls_function = true;
+        self.walk_function_call(name, args, is_constructor);
     }
 }
 

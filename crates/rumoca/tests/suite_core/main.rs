@@ -49,6 +49,7 @@ mod clocked_coincident_exchange;
 mod clocked_sample_regression;
 mod component_redeclare_constraints;
 mod component_redeclare_dimensions;
+mod conditional_arm_selection;
 mod connection_normalization_golden;
 mod constant_folding;
 mod constant_values;

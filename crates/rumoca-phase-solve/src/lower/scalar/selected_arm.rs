@@ -124,19 +124,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
-        let fallback_index = operands.len() - 1;
-        let operand = |index: usize| {
-            operands
-                .get(index)
-                .ok_or_else(|| LowerError::contract("conditional operand is missing", span))
+        let ids = operands.iter().collect::<Vec<_>>();
+        let (Some((&fallback, arm_ids)), true) = (ids.split_last(), ids.len() % 2 == 1) else {
+            return Err(LowerError::contract(
+                "conditional operands are not condition-value pairs and a fallback",
+                span,
+            ));
         };
         // A literal condition is decided here: a false arm is never reached,
         // and a true one is the value every later arm falls back to.
         let mut live = Vec::new();
-        let mut fallback_value = operand(fallback_index)?;
-        for index in (0..fallback_index).step_by(2) {
-            let condition = operand(index)?;
-            let value = operand(index + 1)?;
+        let mut fallback_value = fallback;
+        for pair in arm_ids.chunks_exact(2) {
+            let (condition, value) = (pair[0], pair[1]);
             match self.node(condition).operation() {
                 dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(false)) => {}
                 dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(true)) => {
@@ -182,14 +182,20 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let fallback = self
             .selected_arm_region(&all_prior, span)?
             .selected_arm_output(fallback_value, scalar)?;
-        let program =
-            solve::FunctionConditionalProgram::checked(captures.len(), vec![1], arms, fallback)
-                .map_err(|error| {
-                    LowerError::contract(
-                        format!("selected-arm conditional proof failed: {error}"),
-                        span,
-                    )
-                })?;
+        let program = match solve::FunctionConditionalProgram::checked(
+            captures.len(),
+            vec![1],
+            arms,
+            fallback,
+        ) {
+            Ok(program) => program,
+            Err(error) => {
+                return Err(LowerError::contract(
+                    format!("selected-arm conditional proof failed: {error}"),
+                    span,
+                ));
+            }
+        };
         let capture_start = self.next_register;
         for source in captures {
             let destination = self.register(span)?;

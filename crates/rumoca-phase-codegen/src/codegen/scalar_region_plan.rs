@@ -207,3 +207,71 @@ fn local_output_targets(ops: &[solve::LinearOp]) -> Vec<Option<Box<[usize]>>> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `if y[1] > 0 then 2 else y[2]`: one arm and a fallback, one output.
+    fn program() -> Arc<solve::FunctionConditionalProgram> {
+        let condition = vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::Const { dst: 1, value: 0.0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ];
+        let result = vec![
+            solve::LinearOp::Const { dst: 0, value: 2.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ];
+        let fallback = vec![
+            solve::LinearOp::LoadY { dst: 0, index: 2 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ];
+        let program =
+            solve::FunctionConditionalProgram::checked(0, [1], [(condition, result)], fallback)
+                .expect("the fixture conditional is checked");
+        Arc::new(program)
+    }
+
+    fn render(template: &str) -> String {
+        let program = program();
+        let mut environment = minijinja::Environment::new();
+        environment
+            .add_template("regions", template)
+            .expect("the fixture template parses");
+        let context = minijinja::context! {
+            arms => Value::from_object(PlanArmsValue { program: Arc::clone(&program) }),
+            fallback => region_value(&program, RegionPart::Fallback),
+        };
+        environment
+            .get_template("regions")
+            .expect("the fixture template is registered")
+            .render(context)
+            .expect("the region views render")
+    }
+
+    /// A template walks the arms as a sequence, each arm and region as a map,
+    /// and each region's operations as a sequence of maps, and every store
+    /// carries its region-local output ordinal.
+    #[test]
+    fn region_views_enumerate_as_sequences_and_maps() {
+        assert_eq!(
+            render(
+                "{{ arms|length }}\
+                 {% for arm in arms %}|{{ arm|list|join(',') }}\
+                 {% for part in arm %}|{{ arm[part]|list|join(',') }}:{{ arm[part].register_count }}\
+                 {% for op in arm[part].ops %};{{ op|list|length > 0 }}{% endfor %}\
+                 {% endfor %}{% endfor %}|{{ fallback.ops|length }}\
+                 |{{ arms[0].result.ops[1].output_index }}|{{ arms[5] is undefined }}"
+            ),
+            "1|condition,result|ops,register_count:3;true;true;true;true\
+             |ops,register_count:1;true;true|2|0|true"
+        );
+    }
+}
