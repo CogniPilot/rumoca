@@ -160,7 +160,6 @@ pub mod codegen {
 /// Read-only DAE analysis helpers exposed through the compile facade.
 pub mod analysis {
     pub use rumoca_phase_dae::balance::{BalanceBreakdown, BalanceDetail};
-    pub use rumoca_phase_dae::balance_detail;
 }
 
 /// Structural-analysis primitives over a branded checked-DAE view.

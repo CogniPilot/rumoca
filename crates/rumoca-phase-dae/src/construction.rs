@@ -247,10 +247,6 @@ pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae
     Ok(dae.with_external_tables(external_tables))
 }
 
-pub(crate) fn balance_detail(flat: &flat::Model) -> Result<BalanceDetail, ToDaeError> {
-    analyze(flat).map(|analysis| analysis.balance)
-}
-
 /// The balance evidence and the structural guard selections of one analysis.
 pub(crate) fn construction_evidence(
     flat: &flat::Model,

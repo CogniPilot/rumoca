@@ -22,12 +22,6 @@ pub fn to_dae(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToD
     construction::construct(flat, source_map)
 }
 
-/// Compute the exact source-model balance evidence while Flat ownership is
-/// still available. The canonical DAE intentionally does not duplicate it.
-pub fn balance_detail(flat: &flat::Model) -> Result<BalanceDetail, ToDaeError> {
-    construction::balance_detail(flat)
-}
-
 pub use construction::StructuralSelection;
 
 /// The balance evidence together with every owner whose folded parameter
