@@ -10,6 +10,7 @@ use rumoca_ir_solve::{ComputeNode, LinearOp, ScalarSlot};
 use crate::{LowerError, lower_solve_package, lower_solve_problem};
 
 mod affine_derivatives;
+mod charts;
 mod clocks;
 mod continuous;
 mod discrete;
