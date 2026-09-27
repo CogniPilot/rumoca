@@ -707,6 +707,7 @@ impl AlgebraicProjectionModel for BlockProjectionModel {
         p: &[f64],
         t: f64,
         v: &[f64],
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_jacobian_v(y, p, t, v, out)
@@ -785,6 +786,7 @@ impl AlgebraicProjectionModel for InitialCausalAssignmentModel {
         p: &[f64],
         t: f64,
         v: &[f64],
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_jacobian_v(y, p, t, v, out)
@@ -880,6 +882,7 @@ impl AlgebraicProjectionModel for RectInitialProjectionModel {
         p: &[f64],
         t: f64,
         v: &[f64],
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_jacobian_v(y, p, t, v, out)
@@ -952,6 +955,7 @@ impl AlgebraicProjectionModel for TargetedInitialProjectionModel {
         p: &[f64],
         t: f64,
         v: &[f64],
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_jacobian_v(y, p, t, v, out)
@@ -1033,6 +1037,7 @@ impl AlgebraicProjectionModel for CoupledTargetedInitialProjectionModel {
         p: &[f64],
         t: f64,
         v: &[f64],
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_jacobian_v(y, p, t, v, out)
@@ -1619,6 +1624,7 @@ impl AlgebraicProjectionModel for ScaledResidualProjectionModel {
         p: &[f64],
         t: f64,
         v: &[f64],
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_jacobian_v(y, p, t, v, out)
@@ -1791,6 +1797,7 @@ impl AlgebraicProjectionModel for ParameterInitialProjectionModel {
         p: &[f64],
         _t: f64,
         v: &[f64],
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         out[0] = 2.0 * p[0] * v[0];

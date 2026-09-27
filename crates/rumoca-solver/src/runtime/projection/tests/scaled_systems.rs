@@ -299,6 +299,7 @@ impl AlgebraicProjectionModel for TinyConstantDivisorInitialModel {
         p: &[f64],
         t: f64,
         v: &[f64],
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_jacobian_v(y, p, t, v, out)

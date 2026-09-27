@@ -595,6 +595,23 @@ impl SolveRuntime {
         solver_y: &[f64],
         seed: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        self.seed_refresh_blocks(
+            (&plan.simultaneous_plan, &plan.simultaneous_block_indices),
+            lin,
+            solver_y,
+            seed,
+        )
+    }
+
+    /// [`Self::seed_refresh_with_plan`] over a projection plan whose blocks
+    /// carry their issued indices, such as a subset of the refresh plan's.
+    pub(super) fn seed_refresh_blocks(
+        &self,
+        (plan, block_indices): (&solve::AlgebraicProjectionPlan, &[usize]),
+        lin: AlgebraicLinearization<'_>,
+        solver_y: &[f64],
+        seed: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
         let projection_model = RefreshProjectionModel {
             runtime: self,
             seed_linearizations: Some(RefCell::new(SeedProjectionCache::at_point(
@@ -604,14 +621,14 @@ impl SolveRuntime {
                 self.continuous_structural.algebraic_projection().len(),
             ))),
             #[cfg(test)]
-            plan: &plan.simultaneous_plan,
-            block_indices: &plan.simultaneous_block_indices,
+            plan,
+            block_indices,
             plan_validated: false,
             jacobian_v: ProjectionJacobian::SolverYAndParameters(&self.implicit_jacobian_v),
         };
         let result = project_algebraic_seed_with_plan(
             &projection_model,
-            &plan.simultaneous_plan,
+            plan,
             solver_y,
             crate::runtime::projection::AlgebraicProjectionArgs {
                 parameters: lin.params,

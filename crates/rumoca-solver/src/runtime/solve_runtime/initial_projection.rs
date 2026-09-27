@@ -287,10 +287,11 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         p: &[f64],
         t: f64,
         v: &[f64],
+        rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         if self.refreshes_algebraic_reads {
-            return self.eval_settled_initial_jacobian_v(y, p, t, v, out);
+            return self.eval_settled_initial_jacobian_v((y, p, t), v, rows, out);
         }
         self.eval_partial_initial_jacobian_v(y, p, t, v, out)
     }
@@ -406,12 +407,17 @@ impl InitialProjectionModel<'_> {
     /// cannot see `d settled(y, p) / d(y, p)`. The direction is carried through
     /// the fixed point that settles the view ([`SolveRuntime::settled_initial_tangent`])
     /// and the residual JVP then reads that tangent at the settled point.
+    ///
+    /// With `rows`, only those rows' entries are needed, so the tangent carries
+    /// the direction through only the algebraic blocks they read
+    /// ([`SolveRuntime::settled_blocks_read_by`]). A block outside that set
+    /// cannot move them, and linearizing it anyway would refuse the whole
+    /// derivative wherever that block alone is singular.
     fn eval_settled_initial_jacobian_v(
         &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
+        (y, p, t): (&[f64], &[f64], f64),
         v: &[f64],
+        rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let expected = y.len().checked_add(p.len()).ok_or_else(|| {
@@ -430,9 +436,13 @@ impl InitialProjectionModel<'_> {
             tol: self.tol,
             max_iters: self.max_iters,
         };
-        let seed = self
-            .runtime
-            .settled_initial_tangent(&settled_y, &settled_p, t, v, settle)?;
+        let blocks = rows.and_then(|rows| self.runtime.settled_blocks_read_by(rows));
+        let seed = self.runtime.settled_initial_tangent(
+            (&settled_y, &settled_p, t),
+            v,
+            blocks.as_deref(),
+            settle,
+        )?;
         self.eval_partial_initial_jacobian_v(&settled_y, &settled_p, t, &seed, out)
     }
 
@@ -493,7 +503,7 @@ impl SolveRuntime {
             max_iters: settle.max_iters,
             refreshes_algebraic_reads: self.initial_rows_read_settled_view(),
         }
-        .eval_initial_jacobian_v(y, p, t, v, out)
+        .eval_initial_jacobian_v(y, p, t, v, None, out)
     }
 
     /// Whether an initialization row reads a continuous algebraic, so the
@@ -515,6 +525,41 @@ impl SolveRuntime {
             })
     }
 
+    /// Positions, in the algebraic refresh's simultaneous plan, of the blocks
+    /// the initialization rows `rows` read directly or through other blocks,
+    /// from the construction's structural patterns. `None` when every block
+    /// is needed: a pattern is unrecorded, or an update row reads an algebraic
+    /// coordinate, so the updates' tangents may carry any block's.
+    pub(super) fn settled_blocks_read_by(&self, rows: &[usize]) -> Option<Vec<usize>> {
+        let residual = self
+            .model
+            .artifacts
+            .initialization
+            .structural
+            .residual()?
+            .pattern();
+        let implicit = self.continuous_structural.implicit()?.pattern();
+        if self.initialization_updates_read_algebraic_slots() {
+            return None;
+        }
+        let columns = residual.columns().max(implicit.columns()) as usize;
+        let mut read = vec![false; columns];
+        for &row in rows {
+            residual.visit_row_columns(row, |column| read[column] = true);
+        }
+        let blocks = &self.algebraic_refresh.simultaneous_plan.blocks;
+        let mut needed = vec![false; blocks.len()];
+        // Plan order puts most readers after the blocks they read, so a sweep
+        // from the last block back usually closes the set in one pass; the
+        // loop stops at the first pass that adds no block.
+        while add_blocks_read(blocks, implicit, &mut read, &mut needed) {}
+        Some(
+            (0..blocks.len())
+                .filter(|&position| needed[position])
+                .collect(),
+        )
+    }
+
     /// The tangent along `v` (over `[solver-y | parameter]`) of the settled
     /// initialization view at its settled point `(y, p)`.
     ///
@@ -523,13 +568,13 @@ impl SolveRuntime {
     /// point of the same alternation, linearized: the update rows' JVP writes
     /// the tangents of their targets, and the refresh's seed linearization
     /// writes the tangents of every coordinate it solves, pass after pass
-    /// until the update tangents stop changing.
+    /// until the update tangents stop changing. With `blocks`, only those
+    /// positions of the refresh plan carry the direction.
     fn settled_initial_tangent(
         &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
+        (y, p, t): (&[f64], &[f64], f64),
         v: &[f64],
+        blocks: Option<&[usize]>,
         settle: AlgebraicSettle,
     ) -> Result<Vec<f64>, RuntimeSolveError> {
         let initialization = &self.model.problem.initialization;
@@ -555,6 +600,27 @@ impl SolveRuntime {
             params: p,
             settle,
         };
+        let refresh = &self.algebraic_refresh;
+        let subset = blocks.map(|blocks| {
+            let plan = solve::AlgebraicProjectionPlan {
+                blocks: blocks
+                    .iter()
+                    .map(|&block| refresh.simultaneous_plan.blocks[block].clone())
+                    .collect(),
+            };
+            let indices: Vec<usize> = blocks
+                .iter()
+                .map(|&block| refresh.simultaneous_block_indices[block])
+                .collect();
+            (plan, indices)
+        });
+        let plan = match &subset {
+            Some((plan, indices)) => (plan, indices.as_slice()),
+            None => (
+                &refresh.simultaneous_plan,
+                refresh.simultaneous_block_indices.as_slice(),
+            ),
+        };
         let mut values = vec![0.0; targets.len()];
         for pass in 0..settle.max_iters {
             let mut changed = false;
@@ -572,7 +638,7 @@ impl SolveRuntime {
                 )?;
                 changed = write_update_tangents(targets, &values, y.len(), &mut seed);
             }
-            self.seed_refresh_with_plan(&self.algebraic_refresh, lin, y, &mut seed)?;
+            self.seed_refresh_blocks(plan, lin, y, &mut seed)?;
             if pass > 0 && !changed {
                 return Ok(seed);
             }
@@ -581,6 +647,29 @@ impl SolveRuntime {
             "initial residual tangent did not converge at t={t}"
         )))
     }
+}
+
+/// One sweep, last block first, marking every block that solves a coordinate
+/// in `read` and adding the columns its rows read; whether any block was added.
+fn add_blocks_read(
+    blocks: &[solve::AlgebraicProjectionBlock],
+    implicit: &solve::StructuralPattern,
+    read: &mut [bool],
+    needed: &mut [bool],
+) -> bool {
+    let mut grew = false;
+    for (position, block) in blocks.iter().enumerate().rev() {
+        let solves_a_read = block.y_indices.iter().any(|&y| read.get(y) == Some(&true));
+        if needed[position] || !solves_a_read {
+            continue;
+        }
+        needed[position] = true;
+        grew = true;
+        for &row in &block.rows {
+            implicit.visit_row_columns(row, |column| read[column] = true);
+        }
+    }
+    grew
 }
 
 /// Write the update rows' tangents `values` into the seed entries of their

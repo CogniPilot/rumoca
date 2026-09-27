@@ -414,12 +414,17 @@ pub(crate) trait AlgebraicProjectionModel: ImplicitProjectionModel {
         None
     }
 
+    /// The initialization residual's directional derivative along `v`. With
+    /// `rows`, only those entries are exact and the others unspecified: a model
+    /// evaluating its rows on a settled view linearizes only the algebraic
+    /// blocks those rows read.
     fn eval_initial_jacobian_v(
         &self,
         y: &[f64],
         p: &[f64],
         t: f64,
         v: &[f64],
+        rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError>;
 
@@ -1587,10 +1592,11 @@ impl<M: AlgebraicProjectionModel> AlgebraicProjectionModel
         _p: &[f64],
         t: f64,
         v: &[f64],
+        rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let (y, p) = self.split_values(values)?;
-        self.model.eval_initial_jacobian_v(y, p, t, v, out)
+        self.model.eval_initial_jacobian_v(y, p, t, v, rows, out)
     }
 
     fn eval_initial_target_value(

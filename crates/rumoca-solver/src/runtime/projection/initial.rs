@@ -1249,7 +1249,7 @@ pub(super) fn initial_block_jacobian(
             )));
         }
         seed[y_idx] = 1.0;
-        model.eval_initial_jacobian_v(y, p, t, &seed, &mut jvp)?;
+        model.eval_initial_jacobian_v(y, p, t, &seed, Some(rows), &mut jvp)?;
         for (row_idx, residual_idx) in rows.iter().copied().enumerate() {
             jacobian[(row_idx, col)] =
                 initial_residual_at(&jvp, residual_idx, "initial block Jacobian-vector product")?;

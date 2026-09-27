@@ -352,7 +352,11 @@ torn tear Jacobian from the block's tangent plan, block Jacobians from the
 solver-Y JVP rows and their colored application, the settled initialization
 Jacobian from the initialization residual's JVP along the settled view's
 tangent (the initialization update rows' JVP and the seed projection of the
-complete algebraic plan), the coupled event Newton from the discrete event
+algebraic plan; a block Jacobian over chosen initialization rows projects only
+the algebraic blocks those rows read, closed through the structural patterns,
+so a block outside that set that is singular at the point, such as an
+undetermined enthalpy at a startless zero mass, never refuses it, while a
+singular block inside the set still refuses the derivative), the coupled event Newton from the discrete event
 rows' JVPs (scalar rows, runtime assignments, guarded programs, and
 structured maps, lowered as discrete Solve artifacts), and the `--inspect
 jacobian` probe from the state JVP. No path differences a residual. The

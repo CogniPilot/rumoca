@@ -250,6 +250,7 @@ mod tests {
             _p: &[f64],
             _t: f64,
             v: &[f64],
+            _rows: Option<&[usize]>,
             out: &mut [f64],
         ) -> Result<(), RuntimeSolveError> {
             out[0] = v[0];
