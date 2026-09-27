@@ -1233,6 +1233,30 @@ mod tests {
         session
     }
 
+    /// SPEC_0040 DAE-C22: only a parameter guard over structurally different
+    /// branches is selected at translation, and it is reported once, at its
+    /// equation, naming the parameter that can no longer be set.
+    #[test]
+    fn a_structural_parameter_selection_is_reported_at_its_equation() {
+        let source = "model GuardKinds\n  parameter Boolean on = true;\n  \
+                      parameter Boolean useB = true;\n  Real x(start = 1, fixed = true);\n  \
+                      Real b;\n  Real y;\n  Real z;\nequation\n  der(x) = -x;\n  b = 2 * x;\n  \
+                      y = if on then x else 3 * x;\n  z = if useB then x else b;\nend GuardKinds;\n";
+        let compiler = Compiler::new().model("GuardKinds");
+        let mut session = loaded_session(&compiler, source, "GuardKinds.mo");
+        let warnings = rendered_warnings(&mut session, "GuardKinds")
+            .into_iter()
+            .filter(|warning| warning.contains("WD001"))
+            .collect::<Vec<_>>();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        // The label is the `z = if useB ...` equation: zero-based line 11.
+        assert!(
+            warnings[0].contains("parameter useB cannot be set")
+                && warnings[0].contains("GuardKinds.mo:11"),
+            "{warnings:?}"
+        );
+    }
+
     fn rendered_warnings(session: &mut Session, model_name: &str) -> Vec<String> {
         let diagnostics = session.compile_model_diagnostics(model_name);
         let source_map = diagnostics.source_map;

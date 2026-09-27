@@ -20,26 +20,40 @@ use super::super::expression::conditional_guards::{
 use super::super::function_shapes::{ProvenValue, ShapeEnvironment};
 use super::{ValueReads, VarName, Variability, flat};
 
+/// One owner whose folded guard fixes parameters at translation: the equation
+/// or declaration it appears in and the parameters its guard reads, for the
+/// SPEC_0040 DAE-C22 warning.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructuralSelection {
+    pub span: rumoca_core::Span,
+    pub parameters: Vec<String>,
+}
+
 /// The ordinary parameters a folded guard reads, closed over the parameters
-/// their bindings read. `evaluable` is the translation-time set already known.
+/// their bindings read, and the owners that fold them. `evaluable` is the
+/// translation-time set already known.
 pub(super) fn folded_guard_parameters(
     flat: &flat::Model,
     values: &ShapeEnvironment,
     evaluable: &HashSet<VarName>,
-) -> HashSet<VarName> {
+) -> (HashSet<VarName>, Vec<StructuralSelection>) {
     let mut scan = GuardScan {
         flat,
         values,
         evaluable,
         attribute_scope: false,
+        owner: None,
         found: HashSet::new(),
+        selections: Vec::new(),
     };
     for equation in flat.equations.iter().chain(&flat.initial_equations) {
+        scan.owner = Some(equation.span);
         scan.visit_expression(&equation.residual);
     }
     for variable in flat.variables.values() {
         // A parameter or constant binding lowers as a value (attribute scope);
         // any other declaration binding lowers as its equation.
+        scan.owner = Some(variable.source_span);
         scan.attribute_scope = matches!(
             variable.variability,
             Variability::Parameter(_) | Variability::Constant(_)
@@ -52,7 +66,8 @@ pub(super) fn folded_guard_parameters(
             scan.visit_expression(start);
         }
     }
-    close_over_bindings(flat, evaluable, scan.found)
+    let selections = scan.selections;
+    (close_over_bindings(flat, evaluable, scan.found), selections)
 }
 
 struct GuardScan<'a> {
@@ -60,13 +75,28 @@ struct GuardScan<'a> {
     values: &'a ShapeEnvironment,
     evaluable: &'a HashSet<VarName>,
     attribute_scope: bool,
+    /// The equation or declaration being scanned.
+    owner: Option<rumoca_core::Span>,
     found: HashSet<VarName>,
+    selections: Vec<StructuralSelection>,
 }
 
 impl GuardScan<'_> {
     /// The ordinary parameters `expression` reads by value.
     fn ordinary_parameters(&self, expression: &Expression) -> Vec<VarName> {
         ordinary_parameters(self.flat, self.evaluable, expression)
+    }
+
+    /// Record parameters a folded guard of the current owner reads.
+    fn record(&mut self, read: Vec<VarName>) {
+        let mut parameters = read.iter().map(ToString::to_string).collect::<Vec<_>>();
+        parameters.sort();
+        parameters.dedup();
+        if let Some(span) = self.owner {
+            self.selections
+                .push(StructuralSelection { span, parameters });
+        }
+        self.found.extend(read);
     }
 
     /// Whether an equation conditional stays a run-time branch (SPEC_0040
@@ -114,7 +144,7 @@ impl ExpressionVisitor for GuardScan<'_> {
                     Some(ProvenValue::Boolean(_))
                 )
             {
-                self.found.extend(read);
+                self.record(read);
             }
         }
         for (condition, value) in branches {

@@ -1,6 +1,7 @@
 mod algorithm;
 mod algorithm_lowering;
 mod analysis;
+pub use analysis::StructuralSelection;
 mod clocks;
 mod conditions;
 mod discrete_values;
@@ -248,6 +249,13 @@ pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae
 
 pub(crate) fn balance_detail(flat: &flat::Model) -> Result<BalanceDetail, ToDaeError> {
     analyze(flat).map(|analysis| analysis.balance)
+}
+
+/// The balance evidence and the structural guard selections of one analysis.
+pub(crate) fn construction_evidence(
+    flat: &flat::Model,
+) -> Result<(BalanceDetail, Vec<analysis::StructuralSelection>), ToDaeError> {
+    analyze(flat).map(|analysis| (analysis.balance, analysis.structural_selections))
 }
 
 fn build_checked<'dae>(

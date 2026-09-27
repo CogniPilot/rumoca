@@ -273,12 +273,13 @@ pub(super) fn dae_model_outcome_from_flat(
     // MLS §5.6 / SPEC_0007: ToDae stays downstream of flatten and should
     // consume the cached flat artifact rather than rebuilding earlier phases.
     match to_dae(&artifact.flat, tree.source_map.clone()) {
-        Ok(dae) => match rumoca_phase_dae::balance_detail(&artifact.flat) {
-            Ok(balance_detail) => (
+        Ok(dae) => match rumoca_phase_dae::construction_evidence(&artifact.flat) {
+            Ok((balance_detail, structural_selections)) => (
                 DaeModelOutcome::Success(Box::new(DaeModelArtifactData {
                     flat: Arc::new(artifact.flat),
                     dae: Arc::new(dae),
                     balance_detail,
+                    structural_selections,
                 })),
                 true,
             ),

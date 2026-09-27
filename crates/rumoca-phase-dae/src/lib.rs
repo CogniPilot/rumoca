@@ -27,3 +27,14 @@ pub fn to_dae(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToD
 pub fn balance_detail(flat: &flat::Model) -> Result<BalanceDetail, ToDaeError> {
     construction::balance_detail(flat)
 }
+
+pub use construction::StructuralSelection;
+
+/// The balance evidence together with every owner whose folded parameter
+/// guard fixes parameters at translation (SPEC_0040 DAE-C22), from one
+/// analysis of the Flat model.
+pub fn construction_evidence(
+    flat: &flat::Model,
+) -> Result<(BalanceDetail, Vec<StructuralSelection>), ToDaeError> {
+    construction::construction_evidence(flat)
+}

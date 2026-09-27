@@ -374,6 +374,8 @@ struct DaeModelArtifactData {
     flat: Arc<flat::Model>,
     dae: Arc<dae::Dae>,
     balance_detail: rumoca_phase_dae::balance::BalanceDetail,
+    /// Owners whose folded parameter guards fix parameters at translation.
+    structural_selections: Vec<rumoca_phase_dae::StructuralSelection>,
 }
 
 #[derive(Debug, Clone)]

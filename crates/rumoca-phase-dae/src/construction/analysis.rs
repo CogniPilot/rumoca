@@ -9,6 +9,7 @@ mod expression_events;
 mod expression_semi_linear;
 mod expression_validation;
 mod folded_guards;
+pub use folded_guards::StructuralSelection;
 mod function_array_assemblies;
 mod function_bodies;
 mod function_conditionals;
@@ -180,6 +181,8 @@ pub(super) struct Analysis {
     pub(super) initial_parameters: HashMap<VarName, Expression>,
     /// `final` or `Evaluate=true` parameters with evaluable bindings (MLS §18.6).
     pub(super) evaluable_parameters: HashSet<VarName>,
+    /// The owners whose folded guards fixed parameters at translation.
+    pub(super) structural_selections: Vec<StructuralSelection>,
     /// Discrete coordinates whose initialization-instant value an initial
     /// algorithm determines (MLS §8.6).
     pub(super) initial_discrete_values: HashMap<VarName, InitialDiscreteValue>,
@@ -582,7 +585,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &aggregate_discrete_connections,
     )?;
     let mut evaluable = evaluable_parameters(flat);
-    let folded =
+    let (folded, structural_selections) =
         folded_guards::folded_guard_parameters(flat, function_shapes.model_values(), &evaluable);
     evaluable.extend(folded);
     function_shapes.set_evaluable_parameters(&evaluable);
@@ -608,6 +611,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         model_algorithm_plans,
         initial_parameters: initial.algorithms.parameters,
         evaluable_parameters: evaluable,
+        structural_selections,
         initial_discrete_values: initial.algorithms.discrete_values,
         initial_algorithm_assertions: initial.algorithms.assertions,
         function_plans,

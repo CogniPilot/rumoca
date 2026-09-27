@@ -597,6 +597,33 @@ fn build_model_diagnostics_for_typed_model(
     }
 }
 
+/// One WD001 warning per equation or declaration whose parameter guard selects
+/// between structurally different branches, so its parameters are fixed at
+/// translation and cannot be set (SPEC_0040 DAE-C22, MLS 3.7 §8.3.4).
+fn structural_selection_warnings(
+    selections: &[rumoca_phase_dae::StructuralSelection],
+) -> Vec<CommonDiagnostic> {
+    selections
+        .iter()
+        .map(|selection| {
+            CommonDiagnostic::warning(
+                "WD001",
+                format!(
+                    "the branch of this equation is selected at translation, so parameter{} {} \
+                     cannot be set: its branches differ in structure (MLS 3.7 §8.3.4)",
+                    if selection.parameters.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
+                    selection.parameters.join(", ")
+                ),
+                PrimaryLabel::new(selection.span).with_message("branch fixed at translation"),
+            )
+        })
+        .collect()
+}
+
 fn build_model_diagnostics_for_dae_model(
     tree: &ast::ClassTree,
     model_name: &str,
@@ -607,7 +634,11 @@ fn build_model_diagnostics_for_dae_model(
         class_primary_span(tree, model_name).unwrap_or_else(|| default_tree_span(&tree.source_map));
 
     match dae_outcome {
-        DaeModelOutcome::Success(_) => {}
+        DaeModelOutcome::Success(artifact) => {
+            collected.extend(structural_selection_warnings(
+                &artifact.structural_selections,
+            ));
+        }
         DaeModelOutcome::NeedsInner {
             missing_inners,
             missing_spans,
