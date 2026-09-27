@@ -475,11 +475,11 @@ mod tests {
     #[test]
     fn test_registry_has_all_contracts() {
         let registry = create_registry();
-        // SPEC_0022 defines 442 contracts
+        // SPEC_0022 defines 443 contracts
         assert_eq!(
             registry.len(),
-            442,
-            "Expected 442 contracts, got {}",
+            443,
+            "Expected 443 contracts, got {}",
             registry.len()
         );
     }
@@ -504,7 +504,7 @@ mod tests {
             registry.by_category(ContractCategory::Expression).count(),
             40
         );
-        assert_eq!(registry.by_category(ContractCategory::Equation).count(), 38);
+        assert_eq!(registry.by_category(ContractCategory::Equation).count(), 39);
         assert_eq!(
             registry.by_category(ContractCategory::Algorithm).count(),
             17

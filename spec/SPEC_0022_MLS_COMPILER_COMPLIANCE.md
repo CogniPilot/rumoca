@@ -536,6 +536,7 @@ Defines state-to-state transitions with priority and timing control.
 | EQN-036 | Assert evaluable level | §8.3.7 | "assertionLevel is an optional evaluable expression" |
 | EQN-037 | When not in initial eq | §8.6 | "It is not allowed to use when-clauses in initial equation/algorithm sections" |
 | EQN-038 | Connections.branch scope | §8.3.3 | "Connections.branch/root/potentialRoot same restrictions as connect in for/if-equations"
+| EQN-039 | If-equation evaluable conditions | §8.3.4 | "The if-equations which do not have exclusively evaluable expressions as switching conditions shall satisfy the following: [...] Have the same number of equations in each branch, where the number of equations is defined as in definition 4.4." A conditional whose guard reads a non-evaluable parameter and whose branches have the same scalar equation count and the same unknown incidence is kept as a run-time branch; otherwise the guard is evaluated at translation (structural selection), and each parameter it reads is fixed at translation, published non-settable, with a warning naming the equation |
 
 ### 4.6 Algorithm Contracts (ALG)
 
@@ -913,7 +914,7 @@ areas.
 | Declarations | DECL | 36 |
 | Instantiation | INST | 54 |
 | Expressions | EXPR | 40 |
-| Equations | EQN | 38 |
+| Equations | EQN | 39 |
 | Algorithms | ALG | 17 |
 | Connections | CONN | 30 |
 | Functions | FUNC | 38 |
@@ -927,7 +928,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **442** |
+| **Total** | | **443** |
 
 ---
 
