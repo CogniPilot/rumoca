@@ -247,11 +247,13 @@ fn tangent_value(
     let residual_block =
         rumoca_eval_solve::to_scalar_program_block(&artifacts.initialization.residual_jacobian_v)?;
     let cone = tangent_cone(problem, artifacts, seed_blocks, &residual_block)?;
-    let seed_blocks = seed_blocks
-        .iter()
-        .zip(&cone.blocks)
-        .filter_map(|(block, kept)| kept.then_some(*block))
-        .collect::<Vec<_>>();
+    let mut kept_blocks = Vec::with_capacity(seed_blocks.len());
+    for (block, kept) in seed_blocks.iter().zip(&cone.blocks) {
+        if *kept {
+            kept_blocks.push(*block);
+        }
+    }
+    let seed_blocks = kept_blocks;
     let seed_blocks = seed_blocks.as_slice();
     let mut rows = Vec::new();
     let mut nrows = 0;
@@ -390,13 +392,18 @@ fn meets(set: &BTreeSet<usize>, values: impl IntoIterator<Item = usize>) -> bool
 fn forward_pass(inputs: &ConeInputs<'_>, forward: &mut BTreeSet<usize>) -> bool {
     let before = forward.len();
     for (target, reads) in &inputs.updates {
-        let reached = meets(forward, reads.iter().copied());
-        forward.extend(target.filter(|_| reached));
+        if let Some(target) = target
+            && meets(forward, reads.iter().copied())
+        {
+            forward.insert(*target);
+        }
     }
     for (unknowns, reads) in &inputs.blocks {
-        let reached = meets(forward, reads.iter().copied())
-            || meets(&inputs.unknowns, unknowns.iter().copied());
-        forward.extend(unknowns.iter().copied().filter(|_| reached));
+        if meets(forward, reads.iter().copied())
+            || meets(&inputs.unknowns, unknowns.iter().copied())
+        {
+            forward.extend(unknowns.iter().copied());
+        }
     }
     forward.len() != before
 }
@@ -406,12 +413,16 @@ fn forward_pass(inputs: &ConeInputs<'_>, forward: &mut BTreeSet<usize>) -> bool 
 fn backward_pass(inputs: &ConeInputs<'_>, backward: &mut BTreeSet<usize>) -> bool {
     let before = backward.len();
     for (unknowns, reads) in inputs.blocks.iter().rev() {
-        let read = meets(backward, unknowns.iter().copied());
-        backward.extend(reads.iter().copied().filter(|_| read));
+        if meets(backward, unknowns.iter().copied()) {
+            backward.extend(reads.iter().copied());
+        }
     }
     for (target, reads) in &inputs.updates {
-        let read = target.is_some_and(|target| backward.contains(&target));
-        backward.extend(reads.iter().copied().filter(|_| read));
+        if let Some(target) = target
+            && backward.contains(target)
+        {
+            backward.extend(reads.iter().copied());
+        }
     }
     backward.len() != before
 }

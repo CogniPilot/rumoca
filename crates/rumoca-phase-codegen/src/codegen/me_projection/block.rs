@@ -621,8 +621,12 @@ fn record_torn_tangent(
     tearing: &solve::BlockTearing,
     record: &mut BlockRecord,
 ) -> Result<(), CodegenError> {
-    let plan = solve::TornTangentPlan::derive(tearing, sources.tangent_jvp)
-        .map_err(|_| refuse(canonical, "has a torn row without a directional derivative"))?;
+    let Ok(plan) = solve::TornTangentPlan::derive(tearing, sources.tangent_jvp) else {
+        return Err(refuse(
+            canonical,
+            "has a torn row without a directional derivative",
+        ));
+    };
     let lanes = plan.lanes();
     let functions = if plan.directional() {
         record.tangent_directional = true;

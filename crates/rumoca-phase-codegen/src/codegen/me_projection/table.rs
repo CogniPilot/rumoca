@@ -41,6 +41,12 @@ impl<K: Ord> FunctionFamily<K> {
             return Ok(id);
         }
         let program = build()?;
+        Ok(self.insert(key, program))
+    }
+
+    /// Emit `program` under `key`, or reuse the function of an identical
+    /// program when the family interns by content.
+    fn insert(&mut self, key: K, program: (Vec<solve::LinearOp>, Span)) -> usize {
         let content = self.contents.as_ref().map(|_| format!("{:?}", program.0));
         let known = content
             .as_ref()
@@ -53,7 +59,7 @@ impl<K: Ord> FunctionFamily<K> {
             }
         }
         self.ids.insert(key, id);
-        Ok(id)
+        id
     }
 
     fn share_contents(&mut self) {
