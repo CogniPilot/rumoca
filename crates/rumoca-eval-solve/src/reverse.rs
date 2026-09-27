@@ -378,16 +378,22 @@ fn reverse_row_adjoints(
                 let dst_adj = take_adj(adj, dst);
                 add_adj(adj, src, dst_adj);
             }
+            // A zero adjoint contributes nothing, whatever the local partial: a
+            // selection eagerly evaluates its unselected arm, whose partials may
+            // be infinite there, and `0 * inf` would poison the operands.
             LinearOp::Unary { dst, op, arg } => {
-                let derivative = unary_derivative(op, reg(regs, arg));
                 let dst_adj = take_adj(adj, dst);
-                add_adj(adj, arg, dst_adj * derivative);
+                if dst_adj != 0.0 {
+                    add_adj(adj, arg, dst_adj * unary_derivative(op, reg(regs, arg)));
+                }
             }
             LinearOp::Binary { dst, op, lhs, rhs } => {
-                let (dl, dr) = binary_partials(op, reg(regs, lhs), reg(regs, rhs));
                 let dst_adj = take_adj(adj, dst);
-                add_adj(adj, lhs, dst_adj * dl);
-                add_adj(adj, rhs, dst_adj * dr);
+                if dst_adj != 0.0 {
+                    let (dl, dr) = binary_partials(op, reg(regs, lhs), reg(regs, rhs));
+                    add_adj(adj, lhs, dst_adj * dl);
+                    add_adj(adj, rhs, dst_adj * dr);
+                }
             }
             LinearOp::Select {
                 dst,
@@ -671,6 +677,72 @@ fn unsupported_reverse_op(op: &LinearOp) -> EvalSolveError {
 mod tests {
     use super::*;
     use rumoca_ir_solve::ScalarProgramBlock;
+
+    /// `if true then y0 else y0 * (1 / y1)` at `y1 = 0`: the unselected arm
+    /// evaluates `y0 * inf`, whose partial in `y0` is infinite. Its adjoint is
+    /// zero, so it must add nothing, leaving `df/dy0 = 1` and `df/dy1 = 0`.
+    #[test]
+    fn an_unselected_arm_with_an_infinite_partial_leaves_the_adjoint_finite() {
+        let block = ScalarProgramBlock::with_output_indices(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::LoadY { dst: 1, index: 1 },
+                LinearOp::Const { dst: 2, value: 1.0 },
+                LinearOp::Binary {
+                    dst: 3,
+                    op: BinaryOp::Div,
+                    lhs: 2,
+                    rhs: 1,
+                },
+                LinearOp::Binary {
+                    dst: 4,
+                    op: BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 3,
+                },
+                LinearOp::Select {
+                    dst: 5,
+                    cond: 2,
+                    if_true: 0,
+                    if_false: 4,
+                },
+                LinearOp::StoreOutput { src: 5 },
+            ]],
+            vec![fixture_span()],
+            vec![0],
+        )
+        .expect("valid scalar block");
+        let row_registers: Vec<usize> = block
+            .programs()
+            .iter()
+            .map(|row| crate::required_registers(row).expect("register count"))
+            .collect();
+        let requirements =
+            crate::scalar_program_block_input_requirements(&block).expect("requirements");
+        let mut cot_y = [0.0_f64; 2];
+        reverse_scalar_block_vjp(
+            &ScalarVjpProgram {
+                block: &block,
+                row_registers: &row_registers,
+                requirements,
+            },
+            &ReverseInputs {
+                y: &[2.0, 0.0],
+                p: &[],
+                t: 0.0,
+                context: RowEvalContext::default(),
+            },
+            &[1.0],
+            &mut ReverseCotangents {
+                y: &mut cot_y,
+                p: &mut [],
+                seed: &mut [],
+            },
+            &mut ReverseScratch::default(),
+        )
+        .expect("reverse sweep");
+        assert_eq!(cot_y, [1.0, 0.0]);
+    }
 
     fn fixture_span() -> rumoca_core::Span {
         rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
