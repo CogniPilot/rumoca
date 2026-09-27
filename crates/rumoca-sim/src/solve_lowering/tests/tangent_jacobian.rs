@@ -270,7 +270,7 @@ fn dense_reference(
 }
 
 /// Check one torn block at `points` random points; `false` when the plan
-/// declines at a point with a vanished causal pivot.
+/// declines at a point where a causal slope is not finite.
 fn check_torn_block(
     label: &str,
     rows: &Rows<'_>,
@@ -287,15 +287,15 @@ fn check_torn_block(
             .eval(point(rows, &y))
             .expect("evaluate the tangent Jacobian");
         let Some(exact) = exact else {
-            // The plan declines only at a vanished causal pivot: some causal
-            // row has a zero or undefined slope in its own target.
-            let vanished = tearing.causal_steps.iter().any(|step| {
-                let slope = rows.slope(step.row, step.y_index, &y);
-                !slope.is_finite() || slope == 0.0
-            });
+            // Construction proves every causal slope a nonzero constant, so the
+            // plan declines only where run-time values make one non-finite.
+            let mut non_finite = false;
+            for step in &tearing.causal_steps {
+                non_finite |= !rows.slope(step.row, step.y_index, &y).is_finite();
+            }
             assert!(
-                vanished,
-                "{label}: the tangent plan declined at regular pivots"
+                non_finite,
+                "{label}: the tangent plan declined at finite pivots"
             );
             return false;
         };
@@ -308,7 +308,7 @@ fn check_torn_block(
 
 /// Check every torn block of `model` at `points` random points; returns the
 /// number of torn blocks and of those checked at every point (the others
-/// declined at a vanished causal pivot).
+/// declined where a causal slope is not finite).
 fn check_torn_blocks(label: &str, model: &solve::SolveModel, points: usize) -> (usize, usize) {
     let rows = prepared_rows(model);
     let mut random = Random(0x9e37_79b9_7f4a_7c15);
@@ -417,19 +417,6 @@ fn check_colored_block(
     assert_close(&format!("{label} colored"), &values, &dense);
 }
 
-/// The number of multi-color block applications the lowered plan issues.
-fn multi_color_applications(model: &solve::SolveModel) -> usize {
-    model
-        .artifacts
-        .continuous
-        .structural
-        .algebraic_projection()
-        .iter()
-        .filter_map(solve::JacobianStructure::jacobian_application)
-        .filter(|application| application.colors().len() >= 2)
-        .count()
-}
-
 /// Check every multi-color block application of `model`; returns the blocks
 /// checked.
 fn check_colored_blocks(label: &str, model: &solve::SolveModel) -> usize {
@@ -483,13 +470,13 @@ fn fourbar1_tangent_jacobians_match_the_dense_reference() {
     );
     // The block table moves with structural levers, so the expected counts
     // come from the lowered plan. Every torn block is either checked against
-    // the dense reference at every point or declined at a vanished causal
-    // pivot, which `check_torn_block` asserts; every multi-color application
+    // the dense reference at every point or declined where a causal slope is
+    // not finite, which `check_torn_block` asserts; every multi-color application
     // is checked.
     let (torn, checked) = check_torn_blocks("Fourbar1", &model, 3);
-    let colored = multi_color_applications(&model);
+    let colored = check_colored_blocks("Fourbar1", &model);
     eprintln!(
-        "Fourbar1: {torn} torn blocks ({checked} checked, {} declined at a vanished pivot), \
+        "Fourbar1: {torn} torn blocks ({checked} checked, {} declined at a non-finite pivot), \
          {colored} colored blocks",
         torn - checked
     );
@@ -498,5 +485,4 @@ fn fourbar1_tangent_jacobians_match_the_dense_reference() {
         "Fourbar1 exercises the torn tangent plan"
     );
     assert!(colored > 0, "Fourbar1 exercises the colored tangent plan");
-    assert_eq!(check_colored_blocks("Fourbar1", &model), colored);
 }

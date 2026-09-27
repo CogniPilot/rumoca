@@ -26,12 +26,17 @@ equation
 end ProductLoop;";
 
 fn lowered(model: &str, source: &str) -> solve::SolveModel {
-    let compiled = Compiler::new()
+    let compiled = match Compiler::new()
         .model(model)
         .compile_str(source, &format!("{model}.mo"))
-        .unwrap_or_else(|error| panic!("compile {model}: {error:#}"));
-    lower_dae_for_simulation(&compiled.dae, &SimOptions::default())
-        .unwrap_or_else(|error| panic!("lower {model}: {error:#}"))
+    {
+        Ok(compiled) => compiled,
+        Err(error) => panic!("compile {model}: {error:#}"),
+    };
+    match lower_dae_for_simulation(&compiled.dae, &SimOptions::default()) {
+        Ok(lowered) => lowered,
+        Err(error) => panic!("lower {model}: {error:#}"),
+    }
 }
 
 /// The checker: recompute every causal step's proof from its row.

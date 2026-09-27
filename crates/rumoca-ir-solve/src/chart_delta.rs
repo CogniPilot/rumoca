@@ -585,4 +585,45 @@ mod tests {
         let delta = VecDelta::diff(&[] as &[i32], &[1, 2]);
         assert_eq!(delta.apply(&[]).unwrap(), vec![1, 2]);
     }
+
+    /// A chart whose residual programs shift by an inserted and a dropped row
+    /// carries edit scripts over the programs and their spans, and applying
+    /// them to the primary block rebuilds the chart's block.
+    #[test]
+    fn a_shifted_program_block_round_trips_through_its_edit_scripts() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("chart_delta_shift.mo"),
+            0,
+            1,
+        )
+        .require_provenance("chart delta shift fixture")
+        .unwrap();
+        let row = |value: f64| {
+            vec![
+                crate::LinearOp::Const { dst: 0, value },
+                crate::LinearOp::StoreOutput { src: 0 },
+            ]
+        };
+        let block = |values: &[f64]| {
+            ComputeBlock::from_scalar_program_block(
+                ScalarProgramBlock::with_source_span(
+                    values.iter().map(|v| row(*v)).collect(),
+                    span,
+                )
+                .unwrap(),
+            )
+        };
+        let values: Vec<f64> = (0..24).map(f64::from).collect();
+        let mut shifted = values.clone();
+        shifted.insert(5, -1.0);
+        shifted.remove(13);
+        shifted.push(99.0);
+        let (base, target) = (block(&values), block(&shifted));
+        let delta = ComputeBlockDelta::diff(&base, &target);
+        let ComputeBlockDelta::Rows { programs, .. } = &delta else {
+            panic!("two single scalar-program blocks diff by rows: {delta:?}");
+        };
+        assert!(matches!(programs, VecDelta::Edits(_)), "{programs:?}");
+        assert!(same_compute_block(&delta.apply(&base).unwrap(), &target));
+    }
 }

@@ -576,11 +576,10 @@ fn circle_chart_runtime_chart_swap_completes_the_revolution_on_the_physical_bran
     .expect("CircleChart completes a full revolution through the runtime chart swaps");
 
     let column = |name: &str| {
-        result
-            .names
-            .iter()
-            .position(|candidate| candidate == name)
-            .unwrap_or_else(|| panic!("trace exposes {name}"))
+        let Some(index) = result.names.iter().position(|candidate| candidate == name) else {
+            panic!("trace exposes {name}");
+        };
+        index
     };
     let (q1, q2, v1, v2) = (
         column("q[1]"),

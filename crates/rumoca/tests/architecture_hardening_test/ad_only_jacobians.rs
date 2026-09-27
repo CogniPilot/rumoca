@@ -142,8 +142,10 @@ fn every_verification_battery_still_names_its_difference() {
     let root = workspace_root();
     let needles = needles();
     for (path, reason) in VERIFICATION_BATTERIES {
-        let source = fs::read_to_string(root.join(path))
-            .unwrap_or_else(|error| panic!("{path} ({reason}) is readable: {error}"));
+        let source = match fs::read_to_string(root.join(path)) {
+            Ok(source) => source,
+            Err(error) => panic!("{path} ({reason}) is readable: {error}"),
+        };
         let lower = source.to_ascii_lowercase();
         assert!(
             needles.iter().any(|needle| lower.contains(needle.as_str())),

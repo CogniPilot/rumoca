@@ -283,11 +283,10 @@ fn simulate_with(
 }
 
 fn column(result: &rumoca_sim::SimResult, name: &str) -> usize {
-    result
-        .names
-        .iter()
-        .position(|candidate| candidate == name)
-        .unwrap_or_else(|| panic!("trace exposes {name}"))
+    let Some(index) = result.names.iter().position(|candidate| candidate == name) else {
+        panic!("trace exposes {name}");
+    };
+    index
 }
 
 #[test]

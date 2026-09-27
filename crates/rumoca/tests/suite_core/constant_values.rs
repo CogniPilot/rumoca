@@ -119,12 +119,17 @@ equation
 end SliderLoop;";
 
 fn lowered(model: &str, source: &str) -> rumoca_ir_solve::SolveModel {
-    let compiled = Compiler::new()
+    let compiled = match Compiler::new()
         .model(model)
         .compile_str(source, &format!("{model}.mo"))
-        .unwrap_or_else(|error| panic!("compile {model}: {error:#}"));
-    lower_dae_for_simulation(&compiled.dae, &SimOptions::default())
-        .unwrap_or_else(|error| panic!("lower {model}: {error:#}"))
+    {
+        Ok(compiled) => compiled,
+        Err(error) => panic!("compile {model}: {error:#}"),
+    };
+    match lower_dae_for_simulation(&compiled.dae, &SimOptions::default()) {
+        Ok(lowered) => lowered,
+        Err(error) => panic!("lower {model}: {error:#}"),
+    }
 }
 
 /// Pure-call operations the continuous residual programs execute.
@@ -136,14 +141,11 @@ fn pure_calls(model: &rumoca_ir_solve::SolveModel) -> usize {
 }
 
 fn slot(model: &rumoca_ir_solve::SolveModel, name: &str) -> usize {
-    model
-        .problem
-        .solve_layout
-        .solver_maps
-        .names
-        .iter()
-        .position(|candidate| candidate == name)
-        .unwrap_or_else(|| panic!("`{name}` has a solver slot"))
+    let names = &model.problem.solve_layout.solver_maps.names;
+    let Some(slot) = names.iter().position(|candidate| candidate == name) else {
+        panic!("`{name}` has a solver slot");
+    };
+    slot
 }
 
 #[test]
@@ -159,10 +161,9 @@ fn constant_calls_fold_and_literal_bindings_are_read_as_literals() {
     let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
     for name in ["s", "b"] {
         let index = slot(&model, name);
-        let block = blocks
-            .iter()
-            .find(|block| block.y_indices.contains(&index))
-            .unwrap_or_else(|| panic!("`{name}` is projected"));
+        let Some(block) = blocks.iter().find(|block| block.y_indices.contains(&index)) else {
+            panic!("`{name}` is projected");
+        };
         assert_eq!(block.y_indices, [index], "`{name}` is a singleton block");
     }
 }

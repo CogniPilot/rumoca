@@ -247,6 +247,18 @@ fn same(lhs: f64, rhs: f64, exact: bool) -> bool {
     }
 }
 
+/// The comparison the kink-rule sites use: one unit in the last place apart
+/// agrees away from a kink and differs at one, and the zeros coincide.
+#[test]
+fn sites_agree_within_one_ulp_only_away_from_a_kink() {
+    let next = f64::from_bits(1.0_f64.to_bits() + 1);
+    assert_eq!(ulps(0.0, -0.0), 0);
+    assert_eq!(ulps(-f64::from_bits(1), f64::from_bits(1)), 2);
+    assert!(same(1.0, next, false));
+    assert!(!same(1.0, next, true));
+    assert!(!same(1.0, f64::from_bits(next.to_bits() + 1), false));
+}
+
 fn check(probe: &Probe) {
     let Probe {
         operation,

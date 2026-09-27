@@ -66,19 +66,24 @@ equation
 end DiscreteClass;";
 
 fn compile(model: &str, source: &str) -> rumoca::CompilationResult {
-    Compiler::new()
+    match Compiler::new()
         .model(model)
         .compile_str(source, &format!("{model}.mo"))
-        .unwrap_or_else(|error| panic!("compile {model}: {error:#}"))
+    {
+        Ok(compiled) => compiled,
+        Err(error) => panic!("compile {model}: {error:#}"),
+    }
 }
 
 /// One declaration's `(role, variability, is_tunable, evaluable)` in the
 /// emitted DAE JSON.
 fn dae_class(json: &serde_json::Value, name: &str) -> (String, String, bool, bool) {
-    let variable = json["storage"]["variables"]
-        .as_array()
-        .and_then(|variables| variables.iter().find(|variable| variable["name"] == name))
-        .unwrap_or_else(|| panic!("{name} is a DAE declaration"));
+    let variables = json["storage"]["variables"].as_array();
+    let Some(variable) =
+        variables.and_then(|variables| variables.iter().find(|variable| variable["name"] == name))
+    else {
+        panic!("{name} is a DAE declaration");
+    };
     let text = |value: &serde_json::Value| value.as_str().unwrap_or_default().to_string();
     (
         text(&variable["role"]),
@@ -130,10 +135,9 @@ fn the_dae_keeps_each_declared_variability_class() {
 /// modelDescription, and whether it carries a `start`.
 fn fmi_class(description: &str, name: &str) -> (String, String, String, bool) {
     let needle = format!(" name=\"{name}\" ");
-    let entry = description
-        .lines()
-        .find(|line| line.contains(&needle))
-        .unwrap_or_else(|| panic!("{name} is published"));
+    let Some(entry) = description.lines().find(|line| line.contains(&needle)) else {
+        panic!("{name} is published");
+    };
     let attribute = |key: &str| {
         let key = format!(" {key}=\"");
         entry
@@ -156,7 +160,7 @@ fn fmi_class(description: &str, name: &str) -> (String, String, String, bool) {
 fn the_fmi3_description_classifies_each_variability_class() {
     let compiled = compile("VariabilityClasses", MODEL);
     let description = rumoca::render_target_files(&compiled, "VariabilityClasses", "fmi3", None)
-        .unwrap_or_else(|error| panic!("render fmi3: {error:#}"))
+        .expect("the FMI 3 target renders")
         .into_iter()
         .find(|file| file.path.ends_with("modelDescription.xml"))
         .expect("an FMI 3 description")
@@ -187,7 +191,7 @@ fn the_fmi3_description_classifies_each_variability_class() {
 }
 
 fn simulate(model: &str, source: &str, overrides: &[(&str, f64)]) -> rumoca_sim::SimResult {
-    simulate_dae_with_diagnostics(
+    let simulated = simulate_dae_with_diagnostics(
         &compile(model, source).dae,
         &SimOptions {
             solver_mode: SimSolverMode::Bdf,
@@ -199,16 +203,17 @@ fn simulate(model: &str, source: &str, overrides: &[(&str, f64)]) -> rumoca_sim:
                 .collect(),
             ..Default::default()
         },
-    )
-    .unwrap_or_else(|error| panic!("simulate {model}: {error:#}"))
+    );
+    match simulated {
+        Ok(result) => result,
+        Err(error) => panic!("simulate {model}: {error:#}"),
+    }
 }
 
 fn column<'a>(result: &'a rumoca_sim::SimResult, name: &str) -> &'a [f64] {
-    let index = result
-        .names
-        .iter()
-        .position(|n| n == name)
-        .unwrap_or_else(|| panic!("{name} is recorded"));
+    let Some(index) = result.names.iter().position(|n| n == name) else {
+        panic!("{name} is recorded");
+    };
     &result.data[index]
 }
 
