@@ -14,21 +14,13 @@ pub(super) struct BorrowedContext<'a> {
     parameters: ParamEvalContext<'a>,
     pub(super) literals: EvalContext,
     functions: FxHashMap<&'a str, &'a Function>,
+    /// The enumeration identities of the borrowed inventory, resolved per read
+    /// rather than copied into `literals` for every evaluator.
+    pub(super) canonicalizer: EnumCanonicalizer,
 }
 
 impl<'a> BorrowedContext<'a> {
-    pub(super) fn new(
-        parameters: &ParamEvalContext<'a>,
-        canonicalizer: &EnumCanonicalizer,
-    ) -> Self {
-        let mut literals = EvalContext::new();
-        for (name, literal) in parameters.known_enums {
-            if let Some(identity) = canonicalizer.canonicalize(literal) {
-                let value = identity.to_value();
-                literals.add_parameter(name.clone(), value.clone());
-                literals.add_parameter(identity.to_flat_string(), value);
-            }
-        }
+    pub(super) fn new(parameters: &ParamEvalContext<'a>) -> Self {
         let mut functions = FxHashMap::default();
         for function in parameters.functions.values() {
             functions.insert(function.name.as_str(), function);
@@ -38,8 +30,9 @@ impl<'a> BorrowedContext<'a> {
         }
         Self {
             parameters: *parameters,
-            literals,
+            literals: EvalContext::new(),
             functions,
+            canonicalizer: EnumCanonicalizer::new(parameters.known_enums),
         }
     }
 
@@ -50,6 +43,17 @@ impl<'a> BorrowedContext<'a> {
     fn exact_value(&self, name: &str) -> Option<Cow<'_, Value>> {
         if let Some(value) = self.literals.parameters.get(name) {
             return Some(Cow::Borrowed(value));
+        }
+        // An enumeration parameter, then the canonical path of a literal one
+        // holds, precede the scalar inventories, as their eager copies did.
+        if let Some(identity) = self
+            .parameters
+            .known_enums
+            .get(name)
+            .and_then(|literal| self.canonicalizer.canonicalize(literal))
+            .or_else(|| self.canonicalizer.held_canonical(name))
+        {
+            return Some(Cow::Owned(identity.to_value()));
         }
         // Preserve the typed inventory's insertion precedence without copying
         // entries into a second map. Only the selected scalar becomes a Value.

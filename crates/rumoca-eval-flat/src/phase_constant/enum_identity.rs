@@ -120,6 +120,18 @@ impl EnumCanonicalizer {
 
         EnumLiteralIdentity::from_segments(&segments)
     }
+
+    /// The identity of `path` when it is itself the canonical path of a literal
+    /// some known enumeration value holds: exactly the paths `canonicalize` maps
+    /// a held value to, since that canonical form is the longest held value
+    /// sharing its suffix and so maps to itself.
+    pub(crate) fn held_canonical(&self, path: &str) -> Option<EnumLiteralIdentity> {
+        let segments = ComponentPath::from_flat_path(path).into_parts();
+        self.suffixes
+            .get(&segments[..])
+            .filter(|candidate| !candidate.ambiguous && candidate.segments == segments)
+            .and_then(|candidate| EnumLiteralIdentity::from_segments(&candidate.segments))
+    }
 }
 
 fn merge_enum_suffix_candidate(

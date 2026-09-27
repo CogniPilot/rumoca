@@ -25,6 +25,7 @@ use rumoca_core::{ComponentPath, ExpressionVisitor, scoped_component_path_candid
 pub use boolean_eval::try_eval_flat_expr_boolean;
 use borrowed_context::BorrowedContext;
 use dimension_scope::DimensionScope;
+#[cfg(test)]
 use enum_identity::EnumCanonicalizer;
 pub use enum_identity::canonicalize_enum_literal;
 
@@ -80,16 +81,12 @@ impl<'a> ParamEvalContext<'a> {
 /// preparation; unrelated scalar bindings are never copied.
 pub struct ParamEvaluator<'a> {
     eval_ctx: BorrowedContext<'a>,
-    enum_canonicalizer: EnumCanonicalizer,
 }
 
 impl<'a> ParamEvaluator<'a> {
     pub fn new(ctx: &ParamEvalContext<'a>) -> Self {
-        let enum_canonicalizer = EnumCanonicalizer::new(ctx.known_enums);
-        let eval_ctx = BorrowedContext::new(ctx, &enum_canonicalizer);
         Self {
-            eval_ctx,
-            enum_canonicalizer,
+            eval_ctx: BorrowedContext::new(ctx),
         }
     }
 
@@ -107,7 +104,7 @@ impl<'a> ParamEvaluator<'a> {
         var_context: Option<&str>,
     ) -> Option<Value> {
         self.set_var_context(var_context);
-        register_enum_comparison_candidates(expr, &self.enum_canonicalizer, &mut self.eval_ctx);
+        register_enum_comparison_candidates(expr, &mut self.eval_ctx);
         crate::constant::eval_expr(expr, &self.eval_ctx).ok()
     }
 
@@ -768,7 +765,7 @@ pub fn try_eval_flat_expr_enum(
     };
     let mut evaluator = ParamEvaluator::new(&param_ctx);
     evaluator.set_var_context(None);
-    register_enum_value_candidates(expr, &evaluator.enum_canonicalizer, &mut evaluator.eval_ctx);
+    register_enum_value_candidates(expr, &mut evaluator.eval_ctx);
     crate::constant::eval_expr(expr, &evaluator.eval_ctx)
         .ok()
         .and_then(|value| {
@@ -784,7 +781,6 @@ pub fn try_eval_flat_expr_enum(
 
 fn register_enum_value_candidates(
     expr: &rumoca_core::Expression,
-    enum_canonicalizer: &EnumCanonicalizer,
     eval_ctx: &mut BorrowedContext<'_>,
 ) {
     match expr {
@@ -794,9 +790,9 @@ fn register_enum_value_candidates(
             ..
         } => {
             for (_, value) in branches {
-                register_enum_value_candidates(value, enum_canonicalizer, eval_ctx);
+                register_enum_value_candidates(value, eval_ctx);
             }
-            register_enum_value_candidates(else_branch, enum_canonicalizer, eval_ctx);
+            register_enum_value_candidates(else_branch, eval_ctx);
         }
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
@@ -804,7 +800,7 @@ fn register_enum_value_candidates(
             && !eval_ctx.contains_parameter(name.as_str())
             && looks_like_enum_literal_path(name.as_str()) =>
         {
-            if let Some(identity) = enum_canonicalizer.canonicalize(name.as_str()) {
+            if let Some(identity) = eval_ctx.canonicalizer.canonicalize(name.as_str()) {
                 eval_ctx
                     .literals
                     .add_parameter(name.to_string(), identity.to_value());
@@ -816,18 +812,12 @@ fn register_enum_value_candidates(
 
 fn register_enum_comparison_candidates(
     expr: &rumoca_core::Expression,
-    enum_canonicalizer: &EnumCanonicalizer,
     eval_ctx: &mut BorrowedContext<'_>,
 ) {
-    EnumComparisonRegistrar {
-        enum_canonicalizer,
-        eval_ctx,
-    }
-    .visit_expression(expr);
+    EnumComparisonRegistrar { eval_ctx }.visit_expression(expr);
 }
 
 struct EnumComparisonRegistrar<'a, 'b> {
-    enum_canonicalizer: &'a EnumCanonicalizer,
     eval_ctx: &'a mut BorrowedContext<'b>,
 }
 
@@ -839,8 +829,8 @@ impl ExpressionVisitor for EnumComparisonRegistrar<'_, '_> {
         rhs: &rumoca_core::Expression,
     ) {
         if matches!(op, rumoca_core::OpBinary::Eq | rumoca_core::OpBinary::Neq) {
-            register_enum_value_candidates(lhs, self.enum_canonicalizer, self.eval_ctx);
-            register_enum_value_candidates(rhs, self.enum_canonicalizer, self.eval_ctx);
+            register_enum_value_candidates(lhs, self.eval_ctx);
+            register_enum_value_candidates(rhs, self.eval_ctx);
         }
         self.walk_binary(op, lhs, rhs);
     }

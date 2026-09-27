@@ -35,7 +35,7 @@ fn borrowed_values_match_owned_values_across_scopes_and_unknowns() {
             scope,
         );
         let owned = build_param_value_context(&parameters, &EnumCanonicalizer::new(&enums));
-        let mut borrowed = BorrowedContext::new(&parameters, &EnumCanonicalizer::new(&enums));
+        let mut borrowed = BorrowedContext::new(&parameters);
         borrowed.literals.set_lookup_scope(
             scope
                 .map(ComponentPath::from_flat_path)
@@ -64,6 +64,9 @@ fn borrowed_values_match_owned_values_across_scopes_and_unknowns() {
             function_call("Pkg.bump", vec![var("n")]),
             function_call("bump", vec![var("n")]),
             binary(rumoca_core::OpBinary::Eq, var("mode"), var("Pkg.Mode.On")),
+            var("Pkg.Mode.On"),
+            var("Pkg.Mode.Off"),
+            var("left.mode"),
             binary(rumoca_core::OpBinary::Eq, var("Config.gain"), real(0.5)),
         ];
         for expression in expressions {
@@ -252,4 +255,47 @@ fn build_param_value_context(
             .and_then(|path| path.parent()),
     );
     eval_ctx
+}
+
+/// An evaluator borrows the enumeration inventory: constructing one copies no
+/// entry (each constant evaluation builds one, so a copy costs the whole
+/// inventory per evaluation), and every enumeration parameter and held
+/// canonical literal still resolves as the eager copy did.
+#[test]
+fn an_evaluator_resolves_enumerations_without_copying_the_inventory() {
+    let integers = FxHashMap::default();
+    let reals = FxHashMap::default();
+    let booleans = FxHashMap::default();
+    let dimensions = FxHashMap::default();
+    let functions = FxHashMap::default();
+    let enums: FxHashMap<String, String> = (0..64)
+        .map(|index| (format!("c{index}.mode"), "Pkg.Mode.On".to_string()))
+        .chain([("d.mode".to_string(), "Mode.Off".to_string())])
+        .collect();
+    let parameters = ParamEvalContext::new(
+        &integers,
+        &reals,
+        &booleans,
+        &enums,
+        &dimensions,
+        &functions,
+        None,
+    );
+    let borrowed = BorrowedContext::new(&parameters);
+    assert!(borrowed.literals.parameters.is_empty());
+    let owned = build_param_value_context(&parameters, &EnumCanonicalizer::new(&enums));
+    for name in [
+        "c0.mode",
+        "c63.mode",
+        "d.mode",
+        "Pkg.Mode.On",
+        "Mode.Off",
+        "Pkg.Mode.Off",
+    ] {
+        assert_eq!(
+            crate::constant::eval_expr(&var(name), &borrowed).ok(),
+            crate::constant::eval_expr(&var(name), &owned).ok(),
+            "{name}"
+        );
+    }
 }
