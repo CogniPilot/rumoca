@@ -526,38 +526,17 @@ impl SolveRuntime {
     }
 
     /// Positions, in the algebraic refresh's simultaneous plan, of the blocks
-    /// the initialization rows `rows` read directly or through other blocks,
-    /// from the construction's structural patterns. `None` when every block
-    /// is needed: a pattern is unrecorded, or an update row reads an algebraic
-    /// coordinate, so the updates' tangents may carry any block's.
+    /// the initialization rows `rows` read: the union of their construction-
+    /// issued cones. `None` when every block is needed.
     pub(super) fn settled_blocks_read_by(&self, rows: &[usize]) -> Option<Vec<usize>> {
-        let residual = self
-            .model
-            .artifacts
-            .initialization
-            .structural
-            .residual()?
-            .pattern();
-        let implicit = self.continuous_structural.implicit()?.pattern();
-        if self.initialization_updates_read_algebraic_slots() {
-            return None;
-        }
-        let columns = residual.columns().max(implicit.columns()) as usize;
-        let mut read = vec![false; columns];
+        let cones = self.settled_read_cones.as_deref()?;
+        let mut blocks = Vec::new();
         for &row in rows {
-            residual.visit_row_columns(row, |column| read[column] = true);
+            blocks.extend_from_slice(cones.get(row)?);
         }
-        let blocks = &self.algebraic_refresh.simultaneous_plan.blocks;
-        let mut needed = vec![false; blocks.len()];
-        // Plan order puts most readers after the blocks they read, so a sweep
-        // from the last block back usually closes the set in one pass; the
-        // loop stops at the first pass that adds no block.
-        while add_blocks_read(blocks, implicit, &mut read, &mut needed) {}
-        Some(
-            (0..blocks.len())
-                .filter(|&position| needed[position])
-                .collect(),
-        )
+        blocks.sort_unstable();
+        blocks.dedup();
+        Some(blocks)
     }
 
     /// The tangent along `v` (over `[solver-y | parameter]`) of the settled
@@ -647,6 +626,55 @@ impl SolveRuntime {
             "initial residual tangent did not converge at t={t}"
         )))
     }
+}
+
+/// Per initialization residual row, the positions in `plan` of the algebraic
+/// refresh blocks the row reads directly or through other blocks, closed over
+/// the construction's structural patterns, issued once when the runtime is
+/// built. `None` when a block Jacobian must carry its direction through every
+/// block: a pattern is unrecorded, or an update row reads an algebraic slot,
+/// so the updates' tangents may carry any block's.
+pub(super) fn settled_read_cones(
+    model: &solve::SolveModel,
+    continuous: &solve::ContinuousStructuralArtifacts,
+    plan: &solve::AlgebraicProjectionPlan,
+) -> Option<Box<[Box<[usize]>]>> {
+    let residual = model
+        .artifacts
+        .initialization
+        .structural
+        .residual()?
+        .pattern();
+    let implicit = continuous.implicit()?.pattern();
+    if updates_read_algebraic_slots(model) {
+        return None;
+    }
+    Some(read_cones(residual, implicit, &plan.blocks))
+}
+
+/// [`settled_read_cones`] over the patterns: `residual` has one row per
+/// initialization row and `implicit` one per continuous row, both over
+/// `[solver-y | parameter]` columns.
+fn read_cones(
+    residual: &solve::StructuralPattern,
+    implicit: &solve::StructuralPattern,
+    blocks: &[solve::AlgebraicProjectionBlock],
+) -> Box<[Box<[usize]>]> {
+    let columns = residual.columns().max(implicit.columns()) as usize;
+    (0..residual.rows() as usize)
+        .map(|row| {
+            let mut read = vec![false; columns];
+            residual.visit_row_columns(row, |column| read[column] = true);
+            let mut needed = vec![false; blocks.len()];
+            // Plan order puts most readers after the blocks they read, so a
+            // sweep from the last block back usually closes the set in one
+            // pass; the loop stops at the first pass that adds no block.
+            while add_blocks_read(blocks, implicit, &mut read, &mut needed) {}
+            (0..blocks.len())
+                .filter(|&position| needed[position])
+                .collect()
+        })
+        .collect()
 }
 
 /// One sweep, last block first, marking every block that solves a coordinate
@@ -829,24 +857,89 @@ impl SolveRuntime {
     /// lowered to the tensor form, so testing only the scalar load would miss
     /// exactly the reads that select an assembly branch.
     fn initialization_updates_read_algebraic_slots(&self) -> bool {
-        let state_count = self.model.state_scalar_count();
-        self.model
-            .problem
-            .initialization
-            .update_rhs()
-            .programs()
-            .iter()
-            .flatten()
-            .any(|op| match op {
-                solve::LinearOp::LoadY { index, .. } => *index >= state_count,
-                solve::LinearOp::TensorLoad {
-                    input: solve::TensorInputKind::Y,
-                    input_start,
-                    count,
-                    ..
-                } => input_start.saturating_add(*count) > state_count,
-                _ => false,
-            })
+        updates_read_algebraic_slots(&self.model)
+    }
+}
+
+/// Whether an initialization update row of `model` reads an algebraic slot.
+fn updates_read_algebraic_slots(model: &solve::SolveModel) -> bool {
+    let state_count = model.state_scalar_count();
+    model
+        .problem
+        .initialization
+        .update_rhs()
+        .programs()
+        .iter()
+        .flatten()
+        .any(|op| match op {
+            solve::LinearOp::LoadY { index, .. } => *index >= state_count,
+            solve::LinearOp::TensorLoad {
+                input: solve::TensorInputKind::Y,
+                input_start,
+                count,
+                ..
+            } => input_start.saturating_add(*count) > state_count,
+            _ => false,
+        })
+}
+
+#[cfg(test)]
+mod read_cone_tests {
+    use super::*;
+
+    fn pattern(rows: &[Vec<usize>], columns: usize) -> solve::StructuralPattern {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("read_cone_tests.mo"),
+            0,
+            1,
+        );
+        let provenance = solve::PatternProvenance::derived(
+            solve::PatternDerivation::DependencyPropagation,
+            span,
+        )
+        .expect("fixture provenance");
+        solve::StructuralPattern::from_row_dependencies(rows.len(), columns, rows, provenance)
+            .expect("fixture pattern")
+    }
+
+    fn block(row: usize, y: usize) -> solve::AlgebraicProjectionBlock {
+        solve::AlgebraicProjectionBlock {
+            rows: vec![row],
+            y_indices: vec![y],
+            ..Default::default()
+        }
+    }
+
+    /// TwoTanks in miniature over `[m, H, level, h, T]`: block 0 solves `level`
+    /// from `m`, block 1 solves `h` from `H = m*h` (singular at `m = 0`), and
+    /// block 2 solves `T` from `h`. The level row reads only block 0, so the
+    /// singular block is outside its cone; the temperature row reads block 2
+    /// and, through it, block 1.
+    #[test]
+    fn an_unread_singular_block_is_outside_the_level_rows_cone() {
+        let implicit = pattern(&[vec![0, 2], vec![0, 1, 3], vec![3, 4]], 5);
+        let residual = pattern(&[vec![2], vec![4]], 5);
+        let cones = read_cones(
+            &residual,
+            &implicit,
+            &[block(0, 2), block(1, 3), block(2, 4)],
+        );
+        assert_eq!(&*cones[0], &[0]);
+        assert_eq!(&*cones[1], &[1, 2]);
+    }
+
+    /// A block that reads a later block of the plan still enters the cone: the
+    /// sweep repeats until it adds nothing.
+    #[test]
+    fn a_block_reading_a_later_block_is_closed_over() {
+        let implicit = pattern(&[vec![1], vec![2], vec![]], 3);
+        let residual = pattern(&[vec![0]], 3);
+        let cones = read_cones(
+            &residual,
+            &implicit,
+            &[block(2, 2), block(0, 0), block(1, 1)],
+        );
+        assert_eq!(&*cones[0], &[0, 1, 2]);
     }
 }
 

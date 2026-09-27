@@ -387,6 +387,11 @@ pub struct SolveRuntime {
     algebraic_newton_caches: Vec<RefCell<crate::runtime::projection::SparseNewtonCache>>,
     seed_projection_cache: RefCell<SeedProjectionCache>,
     algebraic_refresh: solve::RefreshPlan,
+    /// Per initialization residual row, the positions of the algebraic
+    /// refresh blocks it reads directly or through other blocks; `None` when
+    /// a block Jacobian must carry its direction through every block
+    /// ([`initial_projection::settled_read_cones`]).
+    settled_read_cones: Option<Box<[Box<[usize]>]>>,
     derivative_refresh: solve::RefreshPlan,
     root_refresh: solve::RefreshPlan,
     event_refresh: solve::RefreshPlan,
@@ -717,6 +722,11 @@ impl SolveRuntime {
                 });
             }
         }
+        let settled_read_cones = initial_projection::settled_read_cones(
+            model,
+            &continuous_structural,
+            &algebraic_refresh.simultaneous_plan,
+        );
         trace_refresh_plan(model, "algebraic", &algebraic_refresh);
         trace_refresh_plan(model, "derivative", &derivative_refresh);
         trace_refresh_plan(model, "root", &root_refresh);
@@ -897,6 +907,7 @@ impl SolveRuntime {
             algebraic_newton_caches,
             seed_projection_cache: RefCell::new(SeedProjectionCache::default()),
             algebraic_refresh,
+            settled_read_cones,
             derivative_refresh,
             root_refresh,
             event_refresh,
