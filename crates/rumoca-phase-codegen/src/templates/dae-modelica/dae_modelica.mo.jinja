@@ -87,9 +87,9 @@
 {%- elif op.kind == "binary" -%}({{ expr(op.lhs) }} {{ binary_operator(op.operator, e.provenance) }} {{ expr(op.rhs) }})
 {%- elif op.kind == "conditional" -%}
   {%- for ordinal in range(0, op.operands | length - 1, 2) -%}
-    {{ "if" if loop.first else "elseif" }} {{ expr(op.operands[ordinal]) }} then {{ expr(op.operands[ordinal + 1]) }}
+    {{ "if" if loop.first else " elseif" }} {{ expr(op.operands[ordinal]) }} then {{ expr(op.operands[ordinal + 1]) }}
   {%- endfor -%}
-  else {{ expr(op.operands[op.operands | length - 1]) }}
+  {{ " else " }}{{ expr(op.operands[op.operands | length - 1]) }}
 {%- elif op.kind == "array" -%}{{ "{" }}{{ expression_list(op.elements) }}{{ "}" }}
 {%- elif op.kind == "record" -%}{{ dae.value_types[e.value_type_id].value_type.record_name }}({{ expression_list(op.fields) }})
 {%- elif op.kind == "field" -%}{{ expr(op.base) }}.{{ dae.value_types[dae.expressions[op.base].value_type_id].value_type.record_fields[op.field].name }}
