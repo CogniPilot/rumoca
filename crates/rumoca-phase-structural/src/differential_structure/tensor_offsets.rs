@@ -1,5 +1,6 @@
 //! Whole-owner differential orders without splitting canonical tensors.
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use rumoca_ir_dae as dae;
@@ -18,6 +19,17 @@ pub struct TensorDifferentialOffsets<'analysis, 'dae> {
     source: &'analysis DifferentialStructure<'dae>,
     equations: Vec<u32>,
     variables: Vec<u32>,
+    preferred: Vec<PreferredAdmission>,
+}
+
+/// One `StateSelect.prefer` declaration the refinement gave a formal successor,
+/// with the equation owners whose order that admission raised, each named by
+/// its first canonical scalar row.
+#[derive(Debug, Clone)]
+pub struct PreferredAdmission {
+    pub variable: u32,
+    /// `(first canonical row, order before this admission)` per raised owner.
+    pub raised_owners: Vec<(usize, u32)>,
 }
 
 impl<'analysis, 'dae> TensorDifferentialOffsets<'analysis, 'dae> {
@@ -34,11 +46,17 @@ impl<'analysis, 'dae> TensorDifferentialOffsets<'analysis, 'dae> {
     pub fn variable_orders(&self) -> &[u32] {
         &self.variables
     }
+
+    /// The admitted `StateSelect.prefer` declarations, in declaration order.
+    pub fn preferred(&self) -> &[PreferredAdmission] {
+        &self.preferred
+    }
 }
 
 pub(super) fn analyze<'analysis, 'dae>(
     source: &'analysis DifferentialStructure<'dae>,
     view: dae::DaeView<'dae>,
+    withheld: &BTreeSet<u32>,
 ) -> Result<Option<TensorDifferentialOffsets<'analysis, 'dae>>, StructuralError> {
     let mut row_groups = Vec::new();
     let mut spans = Vec::new();
@@ -68,25 +86,27 @@ pub(super) fn analyze<'analysis, 'dae>(
         rows: &row_groups,
         columns: &column_groups,
     };
+    let requests = |column: usize, request: rumoca_core::StateSelect| {
+        let variable = view
+            .variable(source.variables[column].variable)
+            .expect("source differential coordinate");
+        variable.state_select() == request
+            && variable.variability() == dae::ExpressionVariability::Continuous
+            && variable.value_type().scalar_type() == dae::ScalarType::Real
+    };
     let variable_orders = source
-        .variables
+        .variable_orders
         .iter()
-        .zip(&source.variable_orders)
-        .map(|(coordinate, &order)| {
-            let variable = view
-                .variable(coordinate.variable)
-                .expect("source differential coordinate");
-            if variable.state_select() == rumoca_core::StateSelect::Always
-                && variable.variability() == dae::ExpressionVariability::Continuous
-                && variable.value_type().scalar_type() == dae::ScalarType::Real
-            {
+        .enumerate()
+        .map(|(column, &order)| {
+            if requests(column, rumoca_core::StateSelect::Always) {
                 order.max(1)
             } else {
                 order
             }
         })
         .collect::<Vec<_>>();
-    let Some((equations, variables)) = refine(
+    let Some((mut equations, mut variables)) = refine(
         &source.rows,
         &source.matching,
         (&source.equation_orders, &variable_orders),
@@ -97,6 +117,16 @@ pub(super) fn analyze<'analysis, 'dae>(
     else {
         return Ok(None);
     };
+    let preferred = admit_preferred(
+        source,
+        groups,
+        (&mut equations, &mut variables),
+        |group: &Range<usize>| {
+            requests(group.start, rumoca_core::StateSelect::Prefer)
+                && !withheld.contains(&source.variables[group.start].variable.index())
+        },
+    )
+    .map_err(|reason| contract(&spans, reason))?;
     if offsets::certify(
         &source.rows,
         &source.matching,
@@ -116,7 +146,55 @@ pub(super) fn analyze<'analysis, 'dae>(
         source,
         equations,
         variables,
+        preferred,
     }))
+}
+
+/// MLS 3.7 §4.9.7.1 makes `prefer` a request, not an obligation. Each requested
+/// declaration without a formal successor receives one exactly when the monotone
+/// closure admits it on top of every earlier admission, in declaration order; a
+/// positive cycle leaves it without one. The closure preserves matched
+/// equalities, so the formal dimension is unchanged, and it never lowers an
+/// order, so every earlier admission keeps its successor.
+fn admit_preferred(
+    source: &DifferentialStructure<'_>,
+    groups: OwnerGroups<'_>,
+    (equations, variables): (&mut Vec<u32>, &mut Vec<u32>),
+    requested: impl Fn(&Range<usize>) -> bool,
+) -> Result<Vec<PreferredAdmission>, &'static str> {
+    let mut admitted = Vec::new();
+    for group in groups.columns {
+        if variables[group.start] > 0
+            || source.invariant_columns()[group.start]
+            || !requested(group)
+        {
+            continue;
+        }
+        let mut raised = variables.clone();
+        raised[group.clone()].fill(1);
+        let Some((next_equations, next_variables)) = refine(
+            &source.rows,
+            &source.matching,
+            (equations, &raised),
+            groups,
+            source.invariant_columns(),
+        )?
+        else {
+            continue;
+        };
+        let raised_owners = groups
+            .rows
+            .iter()
+            .filter(|rows| !rows.is_empty() && next_equations[rows.start] > equations[rows.start])
+            .map(|rows| (rows.start, equations[rows.start]))
+            .collect();
+        admitted.push(PreferredAdmission {
+            variable: source.variables[group.start].variable.index(),
+            raised_owners,
+        });
+        (*equations, *variables) = (next_equations, next_variables);
+    }
+    Ok(admitted)
 }
 
 #[derive(Clone, Copy)]

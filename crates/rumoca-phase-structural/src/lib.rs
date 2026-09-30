@@ -45,7 +45,7 @@ pub use dae_transform::{
 pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};
 pub use differential_structure::{
-    DifferentialCoordinate, DifferentialStructure, TensorDifferentialOffsets,
+    DifferentialCoordinate, DifferentialStructure, PreferredAdmission, TensorDifferentialOffsets,
     analyze_differential_structure,
 };
 pub use incidence::{Incidence, solver_incidence};

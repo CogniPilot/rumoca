@@ -5,15 +5,24 @@ use super::*;
 
 type RebuiltFormal = (dae::Dae, Vec<Vec<u32>>, Vec<EquationProlongation>);
 
+/// A refused formal rebuild. `owner` names the continuous equation owner whose
+/// prolongation was refused, by its first canonical scalar row, with the first
+/// derivative level it could not construct; it is `None` for any other refusal.
+pub(in crate::dae_transform) struct FormalRebuildRefusal {
+    pub owner: Option<(usize, u32)>,
+    pub error: StructuralError,
+}
+
 pub(in crate::dae_transform) fn rebuild_formal(
     model: &dae::Dae,
     source: dae::DaeView<'_>,
     orders: &[u32],
     equation_orders: &[u32],
-) -> Result<RebuiltFormal, StructuralError> {
+) -> Result<RebuiltFormal, Box<FormalRebuildRefusal>> {
     let facts = DifferentiationFacts::collect(source);
     let mut coordinates = Vec::new();
     let mut equations = Vec::new();
+    let mut refused = None;
     let rebuilt = dae::Dae::construct(model.source_map().clone(), |target| {
         prepare_rebuild(
             source,
@@ -54,13 +63,23 @@ pub(in crate::dae_transform) fn rebuild_formal(
                     &[],
                     quotients,
                 )?;
-                equations =
-                    append_derivatives(context, target, variables, rebuilt_state, equation_orders)?;
+                equations = append_derivatives(
+                    context,
+                    target,
+                    variables,
+                    rebuilt_state,
+                    (equation_orders, &mut refused),
+                )?;
                 Ok(())
             },
         )
     })
-    .map_err(construction_failure)?;
+    .map_err(|error| {
+        Box::new(FormalRebuildRefusal {
+            owner: refused,
+            error: construction_failure(error),
+        })
+    })?;
     Ok((rebuilt, coordinates, equations))
 }
 
@@ -69,7 +88,7 @@ fn append_derivatives<'source, 'target>(
     target: &mut dae::DaeConstruction<'target>,
     variables: &[ReservedVariable<'target>],
     rebuilt_state: &mut [Option<dae::ExprId<'target>>],
-    equation_orders: &[u32],
+    (equation_orders, refused): (&[u32], &mut Option<(usize, u32)>),
 ) -> Result<Vec<EquationProlongation>, dae::DaeConstructionError> {
     let mut row = 0;
     let mut next = context.source.continuous_owner_count();
@@ -91,6 +110,7 @@ fn append_derivatives<'source, 'target>(
             equation_orders[start]
         };
         if order > 2 {
+            *refused = Some((start, 3));
             return Err(dae::DaeConstructionError::IncompleteDefinition {
                 kind: "formal derivative order beyond shared differentiation profile",
                 index: order,
@@ -105,7 +125,8 @@ fn append_derivatives<'source, 'target>(
                 rebuilt_state,
                 owner,
                 level as u8,
-            )?;
+            )
+            .inspect_err(|_| *refused = Some((start, level)))?;
         }
         let end = next.checked_add(order as usize).ok_or(
             dae::DaeConstructionError::IncompleteDefinition {

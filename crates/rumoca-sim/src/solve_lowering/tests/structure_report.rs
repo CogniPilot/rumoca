@@ -68,7 +68,7 @@ fn structural_inspection_notes_a_reduced_selection_only_when_lowering_takes_it()
         report
             .notes
             .iter()
-            .any(|note| note.contains("reduced state selection"))
+            .any(|note| note.contains("state selection built from formal derivatives"))
     };
     let options = SimOptions::default();
     let pendulum = compile(PENDULUM, "Pend");

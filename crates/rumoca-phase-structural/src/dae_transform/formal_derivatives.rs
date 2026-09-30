@@ -96,25 +96,32 @@ pub fn construct_formal_derivatives(
     model.inspect(|source| {
         let invariance = crate::time_invariant::TimeInvariance::derive(source);
         let mut order_bounds = vec![0_u32; source.variables().count()];
+        let mut withheld = BTreeSet::new();
         loop {
             let analysis = analyze_differential_structure_with_order_bounds(source, &order_bounds)?;
-            let offsets = analysis.tensor_offsets(source)?.ok_or_else(|| {
-                StructuralError::UnspannedContractViolation {
+            let offsets = analysis
+                .tensor_offsets_withholding(source, &withheld)?
+                .ok_or_else(|| StructuralError::UnspannedContractViolation {
                     reason:
                         "formal derivative construction requires compatible whole-tensor orders"
                             .into(),
-                }
-            })?;
+                })?;
             let mut orders = vec![0; source.variables().count()];
             for (coordinate, &order) in analysis.variables().iter().zip(offsets.variable_orders()) {
                 orders[coordinate.variable().index() as usize] = order;
             }
-            let (rebuilt, coordinates, equations) = super::reconstruction::rebuild_formal(
+            let (rebuilt, coordinates, equations) = match super::reconstruction::rebuild_formal(
                 model,
                 source,
                 &orders,
                 offsets.equation_orders(),
-            )?;
+            ) {
+                Ok(rebuilt) => rebuilt,
+                Err(refusal) => {
+                    withhold_refused_preferences(&mut withheld, offsets.preferred(), *refusal)?;
+                    continue;
+                }
+            };
             let reads = rebuilt.inspect(|formal| {
                 stage_reads::later_stage_reads(
                     formal,
@@ -142,6 +149,39 @@ pub fn construct_formal_derivatives(
             }
         }
     })
+}
+
+/// Withhold the `StateSelect.prefer` admissions that raised a refused owner
+/// across the derivative level its prolongation could not construct. A `prefer`
+/// request is optional (MLS 3.7 §4.9.7.1), so an owner the shared
+/// differentiation rules cannot prolong to that level removes the admissions
+/// that required it, and the construction repeats without them. A refusal no
+/// admission caused is the source system's own and is returned unchanged. Each
+/// repetition withholds at least one more declaration, so this terminates.
+fn withhold_refused_preferences(
+    withheld: &mut BTreeSet<u32>,
+    admitted: &[crate::PreferredAdmission],
+    refusal: super::reconstruction::FormalRebuildRefusal,
+) -> Result<(), StructuralError> {
+    let Some((owner, level)) = refusal.owner else {
+        return Err(refusal.error);
+    };
+    let before = withheld.len();
+    withheld.extend(
+        admitted
+            .iter()
+            .filter(|admission| {
+                admission
+                    .raised_owners
+                    .iter()
+                    .any(|&(raised, from)| raised == owner && from < level)
+            })
+            .map(|admission| admission.variable),
+    );
+    if withheld.len() == before {
+        return Err(refusal.error);
+    }
+    Ok(())
 }
 
 /// Raise each bound to the order a later-stage read needs; `false` when no

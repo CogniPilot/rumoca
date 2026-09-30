@@ -7,7 +7,7 @@
 mod assignment;
 mod offsets;
 mod tensor_offsets;
-pub use tensor_offsets::TensorDifferentialOffsets;
+pub use tensor_offsets::{PreferredAdmission, TensorDifferentialOffsets};
 #[cfg(test)]
 mod tests;
 
@@ -71,7 +71,17 @@ impl<'dae> DifferentialStructure<'dae> {
         &self,
         view: dae::DaeView<'dae>,
     ) -> Result<Option<TensorDifferentialOffsets<'_, 'dae>>, StructuralError> {
-        tensor_offsets::analyze(self, view)
+        tensor_offsets::analyze(self, view, &std::collections::BTreeSet::new())
+    }
+
+    /// [`Self::tensor_offsets`] with the `StateSelect.prefer` declarations in
+    /// `withheld` (source variable ordinals) given no successor they lack.
+    pub(crate) fn tensor_offsets_withholding(
+        &self,
+        view: dae::DaeView<'dae>,
+        withheld: &std::collections::BTreeSet<u32>,
+    ) -> Result<Option<TensorDifferentialOffsets<'_, 'dae>>, StructuralError> {
+        tensor_offsets::analyze(self, view, withheld)
     }
 
     /// Source coordinates in canonical variable order, then tensor scalar order.

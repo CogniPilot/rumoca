@@ -2,6 +2,7 @@
 
 mod evaluation;
 mod exchange;
+mod preferences;
 
 use std::collections::HashMap;
 
@@ -20,6 +21,7 @@ use rumoca_phase_structural::{
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
 
 use evaluation::TrialPoint;
+use preferences::{executes_preferred_basis, prefer_or_retain};
 
 /// The prepared reduced state selection: the primary basis every model executes,
 /// plus one prepared alternate DAE per alternate reduced chart, either a mirror
@@ -43,6 +45,10 @@ pub(crate) struct PreparedSelection<'source> {
     /// primary candidate, with every class it left unchanged; empty when the
     /// source basis is retained.
     pub formal_aliases: AliasQuotientReport,
+    /// The integrated coordinates a formal selection chose, as source scalar
+    /// names (a formal derivative order `k` wraps the name in `k` `der`s), in
+    /// selection order; `None` when the primary integrates its own states.
+    pub basis: Option<Vec<String>>,
 }
 
 /// The alternate Independent sets of a primary selection, each described by
@@ -86,6 +92,7 @@ fn own_selection_loop_guards(
         alternates,
         exchanges,
         formal_aliases,
+        basis,
     } = selection;
     let alternates = alternates
         .into_iter()
@@ -100,6 +107,7 @@ fn own_selection_loop_guards(
         alternates,
         exchanges,
         formal_aliases,
+        basis,
     })
 }
 
@@ -113,6 +121,7 @@ fn prepare_quotient(
         alternates,
         exchanges,
         formal_aliases,
+        basis,
     } = prepare_source(&quotient, overrides)?;
     let primary = match primary {
         PreparedDae::Borrowed {
@@ -147,6 +156,7 @@ fn prepare_quotient(
         alternates,
         exchanges,
         formal_aliases,
+        basis,
     })
 }
 
@@ -198,6 +208,9 @@ fn reduce_or_retain<'source>(
     prepared: PreparedDae<'source>,
     overrides: &HashMap<String, f64>,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
+    if prepared.inspect(|system| system.manifold.is_empty()) {
+        return prefer_or_retain(model, prepared, overrides);
+    }
     let Some(formal) = formal_below_retained_dimension(model, &prepared)? else {
         return Ok(PreparedSelection::retained(prepared));
     };
@@ -205,9 +218,11 @@ fn reduce_or_retain<'source>(
     // over-constrained `StateSelect.always`, a singular stage Jacobian) still
     // surfaces its exact typed failure rather than being masked by retention.
     let mut alternate_selections = AlternateSelections::default();
+    let mut basis = Vec::new();
     let candidate = formal.construct_state_candidate_with_charts(|formal| {
-        let (selection, alternates) = select(formal, overrides)?;
+        let (selection, alternates, primary) = select(formal, overrides)?;
         alternate_selections = alternates;
+        basis = basis_names(formal.source, &primary);
         Ok(selection)
     })?;
     // Retain the source basis when every manifold constraint is a conserved
@@ -222,6 +237,7 @@ fn reduce_or_retain<'source>(
         alternates,
         exchanges: alternate_selections.exchanges,
         formal_aliases,
+        basis: Some(basis),
     })
 }
 
@@ -229,14 +245,16 @@ fn reduce_or_retain<'source>(
 /// retains with a reduced state selection built from the formal derivatives of
 /// `model`: exactly when [`reduce_or_retain`] reduces, which is when the manifold
 /// is nonempty, the formal dimension is below the retained state count, and some
-/// manifold constraint is a redundant loop closure. `model` is the system
-/// `prepared` was prepared from.
+/// manifold constraint is a redundant loop closure, or when the source
+/// `StateSelect` preferences select a basis other than the reducer's. `model` is
+/// the system `prepared` was prepared from.
 pub(crate) fn executes_reduced_selection(
     model: &dae::Dae,
     prepared: &PreparedDae<'_>,
 ) -> Result<bool, StructuralError> {
-    Ok(prepared.manifold_requires_reduction()
+    Ok((prepared.manifold_requires_reduction()
         && formal_below_retained_dimension(model, prepared)?.is_some())
+        || executes_preferred_basis(model, prepared)?)
 }
 
 /// The formal derivatives of `model` when `prepared` retains a constrained
@@ -275,9 +293,11 @@ fn recover_singular_via_formal(
         return Ok(None);
     };
     let mut alternate_selections = AlternateSelections::default();
+    let mut basis = Vec::new();
     let Ok(candidate) = formal.construct_state_candidate_with_charts(|formal| {
-        let (selection, alternates) = select(formal, overrides)?;
+        let (selection, alternates, primary) = select(formal, overrides)?;
         alternate_selections = alternates;
+        basis = basis_names(formal.source, &primary);
         Ok(selection)
     }) else {
         return Ok(None);
@@ -294,7 +314,24 @@ fn recover_singular_via_formal(
         alternates,
         exchanges: alternate_selections.exchanges,
         formal_aliases,
+        basis: Some(basis),
     }))
+}
+
+/// Name a primary Independent set, given by source ordinal, formal order, and
+/// scalar, as source scalar names; formal order `k` wraps the name in `k` `der`s.
+fn basis_names(source: dae::DaeView<'_>, basis: &[(u32, usize, u32)]) -> Vec<String> {
+    basis
+        .iter()
+        .map(|&(variable, order, scalar)| {
+            let name = source
+                .variable_id(variable as usize)
+                .and_then(|id| source.variable(id))
+                .and_then(|variable| variable.scalar_name(scalar as usize))
+                .expect("a selected coordinate names an issuing source scalar");
+            (0..order).fold(name, |name, _| format!("der({name})"))
+        })
+        .collect()
 }
 
 /// Inline the after-index-reduction calls of a prepared candidate, report its
@@ -317,6 +354,7 @@ impl<'source> PreparedSelection<'source> {
             alternates: Vec::new(),
             exchanges: Vec::new(),
             formal_aliases: AliasQuotientReport::default(),
+            basis: None,
         }
     }
 }
@@ -382,8 +420,13 @@ fn resolve_alternate_coordinates<'source, 'formal>(
         .collect()
 }
 
-/// The primary reduced selection plus the alternate Independent sets.
-type SelectionWithAlternates<'formal> = (StateSelection<'formal>, AlternateSelections);
+/// The primary reduced selection, the alternate Independent sets, and the
+/// primary Independent set named by source ordinal, formal order, and scalar.
+type SelectionWithAlternates<'formal> = (
+    StateSelection<'formal>,
+    AlternateSelections,
+    Vec<(u32, usize, u32)>,
+);
 
 /// Refuse a `StateSelect.always` request for more independent coordinates than
 /// the differential dimension provides.
@@ -448,10 +491,9 @@ fn select<'formal>(
         let selected = matrix
             .independent_columns(&choices)
             .map_err(|error| match error {
-                rumoca_eval_solve::dense_basis::DenseBasisError::Rank => failure(format!(
-                    "stage {} has a singular dependent Jacobian under the required state selection",
-                    stage.stage().level()
-                )),
+                rumoca_eval_solve::dense_basis::DenseBasisError::Rank => {
+                    rank_failure(stage.stage().level(), &coordinates)
+                }
                 error => failure(format!(
                     "stage {} basis selection failed: {error:?}",
                     stage.stage().level()
@@ -508,6 +550,7 @@ fn select<'formal>(
             charts,
         },
         alternates,
+        primary_selection,
     ))
 }
 
@@ -715,4 +758,31 @@ fn failure(error: impl std::fmt::Display) -> StructuralError {
     StructuralError::UnspannedContractViolation {
         reason: format!("independent state selection: {error}"),
     }
+}
+
+/// The typed refusal for a stage without a regular dependent complement. When
+/// the stage holds `StateSelect.never` values, which the selection keeps
+/// dependent (MLS 3.7 §4.9.7.1), the refusal names them: no admissible basis
+/// avoids them.
+fn rank_failure(
+    level: i64,
+    coordinates: &[(FormalStageCoordinate<'_, '_>, usize)],
+) -> StructuralError {
+    let never = coordinates
+        .iter()
+        .filter(|(coordinate, _)| {
+            coordinate.order() == 0
+                && coordinate.source_variable().state_select() == StateSelect::Never
+        })
+        .filter_map(|&(coordinate, scalar)| coordinate.source_variable().scalar_name(scalar))
+        .collect::<Vec<_>>();
+    if never.is_empty() {
+        return failure(format!(
+            "stage {level} has a singular dependent Jacobian under the required state selection"
+        ));
+    }
+    failure(format!(
+        "stage {level} has no regular basis that keeps the StateSelect.never values {} out of the integrated states",
+        never.join(", ")
+    ))
 }

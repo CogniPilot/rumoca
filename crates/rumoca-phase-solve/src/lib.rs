@@ -65,6 +65,31 @@ pub fn lower_solve_package(dae: &dae::Dae) -> Result<LoweredSolvePackage, LowerE
     lower_selection(&selection, &std::collections::HashMap::new())
 }
 
+/// The scalars Solve lowering integrates for `dae`, as source scalar names in
+/// basis order: the state selection's own record when a formal selection chose
+/// the basis (a formal derivative order `k` wraps the name in `k` `der`s), and
+/// the prepared system's states otherwise.
+pub fn integrated_state_names(dae: &dae::Dae) -> Result<Vec<String>, LowerError> {
+    let selection =
+        state_selection::prepare(dae, &std::collections::HashMap::new()).map_err(|error| {
+            LowerError::Structural {
+                reason: error.to_string(),
+                span: error.source_span(),
+            }
+        })?;
+    Ok(selection.basis.clone().unwrap_or_else(|| {
+        selection.primary.as_dae().inspect(|view| {
+            view.variables()
+                .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
+                .flat_map(|(_, variable)| {
+                    (0..variable.scalar_count())
+                        .filter_map(move |scalar| variable.scalar_name(scalar))
+                })
+                .collect()
+        })
+    }))
+}
+
 /// Whether Solve lowering executes a reduced state selection instead of the
 /// constrained state manifold that `prepared` retains. `model` is the DAE
 /// `prepared` was prepared from (the alias quotient when there is one), so this

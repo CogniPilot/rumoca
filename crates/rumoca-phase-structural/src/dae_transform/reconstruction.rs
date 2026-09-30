@@ -20,7 +20,7 @@ pub(super) use inline_calls::rebuild_inlined_calls;
 mod loop_guards;
 pub(super) use loop_guards::rebuild_loop_guards;
 mod formal;
-pub(super) use formal::rebuild_formal;
+pub(super) use formal::{FormalRebuildRefusal, rebuild_formal};
 mod state_candidates;
 pub(super) use state_candidates::rebuild_state_candidate;
 
