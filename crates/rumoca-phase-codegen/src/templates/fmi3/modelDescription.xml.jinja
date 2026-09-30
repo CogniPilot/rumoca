@@ -34,6 +34,11 @@
 {%- if variable.maximum %} max="{% set value = variable.maximum | max %}{{ value if kind == "Real" else value | int }}"{% endif %}
 {%- endif %}
 {%- if kind == "Real" and variable.nominal and (variable.nominal | unique | list | length) == 1 %} nominal="{{ variable.nominal[0] }}"{% endif %}>
+{%- if variable.declared_causality %}
+      <Annotations>
+        <Annotation type="rumoca.declaredCausality">{{ variable.declared_causality }}</Annotation>
+      </Annotations>
+{%- endif %}
 {%- for extent in variable.dimensions %}
       <Dimension start="{{ extent }}"/>
 {%- endfor %}

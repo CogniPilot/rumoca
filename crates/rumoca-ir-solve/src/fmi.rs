@@ -57,8 +57,8 @@ pub use max_step_duration::{
     MAX_STEP_DURATION_UNIT,
 };
 pub use metadata::{
-    FmiCausality, FmiInitial, FmiStorageColumn, FmiStorageRun, FmiValueBacking, FmiVariability,
-    FmiVariable, FmiVariableInput,
+    FmiCausality, FmiDeclaredCausality, FmiInitial, FmiStorageColumn, FmiStorageRun,
+    FmiValueBacking, FmiVariability, FmiVariable, FmiVariableInput,
 };
 pub use root_location::{RootLocationPlan, RootTieBreak};
 
@@ -103,6 +103,8 @@ pub enum FmiComponentError {
     StorageTypeMismatch { name: String, span: Span },
     #[error("FMI variable `{name}` is stored in a non-addressable Solve slot")]
     NonAddressableStorage { name: String, span: Span },
+    #[error("FMI variable `{name}` records a declared causality its exported causality states")]
+    RedundantDeclaredCausality { name: String, span: Span },
     #[error("FMI 3 value-reference space exceeds u32")]
     ValueReferenceOverflow,
     #[error("FMI state scalar count {actual} does not match Solve state count {expected}")]
@@ -123,7 +125,8 @@ impl FmiComponentError {
             Self::ScalarCount { span, .. }
             | Self::DuplicateName { span, .. }
             | Self::StorageTypeMismatch { span, .. }
-            | Self::NonAddressableStorage { span, .. } => Some(*span),
+            | Self::NonAddressableStorage { span, .. }
+            | Self::RedundantDeclaredCausality { span, .. } => Some(*span),
             Self::ReservedMaxStepDurationName { declaration, .. } => Some(*declaration),
             Self::EventIndicatorInventory { span, .. } => *span,
             Self::InvalidSolve(_)
@@ -744,6 +747,15 @@ fn checked_variable(
             span: input.declaration,
         });
     }
+    if input
+        .declared_causality
+        .is_some_and(|declared| declared.exported() == input.causality)
+    {
+        return Err(FmiComponentError::RedundantDeclaredCausality {
+            name: input.name,
+            span: input.declaration,
+        });
+    }
     let (column, base) = match run.base {
         ScalarSlot::Y { index, .. } => (FmiStorageColumn::Y, index),
         ScalarSlot::P { index, .. } => (FmiStorageColumn::P, index),
@@ -800,6 +812,7 @@ fn checked_variable(
         unit: input.unit,
         description: input.description,
         causality: input.causality,
+        declared_causality: input.declared_causality,
         variability: input.variability,
         initial,
         tunable: input.tunable,

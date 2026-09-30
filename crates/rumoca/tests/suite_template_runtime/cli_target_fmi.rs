@@ -10,6 +10,7 @@ mod algebraic;
 mod array_bounds;
 mod assertions;
 mod chart_switching;
+mod declared_causality;
 mod derivative_kinks;
 mod lifecycle;
 mod projection;
@@ -229,10 +230,13 @@ fn validate_source_package(fmu: &BuiltFmu, standard: &FmiStandard) {
         Command::new("fmpy").arg("validate").arg(&fmu.archive),
         &format!("validate {} metadata with FMPy", fmu.version),
     );
+    let vdm_work = tempdir().expect("create FMI VDM input directory");
     checked_output(
-        Command::new("bash")
-            .arg(&standard.vdm_check)
-            .arg(&fmu.archive),
+        Command::new("bash").arg(&standard.vdm_check).arg(vdm_input(
+            fmu.version,
+            &fmu.archive,
+            vdm_work.path(),
+        )),
         &format!("validate {} against the FMI VDM model", fmu.version),
     );
     checked_output(
@@ -273,19 +277,60 @@ fn assert_validator_rejection_controls(fmu: &BuiltFmu, schema: &Path, checker: &
     let duplicate_name = work
         .path()
         .join(format!("{}-duplicate-name.fmu", fmu.version));
-    write_duplicate_name_archive(fmu, &duplicate_name);
+    rewrite_description(&fmu.archive, &duplicate_name, |text| {
+        duplicate_variable_name(text, fmu.version)
+    });
     assert_command_failed(
         Command::new("fmpy").arg("validate").arg(&duplicate_name),
         "FMPy must reject duplicate FMI variable names",
     );
     assert_command_failed(
-        Command::new("bash").arg(checker).arg(&duplicate_name),
+        Command::new("bash")
+            .arg(checker)
+            .arg(vdm_input(fmu.version, &duplicate_name, work.path())),
         "VDM checker must reject duplicate FMI variable names",
     );
 }
 
-fn write_duplicate_name_archive(fmu: &BuiltFmu, output: &Path) {
-    let input = fs::File::open(&fmu.archive).expect("open valid FMU control");
+/// The archive the VDM checker reads.
+///
+/// VDMCheck3 1.1.3 cannot load an FMI 3 `<Annotation>` holding character
+/// content, which the FMI 3.0.2 schema permits (`mixed="true"`) and `xmllint`
+/// validates against the unmodified description; on such input it reports the
+/// parse failure yet exits successfully without checking anything. It
+/// therefore reads a copy without the vendor annotations, which importers
+/// ignore by definition, so every other rule is still checked.
+fn vdm_input(version: &str, archive: &Path, work: &Path) -> PathBuf {
+    if version != "fmi3" {
+        return archive.to_path_buf();
+    }
+    let name = archive.file_name().expect("FMU archive file name");
+    let output = work.join("vdm").join(name);
+    fs::create_dir_all(output.parent().expect("VDM input directory"))
+        .expect("create VDM input directory");
+    rewrite_description(archive, &output, without_annotations);
+    output
+}
+
+fn without_annotations(xml: &str) -> String {
+    const OPEN: &str = "<Annotations>";
+    const CLOSE: &str = "</Annotations>";
+    let mut text = xml.to_string();
+    while let Some(start) = text.find(OPEN) {
+        let end = start
+            + text[start..]
+                .find(CLOSE)
+                .expect("an annotation block is closed")
+            + CLOSE.len();
+        text.replace_range(start..end, "");
+    }
+    text
+}
+
+/// Copy `archive` to `output`, passing the model description through
+/// `rewrite`.
+fn rewrite_description(archive: &Path, output: &Path, rewrite: impl Fn(&str) -> String) {
+    let input = fs::File::open(archive).expect("open valid FMU control");
     let mut input = ZipArchive::new(input).expect("read valid FMU control");
     let output = fs::File::create(output).expect("create invalid FMU control");
     let mut output = ZipWriter::new(output);
@@ -305,7 +350,7 @@ fn write_duplicate_name_archive(fmu: &BuiltFmu, output: &Path) {
             .expect("read FMU control bytes");
         if name == "modelDescription.xml" {
             let text = String::from_utf8(bytes).expect("UTF-8 FMI model description");
-            bytes = duplicate_variable_name(&text, fmu.version).into_bytes();
+            bytes = rewrite(&text).into_bytes();
         }
         output
             .start_file(name, options)

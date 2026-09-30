@@ -53,6 +53,13 @@
 {%- else %}
       <String{% if variable.start is defined %} start="{{ variable.text_start[scalar] | xml_escape }}"{% endif %}/>
 {%- endif %}
+{%- if variable.declared_causality %}
+      <Annotations>
+        <Tool name="rumoca">
+          <DeclaredCausality value="{{ variable.declared_causality }}"/>
+        </Tool>
+      </Annotations>
+{%- endif %}
     </ScalarVariable>
 {%- set index.model = index.model + 1 %}
 {%- set index.vr = index.vr + 1 %}

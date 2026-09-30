@@ -89,9 +89,10 @@ The component-facing surface is an exact semantic projection of FMI 3.0.2 ME.
 Host conveniences derive only from standard calls and the checked
 `modelDescription`; no convenience reveals Solve rows, relation memory,
 projection artifacts, internal delay samples or storage layout, or event
-ownership. A namespaced annotation may identify a normal FMI variable carrying
-an importer numerical bound derived from current Modelica expressions; that
-value is not a private component operation or a view of delay storage. The
+ownership. Namespaced annotations may mark a normal FMI variable carrying an
+importer numerical bound derived from current Modelica expressions, or a nested
+declaration's `input`/`output` prefix; neither is a private component operation
+or storage view. The
 strict surface and removal disposition are cataloged in
 [SPEC_0044 §8](SPEC_0044_FMI_EXECUTION_CATALOG.md#8-strict-fmi-component-surface).
 

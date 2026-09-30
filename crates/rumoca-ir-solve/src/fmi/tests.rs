@@ -49,6 +49,7 @@ fn variable_metadata_is_available_only_through_borrowed_views() {
         unit: Some("m".to_string()),
         description: Some("state".to_string()),
         causality: FmiCausality::Local,
+        declared_causality: Some(FmiDeclaredCausality::Output),
         variability: FmiVariability::Continuous,
         initial: None,
         tunable: false,
@@ -75,6 +76,10 @@ fn variable_metadata_is_available_only_through_borrowed_views() {
     assert_eq!(variable.unit(), Some("m"));
     assert_eq!(variable.description(), Some("state"));
     assert_eq!(variable.causality(), FmiCausality::Local);
+    assert_eq!(
+        variable.declared_causality(),
+        Some(FmiDeclaredCausality::Output)
+    );
     assert_eq!(variable.variability(), FmiVariability::Continuous);
     assert_eq!(variable.initial(), None);
     assert!(!variable.is_tunable());
@@ -281,6 +286,7 @@ mod max_step_duration_local {
             unit: None,
             description: None,
             causality: FmiCausality::Parameter,
+            declared_causality: None,
             variability: FmiVariability::Fixed,
             tunable: false,
             evaluable: false,
@@ -875,5 +881,50 @@ mod max_step_duration_local {
             assert!(component.max_step_duration().is_none());
             assert!(component.needs_completed_integrator_step());
         }
+    }
+}
+
+/// A declared `input`/`output` prefix enters the inventory only where the
+/// exported causality does not already state it.
+mod declared_causality {
+    use super::super::*;
+    use super::max_step_duration_local::delay_bearing_model_with_one_state;
+    use crate::SolveDelayPartition;
+
+    fn nested_state(
+        causality: FmiCausality,
+        declared: Option<FmiDeclaredCausality>,
+    ) -> Result<FmiComponent, FmiComponentError> {
+        let (mut model, mut input) = delay_bearing_model_with_one_state();
+        model.problem.events.delays = SolveDelayPartition::default();
+        input.causality = causality;
+        input.declared_causality = declared;
+        FmiComponent::construct(model, vec![input])
+    }
+
+    #[test]
+    fn a_nested_output_state_keeps_its_declared_prefix() {
+        let component = nested_state(FmiCausality::Local, Some(FmiDeclaredCausality::Output))
+            .expect("a local state may record its declared output prefix");
+        let variable = &component.variables()[0];
+        assert_eq!(variable.causality(), FmiCausality::Local);
+        assert_eq!(
+            variable.declared_causality(),
+            Some(FmiDeclaredCausality::Output)
+        );
+    }
+
+    #[test]
+    fn a_prefix_the_exported_causality_states_is_not_constructible() {
+        let rejected = nested_state(FmiCausality::Output, Some(FmiDeclaredCausality::Output))
+            .expect_err("a top-level output needs no declared-causality record");
+        assert!(
+            matches!(
+                &rejected,
+                FmiComponentError::RedundantDeclaredCausality { name, .. } if name == "x"
+            ),
+            "{rejected:?}"
+        );
+        assert!(nested_state(FmiCausality::Output, None).is_ok());
     }
 }
