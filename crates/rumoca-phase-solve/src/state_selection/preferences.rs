@@ -10,8 +10,11 @@
 //! candidate set by the source preferences: a primary basis equal to the
 //! reducer's keeps the reducer's system, and any other basis replaces it, with
 //! its alternate charts, through the same checked candidate construction a
-//! reduced constraint group uses. A `never` value no admissible basis avoids is
-//! a typed refusal.
+//! reduced constraint group uses. An integrated `never` value is a requirement:
+//! a basis that cannot avoid it is a typed refusal. `prefer` candidates and
+//! state ranks are requests: when their formal construction or checked
+//! selection is refused, the reducer's basis is kept and the refusal is
+//! recorded on the selection.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -32,17 +35,27 @@ pub(super) fn prefer_or_retain<'source>(
     prepared: PreparedDae<'source>,
     overrides: &HashMap<String, f64>,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
-    let Some(formal) = preference_candidates(model, &prepared)? else {
+    let Some(request) = PreferenceRequest::of(model, &prepared) else {
         return Ok(PreparedSelection::retained(prepared));
     };
+    let formal = match construct_formal_derivatives(model) {
+        Ok(formal) => formal,
+        Err(error) => return request.refused(prepared, error),
+    };
+    if !request.admits(&formal) {
+        return Ok(PreparedSelection::retained(prepared));
+    }
     let mut alternate_selections = AlternateSelections::default();
     let mut basis = Vec::new();
-    let candidate = formal.construct_state_candidate_with_charts(|formal| {
+    let candidate = match formal.construct_state_candidate_with_charts(|formal| {
         let (selection, alternates, primary) = select(formal, overrides)?;
         alternate_selections = alternates;
         basis = basis_names(formal.source, &primary);
         Ok(selection)
-    })?;
+    }) {
+        Ok(candidate) => candidate,
+        Err(error) => return request.refused(prepared, error),
+    };
     if prepared
         .as_dae()
         .inspect(|view| same_integrated_scalars(&basis, view))
@@ -57,6 +70,7 @@ pub(super) fn prefer_or_retain<'source>(
         exchanges: alternate_selections.exchanges,
         formal_aliases,
         basis: Some(basis),
+        withheld_preferences: None,
     })
 }
 
@@ -67,41 +81,78 @@ pub(super) fn executes_preferred_basis(
     model: &dae::Dae,
     prepared: &PreparedDae<'_>,
 ) -> Result<bool, StructuralError> {
-    let Some(formal) = preference_candidates(model, prepared)? else {
+    let Some(request) = PreferenceRequest::of(model, prepared) else {
         return Ok(false);
     };
-    let basis = formal.inspect(|formal| {
-        select(formal, &HashMap::new()).map(|(_, _, primary)| basis_names(formal.source, &primary))
-    })?;
-    Ok(!prepared
-        .as_dae()
-        .inspect(|view| same_integrated_scalars(&basis, view)))
-}
-
-/// The formal derivatives the preferred selection ranks, or `None` when the
-/// reducer's manifold-free basis is already the preferred one.
-fn preference_candidates<'model>(
-    model: &'model dae::Dae,
-    prepared: &PreparedDae<'_>,
-) -> Result<Option<FormalDerivativeSystem<'model>>, StructuralError> {
-    if !prepared.inspect(|system| system.manifold.is_empty()) {
-        return Ok(None);
-    }
-    let ranked = model.inspect(|source| {
-        prepared
-            .as_dae()
-            .inspect(|integrated| basis_violates_ranks(source, integrated))
-    });
-    if !ranked && !model.inspect(|source| source.variables().any(unintegrated_prefer)) {
-        return Ok(None);
-    }
-    let formal = construct_formal_derivatives(model)?;
-    let admitted = formal.inspect(|formal| {
-        formal.source.variables().any(|(id, variable)| {
-            unintegrated_prefer((id, variable)) && formal.coordinate(id, 1).is_some()
+    let selected = construct_formal_derivatives(model).and_then(|formal| {
+        if !request.admits(&formal) {
+            return Ok(None);
+        }
+        formal.inspect(|formal| {
+            select(formal, &HashMap::new())
+                .map(|(_, _, primary)| Some(basis_names(formal.source, &primary)))
         })
     });
-    Ok((ranked || admitted).then_some(formal))
+    match selected {
+        Ok(Some(basis)) => Ok(!prepared
+            .as_dae()
+            .inspect(|view| same_integrated_scalars(&basis, view))),
+        Ok(None) => Ok(false),
+        Err(error) if request.required => Err(error),
+        Err(_) => Ok(false),
+    }
+}
+
+/// What the source preferences ask of the reducer's manifold-free basis. An
+/// integrated `never` value is a requirement; `prefer` candidates and state
+/// ranks are requests (MLS 3.7 §4.9.7.1), so a request whose formal
+/// construction or checked selection is refused keeps the reducer's basis and
+/// records the refusal, while a refused requirement fails.
+struct PreferenceRequest {
+    required: bool,
+    ranked: bool,
+}
+
+impl PreferenceRequest {
+    fn of(model: &dae::Dae, prepared: &PreparedDae<'_>) -> Option<Self> {
+        if !prepared.inspect(|system| system.manifold.is_empty()) {
+            return None;
+        }
+        let (required, ranked) = model.inspect(|source| {
+            prepared
+                .as_dae()
+                .inspect(|integrated| basis_violations(source, integrated))
+        });
+        let requested =
+            ranked || model.inspect(|source| source.variables().any(unintegrated_prefer));
+        (required || requested).then_some(Self { required, ranked })
+    }
+
+    /// Whether the formal construction holds a candidate the request ranks:
+    /// always for a requirement or a rank violation, and otherwise when an
+    /// undifferentiated `prefer` value received a formal successor.
+    fn admits(&self, formal: &FormalDerivativeSystem<'_>) -> bool {
+        self.required
+            || self.ranked
+            || formal.inspect(|formal| {
+                formal.source.variables().any(|(id, variable)| {
+                    unintegrated_prefer((id, variable)) && formal.coordinate(id, 1).is_some()
+                })
+            })
+    }
+
+    fn refused<'source>(
+        &self,
+        prepared: PreparedDae<'source>,
+        error: StructuralError,
+    ) -> Result<PreparedSelection<'source>, StructuralError> {
+        if self.required {
+            return Err(error);
+        }
+        let mut retained = PreparedSelection::retained(prepared);
+        retained.withheld_preferences = Some(error.to_string());
+        Ok(retained)
+    }
 }
 
 /// A continuous Real `prefer` value the source does not differentiate.
@@ -111,10 +162,10 @@ fn unintegrated_prefer((_, variable): (dae::VariableId<'_>, dae::VariableView<'_
         && variable.role() != dae::VariableRole::State
 }
 
-/// Whether the reducer's basis integrates a `never` value, or demoted a source
-/// state that ranks above one it integrates (MLS 3.7 §4.9.7.1 order `never` <
-/// `avoid` < `default` < `prefer` < `always`).
-fn basis_violates_ranks(source: dae::DaeView<'_>, integrated: dae::DaeView<'_>) -> bool {
+/// Whether the reducer's basis integrates a `never` value, and whether it
+/// demoted a source state that ranks above one it integrates (MLS 3.7
+/// §4.9.7.1 order `never` < `avoid` < `default` < `prefer` < `always`).
+fn basis_violations(source: dae::DaeView<'_>, integrated: dae::DaeView<'_>) -> (bool, bool) {
     let kept = integrated
         .variables()
         .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
@@ -133,8 +184,11 @@ fn basis_violates_ranks(source: dae::DaeView<'_>, integrated: dae::DaeView<'_>) 
             highest_demoted = Some(highest_demoted.map_or(rank, |highest| highest.max(rank)));
         }
     }
-    lowest_kept == Some(0)
-        || matches!((lowest_kept, highest_demoted), (Some(kept), Some(demoted)) if demoted > kept)
+    let ranked = matches!(
+        (lowest_kept, highest_demoted),
+        (Some(kept), Some(demoted)) if demoted > kept
+    );
+    (lowest_kept == Some(0), ranked)
 }
 
 fn rank(selection: StateSelect) -> u8 {

@@ -243,3 +243,36 @@ end Cubic;";
         );
     }
 }
+
+#[test]
+fn a_preference_whose_selection_is_refused_keeps_the_reducer_basis_and_records_why() {
+    // The trial point seeds x at its start guess 0, where y = 1/x is not
+    // finite, so the checked selection refuses the requested basis. `prefer`
+    // is a request: the differentiated basis is kept and the refusal recorded.
+    let source = "model Refused
+  Real x(start = 0);
+  Real y(stateSelect = StateSelect.prefer);
+initial equation
+  x = 1;
+equation
+  der(x) = -x;
+  y = 1/x;
+end Refused;";
+    assert_eq!(integrated(source, "Refused"), ["x"]);
+    let reason = rumoca_phase_solve::withheld_state_preferences(&dae(source, "Refused"))
+        .unwrap()
+        .expect("the refusal is recorded");
+    assert!(reason.contains("independent state selection"), "{reason}");
+    let result = simulate_dae_with_diagnostics(
+        &dae(source, "Refused"),
+        &SimOptions {
+            t_end: 1.0,
+            ..Default::default()
+        },
+    )
+    .expect("the reducer basis simulates");
+    let x = column(&result, "x");
+    for (row, &time) in result.times.iter().enumerate() {
+        assert!((result.data[x][row] - (-time).exp()).abs() < 1e-5);
+    }
+}

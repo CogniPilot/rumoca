@@ -27,6 +27,11 @@ pub fn structural_report_for_dae(
         rumoca_phase_structural::prepare_for_solve(analyzed).map_err(structural_error)?;
     let mut report = prepared.structural_report();
     report.aliases = aliases;
+    if let Ok(Some(reason)) = rumoca_phase_solve::withheld_state_preferences(model) {
+        report.notes.push(format!(
+            "the StateSelect preferences request another basis, withheld because {reason}"
+        ));
+    }
     if rumoca_phase_solve::executes_reduced_state_selection(analyzed, &prepared)
         .map_err(structural_error)?
     {

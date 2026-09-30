@@ -49,6 +49,10 @@ pub(crate) struct PreparedSelection<'source> {
     /// names (a formal derivative order `k` wraps the name in `k` `der`s), in
     /// selection order; `None` when the primary integrates its own states.
     pub basis: Option<Vec<String>>,
+    /// Why a requested `StateSelect` basis (MLS 3.7 §4.9.7.1) was withheld:
+    /// its formal construction or checked selection was refused, so the
+    /// reducer's basis is kept.
+    pub withheld_preferences: Option<String>,
 }
 
 /// The alternate Independent sets of a primary selection, each described by
@@ -93,6 +97,7 @@ fn own_selection_loop_guards(
         exchanges,
         formal_aliases,
         basis,
+        withheld_preferences,
     } = selection;
     let alternates = alternates
         .into_iter()
@@ -108,6 +113,7 @@ fn own_selection_loop_guards(
         exchanges,
         formal_aliases,
         basis,
+        withheld_preferences,
     })
 }
 
@@ -122,6 +128,7 @@ fn prepare_quotient(
         exchanges,
         formal_aliases,
         basis,
+        withheld_preferences,
     } = prepare_source(&quotient, overrides)?;
     let primary = match primary {
         PreparedDae::Borrowed {
@@ -157,6 +164,7 @@ fn prepare_quotient(
         exchanges,
         formal_aliases,
         basis,
+        withheld_preferences,
     })
 }
 
@@ -238,6 +246,7 @@ fn reduce_or_retain<'source>(
         exchanges: alternate_selections.exchanges,
         formal_aliases,
         basis: Some(basis),
+        withheld_preferences: None,
     })
 }
 
@@ -315,6 +324,7 @@ fn recover_singular_via_formal(
         exchanges: alternate_selections.exchanges,
         formal_aliases,
         basis: Some(basis),
+        withheld_preferences: None,
     }))
 }
 
@@ -355,6 +365,7 @@ impl<'source> PreparedSelection<'source> {
             exchanges: Vec::new(),
             formal_aliases: AliasQuotientReport::default(),
             basis: None,
+            withheld_preferences: None,
         }
     }
 }
