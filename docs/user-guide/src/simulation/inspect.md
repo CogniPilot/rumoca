@@ -25,6 +25,28 @@ produce?". Reading `dae-mo` answers "what equation system is the solver
 given?" — the live examples in this book expose the same view through their
 **Show DAE** button.
 
+The JSON dumps are for debugging and for replay with the same compiler build,
+not a stable interface. `dae-json` carries a `schema_version` that changes as
+the IR evolves, and its reader accepts only the current version; `flat-json`
+has no version. For a model's inputs and outputs, read the `modelDescription.xml`
+of an `fmi2` or `fmi3` export instead.
+
+In `dae-json`, a variable's `role` is its runtime classification (`state`,
+`algebraic`, `output`, `discrete_value`, ...), not the declared prefix: a
+declared `output` that is a state has role `state`, and a discrete one has
+role `discrete_value`. The declared prefix is `declared_causality` (`none`,
+`input`, or `output`), kept for nested components too, while `causality` is
+`input` or `output` only at the top level. FMI exports mark a nested
+declaration's prefix with a per-variable annotation and keep its causality
+`local`:
+
+```xml
+<!-- FMI 2, inside the ScalarVariable after its type element -->
+<Annotations><Tool name="rumoca"><DeclaredCausality value="output"/></Tool></Annotations>
+<!-- FMI 3, first child of the variable -->
+<Annotations><Annotation type="rumoca.declaredCausality">output</Annotation></Annotations>
+```
+
 ## Structural Analysis
 
 ```bash
