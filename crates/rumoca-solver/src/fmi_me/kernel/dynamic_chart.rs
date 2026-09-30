@@ -75,6 +75,27 @@ pub(super) struct ReducedChartRuntimes {
 }
 
 impl ReducedChartRuntimes {
+    /// The union of every chart's certified state-Jacobian relation, each
+    /// carried in its Solve IR artifacts: a superset valid whichever chart is
+    /// active. `None` when some chart carries none.
+    pub(super) fn state_jacobian(&self) -> Option<rumoca_ir_solve::StructuralPattern> {
+        let primary = &self.primary.model;
+        let mut union = primary
+            .artifacts
+            .continuous
+            .structural
+            .state_jacobian()?
+            .clone();
+        for chart in self.charts.iter().filter(|chart| chart.set_index != 0) {
+            let charts = &primary.problem.continuous.reduced_chart_set.charts;
+            let plan = charts.get(chart.set_index)?.plan.as_ref()?;
+            union = union
+                .union(plan.artifacts.structural.state_jacobian()?)
+                .ok()?;
+        }
+        Some(union)
+    }
+
     /// Chart `index`'s runtime and binding rows, built on first request.
     pub(super) fn built(&self, index: usize) -> Result<&BuiltChart, RuntimeSolveError> {
         let Some(chart) = self.charts.get(index) else {

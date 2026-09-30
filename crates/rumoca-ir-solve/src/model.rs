@@ -528,6 +528,9 @@ pub struct ContinuousStructuralArtifacts {
     manifold: Option<JacobianStructure>,
     manifold_projection: Box<[JacobianStructure]>,
     derivative: Option<JacobianStructure>,
+    /// The state Jacobian `d(der)/d(states)`, derived from `derivative`
+    /// through the algebraic projection ([`StructuralPattern::derive_state_jacobian`]).
+    state_jacobian: Option<StructuralPattern>,
 }
 
 impl ContinuousStructuralArtifacts {
@@ -553,7 +556,36 @@ impl ContinuousStructuralArtifacts {
                 .map(JacobianStructure::derived)
                 .collect(),
             derivative: derivative.map(JacobianStructure::derived),
+            state_jacobian: None,
         }
+    }
+
+    /// Derive the state Jacobian's relation from the derivative relation and
+    /// the implicit relation through `plan`. A system without states has an
+    /// empty one.
+    pub fn with_state_jacobian(
+        mut self,
+        plan: &AlgebraicProjectionPlan,
+        state_count: usize,
+        solver_count: usize,
+    ) -> Result<Self, crate::StructuralPatternError> {
+        self.state_jacobian = match &self.derivative {
+            Some(derivative) => Some(StructuralPattern::derive_state_jacobian(
+                derivative.pattern(),
+                self.implicit.as_ref().map(JacobianStructure::pattern),
+                plan,
+                state_count,
+                solver_count,
+            )?),
+            None => None,
+        };
+        Ok(self)
+    }
+
+    /// The state Jacobian's certified relation, one row per state derivative
+    /// and one column per state.
+    pub const fn state_jacobian(&self) -> Option<&StructuralPattern> {
+        self.state_jacobian.as_ref()
     }
 
     pub const fn implicit(&self) -> Option<&JacobianStructure> {

@@ -5,3 +5,4 @@
 mod fourbar_connect_order;
 mod move_supplied_derivative;
 mod msl_sim_regression;
+mod state_jacobian_oracle;

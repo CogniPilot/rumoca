@@ -9,6 +9,7 @@ use crate::{
     AffineStencilLoadStride, BinaryOp, LinearOp, Reg, ScalarProgramBlock, TensorOutputMap,
 };
 
+mod state_jacobian;
 mod tensor_update;
 
 #[cfg(test)]

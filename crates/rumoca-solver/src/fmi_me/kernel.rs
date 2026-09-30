@@ -511,6 +511,29 @@ impl SolveMeKernel {
         .map_err(|error| error.at_stage(MeStage::Integration))
     }
 
+    /// Rows per state column of the continuous-state Jacobian's certified
+    /// relation, read from the Solve IR artifacts (a superset of every
+    /// directional derivative's nonzeros). A component that switches reduced
+    /// charts states the union of its charts' relations; `None` when the
+    /// artifacts carry none.
+    pub(crate) fn state_jacobian_columns(&self) -> Option<Rc<[Vec<usize>]>> {
+        if self.state_count == 0 {
+            return Some(Rc::from(Vec::new()));
+        }
+        let pattern = match &self.reduced_charts {
+            Some(charts) => charts.state_jacobian()?,
+            None => self
+                .runtime
+                .model
+                .artifacts
+                .continuous
+                .structural
+                .state_jacobian()?
+                .clone(),
+        };
+        Some(Rc::from(pattern.column_rows()))
+    }
+
     pub(crate) fn get_event_indicators(&self, indicators: &mut Vec<f64>) -> Result<(), MeError> {
         indicators.resize(self.indicator_plan.len(), 0.0);
         self.event_indicators_into(indicators)
