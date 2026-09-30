@@ -223,3 +223,71 @@ fn an_assertion_over_a_folded_parameter_is_still_enforced() {
     let error = format!("{error:?}");
     assert!(error.contains("m stays below two"), "{error}");
 }
+
+/// The `m_flow_nominal`/`m_flow_small` pair of `Modelica.Fluid` pipe flow
+/// models: each binding reads the other only in the branch a folded
+/// `Evaluate=true` flag never selects, so the folded bindings form no cycle.
+const FOLDED_BRANCH_CYCLE: &str = "
+model FoldedBranchCycle
+  parameter Boolean use_eps = false annotation(Evaluate = true);
+  parameter Real g(start = 1, fixed = false);
+  parameter Real a = if use_eps then 2*b else g;
+  parameter Real b = if use_eps then 3 else 100*a;
+  Real x(start = 0, fixed = true);
+initial equation
+  g = 0.5;
+equation
+  der(x) = b;
+end FoldedBranchCycle;";
+
+#[test]
+fn a_folded_condition_selects_its_branch_and_drops_the_unselected_reads() {
+    let model = compile(FOLDED_BRANCH_CYCLE, "FoldedBranchCycle");
+    let folded = fold_evaluable_parameters(&model)
+        .expect("folding succeeds")
+        .expect("use_eps is read and evaluable");
+    // The unselected arms read `b` from `a` and `a` from `b`; only the
+    // selected `g` and `100*a` survive.
+    assert_eq!(binding_reads(&folded, "a"), vec!["g".to_string()]);
+    assert_eq!(binding_reads(&folded, "b"), vec!["a".to_string()]);
+    assert!(!read_parameters(&folded).contains(&"use_eps".to_string()));
+
+    let result = simulate_dae_with_diagnostics(
+        &model,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("FoldedBranchCycle simulates: {error}"));
+    let index = result
+        .names
+        .iter()
+        .position(|name| name == "x")
+        .expect("x is recorded");
+    let x = *result.data[index].last().expect("x has samples");
+    // b = 100*a = 100*g = 50, so x(1) = 50.
+    assert!((x - 50.0).abs() < 1e-6, "x(1) = {x}");
+}
+
+/// Names of the parameters one declaration's binding reads.
+fn binding_reads(model: &dae::Dae, name: &str) -> Vec<String> {
+    model.inspect(|view| {
+        let (_, variable) = view
+            .variables()
+            .find(|(_, variable)| variable.name().to_string() == name)
+            .unwrap_or_else(|| panic!("{name} is declared"));
+        let binding = variable.binding().expect("the declaration has a binding");
+        let mut names = Vec::new();
+        dae::for_each_expression(view, binding, |_, node| {
+            if let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(id)) =
+                node.operation()
+            {
+                names.push(view.variable(id.into()).unwrap().name().to_string());
+            }
+        });
+        names.sort();
+        names.dedup();
+        names
+    })
+}

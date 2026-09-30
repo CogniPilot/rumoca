@@ -452,7 +452,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 format,
             } => self.rebuild_string_conversion(declaration, value, format, provenance)?,
             dae::ExpressionOperation::Conditional(operands) => {
-                self.rebuild_conditional(operands, provenance)?
+                self.rebuild_conditional(source_id, operands, provenance)?
             }
             dae::ExpressionOperation::Array(operands) => {
                 if operands.is_empty() {
@@ -636,7 +636,61 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         self.target.at(provenance).range(start, explicit_step, stop)
     }
 
+    /// Rebuild an MLS §3.6.5 if-expression, selecting through every condition
+    /// a STRUCT-T10(a) fold settles.
+    ///
+    /// A branch whose condition folds to `false` is never selected and a
+    /// condition that folds to `true` makes every later branch unreachable,
+    /// so neither contributes a read. The selection keeps the conditional's
+    /// value type; a branch of a different type keeps the whole conditional.
     fn rebuild_conditional(
+        &mut self,
+        conditional: dae::ExprId<'source>,
+        operands: dae::ExpressionOperands<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let mut selected = operands
+            .get(operands.len() - 1)
+            .expect("checked conditional has a fallback");
+        let mut live = Vec::with_capacity((operands.len() - 1) / 2);
+        for index in (0..operands.len() - 1).step_by(2) {
+            let condition = operands
+                .get(index)
+                .expect("checked conditional branch has a condition");
+            let value = operands
+                .get(index + 1)
+                .expect("checked conditional branch has a value");
+            match self.settled_condition(condition) {
+                Some(false) => {}
+                Some(true) => {
+                    selected = value;
+                    break;
+                }
+                None => live.push((condition, value)),
+            }
+        }
+        let value_type = |expression: dae::ExprId<'source>| {
+            self.source
+                .expression(expression)
+                .and_then(|node| self.source.value_type(node.value_type_id()))
+        };
+        let result_type = value_type(conditional);
+        let keeps_type = |expression| value_type(expression) == result_type;
+        if !keeps_type(selected) || live.iter().any(|(_, value)| !keeps_type(*value)) {
+            return self.rebuild_conditional_arms(operands, provenance);
+        }
+        let fallback = self.rebuild(selected)?;
+        if live.is_empty() {
+            return Ok(fallback);
+        }
+        let mut branches = Vec::with_capacity(live.len());
+        for (condition, value) in live {
+            branches.push((self.rebuild(condition)?, self.rebuild(value)?));
+        }
+        self.target.at(provenance).conditional(branches, fallback)
+    }
+
+    fn rebuild_conditional_arms(
         &mut self,
         operands: dae::ExpressionOperands<'source>,
         provenance: dae::DaeProvenance,
@@ -662,6 +716,30 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             ));
         }
         self.target.at(provenance).conditional(branches, fallback)
+    }
+
+    /// The value a condition has once STRUCT-T10(a) folds its parameters: a
+    /// Boolean literal, a folded scalar Boolean parameter, or its negation.
+    fn settled_condition(&self, condition: dae::ExprId<'source>) -> Option<bool> {
+        let node = self.source.expression(condition)?;
+
+        match node.operation() {
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(value)) => Some(*value),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(parameter)) => {
+                let folded = self.variables[parameter.index() as usize]
+                    .folded
+                    .as_deref()?;
+                match (folded.scalar, &*folded.values) {
+                    (dae::ScalarType::Boolean, [value]) => Some(*value != 0.0),
+                    _ => None,
+                }
+            }
+            dae::ExpressionOperation::Unary {
+                operator: dae::UnaryOperator::Not,
+                operand,
+            } => self.settled_condition(operand).map(|value| !value),
+            _ => None,
+        }
     }
 
     pub(super) fn rebuild_subscripts(
