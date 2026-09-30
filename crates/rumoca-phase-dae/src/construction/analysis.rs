@@ -423,8 +423,8 @@ struct FunctionValidationContext<'scope> {
     /// Record-field coordinates already constructed by an enclosing staged
     /// assembly at this exact source position.
     staged_record_fields: &'scope HashSet<FunctionRecordFieldCoordinate>,
-    /// Whether this source sequence maps directly to the call-scoped action
-    /// sequence rather than a loop or runtime-conditional value owner.
+    /// Whether this source sequence reaches a call-scoped or loop action
+    /// owner, directly or through runtime conditionals that guard its actions.
     call_scoped_actions: bool,
 }
 

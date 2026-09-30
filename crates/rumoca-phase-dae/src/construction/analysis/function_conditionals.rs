@@ -44,10 +44,10 @@ pub(super) fn plan_function_conditional(
     if let Some(selected) = statically_selected_branch(blocks, fallback, context)? {
         return plan_proven_conditional_branch(blocks, fallback, selected, context);
     }
-    let branch_context = FunctionValidationContext {
-        call_scoped_actions: false,
-        ..context
-    };
+    // A runtime branch keeps the enclosing action owner: its assertions lower
+    // to that owner guarded by the MLS §11.5 branch selection, so they keep
+    // their source order and can fail only on the executed path.
+    let branch_context = context;
     let mut branches = Vec::with_capacity(blocks.len());
     for block in blocks {
         validate_function_expression_with_roles(
@@ -169,6 +169,13 @@ pub(super) fn resolve_function_conditional(
             definitions,
         );
     }
+    // A conditional that only asserts defines no value but still owns the
+    // guarded actions of its branches.
+    let owns_actions = branches
+        .iter()
+        .map(Vec::as_slice)
+        .chain(fallback_plans.as_deref().map(Vec::as_slice))
+        .any(plans_carry_runtime_assertion);
     let mut branch_states = Vec::with_capacity(branches.len() + 1);
     let mut ordered = Vec::new();
     for (block, plans) in blocks.iter().zip(branches.iter_mut()) {
@@ -190,6 +197,9 @@ pub(super) fn resolve_function_conditional(
         (None, None) => false,
         _ => unreachable!("a planned function conditional keeps its source fallback shape"),
     };
+    if ordered.is_empty() && owns_actions {
+        return Ok(ordered);
+    }
     if ordered.is_empty() {
         return Err(ToDaeError::unsupported_flat(
             "function conditional",
@@ -205,6 +215,27 @@ pub(super) fn resolve_function_conditional(
         definitions.remember_guarded_branch(&blocks[0].cond, &branch_states[0], &ordered, span);
     }
     Ok(joined)
+}
+
+/// Whether a runtime branch hands at least one assertion to its action owner.
+fn plans_carry_runtime_assertion(plans: &[FunctionStatementPlan]) -> bool {
+    plans.iter().any(|plan| match plan {
+        FunctionStatementPlan::RuntimeAssertion => true,
+        FunctionStatementPlan::If {
+            branches, fallback, ..
+        } => {
+            branches
+                .iter()
+                .any(|branch| plans_carry_runtime_assertion(branch))
+                || fallback
+                    .as_deref()
+                    .is_some_and(plans_carry_runtime_assertion)
+        }
+        FunctionStatementPlan::ProvenBranch { statements, .. } => {
+            plans_carry_runtime_assertion(statements)
+        }
+        _ => false,
+    })
 }
 
 fn statically_selected_branch(
@@ -446,9 +477,7 @@ fn validate_conditional_branch_shape(
     for (statement, plan) in statements.iter().zip(plans) {
         match (statement, plan) {
             (_, FunctionStatementPlan::ProvenAssertion) => continue,
-            (_, FunctionStatementPlan::RuntimeAssertion) => {
-                unreachable!("runtime conditional assertions are rejected during planning")
-            }
+            (_, FunctionStatementPlan::RuntimeAssertion) => continue,
             (_, FunctionStatementPlan::Assignment(_)) => continue,
             (_, FunctionStatementPlan::RecordAssembly(_))
             | (_, FunctionStatementPlan::RecordAssemblyMember) => continue,

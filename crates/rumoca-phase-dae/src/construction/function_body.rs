@@ -1,4 +1,9 @@
+mod branch_assertions;
+
 use super::*;
+use branch_assertions::{
+    BranchAssertion, BranchState, guard_branch_assertions, lower_branch_assertion,
+};
 
 pub(super) fn lower_generated_boolean_assignment<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
@@ -344,6 +349,16 @@ pub(super) fn lower_function_conditional<'dae>(
     let provenance =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, input.span)?;
     let lowered = lower_function_conditional_values(construction, body, input)?;
+    for assertion in &lowered.assertions {
+        construction.functions(|functions| {
+            functions.assertion(
+                body,
+                assertion.condition,
+                assertion.message,
+                assertion.provenance,
+            )
+        })?;
+    }
     construction.functions(|functions| {
         functions.assign_conditional_all(
             body,
@@ -361,6 +376,10 @@ struct LoweredFunctionConditional<'dae> {
     conditions: Vec<dae::ExprId<'dae>>,
     branches: Vec<Vec<dae::ExprId<'dae>>>,
     fallback: Vec<dae::ExprId<'dae>>,
+    /// Branch assertions guarded by their branch selection, in source order;
+    /// the enclosing action owner appends them before the joined commit so
+    /// they read the pre-conditional definitions.
+    assertions: Vec<BranchAssertion<'dae>>,
 }
 
 fn lower_function_conditional_values<'dae>(
@@ -425,7 +444,7 @@ fn lower_function_conditional_values<'dae>(
         let target_id = function_value_coordinate(input.symbols.coordinates, target);
         targets.push(target_id);
         for (lowered_branch, branch) in branches.iter_mut().zip(&branch_values) {
-            lowered_branch.push(match branch.get(target) {
+            lowered_branch.push(match branch.values.get(target) {
                 Some(value) => *value,
                 None => construction
                     .functions(|functions| functions.read(body, target_id, provenance))?,
@@ -434,7 +453,7 @@ fn lower_function_conditional_values<'dae>(
         fallback.push(
             match fallback_values
                 .as_ref()
-                .and_then(|values| values.get(target))
+                .and_then(|state| state.values.get(target))
             {
                 Some(value) => *value,
                 None => construction
@@ -442,11 +461,31 @@ fn lower_function_conditional_values<'dae>(
             },
         );
     }
+    let mut assertions = Vec::new();
+    for (ordinal, branch) in branch_values.iter().enumerate() {
+        guard_branch_assertions(
+            construction,
+            &conditions,
+            Some(ordinal),
+            &branch.assertions,
+            &mut assertions,
+        )?;
+    }
+    if let Some(branch) = &fallback_values {
+        guard_branch_assertions(
+            construction,
+            &conditions,
+            None,
+            &branch.assertions,
+            &mut assertions,
+        )?;
+    }
     Ok(LoweredFunctionConditional {
         targets,
         conditions,
         branches,
         fallback,
+        assertions,
     })
 }
 
@@ -468,7 +507,7 @@ fn lower_conditional_branch<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     body: &dae::FunctionBody<'dae>,
     input: ConditionalBranch<'_, '_, 'dae>,
-) -> Result<HashMap<VarName, dae::ExprId<'dae>>, dae::DaeConstructionError> {
+) -> Result<BranchState<'dae>, dae::DaeConstructionError> {
     let ConditionalBranch {
         symbols,
         binders,
@@ -476,7 +515,7 @@ fn lower_conditional_branch<'dae>(
         plans,
     } = input;
     debug_assert_eq!(statements.len(), plans.len());
-    let mut values = HashMap::new();
+    let mut state = BranchState::default();
     lower_conditional_statements(
         construction,
         body,
@@ -484,9 +523,9 @@ fn lower_conditional_branch<'dae>(
         binders,
         statements,
         plans,
-        &mut values,
+        &mut state,
     )?;
-    Ok(values)
+    Ok(state)
 }
 
 fn lower_conditional_statements<'dae>(
@@ -496,7 +535,7 @@ fn lower_conditional_statements<'dae>(
     binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
     statements: &[rumoca_core::Statement],
     plans: &[FunctionStatementPlan],
-    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
+    state: &mut BranchState<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     debug_assert_eq!(statements.len(), plans.len());
     let mut index = 0usize;
@@ -507,7 +546,7 @@ fn lower_conditional_statements<'dae>(
             symbols,
             &statements[index..],
             &plans[index],
-            values,
+            &mut state.values,
         )? {
             index += count;
             continue;
@@ -521,7 +560,7 @@ fn lower_conditional_statements<'dae>(
             binders,
             statement,
             plan,
-            values,
+            state,
         )?;
         index += 1;
     }
@@ -535,12 +574,12 @@ fn lower_one_conditional_statement<'dae>(
     binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
     statement: &rumoca_core::Statement,
     plan: &FunctionStatementPlan,
-    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
+    state: &mut BranchState<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     match (statement, plan) {
         (_, FunctionStatementPlan::ProvenAssertion) => Ok(()),
-        (_, FunctionStatementPlan::RuntimeAssertion) => {
-            unreachable!("runtime conditional assertions are rejected during planning")
+        (statement, FunctionStatementPlan::RuntimeAssertion) => {
+            lower_branch_assertion(construction, body, symbols, binders, statement, state)
         }
         (
             rumoca_core::Statement::Assignment { value, span, .. },
@@ -555,7 +594,7 @@ fn lower_one_conditional_statement<'dae>(
                 value,
                 span: *span,
             },
-            values,
+            &mut state.values,
         ),
         (
             rumoca_core::Statement::FunctionCall {
@@ -573,7 +612,7 @@ fn lower_one_conditional_statement<'dae>(
                 span: *span,
                 outputs,
             },
-            values,
+            &mut state.values,
         ),
         (
             rumoca_core::Statement::If {
@@ -599,7 +638,7 @@ fn lower_one_conditional_statement<'dae>(
                 targets,
                 span: *span,
             },
-            values,
+            state,
         ),
         (
             rumoca_core::Statement::If {
@@ -618,7 +657,7 @@ fn lower_one_conditional_statement<'dae>(
             binders,
             (cond_blocks, else_block.as_deref(), *selected),
             statements,
-            values,
+            state,
         ),
         _ => unreachable!("analysis accepts only expression-owned statements in a function branch"),
     }
@@ -653,10 +692,10 @@ fn lower_selected_conditional<'dae>(
         Option<usize>,
     ),
     plans: &[FunctionStatementPlan],
-    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
+    state: &mut BranchState<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     let source = selected_conditional_statements(conditional.0, conditional.1, conditional.2);
-    lower_conditional_statements(construction, body, symbols, binders, source, plans, values)
+    lower_conditional_statements(construction, body, symbols, binders, source, plans, state)
 }
 
 fn lower_conditional_multi_output_call<'dae>(
@@ -824,7 +863,7 @@ fn lower_nested_conditional<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     body: &dae::FunctionBody<'dae>,
     input: NestedFunctionConditional<'_, '_, 'dae>,
-    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
+    state: &mut BranchState<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     let mut conditions = Vec::with_capacity(input.blocks.len());
     for block in input.blocks {
@@ -835,7 +874,7 @@ fn lower_nested_conditional<'dae>(
                 functions: input.symbols.functions,
                 shapes: input.symbols.shapes,
                 function_body: Some(body),
-                values: Some(values),
+                values: Some(&state.values),
                 owner_clock: None,
             },
             input.binders,
@@ -843,34 +882,32 @@ fn lower_nested_conditional<'dae>(
             None,
         )?);
     }
-    let incoming = values.clone();
+    let incoming = state.values.clone();
     let mut branch_values = Vec::with_capacity(input.blocks.len());
-    for (block, plans) in input.blocks.iter().zip(input.branch_plans) {
-        let mut branch = incoming.clone();
-        lower_conditional_statements(
+    for (ordinal, (block, plans)) in input.blocks.iter().zip(input.branch_plans).enumerate() {
+        let branch =
+            lower_nested_branch(construction, body, &input, &block.stmts, plans, &incoming)?;
+        guard_branch_assertions(
             construction,
-            body,
-            input.symbols,
-            input.binders,
-            &block.stmts,
-            plans,
-            &mut branch,
+            &conditions,
+            Some(ordinal),
+            &branch.assertions,
+            &mut state.assertions,
         )?;
-        branch_values.push(branch);
+        branch_values.push(branch.values);
     }
     let fallback_values = match (input.fallback, input.fallback_plans) {
         (Some(statements), Some(plans)) => {
-            let mut branch = incoming.clone();
-            lower_conditional_statements(
+            let branch =
+                lower_nested_branch(construction, body, &input, statements, plans, &incoming)?;
+            guard_branch_assertions(
                 construction,
-                body,
-                input.symbols,
-                input.binders,
-                statements,
-                plans,
-                &mut branch,
+                &conditions,
+                None,
+                &branch.assertions,
+                &mut state.assertions,
             )?;
-            branch
+            branch.values
         }
         (None, None) => incoming.clone(),
         _ => unreachable!("nested function conditional fallback plan matches source shape"),
@@ -908,9 +945,31 @@ fn lower_nested_conditional<'dae>(
         let joined = construction.expressions(|expressions| {
             expressions.at(provenance).conditional(branches, fallback)
         })?;
-        values.insert(target.clone(), joined);
+        state.values.insert(target.clone(), joined);
     }
     Ok(())
+}
+
+/// Lower one arm of a nested runtime conditional from the incoming definitions.
+fn lower_nested_branch<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    body: &dae::FunctionBody<'dae>,
+    input: &NestedFunctionConditional<'_, '_, 'dae>,
+    statements: &[rumoca_core::Statement],
+    plans: &[FunctionStatementPlan],
+    incoming: &HashMap<VarName, dae::ExprId<'dae>>,
+) -> Result<BranchState<'dae>, dae::DaeConstructionError> {
+    let mut branch = BranchState::entering(incoming);
+    lower_conditional_statements(
+        construction,
+        body,
+        input.symbols,
+        input.binders,
+        statements,
+        plans,
+        &mut branch,
+    )?;
+    Ok(branch)
 }
 
 fn conditional_incoming_value<'dae>(
@@ -1417,6 +1476,16 @@ fn lower_loop_conditional<'dae>(
             ..conditional
         },
     )?;
+    for assertion in &lowered.assertions {
+        construction.functions(|functions| {
+            functions.assertion_loop(
+                &mut loop_body,
+                assertion.condition,
+                assertion.message,
+                assertion.provenance,
+            )
+        })?;
+    }
     construction.functions(|functions| {
         functions.assign_conditional_all_loop(
             &mut loop_body,
