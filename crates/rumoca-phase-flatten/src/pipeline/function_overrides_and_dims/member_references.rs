@@ -22,10 +22,11 @@ pub(super) fn resolve_override_member_name(
     if member_leaf == "time" && !reference.as_str().contains('.') {
         return None;
     }
-    let package = if let Some(source_package_def_id) = reference
-        .target_def_id()
-        .and_then(|def_id| ctx.class_index.parent_def_id(def_id))
-    {
+    // A resolved reference is a package member only when its declaration's
+    // owner is a package in an active override chain. A declaration without
+    // an owning class (a for-loop index, for example) is never captured.
+    let package = if let Some(def_id) = reference.target_def_id() {
+        let source_package_def_id = ctx.class_index.parent_def_id(def_id)?;
         ctx.active_override_package_for_source_package(source_package_def_id)?
     } else {
         ctx.unique_active_override_package()?

@@ -438,3 +438,78 @@ fn instream_of_an_array_port_reads_the_scalar_peer_stream() {
         panic!("Top compiles: {error:?}");
     }
 }
+
+/// A for-equation index inside a call through a redeclared package is the
+/// loop's own binder, never a member of the instance's package.
+const LOOP_INDEX_IN_PACKAGE_CALL: &str = r#"
+partial package PSM
+  constant Real cp_const;
+  constant Real T0 = 273.15;
+  record State
+    Real p;
+    Real T;
+  end State;
+  replaceable function setState
+    input Real p;
+    input Real h;
+    output State s;
+  algorithm
+    s := State(p = p, T = T0 + h/cp_const);
+  end setState;
+  replaceable function density
+    input State s;
+    output Real d;
+  algorithm
+    d := s.p/(287*s.T);
+  end density;
+end PSM;
+
+package W
+  extends PSM(cp_const = 4184);
+end W;
+
+model M
+  replaceable package Medium = PSM;
+  parameter Integer n = 2;
+  Real ps[n] = {1e5 + time, 2e5};
+  Real hs[n] = {1e4, 2e4 + time};
+  Real d[n];
+equation
+  for i in 1:n loop
+    d[i] = Medium.density(Medium.setState(ps[i], hs[i]));
+  end for;
+end M;
+
+model Top
+  M m(redeclare package Medium = W);
+end Top;
+"#;
+
+#[test]
+fn a_loop_index_in_a_package_call_stays_the_loop_binder() {
+    let compiled = Compiler::new()
+        .model("Top")
+        .compile_str(LOOP_INDEX_IN_PACKAGE_CALL, "LoopIndex.mo")
+        .unwrap_or_else(|error| panic!("Top compiles: {error:?}"));
+    let result = rumoca_sim::simulate_dae(
+        &compiled.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 1.0,
+            ..rumoca_sim::SimOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("Top simulates: {error}"));
+    let column = |name: &str| {
+        let index = result
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("{name} is recorded"));
+        *result.data[index].last().expect("samples")
+    };
+    // d = p / (287 (T0 + h / cp)) at t = 1.
+    let expected_1 = 100_001.0 / (287.0 * (273.15 + 10_000.0 / 4184.0));
+    let expected_2 = 200_000.0 / (287.0 * (273.15 + 20_001.0 / 4184.0));
+    assert!((column("m.d[1]") - expected_1).abs() < 1e-9);
+    assert!((column("m.d[2]") - expected_2).abs() < 1e-9);
+}

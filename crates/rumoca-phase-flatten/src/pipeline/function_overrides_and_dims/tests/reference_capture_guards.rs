@@ -53,7 +53,9 @@ fn function_override_rewrite_keeps_function_local_record_fields() {
     else {
         panic!("expected var ref");
     };
-    assert_eq!(name.as_str(), "AliasMedium.kappa");
+    // The local declaration has no owning class, so it is never a member of the
+    // active package even before the function-local guard applies.
+    assert_eq!(name.as_str(), "sat.kappa");
 
     let local_ctx = FunctionOverrideRewriteContext::new(
         &tree,
