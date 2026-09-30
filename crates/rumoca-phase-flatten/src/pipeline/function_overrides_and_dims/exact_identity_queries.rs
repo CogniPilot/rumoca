@@ -88,6 +88,18 @@ pub(super) fn resolve_function_extends_target_def_id(
                 .then_some(target)
         });
         let Some(candidate) = candidates.next() else {
+            // A partial function that declares its own inputs and outputs and
+            // only inherits an icon or interface class is a definition, not
+            // an alias: it has no implementation beyond itself, so unrelated
+            // partial functions sharing a bodyless base do not collapse onto
+            // that base.
+            if current != exposure
+                && class_index
+                    .get(exposure)
+                    .is_some_and(|declared| !declared.components.is_empty())
+            {
+                return Some(exposure);
+            }
             return (current != exposure).then_some(current);
         };
         if candidates.any(|other| other != candidate) {
