@@ -388,3 +388,53 @@ fn a_record_array_argument_maps_the_function_over_its_elements() {
         panic!("Top compiles: {error:?}");
     }
 }
+
+/// `inStream(ports[i].h_outflow)` on an array of connectors joined to a scalar
+/// connector reads the scalar peer's stream, not an element of it.
+const INSTREAM_ARRAY_PORT_TO_SCALAR_PORT: &str = r#"
+connector Port
+  Real p;
+  flow Real m_flow;
+  stream Real h_outflow;
+end Port;
+
+model Vol
+  Port ports[1];
+  Real hin[1];
+equation
+  for i in 1:1 loop
+    hin[i] = inStream(ports[i].h_outflow);
+    ports[i].h_outflow = 1.0;
+    ports[i].m_flow = 0.5 * (ports[i].p - 1);
+  end for;
+end Vol;
+
+model Pipe
+  Port port_a;
+  Port port_b;
+equation
+  port_a.m_flow + port_b.m_flow = 0;
+  port_a.p = port_b.p;
+  port_a.h_outflow = inStream(port_b.h_outflow);
+  port_b.h_outflow = inStream(port_a.h_outflow);
+end Pipe;
+
+model Top
+  Vol v1;
+  Vol v2;
+  Pipe pipe1;
+equation
+  connect(v1.ports[1], pipe1.port_a);
+  connect(pipe1.port_b, v2.ports[1]);
+end Top;
+"#;
+
+#[test]
+fn instream_of_an_array_port_reads_the_scalar_peer_stream() {
+    let result = Compiler::new()
+        .model("Top")
+        .compile_str(INSTREAM_ARRAY_PORT_TO_SCALAR_PORT, "InStream.mo");
+    if let Err(error) = result {
+        panic!("Top compiles: {error:?}");
+    }
+}
