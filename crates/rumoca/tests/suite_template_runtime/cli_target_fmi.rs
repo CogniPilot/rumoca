@@ -12,6 +12,7 @@ mod assertions;
 mod chart_switching;
 mod co_simulation_step;
 mod derivative_kinks;
+mod integer_parameter;
 mod lifecycle;
 mod mass_matrix;
 mod projection;
