@@ -96,8 +96,26 @@ impl TypeChecker {
         type_table: &TypeTable,
     ) -> Option<TypeId> {
         let (_, tail) = crate::path_utils::class_root_split(dotted_name)?;
-        let anchor_qname = self.def_qualified_names.get(&anchor_def_id)?;
-        let candidate = format!("{anchor_qname}.{tail}");
-        type_table.lookup(&candidate)
+        // MLS §7.3: a member of a package alias such as `replaceable package
+        // Medium = PM` is declared by the aliased package, so the search follows
+        // the anchor's extends edges when the anchor does not declare it.
+        const MAX_DEPTH: usize = 16;
+        let mut visited = std::collections::HashSet::new();
+        let mut pending = vec![anchor_def_id];
+        for _ in 0..MAX_DEPTH {
+            let Some(current) = pending.pop() else { break };
+            if !visited.insert(current) {
+                continue;
+            }
+            if let Some(qname) = self.def_qualified_names.get(&current)
+                && let Some(type_id) = type_table.lookup(&format!("{qname}.{tail}"))
+            {
+                return Some(type_id);
+            }
+            if let Some(bases) = self.class_base_def_ids.get(&current) {
+                pending.extend(bases.iter().rev().copied());
+            }
+        }
+        None
     }
 }
