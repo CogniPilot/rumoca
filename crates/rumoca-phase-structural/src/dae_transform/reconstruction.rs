@@ -106,9 +106,8 @@ pub(super) fn rebuild_requested_states(
                     matches!(
                         variable.role(),
                         dae::VariableRole::Algebraic | dae::VariableRole::Output
-                    ) && variable.variability() == dae::ExpressionVariability::Continuous
-                        && variable.value_type().scalar_type() == dae::ScalarType::Real
-                        && variable.state_select() == rumoca_core::StateSelect::Always
+                    ) && variable.continuous_state_select()
+                        == Some(rumoca_core::StateSelect::Always)
                 })
                 .map(|(id, _)| id.index())
                 .collect::<Vec<_>>();

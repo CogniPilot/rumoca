@@ -1364,6 +1364,22 @@ pub enum StateSelect {
     Always,
 }
 
+impl StateSelect {
+    /// The MLS 3.7 §4.9.7.1 preference order `never` < `avoid` < `default` <
+    /// `prefer` < `always`, as a rank where a higher value is kept as a state
+    /// before a lower one.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Never => 0,
+            Self::Avoid => 1,
+            Self::Default => 2,
+            Self::Prefer => 3,
+            Self::Always => 4,
+        }
+    }
+}
+
 /// A Modelica literal value (shared by flat and DAE IRs).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Literal {

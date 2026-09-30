@@ -25,7 +25,6 @@
 //! derivative questions. Every reader picks the layer its claim needs, so an
 //! offset can never leak into a substitution that names a value.
 
-use rumoca_core::StateSelect;
 use rumoca_eval_dae::{FunctionCallContext, NumericEvaluator};
 use rumoca_ir_dae as dae;
 
@@ -541,13 +540,7 @@ fn anchor_rank(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> (u8, u8, u8) {
             else {
                 return (0, 0, 0);
             };
-            let selection = match variable.state_select() {
-                StateSelect::Never => 0,
-                StateSelect::Avoid => 1,
-                StateSelect::Default => 2,
-                StateSelect::Prefer => 3,
-                StateSelect::Always => 4,
-            };
+            let selection = variable.state_select().rank();
             // When a scalar and an exact singleton projection have the same explicit
             // state preference and initial-value strength, keep the singleton
             // aggregate and demote the scalar member. This is a construction

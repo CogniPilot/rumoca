@@ -452,7 +452,7 @@ pub(super) fn direct_state_constraints(
             .expect("candidate state declaration resolves")
             .state_select();
         (
-            state_demotion_priority(selection),
+            selection.rank(),
             candidate.state,
             candidate.rhs,
             usize::from(candidate.rhs_sign == EqualitySign::Opposite),
@@ -617,16 +617,6 @@ fn carries_a_differentiable_definition(
         return false;
     };
     !dae::expr_contains_var(view, rhs, state.id())
-}
-
-fn state_demotion_priority(selection: StateSelect) -> u8 {
-    match selection {
-        StateSelect::Never => 0,
-        StateSelect::Avoid => 1,
-        StateSelect::Default => 2,
-        StateSelect::Prefer => 3,
-        StateSelect::Always => 4,
-    }
 }
 
 fn auxiliary_state_constraints(

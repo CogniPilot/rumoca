@@ -157,8 +157,7 @@ impl PreferenceRequest {
 
 /// A continuous Real `prefer` value the source does not differentiate.
 fn unintegrated_prefer((_, variable): (dae::VariableId<'_>, dae::VariableView<'_>)) -> bool {
-    continuous_real(variable)
-        && variable.state_select() == StateSelect::Prefer
+    variable.continuous_state_select() == Some(StateSelect::Prefer)
         && variable.role() != dae::VariableRole::State
 }
 
@@ -174,10 +173,13 @@ fn basis_violations(source: dae::DaeView<'_>, integrated: dae::DaeView<'_>) -> (
     let mut lowest_kept = None::<u8>;
     let mut highest_demoted = None::<u8>;
     for (_, variable) in source.variables() {
-        if variable.role() != dae::VariableRole::State || !continuous_real(variable) {
+        let Some(selection) = variable.continuous_state_select() else {
+            continue;
+        };
+        if variable.role() != dae::VariableRole::State {
             continue;
         }
-        let rank = rank(variable.state_select());
+        let rank = selection.rank();
         if kept.contains(variable.name().as_str()) {
             lowest_kept = Some(lowest_kept.map_or(rank, |lowest| lowest.min(rank)));
         } else {
@@ -191,21 +193,6 @@ fn basis_violations(source: dae::DaeView<'_>, integrated: dae::DaeView<'_>) -> (
     (lowest_kept == Some(0), ranked)
 }
 
-fn rank(selection: StateSelect) -> u8 {
-    match selection {
-        StateSelect::Never => 0,
-        StateSelect::Avoid => 1,
-        StateSelect::Default => 2,
-        StateSelect::Prefer => 3,
-        StateSelect::Always => 4,
-    }
-}
-
-fn continuous_real(variable: dae::VariableView<'_>) -> bool {
-    variable.variability() == dae::ExpressionVariability::Continuous
-        && variable.value_type().scalar_type() == dae::ScalarType::Real
-}
-
 /// Whether a named formal basis integrates exactly the scalars `view` holds as
 /// states; a formal derivative coordinate is never such a scalar.
 fn same_integrated_scalars(basis: &[String], view: dae::DaeView<'_>) -> bool {
@@ -217,4 +204,19 @@ fn same_integrated_scalars(basis: &[String], view: dae::DaeView<'_>) -> bool {
         })
         .collect::<BTreeSet<_>>();
     basis.len() == states.len() && basis.iter().all(|name| states.contains(name))
+}
+
+/// Whether a named basis integrates a scalar of an undifferentiated
+/// `StateSelect.prefer` value of `model`.
+pub(super) fn selects_undifferentiated_prefer(model: &dae::Dae, basis: &[String]) -> bool {
+    model.inspect(|source| {
+        let preferred = source
+            .variables()
+            .filter(|&(id, variable)| unintegrated_prefer((id, variable)))
+            .flat_map(|(_, variable)| {
+                (0..variable.scalar_count()).filter_map(move |scalar| variable.scalar_name(scalar))
+            })
+            .collect::<BTreeSet<_>>();
+        basis.iter().any(|name| preferred.contains(name))
+    })
 }

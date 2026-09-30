@@ -21,7 +21,7 @@ use rumoca_phase_structural::{
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
 
 use evaluation::TrialPoint;
-use preferences::{executes_preferred_basis, prefer_or_retain};
+use preferences::{executes_preferred_basis, prefer_or_retain, selects_undifferentiated_prefer};
 
 /// The prepared reduced state selection: the primary basis every model executes,
 /// plus one prepared alternate DAE per alternate reduced chart, either a mirror
@@ -235,7 +235,10 @@ fn reduce_or_retain<'source>(
     })?;
     // Retain the source basis when every manifold constraint is a conserved
     // first integral, reduce when any constraint is a redundant loop closure.
-    if !prepared.manifold_requires_reduction() {
+    // A selection that integrates an undifferentiated `StateSelect.prefer`
+    // value also reduces: the source coordinates are then not the basis the
+    // preferences select (MLS 3.7 §4.9.7.1).
+    if !prepared.manifold_requires_reduction() && !selects_undifferentiated_prefer(model, &basis) {
         return Ok(PreparedSelection::retained(prepared));
     }
     let alternates = prepare_alternate_charts(&formal, &alternate_selections)?;
@@ -254,16 +257,25 @@ fn reduce_or_retain<'source>(
 /// retains with a reduced state selection built from the formal derivatives of
 /// `model`: exactly when [`reduce_or_retain`] reduces, which is when the manifold
 /// is nonempty, the formal dimension is below the retained state count, and some
-/// manifold constraint is a redundant loop closure, or when the source
-/// `StateSelect` preferences select a basis other than the reducer's. `model` is
+/// manifold constraint is a redundant loop closure or the selection integrates
+/// an undifferentiated `StateSelect.prefer` value, or when a manifold-free
+/// system's preferences select a basis other than the reducer's. `model` is
 /// the system `prepared` was prepared from.
 pub(crate) fn executes_reduced_selection(
     model: &dae::Dae,
     prepared: &PreparedDae<'_>,
 ) -> Result<bool, StructuralError> {
-    Ok((prepared.manifold_requires_reduction()
-        && formal_below_retained_dimension(model, prepared)?.is_some())
-        || executes_preferred_basis(model, prepared)?)
+    if let Some(formal) = formal_below_retained_dimension(model, prepared)? {
+        if prepared.manifold_requires_reduction() {
+            return Ok(true);
+        }
+        let basis = formal.inspect(|formal| {
+            select(formal, &HashMap::new())
+                .map(|(_, _, primary)| basis_names(formal.source, &primary))
+        })?;
+        return Ok(selects_undifferentiated_prefer(model, &basis));
+    }
+    executes_preferred_basis(model, prepared)
 }
 
 /// The formal derivatives of `model` when `prepared` retains a constrained

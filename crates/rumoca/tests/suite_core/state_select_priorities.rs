@@ -276,3 +276,50 @@ end Refused;";
         assert!((result.data[x][row] - (-time).exp()).abs() < 1e-5);
     }
 }
+
+#[test]
+fn preferred_values_replace_a_retained_constraint_manifold() {
+    // An open tank with a compressible medium (Modelica.Fluid OpenTank with
+    // LinearColdWater): `der(V)` in the volume work makes the reducer retain
+    // the definitional constraint `u = h - p/d` among U, m, and V on a
+    // manifold, whose source coordinates cannot be reconstructed. The formal
+    // selection integrates the preferred T and level instead.
+    let source = "model Compressible
+  parameter Real p = 1e5;
+  Real U, m, u, d, h, Wb;
+  Real V(stateSelect = StateSelect.never);
+  Real T(stateSelect = StateSelect.prefer, start = 300);
+  Real level(stateSelect = StateSelect.prefer, start = 1);
+equation
+  V = 2*level;
+  m = V*d;
+  d = 1000*(1 - 2e-4*(T - 293));
+  h = 4184*(T - 293) + (p - 1e5)/1000;
+  u = h - p/d;
+  U = m*u;
+  Wb = -p*der(V);
+  der(m) = -1;
+  der(U) = -h + Wb;
+initial equation
+  T = 300;
+  level = 1;
+end Compressible;";
+    assert_eq!(integrated(source, "Compressible"), ["T", "level"]);
+    let result = simulate_dae_with_diagnostics(
+        &dae(source, "Compressible"),
+        &SimOptions {
+            t_end: 1.0,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .expect("the preferred basis simulates");
+    let m = column(&result, "m");
+    let initial = result.data[m][0];
+    for (row, &time) in result.times.iter().enumerate() {
+        assert!(
+            (result.data[m][row] - (initial - time)).abs() < 1e-6,
+            "m at {time}"
+        );
+    }
+}

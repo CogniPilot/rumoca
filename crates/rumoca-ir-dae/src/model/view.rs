@@ -663,6 +663,14 @@ impl<'dae> VariableView<'dae> {
             .is_some_and(|values| values.iter().any(|&value| value))
     }
 
+    /// The `stateSelect` request of a continuous Real declaration, the only
+    /// kind state selection ranks (MLS 3.7 §4.9.7.1); `None` for any other.
+    pub fn continuous_state_select(self) -> Option<StateSelect> {
+        (self.entry.variability == ExpressionVariability::Continuous
+            && self.value_type.scalar_type() == ScalarType::Real)
+            .then(|| self.state_select())
+    }
+
     pub fn identity(self) -> VariableIdentity<'dae> {
         match self.entry.role {
             VariableRole::Parameter | VariableRole::Constant => {

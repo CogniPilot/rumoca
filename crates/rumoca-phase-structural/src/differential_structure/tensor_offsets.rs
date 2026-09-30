@@ -87,12 +87,10 @@ pub(super) fn analyze<'analysis, 'dae>(
         columns: &column_groups,
     };
     let requests = |column: usize, request: rumoca_core::StateSelect| {
-        let variable = view
-            .variable(source.variables[column].variable)
-            .expect("source differential coordinate");
-        variable.state_select() == request
-            && variable.variability() == dae::ExpressionVariability::Continuous
-            && variable.value_type().scalar_type() == dae::ScalarType::Real
+        view.variable(source.variables[column].variable)
+            .expect("source differential coordinate")
+            .continuous_state_select()
+            == Some(request)
     };
     let variable_orders = source
         .variable_orders
