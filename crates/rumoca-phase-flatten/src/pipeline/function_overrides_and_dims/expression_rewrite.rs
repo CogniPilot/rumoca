@@ -310,7 +310,71 @@ fn rewritten_selected_function_reference(
             class_index,
         );
     }
-    retarget_function_reference(original, rewrite.display_name.clone(), target_def_id)
+    retarget_function_reference_in_scope(
+        original,
+        rewrite.display_name.clone(),
+        target_def_id,
+        class_index,
+    )
+}
+
+/// Retarget the leaf of `original` to `target_def_id`, keeping the lexical
+/// scope of the exposure the source spelled.
+///
+/// A call to a short-class alias (`function f = Pkg.g`) selects the aliased
+/// implementation but is rendered through the scope that declares the alias
+/// (`Scope.f`). The structured path must spell that same name, so the enclosing
+/// scopes of the exposure the source named are restated with their own exact
+/// identities. Only an exact match of the rendered name is admitted.
+fn retarget_function_reference_in_scope(
+    original: &rumoca_core::Reference,
+    resolved_name: String,
+    target_def_id: rumoca_core::DefId,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+) -> rumoca_core::Reference {
+    let retargeted = retarget_function_reference(original, resolved_name.clone(), target_def_id);
+    let Some(component_ref) = retargeted.component_ref() else {
+        return retargeted;
+    };
+    if component_ref.to_var_name().as_str() == resolved_name {
+        return retargeted;
+    }
+    let Some(exposure) = original
+        .component_ref()
+        .and_then(|original_ref| original_ref.parts().last())
+    else {
+        return retargeted;
+    };
+    let mut enclosing = Vec::new();
+    let mut parent = class_index.parent_def_id(exposure.def_id);
+    while let Some(parent_def_id) = parent {
+        enclosing.push(parent_def_id);
+        parent = class_index.parent_def_id(parent_def_id);
+    }
+    let Some(leaf) = component_ref.parts().last() else {
+        return retargeted;
+    };
+    for depth in 1..=enclosing.len() {
+        let mut parts = Vec::with_capacity(depth + 1);
+        for def_id in enclosing[..depth].iter().rev() {
+            let Some(scope) = class_index.get(*def_id) else {
+                return retargeted;
+            };
+            parts.push(rumoca_core::ComponentRefPart {
+                ident: scope.name.text.to_string(),
+                span: leaf.span,
+                subs: Vec::new(),
+                def_id: *def_id,
+            });
+        }
+        parts.push(leaf.clone());
+        if let Ok(candidate) = component_ref.with_replaced_parts(parts)
+            && candidate.to_var_name().as_str() == resolved_name
+        {
+            return retargeted.with_rewritten_component_reference(resolved_name, candidate);
+        }
+    }
+    retargeted
 }
 
 /// Respell `original` as the qualified class path of `target_def_id`

@@ -309,3 +309,49 @@ fn a_call_through_a_package_alias_selects_the_redeclared_packages_function() {
         panic!("Top compiles: {error:?}");
     }
 }
+
+/// A function calls a short-class alias of another package's function, both
+/// as a package member and as a local declaration of the calling function.
+const FUNCTION_ALIAS_CALLS: &str = r#"
+package Lib
+  function base
+    input Real x;
+    output Real y;
+  algorithm
+    y := x + 1;
+  end base;
+end Lib;
+
+package Pkg
+  function member = Lib.base;
+  function viaMember
+    input Real x;
+    output Real y;
+  algorithm
+    y := member(x) * 2;
+  end viaMember;
+  function viaLocal
+    input Real x;
+    output Real y;
+  protected
+    function local1 = Lib.base;
+  algorithm
+    y := local1(x) * 3;
+  end viaLocal;
+end Pkg;
+
+model Top
+  Real a = Pkg.viaMember(time);
+  Real b = Pkg.viaLocal(time);
+end Top;
+"#;
+
+#[test]
+fn a_function_calls_a_short_class_alias_of_another_packages_function() {
+    let result = Compiler::new()
+        .model("Top")
+        .compile_str(FUNCTION_ALIAS_CALLS, "FunctionAlias.mo");
+    if let Err(error) = result {
+        panic!("Top compiles: {error:?}");
+    }
+}
