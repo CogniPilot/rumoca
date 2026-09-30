@@ -138,12 +138,7 @@ fn collect_component_modifier_member_types(
     }
 
     for (member_name, member_comp) in &class.components {
-        let member_type_id = resolve_component_type_for_modifier_members(
-            member_comp,
-            ctx.type_table,
-            ctx.type_ids_by_def_id,
-            ctx.source_map,
-        )?;
+        let member_type_id = resolve_component_type_for_modifier_members(ctx, member_comp)?;
         if let Some(member_type_id) = member_type_id {
             member_types.insert(member_name.clone(), member_type_id);
         }
@@ -155,11 +150,11 @@ fn collect_component_modifier_member_types(
 }
 
 fn resolve_component_type_for_modifier_members(
+    ctx: &ComponentModifierMemberTypeContext<'_>,
     component: &Component,
-    type_table: &TypeTable,
-    type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    source_map: &SourceMap,
 ) -> TypeCheckResult<Option<TypeId>> {
+    let (type_table, type_ids_by_def_id, source_map) =
+        (ctx.type_table, ctx.type_ids_by_def_id, ctx.source_map);
     if let Some(type_def_id) = component.type_def_id
         && let Some(type_id) = type_ids_by_def_id.get(&type_def_id)
     {
@@ -167,9 +162,16 @@ fn resolve_component_type_for_modifier_members(
     }
     if component.type_def_id.is_none()
         && component.type_name.name.len() > 1
-        && component.type_name.def_id.is_some()
+        && let Some(anchor) = component.type_name.def_id
     {
-        return Ok(None);
+        // A dotted name whose first segment is a package alias (MLS §7.3):
+        // the member is declared by the aliased package, so it is found
+        // through the anchor's extends chain. An unresolved member abstains.
+        return Ok(member_type_through_anchor(
+            ctx,
+            anchor,
+            &component.type_name,
+        ));
     }
 
     let type_name = component.type_name.to_string();
@@ -209,4 +211,36 @@ fn name_span(
                 "source file `{file_name}` for component modifier member type name was not found"
             )))
         })
+}
+
+/// The type of `anchor.tail...` where `anchor` is a package alias: each tail
+/// segment is a nested class of the current package or of a class it extends.
+fn member_type_through_anchor(
+    ctx: &ComponentModifierMemberTypeContext<'_>,
+    anchor: DefId,
+    name: &rumoca_ir_ast::Name,
+) -> Option<TypeId> {
+    let mut current = anchor;
+    for segment in name.name.iter().skip(1) {
+        current = nested_class_through_extends(ctx.tree, current, &segment.text)?;
+    }
+    ctx.type_ids_by_def_id.get(&current).copied()
+}
+
+fn nested_class_through_extends(tree: &ClassTree, owner: DefId, member: &str) -> Option<DefId> {
+    const MAX_DEPTH: usize = 16;
+    let mut visited = HashSet::new();
+    let mut pending = vec![owner];
+    for _ in 0..MAX_DEPTH {
+        let Some(current) = pending.pop() else { break };
+        if !visited.insert(current) {
+            continue;
+        }
+        let class = tree.get_class_by_def_id(current)?;
+        if let Some(nested) = class.classes.get(member) {
+            return nested.def_id;
+        }
+        pending.extend(class.extends.iter().rev().filter_map(|ext| ext.base_def_id));
+    }
+    None
 }
