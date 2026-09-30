@@ -295,6 +295,18 @@ pub(super) fn resolve_source_constant<'a>(
     {
         return Some((SemanticConstantId::Occurrence(occurrence), value));
     }
+    if let Some((package, key)) =
+        exposing_package_key(name, occurrence.map(|occurrence| occurrence.owner()), ctx)
+        && let Some(value) = ctx.constant_values.get(&key)
+    {
+        return Some((
+            SemanticConstantId::Exposure {
+                package,
+                declaration,
+            },
+            value,
+        ));
+    }
     ctx.constant_values_by_def_id
         .get(&declaration)
         .map(|value| (SemanticConstantId::Declaration(declaration), value))
@@ -510,4 +522,25 @@ pub(super) fn resolve_constant_field_access(
         }
         current = name.as_str().to_string();
     }
+}
+
+/// The package that exposes the constant `name` refers to, with the key its
+/// value was extracted under (MLS §7.1, §7.3). A reference spelled through a
+/// package or package slot (`Medium.h_default`) names the package that slot
+/// selects in the referencing class occurrence; an unqualified reference inside
+/// a class occurrence whose type is spelled through a package slot
+/// (`cp_const` inside `Medium.BaseProperties medium`) names the package that
+/// selects the type. Anything else names no package.
+fn exposing_package_key(
+    name: &rumoca_core::Reference,
+    owner: Option<rumoca_core::InstanceId>,
+    ctx: &Context,
+) -> Option<(rumoca_core::DefId, String)> {
+    let parts = name.component_ref()?.parts();
+    let (leaf, prefix) = parts.split_last()?;
+    let (package, package_name) = match prefix.last() {
+        Some(slot) => ctx.selected_package(slot.def_id, name.instance_id())?,
+        None => ctx.component_type_package(owner?)?,
+    };
+    Some((package, format!("{package_name}.{}", leaf.ident)))
 }

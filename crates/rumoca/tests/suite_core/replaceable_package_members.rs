@@ -644,3 +644,60 @@ fn an_inherited_constant_calls_the_selected_packages_functions() {
         }
     }
 }
+
+/// A model that declares its medium package as a local alias
+/// (`replaceable package Medium = ConstantPropertyLiquidWater`) and types a
+/// component `Medium.BaseProperties`: the nested model's unqualified call and
+/// its constants, one without a declaration default, are the selected
+/// package's (MLS §4.5.1, §7.1).
+const ROOT_PACKAGE_ALIAS: &str = r#"
+partial package PM
+  constant Real cp_const;
+  constant Real T0 = 298.15;
+  function hf
+    input Real T;
+    output Real h;
+  algorithm
+    h := cp_const*(T - T0);
+  end hf;
+  model BP
+    Real T = 300;
+    Real h;
+    Real u;
+  equation
+    h = hf(T);
+    u = cp_const*(T - T0);
+  end BP;
+end PM;
+
+package M
+  extends PM(cp_const = 2, T0 = 273.15);
+end M;
+
+model Root
+  replaceable package Medium = M;
+  Medium.BP medium;
+end Root;
+"#;
+
+#[test]
+fn a_local_package_alias_selects_the_package_of_its_nested_models() {
+    let compiled = Compiler::new()
+        .model("Root")
+        .compile_str(ROOT_PACKAGE_ALIAS, "RootAlias.mo")
+        .unwrap_or_else(|error| panic!("Root compiles: {error:?}"));
+    let result = rumoca_sim::simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 0.1,
+            ..Default::default()
+        },
+    )
+    .expect("Root simulates");
+    for name in ["medium.h", "medium.u"] {
+        let column = result.names.iter().position(|n| n == name).unwrap();
+        for value in &result.data[column] {
+            assert!((value - 53.7).abs() < 1e-9, "{name} = {value}");
+        }
+    }
+}

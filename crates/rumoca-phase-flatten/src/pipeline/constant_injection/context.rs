@@ -10,6 +10,10 @@ impl ConstantOccurrenceId {
     pub(crate) fn new(owner: rumoca_core::InstanceId, declaration: rumoca_core::DefId) -> Self {
         Self { owner, declaration }
     }
+
+    pub(crate) fn owner(self) -> rumoca_core::InstanceId {
+        self.owner
+    }
 }
 
 /// Context for flattening.
@@ -36,6 +40,19 @@ pub(crate) struct Context {
     /// Owning component occurrence for each instantiated class occurrence.
     pub(crate) class_owner_components:
         rustc_hash::FxHashMap<rumoca_core::InstanceId, rumoca_core::InstanceId>,
+    /// Package redeclarations each class occurrence applies: slot to selected
+    /// package (MLS §7.3).
+    pub(crate) class_package_selections: rustc_hash::FxHashMap<
+        rumoca_core::InstanceId,
+        rustc_hash::FxHashMap<rumoca_core::DefId, rumoca_core::DefId>,
+    >,
+    /// The class slot each component occurrence's type is spelled through
+    /// (`Medium` in `Medium.BaseProperties medium`) and its owning class
+    /// occurrence.
+    pub(crate) component_type_slots: rustc_hash::FxHashMap<
+        rumoca_core::InstanceId,
+        (rumoca_core::DefId, Option<rumoca_core::InstanceId>),
+    >,
     /// Instance path of each instantiated component occurrence, as the exact
     /// reference Instantiate proved for it (one part per enclosing component,
     /// each carrying its Resolve declaration identity).

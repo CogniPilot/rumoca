@@ -62,6 +62,83 @@ impl Context {
                 self.root_class_instance = Some(class_data.instance_id);
             }
         }
+        self.seed_package_selections(overlay);
+    }
+
+    /// Record each class occurrence's package redeclarations (slot to selected
+    /// package) and the package slot each component occurrence's type is
+    /// spelled through (`Medium.BaseProperties medium`).
+    fn seed_package_selections(&mut self, overlay: &InstanceOverlay) {
+        self.class_package_selections = overlay
+            .classes
+            .values()
+            .filter(|class_data| !class_data.class_overrides.is_empty())
+            .map(|class_data| {
+                let selections = class_data
+                    .class_overrides
+                    .iter()
+                    .map(|(slot, selection)| (*slot, selection.target_def_id))
+                    .collect();
+                (class_data.instance_id, selections)
+            })
+            .collect();
+        self.component_type_slots = overlay
+            .components
+            .values()
+            .filter_map(|instance_data| {
+                Some((
+                    instance_data.instance_id,
+                    (
+                        instance_data.type_reference_root_def_id?,
+                        instance_data.owner_class_id,
+                    ),
+                ))
+            })
+            .collect();
+    }
+
+    /// The package a class slot denotes inside `class_instance` (MLS §7.3):
+    /// that occurrence's redeclaration of the slot, else the slot class itself,
+    /// when it is a package, with its qualified name.
+    pub(crate) fn selected_package(
+        &self,
+        slot: rumoca_core::DefId,
+        class_instance: Option<rumoca_core::InstanceId>,
+    ) -> Option<(rumoca_core::DefId, &str)> {
+        let package = class_instance
+            .and_then(|instance| self.class_package_selections.get(&instance))
+            .and_then(|selections| selections.get(&slot))
+            .copied()
+            .unwrap_or(slot);
+        if !self.package_def_ids.contains(&package) {
+            return None;
+        }
+        self.target_def_names
+            .get(&package)
+            .map(|name| (package, name.as_str()))
+    }
+
+    /// Qualified names of every package a class occurrence selects by
+    /// redeclaration or a component type is spelled through: the packages whose
+    /// constants a selection exposes.
+    pub(crate) fn selected_package_names(&self) -> Vec<String> {
+        self.class_package_selections
+            .values()
+            .flat_map(|selections| selections.values().copied())
+            .chain(self.component_type_slots.values().map(|&(slot, _)| slot))
+            .filter(|package| self.package_def_ids.contains(package))
+            .filter_map(|package| self.target_def_names.get(&package).cloned())
+            .collect()
+    }
+
+    /// The package a component occurrence's type is selected from, when the
+    /// type is spelled through a package slot.
+    pub(crate) fn component_type_package(
+        &self,
+        component: rumoca_core::InstanceId,
+    ) -> Option<(rumoca_core::DefId, &str)> {
+        let &(slot, owner_class) = self.component_type_slots.get(&component)?;
+        self.selected_package(slot, owner_class)
     }
 
     pub(crate) fn constant_owner_for_class(

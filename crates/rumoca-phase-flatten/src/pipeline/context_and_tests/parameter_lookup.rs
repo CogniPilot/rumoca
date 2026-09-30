@@ -28,6 +28,8 @@ impl Context {
             constant_values_by_def_id: rustc_hash::FxHashMap::default(),
             constant_values_by_occurrence: rustc_hash::FxHashMap::default(),
             class_owner_components: rustc_hash::FxHashMap::default(),
+            class_package_selections: rustc_hash::FxHashMap::default(),
+            component_type_slots: rustc_hash::FxHashMap::default(),
             component_instance_references: rustc_hash::FxHashMap::default(),
             root_class_instance: None,
             target_def_names: rustc_hash::FxHashMap::default(),

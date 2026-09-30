@@ -395,11 +395,8 @@ fn substitute_source_scalar_var_ref(
     // MLS §7.2: a constant an extends modification of the exposing package
     // binds (`extends Base(k = 1)`) takes that binding, which outranks the
     // declaration default and is keyed by the rendered exposing-package name.
-    // MLS §7.1: a constant spelled through a package (`Medium.h_default`) is
-    // that package's element, whose binding was extracted under the rendered
-    // name; the declaration identity alone names no package.
     let key = name.as_str();
-    if (env.ctx.modified_constant_keys.contains(key) || spelled_through_package(name, env.ctx))
+    if env.ctx.modified_constant_keys.contains(key)
         && let Some(value) = resolve_constant_value_expr(key, env.ctx)
     {
         return substitute_resolved_generated_constant(key, value, span, env).map(Some);
@@ -654,15 +651,4 @@ pub(super) fn substitute_known_constants_statement(
     }
     .rewrite_statement(statement)?;
     Ok(())
-}
-
-/// Whether `name` reaches its declaration through a package or package alias,
-/// the part before its leaf.
-fn spelled_through_package(name: &rumoca_core::Reference, ctx: &Context) -> bool {
-    name.component_ref()
-        .and_then(|reference| {
-            let parts = reference.parts();
-            parts.len().checked_sub(2).map(|owner| parts[owner].def_id)
-        })
-        .is_some_and(|owner| ctx.package_def_ids.contains(&owner))
 }

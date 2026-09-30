@@ -13,6 +13,12 @@ use super::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SemanticConstantId {
     Occurrence(ConstantOccurrenceId),
+    /// A declaration as an element of the package a component's type is
+    /// selected from (MLS §7.1, §7.3).
+    Exposure {
+        package: rumoca_core::DefId,
+        declaration: rumoca_core::DefId,
+    },
     Declaration(rumoca_core::DefId),
 }
 

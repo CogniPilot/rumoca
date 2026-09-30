@@ -248,8 +248,16 @@ pub(super) fn exact_override_package_for_source_package<'a>(
     }
     let has_active = !active.is_empty();
     let mut candidates = if has_active { active } else { inherited };
+    // MLS §4.5.1: a short class definition without modifications
+    // (`package Medium = ConstantPropertyLiquidWater`) denotes the class it
+    // names, so selections that reach one package through its aliases are one.
     let mut seen = FxHashSet::default();
-    candidates.retain(|package| seen.insert(package.def_id));
+    candidates.retain(|package| {
+        seen.insert(
+            resolve_package_alias_chain(ctx.tree, ctx.class_index, package.def_id)
+                .map_or(package.def_id, |selected| selected.def_id),
+        )
+    });
     if !has_active
         && let Some(lexical_package) = ctx.lexical_package_def_id
         && candidates

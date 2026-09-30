@@ -63,6 +63,8 @@ pub(super) fn inject_referenced_qualified_class_constants(
         for package in WELL_KNOWN_CONSTANT_PACKAGES {
             scopes.insert((*package).to_string());
         }
+        // MLS §7.3: a selected package exposes its constants under its own name.
+        scopes.extend(ctx.selected_package_names());
 
         for scope in &scopes {
             let resolved = resolve_referenced_scope_class(class_index, scope, model_name);
