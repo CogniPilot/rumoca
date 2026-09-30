@@ -1,8 +1,30 @@
 # IR Schema Versioning
 
-Rumoca's serialized IRs are compatibility contracts, not debug dumps. DAE and
-Solve JSON must carry an explicit `schema_version`, and deserializers reject
-unsupported versions instead of guessing.
+Rumoca's serialized IRs are exact-version wires. DAE and Solve JSON must carry
+an explicit `schema_version`, and deserializers reject every version other than
+the current one instead of guessing.
+
+## The JSON dumps are not a stable interface
+
+`--emit dae-json` and `--emit flat-json` are exact-version debug and replay
+dumps. A DAE dump carries `schema_version` (the `DAE_SCHEMA_VERSION` constant),
+but the reader accepts only the version of the compiler build that wrote it,
+and the number changes as the IR evolves; there are no readers or adapters for
+older versions. A Flat dump has no schema version at all. Neither format
+promises field names, enum tags, or layout across releases, so tools should not
+parse them as an interface. The stable exchange format for model interfaces is
+the FMI `modelDescription.xml` of the `fmi2` and `fmi3` targets.
+
+A DAE variable's `role` is its runtime classification in the MLS Appendix B
+partition (`parameter`, `constant`, `input`, `state`, `algebraic`, `output`,
+`discrete_real`, `discrete_value`), not its declared prefix. A declared
+`output` that is differentiated has role `state`, and one assigned by a discrete
+equation has role `discrete_value`, so `role == "output"` misses such outputs.
+The declaration's prefix is the separate `declared_causality` attribute
+(`none`, `input`, or `output`) at every nesting depth, while `causality` is the
+exported causality, which is `input` or `output` only for top-level
+declarations. In FMI exports a nested declaration keeps `causality="local"` and
+carries its declared prefix as a namespaced `rumoca` annotation.
 
 The policy is:
 

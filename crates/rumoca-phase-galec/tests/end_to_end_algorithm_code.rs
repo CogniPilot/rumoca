@@ -107,6 +107,7 @@ fn define_guarded_variables<'dae>(
             spans.input,
             dae::VariableAttributes {
                 causality: dae::VariableCausality::Input,
+                declared_causality: dae::DeclaredCausality::Input,
                 ..dae::VariableAttributes::default()
             },
         )?;
@@ -116,6 +117,7 @@ fn define_guarded_variables<'dae>(
             spans.output,
             dae::VariableAttributes {
                 causality: dae::VariableCausality::Output,
+                declared_causality: dae::DeclaredCausality::Output,
                 ..dae::VariableAttributes::default()
             },
         )?;

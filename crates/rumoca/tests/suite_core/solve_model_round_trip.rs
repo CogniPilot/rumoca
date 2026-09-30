@@ -222,3 +222,70 @@ fn solve_model_wire_view_fails_closed_before_serialization() {
         "{error}"
     );
 }
+
+const NESTED_OUTPUT_SOURCE: &str = r#"
+model Stage
+  output Real x(start = 1, fixed = true);
+equation
+  der(x) = -x;
+end Stage;
+
+model NestedOutput
+  Stage stage;
+  output Real y;
+equation
+  y = 2*stage.x;
+end NestedOutput;
+"#;
+
+/// A nested output's declared prefix crosses the FMI component wire and is
+/// recorded only where the exported causality does not state it; a payload
+/// written under the previous component schema is refused.
+#[test]
+fn fmi_component_wire_carries_declared_causality() {
+    use rumoca_ir_solve::fmi::{FmiCausality, FmiDeclaredCausality};
+
+    let compiled = Compiler::new()
+        .model("NestedOutput")
+        .compile_str(NESTED_OUTPUT_SOURCE, "nested.mo")
+        .expect("compile NestedOutput");
+    let lowered =
+        lower_correlated_for_simulation_with_overrides(&compiled.dae, &SimOptions::default())
+            .expect("lower correlated model");
+    let wire = rumoca_phase_solve::fmi::fmi_component_wire(&lowered)
+        .expect("construct FMI component wire");
+    let json = serde_json::to_string(&wire).expect("serialize FMI component");
+    let mut deserializer = serde_json::Deserializer::from_str(&json);
+    let component = rumoca_phase_solve::fmi::deserialize_fmi_component(&mut deserializer)
+        .expect("replay FMI component");
+    let causality = |name: &str| {
+        let variable = component
+            .variables()
+            .iter()
+            .find(|variable| variable.name() == name)
+            .unwrap_or_else(|| panic!("`{name}` is published"));
+        (variable.causality(), variable.declared_causality())
+    };
+    assert_eq!(
+        causality("stage.x"),
+        (FmiCausality::Local, Some(FmiDeclaredCausality::Output))
+    );
+    assert_eq!(causality("y"), (FmiCausality::Output, None));
+
+    let current = format!(
+        "\"schema_version\":{}",
+        rumoca_phase_solve::fmi::FMI_COMPONENT_SCHEMA_VERSION
+    );
+    assert!(json.starts_with(&format!("{{{current}")), "{json}");
+    let superseded = json.replacen(&current, "\"schema_version\":1", 1);
+    let mut deserializer = serde_json::Deserializer::from_str(&superseded);
+    let error = rumoca_phase_solve::fmi::deserialize_fmi_component(&mut deserializer)
+        .map(|_| ())
+        .expect_err("a superseded FMI component schema is refused");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported FMI component schema 1"),
+        "{error}"
+    );
+}

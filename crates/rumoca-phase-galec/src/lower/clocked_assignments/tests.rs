@@ -1097,6 +1097,7 @@ fn clocked_local_to_output_alias_is_oriented_and_ordered() {
                 output_declaration,
                 dae::VariableAttributes {
                     causality: dae::VariableCausality::Output,
+                    declared_causality: dae::DeclaredCausality::Output,
                     ..dae::VariableAttributes::default()
                 },
             )?;

@@ -25,6 +25,7 @@ fn discrete_valued_input_is_external_and_excluded_from_event_iteration() {
                 declaration,
                 dae::VariableAttributes {
                     causality: dae::VariableCausality::Input,
+                    declared_causality: dae::DeclaredCausality::Input,
                     ..Default::default()
                 },
             )

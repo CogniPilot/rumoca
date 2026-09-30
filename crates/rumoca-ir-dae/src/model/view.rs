@@ -633,6 +633,8 @@ impl<'dae> VariableView<'dae> {
         fn description -> Option<&'dae str> =
             |view| view.attributes().description.as_deref();
         fn causality -> VariableCausality = |view| view.attributes().causality;
+        fn declared_causality -> DeclaredCausality =
+            |view| view.attributes().declared_causality;
         fn is_tunable -> bool = |view| view.attributes().is_tunable;
         fn is_held -> bool = |view| view.attributes().is_held;
         fn is_evaluable -> bool = |view| view.attributes().evaluable;

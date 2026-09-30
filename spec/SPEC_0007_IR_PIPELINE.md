@@ -151,8 +151,8 @@ Modelica-specific operators: pure functions over
 
 **DAE representation rule:** DAE is the canonical MLS Appendix B model, not a
 solver cache. One catalog owns stable variable identity;
-typed views classify `p`, `x`, `y`, `z`, and `m`, while input/output causality
-is orthogonal metadata. Continuous, initialization, discrete,
+typed views classify `p`, `x`, `y`, `z`, and `m`, while exported causality and
+the declared `input`/`output` prefix are orthogonal metadata (SPEC_0040 DAE-C24). Continuous, initialization, discrete,
 condition, event, and clock systems own behavior. The current
 `DAE_SCHEMA_VERSION` wire schema is the only supported version; every other
 version is rejected without superseded readers or adapters.

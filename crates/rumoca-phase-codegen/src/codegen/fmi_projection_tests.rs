@@ -83,6 +83,7 @@ fn state_input() -> solve::fmi::FmiVariableInput {
         unit: None,
         description: None,
         causality: solve::fmi::FmiCausality::Local,
+        declared_causality: None,
         variability: solve::fmi::FmiVariability::Continuous,
         tunable: false,
         evaluable: false,
@@ -213,6 +214,98 @@ fn the_fmi2_scalar_walk_reads_the_projected_storage_run() {
     assert!(rendered.contains("name=\"x[1]\""), "{rendered}");
     assert!(rendered.contains("name=\"x[2]\""), "{rendered}");
     assert!(rendered.contains("name=\"der(x[1])\""), "{rendered}");
+}
+
+fn render_description(component: solve::fmi::FmiComponent, target: &str) -> String {
+    SolveTemplateRenderer::new_owned_with_fmi(event_free_view(component))
+        .expect("an event-free component renders")
+        .render_with_name_and_artifact(
+            builtin_template(target, "modelDescription.xml.jinja"),
+            "FmiProjectionFixture",
+            &artifact_identities(),
+        )
+        .unwrap_or_else(|error| panic!("{target} description renders: {error}"))
+}
+
+fn component_declaring(
+    causality: solve::fmi::FmiCausality,
+    declared: Option<solve::fmi::FmiDeclaredCausality>,
+) -> solve::fmi::FmiComponent {
+    let input = solve::fmi::FmiVariableInput {
+        causality,
+        declared_causality: declared,
+        ..state_input()
+    };
+    solve::fmi::FmiComponent::construct(model_with_one_state_run(false), vec![input])
+        .expect("one state run is a complete inventory")
+}
+
+/// A nested `output` exported `local` carries its declared prefix as a
+/// namespaced annotation: FMI 2 after the type element of every scalar, FMI 3
+/// as the first child of the tensor variable, ahead of its dimensions.
+#[test]
+fn a_nested_output_renders_its_declared_causality_annotation() {
+    let declared = || {
+        component_declaring(
+            solve::fmi::FmiCausality::Local,
+            Some(solve::fmi::FmiDeclaredCausality::Output),
+        )
+    };
+
+    let fmi2 = render_description(declared(), "fmi2");
+    let annotation = "<Annotations>\n        <Tool name=\"rumoca\">\n          \
+                      <DeclaredCausality value=\"output\"/>\n        </Tool>\n      \
+                      </Annotations>";
+    for scalar in ["x[1]", "x[2]"] {
+        let start = fmi2
+            .find(&format!("<ScalarVariable name=\"{scalar}\""))
+            .unwrap_or_else(|| panic!("{scalar} is published: {fmi2}"));
+        let variable = &fmi2[start..start + fmi2[start..].find("</ScalarVariable>").unwrap()];
+        assert!(variable.contains("causality=\"local\""), "{variable}");
+        let real = variable.find("<Real").expect("the type element");
+        let annotated = variable.find(annotation).expect("the annotation");
+        assert!(real < annotated, "{variable}");
+    }
+    assert_eq!(fmi2.matches(annotation).count(), 2, "{fmi2}");
+
+    let fmi3 = render_description(declared(), "fmi3");
+    assert!(
+        fmi3.contains(
+            "causality=\"local\" variability=\"continuous\" initial=\"exact\" \
+             start=\"1.0 2.0\">\n      <Annotations>\n        \
+             <Annotation type=\"rumoca.declaredCausality\">output</Annotation>\n      \
+             </Annotations>\n      <Dimension start=\"2\"/>"
+        ),
+        "{fmi3}"
+    );
+    assert_eq!(fmi3.matches("<Annotations>").count(), 1, "{fmi3}");
+}
+
+/// A declaration whose exported causality states its prefix, and one with no
+/// prefix, publish no annotation.
+#[test]
+fn an_exported_or_undeclared_causality_renders_no_annotation() {
+    for (causality, declared) in [
+        (solve::fmi::FmiCausality::Output, None),
+        (solve::fmi::FmiCausality::Local, None),
+    ] {
+        for target in ["fmi2", "fmi3"] {
+            let rendered = render_description(component_declaring(causality, declared), target);
+            assert!(!rendered.contains("Annotation"), "{target}: {rendered}");
+        }
+    }
+    let redundant = solve::fmi::FmiComponent::construct(
+        model_with_one_state_run(false),
+        vec![solve::fmi::FmiVariableInput {
+            causality: solve::fmi::FmiCausality::Output,
+            declared_causality: Some(solve::fmi::FmiDeclaredCausality::Output),
+            ..state_input()
+        }],
+    );
+    assert!(matches!(
+        redundant,
+        Err(solve::fmi::FmiComponentError::RedundantDeclaredCausality { .. })
+    ));
 }
 
 /// The correlated component is the FMI path's only semantic input.

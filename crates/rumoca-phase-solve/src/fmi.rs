@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve::fmi::{
-    FmiCausality, FmiComponent, FmiComponentError, FmiVariability, FmiVariableInput,
+    FmiCausality, FmiComponent, FmiComponentError, FmiDeclaredCausality, FmiVariability,
+    FmiVariableInput,
 };
 use rumoca_ir_solve::{SolveVariableStorageRole, SolveVariableValueKind};
 use serde::{Deserialize, Serialize};
@@ -48,7 +49,11 @@ impl FmiLoweringError {
     }
 }
 
-pub const FMI_COMPONENT_SCHEMA_VERSION: u16 = 1;
+/// Current FMI component wire schema; every other version is rejected.
+///
+/// 2 carries each variable's declared `input`/`output` prefix where it differs
+/// from the exported causality.
+pub const FMI_COMPONENT_SCHEMA_VERSION: u16 = 2;
 
 /// Borrowed, canonical construction inputs for one correlated FMI component.
 #[derive(Serialize)]
@@ -139,6 +144,7 @@ fn lower_variable<'dae>(
 ) -> Result<FmiVariableInput, FmiLoweringError> {
     let scalar_count = variable.scalar_count();
     let role = solve_role(variable.role());
+    let causality = fmi_causality(variable.causality());
     let value_kind = solve_value_kind(variable)?;
     let start = match numeric_attribute(numeric, variable, variable.start())? {
         Some(values) => values,
@@ -159,7 +165,9 @@ fn lower_variable<'dae>(
         nominal: numeric_attribute(numeric, variable, variable.nominal())?,
         unit: variable.unit().map(str::to_owned),
         description: variable.description().map(str::to_owned),
-        causality: fmi_causality(variable.causality()),
+        causality,
+        declared_causality: declared_causality(variable.declared_causality())
+            .filter(|declared| declared.exported() != causality),
         variability: fmi_variability(variable),
         tunable: variable.is_tunable(),
         evaluable: variable.is_evaluable(),
@@ -320,6 +328,14 @@ const fn fmi_causality(causality: dae::VariableCausality) -> FmiCausality {
         dae::VariableCausality::CalculatedParameter => FmiCausality::CalculatedParameter,
         dae::VariableCausality::Independent => FmiCausality::Independent,
         dae::VariableCausality::Local => FmiCausality::Local,
+    }
+}
+
+const fn declared_causality(causality: dae::DeclaredCausality) -> Option<FmiDeclaredCausality> {
+    match causality {
+        dae::DeclaredCausality::None => None,
+        dae::DeclaredCausality::Input => Some(FmiDeclaredCausality::Input),
+        dae::DeclaredCausality::Output => Some(FmiDeclaredCausality::Output),
     }
 }
 

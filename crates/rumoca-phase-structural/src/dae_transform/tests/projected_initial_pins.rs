@@ -165,6 +165,7 @@ fn projected_pin_model(shape: &[u32], indices: &[i64], opposite: bool) -> dae::D
                         start: Some(one),
                         fixed: Some(vec![true]),
                         causality: dae::VariableCausality::Output,
+                        declared_causality: dae::DeclaredCausality::Output,
                         ..Default::default()
                     },
                 )?,

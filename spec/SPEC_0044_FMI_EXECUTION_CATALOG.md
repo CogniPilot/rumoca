@@ -463,6 +463,25 @@ SPEC_0043 §8. The CLI requests this lowering only through the `rumoca-sim` faca
 and has no production dependency on `rumoca-phase-solve`; the existing
 `test_cli_uses_facades_not_phase_crates` architecture gate enforces that edge.
 
+Only top-level inputs and outputs export FMI `input`/`output` causality; a
+nested declaration exports `causality="local"` whatever its Modelica prefix.
+Where the declared `input`/`output` prefix differs from the exported causality,
+the component records it (SPEC_0043 §8) and both version templates render a
+namespaced per-variable annotation, which importers that do not know it ignore
+and which never changes causality semantics. FMI 2 places
+`<Annotations><Tool name="rumoca"><DeclaredCausality value="output"/></Tool></Annotations>`
+after the type element of each `ScalarVariable`, so every element of an array
+carries it under its per-scalar name. FMI 3 places
+`<Annotations><Annotation type="rumoca.declaredCausality">output</Annotation></Annotations>`
+as the first child of the variable, before any `<Dimension>`. A top-level input
+or output and an undeclared variable carry no annotation. Evidence:
+`rumoca-phase-codegen` `fmi_projection_tests.rs` and
+`cli_target_fmi/declared_causality.rs`, which validate nested algebraic, state,
+array, discrete, and input declarations against the official schemas, FMPy,
+and VDMCheck. VDMCheck3 1.1.3 cannot load an `<Annotation>` with character
+content, which the FMI 3.0.2 schema permits, so its input omits the
+annotations while `xmllint` validates the unmodified description.
+
 `fmi3GetEventIndicators` in Continuous-Time Mode returns each checked indicator
 with exact zero oriented to `+EPSILON` for `RootZeroDomain::Positive`, to
 `-EPSILON` for `NonPositive`, and for `Previous` into that indicator's frozen
