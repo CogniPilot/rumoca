@@ -169,8 +169,13 @@ fn nested_package_alias_target_ref<'a>(
     })
 }
 
+// A package that only extends another is an alias of it unless the extends
+// modification binds constants or redeclares members: the modified package
+// is then a distinct selection (MLS 7.3) whose constants and members the
+// instance must see.
 fn is_package_alias_definition(class_def: &rumoca_ir_ast::ClassDef) -> bool {
     class_def.extends.len() == 1
+        && class_def.extends[0].modifications.is_empty()
         && class_def.imports.is_empty()
         && class_def.classes.is_empty()
         && class_def.components.is_empty()

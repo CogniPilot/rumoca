@@ -1065,6 +1065,7 @@ pub(crate) fn finalize_flat_model(
     // later rewrite to reintroduce source-shaped record arguments against an
     // already decomposed signature.
     functions::lower_record_function_params(flat)?;
+    expand_record_array_field_projections_in_equations(flat);
     // Recheck the decomposed ABI and materialize defaults of any scalar calls
     // introduced by record projection.
     functions::materialize_flat_function_call_args(flat)?;

@@ -449,8 +449,12 @@ fn exact_package_function_rewrite(
             );
             !exposures.is_empty()
         });
-    let respell_through_package =
-        !alias_exposes_selection && prefix_part.is_some_and(|prefix| prefix.ident == package.alias);
+    // An instance scope selects the package per instance, so a call there is
+    // respelled through that instance's concrete package even when the alias's
+    // default also exposes the implementation.
+    let instance_selects_package = package.active && !ctx.active_scope.is_root();
+    let respell_through_package = (instance_selects_package || !alias_exposes_selection)
+        && prefix_part.is_some_and(|prefix| prefix.ident == package.alias);
     if projected == selection && !respell_through_package {
         return Ok(None);
     }

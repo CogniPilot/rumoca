@@ -18,6 +18,10 @@ pub(super) fn resolve_override_member_name(
     }
     let scope = reference.component_scope()?;
     let member_leaf = scope.leaf_ident()?;
+    // MLS 3.7.2: `time` is the predefined simulation time, never a package member.
+    if member_leaf == "time" && !reference.as_str().contains('.') {
+        return None;
+    }
     let package = if let Some(source_package_def_id) = reference
         .target_def_id()
         .and_then(|def_id| ctx.class_index.parent_def_id(def_id))

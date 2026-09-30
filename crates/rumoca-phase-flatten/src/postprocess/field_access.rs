@@ -382,6 +382,157 @@ fn append_flat_subscripts(
     Some(())
 }
 
+/// Expand a record-array field projection in equations into its coordinates.
+///
+/// Record call decomposition turns `f(states)` over an expanded record array
+/// into `f(states.p, ...)`. Flat owns only the element coordinates
+/// `states[i].p`, so each projection is spelled as the array of those
+/// coordinates, exactly as instantiation spells a written `states.p`.
+pub(crate) fn expand_record_array_field_projections_in_equations(flat: &mut flat::Model) {
+    use rumoca_core::ExpressionRewriter;
+    let elements = record_array_elements(flat);
+    if elements.is_empty() {
+        return;
+    }
+    let mut expander = RecordArrayProjectionExpander {
+        elements: &elements,
+    };
+    for eq in flat
+        .equations
+        .iter_mut()
+        .chain(flat.initial_equations.iter_mut())
+    {
+        eq.residual = expander.rewrite_expression(&eq.residual);
+    }
+    for family in flat
+        .structured_equations
+        .iter_mut()
+        .chain(flat.initial_structured_equations.iter_mut())
+    {
+        if let Some(template) = family.template.as_mut() {
+            for expression in &mut template.body {
+                *expression = expander.rewrite_expression(expression);
+            }
+        }
+    }
+    for variable in flat.variables.values_mut() {
+        for slot in [
+            &mut variable.binding,
+            &mut variable.start,
+            &mut variable.min,
+            &mut variable.max,
+            &mut variable.nominal,
+        ] {
+            if let Some(expression) = slot.as_mut() {
+                *expression = expander.rewrite_expression(expression);
+            }
+        }
+    }
+}
+
+/// Element references of each expanded rank-1 record array, keyed by the
+/// array's rendered name.
+fn record_array_elements(flat: &flat::Model) -> HashMap<String, Vec<rumoca_core::Reference>> {
+    let mut elements: HashMap<String, Vec<rumoca_core::Reference>> = HashMap::new();
+    for (key, record) in &flat.record_instances {
+        let last = record.component_ref.parts().last();
+        if last.is_none_or(|part| part.subs.len() != 1) {
+            continue;
+        }
+        let Some(idx) = key.as_str().rfind('[') else {
+            continue;
+        };
+        elements
+            .entry(key.as_str()[..idx].to_string())
+            .or_default()
+            .push(rumoca_core::Reference::with_component_reference(
+                key.as_str(),
+                record.component_ref.clone(),
+            ));
+    }
+    elements
+}
+
+struct RecordArrayProjectionExpander<'a> {
+    elements: &'a HashMap<String, Vec<rumoca_core::Reference>>,
+}
+
+impl RecordArrayProjectionExpander<'_> {
+    /// The record-array name, field, and field identity a node projects.
+    fn projection<'e>(
+        &self,
+        expr: &'e rumoca_core::Expression,
+    ) -> Option<(&Vec<rumoca_core::Reference>, &'e str, rumoca_core::DefId)> {
+        match expr {
+            rumoca_core::Expression::FieldAccess {
+                base,
+                field,
+                field_def_id,
+                ..
+            } => {
+                let rumoca_core::Expression::VarRef {
+                    name, subscripts, ..
+                } = base.as_ref()
+                else {
+                    return None;
+                };
+                if !subscripts.is_empty() {
+                    return None;
+                }
+                Some((self.elements.get(name.as_str())?, field, *field_def_id))
+            }
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.is_empty() => {
+                let part = name.component_ref()?.parts().last()?;
+                let prefix = name.as_str().strip_suffix(part.ident.as_str())?;
+                let prefix = prefix.strip_suffix('.')?;
+                Some((self.elements.get(prefix)?, part.ident.as_str(), part.def_id))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl rumoca_core::ExpressionRewriter for RecordArrayProjectionExpander<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        let Some((elements, field, field_def_id)) = self.projection(expr) else {
+            return self.walk_expression(expr);
+        };
+        let span = expression_span_or_dummy(expr);
+        let Ok(provenance) =
+            rumoca_core::ProvenanceSpan::new(span, "record array field projection")
+        else {
+            return self.walk_expression(expr);
+        };
+        let projected = elements
+            .iter()
+            .map(|element| {
+                element
+                    .with_appended_field(field, field_def_id, provenance)
+                    .ok()
+                    .map(|reference| rumoca_core::Expression::VarRef {
+                        name: reference,
+                        subscripts: vec![],
+                        span,
+                    })
+            })
+            .collect::<Option<Vec<_>>>();
+        match projected {
+            Some(elements) => rumoca_core::Expression::Array {
+                elements,
+                kind: rumoca_core::ArrayConstructor::Array,
+                span,
+            },
+            None => self.walk_expression(expr),
+        }
+    }
+}
+
+fn expression_span_or_dummy(expr: &rumoca_core::Expression) -> rumoca_core::Span {
+    expr.span().unwrap_or(rumoca_core::Span::DUMMY)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

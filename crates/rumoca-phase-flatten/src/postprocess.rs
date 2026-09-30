@@ -28,8 +28,8 @@ pub(crate) use constant_lookup::constant_expr_preserves_array_shape;
 pub(crate) use constant_substituter::substitute_known_constants_expr;
 pub(crate) use constructor_calls::mark_record_constructor_calls;
 pub(super) use field_access::{
-    drop_invalid_field_access_bindings, normalize_record_array_field_access_bindings,
-    resolve_nested_constructor_field_access_bindings,
+    drop_invalid_field_access_bindings, expand_record_array_field_projections_in_equations,
+    normalize_record_array_field_access_bindings, resolve_nested_constructor_field_access_bindings,
 };
 pub(crate) use index_collapse::{collapse_index_refs_to_known_varrefs, field_access_flat_path};
 pub(crate) use indexed_dimension_recovery::recover_indexed_lhs_dimensions;

@@ -355,3 +355,36 @@ fn a_function_calls_a_short_class_alias_of_another_packages_function() {
         panic!("Top compiles: {error:?}");
     }
 }
+
+/// A whole record array is passed where the function takes one record, so the
+/// call maps over the elements (MLS 12.4.6).
+const RECORD_ARRAY_CALL: &str = r#"
+record R
+  Real p;
+  Real q;
+end R;
+
+function f
+  input R s;
+  output Real T;
+algorithm
+  T := s.p + s.q;
+end f;
+
+model Top
+  R states[2](each p = 2, each q = 3);
+  Real Ts[2];
+equation
+  Ts = f(states);
+end Top;
+"#;
+
+#[test]
+fn a_record_array_argument_maps_the_function_over_its_elements() {
+    let result = Compiler::new()
+        .model("Top")
+        .compile_str(RECORD_ARRAY_CALL, "RecordArrayCall.mo");
+    if let Err(error) = result {
+        panic!("Top compiles: {error:?}");
+    }
+}
