@@ -501,3 +501,76 @@ end E3_DeadBranch;
     assert_close(last(&sim, "y"), 3.0, 1.0e-5, "der(y) = 3 over 1 s");
     Ok(())
 }
+
+/// MLS §3.7.4.4 admits array operands of one common shape; each element reads
+/// its own `actual` at simulation time.
+#[test]
+fn reads_actual_elementwise_on_an_array_row() -> Result<(), Box<dyn std::error::Error>> {
+    const SOURCE: &str = r#"
+model ArrayHomotopy "homotopy over a vectorized call"
+  function mdot
+    input Real dp;
+    input Real rho;
+    output Real m_flow;
+  algorithm
+    m_flow := dp*rho;
+  end mdot;
+  Real rhos[2] = {2, 3};
+  Real dps[2] = {5 + time, 7};
+  Real m_flows[2];
+equation
+  m_flows = homotopy(actual = mdot(dps, rhos), simplified = 2*dps);
+end ArrayHomotopy;
+"#;
+    let sim = simulate(SOURCE, "ArrayHomotopy", 1.0)?;
+
+    assert_close(first(&sim, "m_flows[1]"), 10.0, 1.0e-9, "m_flows[1] at t=0");
+    assert_close(last(&sim, "m_flows[1]"), 12.0, 1.0e-9, "m_flows[1] at t=1");
+    assert_close(
+        last(&sim, "m_flows[2]"),
+        21.0,
+        1.0e-9,
+        "m_flows[2] reads actual",
+    );
+    Ok(())
+}
+
+/// The continuation steers each element of an array homotopy to the root its
+/// own `simplified` element selects.
+#[test]
+fn branch_selection_is_elementwise_on_an_array_row() -> Result<(), Box<dyn std::error::Error>> {
+    const SOURCE: &str = r#"
+model ArrayBistable
+  function sat
+    input Real u;
+    output Real y;
+  algorithm
+    y := if u > 15.0 then 15.0 else if u < -15.0 then -15.0 else u;
+  end sat;
+  Real x[2];
+  Real vin[2];
+  Real y[2](each start = 0, each fixed = true);
+equation
+  vin = 0.4 * x;
+  x = homotopy(
+        actual = sat(15000 * vin),
+        simplified = {15.0, -15.0});
+  der(y) = x;
+end ArrayBistable;
+"#;
+    let sim = simulate(SOURCE, "ArrayBistable", 1.0)?;
+
+    assert_close(
+        first(&sim, "x[1]"),
+        15.0,
+        1.0e-6,
+        "x[1] follows simplified = 15",
+    );
+    assert_close(
+        first(&sim, "x[2]"),
+        -15.0,
+        1.0e-6,
+        "x[2] follows simplified = -15",
+    );
+    Ok(())
+}

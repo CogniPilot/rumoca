@@ -555,8 +555,10 @@ fn homotopy_result(
     at: DaeProvenance,
 ) -> Result<ValueType, DaeConstructionError> {
     expect_arity(arguments, 2, at)?;
+    // MLS §3.7.4.4: `actual` and `simplified` are Real expressions of one
+    // common shape; an array homotopy blends each element independently.
     let simplified = storage.expr_type(arguments[1], at)?;
-    if !actual.is_scalar() || actual.scalar_type() != ScalarType::Real || simplified != &actual {
+    if actual.scalar_type() != ScalarType::Real || simplified != &actual {
         return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
     }
     Ok(actual)
