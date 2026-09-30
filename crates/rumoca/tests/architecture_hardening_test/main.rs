@@ -13,6 +13,7 @@ mod instantiate_value_fabrication;
 mod parser_contract;
 mod parser_ownership;
 mod phase_diagnostics;
+mod process_allocator;
 mod public_api_surface;
 mod size_and_validation;
 mod solver_backend_boundary;

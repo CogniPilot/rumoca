@@ -25,12 +25,12 @@
 //! a thin wrapper that sets up the allocator and the miette error hook, parses
 //! the arguments, runs [`rumoca::cli::run`], and renders any error.
 
-// mimalloc is gated behind `native-allocator` so pure-Rust
-// library consumers of this crate don't pull a C allocator. The binary always
-// enables it via the package default.
+// The process allocator (mimalloc) is gated behind `native-allocator` so
+// pure-Rust library consumers of this crate don't pull a C allocator. The
+// binary always enables it via the package default.
 #[cfg(feature = "native-allocator")]
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: rumoca_allocator::ProcessAllocator = rumoca_allocator::ProcessAllocator;
 
 use clap::Parser;
 use miette::{GraphicalTheme, MietteHandlerOpts};

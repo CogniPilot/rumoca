@@ -12,6 +12,7 @@ exclude = ["infra/fuzz", ".claude/worktrees", "vendor/diffsol"]
 members = [
     "crates/rumoca",
     "crates/rumoca-worker",
+    "crates/rumoca-allocator",
     "crates/rumoca-test-msl",
     "crates/rumoca-core",
     "crates/rumoca-contracts",
@@ -92,6 +93,7 @@ name = "rumoca"
 # crates that depend on `rumoca`.
 rumoca = { path = "crates/rumoca", default-features = false }
 rumoca-worker = { path = "crates/rumoca-worker" }
+rumoca-allocator = { path = "crates/rumoca-allocator" }
 rumoca-core = { path = "crates/rumoca-core" }
 rumoca-contracts = { path = "crates/rumoca-contracts" }
 rumoca-reference = { path = "crates/rumoca-reference" }
@@ -146,6 +148,7 @@ rumoca-test-msl = { path = "crates/rumoca-test-msl" }
 # External dependencies
 anyhow = "1.0"
 mimalloc = "0.1"
+libmimalloc-sys = "0.1"
 num_cpus = "1.17"
 blake3 = "1.5"
 clap = { version = "4.5", features = ["derive"] }

@@ -324,6 +324,9 @@ Steady-state CI rejects reverse dependencies across this chain. `rumoca-compile`
 MUST NOT depend on concrete solvers or visualization assets; backend-selection
 APIs MUST affect runtime behavior, not only metadata.
 
+Every executable installs one process allocator with a fixed startup bound on
+reserved address space: [SPEC_0041 §6](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#6-process-allocator-catalog-spec_0029-12).
+
 ## Dependency Tiers
 
 Workspace crates use six tiers. Dependencies flow downward.
