@@ -180,7 +180,6 @@ path = "tests/suite_galec_fmu/main.rs"
 rumoca-eval-dae = { workspace = true }
 crossterm = { workspace = true }
 tungstenite = { workspace = true }
-mimalloc = { workspace = true }
 walkdir = { workspace = true }
 serde = { workspace = true }
 syn = { workspace = true }

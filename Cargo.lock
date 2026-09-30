@@ -4222,7 +4222,6 @@ dependencies = [
  "clap_complete",
  "crossterm",
  "miette",
- "mimalloc",
  "minijinja",
  "proc-macro2",
  "quick-xml",
