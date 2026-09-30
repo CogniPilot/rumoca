@@ -268,3 +268,24 @@ fn collect_effective_package_constant_aliases(
         }
     }
 }
+
+/// Constants of the package a callable is exposed through.
+///
+/// MLS 5.3.2, 7.1: a function inherited into another package sees that
+/// package's constants, including the ones its extends modification binds, not
+/// only the constants of the package that declares it. The exposing package's
+/// effective constants therefore shadow the declaring package's.
+pub(super) fn collect_exposed_package_constant_aliases(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    exposed_function_name: &str,
+    imports: &mut qualify::ImportMap,
+) {
+    let Some((exposing_scope, _)) = exposed_function_name.rsplit_once('.') else {
+        return;
+    };
+    if class_index.get_by_qualified_name(exposing_scope).is_none() {
+        return;
+    }
+    collect_effective_package_constant_aliases(tree, class_index, exposing_scope, imports, true);
+}
