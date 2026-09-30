@@ -2,7 +2,7 @@
 mod artifact_tests;
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: rumoca_allocator::ProcessAllocator = rumoca_allocator::ProcessAllocator;
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufWriter, Write};

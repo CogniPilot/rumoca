@@ -6,7 +6,7 @@
 //! never compiled for a plain `cargo xtask` invocation.
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: rumoca_allocator::ProcessAllocator = rumoca_allocator::ProcessAllocator;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

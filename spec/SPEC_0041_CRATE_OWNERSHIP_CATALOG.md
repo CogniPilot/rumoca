@@ -6,7 +6,7 @@ REFERENCE
 ## Summary
 
 Lookup catalog of single-source helper owners, session-owned state, session
-persistence, and layer ownership referenced by
+persistence, layer ownership, and the process allocator referenced by
 [SPEC_0029](SPEC_0029_CRATE_BOUNDARIES.md).
 
 ## How To Use This Catalog
@@ -60,6 +60,7 @@ import that path.
 | Solver pre-parameter snapshot helpers (`write_pre_params_from_sources`, `update_slot`, `commit_pre_params_after_event`) | `rumoca-solver::runtime::pre_params` | Shared `pre(...)` snapshot mechanics. |
 | Component-private algebraic settle helpers (`project_algebraics`, `project_algebraics_and_detect_changes`, `project_initial_*`) | `rumoca-solver::runtime::projection` | Used only while evaluating or initializing the FMI component; numerical plugins cannot import this policy. |
 | Component-private Solve evaluation state (`SolveRuntime`, event/discrete row application, algebraic settle, Jacobian/sensitivity reports) | `rumoca-solver::runtime::solve_runtime` | Used only behind the FMI component projection; the common host reaches it solely through the FMI ME kernel. |
+| Process global allocator and its startup configuration (`ProcessAllocator`, `ProcessAllocatorError`, `MIMALLOC_ARENA_RESERVE_KIB`, `GLIBC_MALLOC_ARENA_MAX`) | `rumoca-allocator` | Rules in §6. The only production crate that implements `GlobalAlloc` or sets mimalloc/glibc allocator options; it has no workspace dependencies, so every executable, including `xtask`, can install it. |
 | MSL parity observation-grid policy (`msl_sim_output_dt`, `MSL_SIM_OUTPUT_INTERVALS`) | `rumoca-worker` | A valid Modelica experiment interval owns the grid; otherwise Rumoca uses the same scale-invariant uniform base grid as the OMC oracle. Solver event instants remain additional output points. |
 
 ### 2. Session-Owned Source-Root And Class-Graph Catalog (SPEC_0029 §10)
@@ -148,6 +149,23 @@ Simulation composition:
 - Configured signal references MAY read compiled model values, local input state,
   runtime counters, and constants. The signal-reference language must stay in the
   simulation/config layer and MUST NOT leak into compiler IR.
+
+### 6. Process Allocator Catalog (SPEC_0029 §12)
+
+A process's reserved address space, not only its resident memory, counts
+against an address-space limit (`RLIMIT_AS`). `rumoca-allocator` owns the one
+process allocator (row in §1).
+
+| Rule | Brief Justification |
+|---|---|
+| Every workspace executable installs `rumoca_allocator::ProcessAllocator` as its `#[global_allocator]`; production code has no other global allocator | One configuration, enforced by architecture test |
+| On Linux the allocator applies its configuration inside its first allocation, before the Rust runtime reaches `main` and before any thread exists | mimalloc reserves its first arena before `main`; configuring from `main` is too late |
+| The mimalloc arena reserve is `MIMALLOC_ARENA_RESERVE_KIB` = 64 MiB (mimalloc default: 1 GiB) | The smallest reservation mimalloc makes for a regular page; later arenas keep its geometric growth |
+| On Linux glibc the malloc arena bound is `GLIBC_MALLOC_ARENA_MAX` = 1 (`mallopt(M_ARENA_MAX)`) | glibc malloc serves only libc/std internals; one 64 MiB arena per thread made address space grow with the pool |
+| Both values are compile-time constants, independent of environment variables (`MIMALLOC_*`, `MALLOC_ARENA_MAX`) and of the core count | The bound holds on every host |
+| An option the platform does not accept aborts the process with the typed `ProcessAllocatorError` diagnostic; nothing falls back to the defaults | A silently unapplied bound hides the failure it prevents |
+| Off Linux, where reserved address space is not charged against a limit, `ProcessAllocator` is plain mimalloc | Behavior is unchanged where the bound buys nothing |
+| Library bindings (Python, WASM) install no global allocator; the host process owns its allocator | A library must not reconfigure its embedder |
 
 ## References
 

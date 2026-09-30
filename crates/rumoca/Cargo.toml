@@ -52,7 +52,7 @@ transport-udp = ["rumoca-sim/transport-udp"]
 transport-zenoh = ["rumoca-sim/transport-zenoh"]
 viewer-web = ["rumoca-sim/viewer-web"]
 process-control = ["rumoca-sim/process-control"]
-native-allocator = ["dep:mimalloc"]
+native-allocator = ["dep:rumoca-allocator"]
 fmi = ["rumoca-sim/fmi"]
 fmu-packaging = ["dep:zip", "fmi"]
 examples-smoke-tests = []
@@ -89,11 +89,11 @@ rumoca-phase-resolve = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers"] }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
+# Binary-only global allocator; gated behind `native-allocator` (see [features]).
+rumoca-allocator = { workspace = true, optional = true }
 
 # External dependencies
 anyhow = { workspace = true }
-# Binary-only global allocator; gated behind `native-allocator` (see [features]).
-mimalloc = { workspace = true, optional = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 miette = { workspace = true }

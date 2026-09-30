@@ -22,7 +22,7 @@ Composition of the shipped binaries:
 
 | License | Crates |
 |---|---|
-| Apache License 2.0 | 468 |
+| Apache License 2.0 | 470 |
 | MIT License | 111 |
 | Unicode License v3 | 19 |
 | ISC License | 8 |
@@ -5513,6 +5513,7 @@ Used by:
 - [crossbeam-epoch 0.9.18](https://github.com/crossbeam-rs/crossbeam)
 - [crossbeam-queue 0.3.12](https://github.com/crossbeam-rs/crossbeam)
 - [crossbeam-utils 0.8.21](https://github.com/crossbeam-rs/crossbeam)
+- [cty 0.2.2](https://github.com/japaric/cty)
 - [der-parser 10.0.0](https://github.com/rusticata/der-parser.git)
 - [displaydoc 0.2.6](https://github.com/yaahc/displaydoc)
 - [either 1.16.0](https://github.com/rayon-rs/either)
@@ -8698,6 +8699,7 @@ limitations under the License.
 Used by:
 
 - [rumoca 0.10.1](https://github.com/CogniPilot/rumoca)
+- [rumoca-allocator 0.10.1](https://github.com/CogniPilot/rumoca)
 - [rumoca-bind-python 0.10.1](https://github.com/CogniPilot/rumoca)
 - [rumoca-bind-wasm 0.10.1](https://github.com/CogniPilot/rumoca)
 - [rumoca-bind-wasm-diffsol 0.10.1](https://github.com/CogniPilot/rumoca)

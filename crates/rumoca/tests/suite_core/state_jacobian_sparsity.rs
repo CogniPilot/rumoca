@@ -12,7 +12,7 @@ use tempfile::tempdir;
 
 const CELLS: usize = 400;
 
-fn heat_source() -> String {
+pub(super) fn heat_source() -> String {
     format!(
         "model HeatL
   parameter Integer N = {CELLS};

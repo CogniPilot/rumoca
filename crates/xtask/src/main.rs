@@ -25,7 +25,7 @@ mod wasm_smoke;
 mod wasm_tooling;
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: rumoca_allocator::ProcessAllocator = rumoca_allocator::ProcessAllocator;
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};

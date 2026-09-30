@@ -1,0 +1,39 @@
+[package]
+name = "rumoca-allocator"
+description = "Process global allocator for rumoca executables"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+mimalloc = { workspace = true }
+# `extended` exposes the option API (`mi_option_set`/`mi_option_get`) and the
+# option-enum length the arena-reserve index is checked against.
+libmimalloc-sys = { workspace = true, features = ["extended"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+# The crate is the one place a global allocator crosses the C allocator ABI.
+# Keep the unsafe allowance local to this crate; workspace crates remain
+# covered by the default unsafe_code deny rule.
+[lints.rust]
+unsafe_code = "allow"
+unreachable_pub = "deny"
+unnameable_types = "deny"
+private_interfaces = "deny"
+private_bounds = "deny"
+exported_private_dependencies = "deny"
+dead_code = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+excessive_nesting = "deny"
+too_many_lines = "deny"
+too_many_arguments = "deny"
+pub_use = "allow"
+pub_with_shorthand = "allow"
+pub_without_shorthand = "allow"
+missing_enforced_import_renames = "deny"

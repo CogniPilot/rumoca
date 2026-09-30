@@ -15,7 +15,7 @@ this page is the orientation map.
 | Phases | `rumoca-phase-parse`, `-resolve`, `-typecheck`, `-instantiate`, `-flatten`, `-dae`, `-structural`, `-solve`, `-codegen` | One transformation each |
 | Facade | `rumoca-compile` | Session/compilation API the tools use |
 | Evaluators | `rumoca-eval-ast`, `-eval-flat`, `-eval-dae`, `-eval-solve` | Stage-appropriate evaluation |
-| Runtime | `rumoca-sim`, `rumoca-solver`, `rumoca-solver-rk45`, `rumoca-solver-diffsol`, `rumoca-worker` | Simulation orchestration and solver backends |
+| Runtime | `rumoca-sim`, `rumoca-solver`, `rumoca-solver-rk45`, `rumoca-solver-diffsol`, `rumoca-worker`, `rumoca-allocator` | Simulation orchestration, solver backends, and the executables' process allocator |
 | Optimization | `rumoca-opt` | Training and optimization over differentiable Solve runtime |
 | Execution adapters | `rumoca-exec-cranelift`, `rumoca-exec-mlir`; experimental `rumoca-exec-wasm` | JIT/compiled execution over Solve; the WASM row adapter is not selected by a pipeline yet |
 | Interactive I/O | `rumoca-input`, `rumoca-input-keyboard`, `rumoca-input-gamepad`, `rumoca-signal-frame`, `rumoca-transport-udp`, `rumoca-transport-websocket`, `rumoca-web` | Devices, signals, transports, viewer |
