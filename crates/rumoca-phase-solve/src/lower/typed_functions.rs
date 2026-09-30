@@ -108,8 +108,68 @@ pub(crate) struct RegisteredCall<'dae> {
     pub(crate) site: solve::SolvePureCallSite,
     pub(crate) result_ranges: Box<[Range<usize>]>,
     pub(crate) result_leaf_count: usize,
-    pub(crate) assertion_count: usize,
+    /// Every call-scoped assertion output after the result leaves, in owner
+    /// output order: the owner's own predicates, its own message values, then
+    /// each nested call's complete slot tuple.
+    pub(crate) assertion_slots: std::sync::Arc<[AssertionSlot]>,
     pub(crate) assertions: Box<[RegisteredAssertion<'dae>]>,
+}
+
+/// One call-scoped assertion output of a pure-call owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AssertionSlot {
+    /// The Boolean condition of one assertion reached by the invocation.
+    Predicate,
+    /// One scalar an assertion message converts to text, evaluated in the
+    /// frame of the function that declares that assertion.
+    MessageValue(solve::SolveValueType),
+}
+
+impl AssertionSlot {
+    fn value_type(&self) -> solve::SolveValueType {
+        match self {
+            Self::Predicate => solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
+            Self::MessageValue(value_type) => value_type.clone(),
+        }
+    }
+
+    fn output(&self) -> solve::SolvePureCallOutput {
+        match self {
+            Self::Predicate => solve::SolvePureCallOutput::assertion_predicate(),
+            Self::MessageValue(value_type) => {
+                solve::SolvePureCallOutput::assertion_message_value(value_type.clone())
+            }
+        }
+    }
+
+    const fn is_predicate(&self) -> bool {
+        matches!(self, Self::Predicate)
+    }
+
+    /// The value a slot holds when its assertion lies in a branch the
+    /// invocation does not select: a satisfied predicate, and a message value
+    /// that is never rendered because that predicate cannot fail.
+    fn unselected<'program>(
+        &self,
+        builder: &mut solve::TypedProgramBuilder<'program>,
+        provenance: rumoca_core::Span,
+    ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
+        let value = match self {
+            Self::Predicate => solve::SolveValue::boolean(true),
+            Self::MessageValue(value_type) => match value_type.element_type() {
+                solve::SolveScalarType::Real { .. } => {
+                    solve::SolveValue::real(arithmetic_profile(), 0.0)
+                }
+                solve::SolveScalarType::Integer(_) => {
+                    solve::SolveValue::integer(arithmetic_profile(), 0).map_err(|_| {
+                        solve::SolveProgramConstructionError::InvalidCallOutput { provenance }
+                    })?
+                }
+                solve::SolveScalarType::Boolean => solve::SolveValue::boolean(false),
+            },
+        };
+        builder.constant(value, provenance)
+    }
 }
 
 /// Construction-issued correlation shared by every definition one function
@@ -184,6 +244,9 @@ fn insert_conditional_definition_group<'dae>(
 pub(crate) struct RegisteredAssertion<'dae> {
     pub(crate) predicate_output: usize,
     pub(crate) message: dae::ExprId<'dae>,
+    /// Owner output carrying each converted message value, keyed by the value
+    /// expression the message converts.
+    pub(crate) message_values: Box<[(dae::ExprId<'dae>, usize)]>,
     pub(crate) provenance: dae::DaeProvenance,
 }
 
@@ -458,6 +521,8 @@ struct ExpressionLowerer<'builder, 'program, 'dae> {
     cache: HashMap<dae::ExprId<'dae>, LoweredValue<'program, 'dae>>,
     call_values: HashMap<dae::ExprId<'dae>, Vec<solve::ProgramRegister<'program>>>,
     predicate_values: Vec<Option<solve::ProgramRegister<'program>>>,
+    /// Kind of each entry of `predicate_values`, in owner output order.
+    assertion_slots: std::sync::Arc<[AssertionSlot]>,
     next_direct_assertion: usize,
     direct_assertion_count: usize,
 }
@@ -656,7 +721,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             callees: self.callees.clone(),
             predicate_ranges: self.predicate_ranges.clone(),
             conditional_groups: self.conditional_groups.clone(),
-            predicate_count: self.predicate_values.len(),
+            assertion_slots: self.assertion_slots.clone(),
             direct_assertion_count: self.direct_assertion_count,
         };
         let remaining = remaining.to_vec();
@@ -690,10 +755,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         let mut output_types =
             lower_value_type_leaves(self.view, value_type, arithmetic_profile())?;
         let value_leaf_count = output_types.len();
-        output_types.extend(std::iter::repeat_n(
-            solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
-            pending.len(),
-        ));
+        output_types.extend(self.pending_slot_types(&pending));
         let (captures, environment) =
             self.capture_environment_for(operands[1..].iter().copied())?;
         let context = RegionContext {
@@ -701,7 +763,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             callees: self.callees.clone(),
             predicate_ranges: self.predicate_ranges.clone(),
             conditional_groups: self.conditional_groups.clone(),
-            predicate_count: self.predicate_values.len(),
+            assertion_slots: self.assertion_slots.clone(),
             direct_assertion_count: self.direct_assertion_count,
         };
         let true_environment = environment.clone();
@@ -806,6 +868,33 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         Err(solve::SolveProgramConstructionError::TypeMismatch { provenance })
     }
 
+    /// Output types of the pending assertion slots a region publishes.
+    fn pending_slot_types(&self, pending: &[usize]) -> Vec<solve::SolveValueType> {
+        pending
+            .iter()
+            .map(|&slot| self.assertion_slots[slot].value_type())
+            .collect()
+    }
+
+    /// The value a region publishes for one pending assertion slot: the value
+    /// its branch produced, or the unselected value when the branch reaches
+    /// no call that owns the slot.
+    fn published_slot(
+        &mut self,
+        slot: usize,
+        provenance: rumoca_core::Span,
+    ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
+        if let Some(value) = self.predicate_values.get(slot).copied().flatten() {
+            return Ok(value);
+        }
+        let kind = self
+            .assertion_slots
+            .get(slot)
+            .cloned()
+            .ok_or(solve::SolveProgramConstructionError::InvalidCallOutput { provenance })?;
+        kind.unselected(self.builder, provenance)
+    }
+
     fn pending_predicates(
         &self,
         expressions: impl IntoIterator<Item = dae::ExprId<'dae>>,
@@ -877,10 +966,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 arithmetic_profile(),
             )?);
         }
-        output_types.extend(std::iter::repeat_n(
-            solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
-            pending.len(),
-        ));
+        output_types.extend(self.pending_slot_types(pending));
         let capture_roots = conditions[1..]
             .iter()
             .copied()
@@ -892,7 +978,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             callees: self.callees.clone(),
             predicate_ranges: self.predicate_ranges.clone(),
             conditional_groups: self.conditional_groups.clone(),
-            predicate_count: self.predicate_values.len(),
+            assertion_slots: self.assertion_slots.clone(),
             direct_assertion_count: self.direct_assertion_count,
         };
         let true_environment = environment.clone();
@@ -1006,10 +1092,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             value_ranges.push((value_type, start..output_types.len()));
         }
         let value_leaf_count = output_types.len();
-        output_types.extend(std::iter::repeat_n(
-            solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
-            pending.len(),
-        ));
+        output_types.extend(self.pending_slot_types(&pending));
         let destinations = self.assignment_conditional_chain(
             &value_types,
             &conditions,
@@ -1415,7 +1498,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             callees: self.callees.clone(),
             predicate_ranges: self.predicate_ranges.clone(),
             conditional_groups: self.conditional_groups.clone(),
-            predicate_count: self.predicate_values.len(),
+            assertion_slots: self.assertion_slots.clone(),
             direct_assertion_count: self.direct_assertion_count,
         };
         let result = self.builder.map(
@@ -1787,7 +1870,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             None => {
                 let lowered_arguments = self.call_arguments(expression, arguments, at)?;
                 let values = self.builder.call(call.owner, &lowered_arguments, at)?;
-                if values.len() != call.result_leaf_count + call.assertion_count {
+                if values.len() != call.result_leaf_count + call.assertion_slots.len() {
                     return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
                         provenance: at,
                     });
@@ -1795,7 +1878,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 let predicate_range = self.predicate_ranges.get(&owner).cloned().ok_or(
                     solve::SolveProgramConstructionError::InvalidCallOutput { provenance: at },
                 )?;
-                if predicate_range.len() != call.assertion_count {
+                if predicate_range.len() != call.assertion_slots.len() {
                     return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
                         provenance: at,
                     });

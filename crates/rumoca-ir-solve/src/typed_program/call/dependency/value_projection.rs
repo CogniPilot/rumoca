@@ -47,7 +47,7 @@ pub(in crate::typed_program) fn derive(
 ) -> Option<ValueProjections> {
     if outputs
         .iter()
-        .any(|output| output.kind() == SolvePureCallOutputKind::AssertionPredicate)
+        .any(|output| output.kind() != SolvePureCallOutputKind::Result)
     {
         return None;
     }

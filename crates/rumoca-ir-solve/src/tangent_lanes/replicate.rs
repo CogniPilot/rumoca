@@ -4,7 +4,7 @@ use super::operands::{Operand, destination, visit_operands};
 use super::regions::{Regions, Slot, aggregate_lanes};
 use super::{TangentLaneError, unsupported};
 use crate::linear_op::ScalarProgramRegisterFlow;
-use crate::{LinearOp, Reg, SolvePureCallOutputKind, TensorConcatenateSource};
+use crate::{LinearOp, Reg, TensorConcatenateSource};
 
 /// Construction state.
 ///
@@ -656,8 +656,7 @@ impl Replication {
         let mut register = start as usize;
         let mut output = 0;
         while output < outputs.len() {
-            let paired = outputs[output].kind() == SolvePureCallOutputKind::Result
-                && is_real(outputs[output].value_type());
+            let paired = outputs[output].carries_tangent();
             let leaves = outputs[output..].iter().take(if paired { 2 } else { 1 });
             for (offset, leaf) in leaves.enumerate() {
                 let count = leaf.value_type().scalar_count() as usize;

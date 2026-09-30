@@ -6,7 +6,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::{
-    ConditionalDefinitionGroup, ExpressionLowerer, LoweredValue, ModelCoordinateKey, RegisteredCall,
+    AssertionSlot, ConditionalDefinitionGroup, ExpressionLowerer, LoweredValue, ModelCoordinateKey,
+    RegisteredCall,
 };
 
 #[derive(Clone)]
@@ -42,7 +43,7 @@ pub(super) struct RegionContext<'dae> {
     pub(super) predicate_ranges: HashMap<dae::ExprId<'dae>, Range<usize>>,
     pub(super) conditional_groups:
         HashMap<dae::FunctionDefinitionId<'dae>, ConditionalDefinitionGroup<'dae>>,
-    pub(super) predicate_count: usize,
+    pub(super) assertion_slots: std::sync::Arc<[AssertionSlot]>,
     pub(super) direct_assertion_count: usize,
 }
 
@@ -127,12 +128,7 @@ pub(super) fn lower_region_values<'program, 'dae>(
         values.extend(value.leaves);
     }
     for slot in pending_predicates {
-        let predicate = match lowerer.predicate_values.get(*slot).copied().flatten() {
-            Some(predicate) => predicate,
-            None => lowerer
-                .builder
-                .constant(solve::SolveValue::boolean(true), provenance)?,
-        };
+        let predicate = lowerer.published_slot(*slot, provenance)?;
         values.push(predicate);
     }
     if values.len() != outputs.len() {
@@ -231,7 +227,8 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
         predicate_ranges: context.predicate_ranges.clone(),
         cache: HashMap::new(),
         call_values: HashMap::new(),
-        predicate_values: vec![None; context.predicate_count],
+        predicate_values: vec![None; context.assertion_slots.len()],
+        assertion_slots: context.assertion_slots.clone(),
         next_direct_assertion: 0,
         direct_assertion_count: context.direct_assertion_count,
     })
@@ -260,12 +257,7 @@ pub(super) fn lower_region_conditional<'program, 'dae>(
     let value = lowerer.coerce_value(value, value_type, provenance)?;
     let mut values = value.leaves;
     for slot in pending {
-        let predicate = match lowerer.predicate_values.get(slot).copied().flatten() {
-            Some(predicate) => predicate,
-            None => lowerer
-                .builder
-                .constant(solve::SolveValue::boolean(true), provenance)?,
-        };
+        let predicate = lowerer.published_slot(slot, provenance)?;
         values.push(predicate);
     }
     if values.len() != outputs.len() {

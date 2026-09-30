@@ -91,7 +91,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             callees: self.callees.clone(),
             predicate_ranges: self.predicate_ranges.clone(),
             conditional_groups: self.conditional_groups.clone(),
-            predicate_count: self.predicate_values.len(),
+            assertion_slots: self.assertion_slots.clone(),
             direct_assertion_count: self.direct_assertion_count,
         };
         let iteration = FoldIteration {

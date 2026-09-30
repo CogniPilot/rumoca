@@ -1197,11 +1197,7 @@ impl<'a> AdBuilder<'a> {
         let mut directional_offset = 0usize;
         for output in site.outputs() {
             let count = output.value_type().scalar_count() as usize;
-            let has_tangent = output.kind() == rumoca_ir_solve::SolvePureCallOutputKind::Result
-                && matches!(
-                    output.value_type().element_type(),
-                    rumoca_ir_solve::SolveScalarType::Real { .. }
-                );
+            let has_tangent = output.carries_tangent();
             let primal_start = checked_ad_reg_offset(
                 directional_start,
                 directional_offset,

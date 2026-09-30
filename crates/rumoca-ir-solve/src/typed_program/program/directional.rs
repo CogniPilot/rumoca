@@ -15,8 +15,7 @@ mod mapped;
 
 use super::*;
 use crate::typed_program::call::{
-    SolvePureCallDirectionalOwner, SolvePureCallOutput, SolvePureCallOutputKind,
-    SolvePureCallTableView,
+    SolvePureCallDirectionalOwner, SolvePureCallOutput, SolvePureCallTableView,
 };
 
 #[derive(Clone, Copy)]
@@ -86,22 +85,13 @@ fn expand_types(types: &[SolveValueType]) -> Vec<SolveValueType> {
         .collect()
 }
 
+/// Each primal output followed by its tangent when it carries one; a tangent
+/// keeps its primal's kind, so assertion outputs stay effect outputs.
 fn expand_outputs(outputs: &[SolvePureCallOutput]) -> Vec<SolvePureCallOutput> {
     outputs
         .iter()
         .flat_map(|output| {
-            let primal = match output.kind() {
-                SolvePureCallOutputKind::Result => {
-                    SolvePureCallOutput::result(output.value_type().clone())
-                }
-                SolvePureCallOutputKind::AssertionPredicate => {
-                    SolvePureCallOutput::assertion_predicate()
-                }
-            };
-            let tangent = (output.kind() == SolvePureCallOutputKind::Result
-                && is_real(output.value_type()))
-            .then(|| SolvePureCallOutput::result(output.value_type().clone()));
-            std::iter::once(primal).chain(tangent)
+            std::iter::once(output.clone()).chain(output.carries_tangent().then(|| output.clone()))
         })
         .collect()
 }

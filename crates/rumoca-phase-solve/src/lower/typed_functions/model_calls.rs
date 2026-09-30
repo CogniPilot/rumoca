@@ -1,6 +1,6 @@
 //! Shared registration of nested calls and their assertion ownership.
 
-use super::{PureCallRegistry, RegisteredAssertion, RegisteredCall};
+use super::{AssertionSlot, PureCallRegistry, RegisteredAssertion, RegisteredCall};
 use crate::lower::call_scoped_actions::CallAssertionProjection;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
@@ -33,6 +33,7 @@ type RegisteredExpressionCalls<'dae, Scope> = (
     HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
     HashMap<dae::ExprId<'dae>, Range<usize>>,
     Vec<RegisteredExpressionAssertion<'dae, Scope>>,
+    std::sync::Arc<[AssertionSlot]>,
 );
 
 impl<'dae> PureCallRegistry<'dae> {
@@ -89,21 +90,14 @@ impl<'dae> PureCallRegistry<'dae> {
         }
         let mut callees = HashMap::new();
         let mut predicate_ranges = HashMap::new();
-        let mut predicate_count = 0usize;
+        let mut slots = Vec::new();
         let mut assertions = Vec::new();
         for (owner, projection, scope) in roots {
             let registered = self.register_root(view, projection)?;
-            let end = predicate_count
-                .checked_add(registered.assertion_count)
-                .ok_or(solve::SolveProgramConstructionError::IdentityOverflow {
-                    provenance: view
-                        .expression(projection)
-                        .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
-                        .provenance()
-                        .span(),
-                })?;
-            predicate_ranges.insert(owner, predicate_count..end);
-            predicate_count = end;
+            let start = slots.len();
+            slots.extend(registered.assertion_slots.iter().cloned());
+            let end = slots.len();
+            predicate_ranges.insert(owner, start..end);
             assertions.extend(registered.assertions.iter().cloned().enumerate().map(
                 |(output_offset, assertion)| RegisteredExpressionAssertion {
                     assertion,
@@ -116,6 +110,6 @@ impl<'dae> PureCallRegistry<'dae> {
             ));
             callees.insert(owner, registered);
         }
-        Ok((callees, predicate_ranges, assertions))
+        Ok((callees, predicate_ranges, assertions, slots.into()))
     }
 }

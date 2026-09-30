@@ -332,7 +332,7 @@ impl<'formal> PureCallRegistry<'formal> {
     ) -> Result<FormalExpressionProgram<'formal>, solve::SolveProgramConstructionError> {
         let coordinates =
             collect_model_coordinate_types(view, bodies.iter().map(|body| body.value), [], at)?;
-        let (callees, predicate_ranges, assertions) =
+        let (callees, predicate_ranges, assertions, assertion_slots) =
             self.register_expression_calls(view, bodies.iter().map(|body| (body.value, ())))?;
         let predicate_count = assertions.len();
         let inputs = coordinates
@@ -378,7 +378,8 @@ impl<'formal> PureCallRegistry<'formal> {
                         predicate_ranges,
                         cache: HashMap::new(),
                         call_values: HashMap::new(),
-                        predicate_values: vec![None; predicate_count],
+                        predicate_values: vec![None; assertion_slots.len()],
+                        assertion_slots: assertion_slots.clone(),
                         next_direct_assertion: 0,
                         direct_assertion_count: 0,
                     };
@@ -389,6 +390,9 @@ impl<'formal> PureCallRegistry<'formal> {
                     for (predicate, &output) in lowerer
                         .predicate_values
                         .into_iter()
+                        .zip(assertion_slots.iter())
+                        .filter(|(_, slot)| slot.is_predicate())
+                        .map(|(value, _)| value)
                         .zip(&outputs[residual_outputs..])
                     {
                         let value = predicate.ok_or(

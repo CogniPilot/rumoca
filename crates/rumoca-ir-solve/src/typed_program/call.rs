@@ -104,6 +104,9 @@ impl SolvePureCallIdentity {
 pub enum SolvePureCallOutputKind {
     Result,
     AssertionPredicate,
+    /// One scalar a call-scoped assertion message converts to text, evaluated
+    /// in the frame of the function that declares the assertion.
+    AssertionMessageValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +130,24 @@ impl SolvePureCallOutput {
             value_type: SolveValueType::scalar(SolveScalarType::Boolean),
             kind: SolvePureCallOutputKind::AssertionPredicate,
         }
+    }
+
+    /// A converted assertion-message scalar of `value_type`.
+    #[must_use]
+    pub fn assertion_message_value(value_type: SolveValueType) -> Self {
+        Self {
+            value_type,
+            kind: SolvePureCallOutputKind::AssertionMessageValue,
+        }
+    }
+
+    /// Whether the directional form of the owner pairs this output with a
+    /// tangent output: every Real result and Real message value does, a
+    /// Boolean predicate never does.
+    #[must_use]
+    pub fn carries_tangent(&self) -> bool {
+        self.kind != SolvePureCallOutputKind::AssertionPredicate
+            && matches!(self.value_type.element_type(), SolveScalarType::Real { .. })
     }
 
     #[must_use]
@@ -691,10 +712,15 @@ fn require_owner_interface(
     {
         return Err(SolveProgramConstructionError::ProfileMismatch { provenance });
     }
-    if outputs.iter().any(|output| {
-        output.kind == SolvePureCallOutputKind::AssertionPredicate
-            && (output.value_type.element_type() != SolveScalarType::Boolean
-                || !output.value_type.dimensions().is_empty())
+    if outputs.iter().any(|output| match output.kind {
+        SolvePureCallOutputKind::Result => false,
+        SolvePureCallOutputKind::AssertionPredicate => {
+            output.value_type.element_type() != SolveScalarType::Boolean
+                || !output.value_type.dimensions().is_empty()
+        }
+        SolvePureCallOutputKind::AssertionMessageValue => {
+            !output.value_type.dimensions().is_empty()
+        }
     }) {
         return Err(SolveProgramConstructionError::InvalidCallOutput { provenance });
     }

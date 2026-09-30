@@ -164,12 +164,13 @@ impl<'dae> PureCallRegistry<'dae> {
         solve::SolveProgramConstructionError,
     > {
         let definitions = &transaction.definitions;
-        let (callees, predicate_ranges, assertions) = self.register_expression_calls(
-            view,
-            definitions
-                .iter()
-                .map(|definition| (definition.value, definition.clock)),
-        )?;
+        let (callees, predicate_ranges, assertions, assertion_slots) = self
+            .register_expression_calls(
+                view,
+                definitions
+                    .iter()
+                    .map(|definition| (definition.value, definition.clock)),
+            )?;
         let predicate_count = assertions.len();
         let (coordinate_inputs, inputs, outputs) =
             event_transaction_interface(view, transaction, coordinate_types, predicate_count)?;
@@ -212,7 +213,8 @@ impl<'dae> PureCallRegistry<'dae> {
                     predicate_ranges,
                     cache: HashMap::new(),
                     call_values: HashMap::new(),
-                    predicate_values: vec![None; predicate_count],
+                    predicate_values: vec![None; assertion_slots.len()],
+                    assertion_slots: assertion_slots.clone(),
                     next_direct_assertion: 0,
                     direct_assertion_count: 0,
                 };
@@ -238,6 +240,9 @@ impl<'dae> PureCallRegistry<'dae> {
                 for (predicate, output) in lowerer
                     .predicate_values
                     .into_iter()
+                    .zip(assertion_slots.iter())
+                    .filter(|(_, slot)| slot.is_predicate())
+                    .map(|(value, _)| value)
                     .zip(&outputs[definitions.len()..])
                 {
                     let predicate = predicate.ok_or(
@@ -403,16 +408,17 @@ fn activated_assignment_group<'program, 'dae>(
         .collect::<Vec<_>>();
     let (mut output_types, output_ranges) = lower_value_type_outputs(lowerer, &value_types)?;
     let value_output_count = output_types.len();
-    output_types.extend(std::iter::repeat_n(
-        solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
-        pending.len(),
-    ));
+    output_types.extend(lowerer.pending_slot_types(&pending));
+    let false_slots = pending
+        .iter()
+        .map(|&slot| lowerer.assertion_slots[slot].clone())
+        .collect::<Vec<_>>();
     let context = RegionContext {
         view: lowerer.view,
         callees: lowerer.callees.clone(),
         predicate_ranges: lowerer.predicate_ranges.clone(),
         conditional_groups: lowerer.conditional_groups.clone(),
-        predicate_count: lowerer.predicate_values.len(),
+        assertion_slots: lowerer.assertion_slots.clone(),
         direct_assertion_count: lowerer.direct_assertion_count,
     };
     let true_environment = environment.clone();
@@ -452,8 +458,8 @@ fn activated_assignment_group<'program, 'dae>(
                     output += 1;
                 }
             }
-            for slot in &outputs[output..] {
-                let value = builder.constant(solve::SolveValue::boolean(true), provenance)?;
+            for (slot, kind) in outputs[output..].iter().zip(&false_slots) {
+                let value = kind.unselected(builder, provenance)?;
                 builder.store(*slot, value, provenance)?;
             }
             Ok(())

@@ -358,3 +358,75 @@ fn a_refused_message_never_fires_the_nested_assertion_it_would_have_called() {
         "the run stops at the refusal, not at a spurious abort: {reported}"
     );
 }
+
+/// The `Modelica.Fluid.Utilities.regFun3` shape: a nested function's
+/// assertion message converts its own arguments and locals, and its caller
+/// reaches it only in one branch, with arguments computed from its own locals.
+const NESTED_FRAME_MESSAGE: &str = r#"
+model NestedFrameMessage
+  function interp
+    input Real x;
+    input Real x0;
+    input Real x1;
+    output Real y;
+  protected
+    Real h;
+  algorithm
+    h := x1 - x0;
+    assert(h > 0, "interp: x0 = " + String(x0) + " x1 = " + String(x1) + " h = " + String(h));
+    y := x0 + h*x;
+  end interp;
+  function outerFn
+    input Real x;
+    input Real k;
+    output Real y;
+  protected
+    Real upper;
+  algorithm
+    upper := 2*k - 1;
+    if x > 0 then
+      y := interp(x, 1, upper);
+    else
+      y := x;
+    end if;
+  end outerFn;
+  Real x(start = 1.0, fixed = true);
+equation
+  der(x) = -outerFn(x, x);
+end NestedFrameMessage;
+"#;
+
+#[test]
+fn a_nested_assertion_renders_the_values_of_its_own_call_frame() {
+    let package = lower(
+        NESTED_FRAME_MESSAGE,
+        "NestedFrameMessage",
+        "NestedFrameMessage.mo",
+    );
+    // x = 0.75 calls interp(0.75, 1, 0.5), whose h = -0.5 violates `h > 0`;
+    // every converted value is the nested frame's argument or local.
+    assert_eq!(
+        assertion_message(&package, &[0.75]),
+        "interp: x0 = 1 x1 = 0.5 h = -0.5"
+    );
+}
+
+#[test]
+fn an_unselected_nested_assertion_never_fires() {
+    // For x <= 0 the caller never reaches `interp`, so its slots hold the
+    // unselected values and a run started at x = -1 follows x(t) = -exp(-t).
+    let result = simulate(
+        &NESTED_FRAME_MESSAGE.replace("start = 1.0", "start = -1.0"),
+        "NestedFrameMessage",
+        "NestedFrameMessage.mo",
+        0.5,
+    );
+    let xs = series(&result, "x");
+    for (t, x) in result.times.iter().zip(xs) {
+        let expected = -(-t).exp();
+        assert!(
+            (x - expected).abs() < 1e-5,
+            "der(x) = -x at t={t}: simulated {x}, closed form {expected}"
+        );
+    }
+}
