@@ -392,17 +392,16 @@ fn substitute_source_scalar_var_ref(
     span: rumoca_core::Span,
     env: ConstantSubstitutionEnv<'_>,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
+    // MLS §7.2: a constant an extends modification of the exposing package
+    // binds (`extends Base(k = 1)`) takes that binding, which outranks the
+    // declaration default and is keyed by the rendered exposing-package name.
+    let key = name.as_str();
+    if env.ctx.modified_constant_keys.contains(key)
+        && let Some(value) = resolve_constant_value_expr(key, env.ctx)
+    {
+        return substitute_resolved_generated_constant(key, value, span, env).map(Some);
+    }
     let Some((identity, value)) = resolve_source_constant(name, env.ctx) else {
-        // A constant bound by an extends modification of the exposing package
-        // (`extends Base(k = 1)`) has no declaration-level value: the
-        // modification is the package's own binding, keyed by the rendered
-        // exposing-package name.
-        let key = name.as_str();
-        if env.ctx.modified_constant_keys.contains(key)
-            && let Some(value) = resolve_constant_value_expr(key, env.ctx)
-        {
-            return substitute_resolved_generated_constant(key, value, span, env).map(Some);
-        }
         return Ok(None);
     };
     Ok(Some(substitute_resolved_source_constant(

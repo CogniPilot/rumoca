@@ -513,3 +513,68 @@ fn a_loop_index_in_a_package_call_stays_the_loop_binder() {
     assert!((column("m.d[1]") - expected_1).abs() < 1e-9);
     assert!((column("m.d[2]") - expected_2).abs() < 1e-9);
 }
+
+/// A package that modifies an inherited constant (`extends PSM(T0 = 273.15)`,
+/// as `ConstantPropertyLiquidWater` sets `T0`) and is selected by a redeclare:
+/// the nested model reached through the package slot, a function it calls
+/// unqualified, and a call through the slot all see the modified value.
+const MODIFIED_PACKAGE_CONSTANT: &str = r#"
+package PM
+  constant Real reference_T = 298.15;
+end PM;
+
+partial package PSM
+  extends PM;
+  constant Real T0 = reference_T;
+  function hf
+    input Real T;
+    output Real h;
+  algorithm
+    h := 2*(T - T0);
+  end hf;
+  model BP
+    Real T = 300;
+    Real h;
+    Real h2;
+  equation
+    h = 2*(T - T0);
+    h2 = hf(T);
+  end BP;
+end PSM;
+
+package M
+  extends PSM(T0 = 273.15);
+end M;
+
+model Vessel
+  replaceable package Medium = PSM;
+  Medium.BP medium;
+  Real h3 = Medium.hf(300);
+end Vessel;
+
+model Top
+  Vessel v(redeclare package Medium = M);
+end Top;
+"#;
+
+#[test]
+fn a_selected_package_modifies_the_constants_its_nested_models_and_functions_read() {
+    let compiled = Compiler::new()
+        .model("Top")
+        .compile_str(MODIFIED_PACKAGE_CONSTANT, "Modified.mo")
+        .unwrap_or_else(|error| panic!("Top compiles: {error:?}"));
+    let result = rumoca_sim::simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 0.1,
+            ..Default::default()
+        },
+    )
+    .expect("Top simulates");
+    for name in ["v.medium.h", "v.medium.h2", "v.h3"] {
+        let column = result.names.iter().position(|n| n == name).unwrap();
+        for value in &result.data[column] {
+            assert!((value - 53.7).abs() < 1e-9, "{name} = {value}");
+        }
+    }
+}
