@@ -40,7 +40,14 @@ pub(crate) fn inject_class_extends_constants(
         ctx,
     );
     for ext in &class_def.extends {
-        apply_extends_constants_for_scope(tree, class_index, scope, ext, resolve_context, ctx);
+        apply_extends_constants_for_scope(
+            tree,
+            class_index,
+            scope,
+            (class_def, ext),
+            resolve_context,
+            ctx,
+        );
     }
 }
 
@@ -48,7 +55,7 @@ pub(crate) fn apply_extends_constants_for_scope(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     scope: &str,
-    ext: &rumoca_ir_ast::Extend,
+    (owner, ext): (&ClassDef, &rumoca_ir_ast::Extend),
     resolve_context: &str,
     ctx: &mut Context,
 ) {
@@ -78,7 +85,7 @@ pub(crate) fn apply_extends_constants_for_scope(
         tree,
         class_index,
         scope,
-        &ext.base_name.to_string(),
+        (owner, &ext.base_name.to_string()),
         resolve_context,
         ctx,
     );
@@ -117,11 +124,18 @@ pub(crate) fn inject_nested_class_constants(
             tree,
             class_index,
             nested_scope,
-            ext,
+            (nested_class, ext),
             resolve_context,
             ctx,
         );
-        apply_extends_constants_for_scope(tree, class_index, comp_scope, ext, resolve_context, ctx);
+        apply_extends_constants_for_scope(
+            tree,
+            class_index,
+            comp_scope,
+            (nested_class, ext),
+            resolve_context,
+            ctx,
+        );
     }
 }
 
@@ -189,7 +203,7 @@ pub(crate) fn inject_alias_component_package_constants(
             tree,
             class_index,
             &alias_scope,
-            ext,
+            (alias_class, ext),
             &alias_context,
             ctx,
         );
@@ -198,7 +212,7 @@ pub(crate) fn inject_alias_component_package_constants(
                 tree,
                 class_index,
                 type_alias_scope,
-                ext,
+                (alias_class, ext),
                 &alias_context,
                 ctx,
             );
@@ -208,7 +222,7 @@ pub(crate) fn inject_alias_component_package_constants(
                 tree,
                 class_index,
                 comp_scope,
-                ext,
+                (alias_class, ext),
                 &alias_context,
                 ctx,
             );
@@ -358,7 +372,7 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
                     tree,
                     class_index,
                     &ancestor_scope,
-                    ext,
+                    (ancestor, ext),
                     &ancestor_scope,
                     ctx,
                 );

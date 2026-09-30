@@ -699,7 +699,7 @@ fn inject_component_declared_class_override(
                 request.tree,
                 request.class_index,
                 &lowered_alias_scope,
-                ext,
+                (alias_class, ext),
                 alias_resolve_context,
                 ctx,
             );
@@ -710,7 +710,7 @@ fn inject_component_declared_class_override(
             request.tree,
             request.class_index,
             &alias_scope,
-            ext,
+            (alias_class, ext),
             alias_resolve_context,
             ctx,
         );
@@ -782,7 +782,7 @@ fn inject_active_component_class_override(
             request.tree,
             request.class_index,
             request.comp_scope,
-            ext,
+            (alias_class, ext),
             alias_resolve_context,
             ctx,
         );
@@ -892,7 +892,7 @@ pub(crate) fn inject_component_enclosing_class_constants(
                     tree,
                     class_index,
                     comp_scope,
-                    ext,
+                    (ancestor, ext),
                     &resolve_context,
                     ctx,
                 );
@@ -1068,7 +1068,7 @@ fn inject_alias_package_constants(
                 request.tree,
                 request.class_index,
                 scope,
-                ext,
+                (package_class, ext),
                 request.package_context,
                 &mut *request.ctx,
             );

@@ -578,3 +578,69 @@ fn a_selected_package_modifies_the_constants_its_nested_models_and_functions_rea
         }
     }
 }
+
+/// A package constant whose binding calls a function (`h_default =
+/// f(p_default)`, as `PartialMedium.h_default` calls `specificEnthalpy_pTX`)
+/// is inherited by the selected package, so the call names that package's `f`,
+/// whose body calls the `g` the package redeclares (MLS §7.1).
+const INHERITED_CONSTANT_CALL: &str = r#"
+partial package PM
+  constant Real p_default = 1;
+  constant Real h_default = f(p_default);
+  replaceable partial function g
+    input Real p;
+    output Real y;
+  end g;
+  replaceable function f
+    input Real p;
+    output Real h;
+  algorithm
+    h := g(p);
+  end f;
+end PM;
+
+package M
+  extends PM(p_default = 2);
+  redeclare function extends g
+  algorithm
+    y := 3*p;
+  end g;
+end M;
+
+model Sensor
+  replaceable package Medium = PM;
+  Real h;
+equation
+  h = Medium.h_default;
+end Sensor;
+
+model Top
+  Sensor s(redeclare package Medium = M);
+end Top;
+
+model Direct
+  Real h = M.h_default;
+end Direct;
+"#;
+
+#[test]
+fn an_inherited_constant_calls_the_selected_packages_functions() {
+    for (model, name) in [("Direct", "h"), ("Top", "s.h")] {
+        let compiled = Compiler::new()
+            .model(model)
+            .compile_str(INHERITED_CONSTANT_CALL, "InheritedCall.mo")
+            .unwrap_or_else(|error| panic!("{model} compiles: {error:?}"));
+        let result = rumoca_sim::simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &rumoca_sim::SimOptions {
+                t_end: 0.1,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("{model} simulates: {error}"));
+        let column = result.names.iter().position(|n| n == name).unwrap();
+        for value in &result.data[column] {
+            assert!((value - 6.0).abs() < 1e-12, "{model}: {name} = {value}");
+        }
+    }
+}

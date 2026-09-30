@@ -38,6 +38,7 @@ use std::collections::{HashMap, HashSet};
 pub(crate) use call_args::materialize_flat_function_call_args;
 pub(crate) use call_canonicalization::{
     canonicalize_collected_function_calls, canonicalize_function_calls_in_expression_with_scope,
+    expose_inherited_function_calls,
 };
 use call_collection::collect_function_call_requests;
 #[cfg(test)]

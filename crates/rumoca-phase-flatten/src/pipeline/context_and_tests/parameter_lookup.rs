@@ -51,6 +51,7 @@ impl Context {
             eval_fallback_context: std::cell::OnceCell::new(),
             current_imports: crate::qualify::ImportMap::default(),
             class_def_ids: std::sync::Arc::new(rustc_hash::FxHashSet::default()),
+            package_def_ids: std::sync::Arc::new(rustc_hash::FxHashSet::default()),
             current_class_scope_path: None,
             current_class_instance_id: None,
             simulated_root_name: None,

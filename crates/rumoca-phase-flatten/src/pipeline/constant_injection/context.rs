@@ -111,6 +111,10 @@ pub(crate) struct Context {
     /// Set of DefIds that correspond to class definitions in the current tree.
     /// Used by qualification to distinguish class/type references from components.
     pub class_def_ids: std::sync::Arc<rustc_hash::FxHashSet<rumoca_core::DefId>>,
+    /// Resolve identities of package classes, including package aliases. A
+    /// constant reference spelled through one of them names the package that
+    /// exposes the constant (MLS §7.1).
+    pub package_def_ids: std::sync::Arc<rustc_hash::FxHashSet<rumoca_core::DefId>>,
     /// Canonical class scope path for the class instance currently being flattened.
     /// Derived from `def_map` via the owning class DefId.
     pub current_class_scope_path: Option<String>,

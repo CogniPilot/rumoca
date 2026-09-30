@@ -354,6 +354,16 @@ pub fn flatten_ref_with_options(
     }
     let class_index = ast::ClassDefIndex::from_tree(tree);
     ctx.class_def_ids = std::sync::Arc::new(class_index.def_ids().collect());
+    ctx.package_def_ids = std::sync::Arc::new(
+        class_index
+            .def_ids()
+            .filter(|&def_id| {
+                class_index
+                    .get(def_id)
+                    .is_some_and(|class| class.class_type == rumoca_core::ClassType::Package)
+            })
+            .collect(),
+    );
     ctx.target_def_names = tree
         .def_map
         .iter()

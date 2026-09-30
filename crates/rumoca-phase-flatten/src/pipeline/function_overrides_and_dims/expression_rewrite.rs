@@ -439,7 +439,7 @@ pub(super) fn retarget_function_reference(
         .without_resolved_function()
 }
 
-pub(super) fn retarget_exposed_function_reference(
+pub(crate) fn retarget_exposed_function_reference(
     original: &rumoca_core::Reference,
     resolved_name: String,
     exposed_package_name: &str,

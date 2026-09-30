@@ -38,11 +38,11 @@ use exact_identity_queries::{
     exact_prefix_owner_def_id, function_alias_requires_exact_selection,
     resolve_function_extends_target_def_id,
 };
+pub(crate) use expression_rewrite::retarget_exposed_function_reference;
 #[cfg(test)]
 use expression_rewrite::retarget_function_reference;
 use expression_rewrite::{
     FunctionOverrideExpressionRewriter, expression_contains_function_call, function_local_def_ids,
-    retarget_exposed_function_reference,
 };
 pub(crate) use flat_rewrite::*;
 #[cfg(test)]

@@ -676,3 +676,81 @@ fn resolved_function_reference(
     .expect("rewriting one identity preserves a checked component reference");
     original.with_rewritten_component_reference(original.as_str(), component_ref)
 }
+
+/// Name every unqualified function call in an element that `package`
+/// inherits through the member `package` exposes under that name.
+///
+/// MLS §7.1: inherited elements are looked up in the derived class, so the
+/// binding `h_default = f(p_default)` declared in a base package calls, as an
+/// element of `package`, the `f` that `package` exposes, whose body in turn
+/// resolves its own members (a redeclared `g`) in `package`. A call whose
+/// callee `package` itself declares, or that `package` does not expose as a
+/// function, keeps its identity.
+pub(crate) fn expose_inherited_function_calls(
+    expr: &mut rumoca_core::Expression,
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    package: (&str, rumoca_core::DefId),
+) {
+    *expr = InheritedFunctionCallExposer {
+        tree,
+        class_index,
+        package,
+    }
+    .rewrite_expression(expr);
+}
+
+struct InheritedFunctionCallExposer<'a> {
+    tree: &'a ast::ClassTree,
+    class_index: &'a ast::ClassDefIndex<'a>,
+    package: (&'a str, rumoca_core::DefId),
+}
+
+impl InheritedFunctionCallExposer<'_> {
+    fn exposed_reference(&self, name: &rumoca_core::Reference) -> Option<rumoca_core::Reference> {
+        let component_ref = name.component_ref()?;
+        let [part] = component_ref.parts() else {
+            return None;
+        };
+        let callee = self.class_index.get(part.def_id)?;
+        if callee.class_type != rumoca_core::ClassType::Function
+            || self.class_index.parent_def_id(part.def_id) == Some(self.package.1)
+        {
+            return None;
+        }
+        let exposed_name = format!("{}.{}", self.package.0, part.ident);
+        let exposed =
+            resolve_function_class_with_scope(self.tree, self.class_index, &exposed_name, None)?;
+        if exposed.class_def.class_type != rumoca_core::ClassType::Function {
+            return None;
+        }
+        Some(crate::pipeline::retarget_exposed_function_reference(
+            name,
+            exposed_name,
+            self.package.0,
+            self.package.1,
+            exposed.class_def.def_id?,
+            self.class_index,
+        ))
+    }
+}
+
+impl ExpressionRewriter for InheritedFunctionCallExposer<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            span,
+        } = expr
+        else {
+            return self.walk_expression(expr);
+        };
+        rumoca_core::Expression::FunctionCall {
+            name: self.exposed_reference(name).unwrap_or_else(|| name.clone()),
+            args: self.rewrite_expressions(args),
+            is_constructor: false,
+            span: *span,
+        }
+    }
+}
