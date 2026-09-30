@@ -5,6 +5,7 @@
 //! re-proved against the selected class and its effective components.
 
 use super::class_hierarchy::find_nested_class_in_hierarchy;
+use super::override_collection::build_type_override_map;
 use crate::{InstantiateError, InstantiateResult};
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
@@ -23,6 +24,11 @@ pub(super) fn resolve_member_reference_in_class(
         ))
     })?;
     let mut owner_class_def_id = selected_class_def_id;
+    // MLS 7.3: a member typed by a replaceable class of the selected class's
+    // package is typed by that package's redeclaration, not the nominal class.
+    let package_overrides = tree
+        .get_class_by_def_id(selected_class_def_id)
+        .map(|selected| build_type_override_map(tree, selected, None));
     let mut identities = Vec::with_capacity(reference.parts.len().saturating_sub(first_member));
     for (index, part) in reference.parts.iter().enumerate().skip(first_member) {
         let owner_class = tree
@@ -43,7 +49,10 @@ pub(super) fn resolve_member_reference_in_class(
         )? {
             identities.push(component_def_id);
             if let Some(next_owner_def_id) = next_owner_def_id {
-                owner_class_def_id = next_owner_def_id;
+                owner_class_def_id = package_overrides
+                    .as_ref()
+                    .and_then(|overrides| overrides.target_for_alias_def_id(next_owner_def_id))
+                    .unwrap_or(next_owner_def_id);
             }
             continue;
         }

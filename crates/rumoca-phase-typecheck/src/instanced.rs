@@ -673,6 +673,11 @@ impl TypeChecker {
         overlay: &InstanceOverlay,
         type_table: &TypeTable,
     ) {
+        let class_instances_by_path = overlay
+            .classes
+            .iter()
+            .map(|(&id, class_data)| (class_data.qualified_name.to_component_path(), id))
+            .collect::<HashMap<_, _>>();
         for data in overlay.components.values() {
             let Some(binding) = data.binding.as_ref() else {
                 continue;
@@ -701,9 +706,25 @@ impl TypeChecker {
             } else {
                 data.qualified_name.to_component_path().parent()
             };
-            let previous_scope = std::mem::replace(&mut self.current_instance_scope, binding_scope);
-            let previous_class_instance_id =
-                std::mem::replace(&mut self.current_class_instance_id, data.owner_class_id);
+            let previous_scope =
+                std::mem::replace(&mut self.current_instance_scope, binding_scope.clone());
+            // The binding's references resolve against the class instance of
+            // the scope the modifier was written in, not the modified
+            // component's owner: `ht(states = {medium.state})` names `medium`
+            // of the enclosing instance, whose members carry that instance's
+            // redeclared types.
+            let binding_class_instance_id = if data.binding_from_modification {
+                binding_scope
+                    .as_ref()
+                    .and_then(|scope| class_instances_by_path.get(scope).copied())
+                    .or(data.owner_class_id)
+            } else {
+                data.owner_class_id
+            };
+            let previous_class_instance_id = std::mem::replace(
+                &mut self.current_class_instance_id,
+                binding_class_instance_id,
+            );
             let previous_call_type_overrides =
                 std::mem::take(&mut self.current_call_type_overrides);
             self.current_call_type_overrides =

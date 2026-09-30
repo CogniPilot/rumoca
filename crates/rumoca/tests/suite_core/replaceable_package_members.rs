@@ -173,3 +173,99 @@ fn a_redeclare_reaches_every_inherited_declaration_of_the_package() {
         }
     }
 }
+
+/// A modifier written in `Vol` names `medium.state`, whose record type is the
+/// redeclared `Simple.TS`. It must be typed by the enclosing instance, not by
+/// the nominal `PM.TS`, and `medium.state.p` must be a member of it.
+const LATE_BOUND_RECORD_MEMBER: &str = r#"
+partial package PM
+  replaceable partial record TS end TS;
+  replaceable partial model BP
+    TS state;
+  end BP;
+end PM;
+
+package Simple
+  extends PM;
+  redeclare record extends TS
+    Real p;
+  end TS;
+  redeclare model extends BP
+    Real x;
+  equation
+    state.p = x;
+  end BP;
+end Simple;
+
+model HT
+  replaceable package Medium = PM;
+  parameter Integer n = 1;
+  input Medium.TS states[n];
+  Real q = states[1].p;
+end HT;
+
+model Vol
+  replaceable package Medium = PM;
+  Medium.BP medium;
+  HT ht(redeclare package Medium = Medium, final n = 1, final states = {medium.state});
+equation
+  medium.x = 2;
+end Vol;
+
+model Top
+  Vol v(redeclare package Medium = Simple);
+end Top;
+"#;
+
+#[test]
+fn a_modifier_reads_record_members_typed_by_the_enclosing_instances_package() {
+    let result = Compiler::new()
+        .model("Top")
+        .compile_str(LATE_BOUND_RECORD_MEMBER, "LateBound.mo");
+    if let Err(error) = result {
+        panic!("Top compiles: {error:?}");
+    }
+}
+
+const DEFERRED_REFERENCE_INTO_REDECLARED_RECORD: &str = r#"
+partial package PM
+  replaceable partial record TS end TS;
+  replaceable partial model BP
+    TS state;
+  end BP;
+end PM;
+
+package Simple
+  extends PM;
+  redeclare record extends TS
+    Real p;
+  end TS;
+  redeclare model extends BP
+    Real x;
+  equation
+    state.p = x;
+  end BP;
+end Simple;
+
+model Vol
+  replaceable package Medium = PM;
+  Medium.BP medium;
+  Real y = medium.state.p;
+equation
+  medium.x = 2;
+end Vol;
+
+model Top
+  Vol v(redeclare package Medium = Simple);
+end Top;
+"#;
+
+#[test]
+fn a_reference_reaches_members_of_a_record_redeclared_by_the_selected_package() {
+    let result = Compiler::new()
+        .model("Top")
+        .compile_str(DEFERRED_REFERENCE_INTO_REDECLARED_RECORD, "Deferred.mo");
+    if let Err(error) = result {
+        panic!("Top compiles: {error:?}");
+    }
+}
