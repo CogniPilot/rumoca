@@ -427,15 +427,31 @@ fn exact_package_function_rewrite(
         exposure,
         implementation,
     };
-    // A call spelled through the package alias keeps that spelling even when
-    // instantiation already retargeted it to the alias's redeclaration: the
-    // function body is then converted in the redeclaring package's scope, where
-    // its formal types resolve to the redeclared classes.
-    let spelled_through_alias = reference
+    // Instantiation may already have retargeted a call spelled through a
+    // package alias to the alias's redeclaration while the alias's own class
+    // (the replaceable slot's default) does not expose that implementation. The
+    // occurrence is then respelled through the redeclaring package so its
+    // function is converted in that package's scope, where the formal types
+    // resolve to the redeclared classes.
+    let prefix_part = reference
         .component_ref()
-        .and_then(|component_ref| component_ref.component_scope().prefix_parts().last())
-        .is_some_and(|prefix| prefix.ident == package.alias);
-    if projected == selection && !spelled_through_alias {
+        .and_then(|component_ref| component_ref.component_scope().prefix_parts().last());
+    let alias_exposes_selection = prefix_part
+        .and_then(|prefix| exact_prefix_owner_def_id(ctx.class_index, prefix.def_id))
+        .is_some_and(|owner| {
+            let mut exposures = FxHashSet::default();
+            collect_function_exposures_for_implementation(
+                ctx.class_index,
+                owner,
+                projected.implementation,
+                &mut FxHashSet::default(),
+                &mut exposures,
+            );
+            !exposures.is_empty()
+        });
+    let respell_through_package =
+        !alias_exposes_selection && prefix_part.is_some_and(|prefix| prefix.ident == package.alias);
+    if projected == selection && !respell_through_package {
         return Ok(None);
     }
     let mut rewrite = resolved_function_rewrite(

@@ -1109,6 +1109,9 @@ fn convert_function<'tree>(
         tree,
         class_index,
         qualified_name,
+        class_def
+            .def_id
+            .and_then(|def_id| class_index.qualified_name(def_id)),
         &context.components,
         &mut context.algorithms,
     );

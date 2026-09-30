@@ -30,6 +30,7 @@ pub(super) fn prove_deferred_members_in_algorithms(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     exposed_function_name: &str,
+    own_function_name: Option<&str>,
     components: &IndexMap<String, ast::Component>,
     algorithms: &mut [Vec<ast::Statement>],
 ) {
@@ -37,6 +38,7 @@ pub(super) fn prove_deferred_members_in_algorithms(
         tree,
         class_index,
         exposed_function_name,
+        own_function_name,
         components,
     };
     for section in algorithms.iter_mut() {
@@ -51,6 +53,7 @@ struct DeferredMemberProver<'a, 'tree> {
     tree: &'a ast::ClassTree,
     class_index: &'a ast::ClassDefIndex<'tree>,
     exposed_function_name: &'a str,
+    own_function_name: Option<&'a str>,
     components: &'a IndexMap<String, ast::Component>,
 }
 
@@ -94,22 +97,22 @@ impl DeferredMemberProver<'_, '_> {
             self.prove_member_tail(&mut reference.parts, owner, false);
             return;
         };
-        let contextual_owner = self.contextual_component_type(component);
         let declared_owner = component.type_def_id;
-        let mut contextual_parts = reference.parts.clone();
-        if self.prove_member_tail(
-            &mut contextual_parts,
-            contextual_owner,
-            contextual_owner != declared_owner,
-        ) || contextual_owner == declared_owner
+        // The exposed scope may be a package alias that names only the
+        // replaceable slot's constraining class, so the selected
+        // implementation's own package scope is tried next: it owns the
+        // redeclarations that give the formal's type its members (MLS 7.3).
+        for scope in [Some(self.exposed_function_name), self.own_function_name]
+            .into_iter()
+            .flatten()
         {
-            reference.parts = contextual_parts;
-            return;
+            let owner = self.component_type_in_scope(component, scope);
+            let mut scoped_parts = reference.parts.clone();
+            if self.prove_member_tail(&mut scoped_parts, owner, owner != declared_owner) {
+                reference.parts = scoped_parts;
+                return;
+            }
         }
-        // The exposed scope resolved the formal's type to a class that does not
-        // declare the member (a replaceable slot's constraining class), so the
-        // member is proved in the declaration's own type, which the selected
-        // implementation names.
         self.prove_member_tail(&mut reference.parts, declared_owner, false);
     }
 
@@ -145,12 +148,12 @@ impl DeferredMemberProver<'_, '_> {
     /// its members. The stored `type_def_id` belongs to the generic declaration
     /// and can cross a replaceable edge; the exposed scope owns the concrete
     /// redeclaration that proves the member identity.
-    fn contextual_component_type(&self, component: &ast::Component) -> Option<DefId> {
+    fn component_type_in_scope(&self, component: &ast::Component, scope: &str) -> Option<DefId> {
         super::resolve_function_class_with_scope(
             self.tree,
             self.class_index,
             &component.type_name.to_string(),
-            Some(self.exposed_function_name),
+            Some(scope),
         )
         .and_then(|resolution| resolution.class_def.def_id)
         .or(component.type_def_id)
