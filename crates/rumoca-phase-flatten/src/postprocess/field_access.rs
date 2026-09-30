@@ -499,7 +499,9 @@ impl rumoca_core::ExpressionRewriter for RecordArrayProjectionExpander<'_> {
         let Some((elements, field, field_def_id)) = self.projection(expr) else {
             return self.walk_expression(expr);
         };
-        let span = expression_span_or_dummy(expr);
+        let Some(span) = expr.span() else {
+            return self.walk_expression(expr);
+        };
         let Ok(provenance) =
             rumoca_core::ProvenanceSpan::new(span, "record array field projection")
         else {
@@ -527,10 +529,6 @@ impl rumoca_core::ExpressionRewriter for RecordArrayProjectionExpander<'_> {
             None => self.walk_expression(expr),
         }
     }
-}
-
-fn expression_span_or_dummy(expr: &rumoca_core::Expression) -> rumoca_core::Span {
-    expr.span().unwrap_or(rumoca_core::Span::DUMMY)
 }
 
 #[cfg(test)]

@@ -281,7 +281,7 @@ pub(super) fn collect_exposed_package_constant_aliases(
     exposed_function_name: &str,
     imports: &mut qualify::ImportMap,
 ) {
-    let Some((exposing_scope, _)) = exposed_function_name.rsplit_once('.') else {
+    let Some(exposing_scope) = crate::path_utils::enclosing_scope(exposed_function_name) else {
         return;
     };
     if class_index.get_by_qualified_name(exposing_scope).is_none() {
