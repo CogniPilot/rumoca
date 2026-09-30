@@ -256,6 +256,23 @@ impl BlockReuse {
         }
     }
 
+    /// [`Self::prepared`] for an evaluation-only block.
+    pub(super) fn prepared_evaluation(
+        &self,
+        primary: Option<&PreparedEvaluationBlock>,
+        block: solve::ScalarProgramBlock,
+    ) -> Result<PreparedEvaluationBlock, EvalSolveError> {
+        match (self, primary) {
+            (Self::Same, Some(primary)) => {
+                PreparedEvaluationBlock::with_replaced_programs(primary, block, &[])
+            }
+            (Self::Replaced(replaced), Some(primary)) => {
+                PreparedEvaluationBlock::with_replaced_programs(primary, block, replaced)
+            }
+            _ => PreparedEvaluationBlock::new(block),
+        }
+    }
+
     /// The compiled form of `block`: the primary's, the primary's with the
     /// replaced programs compiled on their own, or `compile(block)`.
     pub(super) fn expression(

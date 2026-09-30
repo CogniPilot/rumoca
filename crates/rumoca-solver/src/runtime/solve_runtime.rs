@@ -29,7 +29,7 @@ use crate::{
 };
 use rumoca_eval_solve::refresh_plan::trace_refresh_plan;
 use rumoca_eval_solve::{
-    EvalSolveError, PreparedComputeBlock, PreparedEventTransactionProgram,
+    EvalSolveError, PreparedComputeBlock, PreparedEvaluationBlock, PreparedEventTransactionProgram,
     PreparedGuardedAssignmentProgram, PreparedScalarProgramBlock, RowEvalContext,
     to_scalar_program_block,
 };
@@ -378,11 +378,11 @@ pub struct SolveRuntime {
     /// (`d(der)/d(y)·v`), lowered to `LinearOp`s with `LoadSeed`. Applied — with a
     /// seed completed by `seed_refresh_derivative_dependencies` — to form
     /// the exact state Jacobian for the state-only BDF path.
-    derivative_jacobian_v: PreparedScalarProgramBlock,
+    derivative_jacobian_v: PreparedEvaluationBlock,
     /// Primal state-derivative scalar program `der = f(solver_y, p, t)`. Reversed
     /// by [`Self::reverse_state_derivative_vjp`] to form the reverse-mode VJP
     /// `(∂der/∂[solver_y|p])ᵀ·λ` (Track A scalar reverse core).
-    derivative_scalar: PreparedScalarProgramBlock,
+    derivative_scalar: PreparedEvaluationBlock,
     /// Per-row forward-mode AD Jacobian-vector product of `implicit_rhs`
     /// (`d(residual_row)/d[y|p]·v`). Used to propagate state and parameter seeds
     /// through the algebraic projection row by row.
@@ -528,6 +528,16 @@ impl SolveRuntime {
             let base = primary.map(pick);
             BlockReuse::of(base, &block).prepared(base, block)
         };
+        // The state-derivative programs are evaluated, differentiated, and
+        // reversed, never solved for a target, so they derive no assignment
+        // certificates (one materialized program per output of a tensor row).
+        let prepare_evaluation =
+            |pick: fn(&SolveRuntime) -> &PreparedEvaluationBlock,
+             block: solve::ScalarProgramBlock| {
+                let base = primary.map(pick);
+                BlockReuse::of_programs(base.map(PreparedEvaluationBlock::block), &block)
+                    .prepared_evaluation(base, block)
+            };
         let prepare_compute =
             |pick: fn(&SolveRuntime) -> &PreparedComputeBlock,
              block: &solve::ComputeBlock,
@@ -694,8 +704,8 @@ impl SolveRuntime {
                 })
             })
             .collect();
-        let compiled_derivative_rhs = BlockReuse::of(
-            primary.map(|primary| &primary.derivative_scalar),
+        let compiled_derivative_rhs = BlockReuse::of_programs(
+            primary.map(|primary| primary.derivative_scalar.block()),
             &derivative_scalar_rhs,
         )
         .expression(
@@ -895,11 +905,11 @@ impl SolveRuntime {
                 "runtime_derivative_rhs",
             )?,
             compiled_derivative_rhs,
-            derivative_jacobian_v: prepare(
+            derivative_jacobian_v: prepare_evaluation(
                 |primary| &primary.derivative_jacobian_v,
                 model.artifacts.continuous.full_jacobian_v.clone(),
             )?,
-            derivative_scalar: prepare(
+            derivative_scalar: prepare_evaluation(
                 |primary| &primary.derivative_scalar,
                 derivative_scalar_rhs,
             )?,

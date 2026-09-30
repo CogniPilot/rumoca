@@ -401,6 +401,17 @@ impl<'dae> ParameterBindingSubstitutions<'dae> {
     }
 }
 
+/// A packed elementwise operation: its context, operation, whether it is a
+/// scaled tensor product (whose packing structural incidence gates), and its
+/// operands.
+type TensorBinaryKey<'dae> = (
+    u64,
+    solve::BinaryOp,
+    bool,
+    dae::ExprId<'dae>,
+    dae::ExprId<'dae>,
+);
+
 pub(super) struct ScalarCompiler<'layout, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'layout LoweredLayout<'dae>,
@@ -446,8 +457,7 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     >,
     matrix_multiply_cache:
         HashMap<(u64, dae::ExprId<'dae>, dae::ExprId<'dae>), (solve::Reg, usize)>,
-    tensor_binary_cache:
-        HashMap<(u64, solve::BinaryOp, dae::ExprId<'dae>, dae::ExprId<'dae>), (solve::Reg, usize)>,
+    tensor_binary_cache: HashMap<TensorBinaryKey<'dae>, (solve::Reg, usize)>,
     tensor_transpose_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
     tensor_concatenate_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
     tensor_update_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
