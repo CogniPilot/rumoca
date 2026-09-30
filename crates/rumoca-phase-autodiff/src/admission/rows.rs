@@ -630,13 +630,10 @@ fn composite() -> Vec<Row> {
 /// its formal is not one call but one call per element (MLS 12.4.6), so its
 /// result is not the shape JAC-S3 has the wrapper state.
 ///
-/// Every admitted row here is checked in OpenModelica. JAC-G1 makes a tangent
-/// body call both the callee's tangent and the callee itself, and a function
-/// that calls two others, is called from a third and returns an array is a
-/// program this compiler's Solve IR declines (`EL005`, "pure-call owner was
-/// not issued by this table"). The primal of each probe runs here; its
-/// expansion does not, so there is no in-process program to compare against
-/// and the gate takes the row where one exists.
+/// Every admitted row here is checked in process. JAC-G1 makes a tangent body
+/// call both the callee's tangent and the callee itself; the callee call the
+/// tangent result does not read still owns a registered pure-call owner, so the
+/// expansion runs and is compared against central differences here.
 fn calls() -> Vec<Row> {
     let admitted: &[(Shape, &'static str, Carrier)] = &[
         (Scalar, CALL_SCALAR, SCALAR_OUT),
@@ -652,7 +649,7 @@ fn calls() -> Vec<Row> {
             form: String::new(),
             carrier: *carrier,
             body: Some(body),
-            verdict: ELSEWHERE,
+            verdict: HERE,
         })
         .collect();
     rows.push(Row {

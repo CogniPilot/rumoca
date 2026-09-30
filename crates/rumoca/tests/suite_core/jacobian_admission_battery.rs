@@ -255,6 +255,11 @@ fn admitted_declaration_pairs_match_central_differences() {
     check_family(Family::Declaration);
 }
 
+#[test]
+fn admitted_call_pairs_match_central_differences() {
+    check_family(Family::Call);
+}
+
 /// Every family with an admitted row is run by a gate above.
 ///
 /// A family added to the table without a gate would be admitted and unchecked,
@@ -271,6 +276,7 @@ fn every_admitted_family_has_a_gate() {
         Family::Declaration,
         Family::Composite,
         Family::Statement,
+        Family::Call,
     ];
     for family in Family::ALL {
         let admitted = table()

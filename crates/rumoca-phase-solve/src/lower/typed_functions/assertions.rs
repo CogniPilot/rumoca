@@ -51,18 +51,22 @@ fn collect_assertion_conditions<'dae>(
     Ok(())
 }
 
+/// Every call owner the typed body lowering reads.
+///
+/// The body lowers each statement in order, so a definition no result or
+/// assertion reads is still lowered; its calls need registered owners exactly
+/// like the calls a result reaches.
 pub(super) fn nested_calls<'dae>(
     view: dae::DaeView<'dae>,
     function: dae::FunctionView<'dae>,
     assertions: &[FunctionAssertion<'dae>],
 ) -> Vec<dae::ExprId<'dae>> {
+    let mut roots = function.result_values().rhs_iter().collect::<Vec<_>>();
+    roots.extend(assertions.iter().map(|assertion| assertion.condition));
+    collect_statement_roots(function.statements(), &mut roots);
     let mut calls = Vec::new();
     let mut seen = HashSet::new();
-    for root in function
-        .result_values()
-        .rhs_iter()
-        .chain(assertions.iter().map(|assertion| assertion.condition))
-    {
+    for root in roots {
         dae::for_each_expression(view, root, |_, node| {
             if let dae::ExpressionOperation::Call { owner, .. } = node.operation()
                 && seen.insert(owner)
@@ -72,6 +76,30 @@ pub(super) fn nested_calls<'dae>(
         });
     }
     calls
+}
+
+fn collect_statement_roots<'dae>(
+    statements: dae::FunctionStatements<'dae>,
+    roots: &mut Vec<dae::ExprId<'dae>>,
+) {
+    for statement in statements {
+        match statement {
+            dae::FunctionStatementView::Assignment { definition } => roots.push(definition.rhs()),
+            dae::FunctionStatementView::AssignmentGroup {
+                definitions,
+                conditional,
+            } => {
+                roots.extend(definitions.rhs_iter());
+                if let Some(conditional) = conditional {
+                    collect_conditional_roots(conditional, roots);
+                }
+            }
+            dae::FunctionStatementView::Assertion { condition, .. } => roots.push(condition),
+            dae::FunctionStatementView::For { statements, .. } => {
+                collect_statement_roots(statements, roots);
+            }
+        }
+    }
 }
 
 pub(super) fn assertion_is_map_independent<'dae>(
@@ -89,4 +117,15 @@ pub(super) fn assertion_is_map_independent<'dae>(
         }
     });
     independent
+}
+
+fn collect_conditional_roots<'dae>(
+    conditional: dae::FunctionConditionalView<'dae>,
+    roots: &mut Vec<dae::ExprId<'dae>>,
+) {
+    roots.extend(conditional.conditions());
+    for ordinal in 0..conditional.branch_count() {
+        roots.extend(conditional.branch(ordinal).into_iter().flatten());
+    }
+    roots.extend(conditional.fallback());
 }
