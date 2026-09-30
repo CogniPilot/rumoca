@@ -3,7 +3,9 @@
 //! Persisting the selections proved here lets downstream phases evaluate
 //! instance-scoped constants of a redeclared class or package.
 
-use super::class_hierarchy::find_nested_class_in_hierarchy;
+use super::class_hierarchy::{
+    find_all_nested_classes_in_hierarchy, find_nested_class_in_hierarchy,
+};
 use super::component_redeclare_validation::{
     reject_unmarked_component_class_replacement, validate_component_class_redeclare_target,
     validate_component_source_modifier_metadata,
@@ -59,7 +61,7 @@ pub(crate) fn extract_component_class_overrides(
             )?;
             continue;
         }
-        let Some(alias_def_id) = nested_class.def_id else {
+        if nested_class.def_id.is_none() {
             return Err(Box::new(InstantiateError::redeclare_error(
                 &target_name,
                 "resolved redeclare target has no DefId",
@@ -69,7 +71,7 @@ pub(crate) fn extract_component_class_overrides(
                     "resolved component class redeclare target",
                 )?,
             )));
-        };
+        }
         if is_forwarding_component_redeclare(mod_expr, &target_name) {
             // The enclosing override is instance-local and is applied by
             // `resolve_component_nested_type_overrides`; validating the
@@ -104,16 +106,23 @@ pub(crate) fn extract_component_class_overrides(
             def_id,
             class_redeclare_modifier_args(mod_expr),
         )?;
-        overrides.insert(
-            alias_def_id,
-            ast::ClassOverride::new(
-                target_name,
-                alias_def_id,
-                def_id,
-                class_redeclare_target_ref(mod_expr),
-            )
-            .with_modifier_args(modifier_args),
-        );
+        // The same member may be declared by several inherited bases; each
+        // declaration takes the redeclared class (MLS §7.1.2).
+        for declaration in find_all_nested_classes_in_hierarchy(tree, target_class, &target_name) {
+            let Some(declaration_def_id) = declaration.def_id else {
+                continue;
+            };
+            overrides.insert(
+                declaration_def_id,
+                ast::ClassOverride::new(
+                    target_name.clone(),
+                    declaration_def_id,
+                    def_id,
+                    class_redeclare_target_ref(mod_expr),
+                )
+                .with_modifier_args(modifier_args.clone()),
+            );
+        }
     }
 
     Ok(overrides)

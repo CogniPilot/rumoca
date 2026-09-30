@@ -39,6 +39,11 @@ pub(crate) fn build_type_override_map(
         }
     });
 
+    // MLS §7.1: nested classes declared in base classes are members of this
+    // class, so an inherited replaceable package such as `Medium` is visible
+    // to forwarding redeclares of the components declared here.
+    collect_nested_overrides_in_extends_chain(tree, class, mod_env, &mut overrides);
+
     // 2. Collect from the enclosing class's nested classes.
     // This handles the pattern where a record type (like ThermodynamicState)
     // is redeclared in the enclosing package, and components in the model

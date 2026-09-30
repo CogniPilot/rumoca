@@ -50,10 +50,17 @@ pub(crate) fn class_flags_compatible(
     if supertype.is_final && !subtype.is_final {
         return false;
     }
-    if is_transitively_non_replaceable(supertype) && !is_transitively_non_replaceable(subtype) {
+    // The `replaceable` prefix on the subtype's own declaration describes its
+    // slot, not its interface, so only its elements are compared (MLS §7.3).
+    if is_transitively_non_replaceable(supertype) && has_replaceable_elements(subtype) {
         return false;
     }
     true
+}
+
+fn has_replaceable_elements(class: &ast::ClassDef) -> bool {
+    class.components.values().any(|comp| comp.is_replaceable)
+        || class.classes.values().any(|nested| nested.is_replaceable)
 }
 
 /// MLS §6.4: a class is transitively non-replaceable when neither it nor any

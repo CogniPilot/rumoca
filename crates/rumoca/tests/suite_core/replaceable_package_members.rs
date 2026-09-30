@@ -81,3 +81,95 @@ fn members_typed_through_a_package_alias_are_members_of_an_inherited_connector()
         panic!("PortReader compiles: {error}");
     }
 }
+
+const INHERITED_MEDIUM: &str = r#"
+partial package PM
+  replaceable partial model BP
+    Real p;
+  end BP;
+end PM;
+
+package Conc
+  extends PM;
+  redeclare model extends BP
+  equation
+    p = 1;
+  end BP;
+end Conc;
+
+model Comp
+  replaceable package Medium = PM;
+  Medium.BP bp;
+end Comp;
+
+partial model Base
+  replaceable package Medium = Conc;
+  Comp c(redeclare package Medium = Medium);
+end Base;
+
+model Ext
+  extends Base;
+end Ext;
+"#;
+
+#[test]
+fn an_inherited_replaceable_package_can_be_forwarded_to_a_component() {
+    match Compiler::new()
+        .model("Ext")
+        .compile_str(INHERITED_MEDIUM, "Inherited.mo")
+    {
+        Ok(_) => {}
+        Err(error) => panic!("Ext compiles: {error:?}"),
+    }
+}
+
+const TWO_BASES_DECLARE_MEDIUM: &str = r#"
+partial package PM
+  replaceable partial model BP
+    Real p;
+  end BP;
+end PM;
+
+package Conc
+  extends PM;
+  redeclare model extends BP
+  equation
+    p = 1;
+  end BP;
+end Conc;
+
+partial model B1
+  replaceable package Medium = PM;
+end B1;
+
+partial model B2
+  replaceable package Medium = PM;
+  Medium.BP[2] bps;
+end B2;
+
+model Both
+  extends B1;
+  extends B2;
+end Both;
+
+model Direct
+  Both c(redeclare package Medium = Conc);
+end Direct;
+
+model Forwarded
+  replaceable package Medium = Conc;
+  Both c(redeclare package Medium = Medium);
+end Forwarded;
+"#;
+
+#[test]
+fn a_redeclare_reaches_every_inherited_declaration_of_the_package() {
+    for model in ["Direct", "Forwarded"] {
+        let result = Compiler::new()
+            .model(model)
+            .compile_str(TWO_BASES_DECLARE_MEDIUM, "TwoBases.mo");
+        if let Err(error) = result {
+            panic!("{model} compiles: {error:?}");
+        }
+    }
+}

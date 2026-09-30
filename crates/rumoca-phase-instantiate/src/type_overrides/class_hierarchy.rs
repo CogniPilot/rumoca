@@ -70,3 +70,43 @@ pub(crate) fn find_nested_class_in_hierarchy<'a>(
 
     None
 }
+
+/// Every nested class named `nested_name` in a class and its extends chain.
+///
+/// MLS §7.1.2 allows several base classes to declare the same element, and the
+/// declarations merge into one member. A redeclare of that member therefore
+/// applies to each inherited declaration, not only the first one found.
+pub(crate) fn find_all_nested_classes_in_hierarchy<'a>(
+    tree: &'a ast::ClassTree,
+    root: &'a ast::ClassDef,
+    nested_name: &str,
+) -> Vec<&'a ast::ClassDef> {
+    const MAX_DEPTH: usize = 32;
+
+    let mut found = Vec::new();
+    let mut to_visit = vec![root];
+    let mut visited_def_ids = std::collections::HashSet::<DefId>::new();
+    let mut visited_names = std::collections::HashSet::<String>::new();
+
+    for _ in 0..MAX_DEPTH {
+        if to_visit.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for class in to_visit.drain(..) {
+            let already_seen = match class.def_id {
+                Some(def_id) => !visited_def_ids.insert(def_id),
+                None => !visited_names.insert(class.name.text.to_string()),
+            };
+            if already_seen {
+                continue;
+            }
+            if let Some(nested) = class.classes.get(nested_name) {
+                found.push(nested);
+            }
+            next.extend(extends_base_classes(tree, class));
+        }
+        to_visit = next;
+    }
+    found
+}
