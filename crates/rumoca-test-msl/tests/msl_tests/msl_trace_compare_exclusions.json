@@ -318,6 +318,19 @@
       "retired_by": "event_instant_alignment"
     },
     {
+      "model_name": "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonPullInStroke",
+      "kind": "model_issue",
+      "reason": "Only the two stopper_xMin.lossPower channels are non-high (477 of 479 channels high). Both traces reach the stopper at the same instants and dissipate the same impact energy; the channels differ in the damped bounce tail of the stiff elastic stopper, whose loss power is not converged at the annotation tolerance: Rumoca at rtol=atol=1e-9 differs from its own 1e-6 trace by more than either differs from OMC. Pointwise comparison of this unconverged event-local observable is non-identifying, while every position, velocity, flux, current and force channel is high.",
+      "evidence": {
+        "facts": [
+          "477/0/2 high/minor/deviation channels; non-high: advancedSolenoid.armature.stopper_xMin.lossPower, simpleSolenoid.armature.stopper_xMin.lossPower",
+          "stopper contact begins at t=0.0136 (advancedSolenoid) and peaks at t=0.0124 (simpleSolenoid) in both traces",
+          "peak loss power 76.85 W (OMC) vs 76.67 W (Rumoca) and 94.48 W vs 94.72 W; dissipated energy 1.4956e-2 J vs 1.4896e-2 J and 2.2124e-2 J vs 2.2190e-2 J",
+          "summed |difference| on the OMC grid: Rumoca 1e-6 vs Rumoca 1e-9 is 7.0 and 6.3, OMC vs Rumoca 1e-6 is 3.3 and 3.6, OMC vs Rumoca 1e-9 is 3.8 and 2.7"
+        ]
+      }
+    },
+    {
       "model_name": "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonQuasiStatic",
       "kind": "model_issue",
       "reason": "All observed non-high channels are internal advancedSolenoid node voltages and half-coil across-voltages (r_par1.v, r_par2.v, r_2.p.v, coil1.n.v, coil2.v and sibling node potentials); no current, flux, force, inductance, position, or terminal channel deviates. They share an identical common-mode offset near 0.4544 V across nodes at very different levels, the signature of a floating internal sub-network whose half-coil voltage split the model regularizes only with 1 nF parasitic capacitors (their documented purpose is to keep the half-coil voltages well-defined). At the quasi-static 12 V operating point that regularization is weakest; the total coil EMF (coil1.v + coil2.v) and all terminal and resistive drops agree, only the weakly-determined split between the half-coils differs. Pointwise comparison of these internal voltages against OMC is non-identifying.",
