@@ -269,3 +269,43 @@ fn a_reference_reaches_members_of_a_record_redeclared_by_the_selected_package() 
         panic!("Top compiles: {error:?}");
     }
 }
+
+/// `Medium.f` names a function of a replaceable package. The instance whose
+/// `Medium` is redeclared as `Simple` calls the redeclared `Simple.f`.
+const FUNCTION_OF_REDECLARED_PACKAGE: &str = r#"
+partial package PM
+  replaceable partial function f
+    input Real x;
+    output Real y;
+  end f;
+end PM;
+
+package Simple
+  extends PM;
+  redeclare function f
+    input Real x;
+    output Real y;
+  algorithm
+    y := x + 1;
+  end f;
+end Simple;
+
+model HT
+  replaceable package Medium = PM;
+  Real y = Medium.f(2.0);
+end HT;
+
+model Top
+  HT ht(redeclare package Medium = Simple);
+end Top;
+"#;
+
+#[test]
+fn a_call_through_a_package_alias_selects_the_redeclared_packages_function() {
+    let result = Compiler::new()
+        .model("Top")
+        .compile_str(FUNCTION_OF_REDECLARED_PACKAGE, "Function.mo");
+    if let Err(error) = result {
+        panic!("Top compiles: {error:?}");
+    }
+}

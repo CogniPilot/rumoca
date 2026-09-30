@@ -153,6 +153,23 @@ fn exact_function_exposure(
             &mut exposures,
         );
         if exposures.is_empty() {
+            // MLS 7.3: the prefix names a replaceable package alias whose
+            // redeclaration provides the selected implementation.
+            for package in ctx
+                .override_packages
+                .iter()
+                .filter(|package| package.alias == prefix.ident.as_str())
+            {
+                collect_function_exposures_for_implementation(
+                    ctx.class_index,
+                    package.def_id,
+                    implementation,
+                    &mut FxHashSet::default(),
+                    &mut exposures,
+                );
+            }
+        }
+        if exposures.is_empty() {
             return Err(FlattenError::missing_function_selection_identity(
                 reference.as_str(),
                 "exact callable owner does not expose the selected implementation",
