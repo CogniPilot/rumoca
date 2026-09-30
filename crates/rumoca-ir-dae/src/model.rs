@@ -190,7 +190,7 @@ pub use view::{
     FunctionView, InitializationOwnerView, RangeBoundView, RangeView, RecordFieldLayout,
     ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
     StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
-    ValueTypeOperands, VariableIdentity, VariableView,
+    ValueTypeOperands, VariableIdentity, VariableView, broadcast_scalar_values,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

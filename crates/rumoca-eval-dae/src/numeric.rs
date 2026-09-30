@@ -687,9 +687,7 @@ where
         expression: dae::ExprId<'dae>,
     ) -> Result<Vec<f64>, NumericEvaluationError> {
         let mut values = self.expression(expression)?;
-        if values.len() == 1 && variable.scalar_count() > 1 {
-            values.resize(variable.scalar_count(), values[0]);
-        }
+        variable.broadcast_values(&mut values);
         if values.len() != variable.scalar_count() {
             return Err(failure(
                 NumericEvaluationErrorKind::ShapeMismatch,

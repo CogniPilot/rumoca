@@ -181,6 +181,7 @@ pub use model::{
     RuntimeQuotientOwnerView, StringConversionFormatView, StructuredFamilyView, SubscriptView,
     SubscriptsView, ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality,
     VariableIdentity, VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
+    broadcast_scalar_values,
 };
 pub use model_event_transactions::{
     ModelEventDefinition, ModelEventDefinitionView, ModelEventStep, ModelEventStepView,

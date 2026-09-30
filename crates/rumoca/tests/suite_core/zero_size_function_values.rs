@@ -133,3 +133,50 @@ fn scalar_times_a_zero_size_input_is_zero_size() {
     assert_endpoints(&result, "x[1]", 0.0, 1.0 - (-3.0f64).exp());
     assert_endpoints(&result, "x[2]", 0.0, 1.0 - (-6.0f64).exp());
 }
+
+/// The `Modelica.Fluid` single-substance port: `Xi_outflow[Medium.nXi]` is a
+/// zero-size array of a type that declares scalar `start` and `nominal`
+/// attributes, which apply to each of its (no) elements.
+const ZERO_SIZE_TYPED_PORT: &str = r#"
+package ZeroSizePort
+  constant Integer nXi = 0;
+  type MassFraction = Real(min = 0, max = 1, nominal = 0.1, start = 0.5);
+  connector Port
+    Real p;
+    flow Real m_flow;
+    stream MassFraction Xi_outflow[nXi];
+  end Port;
+  model Tank
+    Port ports[2];
+    MassFraction Xi[nXi];
+  equation
+    for i in 1:2 loop
+      ports[i].p = 1;
+      ports[i].Xi_outflow = Xi;
+    end for;
+  end Tank;
+end ZeroSizePort;
+model ZeroSizeTypedPort
+  ZeroSizePort.Tank tank;
+  Real x(start = 1, fixed = true);
+equation
+  der(x) = -x;
+end ZeroSizeTypedPort;
+"#;
+
+#[test]
+fn a_scalar_type_attribute_covers_no_element_of_a_zero_size_array() {
+    let compiled = Compiler::new()
+        .model("ZeroSizeTypedPort")
+        .compile_str(ZERO_SIZE_TYPED_PORT, "ZeroSizeTypedPort.mo")
+        .expect("ZeroSizeTypedPort compiles");
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("ZeroSizeTypedPort simulates: {error}"));
+    assert_endpoints(&result, "x", 1.0, (-1.0f64).exp());
+}

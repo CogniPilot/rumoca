@@ -688,6 +688,12 @@ impl<'dae> VariableView<'dae> {
             .expect("final DAE value type has a checked scalar capacity")
     }
 
+    /// Spread a single evaluated attribute or binding value over this
+    /// variable's scalars; see [`broadcast_scalar_values`].
+    pub fn broadcast_values<T: Clone>(self, values: &mut Vec<T>) {
+        broadcast_scalar_values(values, self.scalar_count());
+    }
+
     pub fn scalar_name(self, flat_index: usize) -> Option<String> {
         let subscripts = self.value_type.scalar_subscripts(flat_index)?;
         if subscripts.is_empty() {
@@ -1852,5 +1858,19 @@ fn positive_parameter_view(entry: &PositiveParameterEntry) -> PositiveParameterV
         expression: ExprId::from_raw(entry.expression),
         value: entry.value,
         provenance: entry.provenance,
+    }
+}
+
+/// Spread one evaluated value over `scalar_count` scalars.
+///
+/// A scalar attribute of a type applies to every element of an array of that
+/// type (MLS §4.9, §10.1), so one value covers the whole array, including the
+/// empty element set of a zero-size array (MLS §10.3.1). Any other length is
+/// left for the caller's shape check.
+pub fn broadcast_scalar_values<T: Clone>(values: &mut Vec<T>, scalar_count: usize) {
+    if values.len() == 1 && scalar_count != 1 {
+        let value = values[0].clone();
+        values.clear();
+        values.resize(scalar_count, value);
     }
 }

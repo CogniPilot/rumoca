@@ -203,9 +203,7 @@ fn parameter_nominals(
                 span,
             )
         })?;
-        if values.len() == 1 && slots.len() > 1 {
-            values.resize(slots.len(), values[0]);
-        }
+        dae::broadcast_scalar_values(&mut values, slots.len());
         if values.len() != slots.len()
             || values
                 .iter()

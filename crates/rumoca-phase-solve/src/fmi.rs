@@ -192,9 +192,7 @@ fn text_start<'dae>(
     let mut values = Vec::new();
     collect_string_literals(view, expression, &mut values)?;
     let count = variable.scalar_count();
-    if values.len() == 1 && count > 1 {
-        values.resize(count, values[0].clone());
-    }
+    dae::broadcast_scalar_values(&mut values, count);
     (values.len() == count).then_some(values)
 }
 
@@ -259,9 +257,7 @@ fn numeric_attribute<'dae>(
                 message: error.to_string(),
                 span: error.span(),
             })?;
-    if values.len() == 1 && variable.scalar_count() > 1 {
-        values.resize(variable.scalar_count(), values[0]);
-    }
+    variable.broadcast_values(&mut values);
     if values.len() != variable.scalar_count() {
         return Err(FmiLoweringError::NumericMetadata {
             variable: variable.name().to_string(),

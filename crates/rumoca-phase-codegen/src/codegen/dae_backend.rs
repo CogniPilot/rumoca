@@ -160,9 +160,7 @@ fn numeric_values<'dae>(
     numeric_expression
         .map(|expression| {
             let mut values = evaluator.expression(expression)?;
-            if values.len() == 1 && variable.scalar_count() > 1 {
-                values.resize(variable.scalar_count(), values[0]);
-            }
+            variable.broadcast_values(&mut values);
             if values.len() != variable.scalar_count() {
                 return Err(DaeBackendError::AttributeShape {
                     variable: variable.name().to_string(),
