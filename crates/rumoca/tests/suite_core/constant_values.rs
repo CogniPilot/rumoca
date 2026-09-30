@@ -289,3 +289,46 @@ fn a_slider_loop_tears_into_two_angles_and_settles_without_dense_fallback() {
         assert!((gap - r3).abs() < 1e-6, "loop closure {gap} at step {step}");
     }
 }
+
+/// The `Modelica.Media` `BaseProperties` mass-fraction assertion: its message
+/// names the substance through a constant String array indexed by the
+/// expanded loop index, so the selected element is a literal of the message.
+const INDEXED_STRING_CONSTANT_MESSAGE: &str = r#"
+package IndexedNames
+  constant String substanceNames[2] = {"air", "water"};
+  constant String mediumName = "moist air";
+  model Fractions
+    Real X[2](start = {1.0, 0.5}, each fixed = true);
+  equation
+    for i in 1:2 loop
+      der(X[i]) = -X[i];
+      assert(X[i] >= 0.4, "X[" + String(i) + "] of " + substanceNames[i] + " in " + mediumName);
+    end for;
+  end Fractions;
+end IndexedNames;
+model IndexedStringMessage
+  IndexedNames.Fractions fractions;
+end IndexedStringMessage;
+"#;
+
+#[test]
+fn a_constant_string_array_element_renders_in_an_assertion_message() {
+    let compiled = Compiler::new()
+        .model("IndexedStringMessage")
+        .compile_str(INDEXED_STRING_CONSTANT_MESSAGE, "IndexedStringMessage.mo")
+        .expect("IndexedStringMessage compiles");
+    // X[2] = 0.5*exp(-t) falls below 0.4 at t = ln(1.25) < 1; X[1] never does.
+    let error = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .expect_err("X[2] crosses its bound");
+    let message = error.to_string();
+    assert!(
+        message.contains("X[2] of water in moist air"),
+        "the message selects the second substance name: {message}"
+    );
+}
