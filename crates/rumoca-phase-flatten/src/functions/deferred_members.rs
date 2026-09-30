@@ -89,32 +89,56 @@ impl DeferredMemberProver<'_, '_> {
         // not retain the occurrence DefId carried by the body reference, so
         // name ownership is the authoritative discriminator here.
         let component = self.components.get(root.ident.text.as_ref());
-        let (mut owner, reprove_members) = if let Some(component) = component {
-            let contextual_owner = self.contextual_component_type(component);
-            let declared_owner = component.type_def_id;
-            (contextual_owner, contextual_owner != declared_owner)
-        } else {
-            (
-                self.class_index.get(root_def_id).map(|_| root_def_id),
-                false,
-            )
+        let Some(component) = component else {
+            let owner = self.class_index.get(root_def_id).map(|_| root_def_id);
+            self.prove_member_tail(&mut reference.parts, owner, false);
+            return;
         };
-        for part in reference.parts.iter_mut().skip(1) {
+        let contextual_owner = self.contextual_component_type(component);
+        let declared_owner = component.type_def_id;
+        let mut contextual_parts = reference.parts.clone();
+        if self.prove_member_tail(
+            &mut contextual_parts,
+            contextual_owner,
+            contextual_owner != declared_owner,
+        ) || contextual_owner == declared_owner
+        {
+            reference.parts = contextual_parts;
+            return;
+        }
+        // The exposed scope resolved the formal's type to a class that does not
+        // declare the member (a replaceable slot's constraining class), so the
+        // member is proved in the declaration's own type, which the selected
+        // implementation names.
+        self.prove_member_tail(&mut reference.parts, declared_owner, false);
+    }
+
+    /// Prove the member of each segment after the root, left to right, each as
+    /// a member of the class the preceding segment continues in. Returns
+    /// whether every segment was proved.
+    fn prove_member_tail(
+        &self,
+        parts: &mut [ast::ComponentRefPart],
+        mut owner: Option<DefId>,
+        reprove_members: bool,
+    ) -> bool {
+        for part in parts.iter_mut().skip(1) {
             let Some(owner_def_id) = owner else {
-                return;
+                return false;
             };
             let Some(owner_class) = self.class_index.get(owner_def_id) else {
-                return;
+                return false;
             };
             let Some(member) = member_of_class(self.class_index, owner_class, &part.ident.text)
             else {
-                return;
+                return false;
             };
             if reprove_members || part.def_id.is_none() {
                 part.def_id = Some(member.declaration);
             }
             owner = member.continues_in;
         }
+        true
     }
 
     /// Resolve a formal/local type in the exposed callable scope before using

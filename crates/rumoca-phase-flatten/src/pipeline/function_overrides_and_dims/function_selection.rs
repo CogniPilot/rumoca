@@ -427,7 +427,15 @@ fn exact_package_function_rewrite(
         exposure,
         implementation,
     };
-    if projected == selection {
+    // A call spelled through the package alias keeps that spelling even when
+    // instantiation already retargeted it to the alias's redeclaration: the
+    // function body is then converted in the redeclaring package's scope, where
+    // its formal types resolve to the redeclared classes.
+    let spelled_through_alias = reference
+        .component_ref()
+        .and_then(|component_ref| component_ref.component_scope().prefix_parts().last())
+        .is_some_and(|prefix| prefix.ident == package.alias);
+    if projected == selection && !spelled_through_alias {
         return Ok(None);
     }
     let mut rewrite = resolved_function_rewrite(
