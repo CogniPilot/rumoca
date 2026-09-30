@@ -756,6 +756,7 @@ fn runtime_inputs_require_an_override_or_use_their_checked_default() {
                 rumoca_ir_dae::VariableAttributes {
                     binding: Some(default),
                     causality: rumoca_ir_dae::VariableCausality::Input,
+                    declared_causality: rumoca_ir_dae::DeclaredCausality::Input,
                     ..Default::default()
                 },
             )?;
@@ -766,6 +767,7 @@ fn runtime_inputs_require_an_override_or_use_their_checked_default() {
                 at("input Real supplied"),
                 rumoca_ir_dae::VariableAttributes {
                     causality: rumoca_ir_dae::VariableCausality::Input,
+                    declared_causality: rumoca_ir_dae::DeclaredCausality::Input,
                     ..Default::default()
                 },
             )?;

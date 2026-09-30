@@ -160,7 +160,9 @@ pub(crate) use construction_checks::{
 /// 39 records checked evaluability of `final` and `Evaluate=true` parameters.
 /// 40 carries each function's MLS §18.3 inline request on the wire.
 /// 41 adds the MLS §16.5.2 shifted event clock kind.
-pub const DAE_SCHEMA_VERSION: u16 = 41;
+/// 42 records each variable's declared `input`/`output` prefix beside its
+/// exported causality.
+pub const DAE_SCHEMA_VERSION: u16 = 42;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -216,6 +218,7 @@ pub(crate) struct VariableAttributesWire {
     state_select: StateSelect,
     description: Option<String>,
     pub(crate) causality: VariableCausality,
+    declared_causality: DeclaredCausality,
     is_tunable: bool,
     is_held: bool,
     evaluable: bool,
@@ -286,6 +289,21 @@ pub enum VariableCausality {
     Local,
 }
 
+/// The `input`/`output` prefix of a declaration (MLS §4.4.2.2), independent
+/// of where the declaration sits in the instance hierarchy.
+///
+/// [`VariableCausality`] is the exported causality, which is `Input` or
+/// `Output` only for a top-level declaration; a nested `output` is exported
+/// `Local` and keeps its prefix here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeclaredCausality {
+    #[default]
+    None,
+    Input,
+    Output,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VariableOrigin {
@@ -307,6 +325,9 @@ pub struct VariableAttributes<'dae> {
     pub state_select: StateSelect,
     pub description: Option<String>,
     pub causality: VariableCausality,
+    /// The source `input`/`output` prefix. An exported `Input` or `Output`
+    /// causality requires the same declared causality (SPEC_0040 DAE-C24).
+    pub declared_causality: DeclaredCausality,
     pub is_tunable: bool,
     pub is_held: bool,
     /// A `final` or `Evaluate=true` parameter or constant whose declaration
@@ -1098,6 +1119,7 @@ impl<'dae> Variables<'_, 'dae> {
             }
         }
         self.validate_evaluable(variable, attributes, provenance)?;
+        self.validate_declared_causality(variable, attributes, provenance)?;
         if let Some(binding) = attributes.binding {
             self.storage.expect_closed_expression(binding, provenance)?;
             let found = self
@@ -1132,6 +1154,29 @@ impl<'dae> Variables<'_, 'dae> {
                 .expect_attribute_type_compatible(expected, found, provenance)?;
         }
         Ok(())
+    }
+
+    /// An exported `Input` or `Output` causality exists only for a declaration
+    /// carrying the same prefix (SPEC_0040 DAE-C24).
+    fn validate_declared_causality(
+        &self,
+        variable: VariableId<'dae>,
+        attributes: &VariableAttributes<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        let required = match attributes.causality {
+            VariableCausality::Input => DeclaredCausality::Input,
+            VariableCausality::Output => DeclaredCausality::Output,
+            _ => return Ok(()),
+        };
+        if attributes.declared_causality == required {
+            return Ok(());
+        }
+        let entry = self.storage.variable(variable.index(), provenance)?;
+        Err(DaeConstructionError::InvalidDeclaredCausality {
+            name: entry.name.clone(),
+            span: provenance.span(),
+        })
     }
 }
 
@@ -1168,6 +1213,7 @@ fn erase_variable_attributes(attributes: VariableAttributes<'_>) -> VariableAttr
         state_select: attributes.state_select,
         description: attributes.description,
         causality: attributes.causality,
+        declared_causality: attributes.declared_causality,
         is_tunable: attributes.is_tunable,
         is_held: attributes.is_held,
         evaluable: attributes.evaluable,

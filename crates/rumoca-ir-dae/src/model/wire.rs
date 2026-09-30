@@ -1404,6 +1404,7 @@ fn define_variables<'dae>(
             state_select: attributes.state_select,
             description: attributes.description.clone(),
             causality: attributes.causality,
+            declared_causality: attributes.declared_causality,
             is_tunable: attributes.is_tunable,
             is_held: attributes.is_held,
             evaluable: attributes.evaluable,

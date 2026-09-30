@@ -328,6 +328,7 @@ fn lower_variable_attributes<'dae>(
         state_select: variable.flat.state_select,
         description: variable.flat.description.clone(),
         causality,
+        declared_causality: declared_causality(&variable.flat.causality),
         is_tunable: matches!(variable.role, RuntimeVariableRole::Parameter)
             && !derived_parameter
             && !variable.flat.evaluate
@@ -500,6 +501,15 @@ fn variable_causality(
         (Causality::Output(_), _, true) => dae::VariableCausality::Output,
         (_, RuntimeVariableRole::Parameter, _) => dae::VariableCausality::Parameter,
         _ => dae::VariableCausality::Local,
+    }
+}
+
+/// The declaration's own prefix, kept at every nesting depth (MLS §4.4.2.2).
+const fn declared_causality(causality: &Causality) -> dae::DeclaredCausality {
+    match causality {
+        Causality::Empty => dae::DeclaredCausality::None,
+        Causality::Input(_) => dae::DeclaredCausality::Input,
+        Causality::Output(_) => dae::DeclaredCausality::Output,
     }
 }
 

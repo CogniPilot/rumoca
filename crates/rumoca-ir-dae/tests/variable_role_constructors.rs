@@ -482,6 +482,7 @@ fn primitive_parameter_input_and_discrete_arrays_preserve_rectangular_capacity()
                 discrete_at,
                 VariableAttributes {
                     causality: rumoca_ir_dae::VariableCausality::Input,
+                    declared_causality: rumoca_ir_dae::DeclaredCausality::Input,
                     ..VariableAttributes::default()
                 },
             )?;
@@ -491,6 +492,7 @@ fn primitive_parameter_input_and_discrete_arrays_preserve_rectangular_capacity()
                 integer_at,
                 VariableAttributes {
                     causality: rumoca_ir_dae::VariableCausality::Input,
+                    declared_causality: rumoca_ir_dae::DeclaredCausality::Input,
                     ..VariableAttributes::default()
                 },
             )?;
@@ -552,4 +554,72 @@ fn record_aggregate_cannot_be_inserted_as_a_model_coordinate() {
             ..
         } if span == expected_span
     ));
+}
+
+fn declared_output_dae(
+    causality: rumoca_ir_dae::VariableCausality,
+) -> Result<Dae, DaeConstructionError> {
+    let mut source_map = SourceMap::new();
+    let source = source_map.add("declared_output.mo", "output Real speed;");
+    let at = DaeProvenance::source(Span::from_offsets(source, 0, 18)).expect("declaration");
+    Dae::construct(source_map, |dae| {
+        let real = dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), at))?;
+        dae.variables(|variables| {
+            variables.algebraic(
+                VarName::new("outer.speed"),
+                real,
+                at,
+                VariableAttributes {
+                    causality,
+                    declared_causality: rumoca_ir_dae::DeclaredCausality::Output,
+                    ..VariableAttributes::default()
+                },
+            )
+        })?;
+        Ok(())
+    })
+}
+
+/// A nested `output` keeps its declared prefix beside the `Local` causality it
+/// is exported with, and the prefix survives the wire.
+#[test]
+fn a_nested_output_keeps_its_declared_causality_through_the_wire() {
+    let dae = declared_output_dae(rumoca_ir_dae::VariableCausality::Local)
+        .expect("a local declaration may carry an output prefix");
+    let encoded = serde_json::to_string(&dae).expect("declared causality serializes");
+    assert!(
+        encoded.contains("\"declared_causality\":\"output\""),
+        "{encoded}"
+    );
+    let decoded: Dae = serde_json::from_str(&encoded).expect("wire replays declared causality");
+    decoded.inspect(|view| {
+        let (_, variable) = view.variables().next().expect("one declaration");
+        assert_eq!(
+            variable.causality(),
+            rumoca_ir_dae::VariableCausality::Local
+        );
+        assert_eq!(
+            variable.declared_causality(),
+            rumoca_ir_dae::DeclaredCausality::Output
+        );
+    });
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), encoded);
+}
+
+/// An exported `Input` or `Output` causality is constructible only for a
+/// declaration carrying the same prefix.
+#[test]
+fn an_exported_causality_without_its_declared_prefix_is_not_constructible() {
+    declared_output_dae(rumoca_ir_dae::VariableCausality::Output)
+        .expect("a top-level output declares its prefix");
+    let error = declared_output_dae(rumoca_ir_dae::VariableCausality::Input)
+        .expect_err("an exported input needs a declared input prefix");
+    assert!(
+        matches!(
+            &error,
+            DaeConstructionError::InvalidDeclaredCausality { name, .. }
+                if name.as_str() == "outer.speed"
+        ),
+        "{error:?}"
+    );
 }

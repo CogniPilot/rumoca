@@ -545,6 +545,7 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
                     provenance,
                     dae::VariableAttributes {
                         causality: dae::VariableCausality::Input,
+                        declared_causality: dae::DeclaredCausality::Input,
                         ..Default::default()
                     },
                 )?,
@@ -554,6 +555,7 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
                     provenance,
                     dae::VariableAttributes {
                         causality: dae::VariableCausality::Output,
+                        declared_causality: dae::DeclaredCausality::Output,
                         ..Default::default()
                     },
                 )?,

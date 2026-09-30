@@ -192,6 +192,8 @@ pub enum DaeConstructionError {
         "`{name}` is marked evaluable but is not a fixed, non-tunable parameter whose binding reads only constants and evaluable parameters"
     )]
     InvalidEvaluableParameter { name: VarName, span: Span },
+    #[error("`{name}` exports an input or output causality its declaration does not carry")]
+    InvalidDeclaredCausality { name: VarName, span: Span },
     #[error("variable `{name}` of type {found:?} cannot be a {role:?} DAE coordinate")]
     InvalidVariableType {
         name: VarName,
@@ -376,6 +378,7 @@ impl DaeConstructionError {
             | Self::InvalidVariableRole { span, .. }
             | Self::InvalidInitialParameter { span, .. }
             | Self::InvalidEvaluableParameter { span, .. }
+            | Self::InvalidDeclaredCausality { span, .. }
             | Self::InvalidVariableType { span, .. }
             | Self::DuplicateDefinition { span, .. }
             | Self::DuplicateKey { span, .. }

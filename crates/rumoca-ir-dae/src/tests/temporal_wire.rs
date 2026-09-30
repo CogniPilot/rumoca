@@ -622,8 +622,10 @@ fn wire_v12_round_trip_preserves_provenance_without_inline_source_copies() {
     .unwrap();
 
     let json = serde_json::to_string(&dae).unwrap();
+    // The version field is not a copy of the source, whatever its number.
+    let payload = json.replacen(&format!("\"schema_version\":{DAE_SCHEMA_VERSION}"), "", 1);
     assert_eq!(
-        json.matches("42").count(),
+        payload.matches("42").count(),
         2,
         "source text plus literal value"
     );

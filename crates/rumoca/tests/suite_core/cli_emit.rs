@@ -291,6 +291,66 @@ fn same_named_families_do_not_share_variability_proofs_across_occurrences() {
         .expect("occurrence-scoped family model should produce valid DAE JSON");
 }
 
+const DECLARED_CAUSALITY_FIXTURE: &str = "
+model Vehicle
+  output Real p(start = 0, fixed = true);
+  output Real accel;
+  output Boolean far;
+equation
+  accel = 1 - 0.1*p;
+  der(p) = accel;
+  far = p > 2;
+end Vehicle;
+
+model DeclaredCausalityFixture
+  Vehicle vehicle;
+  output Real y;
+equation
+  y = vehicle.accel;
+end DeclaredCausalityFixture;
+";
+
+/// `role` is the runtime classification, so a nested declared `output` that is
+/// a state or discrete is not `role == \"output\"`; its prefix is the separate
+/// `declared_causality`, while `causality` is exported only at the top level.
+#[test]
+fn dae_json_keeps_the_declared_prefix_beside_role_and_causality() {
+    let (_dir, file) = named_fixture_file("DeclaredCausalityFixture", DECLARED_CAUSALITY_FIXTURE);
+    let out = assert_emit_ok(&file, "dae-json");
+    let dae: serde_json::Value = serde_json::from_str(&out).expect("valid DAE JSON");
+    let variables = dae["storage"]["variables"]
+        .as_array()
+        .expect("DAE variable catalog");
+    let facts = |name: &str| {
+        let variable = variables
+            .iter()
+            .find(|variable| variable["name"] == name)
+            .unwrap_or_else(|| panic!("`{name}` is in the catalog: {out}"));
+        let attributes = &variable["attributes"];
+        (
+            variable["role"].as_str().unwrap().to_owned(),
+            attributes["causality"].as_str().unwrap().to_owned(),
+            attributes["declared_causality"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        )
+    };
+    let expected = |role: &str, causality: &str, declared: &str| {
+        (role.to_owned(), causality.to_owned(), declared.to_owned())
+    };
+    assert_eq!(facts("vehicle.p"), expected("state", "local", "output"));
+    assert_eq!(
+        facts("vehicle.accel"),
+        expected("output", "local", "output")
+    );
+    assert_eq!(
+        facts("vehicle.far"),
+        expected("discrete_value", "local", "output")
+    );
+    assert_eq!(facts("y"), expected("output", "output", "output"));
+}
+
 #[test]
 fn inspect_structure_on_compile() {
     let (_dir, file) = fixture_file();
