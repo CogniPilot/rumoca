@@ -1,5 +1,5 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array, rmc_kind, text_fields, text_table, cs_integrator %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array, rmc_kind, text_fields, text_table, cs_integrator, cs_integrator_function %}
 {%- set cs_integrate = cs_integrator(fmi) %}
 {%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields, workspace_reset %}
 {%- from "fmi-scalar-events.jinja" import scalar_events, event_reset, cs_events %}
@@ -9,7 +9,7 @@
 static void initialize_values(ModelInstance* m) {
 {{- value_array("initial_y", "Y_LEN", fmi.initial_y) }}
 {{- value_array("initial_p", "P_LEN", fmi.initial_parameters) }}
-    m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true; m->tolerance=0.0; rmc_release_text(m);{{ workspace_reset(me_refresh) }}{{ event_reset(fmi) }}
+    m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true; m->tolerance=0.0; m->rmc_cs_substep=0.0; rmc_release_text(m);{{ workspace_reset(me_refresh) }}{{ event_reset(fmi) }}
     memcpy(m->y, initial_y, sizeof(m->y));
     memcpy(m->p, initial_p, sizeof(m->p));
     m->time = 0.0;
@@ -84,31 +84,7 @@ static fmi2Status evaluate_derivatives(ModelInstance* m) {
 }
 {%- endif %}
 
-static fmi2Status {{ cs_integrate }}(ModelInstance* m, fmi2Real start, fmi2Real step) {
-    double initial[STATE_LEN];
-    double k1[STATE_LEN];
-    double k2[STATE_LEN];
-    double k3[STATE_LEN];
-    double k4[STATE_LEN];
-    size_t count = {{ solve.solve_layout.state_scalar_count }};
-    for (size_t i = 0; i < count; ++i) initial[i] = m->y[i];
-    m->time = start;
-    if (evaluate_derivatives(m) != fmi2OK) return fmi2Error;
-    for (size_t i = 0; i < count; ++i) { k1[i] = m->derivative[i]; m->y[i] = initial[i] + 0.5 * step * k1[i]; }
-    m->time = start + 0.5 * step;
-    if (evaluate_derivatives(m) != fmi2OK) return fmi2Error;
-    for (size_t i = 0; i < count; ++i) { k2[i] = m->derivative[i]; m->y[i] = initial[i] + 0.5 * step * k2[i]; }
-    if (evaluate_derivatives(m) != fmi2OK) return fmi2Error;
-    for (size_t i = 0; i < count; ++i) { k3[i] = m->derivative[i]; m->y[i] = initial[i] + step * k3[i]; }
-    m->time = start + step;
-    if (evaluate_derivatives(m) != fmi2OK) return fmi2Error;
-    for (size_t i = 0; i < count; ++i) {
-        k4[i] = m->derivative[i];
-        m->y[i] = initial[i] + step * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0;
-        if (!isfinite(m->y[i])) return fmi2Error;
-    }
-    return settle_assertion_event(m);
-}
+{{ cs_integrator_function(fmi, solve, "fmi2") }}
 {%- if fmi.scalar_events %}
 {{ cs_events(fmi, cs_integrate, "fmi2") }}
 {%- endif %}
@@ -258,10 +234,11 @@ FMI_EXPORT fmi2Status fmi2DoStep(fmi2Component c, fmi2Real current, fmi2Real ste
     if (fabs(current - m->time) > 1e-12 * fmax(1.0, fmax(fabs(current), fabs(m->time)))) return fmi2Error;
     double old_y[Y_LEN];
     for (size_t i = 0; i < Y_LEN; ++i) old_y[i] = m->y[i];
-    if ({% if fmi.scalar_events %}rmc_cs_advance{% else %}{{ cs_integrate }}{% endif %}(m, current, step) != fmi2OK) {
+    fmi2Status advanced = {% if fmi.scalar_events %}rmc_cs_advance{% else %}{{ cs_integrate }}{% endif %}(m, current, step);
+    if (advanced != fmi2OK) {
         for (size_t i = 0; i < Y_LEN; ++i) m->y[i] = old_y[i];
         m->time = current;
-        return fmi2Error;
+        return advanced == fmi2Discard ? fmi2Discard : fmi2Error;
     }
 {%- if me_refresh.switching %}
     bool request = false, changed = false, nominals = false;

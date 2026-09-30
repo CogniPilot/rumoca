@@ -17,6 +17,12 @@ checked component state.
 - FMI 3 value references address complete tensor variables with declared
   dimensions.
 - ME and CS are lifecycle profiles of one kernel, not independent lowerings.
+- A Co-Simulation step runs the component's `CoSimulationStepPlan`:
+  error-controlled Dormand-Prince 5(4) substeps within the setup tolerance
+  (1e-6 when the importer defines none), ending exactly at the communication
+  point. Accuracy follows the tolerance rather than the communication step
+  size; a step that cannot meet it within the plan's substep budget is rolled
+  back and returns Discard. The FMI 2 target shares this rule.
 
 ## Unsupported
 
@@ -44,10 +50,14 @@ Initialization rows over declaration seeds, homotopy continuation, delay
 histories, and retained state-manifold rows are refused.
 
 The current profile rejects general events, clocks, runtime event history,
-external calls/tables, and random operations. Algebraic systems run the shared
-ME projection kernel of SPEC_0044 ME-PROJ-001. Non-finite refreshed values fail
-the FMI call and a failed CS step rolls back its state. Unimplemented FMI
-capabilities are absent from metadata and reject at the ABI.
+external calls/tables, and random operations. A derivative inside a matrix
+product (`J * der(w) = f`) lowers to a Solve IR `LinSolve` that the state
+derivative kernel evaluates by the linked kernel's Gauss-Jordan elimination
+with partial pivoting; a singular matrix fails the evaluation. A `LinSolve` in
+a residual, projection, or initialization block is refused. Algebraic systems
+run the shared ME projection kernel of SPEC_0044 ME-PROJ-001. Non-finite
+refreshed values fail the FMI call and a failed CS step rolls back its state.
+Unimplemented FMI capabilities are absent from metadata and reject at the ABI.
 
 The C sources are split into translation units that compile in parallel:
 `model.c` (FMI surface, refresh, kernel), `rmc_assign.c` (exact assignments),
@@ -65,10 +75,13 @@ functions), sharing `model.h`.
 - `packaged_fmi_tensor_products_and_transpose_match_independent_numpy_values`
   checks rectangular matrix/vector products and rank-three transpose against
   NumPy through both interfaces and FMI versions.
+- `packaged_fmi_mass_matrix_derivatives_match_the_matrix_exponential` runs
+  `J * der(w) = -w` (issue #363), including a pivoting inertia tensor, through
+  both interfaces and FMI versions against the matrix exponential.
 - `cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime -- backend_template_runtime_regression::fmi2_and_fmi3_consume_an_exact_isolable_algebraic_schedule`
   proves both FMI consumers accept the checked exact schedule through their shared C kernel.
 - `cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime -- backend_template_runtime_regression::fmi3_exact_runtime_`
-  compiles and runs final-RK4 refresh, non-finite rollback, and chained-singleton
+  compiles and runs final-step refresh, non-finite rollback, and chained-singleton
   order discriminators against the rendered C.
 - `cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime -- backend_template_runtime_regression::fmi2_and_fmi3_reject_a_tunable_algebraic_coefficient`
   proves the explicit profile fails closed when a runtime coefficient would

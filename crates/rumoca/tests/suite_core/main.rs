@@ -193,6 +193,7 @@ mod simulation_work_counts;
 mod singular_algebraic_seed;
 mod solve_model_round_trip;
 mod state_demotion_through_alias;
+mod state_jacobian_sparsity;
 mod state_select_enclosing_constant_test;
 mod steady_adjoint_test;
 mod steady_state_sensitivity_test;

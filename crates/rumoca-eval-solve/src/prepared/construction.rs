@@ -1,6 +1,9 @@
 use super::*;
 use crate::invalid_row;
 
+#[cfg(test)]
+mod evaluation_facts_tests;
+
 impl Clone for PreparedScalarProgramBlock {
     fn clone(&self) -> Self {
         Self {
@@ -18,6 +21,7 @@ impl Clone for PreparedScalarProgramBlock {
             row_parameter_static_y_gradient_params: self
                 .row_parameter_static_y_gradient_params
                 .clone(),
+            facts: self.facts,
             requirements: self.requirements,
             scratch: RefCell::new(RowEvalScratch::default()),
             row_output_scratch: RefCell::new(Vec::new()),
@@ -41,7 +45,7 @@ struct PreparedRow {
 /// Which facts preparing a program derives: every fact, or only those
 /// evaluating its outputs reads, leaving it without assignment certificates.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum RowFacts {
+pub(super) enum RowFacts {
     Full,
     Evaluation,
 }
@@ -115,7 +119,10 @@ impl PreparedScalarProgramBlock {
         Self::with_facts(block, RowFacts::Full)
     }
 
-    fn with_facts(block: ScalarProgramBlock, facts: RowFacts) -> Result<Self, EvalSolveError> {
+    pub(super) fn with_facts(
+        block: ScalarProgramBlock,
+        facts: RowFacts,
+    ) -> Result<Self, EvalSolveError> {
         let row_count = block.programs().len();
         let block_span = block.program_span(0);
         let output_count = checked_prepared_output_count(&block)?;
@@ -164,6 +171,7 @@ impl PreparedScalarProgramBlock {
                 "prepared parameter-static gradient count",
                 block_span,
             )?,
+            facts,
             requirements: RowInputRequirements::default(),
             scratch: RefCell::new(RowEvalScratch::default()),
             row_output_scratch: RefCell::new(Vec::new()),
@@ -196,7 +204,7 @@ impl PreparedScalarProgramBlock {
         let mut prepared = base.clone();
         prepared.block = block;
         for &row_idx in replaced {
-            let row = prepare_row(&prepared.block, row_idx, RowFacts::Full)?;
+            let row = prepare_row(&prepared.block, row_idx, prepared.facts)?;
             prepared.set_row(row_idx, row);
         }
         prepared.requirements = prepared
@@ -292,6 +300,7 @@ fn reverse_y_gradient_supported(row: &[LinearOp]) -> bool {
 
 /// A prepared block that only evaluates its programs' outputs: it records no
 /// assignment certificates, and its type exposes no query that would read one.
+#[derive(Clone)]
 pub struct PreparedEvaluationBlock(PreparedScalarProgramBlock);
 
 impl PreparedEvaluationBlock {
@@ -299,9 +308,47 @@ impl PreparedEvaluationBlock {
         PreparedScalarProgramBlock::with_facts(block, RowFacts::Evaluation).map(Self)
     }
 
+    /// [`PreparedScalarProgramBlock::with_replaced_programs`] over an
+    /// evaluation-only base.
+    pub fn with_replaced_programs(
+        base: &Self,
+        block: ScalarProgramBlock,
+        replaced: &[usize],
+    ) -> Result<Self, EvalSolveError> {
+        PreparedScalarProgramBlock::with_replaced_programs(&base.0, block, replaced).map(Self)
+    }
+
     #[must_use]
     pub fn block(&self) -> &ScalarProgramBlock {
         self.0.block()
+    }
+
+    #[must_use]
+    pub fn requirements(&self) -> RowInputRequirements {
+        self.0.requirements()
+    }
+
+    /// [`PreparedScalarProgramBlock::eval_with_context`].
+    pub fn eval_with_context(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        out: &mut [f64],
+    ) -> Result<(), EvalSolveError> {
+        self.0.eval_with_context(y, p, t, context, out)
+    }
+
+    /// [`PreparedScalarProgramBlock::reverse_vjp`].
+    pub fn reverse_vjp(
+        &self,
+        inputs: &crate::reverse::ReverseInputs<'_>,
+        output_cotangents: &[f64],
+        cot: &mut crate::reverse::ReverseCotangents<'_>,
+        scratch: &mut crate::reverse::ReverseScratch,
+    ) -> Result<(), EvalSolveError> {
+        self.0.reverse_vjp(inputs, output_cotangents, cot, scratch)
     }
 
     /// [`PreparedScalarProgramBlock::eval_row_outputs_unchecked_with_context`].

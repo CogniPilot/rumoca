@@ -402,12 +402,13 @@ impl SolveRuntime {
         out.fill(0.0);
 
         // State (der) rows: ∂der/∂[y|p]ᵀ · λ[0..state_count].
+        let state_lambda = &lambda[..self.state_count];
         self.accumulate_block_vjp(
-            &self.derivative_scalar,
-            t,
-            solver_y,
-            params,
-            &lambda[..self.state_count],
+            |inputs, cot, scratch| {
+                self.derivative_scalar
+                    .reverse_vjp(inputs, state_lambda, cot, scratch)
+            },
+            (t, solver_y, params),
             out,
         )?;
 
@@ -435,7 +436,14 @@ impl SolveRuntime {
         }
         if !alg.is_empty() {
             let mu = self.scatter_algebraic_multipliers(&alg, lambda);
-            self.accumulate_block_vjp(&self.implicit_scalar_rhs, t, solver_y, params, &mu, out)?;
+            self.accumulate_block_vjp(
+                |inputs, cot, scratch| {
+                    self.implicit_scalar_rhs
+                        .reverse_vjp(inputs, &mu, cot, scratch)
+                },
+                (t, solver_y, params),
+                out,
+            )?;
         }
         Ok(())
     }
@@ -445,32 +453,31 @@ impl SolveRuntime {
     /// part). `out` is not cleared, so successive calls sum their contributions.
     fn accumulate_block_vjp(
         &self,
-        block: &PreparedScalarProgramBlock,
-        t: f64,
-        solver_y: &[f64],
-        params: &[f64],
-        cotangents: &[f64],
+        reverse: impl FnOnce(
+            &rumoca_eval_solve::reverse::ReverseInputs<'_>,
+            &mut rumoca_eval_solve::reverse::ReverseCotangents<'_>,
+            &mut rumoca_eval_solve::reverse::ReverseScratch,
+        ) -> Result<(), rumoca_eval_solve::EvalSolveError>,
+        (t, solver_y, params): (f64, &[f64], &[f64]),
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let mut scratch = rumoca_eval_solve::reverse::ReverseScratch::default();
         let (cot_y, cot_p) = out.split_at_mut(self.solver_count);
-        block
-            .reverse_vjp(
-                &rumoca_eval_solve::reverse::ReverseInputs {
-                    y: solver_y,
-                    p: params,
-                    t,
-                    context: self.row_eval_context(),
-                },
-                cotangents,
-                &mut rumoca_eval_solve::reverse::ReverseCotangents {
-                    y: cot_y,
-                    p: cot_p,
-                    seed: &mut [],
-                },
-                &mut scratch,
-            )
-            .map_err(RuntimeSolveError::from)
+        reverse(
+            &rumoca_eval_solve::reverse::ReverseInputs {
+                y: solver_y,
+                p: params,
+                t,
+                context: self.row_eval_context(),
+            },
+            &mut rumoca_eval_solve::reverse::ReverseCotangents {
+                y: cot_y,
+                p: cot_p,
+                seed: &mut [],
+            },
+            &mut scratch,
+        )
+        .map_err(RuntimeSolveError::from)
     }
 
     /// Build the implicit-residual row cotangent `μ` for the algebraic block: the

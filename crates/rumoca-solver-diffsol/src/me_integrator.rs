@@ -371,6 +371,13 @@ fn build_problem(
     initial_step: f64,
 ) -> Result<BdfProblem, MeIntegrationError> {
     let initial = try_copy(point.states(), "BDF initial point")?;
+    if derivatives.state_jacobian_columns().is_none() {
+        return Err(numerical(
+            MeNumericalFailure::Construction,
+            "the component carries no certified state-Jacobian relation to color the BDF \
+             Jacobian with",
+        ));
+    }
     let rhs_derivatives = Rc::clone(&derivatives);
     let rhs: RhsFn = Box::new(move |state, _parameters, time, output| {
         rhs_derivatives.derivatives_into(time, state.as_slice(), output.as_mut_slice());
@@ -378,10 +385,19 @@ fn build_problem(
     let jacobian_derivatives = derivatives;
     let probing = Rc::new(Cell::new(true));
     let jacobian_probe = Rc::clone(&probing);
+    // Diffsol finds the Jacobian's nonzeros by probing the action with one
+    // seeded column at a time. The probe answers from the component's
+    // certified state-Jacobian relation (Solve IR), so the coloring is as
+    // sparse as the model and this backend derives no structure itself.
     let jacobian: JacobianFn = Box::new(move |state, _parameters, time, seed, output| {
         if jacobian_probe.get() {
-            let magnitude = seed.as_slice().iter().copied().map(f64::abs).sum();
-            output.as_mut_slice().fill(magnitude);
+            probe_pattern(
+                jacobian_derivatives
+                    .state_jacobian_columns()
+                    .unwrap_or_default(),
+                seed.as_slice(),
+                output.as_mut_slice(),
+            );
             return;
         }
         jacobian_derivatives.directional_derivative_into(
@@ -409,6 +425,21 @@ fn build_problem(
     }
     probing.set(false);
     problem
+}
+
+/// The structural Jacobian action the sparsity probe observes: each seeded
+/// column reaches the rows `columns` lists for it, so a NaN seed marks exactly
+/// the relation's rows.
+fn probe_pattern(columns: &[Vec<usize>], seed: &[f64], output: &mut [f64]) {
+    output.fill(0.0);
+    for (column, value) in seed.iter().copied().enumerate() {
+        if value == 0.0 {
+            continue;
+        }
+        for &row in columns.get(column).map_or(&[][..], Vec::as_slice) {
+            output[row] += value.abs();
+        }
+    }
 }
 
 /// diffsol's absolute minimum step.

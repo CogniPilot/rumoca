@@ -46,7 +46,9 @@ mod static_assertions;
 mod tests;
 
 pub use c_codegen::{FmiCCodegenError, FmiCCodegenView};
-pub use co_simulation::{CoSimulationMethod, CoSimulationStepPlan, CoSimulationSubstep};
+pub use co_simulation::{
+    CoSimulationController, CoSimulationMethod, CoSimulationStepPlan, CoSimulationSubstep,
+};
 pub use event_free::{FmiEventFreeCodegenView, FmiEventFreeError};
 pub use indicator_plan::{
     FmiIndicatorPlan, IndicatorEntry, IndicatorPlanError, IndicatorPlanInputs,

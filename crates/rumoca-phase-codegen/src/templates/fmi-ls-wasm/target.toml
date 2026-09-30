@@ -40,7 +40,7 @@ host_callbacks = false
 
 [capabilities.tensor]
 matmul = "scalar"
-linsolve = "unsupported"
+linsolve = "scalar"
 elementwise = "scalar"
 stencil = "scalar"
 reductions = "scalar"

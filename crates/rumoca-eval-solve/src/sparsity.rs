@@ -199,7 +199,13 @@ pub fn derive_solve_structural_artifacts(
     .with_manifold_output_evaluations(
         &problem.continuous.manifold_projection_plan,
         &to_scalar_program_block(&artifacts.continuous.manifold_jacobian_v)?,
-    );
+    )
+    .with_state_jacobian(
+        &problem.continuous.algebraic_projection_plan,
+        problem.solve_layout.state_scalar_count,
+        solver_columns,
+    )
+    .map_err(|error| from_pattern_error(error, None))?;
     let initialization_columns = solver_columns
         .checked_add(problem.layout.p_scalars())
         .ok_or_else(|| {

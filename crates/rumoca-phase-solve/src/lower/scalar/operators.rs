@@ -268,28 +268,33 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         if count <= 1 || per_scalar(lhs) || per_scalar(rhs) {
             return Ok(None);
         }
+        let scaled = matches!(operator, dae::BinaryOperator::Multiply);
         let op = match operator {
             dae::BinaryOperator::Add | dae::BinaryOperator::ElementwiseAdd => solve::BinaryOp::Add,
             dae::BinaryOperator::Subtract | dae::BinaryOperator::ElementwiseSubtract => {
                 solve::BinaryOp::Sub
             }
             dae::BinaryOperator::ElementwiseMultiply => solve::BinaryOp::Mul,
-            dae::BinaryOperator::Multiply
-                if (lhs_count == 1 || rhs_count == 1)
-                    && !(0..count).any(|scalar| self.omits_product_term(lhs, rhs, scalar)) =>
-            {
+            dae::BinaryOperator::Multiply if lhs_count == 1 || rhs_count == 1 => {
                 solve::BinaryOp::Mul
             }
             dae::BinaryOperator::ElementwiseDivide => solve::BinaryOp::Div,
             dae::BinaryOperator::Divide if lhs_count == 1 || rhs_count == 1 => solve::BinaryOp::Div,
             _ => return Ok(None),
         };
-        let key = (self.context_id, op, lhs, rhs);
+        // Every scalar of the operation reads this one packed owner, so the
+        // cache answers them all; only a miss proves the operation packable.
+        let key = (self.context_id, op, scaled, lhs, rhs);
         if let Some(&(start, cached_count)) = self.tensor_binary_cache.get(&key) {
             return (scalar < cached_count)
                 .then(|| start + scalar as solve::Reg)
                 .map(Some)
                 .ok_or_else(|| LowerError::contract("tensor binary scalar is out of range", span));
+        }
+        // A scaled tensor packs only when structural incidence keeps every
+        // product term; otherwise each scalar lowers its kept terms alone.
+        if scaled && (0..count).any(|scalar| self.omits_product_term(lhs, rhs, scalar)) {
+            return Ok(None);
         }
         let lhs_start = self.pack_expression(lhs)?;
         let rhs_start = self.pack_expression(rhs)?;

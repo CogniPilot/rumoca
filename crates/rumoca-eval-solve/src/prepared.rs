@@ -120,6 +120,9 @@ pub struct PreparedScalarProgramBlock {
     row_tensor_affine_assignments: Vec<tensor_affine_assignment::PreparedTensorAffineAssignments>,
     row_parameter_indices: Vec<Box<[usize]>>,
     row_parameter_static_y_gradient_params: Vec<Option<Box<[usize]>>>,
+    /// The facts every program was prepared with; a replaced program is
+    /// prepared with the same ones.
+    facts: construction::RowFacts,
     requirements: RowInputRequirements,
     scratch: RefCell<RowEvalScratch>,
     row_output_scratch: RefCell<Vec<f64>>,
@@ -1386,6 +1389,11 @@ struct PreparedMatMulInput<'a> {
     span: rumoca_core::Span,
 }
 
+/// A compute block only evaluates its nodes' outputs and exposes no target
+/// query, so its scalar programs derive evaluation facts alone: deriving the
+/// per-output assignment certificates of a residual row would cost one
+/// materialized program per output of every tensor row, and nothing reads
+/// them.
 fn prepared_scalar_programs(
     block: &ScalarProgramBlock,
     output_cursor: usize,
@@ -1400,7 +1408,10 @@ fn prepared_scalar_programs(
         output_indices,
     )?;
     Ok((
-        PreparedComputeNode::ScalarPrograms(Box::new(PreparedScalarProgramBlock::new(placed)?)),
+        PreparedComputeNode::ScalarPrograms(Box::new(PreparedScalarProgramBlock::with_facts(
+            placed,
+            construction::RowFacts::Evaluation,
+        )?)),
         next_output_cursor,
     ))
 }

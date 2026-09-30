@@ -1402,7 +1402,7 @@ fn unsupported_feature(
 ) -> Result<()> {
     bail!(
         "unsupported-feature:{}: Target '{}' does not support feature '{}': {} \
-         (see `rumoca targets` for a target supporting the '{}' column)",
+         (its target.toml declares `[capabilities] {}` unsupported)",
         feature,
         manifest.name.as_deref().unwrap_or("custom"),
         feature,

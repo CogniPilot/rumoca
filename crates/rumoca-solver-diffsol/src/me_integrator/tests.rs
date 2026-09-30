@@ -170,3 +170,48 @@ fn shortened_bdf_step_preserves_the_stiff_voltage_solution() {
         "shortened step voltage {voltage} differs from the analytic value {exact}"
     );
 }
+
+/// The nonzeros Diffsol's NaN column probe finds through `probe_pattern`.
+fn probed_nonzeros(columns: &[Vec<usize>], n: usize) -> Vec<(usize, usize)> {
+    use diffsol::{
+        Closure, FaerSparseMat, FaerVec, ParameterisedOp, Vector, find_jacobian_non_zeros,
+    };
+    let op = Closure::<FaerSparseMat<f64>, _, _>::new(
+        |_: &FaerVec<f64>, _: &FaerVec<f64>, _: f64, _: &mut FaerVec<f64>| {},
+        |_: &FaerVec<f64>,
+         _: &FaerVec<f64>,
+         _: f64,
+         seed: &FaerVec<f64>,
+         out: &mut FaerVec<f64>| {
+            super::probe_pattern(columns, seed.as_slice(), out.as_mut_slice());
+        },
+        n,
+        n,
+        0,
+        Default::default(),
+    );
+    let parameters = FaerVec::from_vec(Vec::new(), Default::default());
+    let state = FaerVec::from_vec(vec![0.0; n], Default::default());
+    find_jacobian_non_zeros(&ParameterisedOp::new(&op, &parameters), &state, 0.0)
+}
+
+/// Issue #365: Diffsol finds the Jacobian's nonzeros by seeding one column
+/// with NaN at a time. The probe answers from the component's certified
+/// relation; the dense answer it gave before made the column-conflict coloring
+/// graph cubic in the state count.
+#[test]
+fn the_sparsity_probe_marks_exactly_the_proven_rows() {
+    let n = 6;
+    let tridiagonal = (0..n)
+        .map(|column: usize| (column.saturating_sub(1)..(column + 2).min(n)).collect())
+        .collect::<Vec<Vec<usize>>>();
+    let mut expected = tridiagonal
+        .iter()
+        .enumerate()
+        .flat_map(|(column, rows)| rows.iter().map(move |&row| (row, column)))
+        .collect::<Vec<_>>();
+    expected.sort_by_key(|&(row, column)| (column, row));
+    let probed = probed_nonzeros(&tridiagonal, n);
+    assert_eq!(probed, expected);
+    assert_eq!(probed.len(), 3 * n - 2);
+}

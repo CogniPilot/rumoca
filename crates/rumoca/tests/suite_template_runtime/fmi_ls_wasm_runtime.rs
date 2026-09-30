@@ -232,27 +232,29 @@ struct Track<'a> {
     rate: f64,
 }
 
-/// The trace agreement a fixed-step component can promise against the
-/// adaptive native run. The component integrates classical RK4 once per
-/// `dt` (its `CoSimulationStepPlan`), whose global error over the horizon is
-/// bounded by `horizon * rate^5 * dt^4 / 120` in units of `scale`; the native
-/// run is adaptive to its `rtol`/`atol`. The sum, with a factor of ten for
-/// the constants the bound leaves out, is the tolerance.
-fn fixed_step_rk4_tolerance(track: &Track<'_>) -> f64 {
+/// The trace agreement the component can promise against the adaptive native
+/// run. The component integrates each `dt` by its `CoSimulationStepPlan`,
+/// error-controlled substeps whose local error stays within the plan's default
+/// tolerance (the host sets none), so the global error grows at most with
+/// `horizon * rate` local tolerances in units of `scale`; the native run is
+/// adaptive to its `rtol`/`atol`. The sum, with a factor of ten for the
+/// constants the bound leaves out, is the tolerance.
+fn co_simulation_tolerance(track: &Track<'_>) -> f64 {
+    const PLAN_TOLERANCE: f64 = 1.0e-6;
     let native = SimOptions::default();
     let horizon = track.t_end - track.t_start;
-    let rk4 = horizon * track.rate.powi(5) * track.dt.powi(4) / 120.0;
-    10.0 * (track.scale * (rk4 + native.rtol) + native.atol)
+    let component = PLAN_TOLERANCE * (horizon * track.rate).max(1.0);
+    10.0 * (track.scale * (component + native.rtol) + native.atol)
 }
 
 /// Build, validate, run the component over a do-step grid, and assert each
 /// requested channel tracks the native series within the
-/// [`fixed_step_rk4_tolerance`] of the track.
+/// [`co_simulation_tolerance`] of the track.
 fn assert_tracks_native(
     result: &rumoca::CompilationResult,
     track: Track<'_>,
 ) -> (TempDir, Vec<Vec<f64>>) {
-    let tolerance = fixed_step_rk4_tolerance(&track);
+    let tolerance = co_simulation_tolerance(&track);
     let Track {
         model,
         channels,

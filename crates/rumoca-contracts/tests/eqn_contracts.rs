@@ -1489,6 +1489,14 @@ template = "model.out.jinja"
                 error.to_string().contains("dynamic_derivative_subscripts"),
                 "{error}"
             );
+            // Issue #360: the refusal names the manifest capability, not a
+            // `rumoca targets` column that does not exist.
+            assert!(
+                error.to_string().contains(
+                    "declares `[capabilities] dynamic_derivative_subscripts` unsupported"
+                ),
+                "{error}"
+            );
             false
         }
     }

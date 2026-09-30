@@ -69,6 +69,7 @@
 {%- elif op.kind == "LoadSeed" %}    r[{{ op.dst }}] = seed[{{ op.index }}];
 {%- elif op.kind == "LoadIndexedP" %}    r[{{ op.dst }}] = m->p[{{ op.base }} + (size_t)fmin(fmax(round(r[{{ op.index_ref }}]), 0.0), {{ op.count - 1 if op.count > 0 else 0 }}.0)];
 {%- elif op.kind == "Move" %}    r[{{ op.dst }}] = r[{{ op.src }}];
+{%- elif op.kind == "LinearSolveComponent" %}    { double w[{{ op.n * (op.n + 1) }}]; if (!rmc_linear_solve_component(&r[{{ op.matrix_start }}], &r[{{ op.rhs_start }}], {{ op.n }}, {{ op.component }}, w, &r[{{ op.dst }}])) return {{ error_status }}; }
 {%- elif op.kind == "Unary" %}    r[{{ op.dst }}] = {{ unary(op.operator, op.arg) }};
 {%- elif op.kind == "Binary" %}    r[{{ op.dst }}] = {{ binary(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Compare" %}    r[{{ op.dst }}] = {{ compare(op.operator, op.lhs, op.rhs) }};
@@ -464,10 +465,134 @@ static inline bool rmc_own_text(ModelInstance* dst, const ModelInstance* src) { 
 {%- endif %}
 {%- endmacro %}
 
+{#- One component of `A x = b` for a `LinearSolveComponent` op: the linked
+    kernel's Gauss-Jordan elimination with partial pivoting (eval-solve
+    linear_solve.rs, Golub and Van Loan algorithm 3.4.1), operation for
+    operation, so both evaluate bitwise-equal values. The pivot is the last row
+    of largest magnitude; a zero or non-finite pivot, or a non-finite
+    solution, refuses the evaluation. `work` holds the n x (n + 1) augmented
+    matrix. -#}
+{%- macro linear_solve_kernel() %}
+static inline bool rmc_linear_solve_component(const double* matrix, const double* rhs, size_t n, size_t component, double* work, double* value) {
+    size_t stride = n + 1;
+    for (size_t row = 0; row < n; ++row) {
+        for (size_t col = 0; col < n; ++col) work[row * stride + col] = matrix[row * n + col];
+        work[row * stride + n] = rhs[row];
+    }
+    for (size_t col = 0; col < n; ++col) {
+        size_t pivot = col; double best = fabs(work[col * stride + col]);
+        for (size_t row = col + 1; row < n; ++row) {
+            double candidate = fabs(work[row * stride + col]);
+            if (isnan(candidate) || (!isnan(best) && candidate >= best)) { best = candidate; pivot = row; }
+        }
+        double pivot_value = work[pivot * stride + col];
+        if (pivot_value == 0.0 || !isfinite(pivot_value)) return false;
+        for (size_t k = 0; k < stride; ++k) { double swap = work[col * stride + k]; work[col * stride + k] = work[pivot * stride + k]; work[pivot * stride + k] = swap; }
+        for (size_t k = col; k < stride; ++k) work[col * stride + k] /= pivot_value;
+        for (size_t row = 0; row < n; ++row) {
+            if (row == col) continue;
+            double factor = work[row * stride + col];
+            for (size_t k = col; k < stride; ++k) work[row * stride + k] -= factor * work[col * stride + k];
+        }
+    }
+    for (size_t row = 0; row < n; ++row) if (!isfinite(work[row * stride + n])) return false;
+    *value = work[component * stride + n];
+    return true;
+}
+{%- endmacro %}
+
 {#- The component's Co-Simulation step rule (ir-solve fmi::CoSimulationStepPlan,
     SPEC_0044 ME-LSW-001): the name of the substep integrator it selects. -#}
 {%- macro cs_integrator(fmi) -%}
-{%- if fmi.co_simulation.method == "ClassicalRk4" and fmi.co_simulation.substep == "CommunicationStep" -%}integrate_rk4
+{%- if fmi.co_simulation.method == "DormandPrince54" and fmi.co_simulation.substep == "ErrorControlled" -%}integrate_dopri5
 {%- else -%}{{ fail("unsupported-feature:fmi.c.co-simulation-step " ~ fmi.co_simulation.method ~ "/" ~ fmi.co_simulation.substep) }}
 {%- endif -%}
+{%- endmacro %}
+
+{#- The substep integrator the plan selects, shared by the FMI 2 and FMI 3
+    components: the tableau and controller of rumoca-solver-rk45, with the
+    controller constants read from the plan. -#}
+{%- macro cs_integrator_function(fmi, solve, prefix) %}
+{%- set plan = fmi.co_simulation.controller %}
+/* Co-Simulation step rule (Solve IR CoSimulationStepPlan): error-controlled
+   Dormand-Prince 5(4) over one communication step [start, start + step].
+   - Substeps start from the step size the previous communication step
+     proposed and the last one ends exactly at start + step.
+   - A substep is accepted when the max-norm of the difference between the
+     fifth- and embedded fourth-order solutions stays within
+     tol * (1 + max(|y|, |y_new|)); tol is the fmi*SetupExperiment /
+     fmi3EnterInitializationMode tolerance, or {{ plan.default_tolerance }} when
+     the importer defines none.
+   - The next substep is h * min(max({{ plan.safety }} * err^({{ plan.exponent }}), {{ plan.min_factor }}), {{ plan.max_factor }})
+     (Hairer, Norsett and Wanner, Solving ODEs I, section II.4).
+   - A communication step whose substep underflows or which attempts more
+     than {{ plan.max_substeps }} substeps returns Discard; a failed derivative
+     evaluation returns Error. The caller rolls the state back either way.
+   Accuracy therefore follows the tolerance, not the importer's communication
+   step size: a stiff mode takes as many substeps as its stability needs. */
+static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double start, double step) {
+    static const double a[6][6] = {
+        {1.0 / 5.0},
+        {3.0 / 40.0, 9.0 / 40.0},
+        {44.0 / 45.0, -56.0 / 15.0, 32.0 / 9.0},
+        {19372.0 / 6561.0, -25360.0 / 2187.0, 64448.0 / 6561.0, -212.0 / 729.0},
+        {9017.0 / 3168.0, -355.0 / 33.0, 46732.0 / 5247.0, 49.0 / 176.0, -5103.0 / 18656.0},
+        {35.0 / 384.0, 0.0, 500.0 / 1113.0, 125.0 / 192.0, -2187.0 / 6784.0, 11.0 / 84.0}};
+    static const double c[6] = {1.0 / 5.0, 3.0 / 10.0, 4.0 / 5.0, 8.0 / 9.0, 1.0, 1.0};
+    static const double low[7] = {5179.0 / 57600.0, 0.0, 7571.0 / 16695.0, 393.0 / 640.0, -92097.0 / 339200.0, 187.0 / 2100.0, 1.0 / 40.0};
+    double y0[STATE_LEN];
+    double k[7][STATE_LEN];
+    const size_t n = {{ solve.solve_layout.state_scalar_count }};
+    const double tol = m->tolerance > 0.0 ? m->tolerance : {{ plan.default_tolerance }};
+    const double end = start + step;
+    double t = start;
+    double h = m->rmc_cs_substep > 0.0 ? fmin(m->rmc_cs_substep, step) : step;
+    bool start_derivative = false;
+    for (unsigned long attempt = 0; t < end; ++attempt) {
+        if (attempt >= {{ plan.max_substeps }}UL) { RMC_LOG(m, "Co-Simulation step exceeded its substep budget"); return {{ prefix }}Discard; }
+        const bool last = h >= end - t;
+        if (last) h = end - t;
+        if (!(h > 0.0) || t + h == t) { RMC_LOG(m, "Co-Simulation substep underflowed"); return {{ prefix }}Discard; }
+        for (size_t i = 0; i < n; ++i) y0[i] = m->y[i];
+        if (!start_derivative) {
+            m->time = t;
+            if (evaluate_derivatives(m) != {{ prefix }}OK) return {{ prefix }}Error;
+            for (size_t i = 0; i < n; ++i) k[0][i] = m->derivative[i];
+            start_derivative = true;
+        }
+        for (size_t s = 0; s < 6; ++s) {
+            for (size_t i = 0; i < n; ++i) {
+                double sum = 0.0;
+                for (size_t j = 0; j <= s; ++j) sum += a[s][j] * k[j][i];
+                m->y[i] = y0[i] + h * sum;
+            }
+            m->time = s >= 4 && last ? end : t + c[s] * h;
+            if (evaluate_derivatives(m) != {{ prefix }}OK) return {{ prefix }}Error;
+            for (size_t i = 0; i < n; ++i) k[s + 1][i] = m->derivative[i];
+        }
+        double error = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            double estimate = 0.0;
+            for (size_t j = 0; j < 7; ++j) estimate += low[j] * k[j][i];
+            estimate = y0[i] + h * estimate;
+            double scale = tol + tol * fmax(fabs(y0[i]), fabs(m->y[i]));
+            double ratio = fabs(m->y[i] - estimate) / fmax(scale, DBL_MIN);
+            error = isfinite(ratio) ? fmax(error, ratio) : INFINITY;
+        }
+        double factor = error > 0.0 ? fmin(fmax({{ plan.safety }} * pow(error, {{ plan.exponent }}), {{ plan.min_factor }}), {{ plan.max_factor }}) : {{ plan.max_factor }};
+        if (error <= 1.0) {
+            /* First same as last: the seventh stage is the derivative at the
+               accepted state. */
+            for (size_t i = 0; i < n; ++i) k[0][i] = k[6][i];
+            if (!last) m->rmc_cs_substep = h * factor;
+            t = last ? end : t + h;
+        } else {
+            for (size_t i = 0; i < n; ++i) m->y[i] = y0[i];
+            m->time = t;
+        }
+        h *= factor;
+    }
+    m->time = end;
+    return settle_assertion_event(m);
+}
 {%- endmacro %}
