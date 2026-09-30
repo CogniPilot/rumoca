@@ -362,15 +362,8 @@ fn prepared_implicit(
 /// The derivative kernel of an alternate chart, which the component evaluates
 /// in place of the primary's while that chart is active.
 fn alternate_derivative(problem: &solve::SolveProblem) -> Result<Value, CodegenError> {
+    super::solve_renderer::require_builtin_fmi_template_domain(problem)?;
     let scalar = rumoca_eval_solve::to_scalar_program_block(&problem.continuous.derivative_rhs)?;
-    if problem.uses_linear_solve_component()
-        || super::scalar_program_block_uses_linear_solve_component(&scalar)
-    {
-        return Err(CodegenError::dae_preparation_failed(
-            "built-in FMI templates do not implement tensor linear-solve components",
-            None,
-        ));
-    }
     Ok(Value::from_object(
         super::scalar_program_plan::ScalarProgramPlan::new(std::sync::Arc::new(scalar))?,
     ))

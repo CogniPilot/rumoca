@@ -148,16 +148,25 @@ impl SolveTemplateRenderer {
 /// exists. The event/storage inventory is already carried by the input
 /// type-state, and the algebraic refresh is admitted only by its checked ME
 /// refresh view; this owns the remaining Solve capabilities the C templates do
-/// not implement.
-fn require_builtin_fmi_template_domain(problem: &solve::SolveProblem) -> Result<(), CodegenError> {
-    if problem.uses_linear_solve_component()
+/// not implement. The state-derivative kernel evaluates a linear-solve
+/// component with the kernel's dense elimination (`linear_solve_kernel`); the
+/// residual, projection, and initialization blocks, whose directional
+/// derivatives the C templates also render, do not.
+pub(super) fn require_builtin_fmi_template_domain(
+    problem: &solve::SolveProblem,
+) -> Result<(), CodegenError> {
+    let continuous = &problem.continuous;
+    if continuous.implicit_rhs.uses_linear_solve_component()
+        || continuous.residual.uses_linear_solve_component()
+        || continuous.manifold_residual.uses_linear_solve_component()
         || problem
             .initialization
             .residual()
             .uses_linear_solve_component()
     {
         return Err(CodegenError::dae_preparation_failed(
-            "built-in FMI templates do not implement tensor linear-solve components",
+            "built-in FMI templates implement tensor linear-solve components only in the \
+             state-derivative kernel",
             None,
         ));
     }

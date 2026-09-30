@@ -12,6 +12,7 @@ mod assertions;
 mod chart_switching;
 mod derivative_kinks;
 mod lifecycle;
+mod mass_matrix;
 mod projection;
 mod reported_models;
 mod residual_split_harness;

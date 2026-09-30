@@ -69,6 +69,7 @@
 {%- elif op.kind == "LoadSeed" %}    r[{{ op.dst }}] = seed[{{ op.index }}];
 {%- elif op.kind == "LoadIndexedP" %}    r[{{ op.dst }}] = m->p[{{ op.base }} + (size_t)fmin(fmax(round(r[{{ op.index_ref }}]), 0.0), {{ op.count - 1 if op.count > 0 else 0 }}.0)];
 {%- elif op.kind == "Move" %}    r[{{ op.dst }}] = r[{{ op.src }}];
+{%- elif op.kind == "LinearSolveComponent" %}    { double w[{{ op.n * (op.n + 1) }}]; if (!rmc_linear_solve_component(&r[{{ op.matrix_start }}], &r[{{ op.rhs_start }}], {{ op.n }}, {{ op.component }}, w, &r[{{ op.dst }}])) return {{ error_status }}; }
 {%- elif op.kind == "Unary" %}    r[{{ op.dst }}] = {{ unary(op.operator, op.arg) }};
 {%- elif op.kind == "Binary" %}    r[{{ op.dst }}] = {{ binary(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Compare" %}    r[{{ op.dst }}] = {{ compare(op.operator, op.lhs, op.rhs) }};
@@ -462,6 +463,42 @@ static bool rmc_set_text(ModelInstance* m, size_t index, const char* value) { (v
 static void rmc_release_text(ModelInstance* m) { (void)m; }
 static inline bool rmc_own_text(ModelInstance* dst, const ModelInstance* src) { (void)dst; (void)src; return true; }
 {%- endif %}
+{%- endmacro %}
+
+{#- One component of `A x = b` for a `LinearSolveComponent` op: the linked
+    kernel's Gauss-Jordan elimination with partial pivoting (eval-solve
+    linear_solve.rs, Golub and Van Loan algorithm 3.4.1), operation for
+    operation, so both evaluate bitwise-equal values. The pivot is the last row
+    of largest magnitude; a zero or non-finite pivot, or a non-finite
+    solution, refuses the evaluation. `work` holds the n x (n + 1) augmented
+    matrix. -#}
+{%- macro linear_solve_kernel() %}
+static inline bool rmc_linear_solve_component(const double* matrix, const double* rhs, size_t n, size_t component, double* work, double* value) {
+    size_t stride = n + 1;
+    for (size_t row = 0; row < n; ++row) {
+        for (size_t col = 0; col < n; ++col) work[row * stride + col] = matrix[row * n + col];
+        work[row * stride + n] = rhs[row];
+    }
+    for (size_t col = 0; col < n; ++col) {
+        size_t pivot = col; double best = fabs(work[col * stride + col]);
+        for (size_t row = col + 1; row < n; ++row) {
+            double candidate = fabs(work[row * stride + col]);
+            if (isnan(candidate) || (!isnan(best) && candidate >= best)) { best = candidate; pivot = row; }
+        }
+        double pivot_value = work[pivot * stride + col];
+        if (pivot_value == 0.0 || !isfinite(pivot_value)) return false;
+        for (size_t k = 0; k < stride; ++k) { double swap = work[col * stride + k]; work[col * stride + k] = work[pivot * stride + k]; work[pivot * stride + k] = swap; }
+        for (size_t k = col; k < stride; ++k) work[col * stride + k] /= pivot_value;
+        for (size_t row = 0; row < n; ++row) {
+            if (row == col) continue;
+            double factor = work[row * stride + col];
+            for (size_t k = col; k < stride; ++k) work[row * stride + k] -= factor * work[col * stride + k];
+        }
+    }
+    for (size_t row = 0; row < n; ++row) if (!isfinite(work[row * stride + n])) return false;
+    *value = work[component * stride + n];
+    return true;
+}
 {%- endmacro %}
 
 {#- The component's Co-Simulation step rule (ir-solve fmi::CoSimulationStepPlan,
