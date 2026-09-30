@@ -613,8 +613,8 @@ static {{ prefix }}Status rmc_events_continuous(ModelInstance* m) {
 
 {#- Co-Simulation stepping with located state events (ME-EVENT-004). The scan
     cadence, the location tolerance, and the bisection budget are the
-    component's RootLocationPlan; `integrate` is the template's fixed-step
-    integrator over one interval. -#}
+    component's RootLocationPlan; `integrate` is the plan's error-controlled
+    substep integrator over one interval. -#}
 {%- macro cs_events(fmi, integrate, prefix) %}
 {%- set plan = fmi.root_location %}
 /* RootLocationPlan::scan_resolution. */
@@ -642,7 +642,9 @@ static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, 
     double y0[Y_LEN];
     bool changed = false;
     memcpy(y0, m->y, sizeof(m->y));
-    if ({{ integrate }}(m, t, h) != {{ prefix }}OK || rmc_domains_changed(m, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
+    {{ prefix }}Status integrated = {{ integrate }}(m, t, h);
+    if (integrated != {{ prefix }}OK) return integrated == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
+    if (rmc_domains_changed(m, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
     *advanced = h;
     if (!changed) return {{ prefix }}OK;
     double lo = 0.0, hi = h, tol = rmc_location_tolerance(t, h);
@@ -670,7 +672,8 @@ static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double 
     while (t < end) {
         double scan = m->rmc_scan > 0.0 ? m->rmc_scan : rmc_scan_resolution(NAN);
         double h = fmin(end - t, scan), advanced = 0.0;
-        if (rmc_cs_interval(m, t, h, &advanced) != {{ prefix }}OK) return {{ prefix }}Error;
+        {{ prefix }}Status interval = rmc_cs_interval(m, t, h, &advanced);
+        if (interval != {{ prefix }}OK) return interval == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
         t = advanced == end - t ? end : t + advanced;
         m->time = t;
     }

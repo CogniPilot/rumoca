@@ -10,6 +10,7 @@ mod algebraic;
 mod array_bounds;
 mod assertions;
 mod chart_switching;
+mod co_simulation_step;
 mod derivative_kinks;
 mod lifecycle;
 mod mass_matrix;

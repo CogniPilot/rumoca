@@ -185,17 +185,17 @@ end TunableAlgebraicCoefficient;
 }
 
 #[test]
-fn fmi3_exact_runtime_refreshes_the_final_rk4_state() {
+fn fmi3_exact_runtime_refreshes_the_final_step_state() {
     let rendered = render_fmi3_model(
-        "FinalRk4Algebraic",
+        "FinalStepAlgebraic",
         r#"
-model FinalRk4Algebraic
+model FinalStepAlgebraic
   Real x(start = 1);
   output Real y(start = 2);
 equation
   0 = y - 2*x;
   der(x) = -x;
-end FinalRk4Algebraic;
+end FinalStepAlgebraic;
 "#,
     );
     execute_emitted_fmi3_kernel(
@@ -209,9 +209,45 @@ end FinalRk4Algebraic;
     fmi3Float64 last_time;
     if (fmi3DoStep(&model, 0.0, 1.0, fmi3True, &event_needed, &terminate,
                    &early_return, &last_time) != fmi3OK) return 1;
-    if (fabs(model.y[0] - 0.375) > 1.0e-12) return 2;
-    if (fabs(model.y[1] - 0.75) > 1.0e-12) return 3;
+    if (fabs(model.y[0] - exp(-1.0)) > 1.0e-5) return 2;
+    if (fabs(model.y[1] - 2.0 * model.y[0]) > 1.0e-12) return 3;
     if (fabs(last_time - 1.0) > 1.0e-12) return 4;
+"#,
+    );
+}
+
+/// A communication step the error controller cannot complete, here across the
+/// finite-time blow-up of `der(x) = x^2` at `t = 1`, is discarded and rolled
+/// back instead of returning a finite but meaningless state (issue #361).
+#[test]
+fn fmi3_exact_runtime_discards_a_step_its_controller_cannot_complete() {
+    let rendered = render_fmi3_model(
+        "FiniteTimeBlowUp",
+        r#"
+model FiniteTimeBlowUp
+  Real x(start = 1);
+  output Real y(start = 1);
+equation
+  der(x) = x^2;
+  0 = y - x;
+end FiniteTimeBlowUp;
+"#,
+    );
+    execute_emitted_fmi3_kernel(
+        (&rendered.model_c, &rendered.assign_c),
+        2,
+        1,
+        r#"
+    model.y[0] = 1.0; model.y[1] = 1.0;
+    model.state = MODEL_STEP; model.type = INTERFACE_CS;
+    fmi3Boolean event_needed, terminate, early_return;
+    fmi3Float64 last_time = -1.0;
+    if (fmi3DoStep(&model, 0.0, 0.5, fmi3True, &event_needed, &terminate,
+                   &early_return, &last_time) != fmi3OK) return 1;
+    if (fabs(model.y[0] - 2.0) > 1.0e-5) return 2;
+    if (fmi3DoStep(&model, 0.5, 1.0, fmi3True, &event_needed, &terminate,
+                   &early_return, &last_time) != fmi3Discard) return 3;
+    if (model.time != 0.5 || last_time != 0.5 || fabs(model.y[0] - 2.0) > 1.0e-5) return 4;
 "#,
     );
 }
@@ -227,7 +263,7 @@ model NonfiniteFinalAlgebraic
   output Real y(start = 1);
 equation
   der(x) = -x;
-  0 = y - 1/(x-u);
+  0 = y - sqrt(x-u);
 end NonfiniteFinalAlgebraic;
 "#,
     );
@@ -243,12 +279,12 @@ end NonfiniteFinalAlgebraic;
     if (fmi3SetFloat64(&model, &input_vr, 1, &input, 1) != fmi3OK) return 1;
     fmi3Float64 output;
     if (fmi3GetFloat64(&model, &output_vr, 1, &output, 1) != fmi3OK) return 2;
-    if (fabs(output - 1.6) > 1.0e-12) return 3;
+    if (fabs(output - sqrt(0.625)) > 1.0e-12) return 3;
     fmi3Boolean event_needed, terminate, early_return;
     fmi3Float64 last_time;
     if (fmi3DoStep(&model, 0.0, 1.0, fmi3True, &event_needed, &terminate,
                    &early_return, &last_time) != fmi3Error) return 4;
-    if (model.time != 0.0 || model.y[0] != 1.0 || model.y[1] != 1.6) return 5;
+    if (model.time != 0.0 || model.y[0] != 1.0 || model.y[1] != sqrt(0.625)) return 5;
     fmi3Float64 retained;
     if (fmi3GetFloat64(&model, &input_vr, 1, &retained, 1) != fmi3OK) return 6;
     if (retained != 0.375) return 7;
@@ -374,6 +410,7 @@ fn execute_emitted_fmi3_kernel(
     let do_step = &model_c[do_step_start..do_step_end];
     let driver = format!(
         r#"
+#include <float.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -387,7 +424,8 @@ typedef int32_t fmi3Int32;
 typedef const char* fmi3String;
 typedef int fmi3Boolean;
 typedef unsigned int fmi3ValueReference;
-typedef enum {{ fmi3OK = 0, fmi3Error = 3 }} fmi3Status;
+typedef enum {{ fmi3OK = 0, fmi3Discard = 2, fmi3Error = 3 }} fmi3Status;
+typedef void (*fmi3LogMessageCallback)(void*, fmi3Status, fmi3String, fmi3String);
 enum {{ fmi3False = 0, fmi3True = 1 }};
 enum ModelState {{ MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED }};
 enum InterfaceType {{ INTERFACE_ME, INTERFACE_CS }};
@@ -395,7 +433,7 @@ enum InterfaceType {{ INTERFACE_ME, INTERFACE_CS }};
 #define P_LEN 1
 #define STATE_LEN {state_len}
 #define RMC_API
-typedef struct {{ bool assertions_initialized; bool assertion_failed; bool parameters_dirty; double time; double tolerance; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type; }} ModelInstance;
+typedef struct {{ bool assertions_initialized; bool assertion_failed; bool parameters_dirty; void* environment; fmi3LogMessageCallback logger; double time; double tolerance; double rmc_cs_substep; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type; }} ModelInstance;
 {assign_c}
 {kernel}
 {value_helpers}

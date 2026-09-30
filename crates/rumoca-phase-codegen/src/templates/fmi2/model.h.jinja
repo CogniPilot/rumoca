@@ -31,7 +31,7 @@ enum ModelState { MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_C
 #define STATE_LEN {{ solve.solve_layout.state_scalar_count if solve.solve_layout.state_scalar_count > 0 else 1 }}
 typedef struct {
     bool assertions_initialized; bool assertion_failed; bool parameters_dirty;
-    double time; double tolerance;
+    double time; double tolerance; double rmc_cs_substep;
     double y[Y_LEN];
     double p[P_LEN];
     double derivative[STATE_LEN];

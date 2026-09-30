@@ -17,6 +17,12 @@ checked component state.
 - FMI 3 value references address complete tensor variables with declared
   dimensions.
 - ME and CS are lifecycle profiles of one kernel, not independent lowerings.
+- A Co-Simulation step runs the component's `CoSimulationStepPlan`:
+  error-controlled Dormand-Prince 5(4) substeps within the setup tolerance
+  (1e-6 when the importer defines none), ending exactly at the communication
+  point. Accuracy follows the tolerance rather than the communication step
+  size; a step that cannot meet it within the plan's substep budget is rolled
+  back and returns Discard. The FMI 2 target shares this rule.
 
 ## Unsupported
 
@@ -75,7 +81,7 @@ functions), sharing `model.h`.
 - `cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime -- backend_template_runtime_regression::fmi2_and_fmi3_consume_an_exact_isolable_algebraic_schedule`
   proves both FMI consumers accept the checked exact schedule through their shared C kernel.
 - `cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime -- backend_template_runtime_regression::fmi3_exact_runtime_`
-  compiles and runs final-RK4 refresh, non-finite rollback, and chained-singleton
+  compiles and runs final-step refresh, non-finite rollback, and chained-singleton
   order discriminators against the rendered C.
 - `cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime -- backend_template_runtime_regression::fmi2_and_fmi3_reject_a_tunable_algebraic_coefficient`
   proves the explicit profile fails closed when a runtime coefficient would

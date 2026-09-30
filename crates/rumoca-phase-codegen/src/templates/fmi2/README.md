@@ -4,7 +4,8 @@
 
 Use this target to exchange a Rumoca model with tools that require FMI 2.0.5.
 One source-code FMU advertises both Model Exchange and Co-Simulation so the
-importer can own integration or use the component's fixed integrator.
+importer can own integration or use the component's error-controlled
+Co-Simulation integrator.
 
 ## Contract
 
