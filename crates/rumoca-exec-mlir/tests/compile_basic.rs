@@ -23,8 +23,13 @@ fn compile_derivative_rhs(
 /// Jacobian column space is `y_scalars + p_scalars` wide. Understating either
 /// extent aliases parameter columns onto state columns, so every fixture
 /// declares exactly the storage its own `LoadY`/`LoadP` ops read.
-fn fixture_layout(y_scalars: usize, p_scalars: usize) -> VarLayout {
-    VarLayout::from_parts(indexmap::IndexMap::new(), y_scalars, p_scalars)
+/// A derivative-only problem's solver coordinates are its states, so each
+/// state owns one named `Y` slot even when the program never loads it.
+fn fixture_layout(states: usize, p_scalars: usize) -> VarLayout {
+    let bindings = (0..states)
+        .map(|index| (format!("x{index}"), rumoca_ir_solve::scalar_slot_y(index)))
+        .collect();
+    VarLayout::from_parts(bindings, states, p_scalars)
 }
 
 fn derivative_problem(derivative_rhs: ComputeBlock, layout: VarLayout) -> SolveProblem {
@@ -101,13 +106,14 @@ fn mlir_derivative_rhs_time_dependency() {
         LinearOp::LoadTime { dst: 0 },
         LinearOp::StoreOutput { src: 0 },
     ];
-    // xdot = t reads neither state nor parameter storage.
+    // xdot = t reads neither state nor parameter storage, but its one state
+    // still owns a Y slot.
     let solve = derivative_problem(
         ComputeBlock::from_scalar_program_block(scalar_program_block(
             vec![row],
             "compile_basic_time.mo",
         )),
-        fixture_layout(0, 0),
+        fixture_layout(1, 0),
     );
 
     let result = compile_derivative_rhs(&solve, "time_dep");
@@ -120,7 +126,7 @@ fn mlir_derivative_rhs_time_dependency() {
         Err(e) => panic!("compile failed: {e}"),
     };
 
-    let y: [f64; 0] = [];
+    let y = [0.0f64];
     let p: [f64; 0] = [];
     let mut out = [0.0f64];
     let t = 3.125;

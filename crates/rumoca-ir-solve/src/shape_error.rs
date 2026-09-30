@@ -102,6 +102,11 @@ pub enum SolveProblemShapeContractError {
     ContinuousRefreshOwner {
         detail: String,
     },
+    /// A derivative-only problem whose layout does not name exactly one `Y`
+    /// coordinate per state.
+    DerivativeStateStorage {
+        detail: String,
+    },
     ZeroTensorDimension {
         context: String,
         node_index: usize,
@@ -248,7 +253,7 @@ impl SolveProblemShapeContractError {
             | Self::DuplicateProjectionUnknown { span, .. }
             | Self::InvalidProjectionUnknown { span, .. }
             | Self::InvalidScheduledRootTiming { span, .. } => *span,
-            Self::ContinuousRefreshOwner { .. } => None,
+            Self::ContinuousRefreshOwner { .. } | Self::DerivativeStateStorage { .. } => None,
             Self::ScalarProgramMissingProvenance { .. } => None,
             Self::ZeroTensorDimension { span, .. }
             | Self::StructuredIndexDomain { span, .. }
@@ -276,6 +281,9 @@ impl std::fmt::Display for SolveProblemShapeContractError {
             Self::Layout(err) => write!(f, "Solve layout shape contract failed: {err}"),
             Self::ContinuousRefreshOwner { detail } => {
                 write!(f, "continuous refresh owner is invalid: {detail}")
+            }
+            Self::DerivativeStateStorage { detail } => {
+                write!(f, "derivative state storage is invalid: {detail}")
             }
             error @ (Self::ZeroTensorDimension { .. }
             | Self::StructuredIndexDomain { .. }

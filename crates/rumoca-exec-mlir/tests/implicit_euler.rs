@@ -20,27 +20,51 @@ use rumoca_ir_solve::{
 
 mod support;
 
-/// Both models here are one-state and parameterless, so the derivative seed
-/// space is exactly one state column and no parameter column.
+/// Both models here are parameterless: the state `x` sits at `y[0]` and the
+/// algebraic `z` the implicit row `z = f(x)` defines sits at `y[1]`.
 fn fixture_layout() -> VarLayout {
-    VarLayout::from_parts(indexmap::IndexMap::new(), 1, 0)
+    VarLayout::from_parts(
+        [
+            ("x".to_string(), rumoca_ir_solve::scalar_slot_y(0)),
+            ("z".to_string(), rumoca_ir_solve::scalar_slot_y(1)),
+        ]
+        .into_iter()
+        .collect(),
+        2,
+        0,
+    )
 }
 
-/// The one-entry solver vector used by the standalone implicit-RHS fixture.
-/// It is classified as algebraic because `implicit_row_targets` certifies the
-/// row as an exact Y assignment; the physical state inventory remains owned by
-/// `fixture_layout` for derivative/JVP compilation.
-fn fixture_solve_layout(state: &str) -> SolveLayout {
-    let state = state.to_string();
+/// The solver vector `[x, z]`: `x` is the state the derivative row
+/// integrates, and `z` is the algebraic the implicit row owns.
+fn fixture_solve_layout() -> SolveLayout {
+    let names = ["x".to_string(), "z".to_string()];
     SolveLayout {
         solver_maps: SolverNameIndexMaps {
-            names: vec![state.clone()],
-            name_to_idx: [(state.clone(), 0)].into_iter().collect(),
-            base_to_indices: [(state, vec![0])].into_iter().collect(),
+            name_to_idx: names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| (name.clone(), index))
+                .collect(),
+            base_to_indices: names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| (name.clone(), vec![index]))
+                .collect(),
+            names: names.to_vec(),
         },
+        state_scalar_count: 1,
         algebraic_scalar_count: 1,
         ..SolveLayout::default()
     }
+}
+
+/// The solver vector for state values `x`. Neither program reads the
+/// algebraic `z`, so it is zero.
+fn solver_vector(x: &[f64]) -> Vec<f64> {
+    let mut y = x.to_vec();
+    y.push(0.0);
+    y
 }
 
 fn checked_problem(problem: SolveProblem) -> SolveProblem {
@@ -98,7 +122,7 @@ fn implicit_euler(
     for _step in 0..n_steps {
         // Initial guess: explicit Euler (good starting point for small dt)
         compiled
-            .call(&y, p, t, &mut rhs_vec)
+            .call(&solver_vector(&y), p, t, &mut rhs_vec)
             .expect("eval_derivative failed");
         for i in 0..n {
             y_new[i] = y[i] + dt * rhs_vec[i];
@@ -108,7 +132,7 @@ fn implicit_euler(
         for iter in 0..max_newton {
             // G(y_new) = y_new - y_old - dt * f(y_new)
             compiled
-                .call_implicit_rhs(&y_new, p, t + dt, &mut rhs_vec)
+                .call_implicit_rhs(&solver_vector(&y_new), p, t + dt, &mut rhs_vec)
                 .expect("eval_implicit_rhs absent")
                 .expect("eval_implicit_rhs call failed");
             let mut g_norm = 0.0f64;
@@ -133,7 +157,13 @@ fn implicit_euler(
                 let mut ei = vec![0.0f64; n];
                 ei[i] = 1.0;
                 compiled
-                    .call_jacobian_v(&y_new, p, &ei, t + dt, &mut gp_vec)
+                    .call_jacobian_v(
+                        &solver_vector(&y_new),
+                        p,
+                        &solver_vector(&ei),
+                        t + dt,
+                        &mut gp_vec,
+                    )
                     .expect("eval_jacobian_v absent")
                     .expect("eval_jacobian_v call failed");
                 // G'_i(e_i) = e_i[i] - dt * gp_vec[i] = 1 - dt * J_{ii}
@@ -164,7 +194,7 @@ fn decay_solve() -> SolveProblem {
     ];
     checked_problem(SolveProblem {
         layout: fixture_layout(),
-        solve_layout: fixture_solve_layout("x"),
+        solve_layout: fixture_solve_layout(),
         continuous: ContinuousSolveSystem {
             derivative_rhs: ComputeBlock::from_scalar_program_block(spb(
                 vec![rhs_row.clone()],
@@ -174,11 +204,11 @@ fn decay_solve() -> SolveProblem {
                 vec![rhs_row],
                 "implicit_euler_decay_implicit.mo",
             )),
-            implicit_row_targets: vec![Some(rumoca_ir_solve::scalar_slot_y(0))],
+            implicit_row_targets: vec![Some(rumoca_ir_solve::scalar_slot_y(1))],
             algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan {
                 blocks: vec![rumoca_ir_solve::AlgebraicProjectionBlock {
                     rows: vec![0],
-                    y_indices: vec![0],
+                    y_indices: vec![1],
                     tearing: None,
                     alternate_charts: Vec::new(),
                 }],
@@ -215,7 +245,7 @@ fn logistic_solve() -> SolveProblem {
     ];
     checked_problem(SolveProblem {
         layout: fixture_layout(),
-        solve_layout: fixture_solve_layout("x"),
+        solve_layout: fixture_solve_layout(),
         continuous: ContinuousSolveSystem {
             derivative_rhs: ComputeBlock::from_scalar_program_block(spb(
                 vec![rhs_row.clone()],
@@ -225,11 +255,11 @@ fn logistic_solve() -> SolveProblem {
                 vec![rhs_row],
                 "implicit_euler_logistic_implicit.mo",
             )),
-            implicit_row_targets: vec![Some(rumoca_ir_solve::scalar_slot_y(0))],
+            implicit_row_targets: vec![Some(rumoca_ir_solve::scalar_slot_y(1))],
             algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan {
                 blocks: vec![rumoca_ir_solve::AlgebraicProjectionBlock {
                     rows: vec![0],
-                    y_indices: vec![0],
+                    y_indices: vec![1],
                     tearing: None,
                     alternate_charts: Vec::new(),
                 }],

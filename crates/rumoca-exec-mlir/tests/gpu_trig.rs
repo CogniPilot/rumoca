@@ -137,7 +137,7 @@ fn nonlinear_drone_solve() -> SolveProblem {
         // Six states (x, y, theta, vx, vy, omega) and four parameters
         // (m, J, F, g): the derivative seed space is state columns followed by
         // parameter columns, so both extents belong to the fixture.
-        rumoca_ir_solve::VarLayout::from_parts(Default::default(), 6, 4),
+        drone_state_layout(),
     )
     .expect("fixture derivative problem is valid by construction")
 }
@@ -394,7 +394,7 @@ fn linear_drone_ptx_no_libdevice_needed() {
             "gpu_trig_linear_reference.mo",
         )),
         // Same six states and four parameters as the nonlinear fixture.
-        rumoca_ir_solve::VarLayout::from_parts(Default::default(), 6, 4),
+        drone_state_layout(),
     )
     .expect("fixture derivative problem is valid by construction");
 
@@ -425,4 +425,15 @@ fn linear_drone_ptx_no_libdevice_needed() {
         }
         Err(e) => panic!("Unexpected error: {e}"),
     }
+}
+
+/// The six drone states (x, y, theta, vx, vy, omega), each named at its own
+/// Y slot, followed by the four parameters (m, J, F, g).
+fn drone_state_layout() -> rumoca_ir_solve::VarLayout {
+    let bindings = ["x", "y", "theta", "vx", "vy", "omega"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| (name.to_string(), rumoca_ir_solve::scalar_slot_y(index)))
+        .collect();
+    rumoca_ir_solve::VarLayout::from_parts(bindings, 6, 4)
 }

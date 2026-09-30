@@ -800,6 +800,57 @@ impl<'de> Deserialize<'de> for SolveProblem {
     }
 }
 
+/// The solver coordinates of a derivative-only problem: one per state, named
+/// by the scalar binding of its `Y` slot.
+fn state_solver_maps(
+    layout: &VarLayout,
+    state_count: usize,
+) -> Result<SolverNameIndexMaps, SolveProblemShapeContractError> {
+    let storage_error =
+        |detail: String| SolveProblemShapeContractError::DerivativeStateStorage { detail };
+    if layout.y_scalars() != state_count {
+        return Err(storage_error(format!(
+            "{state_count} states need {state_count} Y scalars, the layout owns {}",
+            layout.y_scalars()
+        )));
+    }
+    let mut names: Vec<Option<String>> = vec![None; state_count];
+    for (name, slot) in layout.bindings() {
+        let ScalarSlot::Y { index, .. } = *slot else {
+            continue;
+        };
+        let Some(entry) = names.get_mut(index) else {
+            continue;
+        };
+        if layout.shape(name.as_str()).is_some() || entry.is_some() {
+            return Err(storage_error(format!(
+                "state slot Y[{index}] is not named by exactly one scalar binding"
+            )));
+        }
+        *entry = Some(name.as_str().to_string());
+    }
+    let names = names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| {
+            name.ok_or_else(|| storage_error(format!("state slot Y[{index}] has no name")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(SolverNameIndexMaps {
+        name_to_idx: names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), index))
+            .collect(),
+        base_to_indices: names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), vec![index]))
+            .collect(),
+        names,
+    })
+}
+
 impl SolveProblem {
     /// Build a continuous-only problem from one checked derivative program and
     /// the variable layout that program addresses.
@@ -810,14 +861,22 @@ impl SolveProblem {
     /// loads silently aliases derivative columns. The state extent is taken
     /// from the program's checked output count, and the finished problem is
     /// validated before it is returned.
+    ///
+    /// Every solver coordinate of such a problem is a state, so the layout's
+    /// `Y` storage must be exactly the states, each named by one scalar
+    /// binding; those names become the solver coordinates. A layout with more
+    /// or fewer `Y` scalars than states, or with an unnamed state slot, is
+    /// refused.
     pub fn with_derivative_rhs(
         derivative_rhs: ComputeBlock,
         layout: VarLayout,
     ) -> Result<Self, SolveProblemShapeContractError> {
         let state_scalar_count = derivative_rhs.output_count("continuous.derivative_rhs")?;
+        let solver_maps = state_solver_maps(&layout, state_scalar_count)?;
         let problem = Self {
             layout,
             solve_layout: SolveLayout {
+                solver_maps,
                 state_scalar_count,
                 ..SolveLayout::default()
             },

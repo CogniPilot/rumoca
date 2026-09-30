@@ -21,11 +21,18 @@ mod support;
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// Every fixture here solves the 2x2 system `A * xdot = b(y)` over two states
-/// and no parameters, so the derivative seed space is exactly two columns wide.
+/// and no parameters, so the derivative seed space is exactly two columns wide;
+/// each state owns one named Y slot.
 fn solve_problem_for(derivative_rhs: ComputeBlock) -> SolveProblem {
+    let bindings = [
+        ("x0".to_string(), rumoca_ir_solve::scalar_slot_y(0)),
+        ("x1".to_string(), rumoca_ir_solve::scalar_slot_y(1)),
+    ]
+    .into_iter()
+    .collect();
     SolveProblem::with_derivative_rhs(
         derivative_rhs,
-        rumoca_ir_solve::VarLayout::from_parts(indexmap::IndexMap::new(), 2, 0),
+        rumoca_ir_solve::VarLayout::from_parts(bindings, 2, 0),
     )
     .expect("fixture derivative problem is valid by construction")
 }

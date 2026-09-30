@@ -428,3 +428,55 @@ fn linear_solve_component_query_covers_scalar_programs_and_nodes() {
     problem.continuous.derivative_rhs = scalar_block;
     assert!(problem.uses_linear_solve_component());
 }
+
+fn one_state_derivative() -> ComputeBlock {
+    ComputeBlock::from_scalar_program_block(
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            provenance(fixture_span()),
+        )
+        .expect("fixture program is computable"),
+    )
+}
+
+fn named_y_layout(names: &[&str], y_scalars: usize) -> crate::VarLayout {
+    crate::VarLayout::from_parts(
+        names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.to_string(), crate::scalar_slot_y(index)))
+            .collect(),
+        y_scalars,
+        0,
+    )
+}
+
+#[test]
+fn derivative_problem_names_its_states_as_solver_coordinates() {
+    let problem =
+        SolveProblem::with_derivative_rhs(one_state_derivative(), named_y_layout(&["x"], 1))
+            .expect("one named state slot per derivative row");
+    assert_eq!(problem.solve_layout.state_scalar_count, 1);
+    assert_eq!(problem.solve_layout.solver_scalar_count(), 1);
+    assert_eq!(
+        problem.solve_layout.solver_maps.names,
+        vec!["x".to_string()]
+    );
+}
+
+#[test]
+fn derivative_problem_refuses_state_storage_it_cannot_name() {
+    for layout in [
+        named_y_layout(&[], 1),
+        named_y_layout(&["x", "z"], 2),
+        named_y_layout(&[], 0),
+    ] {
+        assert!(matches!(
+            SolveProblem::with_derivative_rhs(one_state_derivative(), layout),
+            Err(SolveProblemShapeContractError::DerivativeStateStorage { .. })
+        ));
+    }
+}

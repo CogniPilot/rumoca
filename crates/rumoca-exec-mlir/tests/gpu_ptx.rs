@@ -45,8 +45,15 @@ fn decay_solve() -> SolveProblem {
             .expect("fixture program is computable"),
         ),
         // xdot = -y[0]: one state, no parameters. The derivative seed space is
-        // `y_scalars + p_scalars` wide, so the fixture states its own extents.
-        VarLayout::from_parts(indexmap::IndexMap::new(), 1, 0),
+        // `y_scalars + p_scalars` wide, so the fixture states its own extents
+        // and names its one state.
+        VarLayout::from_parts(
+            [("x".to_string(), rumoca_ir_solve::scalar_slot_y(0))]
+                .into_iter()
+                .collect(),
+            1,
+            0,
+        ),
     )
     .expect("fixture derivative problem is valid by construction")
 }

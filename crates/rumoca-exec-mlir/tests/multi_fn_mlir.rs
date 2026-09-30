@@ -17,24 +17,51 @@ use rumoca_ir_solve::{
 
 mod support;
 
-/// Every fixture in this file is the one-state decay model `xdot = -y[0]`
-/// with no parameters, so the derivative seed space is exactly one column.
+/// The decay model's storage: the state `x` at `y[0]` and the algebraic `z`
+/// at `y[1]` that the implicit row `z = -x` defines, with no parameters.
 fn fixture_layout() -> VarLayout {
-    VarLayout::from_parts(indexmap::IndexMap::new(), 1, 0)
+    VarLayout::from_parts(
+        [
+            ("x".to_string(), rumoca_ir_solve::scalar_slot_y(0)),
+            ("z".to_string(), rumoca_ir_solve::scalar_slot_y(1)),
+        ]
+        .into_iter()
+        .collect(),
+        2,
+        0,
+    )
 }
 
-/// The one-entry solver vector used by the standalone implicit-RHS fixture.
-/// It is classified as algebraic because `implicit_row_targets` certifies the
-/// row as an exact Y assignment; the physical state inventory remains owned by
-/// `fixture_layout` for derivative/JVP compilation.
+/// The storage of a derivative-only fixture: the one state `x` at `y[0]`.
+fn state_layout() -> VarLayout {
+    VarLayout::from_parts(
+        [("x".to_string(), rumoca_ir_solve::scalar_slot_y(0))]
+            .into_iter()
+            .collect(),
+        1,
+        0,
+    )
+}
+
+/// The solver vector `[x, z]`: `x` is the state the derivative row
+/// integrates, and `z` is the algebraic the implicit row owns.
 fn fixture_solve_layout() -> SolveLayout {
-    let state = "x".to_string();
+    let names = ["x".to_string(), "z".to_string()];
     SolveLayout {
         solver_maps: SolverNameIndexMaps {
-            names: vec![state.clone()],
-            name_to_idx: [(state.clone(), 0)].into_iter().collect(),
-            base_to_indices: [(state, vec![0])].into_iter().collect(),
+            name_to_idx: names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| (name.clone(), index))
+                .collect(),
+            base_to_indices: names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| (name.clone(), vec![index]))
+                .collect(),
+            names: names.to_vec(),
         },
+        state_scalar_count: 1,
         algebraic_scalar_count: 1,
         ..SolveLayout::default()
     }
@@ -75,11 +102,11 @@ fn decay_solve_problem() -> SolveProblem {
                 vec![impl_row],
                 "multi_fn_implicit.mo",
             )),
-            implicit_row_targets: vec![Some(rumoca_ir_solve::scalar_slot_y(0))],
+            implicit_row_targets: vec![Some(rumoca_ir_solve::scalar_slot_y(1))],
             algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan {
                 blocks: vec![rumoca_ir_solve::AlgebraicProjectionBlock {
                     rows: vec![0],
-                    y_indices: vec![0],
+                    y_indices: vec![1],
                     tearing: None,
                     alternate_charts: Vec::new(),
                 }],
@@ -121,7 +148,7 @@ fn multi_fn_implicit_rhs_numerics() {
     assert_eq!(compiled.implicit_rows(), 1);
 
     for &y0 in &[0.5, 1.0, -2.0, 3.7] {
-        let y = [y0];
+        let y = [y0, 0.0];
         let mut out = [0.0f64];
         compiled
             .call_implicit_rhs(&y, &[], 0.0, &mut out)
@@ -146,8 +173,8 @@ fn multi_fn_jacobian_v_numerics() {
 
     // J*seed = -seed[0]  for any y (linear system, Jacobian is constant)
     for &(y0, s0) in &[(1.0, 1.0), (2.0, 0.5), (-1.0, 3.0), (0.0, -2.5)] {
-        let y = [y0];
-        let seed = [s0];
+        let y = [y0, 0.0];
+        let seed = [s0, 0.0];
         let mut out = [0.0f64];
         compiled
             .call_jacobian_v(&y, &[], &seed, 0.0, &mut out)
@@ -172,7 +199,7 @@ fn multi_fn_derivative_still_correct() {
     };
 
     for &y0 in &[0.0, 1.0, -3.0, 2.5] {
-        let y = [y0];
+        let y = [y0, 0.0];
         let mut out = [0.0f64];
         compiled
             .call(&y, &[], 0.0, &mut out)
@@ -197,7 +224,7 @@ fn multi_fn_empty_implicit_no_symbol() {
             ]],
             "multi_fn_empty_implicit.mo",
         )),
-        fixture_layout(),
+        state_layout(),
     )
     .expect("fixture derivative problem is valid by construction");
     // implicit_rhs left as default (empty)

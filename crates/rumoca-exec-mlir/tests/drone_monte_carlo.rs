@@ -137,7 +137,7 @@ fn drone_solve() -> SolveProblem {
         // Six states (x, y, theta, vx, vy, omega) and four parameters
         // (m, J, F, g): the derivative seed space is state columns followed by
         // parameter columns, so both extents belong to the fixture.
-        rumoca_ir_solve::VarLayout::from_parts(Default::default(), 6, 4),
+        drone_state_layout(),
     )
     .expect("fixture derivative problem is valid by construction")
 }
@@ -529,4 +529,15 @@ fn drone_monte_carlo_gpu_device_euler() {
          device vs host max error: {max_err:.2e}"
     );
     assert!(mean_alt > 0.0, "expected positive mean altitude");
+}
+
+/// The six drone states (x, y, theta, vx, vy, omega), each named at its own
+/// Y slot, followed by the four parameters (m, J, F, g).
+fn drone_state_layout() -> rumoca_ir_solve::VarLayout {
+    let bindings = ["x", "y", "theta", "vx", "vy", "omega"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| (name.to_string(), rumoca_ir_solve::scalar_slot_y(index)))
+        .collect();
+    rumoca_ir_solve::VarLayout::from_parts(bindings, 6, 4)
 }
