@@ -1,3 +1,5 @@
+mod alias_orientation;
+
 use super::*;
 use std::borrow::Cow;
 
@@ -337,6 +339,7 @@ pub(super) fn aggregate_discrete_connections(
         }
     }
     debug_assert!(groups.is_empty(), "every group names a Flat variable");
+    alias_orientation::reversed_alias_owners(flat, roles, connection_ranks, &mut result)?;
     Ok(result)
 }
 

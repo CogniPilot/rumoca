@@ -64,6 +64,7 @@ mod derivative_alias_initial_acceleration;
 mod derivative_kinks;
 mod derivative_reads_in_derivative_rows;
 mod differential_structure;
+mod discrete_alias_orientation;
 mod enumeration_compact_range_test;
 mod enumeration_literal_assertions;
 mod evaluable_parameters;
