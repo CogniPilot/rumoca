@@ -177,6 +177,7 @@ pub(super) fn resolve_function_conditional(
         .chain(fallback_plans.as_deref().map(Vec::as_slice))
         .any(plans_carry_runtime_assertion);
     let mut branch_states = Vec::with_capacity(branches.len() + 1);
+    let mut completing_states = Vec::with_capacity(branches.len() + 1);
     let mut ordered = Vec::new();
     for (block, plans) in blocks.iter().zip(branches.iter_mut()) {
         definitions.require_readable(&block.cond, context, span)?;
@@ -184,6 +185,9 @@ pub(super) fn resolve_function_conditional(
         state.enter_guard(&block.cond, context);
         resolve_conditional_branch(&block.stmts, plans, context, &mut state)?;
         collect_branch_targets(plans, &mut ordered);
+        if !branch_never_completes(&block.stmts) {
+            completing_states.push(state.clone());
+        }
         branch_states.push(state);
     }
     let exhaustive = match (fallback_statements, fallback_plans) {
@@ -191,6 +195,9 @@ pub(super) fn resolve_function_conditional(
             let mut state = definitions.clone();
             resolve_conditional_branch(statements, plans, context, &mut state)?;
             collect_branch_targets(plans, &mut ordered);
+            if !branch_never_completes(statements) {
+                completing_states.push(state.clone());
+            }
             branch_states.push(state);
             true
         }
@@ -210,7 +217,14 @@ pub(super) fn resolve_function_conditional(
             span,
         ));
     }
-    let joined = definitions.join_branches(&branch_states, exhaustive, &ordered, context, span)?;
+    // A branch that never completes defines nothing code after the
+    // conditional can observe, so only the completing branches are joined.
+    let joined_states = if completing_states.is_empty() {
+        &branch_states
+    } else {
+        &completing_states
+    };
+    let joined = definitions.join_branches(joined_states, exhaustive, &ordered, context, span)?;
     if !exhaustive && blocks.len() == 1 && is_immutable_guard(&blocks[0].cond, context) {
         definitions.remember_guarded_branch(&blocks[0].cond, &branch_states[0], &ordered, span);
     }
@@ -562,4 +576,26 @@ fn collect_branch_target(target: &VarName, ordered: &mut Vec<VarName>) {
     if !ordered.contains(target) {
         ordered.push(target.clone());
     }
+}
+
+/// Whether a branch ends every execution in an assertion whose condition is
+/// the literal `false` (MLS §8.3.7: the assertion fails and the function call
+/// does not return), as in the `else assert(false, ...)` arm of an exhaustive
+/// region dispatch.
+pub(in crate::construction) fn branch_never_completes(
+    statements: &[rumoca_core::Statement],
+) -> bool {
+    statements.iter().any(|statement| {
+        matches!(
+            statement,
+            rumoca_core::Statement::Assert {
+                condition: Expression::Literal {
+                    value: Literal::Boolean(false),
+                    ..
+                },
+                level: None,
+                ..
+            }
+        )
+    })
 }

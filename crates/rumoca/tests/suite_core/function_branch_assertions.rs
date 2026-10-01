@@ -90,3 +90,79 @@ fn a_branch_assertion_reads_the_definitions_its_branch_made_before_it() {
     assert!(error.contains("d too negative"), "{error}");
     assert!(error.contains("t=0.245"), "{error}");
 }
+
+/// A region dispatch whose `else` arm only asserts `false` (the shape of the
+/// IF97 `waterBaseProp_*` functions): that arm never completes, so the values
+/// the other arms define are defined after the conditional, and reaching the
+/// arm fails the call instead of returning a value.
+fn region_dispatch(regions: &str) -> String {
+    format!(
+        r#"
+model Dispatch
+  function props
+    input Real T;
+    output Real h;
+  protected
+    Integer region;
+    Real cp;
+  algorithm
+    region := {regions};
+    if region == 1 then
+      cp := 4.2;
+      h := cp*T;
+    elseif region == 2 then
+      cp := 2.0;
+      h := cp*T + 1;
+    else
+      assert(false, "region");
+    end if;
+    h := h + 0*cp;
+  end props;
+  Real h = props(300 + 200*time);
+end Dispatch;
+"#
+    )
+}
+
+#[test]
+fn an_arm_that_only_fails_defines_nothing_the_conditional_must_join() {
+    let source = region_dispatch("if T < 400 then 1 else 2");
+    let compiled = Compiler::new()
+        .model("Dispatch")
+        .compile_str(&source, "Dispatch.mo")
+        .unwrap_or_else(|error| panic!("Dispatch compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..Default::default()
+        },
+    )
+    .expect("Dispatch simulates");
+    let column = result.names.iter().position(|n| n == "h").expect("h");
+    for (sample, time) in result.times.iter().enumerate() {
+        let temperature = 300.0 + 200.0 * time;
+        let expected = if temperature < 400.0 {
+            4.2 * temperature
+        } else {
+            2.0 * temperature + 1.0
+        };
+        let value = result.data[column][sample];
+        assert!((value - expected).abs() < 1e-9, "h({time}) = {value}");
+    }
+
+    let source = region_dispatch("if T < 400 then 1 elseif T < 450 then 2 else 3");
+    let compiled = Compiler::new()
+        .model("Dispatch")
+        .compile_str(&source, "Dispatch.mo")
+        .unwrap_or_else(|error| panic!("Dispatch compiles: {error:?}"));
+    let error = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..Default::default()
+        },
+    )
+    .expect_err("reaching the failing arm fails the simulation");
+    assert!(format!("{error:?}").contains("region"), "{error:?}");
+}

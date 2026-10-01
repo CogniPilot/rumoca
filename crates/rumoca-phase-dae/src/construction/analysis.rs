@@ -91,7 +91,7 @@ use function_bodies::{
     validate_function_expression_with_roles, validate_function_statements,
     validate_function_subscripts, validate_functions,
 };
-pub(super) use function_conditionals::selected_conditional_statements;
+pub(super) use function_conditionals::{branch_never_completes, selected_conditional_statements};
 use function_conditionals::{plan_function_conditional, resolve_function_conditional};
 use function_definitions::FunctionDefinitions;
 pub(super) use function_definitions::FunctionValueSeed;

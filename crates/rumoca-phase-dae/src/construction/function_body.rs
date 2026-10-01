@@ -437,30 +437,14 @@ fn lower_function_conditional_values<'dae>(
     // pre-conditional definition (`X[i] := value` while `value := value - L·X[k]`),
     // and those reads can be mutual, so no per-target assignment order keeps
     // every read fact current — only an atomic commit does.
-    let mut targets = Vec::with_capacity(input.targets.len());
-    let mut branches = vec![Vec::with_capacity(input.targets.len()); branch_values.len()];
-    let mut fallback = Vec::with_capacity(input.targets.len());
-    for target in input.targets {
-        let target_id = function_value_coordinate(input.symbols.coordinates, target);
-        targets.push(target_id);
-        for (lowered_branch, branch) in branches.iter_mut().zip(&branch_values) {
-            lowered_branch.push(match branch.values.get(target) {
-                Some(value) => *value,
-                None => construction
-                    .functions(|functions| functions.read(body, target_id, provenance))?,
-            });
-        }
-        fallback.push(
-            match fallback_values
-                .as_ref()
-                .and_then(|state| state.values.get(target))
-            {
-                Some(value) => *value,
-                None => construction
-                    .functions(|functions| functions.read(body, target_id, provenance))?,
-            },
-        );
-    }
+    let (targets, branches, fallback) = join_branch_targets(
+        construction,
+        body,
+        &input,
+        &branch_values,
+        fallback_values.as_ref(),
+        provenance,
+    )?;
     let mut assertions = Vec::new();
     for (ordinal, branch) in branch_values.iter().enumerate() {
         guard_branch_assertions(
@@ -1742,4 +1726,103 @@ pub(super) fn function_value_coordinate<'dae>(
         unreachable!("function analysis accepts only mutable function values")
     };
     target
+}
+
+/// The value one completing branch gives `target`, standing in on a branch
+/// that never completes.
+///
+/// A branch ending in `assert(false, ...)` fails its call (MLS §8.3.7), so the
+/// value it would leave is never observed; the analysis certificate admits the
+/// read after the conditional on exactly that ground. The select still needs
+/// an operand on that path, and any defined value is equivalent there.
+fn completed_branch_value<'dae>(
+    branch_values: &[BranchState<'dae>],
+    fallback_values: Option<&BranchState<'dae>>,
+    never_completes: &[bool],
+    target: &VarName,
+) -> Option<dae::ExprId<'dae>> {
+    branch_values
+        .iter()
+        .chain(fallback_values)
+        .zip(never_completes)
+        .filter(|(_, diverges)| !**diverges)
+        .find_map(|(branch, _)| branch.values.get(target).copied())
+}
+
+/// A branch's own value for a target, or the target's pre-conditional
+/// definition when the branch leaves it unchanged.
+fn read_unless_defined<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    body: &dae::FunctionBody<'dae>,
+    value: Option<dae::ExprId<'dae>>,
+    target: dae::FunctionValueId<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    match value {
+        Some(value) => Ok(value),
+        None => construction.functions(|functions| functions.read(body, target, provenance)),
+    }
+}
+
+/// Joined target operands of one conditional: the target coordinates, each
+/// branch's operand per target, and the fallback's operand per target.
+type JoinedBranchTargets<'dae> = (
+    Vec<dae::FunctionValueId<'dae>>,
+    Vec<Vec<dae::ExprId<'dae>>>,
+    Vec<dae::ExprId<'dae>>,
+);
+
+/// Correlate every branch's value for every target with the shared
+/// pre-conditional definitions; a branch that never completes takes a
+/// completing branch's value (see `completed_branch_value`).
+fn join_branch_targets<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    body: &dae::FunctionBody<'dae>,
+    input: &FunctionConditional<'_, '_, 'dae>,
+    branch_values: &[BranchState<'dae>],
+    fallback_values: Option<&BranchState<'dae>>,
+    provenance: dae::DaeProvenance,
+) -> Result<JoinedBranchTargets<'dae>, dae::DaeConstructionError> {
+    let mut targets = Vec::with_capacity(input.targets.len());
+    let mut branches = vec![Vec::with_capacity(input.targets.len()); branch_values.len()];
+    let mut fallback = Vec::with_capacity(input.targets.len());
+    let never_completes = input
+        .blocks
+        .iter()
+        .map(|block| branch_never_completes(&block.stmts))
+        .chain(input.fallback.map(branch_never_completes))
+        .collect::<Vec<_>>();
+    let fallback_diverges = input.fallback.is_some() && never_completes.last() == Some(&true);
+    for target in input.targets {
+        let target_id = function_value_coordinate(input.symbols.coordinates, target);
+        targets.push(target_id);
+        let completed =
+            completed_branch_value(branch_values, fallback_values, &never_completes, target);
+        let operand = |state: Option<&BranchState<'dae>>, diverges: bool| {
+            state
+                .and_then(|state| state.values.get(target).copied())
+                .or(completed.filter(|_| diverges))
+        };
+        for ((lowered, branch), diverges) in
+            branches.iter_mut().zip(branch_values).zip(&never_completes)
+        {
+            let value = operand(Some(branch), *diverges);
+            lowered.push(read_unless_defined(
+                construction,
+                body,
+                value,
+                target_id,
+                provenance,
+            )?);
+        }
+        let value = operand(fallback_values, fallback_diverges);
+        fallback.push(read_unless_defined(
+            construction,
+            body,
+            value,
+            target_id,
+            provenance,
+        )?);
+    }
+    Ok((targets, branches, fallback))
 }
