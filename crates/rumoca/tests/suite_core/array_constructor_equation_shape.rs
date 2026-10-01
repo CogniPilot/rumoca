@@ -55,3 +55,59 @@ end TorqueBalance;
         }
     }
 }
+
+/// MLS §10.4: the array constructor function `array(A, B, ...)` is `{A, B, ...}`
+/// and `array(e for i in r)` is `{e for i in r}`, in a function's protected
+/// constant (as `IF97_Utilities` writes its viscosity coefficients) and in an
+/// equation.
+#[test]
+fn the_array_function_constructs_the_array_of_its_arguments() {
+    let compiled = rumoca::Compiler::new()
+        .model("ArrayFunction.Top")
+        .compile_str(
+            r#"
+package ArrayFunction
+  function f
+    input Real x;
+    output Real y;
+  protected
+    constant Real[3] nn = array(1.0, 2.0, 3.0);
+  algorithm
+    y := x*nn[2] + nn[3];
+  end f;
+  model Top
+    Real y = f(time);
+    Real z[2] = array(time, 2*time);
+    Real w[3] = array(i*time for i in 1:3);
+  end Top;
+end ArrayFunction;
+"#,
+            "ArrayFunction.mo",
+        )
+        .unwrap_or_else(|error| panic!("Top compiles: {error:?}"));
+    let result = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..Default::default()
+        },
+    )
+    .expect("Top simulates");
+    let last = result.times.len() - 1;
+    let time = result.times[last];
+    let value = |name: &str| {
+        let index = result.names.iter().position(|n| n == name);
+        result.data[index.unwrap_or_else(|| panic!("{name} in {:?}", result.names))][last]
+    };
+    let expected = [
+        ("y", 2.0 * time + 3.0),
+        ("z[1]", time),
+        ("z[2]", 2.0 * time),
+        ("w[1]", time),
+        ("w[3]", 3.0 * time),
+    ];
+    for (name, expected) in expected {
+        let actual = value(name);
+        assert!((actual - expected).abs() < 1e-9, "{name} = {actual}");
+    }
+}
