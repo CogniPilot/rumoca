@@ -404,7 +404,7 @@ impl SolveRuntime {
         // State (der) rows: ∂der/∂[y|p]ᵀ · λ[0..state_count].
         let state_lambda = &lambda[..self.state_count];
         self.accumulate_block_vjp(
-            |inputs, cot, scratch| {
+            &mut |inputs, cot, scratch| {
                 self.derivative_scalar
                     .reverse_vjp(inputs, state_lambda, cot, scratch)
             },
@@ -437,7 +437,7 @@ impl SolveRuntime {
         if !alg.is_empty() {
             let mu = self.scatter_algebraic_multipliers(&alg, lambda);
             self.accumulate_block_vjp(
-                |inputs, cot, scratch| {
+                &mut |inputs, cot, scratch| {
                     self.implicit_scalar_rhs
                         .reverse_vjp(inputs, &mu, cot, scratch)
                 },
@@ -453,7 +453,7 @@ impl SolveRuntime {
     /// part). `out` is not cleared, so successive calls sum their contributions.
     fn accumulate_block_vjp(
         &self,
-        reverse: impl FnOnce(
+        reverse: &mut dyn FnMut(
             &rumoca_eval_solve::reverse::ReverseInputs<'_>,
             &mut rumoca_eval_solve::reverse::ReverseCotangents<'_>,
             &mut rumoca_eval_solve::reverse::ReverseScratch,

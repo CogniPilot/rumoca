@@ -81,9 +81,7 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
     /// Rows per state column of the state Jacobian's structural pattern: a
     /// superset of the nonzeros of every directional derivative, or `None`
     /// when the component proves none.
-    fn state_jacobian_columns(&self) -> Option<&[Vec<usize>]> {
-        None
-    }
+    fn state_jacobian_columns(&self) -> Option<&[Vec<usize>]>;
 }
 
 /// The sole production derivative source: the one leased FMI component.
@@ -524,6 +522,10 @@ impl MeDerivativeComponent for ClosureDerivatives {
     fn discards_failed_trials(&self) -> bool {
         false
     }
+
+    fn state_jacobian_columns(&self) -> Option<&[Vec<usize>]> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -662,6 +664,20 @@ mod tests {
         assert!(!controller.is_active());
     }
 
+    /// A component that proves no state-Jacobian relation hands the plugin
+    /// none, so the plugin colors from no claimed pattern.
+    #[test]
+    fn a_component_without_a_state_jacobian_relation_exposes_none() {
+        let controller = controller();
+        assert!(controller.issue_handle().state_jacobian_columns().is_none());
+        assert!(
+            folding(false)
+                .issue_handle()
+                .state_jacobian_columns()
+                .is_none()
+        );
+    }
+
     /// The first failure is the one that survives: a later consequence must not
     /// overwrite the cause.
     #[test]
@@ -732,6 +748,10 @@ mod tests {
 
         fn discards_failed_trials(&self) -> bool {
             self.discards
+        }
+
+        fn state_jacobian_columns(&self) -> Option<&[Vec<usize>]> {
+            None
         }
     }
 
