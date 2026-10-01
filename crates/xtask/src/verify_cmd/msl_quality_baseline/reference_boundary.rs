@@ -19,11 +19,11 @@ fn reviewed_migration() -> ReferenceBoundaryMigration {
     migration.metric.change = "typed-trace-exceptions-v1".to_string();
     migration.metric.strict_high_before = 231;
     migration.metric.strict_high_after = 231;
-    migration.metric.policy_excluded_after = 33;
+    migration.metric.policy_excluded_after = 34;
     migration.metric.excluded_strict_high_before = 0;
     migration.metric.excluded_non_high_before = 0;
     migration.metric.exclusions_sha256 =
-        "d8ddb25c1169b72c35c89f77eed12e0b5ae9de8ef4ace0ec998ecdbcb0ec9da0".to_string();
+        "a1f0aa603f19f2522fc6bca07501a64d0b3d7e6cb89703ed1c7a84dcb3279126".to_string();
     migration.evidence_git_commit = "70fa6612a34b7e6b454672e448a747d6e4bdd440".to_string();
     migration.evidence_run = "typed-trace-exceptions-full".to_string();
     migration.policy_excluded_before = 23;

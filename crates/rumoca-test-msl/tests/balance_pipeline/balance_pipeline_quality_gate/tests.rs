@@ -1728,9 +1728,10 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
         reference.metric.strict_high_after
     );
     // The typed-exception boundary types every reviewed row and removes none;
-    // it adds the ten reviewed Clocked, Electrical, and Magnetic rows.
+    // it adds the ten reviewed Clocked, Electrical, and Magnetic rows and the
+    // ComparisonPullInStroke stopper loss-power row.
     assert_eq!(
-        reference.policy_excluded_before + 10,
+        reference.policy_excluded_before + 11,
         reference.metric.policy_excluded_after
     );
     assert_eq!(reference.metric.excluded_strict_high_before, 0);

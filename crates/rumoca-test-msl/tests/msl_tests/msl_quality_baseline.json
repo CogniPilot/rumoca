@@ -388,11 +388,11 @@
     "change": "typed-trace-exceptions-v1",
     "strict_high_before": 231,
     "strict_high_after": 231,
-    "policy_excluded_after": 33,
+    "policy_excluded_after": 34,
     "excluded_strict_high_before": 0,
     "excluded_non_high_before": 0,
     "exclusions_file": "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json",
-    "exclusions_sha256": "d8ddb25c1169b72c35c89f77eed12e0b5ae9de8ef4ace0ec998ecdbcb0ec9da0",
+    "exclusions_sha256": "a1f0aa603f19f2522fc6bca07501a64d0b3d7e6cb89703ed1c7a84dcb3279126",
     "evidence_git_commit": "70fa6612a34b7e6b454672e448a747d6e4bdd440",
     "evidence_run": "typed-trace-exceptions-full",
     "policy_excluded_before": 23,
@@ -797,7 +797,7 @@
     "Modelica.Electrical.Analog.Examples.OpAmps.SignalGenerator",
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Generator"
   ],
-  "trace_exceptions_sha256": "d8ddb25c1169b72c35c89f77eed12e0b5ae9de8ef4ace0ec998ecdbcb0ec9da0",
+  "trace_exceptions_sha256": "a1f0aa603f19f2522fc6bca07501a64d0b3d7e6cb89703ed1c7a84dcb3279126",
   "evidence_provenance": "stage, trace, and runtime figures are the promoted version-7 release asset's (CI run 36060605842 at b92932c0fabe9d8fee2dcafaeac457ecb164cc00); the typed-trace-exceptions-full evidence run at 70fa6612a34b7e6b454672e448a747d6e4bdd440 supplied only unexcepted_non_high_models",
   "certified_strict_high_models": [
     "Modelica.Blocks.Examples.BusUsage",
