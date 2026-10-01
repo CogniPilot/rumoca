@@ -56,9 +56,9 @@ pub(super) fn prefer_or_retain<'source>(
         Ok(candidate) => candidate,
         Err(error) => return request.refused(prepared, error),
     };
-    if prepared
+    if !prepared
         .as_dae()
-        .inspect(|view| same_integrated_scalars(&basis, view))
+        .inspect(|view| ranks_above(model, &basis, view))
     {
         return Ok(PreparedSelection::retained(prepared));
     }
@@ -94,9 +94,9 @@ pub(super) fn executes_preferred_basis(
         })
     });
     match selected {
-        Ok(Some(basis)) => Ok(!prepared
+        Ok(Some(basis)) => Ok(prepared
             .as_dae()
-            .inspect(|view| same_integrated_scalars(&basis, view))),
+            .inspect(|view| ranks_above(model, &basis, view))),
         Ok(None) => Ok(false),
         Err(error) if request.required => Err(error),
         Err(_) => Ok(false),
@@ -193,30 +193,56 @@ fn basis_violations(source: dae::DaeView<'_>, integrated: dae::DaeView<'_>) -> (
     (lowest_kept == Some(0), ranked)
 }
 
-/// Whether a named formal basis integrates exactly the scalars `view` holds as
-/// states; a formal derivative coordinate is never such a scalar.
-fn same_integrated_scalars(basis: &[String], view: dae::DaeView<'_>) -> bool {
-    let states = view
+/// Whether a named basis honors the source `StateSelect` preferences (MLS 3.7
+/// §4.9.7.1) strictly better than the scalars `incumbent` integrates: the
+/// basis's scalar ranks, sorted from highest, exceed the incumbent's
+/// lexicographically. A formal derivative coordinate ranks as its variable. A
+/// basis that ranks no higher than the incumbent is no reason to replace it.
+pub(super) fn ranks_above(model: &dae::Dae, basis: &[String], incumbent: dae::DaeView<'_>) -> bool {
+    let incumbent = incumbent
         .variables()
         .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
         .flat_map(|(_, variable)| {
             (0..variable.scalar_count()).filter_map(move |scalar| variable.scalar_name(scalar))
         })
-        .collect::<BTreeSet<_>>();
-    basis.len() == states.len() && basis.iter().all(|name| states.contains(name))
+        .collect::<Vec<_>>();
+    model.inspect(|source| {
+        let ranks = source
+            .variables()
+            .flat_map(|(_, variable)| {
+                let rank = variable
+                    .continuous_state_select()
+                    .unwrap_or_default()
+                    .rank();
+                (0..variable.scalar_count())
+                    .filter_map(move |scalar| Some((variable.scalar_name(scalar)?, rank)))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let profile = |names: &[String]| {
+            let mut profile = names
+                .iter()
+                .map(|name| {
+                    ranks
+                        .get(variable_scalar_name(name))
+                        .copied()
+                        .unwrap_or(StateSelect::Default.rank())
+                })
+                .collect::<Vec<_>>();
+            profile.sort_unstable_by(|left, right| right.cmp(left));
+            profile
+        };
+        profile(basis) > profile(&incumbent)
+    })
 }
 
-/// Whether a named basis integrates a scalar of an undifferentiated
-/// `StateSelect.prefer` value of `model`.
-pub(super) fn selects_undifferentiated_prefer(model: &dae::Dae, basis: &[String]) -> bool {
-    model.inspect(|source| {
-        let preferred = source
-            .variables()
-            .filter(|&(id, variable)| unintegrated_prefer((id, variable)))
-            .flat_map(|(_, variable)| {
-                (0..variable.scalar_count()).filter_map(move |scalar| variable.scalar_name(scalar))
-            })
-            .collect::<BTreeSet<_>>();
-        basis.iter().any(|name| preferred.contains(name))
-    })
+/// The variable scalar a basis name integrates: a formal derivative coordinate
+/// `der(der(x))` names the scalar `x`.
+fn variable_scalar_name(mut name: &str) -> &str {
+    while let Some(inner) = name
+        .strip_prefix("der(")
+        .and_then(|inner| inner.strip_suffix(')'))
+    {
+        name = inner;
+    }
+    name
 }

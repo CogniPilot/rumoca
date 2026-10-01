@@ -21,7 +21,7 @@ use rumoca_phase_structural::{
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
 
 use evaluation::TrialPoint;
-use preferences::{executes_preferred_basis, prefer_or_retain, selects_undifferentiated_prefer};
+use preferences::{executes_preferred_basis, prefer_or_retain, ranks_above};
 
 /// The prepared reduced state selection: the primary basis every model executes,
 /// plus one prepared alternate DAE per alternate reduced chart, either a mirror
@@ -235,10 +235,13 @@ fn reduce_or_retain<'source>(
     })?;
     // Retain the source basis when every manifold constraint is a conserved
     // first integral, reduce when any constraint is a redundant loop closure.
-    // A selection that integrates an undifferentiated `StateSelect.prefer`
-    // value also reduces: the source coordinates are then not the basis the
-    // preferences select (MLS 3.7 §4.9.7.1).
-    if !prepared.manifold_requires_reduction() && !selects_undifferentiated_prefer(model, &basis) {
+    // A selection that honors the `StateSelect` preferences better than the
+    // retained source coordinates also reduces (MLS 3.7 §4.9.7.1).
+    if !prepared.manifold_requires_reduction()
+        && !prepared
+            .as_dae()
+            .inspect(|view| ranks_above(model, &basis, view))
+    {
         return Ok(PreparedSelection::retained(prepared));
     }
     let alternates = prepare_alternate_charts(&formal, &alternate_selections)?;
@@ -257,8 +260,9 @@ fn reduce_or_retain<'source>(
 /// retains with a reduced state selection built from the formal derivatives of
 /// `model`: exactly when [`reduce_or_retain`] reduces, which is when the manifold
 /// is nonempty, the formal dimension is below the retained state count, and some
-/// manifold constraint is a redundant loop closure or the selection integrates
-/// an undifferentiated `StateSelect.prefer` value, or when a manifold-free
+/// manifold constraint is a redundant loop closure or the selection honors the
+/// `StateSelect` preferences better than the retained coordinates, or when a
+/// manifold-free
 /// system's preferences select a basis other than the reducer's. `model` is
 /// the system `prepared` was prepared from.
 pub(crate) fn executes_reduced_selection(
@@ -273,7 +277,9 @@ pub(crate) fn executes_reduced_selection(
             select(formal, &HashMap::new())
                 .map(|(_, _, primary)| basis_names(formal.source, &primary))
         })?;
-        return Ok(selects_undifferentiated_prefer(model, &basis));
+        return Ok(prepared
+            .as_dae()
+            .inspect(|view| ranks_above(model, &basis, view)));
     }
     executes_preferred_basis(model, prepared)
 }

@@ -323,3 +323,23 @@ end Compressible;";
         );
     }
 }
+
+#[test]
+fn a_selection_that_honors_no_preference_better_keeps_the_reducer_basis() {
+    // The equations determine the preferred y, so no basis can integrate it.
+    // The formal selection then ranks no higher than the reducer's basis and
+    // gives no reason to replace it, whichever differentiated coordinate of
+    // equal rank it chose.
+    let source = "model EqualRank
+  Real a(start = 1);
+  Real b;
+  Real y(stateSelect = StateSelect.prefer, start = 0.5);
+equation
+  der(a) + der(b) = -(a + b);
+  b = 2*a + 1;
+  y + exp(y) = 2 + time;
+initial equation
+  a = 1;
+end EqualRank;";
+    assert_eq!(integrated(source, "EqualRank"), ["a"]);
+}
