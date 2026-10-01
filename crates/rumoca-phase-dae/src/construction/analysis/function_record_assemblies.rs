@@ -150,13 +150,14 @@ pub(super) fn validate_record_output_assembly(
     let group = &statements[start..start + count];
     let constructor = record_constructor(target, context)?;
     let mut fields = Vec::with_capacity(constructor.inputs.len());
+    let writes = |statement: &rumoca_core::Statement, field: &str| {
+        record_assignment_target(statement, context.function)
+            .is_some_and(|(_, part)| part_matches_record_field(part, field, &constructor.inputs))
+    };
     for field in &constructor.inputs {
         let first = group
             .iter()
-            .position(|statement| {
-                record_assignment_target(statement, context.function)
-                    .is_some_and(|(_, part)| part_matches_record_field(part, &field.name))
-            })
+            .position(|statement| writes(statement, &field.name))
             .unwrap_or(group.len());
         let available_fields = constructor
             .inputs
@@ -165,11 +166,7 @@ pub(super) fn validate_record_output_assembly(
                 group
                     .iter()
                     .enumerate()
-                    .filter(|(_, statement)| {
-                        record_assignment_target(statement, context.function).is_some_and(
-                            |(_, part)| part_matches_record_field(part, &candidate.name),
-                        )
-                    })
+                    .filter(|(_, statement)| writes(statement, &candidate.name))
                     .map(|(index, _)| index)
                     .max()
                     .is_some_and(|last| last < first)
@@ -195,11 +192,36 @@ pub(super) fn validate_record_output_assembly(
     )))
 }
 
-fn part_matches_record_field(part: &rumoca_core::ComponentRefPart, field: &str) -> bool {
-    part.ident == field
-        || field
-            .strip_prefix(part.ident.as_str())
-            .is_some_and(|suffix| suffix.starts_with('_'))
+fn part_matches_record_field(
+    part: &rumoca_core::ComponentRefPart,
+    field: &str,
+    fields: &[rumoca_core::FunctionParam],
+) -> bool {
+    assigned_field_projection(part, field, fields).is_some()
+}
+
+/// How an assignment to `record.<part>` writes constructor field `field`:
+/// `Some(None)` when it names the field itself, `Some(Some(nested))` when the
+/// part names a decomposed nested record whose field `nested` is spelled
+/// `<part>_<nested>` in the constructor, and `None` otherwise. A part that is
+/// itself a constructor field names only that field, so `zeta1` never writes
+/// a sibling such as `zeta1_at_a`.
+fn assigned_field_projection(
+    part: &rumoca_core::ComponentRefPart,
+    field: &str,
+    fields: &[rumoca_core::FunctionParam],
+) -> Option<Option<VarName>> {
+    if part.ident == field {
+        return Some(None);
+    }
+    if fields.iter().any(|candidate| candidate.name == part.ident) {
+        return None;
+    }
+    field
+        .strip_prefix(part.ident.as_str())
+        .and_then(|suffix| suffix.strip_prefix('_'))
+        .filter(|suffix| !suffix.is_empty())
+        .map(|nested| Some(VarName::new(nested)))
 }
 
 fn record_assignment_target<'scope>(
@@ -355,19 +377,12 @@ fn collect_field_scalar_sources(
         let rumoca_core::Statement::Assignment { value, span, .. } = statement else {
             unreachable!("record assembly group contains assignments")
         };
-        let Some((_, target)) = record_assignment_target(statement, context.function) else {
+        let Some((record, target)) = record_assignment_target(statement, context.function) else {
             unreachable!("record assembly group has validated two-part record targets")
         };
-        let value_field = if target.ident == field.name {
-            None
-        } else if let Some(nested) = field
-            .name
-            .strip_prefix(target.ident.as_str())
-            .and_then(|suffix| suffix.strip_prefix('_'))
-            .filter(|suffix| !suffix.is_empty())
-        {
-            Some(VarName::new(nested))
-        } else {
+        let constructor = record_constructor(record, context)?;
+        let Some(value_field) = assigned_field_projection(target, &field.name, &constructor.inputs)
+        else {
             continue;
         };
         require_span(*span, "record field assignment")?;

@@ -69,6 +69,32 @@ fn rewrite_whole_record_params_in_statement(
     *stmt = WholeRecordParamRewriter { params }.rewrite_statement(stmt);
 }
 
+/// Apply the decomposed-record rewrites of the algorithm to every declaration
+/// default of a function: MLS 3.7 §12.4.4 evaluates the bindings of protected
+/// and output variables in the function's own scope, so a binding such as
+/// `Real k = f(data.d)` reads the decomposed input exactly as the algorithm
+/// does. Whole-record uses are reconstructed only once call arguments have
+/// been decomposed, as for the body.
+fn rewrite_decomposed_params_in_defaults(
+    func: &mut rumoca_core::Function,
+    params: &[DecomposedParam],
+    reconstruct_whole_records: bool,
+) {
+    for parameter in func
+        .inputs
+        .iter_mut()
+        .chain(func.outputs.iter_mut())
+        .chain(func.locals.iter_mut())
+    {
+        if let Some(default) = &mut parameter.default {
+            *default = RecordFieldAccessRewriter { params }.rewrite_expression(default);
+            if reconstruct_whole_records {
+                *default = WholeRecordParamRewriter { params }.rewrite_expression(default);
+            }
+        }
+    }
+}
+
 struct WholeRecordParamRewriter<'a> {
     params: &'a [DecomposedParam],
 }
@@ -792,6 +818,7 @@ fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, Fla
         for stmt in &mut func.body {
             rewrite_field_access_in_statement(stmt, &decomposed);
         }
+        rewrite_decomposed_params_in_defaults(func, &decomposed, false);
 
         // Replace record inputs with scalar field inputs
         decompose_derivative_input_roles(func, &decomposed);
@@ -950,6 +977,7 @@ fn rewrite_decomposed_record_call_sites(
                 rewrite_field_access_in_statement(stmt, decomposed);
                 rewrite_whole_record_params_in_statement(stmt, decomposed);
             }
+            rewrite_decomposed_params_in_defaults(func, decomposed, true);
         }
     }
     Ok(())
