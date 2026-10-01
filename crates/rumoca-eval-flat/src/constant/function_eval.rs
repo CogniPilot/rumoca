@@ -1221,17 +1221,14 @@ fn eval_var_ref(
     }
     // MLS 3.6 §12.2: a record component's fields are read through the joined
     // reference Flat renders, so `z.im` names the field `im` of the bound local
-    // `z`. Resolving it here is also what keeps the enumeration fallback below
-    // honest — a reference whose head segment is a component in scope is never
-    // an enumeration literal, and guessing one folded `z.im` to the enumeration
-    // value `z.im` instead of the record field.
+    // `z`.
     if let Some(value) = read_bound_field_path(reference, env, eval)? {
         return apply_subscripts_flat(value, subscripts, env, eval);
     }
-    // Try parsing as qualified enum.
-    if let Some((type_name, literal)) = reference.scope_split() {
-        return Ok(Value::Enum(type_name.to_string(), literal.to_string()));
-    }
+    // An enumeration literal is a registered value (`get_enum` above). A
+    // qualified name that names no value is unknown: reading it as an
+    // enumeration literal turned an unevaluated package constant
+    // (`Medium.poly_rho`) into the enumeration value `Medium.poly_rho`.
     Err(EvalError::unknown_variable(name, eval.span))
 }
 
@@ -1246,7 +1243,7 @@ fn eval_var_ref(
 /// reference is settled here, and a segment this evaluator cannot follow —
 /// a subscripted field, or a value it holds as something other than a record —
 /// is reported as a form it has no rule for. That refusal leaves the value for
-/// the runtime; it never lets the enumeration fallback below invent one.
+/// the runtime instead of inventing a value.
 fn read_bound_field_path(
     reference: &rumoca_core::Reference,
     env: &FunctionEnv,

@@ -179,13 +179,17 @@ fn test_named_argument_binding() {
 }
 
 #[test]
-fn eval_var_ref_qualified_enum_split_ignores_dots_inside_indices() {
+fn eval_var_ref_reads_only_registered_enumeration_literals() {
     let env = FunctionEnv {
         inputs: IndexMap::new(),
         outputs: IndexMap::new(),
         locals: IndexMap::new(),
     };
-    let ctx = EvalContext::new();
+    let mut ctx = EvalContext::new();
+    ctx.enum_literals.insert(
+        "Modelica.Types.Color.red".to_string(),
+        ("Modelica.Types.Color".to_string(), "red".to_string()),
+    );
     let limits = EvalLimits::default();
     let eval = EvalState {
         ctx: &ctx,
@@ -200,10 +204,23 @@ fn eval_var_ref_qualified_enum_split_ignores_dots_inside_indices() {
         &env,
         &eval,
     )
-    .expect("qualified enum fallback");
+    .expect("registered enumeration literal");
     assert_eq!(
         enum_value,
         Value::Enum("Modelica.Types.Color".to_string(), "red".to_string())
+    );
+
+    // A qualified name that names no value is unknown, never a guessed
+    // enumeration literal (an unevaluated package constant read this way
+    // became the enumeration value of its own name).
+    assert!(
+        eval_var_ref(
+            &rumoca_core::Reference::new("Medium.poly_rho"),
+            &[],
+            &env,
+            &eval
+        )
+        .is_err()
     );
 
     assert!(
@@ -896,18 +913,16 @@ fn record_field_read_is_not_guessed_as_an_enumeration_literal() {
         "a field this evaluator cannot follow refuses; it never invents a value: {missing}"
     );
 
-    // A head that names nothing in scope is still read as a qualified
-    // enumeration literal.
-    let literal = eval_var_ref(
-        &rumoca_core::Reference::new("Modelica.Types.Init.NoInit"),
-        &[],
-        &env,
-        &eval,
-    )
-    .expect("qualified enum fallback");
-    assert_eq!(
-        literal,
-        Value::Enum("Modelica.Types.Init".to_string(), "NoInit".to_string())
+    // A head that names nothing in scope and no registered literal is
+    // unknown rather than a guessed enumeration literal.
+    assert!(
+        eval_var_ref(
+            &rumoca_core::Reference::new("Modelica.Types.Init.NoInit"),
+            &[],
+            &env,
+            &eval,
+        )
+        .is_err()
     );
 }
 
