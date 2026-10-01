@@ -104,7 +104,12 @@ pub(crate) fn collect_component_constructor_aliases_for_class(
         else {
             continue;
         };
-        if !is_receiver_alias_type(&target_ref.class_def.class_type) {
+        // MLS §4.7: no component is an instance of a package. A package here is
+        // the root of a qualified type name (`Medium` in `Medium.MassFlowRate`),
+        // not the component's type, and selects nothing.
+        if !is_receiver_alias_type(&target_ref.class_def.class_type)
+            || target_ref.class_def.class_type == rumoca_core::ClassType::Package
+        {
             continue;
         }
         // Derived classes should override inherited aliases with the same name.

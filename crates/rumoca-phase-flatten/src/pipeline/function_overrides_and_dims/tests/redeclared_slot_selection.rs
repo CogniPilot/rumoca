@@ -316,3 +316,53 @@ fn extends_modification_redeclare_collection_records_exact_slot_identity() {
     assert!(target.active);
     assert_eq!(target.function_slot, FunctionSlot::Exact(ids.slot_def));
 }
+
+#[test]
+fn a_component_typed_through_a_package_slot_contributes_no_package_selection() {
+    // MLS §4.7: no component is an instance of a package. A component whose
+    // recorded type is the root of `Medium.MassFlowRate` must not become a
+    // receiver alias for the package slot, or every call through the slot sees
+    // a second package selection.
+    let medium_def = DefId::new(1);
+    let pump_def = DefId::new(2);
+    let lib_def = DefId::new(3);
+    let mut medium = class("Medium", ClassType::Package);
+    medium.def_id = Some(medium_def);
+    let mut pump = class("Pump", ClassType::Model);
+    pump.def_id = Some(pump_def);
+    pump.components.insert(
+        "m_flow_start".to_string(),
+        component("m_flow_start", "Medium.MassFlowRate", medium_def),
+    );
+    let mut lib = class("Lib", ClassType::Package);
+    lib.def_id = Some(lib_def);
+    lib.classes.insert("Medium".to_string(), medium);
+    lib.classes.insert("Pump".to_string(), pump);
+    let mut tree = ClassTree::new();
+    tree.definitions.classes.insert("Lib".to_string(), lib);
+    for (def_id, name) in [
+        (lib_def, "Lib"),
+        (medium_def, "Lib.Medium"),
+        (pump_def, "Lib.Pump"),
+    ] {
+        tree.def_map.insert(def_id, name.to_string());
+        tree.name_map.insert(name.to_string(), def_id);
+    }
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let pump = class_index.get(pump_def).expect("fixture pump");
+    let mut overrides = rustc_hash::FxHashMap::default();
+    let mut visited = FxHashSet::default();
+    collect_component_constructor_aliases_for_class(
+        &tree,
+        &class_index,
+        pump,
+        "Lib.Pump",
+        true,
+        &mut visited,
+        &mut overrides,
+    );
+    assert!(
+        !overrides.contains_key("m_flow_start"),
+        "a slot-typed component selected a package"
+    );
+}
