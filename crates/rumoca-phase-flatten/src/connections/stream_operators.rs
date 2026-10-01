@@ -756,7 +756,7 @@ impl StreamOperatorRewriter {
         let Some(access) = stream_access(argument) else {
             return false;
         };
-        let Ok(endpoint) = self.endpoint_for(&access.name, *span) else {
+        let Some(flow_member) = self.connector_flow_member(&access, *span) else {
             return false;
         };
         let Some(weight) = stream_access(weight) else {
@@ -776,7 +776,22 @@ impl StreamOperatorRewriter {
             }
             _ => false,
         };
-        same_connector && weight.name.last_segment() == endpoint.flow.name.last_segment()
+        same_connector && weight.name.last_segment() == flow_member
+    }
+
+    /// The flow member name of the connector a stream access reads; for an
+    /// access into a connector array, the one member every element shares.
+    fn connector_flow_member(&self, access: &StreamAccess, span: Span) -> Option<String> {
+        if let Ok(endpoint) = self.endpoint_for(&access.name, span) {
+            return Some(endpoint.flow.name.last_segment().to_string());
+        }
+        let matches = self.indexed_endpoint_matches(&access.name);
+        let (_, first) = matches.first()?;
+        let member = first.flow.name.last_segment();
+        matches
+            .iter()
+            .all(|(_, endpoint)| endpoint.flow.name.last_segment() == member)
+            .then(|| member.to_string())
     }
 }
 
