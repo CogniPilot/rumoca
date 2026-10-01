@@ -22,6 +22,7 @@ mod function_metadata;
 mod function_output_validation;
 mod function_param_alias;
 mod function_requests;
+mod record_value_fields;
 #[cfg(test)]
 mod tests;
 
@@ -61,6 +62,7 @@ use function_output_validation::validate_function_outputs_assigned;
 use function_param_alias::function_param_type_alias_dims;
 use function_requests::{FunctionIdentitySet, same_function_request};
 pub(crate) use function_requests::{FunctionRequest, FunctionRequests};
+pub(crate) use record_value_fields::split_branch_assigned_records;
 
 use crate::algorithms;
 use crate::ast_lower;
