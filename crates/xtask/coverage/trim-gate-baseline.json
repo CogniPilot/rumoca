@@ -12,6 +12,12 @@
       "dead_likely_candidates": 135,
       "needs_targeted_test_candidates": 357
     },
+    "rumoca-allocator": {
+      "zero_count_functions_total": 3,
+      "candidates_total": 3,
+      "dead_likely_candidates": 1,
+      "needs_targeted_test_candidates": 1
+    },
     "rumoca-bind-python": {
       "zero_count_functions_total": 401,
       "candidates_total": 398,
