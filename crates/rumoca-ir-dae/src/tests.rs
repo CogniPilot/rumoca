@@ -1571,6 +1571,7 @@ fn every_variable_role_can_reserve_a_header_for_forward_attributes() {
 }
 
 mod b1c_owners;
+mod scalar_broadcast;
 
 /// A second variable with a reserved name is refused at its own declaration.
 #[test]
