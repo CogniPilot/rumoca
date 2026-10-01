@@ -147,6 +147,20 @@
       }
     },
     {
+      "model_name": "Modelica.Electrical.Analog.Examples.OpAmps.SignalGenerator",
+      "kind": "reference_failure",
+      "reason": "The Schmitt-trigger op-amp uses strict=false, so its saturation branches are event relations and the rectangle output may only switch when V0*v_in crosses a supply limit. For R1=1000, R2=1500, Vps=15 and V0=15000 that crossing is at |vOutTriangle| = (Vps*R1 - (R1+R2)*Vps/V0)/R2 = 9.998333 V, so the ideal circuit is strictly periodic. Rumoca switches at exactly that amplitude every half period at both 1e-6 and 1e-10. The default OMC reference switches early and irregularly (amplitudes from 1.886 V to 9.994 V, half periods from 0.0237 s to 0.0498 s), so its phase drifts and 47 of 66 channels deviate. OMC at 1e-10 moves toward the analytic amplitude but still switches irregularly, and OMC at 1e-12 does not finish within 600 s, so there is no converged reference. This is a reference-generation failure, not strict-high credit.",
+      "evidence": {
+        "facts": [
+          "analytic switching amplitude (Vps*R1 - (R1+R2)*Vps/V0)/R2 = 9.998333 V; ideal circuit is periodic",
+          "Rumoca switches at |vOutTriangle| = 9.998333 V at 1e-6 and 1e-10; first switch at t=0.02499805516 (1e-6) and t=0.02499805515 (1e-10), half period 0.0499950 s",
+          "default OMC (1e-6) switch amplitudes 1.886 V to 9.994 V, half periods 0.0237 s to 0.0498 s; 19 high and 47 deviating channels",
+          "OMC at 1e-10 switch amplitudes 9.805 V to 9.998 V, still irregular; OMC at 1e-12 does not finish within 600 s"
+        ],
+        "artifact": "msl:Modelica.Electrical.Analog.Examples.OpAmps.SignalGenerator"
+      }
+    },
+    {
       "model_name": "Modelica.Electrical.Analog.Examples.SwitchWithArc",
       "kind": "comparator_limitation",
       "reason": "Only switch1.LossPower is non-high (57/58 channels and all initial conditions are high). The ideal switch defines LossPower=v*i and both traces produce the same approximately 2.466374e8 W opening spike, but Rumoca records the scheduled opening at the exact t=0.5 coordinate while OMC records it at t=0.500000000200003. Pointwise interpolation turns this 2.0e-10 s event-coordinate convention into a deviation on the discontinuous algebraic spike although the state trajectories agree, so OMC pointwise comparison is non-identifying for this event-local observable.",
@@ -197,6 +211,20 @@
         ],
         "commit": "3d76411c1",
         "artifact": "docs/dev-guide/src/tooling/multibody-coverage.md"
+      }
+    },
+    {
+      "model_name": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Generator",
+      "kind": "reference_failure",
+      "reason": "Only seven aliases of the damper-cage loss power are non-high (571 of 578 channels high). After the start-up transient the loss power is a 0.29260696 W constant, and the default OMC reference carries integration residue of up to 9.7e-6 W on it, so the channel's p95-p05 reference range (4.05e-6 W) is that residue and Rumoca's own 1e-6 residue (mean difference 3.7e-6 W) scores as a deviation against it. With the same OMC model at 1e-10 as the converged reference, the default OMC trace differs by a mean 3.15e-6 W and the unchanged Rumoca trace by a mean 9.4e-7 W, and Rumoca at 1e-10 agrees with OMC at 1e-10 within 1.3e-8 W. The default reference is not accurate enough to identify this near-constant observable pointwise; this is not strict-high credit.",
+      "evidence": {
+        "facts": [
+          "571 high and 7 deviating channels; all 7 are aliases of smee.damperCage.lossPower",
+          "damper-cage loss power after start-up: 0.29260696 W; default OMC p95-p05 range 4.05e-6 W",
+          "against OMC at 1e-10 on t in [1, 30]: default OMC mean difference 3.15e-6 W, Rumoca 1e-6 mean difference 9.4e-7 W",
+          "Rumoca at 1e-10 vs OMC at 1e-10: maximum difference 1.3e-8 W"
+        ],
+        "artifact": "msl:Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Generator"
       }
     },
     {

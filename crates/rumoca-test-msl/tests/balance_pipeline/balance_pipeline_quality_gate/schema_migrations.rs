@@ -25,11 +25,11 @@ pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMig
     migration.metric.change = "typed-trace-exceptions-v1".to_string();
     migration.metric.strict_high_before = 231;
     migration.metric.strict_high_after = 231;
-    migration.metric.policy_excluded_after = 34;
+    migration.metric.policy_excluded_after = 36;
     migration.metric.excluded_strict_high_before = 0;
     migration.metric.excluded_non_high_before = 0;
     migration.metric.exclusions_sha256 =
-        "a1f0aa603f19f2522fc6bca07501a64d0b3d7e6cb89703ed1c7a84dcb3279126".to_string();
+        "69d6b7259debe61e12fb9a8d3b0003115c496d4ec0f4a84ae8de5a8f9f7dcc49".to_string();
     migration.evidence_git_commit = "70fa6612a34b7e6b454672e448a747d6e4bdd440".to_string();
     migration.evidence_run = "typed-trace-exceptions-full".to_string();
     migration.policy_excluded_before = 23;

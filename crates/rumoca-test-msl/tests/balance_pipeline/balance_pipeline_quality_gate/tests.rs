@@ -1679,7 +1679,7 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
     assert_eq!(baseline.partial_model_names, reviewed_partial_model_names());
     assert_eq!(baseline.tensor_preservation.report_errors, 0);
     assert_eq!(baseline.certified_strict_high_models.len(), 194);
-    assert_eq!(baseline.unexcepted_non_high_models.len(), 3);
+    assert_eq!(baseline.unexcepted_non_high_models.len(), 1);
     assert_eq!(
         baseline.trace_exceptions_sha256.as_deref(),
         Some(
@@ -1728,10 +1728,11 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
         reference.metric.strict_high_after
     );
     // The typed-exception boundary types every reviewed row and removes none;
-    // it adds the ten reviewed Clocked, Electrical, and Magnetic rows and the
-    // ComparisonPullInStroke stopper loss-power row.
+    // it adds the ten reviewed Clocked, Electrical, and Magnetic rows, the
+    // ComparisonPullInStroke stopper loss-power row, and the SignalGenerator
+    // and SMEE_Generator reference-failure rows.
     assert_eq!(
-        reference.policy_excluded_before + 11,
+        reference.policy_excluded_before + 13,
         reference.metric.policy_excluded_after
     );
     assert_eq!(reference.metric.excluded_strict_high_before, 0);
