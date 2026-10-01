@@ -1,8 +1,8 @@
 use super::VerifyCommand;
 use super::gate::{
     GateStep, VerifyGateArgs, blocking_template_failures, changed_crates, changed_packages,
-    extract_snapshot, gate_steps, link_shared_caches, lock_host, resolve_rev, run, run_steps,
-    upstream_main,
+    create_coverage_output, extract_snapshot, gate_steps, link_shared_caches, lock_host,
+    resolve_rev, run, run_steps, upstream_main,
 };
 use clap::Parser;
 use std::path::Path;
@@ -69,6 +69,11 @@ fn a_snapshot_holds_the_committed_tree_and_links_the_shared_caches() {
     link_shared_caches(&root, &snapshot).unwrap();
     assert!(snapshot.join("target/msl").exists());
     assert!(!snapshot.join("target/fmi-conformance").exists());
+    // The coverage report directory exists before `cargo llvm-cov` writes to it.
+    for _ in 0..2 {
+        create_coverage_output(&snapshot).unwrap();
+    }
+    assert!(snapshot.join("target/llvm-cov").is_dir());
 }
 
 #[test]

@@ -26,6 +26,9 @@ const UPSTREAM: &str = "https://github.com/CogniPilot/rumoca";
 /// path, since `nix develop` points `TMPDIR` at a per-shell directory.
 const COVERAGE_LOCK: &str = "/tmp/rumoca-coverage.lock";
 
+/// The snapshot-relative directory the coverage steps write their reports to.
+const COVERAGE_OUTPUT_DIR: &str = "target/llvm-cov";
+
 /// Template targets whose Python packages a local shell need not provide;
 /// their failures are reported but do not fail the gate.
 const OPTIONAL_TEMPLATE_TARGETS: [&str; 2] = ["casadi", "jax"];
@@ -271,6 +274,9 @@ pub(crate) fn run(root: &Path, args: &VerifyGateArgs) -> Result<()> {
     let log_path = base.join("gate.log");
     extract_snapshot(&repo, &rev, &snapshot)?;
     link_shared_caches(root, &snapshot)?;
+    if args.coverage {
+        create_coverage_output(&snapshot)?;
+    }
     let packages = if args.crates.is_empty() {
         changed_packages(&repo, &upstream_main(&repo, UPSTREAM), &rev, &snapshot)
     } else {
@@ -353,6 +359,15 @@ pub(crate) fn link_shared_caches(root: &Path, snapshot: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Create the snapshot's `target/llvm-cov`, where the coverage steps write
+/// their reports: `cargo llvm-cov --output-path` does not create the parent
+/// directory, and the gate's Cargo target directory lies outside the snapshot.
+/// `xtask coverage run` creates the same directory before it measures.
+pub(crate) fn create_coverage_output(snapshot: &Path) -> Result<()> {
+    let output = snapshot.join(COVERAGE_OUTPUT_DIR);
+    fs::create_dir_all(&output).context(format!("create {}", output.display()))
 }
 
 #[cfg(unix)]
