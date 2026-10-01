@@ -217,14 +217,17 @@ fn the_fmi2_scalar_walk_reads_the_projected_storage_run() {
 }
 
 fn render_description(component: solve::fmi::FmiComponent, target: &str) -> String {
-    SolveTemplateRenderer::new_owned_with_fmi(event_free_view(component))
+    let rendered = SolveTemplateRenderer::new_owned_with_fmi(event_free_view(component))
         .expect("an event-free component renders")
         .render_with_name_and_artifact(
             builtin_template(target, "modelDescription.xml.jinja"),
             "FmiProjectionFixture",
             &artifact_identities(),
-        )
-        .unwrap_or_else(|error| panic!("{target} description renders: {error}"))
+        );
+    match rendered {
+        Ok(description) => description,
+        Err(error) => panic!("{target} description renders: {error}"),
+    }
 }
 
 fn component_declaring(
@@ -257,9 +260,9 @@ fn a_nested_output_renders_its_declared_causality_annotation() {
                       <DeclaredCausality value=\"output\"/>\n        </Tool>\n      \
                       </Annotations>";
     for scalar in ["x[1]", "x[2]"] {
-        let start = fmi2
-            .find(&format!("<ScalarVariable name=\"{scalar}\""))
-            .unwrap_or_else(|| panic!("{scalar} is published: {fmi2}"));
+        let Some(start) = fmi2.find(&format!("<ScalarVariable name=\"{scalar}\"")) else {
+            panic!("{scalar} is published: {fmi2}");
+        };
         let variable = &fmi2[start..start + fmi2[start..].find("</ScalarVariable>").unwrap()];
         assert!(variable.contains("causality=\"local\""), "{variable}");
         let real = variable.find("<Real").expect("the type element");
