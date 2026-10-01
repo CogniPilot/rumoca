@@ -233,3 +233,52 @@ fn ensure_any_file_contains(root: &Path, files: &[&str], needle: &str) -> Result
         files.join(", ")
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(root: &Path, rel: &str) {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "").unwrap();
+    }
+
+    /// Only `*.test.mjs` files are collected, from both directories, sorted.
+    #[test]
+    fn web_unit_tests_are_collected_from_both_directories_in_order() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), "packages/playground/tests/b.test.mjs");
+        write(root.path(), "packages/playground/tests/smoke.mjs");
+        write(root.path(), "packages/rumoca-web/tests/a.test.mjs");
+        write(root.path(), "packages/rumoca-web/tests/helper.js");
+        assert_eq!(
+            web_unit_test_files(root.path()).unwrap(),
+            [
+                "packages/playground/tests/b.test.mjs",
+                "packages/rumoca-web/tests/a.test.mjs",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_web_test_directory_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), "packages/rumoca-web/tests/a.test.mjs");
+        let err = web_unit_test_files(root.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("packages/playground/tests"),
+            "{err}"
+        );
+    }
+
+    /// An empty test set is refused before any runner starts.
+    #[test]
+    fn no_web_unit_tests_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("packages/rumoca-web/tests")).unwrap();
+        fs::create_dir_all(root.path().join("packages/playground/tests")).unwrap();
+        let err = run_web_unit_tests(root.path()).unwrap_err();
+        assert!(err.to_string().contains("no web unit tests found"), "{err}");
+    }
+}

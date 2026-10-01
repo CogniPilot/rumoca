@@ -348,10 +348,12 @@ pub(crate) fn extract_snapshot(repo: &Path, rev: &str, snapshot: &Path) -> Resul
     Ok(())
 }
 
-/// Link the repository's MSL and FMI conformance caches into the snapshot.
+/// Link the repository's MSL and FMI conformance caches into the snapshot,
+/// and create the `target/llvm-cov` directory the coverage steps write their
+/// reports into.
 pub(crate) fn link_shared_caches(root: &Path, snapshot: &Path) -> Result<()> {
     let target = snapshot.join("target");
-    fs::create_dir_all(&target)?;
+    fs::create_dir_all(target.join("llvm-cov"))?;
     for cache in ["msl", "fmi-conformance"] {
         let source = root.join("target").join(cache);
         if source.exists() {
