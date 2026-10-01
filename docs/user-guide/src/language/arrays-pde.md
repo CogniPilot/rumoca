@@ -443,13 +443,18 @@ pure ODE — exactly what the method of lines wants:
   for differentiating the flow with respect to the airfoil shape.
 
 The freestream is horizontal and the *airfoil itself pitches*: each cell's
-coordinates are rotated into the airfoil frame, so the solid mask turns with
-the angle of attack the way a real wind-tunnel model would. `aoa` is the
-pre-simulation angle parameter. The model also exposes `input Real aoa_cmd`;
-an `aoa_motor` state follows that command with
-`der(aoa_motor) = (aoa_cmd - aoa_motor) / aoa_tau`. A structural
-`interactive` flag selects whether the immersed-boundary mask uses the
-pre-simulation parameter `aoa` or the lagged state `aoa_motor`. With
+coordinates `sc` (chordwise) and `nc` (chord-normal) live in the airfoil frame,
+so the solid mask turns with the angle of attack the way a real wind-tunnel
+model would. `aoa` is the pre-simulation angle parameter; initial equations
+rotate every cell center into the frame at that angle. The model also exposes
+`input Real aoa_cmd = aoa`; an `aoa_motor` state follows that command with
+`der(aoa_motor) = (aoa_cmd - aoa_motor) / aoa_tau`, and the frame coordinates
+follow the exact rotation kinematics `der(sc) = -nc·ω`, `der(nc) = sc·ω` at the
+pitch rate `ω = der(aoa_motor)`. The camber inputs `mc`, `pc`, and `tk` drive
+their own lagged motor states the same way. A structural `interactive` flag
+selects whether the motors follow the command inputs or hold their
+pre-simulation values. The inputs carry their pre-simulation values as
+declaration defaults, so a plain batch run needs no input provider. With
 **Interactive** off, the **AoA slider** is a normal parameter tuner and re-runs
 the simulation from the selected pre-simulation angle. With **Interactive** on,
 the same slider feeds `aoa_cmd` during stepping, so the physical airfoil angle
@@ -462,15 +467,16 @@ finite-volume loops are preserved as source-proven affine stencils, so the
 WebGPU path emits native row-parallel stencil kernels instead of rediscovering
 grid structure from scalarized equations. If WebGPU is unavailable the run
 fails with a clear error instead of silently falling back (uncheck GPU for the
-CPU path). GPU v1 runs in f32 with events and algebraics frozen at their
-settled initial values, which is exact for the normal batch run because
-`interactive = false` makes the mask depend only on pre-simulation parameters.
-The named-input interactive stepping path reads `aoa_cmd` before each step and
-uses `interactive = true`. The run is an impulsive wind-tunnel start:
-the field begins at rest and the freestream sweeps in from the inlet and
-far-field boundaries. This is the heaviest example in the book
-(~6,500 integrated states on the default grid): expect the first run to take a
-while.
+CPU path). `wgsl-ode` accepts explicit ODEs only, in f32: no algebraic
+variables and no events. That is why the mask is written out inside the two
+momentum equations instead of being a separate `sig` variable, and why the
+camber's branch switch is wrapped in `noEvent` (the mean line is continuously
+differentiable there, so no event is needed). The named-input interactive
+stepping path reads `aoa_cmd` before each step and uses `interactive = true`.
+The run is an impulsive wind-tunnel start: the field begins at rest and the
+freestream sweeps in from the inlet and far-field boundaries. This is the
+heaviest example in the book (about 2,700 integrated states on the default
+grid): expect the first run to take a while.
 
 ```modelica,interactive,gpu
 model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penalization"
@@ -481,8 +487,8 @@ model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penal
   parameter Real xle = 1.0 "Leading edge distance from inlet [chords]";
   parameter Real aoa = 8.0 "Initial/pre-simulation angle of attack [deg]";
   parameter Boolean interactive = false
-    "Use live AoA motor state for the airfoil mask" annotation(Evaluate = true);
-  input Real aoa_cmd(start = aoa) "Commanded angle of attack [deg]";
+    "Drive the airfoil motors from the live command inputs" annotation(Evaluate = true);
+  input Real aoa_cmd = aoa "Commanded angle of attack [deg]";
   parameter Real aoa_tau = 1.0 "First-order AoA motor time constant [s]";
   parameter Real U = 1.0 "Freestream speed (horizontal)";
   parameter Real nu = 0.01 "Kinematic viscosity (Re = U/nu = 100)";
@@ -493,9 +499,9 @@ model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penal
   parameter Real mc0 = 0.02 "Initial/pre-simulation NACA max camber";
   parameter Real pc0 = 0.4 "Initial/pre-simulation NACA camber position";
   parameter Real tk0 = 0.12 "Initial/pre-simulation NACA thickness";
-  input Real mc(start = mc0) "Commanded NACA max camber";
-  input Real pc(start = pc0) "Commanded NACA camber position";
-  input Real tk(start = tk0) "Commanded NACA thickness";
+  input Real mc = mc0 "Commanded NACA max camber";
+  input Real pc = pc0 "Commanded NACA camber position";
+  input Real tk = tk0 "Commanded NACA thickness";
   parameter Real shape_tau = 1.0 "First-order airfoil shape actuator time constant [s]";
   parameter Real dx = Lx / NX;
   parameter Real dy = Ly / NY;
@@ -512,51 +518,43 @@ model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penal
   Real q[NX, NY] "pressure / rho";
   Real sc[NX, NY] "Chordwise coordinate in the pitched airfoil frame";
   Real nc[NX, NY] "Chord-normal coordinate in the pitched airfoil frame";
-  Real sig[NX, NY] "Solid mask (1 inside the airfoil)";
-  // States start at rest (default start = 0): an impulsive wind-tunnel
+  // Flow states start at rest (default start = 0): an impulsive wind-tunnel
   // start where the freestream sweeps in through the boundary relaxation.
+initial equation
+  // Each cell center rotated into the airfoil frame (pitched about the
+  // leading edge) at the initial angle of attack.
+  for i in 1:NX loop
+    for j in 1:NY loop
+      sc[i, j] = ((i - 0.5) * dx - xle) * cos(aoa * pi / 180.0)
+        - ((j - 0.5) * dy - Ly / 2.0) * sin(aoa * pi / 180.0);
+      nc[i, j] = ((i - 0.5) * dx - xle) * sin(aoa * pi / 180.0)
+        + ((j - 0.5) * dy - Ly / 2.0) * cos(aoa * pi / 180.0);
+    end for;
+  end for;
 equation
   der(aoa_motor) =
     if interactive then (aoa_cmd - aoa_motor) / aoa_tau else 0.0;
   der(mc_motor) = if interactive then (mc - mc_motor) / shape_tau else 0.0;
   der(pc_motor) = if interactive then (pc - pc_motor) / shape_tau else 0.0;
   der(tk_motor) = if interactive then (tk - tk_motor) / shape_tau else 0.0;
+  // The airfoil frame turns at the pitch rate der(aoa_motor), so each cell's
+  // frame coordinates follow the exact rotation kinematics.
   for i in 1:NX loop
     for j in 1:NY loop
-      if interactive then
-        sc[i, j] = ((i - 0.5) * dx - xle) * cos(aoa_motor * pi / 180.0)
-          - ((j - 0.5) * dy - Ly / 2.0) * sin(aoa_motor * pi / 180.0);
-        nc[i, j] = ((i - 0.5) * dx - xle) * sin(aoa_motor * pi / 180.0)
-          + ((j - 0.5) * dy - Ly / 2.0) * cos(aoa_motor * pi / 180.0);
-        sig[i, j] =
-          0.5 * (1.0 - tanh((abs(nc[i, j]
-              - (if sc[i, j] < pc_motor then mc_motor / pc_motor ^ 2 * (2.0 * pc_motor * sc[i, j] - sc[i, j] ^ 2)
-                 else mc_motor / (1.0 - pc_motor) ^ 2
-                   * ((1.0 - 2.0 * pc_motor) + 2.0 * pc_motor * sc[i, j] - sc[i, j] ^ 2)))
-            - sqrt((5.0 * tk_motor * (0.2969 * sqrt(max(sc[i, j], 0.0)) - 0.1260 * sc[i, j]
-                    - 0.3516 * sc[i, j] ^ 2 + 0.2843 * sc[i, j] ^ 3
-                    - 0.1036 * sc[i, j] ^ 4)) ^ 2 + tmin ^ 2)) / epsn))
-          * (0.5 * (1.0 + tanh(sc[i, j] / epss)))
-          * (0.5 * (1.0 + tanh((1.0 - sc[i, j]) / epss)));
-      else
-        sc[i, j] = ((i - 0.5) * dx - xle) * cos(aoa * pi / 180.0)
-          - ((j - 0.5) * dy - Ly / 2.0) * sin(aoa * pi / 180.0);
-        nc[i, j] = ((i - 0.5) * dx - xle) * sin(aoa * pi / 180.0)
-          + ((j - 0.5) * dy - Ly / 2.0) * cos(aoa * pi / 180.0);
-        sig[i, j] =
-          0.5 * (1.0 - tanh((abs(nc[i, j]
-              - (if sc[i, j] < pc0 then mc0 / pc0 ^ 2 * (2.0 * pc0 * sc[i, j] - sc[i, j] ^ 2)
-                 else mc0 / (1.0 - pc0) ^ 2
-                   * ((1.0 - 2.0 * pc0) + 2.0 * pc0 * sc[i, j] - sc[i, j] ^ 2)))
-            - sqrt((5.0 * tk0 * (0.2969 * sqrt(max(sc[i, j], 0.0)) - 0.1260 * sc[i, j]
-                    - 0.3516 * sc[i, j] ^ 2 + 0.2843 * sc[i, j] ^ 3
-                    - 0.1036 * sc[i, j] ^ 4)) ^ 2 + tmin ^ 2)) / epsn))
-          * (0.5 * (1.0 + tanh(sc[i, j] / epss)))
-          * (0.5 * (1.0 + tanh((1.0 - sc[i, j]) / epss)));
-      end if;
+      der(sc[i, j]) = -nc[i, j] * pi / 180.0
+        * (if interactive then (aoa_cmd - aoa_motor) / aoa_tau else 0.0);
+      der(nc[i, j]) = sc[i, j] * pi / 180.0
+        * (if interactive then (aoa_cmd - aoa_motor) / aoa_tau else 0.0);
     end for;
   end for;
-  // Interior: momentum + artificial-compressibility continuity.
+  // Interior: momentum + artificial-compressibility continuity. The last term
+  // of each momentum equation is the Brinkman drag sig * V / tau, with the
+  // smooth solid fraction sig written out in place:
+  //   sig = 0.5 * (1 - tanh((|nc - camber(sc)| - thickness(sc)) / epsn))
+  //         * 0.5 * (1 + tanh(sc / epss)) * 0.5 * (1 + tanh((1 - sc) / epss))
+  // The NACA mean line is continuously differentiable where its two branches
+  // meet (sc = pc), so the branch switch needs no event: noEvent keeps it a
+  // smooth expression.
   for i in 2:NX - 1 loop
     for j in 2:NY - 1 loop
       der(u[i, j]) = -u[i, j] * (u[i + 1, j] - u[i - 1, j]) / (2.0 * dx)
@@ -564,13 +562,33 @@ equation
         - (q[i + 1, j] - q[i - 1, j]) / (2.0 * dx)
         + nu * ((u[i + 1, j] - 2.0 * u[i, j] + u[i - 1, j]) / dx ^ 2
               + (u[i, j + 1] - 2.0 * u[i, j] + u[i, j - 1]) / dy ^ 2)
-        - sig[i, j] * u[i, j] / tau;
+        - 0.5 * (1.0 - tanh((abs(nc[i, j]
+              - noEvent(if sc[i, j] < pc_motor
+                  then mc_motor / pc_motor ^ 2 * (2.0 * pc_motor * sc[i, j] - sc[i, j] ^ 2)
+                  else mc_motor / (1.0 - pc_motor) ^ 2
+                    * ((1.0 - 2.0 * pc_motor) + 2.0 * pc_motor * sc[i, j] - sc[i, j] ^ 2)))
+            - sqrt((5.0 * tk_motor * (0.2969 * sqrt(max(sc[i, j], 0.0)) - 0.1260 * sc[i, j]
+                    - 0.3516 * sc[i, j] ^ 2 + 0.2843 * sc[i, j] ^ 3
+                    - 0.1036 * sc[i, j] ^ 4)) ^ 2 + tmin ^ 2)) / epsn))
+          * (0.5 * (1.0 + tanh(sc[i, j] / epss)))
+          * (0.5 * (1.0 + tanh((1.0 - sc[i, j]) / epss)))
+          * u[i, j] / tau;
       der(v[i, j]) = -u[i, j] * (v[i + 1, j] - v[i - 1, j]) / (2.0 * dx)
         - v[i, j] * (v[i, j + 1] - v[i, j - 1]) / (2.0 * dy)
         - (q[i, j + 1] - q[i, j - 1]) / (2.0 * dy)
         + nu * ((v[i + 1, j] - 2.0 * v[i, j] + v[i - 1, j]) / dx ^ 2
               + (v[i, j + 1] - 2.0 * v[i, j] + v[i, j - 1]) / dy ^ 2)
-        - sig[i, j] * v[i, j] / tau;
+        - 0.5 * (1.0 - tanh((abs(nc[i, j]
+              - noEvent(if sc[i, j] < pc_motor
+                  then mc_motor / pc_motor ^ 2 * (2.0 * pc_motor * sc[i, j] - sc[i, j] ^ 2)
+                  else mc_motor / (1.0 - pc_motor) ^ 2
+                    * ((1.0 - 2.0 * pc_motor) + 2.0 * pc_motor * sc[i, j] - sc[i, j] ^ 2)))
+            - sqrt((5.0 * tk_motor * (0.2969 * sqrt(max(sc[i, j], 0.0)) - 0.1260 * sc[i, j]
+                    - 0.3516 * sc[i, j] ^ 2 + 0.2843 * sc[i, j] ^ 3
+                    - 0.1036 * sc[i, j] ^ 4)) ^ 2 + tmin ^ 2)) / epsn))
+          * (0.5 * (1.0 + tanh(sc[i, j] / epss)))
+          * (0.5 * (1.0 + tanh((1.0 - sc[i, j]) / epss)))
+          * v[i, j] / tau;
       der(q[i, j]) = -cs ^ 2 * ((u[i + 1, j] - u[i - 1, j]) / (2.0 * dx)
                               + (v[i, j + 1] - v[i, j - 1]) / (2.0 * dy))
         + qnu * ((q[i + 1, j] - 2.0 * q[i, j] + q[i - 1, j]) / dx ^ 2

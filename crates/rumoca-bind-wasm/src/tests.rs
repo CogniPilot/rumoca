@@ -14,6 +14,7 @@ mod scenario_config_tests;
 mod simulation_runtime_tests;
 mod source_modelica_roundtrip_tests;
 mod source_root_api_tests;
+mod user_guide_examples_tests;
 mod wasm_cache_tests;
 mod workspace_config_api_tests;
 

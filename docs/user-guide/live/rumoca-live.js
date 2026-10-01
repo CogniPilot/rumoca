@@ -1630,23 +1630,10 @@ self.onmessage = async (event) => {
     }
 
     function enableLiveInputModelSource(source) {
-        let next = source.replace(
+        return source.replace(
             /(\bparameter\s+Boolean\s+interactive\s*=\s*)false\b/,
             '$1true',
         );
-        next = next.replace(
-            /\n  parameter Real sc\[NX, NY\] = \{[\s\S]*?\n  \} "Chordwise coordinate in the pitched airfoil frame";/,
-            '\n  Real sc[NX, NY] "Chordwise coordinate in the pitched airfoil frame";',
-        );
-        next = next.replace(
-            /\n  parameter Real nc\[NX, NY\] = \{[\s\S]*?\n  \} "Chord-normal coordinate in the pitched airfoil frame";/,
-            '\n  Real nc[NX, NY] "Chord-normal coordinate in the pitched airfoil frame";',
-        );
-        next = next.replace(
-            /\n  parameter Real sig\[NX, NY\] = \{[\s\S]*?\n  \} "Solid mask \(1 inside the airfoil\)";/,
-            '\n  Real sig[NX, NY] "Solid mask (1 inside the airfoil)";',
-        );
-        return next;
     }
 
     // The API handed to editable `js,rumoca-viz` blocks (and used by the
