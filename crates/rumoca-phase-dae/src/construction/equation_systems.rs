@@ -96,7 +96,7 @@ pub(super) fn lower_equation_systems<'dae>(
         StructuredEquationRows {
             equations: &flat.initial_equations,
             families: &flat.initial_structured_equations,
-            excluded_families: &HashSet::new(),
+            excluded_families: &analysis.initial_discrete_families,
             environment: None,
             initialization: true,
         },

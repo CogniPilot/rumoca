@@ -1,8 +1,19 @@
 use super::*;
 
+/// The structured families of one Flat equation partition.
+pub(super) struct PartitionFamilies<'flat> {
+    pub(super) families: &'flat [flat::StructuredEquationFamily],
+    /// The rows of the owning Flat equation partition.
+    pub(super) equations: &'flat [flat::Equation],
+    /// Whether the partition is the initialization system. MLS 3.7 §8.6 solves
+    /// initialization as one system of equations in which `pre(v)` of a
+    /// discrete-time `v` is an unknown, so the Appendix B solved form of
+    /// discrete-valued equations governs only the simulation partition.
+    pub(super) initialization: bool,
+}
+
 pub(super) fn validate_structured_families(
-    families: &[flat::StructuredEquationFamily],
-    equation_count: usize,
+    partition: PartitionFamilies<'_>,
     runtime_roles: &HashMap<VarName, PlannedRole>,
     expression_roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
@@ -10,7 +21,8 @@ pub(super) fn validate_structured_families(
     model_values: &ShapeEnvironment,
 ) -> Result<HashSet<usize>, ToDaeError> {
     let mut covered = HashSet::new();
-    for family in families {
+    let equation_count = partition.equations.len();
+    for family in partition.families {
         require_span(family.span, "structured equation family")?;
         let domain_count = family.domain.scalar_count().map_err(|error| {
             ToDaeError::unsupported_flat(
@@ -40,9 +52,12 @@ pub(super) fn validate_structured_families(
                 family.span,
             ));
         }
-        if materialized_discrete_real_family(family, runtime_roles) {
-            // Its materialized rows are discrete Real definitions; each row
-            // keeps its own ordinary owner.
+        if materialized_discrete_real_family(family, runtime_roles)
+            || (!partition.initialization
+                && materialized_discrete_value_rows(family, partition.equations, runtime_roles))
+        {
+            // Its materialized rows are discrete definitions; each row keeps
+            // its own ordinary owner.
             continue;
         }
         if let Some(template) = &family.template {
@@ -50,8 +65,13 @@ pub(super) fn validate_structured_families(
             // with all other element rows for its target. The aggregate pass
             // derives exact declared-shape coverage and overlap evidence; the
             // template is only the compact second view of those same rows.
-            if !family.interiors_materialized
-                || !structured_discrete_element_assignments(&template.body, runtime_roles)
+            // Materialized initialization rows are ordinary initial equations,
+            // validated row by row like every scalar initial equation.
+            let materialized_initialization =
+                partition.initialization && family.interiors_materialized;
+            if !materialized_initialization
+                && (!family.interiors_materialized
+                    || !structured_discrete_element_assignments(&template.body, runtime_roles))
             {
                 structured_discrete_assignments(&template.body, runtime_roles, family.span)?;
             }
@@ -122,6 +142,42 @@ pub(in crate::construction) fn materialized_discrete_real_family(
                             && matches!(roles.get(name.var_name()), Some(PlannedRole::DiscreteReal))
                 )
             )
+        })
+}
+
+/// Whether a materialized family without a compact template defines a
+/// discrete-valued coordinate: some row is an Appendix B discrete-valued
+/// assignment.
+///
+/// Flatten keeps no template when the loop body selects its equations, for
+/// example through a parameter-conditioned `if`, so the family is only the
+/// grouping of its rows and owns no body of its own. A discrete-valued row is
+/// not a residual, so such a grouping is dissolved: each row is lowered with
+/// its own ordinary owner, exactly as the same rows are when they stand
+/// outside a loop.
+pub(in crate::construction) fn materialized_discrete_value_rows(
+    family: &flat::StructuredEquationFamily,
+    equations: &[flat::Equation],
+    roles: &HashMap<VarName, PlannedRole>,
+) -> bool {
+    let Ok(points) = family.domain.scalar_count() else {
+        return false;
+    };
+    let Some(rows) = points
+        .checked_mul(family.equations_per_point)
+        .and_then(|count| family.first_equation_index.checked_add(count))
+        .and_then(|end| equations.get(family.first_equation_index..end))
+    else {
+        return false;
+    };
+    family.template.is_none()
+        && family.interiors_materialized
+        && rows.iter().any(|equation| {
+            structured_discrete_element_assignments(std::slice::from_ref(&equation.residual), roles)
+                || matches!(
+                    discrete_value_assignment(&equation.residual, roles, equation.span),
+                    Ok(Some(_))
+                )
         })
 }
 

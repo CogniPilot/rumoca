@@ -387,8 +387,13 @@ fn insert_initial_discrete_value<'dae>(
             span: owner.span(),
         });
     }
-    if !declared.is_scalar() || !found.is_scalar() {
+    // MLS 3.7 §8.6 determines a discrete array coordinate element by element;
+    // the definition is the whole aggregate, so its shape is the declared one.
+    if declared.is_record() || found.is_record() {
         return Err(DaeConstructionError::ExpectedScalar { span: owner.span() });
+    }
+    if found.dimensions() != declared.dimensions() {
+        return Err(DaeConstructionError::ShapeMismatch { span: owner.span() });
     }
     expect_initialization_settled_reads(storage, value, owner)?;
     if storage

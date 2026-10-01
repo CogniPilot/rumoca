@@ -38,40 +38,54 @@ pub(super) fn lower_initial_discrete_values<'dae>(
     for definition in view.initial_discrete_values() {
         let span = definition.provenance().span();
         let variable = definition.target().index();
-        let program = ScalarCompiler::new(view, layout, None).program(definition.value(), 0)?;
-        let current = variable_scalar_slot(layout, variable, 0, span)?;
-        let solve::ScalarSlot::P { .. } = current else {
-            return Err(LowerError::contract(
-                "a discrete coordinate with an initial-algorithm value does not occupy \
-                 parameter storage",
-                span,
-            ));
-        };
-        for target in [current, initial_pre_slot(layout, variable, span)?] {
-            let output = rows.len();
-            rows.push(program.clone(), span, output);
-            targets.push(target);
+        let scalar_count = layout
+            .variables
+            .get(variable as usize)
+            .map(|entry| entry.count)
+            .ok_or_else(|| LowerError::contract("variable has no Solve layout entry", span))?;
+        let pre_base = initial_pre_base(layout, variable, span)?;
+        // An array coordinate's definition is its whole aggregate; each scalar
+        // writes its own lane and the matching lane of its `pre` storage.
+        for scalar in 0..scalar_count {
+            let program =
+                ScalarCompiler::new(view, layout, None).program(definition.value(), scalar)?;
+            let current = variable_scalar_slot(layout, variable, scalar, span)?;
+            let solve::ScalarSlot::P { .. } = current else {
+                return Err(LowerError::contract(
+                    "a discrete coordinate with an initial-algorithm value does not occupy \
+                     parameter storage",
+                    span,
+                ));
+            };
+            let pre = pre_base
+                .checked_add(scalar)
+                .map(solve::scalar_slot_p)
+                .ok_or_else(|| LowerError::contract("pre-value layout overflow", span))?;
+            for target in [current, pre] {
+                let output = rows.len();
+                rows.push(program.clone(), span, output);
+                targets.push(target);
+            }
         }
     }
     Ok(InitialDiscreteUpdates { rows, targets })
 }
 
-/// The `pre` slot of one discrete coordinate.
+/// The first parameter index of one discrete coordinate's `pre` storage.
 ///
 /// Every discrete coordinate is given one by `append_pre_variables`, so a
 /// missing slot is a layout contract failure rather than a coordinate without
 /// history — skipping it would silently leave `pre(v)` at the declared `start`.
-fn initial_pre_slot(
+fn initial_pre_base(
     layout: &LoweredLayout<'_>,
     variable: u32,
     span: Span,
-) -> Result<solve::ScalarSlot, LowerError> {
+) -> Result<usize, LowerError> {
     layout
         .pre_variables
         .get(variable as usize)
         .copied()
         .flatten()
-        .map(solve::scalar_slot_p)
         .ok_or_else(|| {
             LowerError::contract(
                 "a discrete coordinate with an initial-algorithm value has no lowered `pre` slot",

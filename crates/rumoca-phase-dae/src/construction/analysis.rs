@@ -120,7 +120,8 @@ use history_operators::analyze_history_operators;
 pub(super) use initial_algorithms::InitialDiscreteValue;
 use initial_algorithms::{
     InitialAlgorithmAnalysis, analyze_initial_algorithms, assertion_call,
-    claim_initial_discrete_equations, reject_unsupported_initial_algorithm_statements,
+    claim_initial_discrete_equations, claimed_initial_families,
+    reject_unsupported_initial_algorithm_statements,
 };
 use loop_compaction::compact_function_loops;
 use model_algorithm_calls::analyze_event_function_calls;
@@ -145,8 +146,10 @@ use record_array_fields::{
 use record_equations::analyze_record_equations;
 use sample_aliases::analyze_sample_aliases;
 use source_balance::{SourceBalanceInput, source_balance};
-pub(super) use structured_families::materialized_discrete_real_family;
-use structured_families::validate_structured_families;
+use structured_families::{PartitionFamilies, validate_structured_families};
+pub(super) use structured_families::{
+    materialized_discrete_real_family, materialized_discrete_value_rows,
+};
 use unexecuted_branches::{check_function_assignment_shapes, check_unexecuted_branches};
 use when_chains::validate_when_chains;
 
@@ -162,6 +165,8 @@ pub(super) struct Analysis {
     /// Scalar initial-equation rows represented by typed initial discrete-value
     /// definitions rather than numeric initialization residuals.
     pub(super) initial_discrete_equation_rows: HashSet<usize>,
+    /// Initialization families whose rows are all such definitions.
+    pub(super) initial_discrete_families: HashSet<usize>,
     pub(super) initial_parameter_equations:
         Vec<initial_parameter_equations::InitialParameterEquation>,
     pub(super) sample_lattices: Vec<(Span, PeriodicClockSchedule)>,
@@ -626,6 +631,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         balance: balance.detail,
         continuous_family_rows,
         initialization_family_rows,
+        initial_discrete_families: claimed_initial_families(flat, &initial.discrete_equation_rows),
         initial_discrete_equation_rows: initial.discrete_equation_rows,
         initial_parameter_equations: initial.parameter_equations,
         sample_lattices,
@@ -775,8 +781,11 @@ fn analyze_structured_family_rows(
     values: &ShapeEnvironment,
 ) -> Result<(HashSet<usize>, HashSet<usize>), ToDaeError> {
     let continuous = validate_structured_families(
-        &flat.structured_equations,
-        flat.equations.len(),
+        PartitionFamilies {
+            families: &flat.structured_equations,
+            equations: &flat.equations,
+            initialization: false,
+        },
         roles,
         expression_roles,
         states,
@@ -784,8 +793,11 @@ fn analyze_structured_family_rows(
         values,
     )?;
     let initialization = validate_structured_families(
-        &flat.initial_structured_equations,
-        flat.initial_equations.len(),
+        PartitionFamilies {
+            families: &flat.initial_structured_equations,
+            equations: &flat.initial_equations,
+            initialization: true,
+        },
         roles,
         expression_roles,
         states,

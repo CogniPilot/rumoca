@@ -41,10 +41,12 @@
 //! input coordinate from an algorithm, and inventing one would replace a
 //! missing capability with an unproven guess.
 mod checking_calls;
+mod element_definitions;
 mod loops;
 
 use super::*;
 use checking_calls::{checking_call, expand_checking_call, reject_unsupported_checking_call};
+use element_definitions::{ElementDefinitions, ElementTarget, element_ordinal};
 use rumoca_core::ExpressionRewriter;
 
 pub(super) struct InitialAlgorithmAnalysis {
@@ -62,47 +64,101 @@ pub(super) struct InitialAlgorithmAnalysis {
 /// Flat preserves an equality as `lhs - rhs`; either side may name the
 /// coordinate directly or through `pre(m)`. Both spellings determine the one
 /// MLS §8.6 initialization value that seeds current and pre storage. The
-/// checked DAE constructor remains responsible for scalar type,
-/// initialization-settled reads, and unique ownership.
+/// checked DAE constructor remains responsible for type and shape,
+/// initialization-settled reads, and unique ownership. Element definitions of
+/// a discrete array are claimed together, as one aggregate value, when they
+/// determine every element exactly once.
 pub(super) fn claim_initial_discrete_equations(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     definitions: &mut HashMap<VarName, InitialDiscreteValue>,
 ) -> Result<HashSet<usize>, ToDaeError> {
     let mut claimed = HashSet::new();
+    let mut elements = ElementDefinitions::default();
     for (row, equation) in flat.initial_equations.iter().enumerate() {
         let Some((target, value)) = initial_discrete_equation(flat, &equation.residual, roles)?
         else {
             continue;
         };
-        if definitions
-            .insert(
-                target.clone(),
-                InitialDiscreteValue {
+        match target {
+            InitialTargetRef::Whole(target) => {
+                let definition = InitialDiscreteValue {
                     value: value.clone(),
                     span: equation.span,
-                },
-            )
-            .is_some()
-        {
-            return Err(unsupported(
-                format!(
-                    "`{target}` is determined by more than one initial owner; an \
-                     initialization-determined coordinate has exactly one determining owner"
-                ),
-                equation.span,
-            ));
+                };
+                insert_initial_definition(definitions, target, definition)?;
+                claimed.insert(row);
+            }
+            InitialTargetRef::Element(target) => {
+                elements.record(target, row, value, equation.span);
+            }
         }
-        claimed.insert(row);
+    }
+    for (target, definition, rows) in elements.complete(flat) {
+        insert_initial_definition(definitions, target, definition)?;
+        claimed.extend(rows);
     }
     Ok(claimed)
+}
+
+/// The materialized initialization families every row of which is a claimed
+/// discrete definition: their rows are owned by those definitions, so the
+/// family itself contributes no initialization residual.
+pub(super) fn claimed_initial_families(
+    flat: &flat::Model,
+    claimed: &HashSet<usize>,
+) -> HashSet<usize> {
+    flat.initial_structured_equations
+        .iter()
+        .enumerate()
+        .filter(|(_, family)| {
+            let Ok(points) = family.domain.scalar_count() else {
+                return false;
+            };
+            let Some(end) = points
+                .checked_mul(family.equations_per_point)
+                .and_then(|rows| family.first_equation_index.checked_add(rows))
+            else {
+                return false;
+            };
+            family.interiors_materialized
+                && end > family.first_equation_index
+                && (family.first_equation_index..end).all(|row| claimed.contains(&row))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn insert_initial_definition(
+    definitions: &mut HashMap<VarName, InitialDiscreteValue>,
+    target: &VarName,
+    definition: InitialDiscreteValue,
+) -> Result<(), ToDaeError> {
+    let span = definition.span;
+    if definitions.insert(target.clone(), definition).is_some() {
+        return Err(unsupported(
+            format!(
+                "`{target}` is determined by more than one initial owner; an \
+                 initialization-determined coordinate has exactly one determining owner"
+            ),
+            span,
+        ));
+    }
+    Ok(())
+}
+
+/// The coordinate, or the element of a discrete array, an initial equation
+/// determines.
+enum InitialTargetRef<'flat> {
+    Whole(&'flat VarName),
+    Element(ElementTarget<'flat>),
 }
 
 fn initial_discrete_equation<'flat>(
     flat: &'flat flat::Model,
     residual: &'flat Expression,
     roles: &HashMap<VarName, PlannedRole>,
-) -> Result<Option<(&'flat VarName, &'flat Expression)>, ToDaeError> {
+) -> Result<Option<(InitialTargetRef<'flat>, &'flat Expression)>, ToDaeError> {
     let Expression::Binary {
         op: OpBinary::Sub,
         lhs,
@@ -113,8 +169,8 @@ fn initial_discrete_equation<'flat>(
         return Ok(None);
     };
     let definition = match (
-        initial_discrete_target(lhs, roles),
-        initial_discrete_target(rhs, roles),
+        initial_discrete_target(flat, lhs, roles),
+        initial_discrete_target(flat, rhs, roles),
     ) {
         (Some(target), None) => Some((target, rhs.as_ref())),
         (None, Some(target)) => Some((target, lhs.as_ref())),
@@ -176,9 +232,10 @@ fn has_only_initialization_settled_reads(
 }
 
 fn initial_discrete_target<'flat>(
+    flat: &flat::Model,
     expression: &'flat Expression,
     roles: &HashMap<VarName, PlannedRole>,
-) -> Option<&'flat VarName> {
+) -> Option<InitialTargetRef<'flat>> {
     let expression = match expression {
         Expression::BuiltinCall {
             function: BuiltinFunction::Pre,
@@ -193,15 +250,18 @@ fn initial_discrete_target<'flat>(
     else {
         return None;
     };
-    if !subscripts.is_empty()
-        || !matches!(
-            roles.get(name.var_name()),
-            Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-        )
-    {
+    let name = name.var_name();
+    if !matches!(
+        roles.get(name),
+        Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+    ) {
         return None;
     }
-    Some(name.var_name())
+    if subscripts.is_empty() {
+        return Some(InitialTargetRef::Whole(name));
+    }
+    let ordinal = element_ordinal(flat, name, subscripts)?;
+    Some(InitialTargetRef::Element(ElementTarget { name, ordinal }))
 }
 
 /// One discrete coordinate's initialization-instant value.

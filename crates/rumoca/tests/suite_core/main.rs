@@ -126,6 +126,7 @@ mod index_reduction_parameter_branch;
 mod indexed_function_constraint;
 mod initial_algorithm_test;
 mod initial_alias_domain;
+mod initial_discrete_array_definitions;
 mod initial_value_alias_transfer;
 mod initialization_ordering;
 mod initialization_parameter_scale;
