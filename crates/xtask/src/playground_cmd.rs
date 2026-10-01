@@ -39,8 +39,19 @@ pub(crate) fn run_playground_smoke_check(root: &Path) -> Result<()> {
     stage_playground_vendor_assets(root)?;
     check_playground_js_syntax(root)?;
     check_playground_expected_sources(root)?;
+    run_interactive_input_tests(root)?;
     run_results_picker_smoke(root)?;
     run_single_threaded_wasm_smoke(root)
+}
+
+/// Keyboard, gamepad, and touch input mapping of the interactive runtime.
+fn run_interactive_input_tests(root: &Path) -> Result<()> {
+    let mut cmd = Command::new("node");
+    cmd.arg("--test")
+        .arg("packages/rumoca-web/tests/interactive_input.test.mjs")
+        .arg("packages/rumoca-web/tests/touch_controls.test.mjs")
+        .current_dir(root);
+    run_status(cmd)
 }
 
 fn run_results_picker_smoke(root: &Path) -> Result<()> {
@@ -64,6 +75,7 @@ fn check_playground_js_syntax(root: &Path) -> Result<()> {
         "packages/rumoca-web/runtime/rumoca_worker.js",
         "packages/rumoca-web/runtime/rumoca_runtime.js",
         "packages/rumoca-web/runtime/rumoca_interactive.js",
+        "packages/rumoca-web/runtime/rumoca_touch_controls.js",
         "packages/rumoca-web/runtime/modelica_language.js",
         "packages/rumoca-web/runtime/parse_worker.js",
         "packages/rumoca-web/runtime/rumoca_gpu.js",

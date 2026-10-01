@@ -126,6 +126,7 @@ const runtimeFiles = [
   "rumoca_diffsol.js",
   "rumoca_galec.js",
   "rumoca_interactive.js",
+  "rumoca_touch_controls.js",
   "modelica_language.js",
   "rumoca_worker.js",
   "parse_worker.js",

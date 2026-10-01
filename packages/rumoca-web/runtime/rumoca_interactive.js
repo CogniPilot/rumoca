@@ -1,4 +1,9 @@
 import { ensureParsedSourceRootCache } from './rumoca_runtime.js';
+import {
+  createVirtualGamepad,
+  mountTouchControls,
+  scenarioUsesTouchControls,
+} from './rumoca_touch_controls.js';
 
 const GAMEPAD_AXES = {
   LeftStickX: { index: 0, sign: 1 },
@@ -273,7 +278,11 @@ function normalizedKeyboardKey(eventOrKey) {
   return typeof key === 'string' && key.length === 1 ? key.toLowerCase() : trimMaybeString(key);
 }
 
-export function createInputRuntime(config) {
+// `virtualGamepad` (optional) is the on-screen touch pad from
+// rumoca_touch_controls.js. A physical controller always takes precedence; the
+// touch pad is sampled only after the user touches it and stops overriding the
+// gamepad-bound locals as soon as a bound keyboard key is pressed.
+export function createInputRuntime(config, { virtualGamepad = null } = {}) {
   const locals = new Map();
   const keyboardBindings = {};
   for (const [key, binding] of sortedEntries(config?.input?.keyboard?.keys)) {
@@ -347,6 +356,7 @@ export function createInputRuntime(config) {
     if (!binding) {
       return false;
     }
+    virtualGamepad?.disengage();
     const wasPressed = pressedKeys.has(key);
     pressedKeys.add(key);
     const id = `key:${key}`;
@@ -378,8 +388,13 @@ export function createInputRuntime(config) {
     connectedGamepad = pads[0] || null;
     if (connectedGamepad) {
       lastMode = 'gamepad';
+      return connectedGamepad;
     }
-    return connectedGamepad;
+    if (virtualGamepad?.engaged) {
+      lastMode = 'touch';
+      return virtualGamepad.sample();
+    }
+    return null;
   }
 
   function update(dt) {
@@ -1458,7 +1473,7 @@ class InteractiveControls {
     if (!this.inputCaptureActive) {
       return;
     }
-    if (event.target?.closest?.('.rumoca-interactive-controls')) {
+    if (event.target?.closest?.('.rumoca-interactive-controls, .rumoca-touch-controls')) {
       return;
     }
     this.updatePointerFromEvent(event);
@@ -1491,7 +1506,7 @@ class InteractiveControls {
   }
 
   capturePointerDown(event) {
-    if (event.target?.closest?.('.rumoca-interactive-controls')) {
+    if (event.target?.closest?.('.rumoca-interactive-controls, .rumoca-touch-controls')) {
       return;
     }
     if (this.container.contains(event.target)) {
@@ -1610,6 +1625,9 @@ class InteractiveControls {
     this.updateFullscreenUi();
     this.updateRunStateUi('Ready', 'ready');
     this.container.appendChild(this.controls);
+    this.touchControls = this.virtualGamepad
+      ? mountTouchControls({ container: this.container, config: this.config, gamepad: this.virtualGamepad })
+      : null;
     this.container.tabIndex = 0;
     this.viewer.canvas.tabIndex = -1;
     this.registerListeners('addEventListener');
@@ -1643,6 +1661,7 @@ class InteractiveControls {
   dispose() {
     this.registerListeners('removeEventListener');
     this.releasePointerCapture();
+    this.touchControls?.dispose();
   }
 }
 
@@ -1656,7 +1675,8 @@ export async function createInteractiveSimulation(options) {
     onStatus = () => {},
     onError = () => {},
   } = options || {};
-  const input = createInputRuntime(config);
+  const virtualGamepad = scenarioUsesTouchControls(config) ? createVirtualGamepad() : null;
+  const input = createInputRuntime(config, { virtualGamepad });
   const session = await createInteractiveSession(options || {}, input, onStatus);
   const viewerSignals = new Map();
   const pointer = createPointerState();
@@ -1693,6 +1713,7 @@ export async function createInteractiveSimulation(options) {
     pointer,
     container,
     controller,
+    virtualGamepad,
     onStatus,
   });
 
