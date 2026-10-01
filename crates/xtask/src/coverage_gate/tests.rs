@@ -71,6 +71,19 @@ fn added_lines_come_from_new_side_hunks_only() {
         "an added exemption is located by its new-side line; a deleted one is not listed"
     );
     assert_eq!(parse_changed_code(""), ChangedCode::default());
+    // Mentions in documentation, string literals, and fixture text are not
+    // the attribute; only a line that starts with it is.
+    let mentions = "diff --git a/x b/x\n+++ b/crates/alpha/src/lib.rs\n@@ -0,0 +1,6 @@\n\
+        +/// The exemption, `#[cfg_attr(coverage_nightly, coverage(off))]`.\n\
+        +const MARKER: &str = \"coverage(off)\";\n\
+        ++#[cfg_attr(coverage_nightly, coverage(off))]\n\
+        +    let text = \"#[cfg_attr(coverage_nightly, coverage(off))]\";\n\
+        +    #[cfg_attr( coverage_nightly , coverage(off) )]\n\
+        +#![cfg_attr(coverage_nightly, feature(coverage_attribute))]\n";
+    assert_eq!(
+        parse_changed_code(mentions).exemptions,
+        ["crates/alpha/src/lib.rs:5"]
+    );
     assert_eq!(added_range("-1,2 +7,0 @@"), None);
     assert_eq!(
         added_range("-1,2 +0,0 @@"),

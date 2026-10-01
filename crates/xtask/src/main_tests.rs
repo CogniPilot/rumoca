@@ -3,6 +3,7 @@ use super::{
     RepoCompletionsCommand, RepoGraphCommand, RepoHooksCommand, RepoPolicyCommand,
     RepoUbuntuCommand, VscodeCommand, WebCommand, classify_candidate,
     docs_wasm_package_is_up_to_date, is_line_count_excluded_rust_file, rust_target_is_installed,
+    uncovered_functions,
 };
 use crate::docs_cmd::{DocsBook, DocsCommand};
 use crate::modelica_dependency_cache::{CmmCommand, ModelicaDepsCommand};
@@ -1106,4 +1107,61 @@ fn coverage_attribution_matches_the_longest_package_prefix_first() {
         "crates/rumoca/src/main.rs",
         "Windows separators normalize so prefixes compare on one spelling"
     );
+}
+
+fn cov_function(name: &str, line: u64, count: u64) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "count": count,
+        "filenames": ["/repo/crates/alpha/src/lib.rs"],
+        "regions": [[line, 1, line + 2, 2, count, 0, 0, 0]],
+    })
+}
+
+/// A generic function's never-run `::<_>` copy is covered by any executed
+/// instantiation at the same start line; an all-zero group is one candidate.
+#[test]
+fn uncovered_functions_group_generic_copies_and_count_an_all_zero_group_once() {
+    let functions = [
+        cov_function("alpha::broadcast::<_>", 10, 0),
+        cov_function("alpha::broadcast::<f64>", 10, 3),
+        cov_function("alpha::never::<_>", 20, 0),
+        cov_function("alpha::never::<_>", 20, 0),
+        cov_function("alpha::never::<u8>", 20, 0),
+        cov_function("<alpha::Thing<_>>::method", 30, 0),
+        cov_function("<alpha::Thing<i32>>::method", 30, 1),
+        cov_function("alpha::same_name", 40, 0),
+        cov_function("alpha::same_name", 41, 5),
+        serde_json::json!({"count": 0}),
+    ];
+    let uncovered = uncovered_functions(&functions)
+        .into_iter()
+        .map(|function| function.get("name").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        uncovered,
+        [Some("alpha::never::<_>"), Some("alpha::same_name"), None],
+        "an executed instantiation covers its group; distinct start lines stay distinct"
+    );
+    assert_eq!(
+        crate::coverage_analysis::cov_function_start_line(&serde_json::json!({})),
+        0
+    );
+}
+
+#[test]
+fn generic_argument_lists_are_stripped_but_qualified_paths_are_kept() {
+    use crate::coverage_analysis::strip_generic_args;
+    assert_eq!(strip_generic_args("a::f::<_>"), "a::f");
+    assert_eq!(strip_generic_args("a::f::<_, _>"), "a::f");
+    assert_eq!(
+        strip_generic_args("a::f::<Vec<f64>>::{closure#0}"),
+        "a::f::{closure#0}"
+    );
+    assert_eq!(
+        strip_generic_args("<a::Foo<T> as a::Tr<U>>::m"),
+        "<a::Foo as a::Tr>::m"
+    );
+    assert_eq!(strip_generic_args("a::g::<fn() -> u8>"), "a::g");
+    assert_eq!(strip_generic_args("<a::Thing>::m"), "<a::Thing>::m");
 }

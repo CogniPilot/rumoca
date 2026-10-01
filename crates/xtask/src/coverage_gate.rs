@@ -5,7 +5,7 @@
 //! in a hunk that `git diff -U0 <base>...HEAD` adds) must execute at least once
 //! under the workspace tests; closures are exempt, since an error path's
 //! `.with_context(|| ...)` is a closure only a failure runs, and so are
-//! functions carrying the one reviewed exemption (see `EXEMPTION_MARKER`),
+//! functions carrying the one reviewed exemption (see `EXEMPTION_ATTRIBUTE`),
 //! which the report lists for the reviewer. And workspace line
 //! coverage may not drop more than the allowed margin below the committed
 //! baseline. The per-package zero-execution counts are reported for
@@ -87,10 +87,21 @@ struct ZeroExecutionFunction {
 /// `(first, last)` ranges.
 type AddedLines = BTreeMap<String, Vec<(u64, u64)>>;
 
-/// The one coverage exemption, `#[cfg_attr(coverage_nightly, coverage(off))]`
-/// (SPEC_0025 §4): an exempt function has no coverage record, so the gate
-/// never sees it, and the report lists every exemption a change adds.
-const EXEMPTION_MARKER: &str = "coverage(off)";
+/// The one coverage exemption attribute (SPEC_0025 §4), whitespace removed:
+/// an exempt function has no coverage record, so the gate never sees it, and
+/// the report lists every exemption a change adds.
+const EXEMPTION_ATTRIBUTE: &str = "#[cfg_attr(coverage_nightly,coverage(off))]";
+
+/// Whether an added source line is the exemption attribute itself. Only a
+/// line that starts with the attribute counts, so a mention in a comment, a
+/// string literal, or a test fixture's text is never one.
+fn is_exemption_attribute(text: &str) -> bool {
+    let compact = text
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    compact.starts_with(EXEMPTION_ATTRIBUTE)
+}
 
 pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
     let candidates_path = resolve_path(
@@ -230,7 +241,7 @@ fn parse_changed_code(diff: &str) -> ChangedCode {
                 next_line = range.0;
             }
         } else if let (Some(file), Some(text)) = (&file, line.strip_prefix('+')) {
-            if text.contains(EXEMPTION_MARKER) {
+            if is_exemption_attribute(text) {
                 change.exemptions.push(format!("{file}:{next_line}"));
             }
             next_line += 1;

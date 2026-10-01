@@ -256,10 +256,14 @@ pub(super) fn demangle_cov_function_name(name: &str) -> String {
 }
 
 /// The build-graph-independent identity of one instrumented function: its
-/// demangled name (the crate-disambiguator hash stripped) plus its source
-/// files. Twin copies of one function linked into different test binaries
-/// share this identity.
-pub(super) fn cov_function_identity(function: &serde_json::Value) -> Option<(String, String)> {
+/// demangled name with the crate-disambiguator hash and every generic
+/// argument list stripped, its source files, and its start line. Twin copies
+/// of one function linked into different test binaries share this identity,
+/// and so do a generic function's instantiations and the never-run `::<_>`
+/// copy llvm-cov emits for it.
+pub(super) fn cov_function_identity(
+    function: &serde_json::Value,
+) -> Option<(String, String, usize)> {
     let name = function.get("name").and_then(serde_json::Value::as_str)?;
     let files = function
         .get("filenames")
@@ -268,7 +272,60 @@ pub(super) fn cov_function_identity(function: &serde_json::Value) -> Option<(Str
         .filter_map(serde_json::Value::as_str)
         .collect::<Vec<_>>()
         .join(";");
-    Some((demangle_cov_function_name(name), files))
+    Some((
+        strip_generic_args(&demangle_cov_function_name(name)),
+        files,
+        cov_function_start_line(function),
+    ))
+}
+
+/// The first line of a function's first coverage region, or 0 when absent.
+pub(super) fn cov_function_start_line(function: &serde_json::Value) -> usize {
+    function
+        .get("regions")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|regions| regions.first())
+        .and_then(serde_json::Value::as_array)
+        .and_then(|region| region.first())
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|line| usize::try_from(line).ok())
+        .unwrap_or(0)
+}
+
+/// `name` with every generic argument list removed: `f::<f64>` and `f::<_>`
+/// both read `f`, and `<Foo<T> as Tr<U>>::m` reads `<Foo as Tr>::m`. A `<`
+/// that opens a qualified path (not following an identifier or `::`) is kept,
+/// and the `>` of a `->` never closes a list.
+pub(super) fn strip_generic_args(name: &str) -> String {
+    let mut stripped = String::with_capacity(name.len());
+    let mut depth = 0usize;
+    let mut previous = ' ';
+    for ch in name.chars() {
+        if depth > 0 {
+            match ch {
+                '<' => depth += 1,
+                '>' if previous != '-' => depth -= 1,
+                _ => {}
+            }
+        } else if ch == '<' && opens_generic_args(&stripped) {
+            depth = 1;
+            if let Some(path) = stripped.strip_suffix("::") {
+                stripped.truncate(path.len());
+            }
+        } else {
+            stripped.push(ch);
+        }
+        previous = ch;
+    }
+    stripped
+}
+
+fn opens_generic_args(prefix: &str) -> bool {
+    prefix.ends_with("::")
+        || prefix
+            .chars()
+            .last()
+            .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
 }
 
 pub(super) fn extract_symbol_name(name: &str) -> Option<String> {

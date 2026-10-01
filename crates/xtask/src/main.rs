@@ -29,8 +29,9 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use completion_cmd::CompletionsArgs;
 use coverage_analysis::{
     CallsiteIndex, build_workspace_callsite_index, count_callsites_same_file,
-    cov_function_identity, demangle_cov_function_name, extract_symbol_name, is_opaque_symbol_name,
-    owner_decision_for_label, package_for_filename, relativize_path, render_coverage_trim_report,
+    cov_function_identity, cov_function_start_line, demangle_cov_function_name,
+    extract_symbol_name, is_opaque_symbol_name, owner_decision_for_label, package_for_filename,
+    relativize_path, render_coverage_trim_report,
 };
 use coverage_gate::CoverageGateArgs;
 use crate_dag_cmd::CrateDagArgs;
@@ -1262,47 +1263,9 @@ fn zero_count_candidates_by_package(
         .and_then(serde_json::Value::as_array)
         .context("full JSON missing data[0].functions")?;
 
-    // Each library function is instrumented once per binary that links it
-    // (the lib copy and the crate's own test harness at least), and the
-    // profile keeps the copies as separate entries whose mangled names differ
-    // only in the crate-disambiguator hash. A function exercised by only one
-    // kind of suite therefore leaves a zero-count twin, which is a property
-    // of the build graph, not of test coverage. Count a function as
-    // uncovered only when EVERY copy of its demangled identity is zero.
-    let covered_identities: HashSet<(String, String)> = functions
-        .iter()
-        .filter(|function| {
-            function
-                .get("count")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0)
-                != 0
-        })
-        .filter_map(cov_function_identity)
-        .collect();
-
     let mut zero_totals_by_package: ZeroCoverageTotalsByPackage = HashMap::new();
     let mut candidates_by_package: CandidateListsByPackage = HashMap::new();
-    let mut counted_zero_identities: HashSet<(String, String)> = HashSet::new();
-    for function in functions {
-        if function
-            .get("count")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0)
-            != 0
-        {
-            continue;
-        }
-        if let Some(identity) = cov_function_identity(function) {
-            if covered_identities.contains(&identity) {
-                continue;
-            }
-            // Both copies of a genuinely uncovered function are zero; count
-            // the identity once, not once per linked binary.
-            if !counted_zero_identities.insert(identity) {
-                continue;
-            }
-        }
+    for function in uncovered_functions(functions) {
         let Some((package_name, candidate)) = zero_count_candidate_for_function(
             root,
             package_infos,
@@ -1325,6 +1288,38 @@ fn zero_count_candidates_by_package(
     Ok((zero_totals_by_package, candidates_by_package))
 }
 
+/// One entry per function no copy of which executed. Each library function is
+/// instrumented once per binary that links it (the lib copy and the crate's
+/// own test harness at least), and a generic function once per instantiation
+/// plus a never-run `::<_>` copy; the copies differ only in hash and generic
+/// arguments. A function counts as uncovered only when EVERY copy sharing its
+/// `cov_function_identity` is zero, and then once.
+fn uncovered_functions(functions: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    let executed = |function: &serde_json::Value| {
+        function
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            != 0
+    };
+    let covered_identities: HashSet<_> = functions
+        .iter()
+        .filter(|function| executed(function))
+        .filter_map(cov_function_identity)
+        .collect();
+    let mut counted_zero_identities = HashSet::new();
+    functions
+        .iter()
+        .filter(|function| !executed(function))
+        .filter(|function| match cov_function_identity(function) {
+            Some(identity) => {
+                !covered_identities.contains(&identity) && counted_zero_identities.insert(identity)
+            }
+            None => true,
+        })
+        .collect()
+}
+
 fn zero_count_candidate_for_function(
     root: &Path,
     package_infos: &[WorkspacePackageInfo],
@@ -1341,14 +1336,7 @@ fn zero_count_candidate_for_function(
         .filter_map(serde_json::Value::as_str)
         .find(|filename| package_for_filename(root, package_infos, filename).is_some())?;
     let package = package_for_filename(root, package_infos, file)?;
-    let line = function
-        .get("regions")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|regions| regions.first())
-        .and_then(serde_json::Value::as_array)
-        .and_then(|region| region.first())
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as usize;
+    let line = cov_function_start_line(function);
     let raw_function = function
         .get("name")
         .and_then(serde_json::Value::as_str)
