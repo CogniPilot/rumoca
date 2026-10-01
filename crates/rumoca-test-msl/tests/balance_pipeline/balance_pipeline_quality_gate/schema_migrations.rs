@@ -18,11 +18,11 @@ pub(super) fn quality_gate_v3_metric_schema_migration() -> MslMetricSchemaMigrat
 }
 
 pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    let mut migration = v7_reference_boundary_migration();
+    let mut migration = v8_reference_boundary_migration();
     migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 7;
-    migration.metric.to_quality_gate_version = 8;
-    migration.metric.change = "typed-trace-exceptions-v1".to_string();
+    migration.metric.from_quality_gate_version = 8;
+    migration.metric.to_quality_gate_version = 9;
+    migration.metric.change = "typed-trace-exceptions-v2".to_string();
     migration.metric.strict_high_before = 231;
     migration.metric.strict_high_after = 231;
     migration.metric.policy_excluded_after = 36;
@@ -30,6 +30,26 @@ pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMig
     migration.metric.excluded_non_high_before = 0;
     migration.metric.exclusions_sha256 =
         "69d6b7259debe61e12fb9a8d3b0003115c496d4ec0f4a84ae8de5a8f9f7dcc49".to_string();
+    migration.evidence_git_commit = "b4c670b55cc228fc1db13307b7252e8ba15c80f2".to_string();
+    migration.evidence_run = "reviewed-reference-failure-rows-full".to_string();
+    migration.policy_excluded_before = 33;
+    migration.roster_additions = Vec::new();
+    migration
+}
+
+pub(super) fn v8_reference_boundary_migration() -> MslReferenceBoundaryMigration {
+    let mut migration = v7_reference_boundary_migration();
+    migration.previous = Some(Box::new(migration.clone()));
+    migration.metric.from_quality_gate_version = 7;
+    migration.metric.to_quality_gate_version = 8;
+    migration.metric.change = "typed-trace-exceptions-v1".to_string();
+    migration.metric.strict_high_before = 231;
+    migration.metric.strict_high_after = 231;
+    migration.metric.policy_excluded_after = 33;
+    migration.metric.excluded_strict_high_before = 0;
+    migration.metric.excluded_non_high_before = 0;
+    migration.metric.exclusions_sha256 =
+        "d8ddb25c1169b72c35c89f77eed12e0b5ae9de8ef4ace0ec998ecdbcb0ec9da0".to_string();
     migration.evidence_git_commit = "70fa6612a34b7e6b454672e448a747d6e4bdd440".to_string();
     migration.evidence_run = "typed-trace-exceptions-full".to_string();
     migration.policy_excluded_before = 23;

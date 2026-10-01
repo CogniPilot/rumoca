@@ -12,11 +12,11 @@ pub(super) struct ReferenceBoundaryMigration {
 }
 
 fn reviewed_migration() -> ReferenceBoundaryMigration {
-    let mut migration = v7_migration();
+    let mut migration = v8_migration();
     migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 7;
-    migration.metric.to_quality_gate_version = 8;
-    migration.metric.change = "typed-trace-exceptions-v1".to_string();
+    migration.metric.from_quality_gate_version = 8;
+    migration.metric.to_quality_gate_version = 9;
+    migration.metric.change = "typed-trace-exceptions-v2".to_string();
     migration.metric.strict_high_before = 231;
     migration.metric.strict_high_after = 231;
     migration.metric.policy_excluded_after = 36;
@@ -24,6 +24,25 @@ fn reviewed_migration() -> ReferenceBoundaryMigration {
     migration.metric.excluded_non_high_before = 0;
     migration.metric.exclusions_sha256 =
         "69d6b7259debe61e12fb9a8d3b0003115c496d4ec0f4a84ae8de5a8f9f7dcc49".to_string();
+    migration.evidence_git_commit = "b4c670b55cc228fc1db13307b7252e8ba15c80f2".to_string();
+    migration.evidence_run = "reviewed-reference-failure-rows-full".to_string();
+    migration.policy_excluded_before = 33;
+    migration
+}
+
+fn v8_migration() -> ReferenceBoundaryMigration {
+    let mut migration = v7_migration();
+    migration.previous = Some(Box::new(migration.clone()));
+    migration.metric.from_quality_gate_version = 7;
+    migration.metric.to_quality_gate_version = 8;
+    migration.metric.change = "typed-trace-exceptions-v1".to_string();
+    migration.metric.strict_high_before = 231;
+    migration.metric.strict_high_after = 231;
+    migration.metric.policy_excluded_after = 33;
+    migration.metric.excluded_strict_high_before = 0;
+    migration.metric.excluded_non_high_before = 0;
+    migration.metric.exclusions_sha256 =
+        "d8ddb25c1169b72c35c89f77eed12e0b5ae9de8ef4ace0ec998ecdbcb0ec9da0".to_string();
     migration.evidence_git_commit = "70fa6612a34b7e6b454672e448a747d6e4bdd440".to_string();
     migration.evidence_run = "typed-trace-exceptions-full".to_string();
     migration.policy_excluded_before = 23;
@@ -94,7 +113,7 @@ pub(super) fn validate_reference_boundary_migration(
 ) -> Result<()> {
     let expected = match baseline.quality_gate_version {
         MSL_QUALITY_GATE_VERSION => Some(reviewed_migration()),
-        PREVIOUS_REFERENCE_BOUNDARY_VERSION => Some(v7_migration()),
+        PREVIOUS_REFERENCE_BOUNDARY_VERSION => Some(v8_migration()),
         _ => None,
     };
     ensure!(
@@ -158,7 +177,7 @@ mod tests {
     #[test]
     fn reference_boundary_migration_preserves_all_existing_ratchets() {
         let checked = checked_baseline();
-        for version in [4, 7] {
+        for version in [4, 8] {
             preserves_ratchets_from(&checked, version);
         }
     }
@@ -166,7 +185,7 @@ mod tests {
     fn preserves_ratchets_from(checked: &MslQualityBaselineHeader, version: u64) {
         let mut promoted = checked.clone();
         promoted.quality_gate_version = version;
-        promoted.reference_boundary_migration = (version == 7).then(v7_migration);
+        promoted.reference_boundary_migration = (version == 8).then(v8_migration);
         assert_eq!(
             choose_baseline(&promoted, checked).unwrap(),
             BaselineChoice::CheckedInMigration
@@ -212,6 +231,7 @@ mod tests {
         assert!(schema_target_reaches_current(5, &baseline));
         assert!(schema_target_reaches_current(6, &baseline));
         assert!(schema_target_reaches_current(7, &baseline));
+        assert!(schema_target_reaches_current(8, &baseline));
         assert!(!schema_target_reaches_current(3, &baseline));
         let migration = baseline.reference_boundary_migration.as_mut().unwrap();
         migration
@@ -219,7 +239,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .metric
-            .to_quality_gate_version = 8;
+            .to_quality_gate_version = 9;
         assert!(!schema_target_reaches_current(4, &baseline));
         assert!(validate_reference_boundary_migration(&baseline).is_err());
     }

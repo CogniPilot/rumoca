@@ -1728,11 +1728,11 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
         reference.metric.strict_high_after
     );
     // The typed-exception boundary types every reviewed row and removes none;
-    // it adds the ten reviewed Clocked, Electrical, and Magnetic rows, the
-    // ComparisonPullInStroke stopper loss-power row, and the SignalGenerator
-    // and SMEE_Generator reference-failure rows.
+    // the v9 boundary adds the ComparisonPullInStroke stopper loss-power row
+    // and the SignalGenerator and SMEE_Generator reference-failure rows to the
+    // promoted v8 file.
     assert_eq!(
-        reference.policy_excluded_before + 13,
+        reference.policy_excluded_before + 3,
         reference.metric.policy_excluded_after
     );
     assert_eq!(reference.metric.excluded_strict_high_before, 0);
@@ -1889,15 +1889,20 @@ fn quality_context_rejects_baseline_partial_roster_drift() {
 }
 
 /// A roster addition must name its defect and be in the roster it adds to;
-/// the checked baseline's LogicalSample addition is reviewed (SPEC_0050).
+/// the v8 boundary's LogicalSample addition is reviewed and the v9 boundary
+/// adds none (SPEC_0050).
 #[test]
 fn roster_additions_name_their_defect_and_join_the_roster() {
     let baseline =
         load_msl_quality_baseline(&msl_quality_baseline_path()).expect("load checked baseline");
     assert!(validate_unexcepted_non_high_roster(&baseline).is_ok());
+    let head = baseline
+        .reference_boundary_migration
+        .as_ref()
+        .expect("checked v9 boundary");
+    assert!(head.roster_additions.is_empty());
     assert_eq!(
-        baseline
-            .reference_boundary_migration
+        head.previous
             .as_ref()
             .map(|migration| migration.roster_additions.clone()),
         Some(vec![schema_migrations::logical_sample_roster_addition()])
@@ -1907,12 +1912,17 @@ fn roster_additions_name_their_defect_and_join_the_roster() {
     unnamed
         .reference_boundary_migration
         .as_mut()
+        .and_then(|migration| migration.previous.as_mut())
         .unwrap()
         .roster_additions[0]
         .cause = " ".to_string();
     assert!(validate_unexcepted_non_high_roster(&unnamed).is_err());
 
+    // Under the boundary that adds it, LogicalSample must be in the roster.
     let mut outside = baseline;
+    outside.reference_boundary_migration = outside
+        .reference_boundary_migration
+        .and_then(|migration| migration.previous.map(|previous| *previous));
     outside
         .unexcepted_non_high_models
         .shift_remove("Modelica.Clocked.Examples.Elementary.ClockSignals.LogicalSample");

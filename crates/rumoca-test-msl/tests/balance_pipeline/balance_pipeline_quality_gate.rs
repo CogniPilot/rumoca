@@ -81,7 +81,7 @@ pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
 /// boundary without changing any baseline floor. Earlier reference-convergence
 /// and conditioned-observable boundaries and version 4's source-static partial
 /// roster remain pinned.
-pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 8;
+pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 9;
 pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
 pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
