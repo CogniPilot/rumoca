@@ -453,10 +453,16 @@ fn constructor_class_for_call<'a>(
     // exact *target* segment. `root_def_id` is the first segment, which for a
     // dotted constructor such as `P.Concrete.Element(...)` identifies the
     // enclosing package rather than the record (MLS §5.3, §12.6).
+    //
+    // Only a record class has a constructor (MLS §12.6). A call of a function
+    // that returns a record is not one: its inputs are not record fields, and
+    // projecting its arguments by field name or position would replace the
+    // function's result by its inputs.
     comp.target_def_id()
         .and_then(|def_id| tree.get_class_by_def_id(def_id))
         .or_else(|| find_class_in_tree(tree, &comp.to_string()))
         .or_else(|| resolve_scoped_constructor_class(tree, comp, binding_source_scope))
+        .filter(|class| class.class_type == rumoca_core::ClassType::Record)
 }
 
 fn resolve_scoped_constructor_class<'a>(

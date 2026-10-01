@@ -189,6 +189,7 @@ mod zero_size_function_values;
 mod noncommutative_product_derivatives;
 mod record_array_member_slice_test;
 mod record_connector_equation_test;
+mod record_function_binding;
 mod record_output_dependencies;
 mod reverse_vjp_test;
 mod runtime_index_derivative;
