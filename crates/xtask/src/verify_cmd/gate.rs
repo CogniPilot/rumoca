@@ -29,6 +29,11 @@ const COVERAGE_LOCK: &str = "/tmp/rumoca-coverage.lock";
 /// The snapshot-relative directory the coverage steps write their reports to.
 const COVERAGE_OUTPUT_DIR: &str = "target/llvm-cov";
 
+/// The snapshot-relative `git diff -U0` of the revision against its merge base
+/// with upstream `main`: the change whose new functions the coverage gate
+/// judges, written before the steps run since a snapshot has no history.
+const CHANGED_CODE_DIFF: &str = "target/llvm-cov/changed-code.diff";
+
 /// Template targets whose Python packages a local shell need not provide;
 /// their failures are reported but do not fail the gate.
 const OPTIONAL_TEMPLATE_TARGETS: [&str; 2] = ["casadi", "jax"];
@@ -41,7 +46,7 @@ pub(crate) struct VerifyGateArgs {
     /// Worktree whose committed `HEAD` is snapshotted
     #[arg(long)]
     pub(crate) worktree: Option<PathBuf>,
-    /// Also run the coverage trim gate with CI's flags (about an hour)
+    /// Also run the coverage run, report, and gate as CI does (about an hour)
     #[arg(long)]
     pub(crate) coverage: bool,
     /// Crates whose rustdoc runs (default: crates changed relative to upstream
@@ -202,15 +207,8 @@ fn coverage_steps() -> Vec<GateStep> {
                 "--",
                 "coverage",
                 "gate",
-                "--enforce-trim-regressions",
-                "--allowed-zero-count-growth",
-                "2",
-                "--allowed-dead-likely-growth",
-                "2",
-                "--allowed-total-candidate-growth",
-                "2",
-                "--allowed-needs-targeted-test-growth",
-                "2",
+                "--changed-diff",
+                CHANGED_CODE_DIFF,
             ],
         ),
     ];
@@ -274,11 +272,13 @@ pub(crate) fn run(root: &Path, args: &VerifyGateArgs) -> Result<()> {
     let log_path = base.join("gate.log");
     extract_snapshot(&repo, &rev, &snapshot)?;
     link_shared_caches(root, &snapshot)?;
+    let main = upstream_main(&repo, UPSTREAM);
     if args.coverage {
         create_coverage_output(&snapshot)?;
+        write_changed_code_diff(&repo, &main, &rev, &snapshot)?;
     }
     let packages = if args.crates.is_empty() {
-        changed_packages(&repo, &upstream_main(&repo, UPSTREAM), &rev, &snapshot)
+        changed_packages(&repo, &main, &rev, &snapshot)
     } else {
         args.crates.clone()
     };
@@ -370,6 +370,21 @@ pub(crate) fn link_shared_caches(root: &Path, snapshot: &Path) -> Result<()> {
 pub(crate) fn create_coverage_output(snapshot: &Path) -> Result<()> {
     let output = snapshot.join(COVERAGE_OUTPUT_DIR);
     fs::create_dir_all(&output).context(format!("create {}", output.display()))
+}
+
+/// Write the change `rev` makes since its merge base with `main` into the
+/// snapshot, where the coverage gate reads it.
+pub(crate) fn write_changed_code_diff(
+    repo: &Path,
+    main: &str,
+    rev: &str,
+    snapshot: &Path,
+) -> Result<()> {
+    let diff = crate::coverage_gate::changed_code_diff(repo, main, rev).context(format!(
+        "diff {rev} against upstream main {main}; fetch main first"
+    ))?;
+    let path = snapshot.join(CHANGED_CODE_DIFF);
+    fs::write(&path, diff).context(format!("write {}", path.display()))
 }
 
 #[cfg(unix)]

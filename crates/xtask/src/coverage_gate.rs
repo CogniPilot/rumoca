@@ -1,3 +1,15 @@
+//! `cargo xtask coverage gate`: the coverage checks CI enforces after
+//! `coverage report`.
+//!
+//! Two checks fail the gate. Every function a change adds (its first line lies
+//! in a hunk that `git diff -U0 <base>...HEAD` adds) must execute at least once
+//! under the workspace tests; closures are exempt, since an error path's
+//! `.with_context(|| ...)` is a closure only a failure runs. And workspace line
+//! coverage may not drop more than the allowed margin below the committed
+//! baseline. The per-package zero-execution counts are reported for
+//! information only: they drift between runs and say nothing about the change
+//! under review.
+
 use anyhow::{Context, Result, bail, ensure};
 use clap::Args as ClapArgs;
 use serde::{Deserialize, Serialize};
@@ -5,97 +17,73 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const DEFAULT_BASELINE_FILE_REL: &str = "crates/xtask/coverage/trim-gate-baseline.json";
 const DEFAULT_CANDIDATES_FILE_REL: &str = "target/llvm-cov/trim-candidates.json";
-const DEFAULT_DIFF_FILE_REL: &str = "target/llvm-cov/coverage-gate.md";
+const DEFAULT_REPORT_FILE_REL: &str = "target/llvm-cov/coverage-gate.md";
 const DEFAULT_SUMMARY_FILE_NAME: &str = "workspace-summary.json";
 const GENERATED_BY: &str = "cargo xtask coverage gate";
 
 #[derive(Debug, Clone, ClapArgs)]
 pub(crate) struct CoverageGateArgs {
-    /// Optional current trim-candidates JSON (default: target/llvm-cov/trim-candidates.json)
+    /// Trim candidates JSON from `coverage report` (default: target/llvm-cov/trim-candidates.json)
     #[arg(long)]
     candidates_file: Option<PathBuf>,
-    /// Optional committed baseline JSON (default: crates/xtask/coverage/trim-gate-baseline.json)
+    /// Committed line-coverage baseline (default: crates/xtask/coverage/trim-gate-baseline.json)
     #[arg(long)]
     baseline_file: Option<PathBuf>,
-    /// Optional markdown diff output path (default: target/llvm-cov/coverage-gate.md)
+    /// Markdown report output path (default: target/llvm-cov/coverage-gate.md)
     #[arg(long)]
-    diff_file: Option<PathBuf>,
-    /// Enforce trim candidate regressions as hard failures.
-    #[arg(long, default_value_t = false)]
-    enforce_trim_regressions: bool,
+    report_file: Option<PathBuf>,
+    /// Base revision of the change: every function `git diff <rev>...HEAD` adds must execute.
+    #[arg(
+        long,
+        conflicts_with = "changed_diff",
+        required_unless_present_any = ["changed_diff", "promote_baseline"]
+    )]
+    changed_since: Option<String>,
+    /// A `git diff -U0` of the change, for a tree without history (a `verify gate` snapshot).
+    #[arg(long)]
+    changed_diff: Option<PathBuf>,
     /// Allowed drop in workspace line coverage percentage from baseline.
     #[arg(long, default_value_t = 0.25)]
     allowed_workspace_line_coverage_drop: f64,
-    /// Restrict gate to selected package(s). If omitted, baseline package set is used.
-    #[arg(long = "package", short = 'p')]
-    packages: Vec<String>,
-    /// Allowed growth for zero-count function totals per package.
-    #[arg(long, default_value_t = 0)]
-    allowed_zero_count_growth: usize,
-    /// Allowed growth for dead_likely candidate totals per package.
-    #[arg(long, default_value_t = 0)]
-    allowed_dead_likely_growth: usize,
-    /// Allowed growth for total candidate totals per package.
-    #[arg(long, default_value_t = 0)]
-    allowed_total_candidate_growth: usize,
-    /// Allowed growth for needs_targeted_test candidate totals per package.
-    #[arg(long, default_value_t = 0)]
-    allowed_needs_targeted_test_growth: usize,
-    /// Promote current metrics to baseline instead of enforcing the gate.
-    #[arg(long, default_value_t = false)]
+    /// Write the current workspace line coverage to the baseline instead of gating.
+    #[arg(long, conflicts_with_all = ["changed_since", "changed_diff"])]
     promote_baseline: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct PackageGateMetrics {
-    zero_count_functions_total: usize,
-    candidates_total: usize,
-    dead_likely_candidates: usize,
-    needs_targeted_test_candidates: usize,
-}
-
+/// The committed workspace line-coverage bar.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct CoverageTrimGateBaseline {
+struct LineCoverageBaseline {
     generated_by: String,
     generated_at_unix_secs: u64,
     source_candidates_file: String,
-    #[serde(default)]
-    workspace_line_coverage_percent: Option<f64>,
-    #[serde(default)]
-    workspace_lines_covered: Option<u64>,
-    #[serde(default)]
-    workspace_lines_total: Option<u64>,
-    packages: BTreeMap<String, PackageGateMetrics>,
+    workspace_line_coverage_percent: f64,
+    workspace_lines_covered: u64,
+    workspace_lines_total: u64,
 }
 
-#[derive(Debug, Clone)]
-struct GateComparison {
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WorkspaceLineCoverage {
+    percent: f64,
+    covered: u64,
+    total: u64,
+}
+
+/// One function the workspace tests never execute, from the trim candidates.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ZeroExecutionFunction {
+    file: String,
+    line: u64,
+    name: String,
     package: String,
-    baseline: PackageGateMetrics,
-    current: PackageGateMetrics,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum MetricKind {
-    ZeroCountFunctionsTotal,
-    CandidatesTotal,
-    DeadLikelyCandidates,
-    NeedsTargetedTestCandidates,
-}
-
-impl MetricKind {
-    fn label(self) -> &'static str {
-        match self {
-            Self::ZeroCountFunctionsTotal => "zero_count_functions_total",
-            Self::CandidatesTotal => "candidates_total",
-            Self::DeadLikelyCandidates => "dead_likely_candidates",
-            Self::NeedsTargetedTestCandidates => "needs_targeted_test_candidates",
-        }
-    }
-}
+/// The lines a change adds, per repository-relative file, as inclusive
+/// `(first, last)` ranges.
+type AddedLines = BTreeMap<String, Vec<(u64, u64)>>;
 
 pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
     let candidates_path = resolve_path(
@@ -109,66 +97,48 @@ pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
         candidates_path.display()
     );
     let baseline_path = resolve_path(root, args.baseline_file.as_ref(), DEFAULT_BASELINE_FILE_REL);
-    let diff_path = resolve_path(root, args.diff_file.as_ref(), DEFAULT_DIFF_FILE_REL);
-
-    let current_metrics = load_current_metrics(&candidates_path)?;
-    let package_filter = selected_packages(&args.packages, None, &current_metrics);
+    let current_workspace = load_workspace_line_coverage(&candidates_path);
 
     if args.promote_baseline {
-        promote_baseline(
-            &baseline_path,
-            &candidates_path,
-            &current_metrics,
-            &package_filter,
-        )?;
-        println!(
-            "Coverage trim baseline updated: {}",
-            baseline_path.display()
-        );
+        let Some(current) = current_workspace else {
+            bail!(
+                "cannot promote baseline: no workspace line coverage beside '{}'",
+                candidates_path.display()
+            );
+        };
+        promote_baseline(&baseline_path, &candidates_path, current)?;
+        println!("Coverage baseline updated: {}", baseline_path.display());
         return Ok(());
     }
 
-    ensure!(
-        baseline_path.is_file(),
-        "missing coverage baseline '{}'; run `cargo xtask coverage gate --promote-baseline`",
-        baseline_path.display()
-    );
     let baseline = load_baseline(&baseline_path)?;
-    let package_filter = selected_packages(&args.packages, Some(&baseline), &current_metrics);
-    let comparisons = build_comparisons(&baseline, &current_metrics, &package_filter)?;
-    let baseline_workspace = baseline
-        .workspace_line_coverage_percent
-        .zip(baseline.workspace_lines_covered)
-        .zip(baseline.workspace_lines_total)
-        .map(|((percent, covered), total)| WorkspaceLineCoverage {
-            percent,
-            covered,
-            total,
-        });
-    let current_workspace = load_workspace_line_coverage(&candidates_path);
-    let workspace_coverage_failure = compare_workspace_line_coverage(
+    let baseline_workspace = WorkspaceLineCoverage {
+        percent: baseline.workspace_line_coverage_percent,
+        covered: baseline.workspace_lines_covered,
+        total: baseline.workspace_lines_total,
+    };
+    let functions = load_zero_execution_functions(&candidates_path)?;
+    let (diff, change) = changed_code(root, args)?;
+    let untested = new_functions_without_executions(&functions, &parse_added_lines(&diff));
+    let allowed_drop = args.allowed_workspace_line_coverage_drop;
+    let line_failure =
+        compare_workspace_line_coverage(baseline_workspace, current_workspace, allowed_drop);
+
+    let report_path = resolve_path(root, args.report_file.as_ref(), DEFAULT_REPORT_FILE_REL);
+    let mut report = format!(
+        "# Coverage Gate\n\n- baseline: `{}`\n- current: `{}`\n- change: `{change}`\n\n",
+        baseline_path.display(),
+        candidates_path.display()
+    );
+    report.push_str(&render_line_coverage(
         baseline_workspace,
         current_workspace,
-        args.allowed_workspace_line_coverage_drop,
-    );
-
-    let (diff_markdown, trim_failures) = build_gate_diff(
-        &comparisons,
-        args,
-        &baseline_path,
-        &candidates_path,
-        baseline_workspace,
-        current_workspace,
-    );
-    write_text_file(&diff_path, &diff_markdown)?;
-
-    finalize_gate_result(
-        comparisons.len(),
-        &diff_path,
-        trim_failures,
-        workspace_coverage_failure,
-        args.enforce_trim_regressions,
-    )
+        allowed_drop,
+    ));
+    report.push_str(&render_new_functions(&untested));
+    report.push_str(&render_package_counts(&functions));
+    write_text_file(&report_path, &report)?;
+    gate_verdict(&report_path, &untested, line_failure)
 }
 
 fn resolve_path(root: &Path, user_path: Option<&PathBuf>, default_rel: &str) -> PathBuf {
@@ -181,116 +151,141 @@ fn resolve_path(root: &Path, user_path: Option<&PathBuf>, default_rel: &str) -> 
     root.join(path)
 }
 
-fn finalize_gate_result(
-    package_count: usize,
-    diff_path: &Path,
-    trim_failures: Vec<String>,
-    workspace_coverage_failure: Option<String>,
-    enforce_trim_regressions: bool,
-) -> Result<()> {
-    let has_trim_failures = !trim_failures.is_empty();
-    let trim_is_fatal = enforce_trim_regressions && has_trim_failures;
-    let has_workspace_failure = workspace_coverage_failure.is_some();
-
-    if !has_workspace_failure && !trim_is_fatal {
-        println!(
-            "Coverage gate: PASS ({} package(s)). Diff: {}",
-            package_count,
-            diff_path.display()
-        );
-        if has_trim_failures {
-            println!(
-                "Coverage gate: trim regressions detected (non-fatal). Re-run with --enforce-trim-regressions to fail on these."
-            );
-            for warning in trim_failures {
-                println!("- {warning}");
-            }
-        }
-        return Ok(());
+/// The change's unified diff and a label naming where it came from.
+fn changed_code(root: &Path, args: &CoverageGateArgs) -> Result<(String, String)> {
+    if let Some(diff_file) = &args.changed_diff {
+        let path = resolve_path(root, Some(diff_file), "");
+        let diff = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read changed-code diff '{}'", path.display()))?;
+        return Ok((diff, path.display().to_string()));
     }
-
-    let mut message = format!("coverage gate failed; diff: {}\n", diff_path.display());
-    if let Some(workspace_failure) = workspace_coverage_failure {
-        message.push_str("- ");
-        message.push_str(&workspace_failure);
-        message.push('\n');
-    }
-    if trim_is_fatal {
-        message.push_str(&format!(
-            "- trim regressions: {} (strict mode enabled)\n",
-            trim_failures.len()
-        ));
-        for failure in trim_failures {
-            message.push_str("  - ");
-            message.push_str(&failure);
-            message.push('\n');
-        }
-    }
-    bail!(message.trim_end().to_string());
+    let Some(base) = args.changed_since.as_deref() else {
+        bail!("the coverage gate needs --changed-since <rev> or --changed-diff <file>");
+    };
+    Ok((
+        changed_code_diff(root, base, "HEAD")?,
+        format!("{base}...HEAD"),
+    ))
 }
 
-fn load_current_metrics(path: &Path) -> Result<BTreeMap<String, PackageGateMetrics>> {
-    let payload = read_json(path)?;
-    let mut metrics = BTreeMap::<String, PackageGateMetrics>::new();
-
-    if let Some(packages) = payload.get("packages").and_then(Value::as_array) {
-        for package in packages {
-            let Some(name) = package
-                .get("package")
-                .and_then(Value::as_str)
-                .map(str::trim)
-            else {
-                continue;
-            };
-            if name.is_empty() {
-                continue;
-            }
-            let Some(zero_count) = package
-                .get("zero_count_functions_total")
-                .and_then(Value::as_u64)
-                .and_then(|count| usize::try_from(count).ok())
-            else {
-                continue;
-            };
-            metrics
-                .entry(name.to_string())
-                .or_default()
-                .zero_count_functions_total = zero_count;
-        }
-    }
-
-    if let Some(candidates) = payload.get("candidates").and_then(Value::as_array) {
-        for candidate in candidates {
-            let Some(name) = candidate
-                .get("package")
-                .and_then(Value::as_str)
-                .map(str::trim)
-            else {
-                continue;
-            };
-            if name.is_empty() {
-                continue;
-            }
-            let entry = metrics.entry(name.to_string()).or_default();
-            entry.candidates_total += 1;
-            let triage_label = candidate
-                .get("triage_label")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            match triage_label {
-                "dead_likely" => entry.dead_likely_candidates += 1,
-                "needs_targeted_test" => entry.needs_targeted_test_candidates += 1,
-                _ => {}
-            }
-        }
-    }
-
+/// `git diff -U0 <base>...<head>` of the Rust sources in `repo`: the changes
+/// `head` makes since its merge base with `base`.
+pub(crate) fn changed_code_diff(repo: &Path, base: &str, head: &str) -> Result<String> {
+    let range = format!("{base}...{head}");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["-c", "core.quotePath=false", "diff", "-U0", "--no-color"])
+        .args(["--no-ext-diff", &range, "--", "*.rs"])
+        .output()
+        .context("failed to run git diff")?;
     ensure!(
-        !metrics.is_empty(),
-        "trim candidates payload '{}' did not contain package metrics",
-        path.display()
+        output.status.success(),
+        "git diff {range} failed in '{}': {}",
+        repo.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
     );
-    Ok(metrics)
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The new-side line ranges each file's hunks add. File headers are read only
+/// between `diff --git` and the first hunk, so an added line whose text starts
+/// with `++ b/` is never taken for one.
+fn parse_added_lines(diff: &str) -> AddedLines {
+    let mut added = AddedLines::new();
+    let mut file: Option<String> = None;
+    let mut in_header = false;
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            in_header = true;
+            file = None;
+        } else if in_header && let Some(path) = line.strip_prefix("+++ ") {
+            // A deleted file's new side is `/dev/null`: it adds nothing.
+            file = path.strip_prefix("b/").map(str::to_string);
+        } else if let Some(header) = line.strip_prefix("@@ ") {
+            in_header = false;
+            if let (Some(file), Some(range)) = (&file, added_range(header)) {
+                added.entry(file.clone()).or_default().push(range);
+            }
+        }
+    }
+    added
+}
+
+/// The inclusive new-side range of a hunk header `-a,b +c,d @@ ...`, or `None`
+/// when the hunk only deletes.
+fn added_range(header: &str) -> Option<(u64, u64)> {
+    let new_side = header
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix('+'))?;
+    let (start, count) = match new_side.split_once(',') {
+        Some((start, count)) => (start.parse::<u64>().ok()?, count.parse::<u64>().ok()?),
+        None => (new_side.parse::<u64>().ok()?, 1),
+    };
+    let last = (start + count).checked_sub(1)?;
+    (count > 0).then_some((start, last))
+}
+
+/// A closure body (`{closure#N}` in v0 demangling, `{{closure}}` in legacy).
+fn is_closure(name: &str) -> bool {
+    name.contains("{closure") || name.contains("{{closure}}")
+}
+
+/// The non-closure zero-execution functions whose first line the change adds,
+/// ordered by file and line.
+fn new_functions_without_executions<'a>(
+    functions: &'a [ZeroExecutionFunction],
+    added: &AddedLines,
+) -> Vec<&'a ZeroExecutionFunction> {
+    functions
+        .iter()
+        .filter(|function| !is_closure(&function.name))
+        .filter(|function| {
+            added.get(&function.file).is_some_and(|ranges| {
+                ranges
+                    .iter()
+                    .any(|&(first, last)| (first..=last).contains(&function.line))
+            })
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn load_zero_execution_functions(path: &Path) -> Result<Vec<ZeroExecutionFunction>> {
+    let payload = read_json(path)?;
+    let Some(candidates) = payload.get("candidates").and_then(Value::as_array) else {
+        bail!(
+            "trim candidates payload '{}' has no candidates array",
+            path.display()
+        );
+    };
+    let functions = candidates
+        .iter()
+        .map(zero_execution_function)
+        .collect::<Option<Vec<_>>>();
+    let Some(functions) = functions else {
+        bail!(
+            "trim candidates payload '{}' has a candidate without file, line, demangled_function, and package",
+            path.display()
+        );
+    };
+    Ok(functions)
+}
+
+fn zero_execution_function(candidate: &Value) -> Option<ZeroExecutionFunction> {
+    let text = |key: &str| {
+        candidate
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    Some(ZeroExecutionFunction {
+        file: text("file")?,
+        line: candidate.get("line").and_then(Value::as_u64)?,
+        name: text("demangled_function")?,
+        package: text("package")?,
+    })
 }
 
 fn read_json(path: &Path) -> Result<Value> {
@@ -299,66 +294,22 @@ fn read_json(path: &Path) -> Result<Value> {
     serde_json::from_str(&raw).with_context(|| format!("failed to parse JSON '{}'", path.display()))
 }
 
-fn selected_packages(
-    requested: &[String],
-    baseline: Option<&CoverageTrimGateBaseline>,
-    current_metrics: &BTreeMap<String, PackageGateMetrics>,
-) -> Vec<String> {
-    if !requested.is_empty() {
-        let selected = requested
-            .iter()
-            .map(|package| package.trim())
-            .filter(|package| !package.is_empty())
-            .map(ToString::to_string)
-            .collect::<BTreeSet<_>>();
-        return selected.iter().cloned().collect();
-    }
-    if let Some(baseline) = baseline
-        && !baseline.packages.is_empty()
-    {
-        return baseline.packages.keys().cloned().collect();
-    }
-    current_metrics.keys().cloned().collect()
-}
-
 fn promote_baseline(
     baseline_path: &Path,
     candidates_path: &Path,
-    current_metrics: &BTreeMap<String, PackageGateMetrics>,
-    selected_packages: &[String],
+    current: WorkspaceLineCoverage,
 ) -> Result<()> {
-    let mut packages = BTreeMap::<String, PackageGateMetrics>::new();
-    for package in selected_packages {
-        let Some(metrics) = current_metrics.get(package) else {
-            bail!(
-                "cannot promote baseline: selected package '{}' not found in '{}'",
-                package,
-                candidates_path.display()
-            );
-        };
-        packages.insert(package.clone(), metrics.clone());
-    }
-
-    let workspace_line_coverage = load_workspace_line_coverage(candidates_path);
-    let baseline = CoverageTrimGateBaseline {
+    let baseline = LineCoverageBaseline {
         generated_by: GENERATED_BY.to_string(),
         generated_at_unix_secs: unix_timestamp_seconds(),
         source_candidates_file: path_metadata_string(candidates_path),
-        workspace_line_coverage_percent: workspace_line_coverage.map(|stats| stats.percent),
-        workspace_lines_covered: workspace_line_coverage.map(|stats| stats.covered),
-        workspace_lines_total: workspace_line_coverage.map(|stats| stats.total),
-        packages,
+        workspace_line_coverage_percent: current.percent,
+        workspace_lines_covered: current.covered,
+        workspace_lines_total: current.total,
     };
     let payload =
         serde_json::to_string_pretty(&baseline).context("failed to serialize baseline JSON")?;
-    write_text_file(baseline_path, &payload)
-}
-
-#[derive(Debug, Clone, Copy)]
-struct WorkspaceLineCoverage {
-    percent: f64,
-    covered: u64,
-    total: u64,
+    write_text_file(baseline_path, &format!("{payload}\n"))
 }
 
 fn load_workspace_line_coverage(candidates_path: &Path) -> Option<WorkspaceLineCoverage> {
@@ -380,9 +331,13 @@ fn load_workspace_line_coverage(candidates_path: &Path) -> Option<WorkspaceLineC
     })
 }
 
-fn load_baseline(path: &Path) -> Result<CoverageTrimGateBaseline> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read baseline JSON '{}'", path.display()))?;
+fn load_baseline(path: &Path) -> Result<LineCoverageBaseline> {
+    let raw = fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read coverage baseline '{}'; run `cargo xtask coverage gate --promote-baseline`",
+            path.display()
+        )
+    })?;
     serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse baseline '{}'", path.display()))
 }
@@ -405,117 +360,15 @@ fn path_metadata_string(path: &Path) -> String {
     path.display().to_string()
 }
 
-fn build_comparisons(
-    baseline: &CoverageTrimGateBaseline,
-    current_metrics: &BTreeMap<String, PackageGateMetrics>,
-    selected_packages: &[String],
-) -> Result<Vec<GateComparison>> {
-    let mut comparisons = Vec::new();
-    for package in selected_packages {
-        let Some(base) = baseline.packages.get(package) else {
-            bail!(
-                "baseline does not contain package '{}' (update baseline or select valid packages)",
-                package
-            );
-        };
-        let Some(current) = current_metrics.get(package) else {
-            bail!(
-                "current trim candidates are missing baseline package '{}' (coverage roster drift; regenerate or promote the baseline explicitly)",
-                package
-            );
-        };
-        comparisons.push(GateComparison {
-            package: package.clone(),
-            baseline: base.clone(),
-            current: current.clone(),
-        });
-    }
-    Ok(comparisons)
-}
-
-fn build_gate_diff(
-    comparisons: &[GateComparison],
-    args: &CoverageGateArgs,
-    baseline_path: &Path,
-    candidates_path: &Path,
-    baseline_workspace: Option<WorkspaceLineCoverage>,
-    current_workspace: Option<WorkspaceLineCoverage>,
-) -> (String, Vec<String>) {
-    let mut markdown = String::new();
-    markdown.push_str("# Coverage Gate\n\n");
-    markdown.push_str(&format!("- baseline: `{}`\n", baseline_path.display()));
-    markdown.push_str(&format!("- current: `{}`\n\n", candidates_path.display()));
-    markdown.push_str("## Workspace line coverage\n\n");
-    markdown.push_str("| baseline (%) | current (%) | delta | allowed drop | status |\n");
-    markdown.push_str("| ---: | ---: | ---: | ---: | --- |\n");
-    let (baseline_percent, current_percent, delta, status) = workspace_coverage_row(
-        baseline_workspace,
-        current_workspace,
-        args.allowed_workspace_line_coverage_drop,
-    );
-    markdown.push_str(&format!(
-        "| {} | {} | {} | `-{:.2}` | {} |\n\n",
-        baseline_percent, current_percent, delta, args.allowed_workspace_line_coverage_drop, status
-    ));
-    markdown.push_str("## Trim candidate regressions\n\n");
-    markdown.push_str("| package | metric | baseline | current | delta | allowance | status |\n");
-    markdown.push_str("| --- | --- | ---: | ---: | ---: | ---: | --- |\n");
-
-    let mut failures = Vec::new();
-    for comparison in comparisons {
-        push_metric_row(
-            &mut markdown,
-            &mut failures,
-            &comparison.package,
-            MetricKind::ZeroCountFunctionsTotal,
-            comparison.baseline.zero_count_functions_total,
-            comparison.current.zero_count_functions_total,
-            args.allowed_zero_count_growth,
-        );
-        push_metric_row(
-            &mut markdown,
-            &mut failures,
-            &comparison.package,
-            MetricKind::CandidatesTotal,
-            comparison.baseline.candidates_total,
-            comparison.current.candidates_total,
-            args.allowed_total_candidate_growth,
-        );
-        push_metric_row(
-            &mut markdown,
-            &mut failures,
-            &comparison.package,
-            MetricKind::DeadLikelyCandidates,
-            comparison.baseline.dead_likely_candidates,
-            comparison.current.dead_likely_candidates,
-            args.allowed_dead_likely_growth,
-        );
-        push_metric_row(
-            &mut markdown,
-            &mut failures,
-            &comparison.package,
-            MetricKind::NeedsTargetedTestCandidates,
-            comparison.baseline.needs_targeted_test_candidates,
-            comparison.current.needs_targeted_test_candidates,
-            args.allowed_needs_targeted_test_growth,
-        );
-    }
-    (markdown, failures)
-}
-
 fn compare_workspace_line_coverage(
-    baseline_workspace: Option<WorkspaceLineCoverage>,
+    baseline: WorkspaceLineCoverage,
     current_workspace: Option<WorkspaceLineCoverage>,
     allowed_drop: f64,
 ) -> Option<String> {
-    let Some(baseline) = baseline_workspace else {
-        return Some("baseline workspace line coverage metrics are missing".to_string());
-    };
     let Some(current) = current_workspace else {
         return Some("current workspace line coverage metrics are missing".to_string());
     };
-    let minimum_allowed = baseline.percent - allowed_drop;
-    if current.percent < minimum_allowed {
+    if current.percent < baseline.percent - allowed_drop {
         return Some(format!(
             "workspace line coverage regressed: current={:.2}% < baseline={:.2}% - allowed_drop={:.2}%",
             current.percent, baseline.percent, allowed_drop
@@ -524,78 +377,95 @@ fn compare_workspace_line_coverage(
     None
 }
 
-fn workspace_coverage_row(
-    baseline_workspace: Option<WorkspaceLineCoverage>,
+fn render_line_coverage(
+    baseline: WorkspaceLineCoverage,
     current_workspace: Option<WorkspaceLineCoverage>,
     allowed_drop: f64,
-) -> (String, String, String, &'static str) {
-    let Some(baseline) = baseline_workspace else {
-        return (
-            "missing".to_string(),
-            current_workspace
-                .map(|current| format!("{:.2}", current.percent))
-                .unwrap_or_else(|| "missing".to_string()),
-            "n/a".to_string(),
-            "FAIL",
-        );
+) -> String {
+    let (current, delta) = match current_workspace {
+        Some(current) => (
+            format!("{:.2}", current.percent),
+            format!("{:+.2}", current.percent - baseline.percent),
+        ),
+        None => ("missing".to_string(), "n/a".to_string()),
     };
-    let Some(current) = current_workspace else {
-        return (
-            format!("{:.2}", baseline.percent),
-            "missing".to_string(),
-            "n/a".to_string(),
-            "FAIL",
-        );
-    };
-
-    let delta = current.percent - baseline.percent;
-    let status = if current.percent >= baseline.percent - allowed_drop {
-        "PASS"
-    } else {
-        "FAIL"
-    };
-    (
-        format!("{:.2}", baseline.percent),
-        format!("{:.2}", current.percent),
-        format!("{delta:+.2}"),
-        status,
+    let failed = compare_workspace_line_coverage(baseline, current_workspace, allowed_drop);
+    format!(
+        "## Workspace line coverage\n\n\
+         | baseline (%) | current (%) | delta | allowed drop | status |\n\
+         | ---: | ---: | ---: | ---: | --- |\n\
+         | {:.2} | {current} | {delta} | `-{allowed_drop:.2}` | {} |\n\n",
+        baseline.percent,
+        if failed.is_some() { "FAIL" } else { "PASS" }
     )
 }
 
-fn push_metric_row(
-    markdown: &mut String,
-    failures: &mut Vec<String>,
-    package: &str,
-    metric: MetricKind,
-    baseline: usize,
-    current: usize,
-    allowance: usize,
-) {
-    let baseline_u64 = u64::try_from(baseline).unwrap_or(u64::MAX);
-    let current_u64 = u64::try_from(current).unwrap_or(u64::MAX);
-    let delta_i128 = i128::from(current_u64) - i128::from(baseline_u64);
-    let allowed_max = baseline.saturating_add(allowance);
-    let passed = current <= allowed_max;
-    markdown.push_str(&format!(
-        "| `{}` | `{}` | `{}` | `{}` | `{}` | `+{}` | `{}` |\n",
-        package,
-        metric.label(),
-        baseline,
-        current,
-        delta_i128,
-        allowance,
-        if passed { "PASS" } else { "FAIL" }
-    ));
-    if !passed {
-        failures.push(format!(
-            "{} {} regressed: current={} > baseline={} + allowance={}",
-            package,
-            metric.label(),
-            current,
-            baseline,
-            allowance
+fn render_new_functions(untested: &[&ZeroExecutionFunction]) -> String {
+    let mut markdown = String::from(
+        "## New functions without executions\n\n\
+         Functions the change adds that no workspace test executes (closures exempt).\n\n\
+         | file:line | function |\n| --- | --- |\n",
+    );
+    if untested.is_empty() {
+        markdown.push_str("| _none_ | - |\n");
+    }
+    for function in untested {
+        markdown.push_str(&format!(
+            "| `{}:{}` | `{}` |\n",
+            function.file, function.line, function.name
         ));
     }
+    markdown.push('\n');
+    markdown
+}
+
+/// Per-package zero-execution counts, informational only.
+fn render_package_counts(functions: &[ZeroExecutionFunction]) -> String {
+    let mut counts = BTreeMap::<&str, (usize, usize)>::new();
+    for function in functions {
+        let entry = counts.entry(function.package.as_str()).or_default();
+        if is_closure(&function.name) {
+            entry.1 += 1;
+        } else {
+            entry.0 += 1;
+        }
+    }
+    let mut markdown = String::from(
+        "## Zero-execution functions per package (informational)\n\n\
+         | package | functions | closures |\n| --- | ---: | ---: |\n",
+    );
+    for (package, (named, closures)) in counts {
+        markdown.push_str(&format!("| `{package}` | {named} | {closures} |\n"));
+    }
+    markdown
+}
+
+fn gate_verdict(
+    report_path: &Path,
+    untested: &[&ZeroExecutionFunction],
+    line_failure: Option<String>,
+) -> Result<()> {
+    if untested.is_empty() && line_failure.is_none() {
+        println!("Coverage gate: PASS. Report: {}", report_path.display());
+        return Ok(());
+    }
+    let mut message = format!("coverage gate failed; report: {}\n", report_path.display());
+    if let Some(line_failure) = line_failure {
+        message.push_str(&format!("- {line_failure}\n"));
+    }
+    if !untested.is_empty() {
+        message.push_str(&format!(
+            "- {} new function(s) never execute under the workspace tests; add a test that runs each:\n",
+            untested.len()
+        ));
+    }
+    for function in untested {
+        message.push_str(&format!(
+            "  - {}:{} {}\n",
+            function.file, function.line, function.name
+        ));
+    }
+    bail!(message.trim_end().to_string());
 }
 
 fn unix_timestamp_seconds() -> u64 {
@@ -606,125 +476,5 @@ fn unix_timestamp_seconds() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn baseline_package_missing_from_current_inventory_fails_closed() {
-        let baseline = CoverageTrimGateBaseline {
-            generated_by: GENERATED_BY.to_string(),
-            generated_at_unix_secs: 0,
-            source_candidates_file: "candidates.json".to_string(),
-            workspace_line_coverage_percent: None,
-            workspace_lines_covered: None,
-            workspace_lines_total: None,
-            packages: BTreeMap::from([("rumoca-core".to_string(), PackageGateMetrics::default())]),
-        };
-
-        let error = build_comparisons(&baseline, &BTreeMap::new(), &["rumoca-core".to_string()])
-            .expect_err("a stale coverage roster must not silently shrink the gate");
-        assert!(error.to_string().contains("coverage roster drift"));
-    }
-
-    #[test]
-    fn a_metric_within_its_allowance_passes_and_one_beyond_it_fails() {
-        let mut markdown = String::new();
-        let mut failures = Vec::new();
-
-        push_metric_row(
-            &mut markdown,
-            &mut failures,
-            "rumoca-core",
-            MetricKind::ZeroCountFunctionsTotal,
-            10,
-            12,
-            2,
-        );
-        assert!(
-            failures.is_empty(),
-            "current == baseline + allowance passes"
-        );
-        assert_eq!(
-            markdown,
-            "| `rumoca-core` | `zero_count_functions_total` | `10` | `12` | `2` | `+2` | `PASS` |\n"
-        );
-
-        markdown.clear();
-        push_metric_row(
-            &mut markdown,
-            &mut failures,
-            "rumoca-core",
-            MetricKind::NeedsTargetedTestCandidates,
-            10,
-            13,
-            2,
-        );
-        assert!(markdown.ends_with("`FAIL` |\n"));
-        assert_eq!(
-            failures,
-            vec![
-                "rumoca-core needs_targeted_test_candidates regressed: \
-                 current=13 > baseline=10 + allowance=2"
-                    .to_string()
-            ],
-            "the failure names the package, metric, and both sides of the bound"
-        );
-
-        markdown.clear();
-        failures.clear();
-        push_metric_row(
-            &mut markdown,
-            &mut failures,
-            "rumoca-core",
-            MetricKind::CandidatesTotal,
-            10,
-            7,
-            0,
-        );
-        assert!(failures.is_empty(), "an improvement never fails the gate");
-        assert!(
-            markdown.contains("| `-3` |"),
-            "the delta is signed so an improvement reads as one: {markdown}"
-        );
-    }
-
-    #[test]
-    fn resolve_path_keeps_absolute_paths_and_roots_relative_ones() {
-        let root = Path::new("/repo");
-        let absolute = PathBuf::from("/elsewhere/candidates.json");
-        assert_eq!(
-            resolve_path(root, Some(&absolute), "default.json"),
-            absolute,
-            "an absolute user path is taken as given"
-        );
-        assert_eq!(
-            resolve_path(root, Some(&PathBuf::from("target/x.json")), "default.json"),
-            Path::new("/repo/target/x.json"),
-            "a relative user path resolves against the repo root, not the cwd"
-        );
-        assert_eq!(
-            resolve_path(root, None, "target/llvm-cov/trim-candidates.json"),
-            Path::new("/repo/target/llvm-cov/trim-candidates.json"),
-            "no user path falls back to the rooted default"
-        );
-    }
-
-    #[test]
-    fn read_json_reports_the_offending_path_on_bad_input() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("payload.json");
-        std::fs::write(&path, "{\"packages\": {}}").expect("write JSON");
-        let value = read_json(&path).expect("valid JSON parses");
-        assert!(value.get("packages").is_some());
-
-        std::fs::write(&path, "{not json").expect("write junk");
-        let error = read_json(&path).expect_err("malformed JSON must not pass");
-        assert!(
-            error.to_string().contains("payload.json"),
-            "the error names the file the operator must fix: {error}"
-        );
-        let missing = dir.path().join("absent.json");
-        let error = read_json(&missing).expect_err("a missing file must not pass");
-        assert!(error.to_string().contains("absent.json"));
-    }
-}
+#[path = "coverage_gate_tests.rs"]
+mod tests;

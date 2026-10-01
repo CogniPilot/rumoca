@@ -2,7 +2,7 @@ use super::VerifyCommand;
 use super::gate::{
     GateStep, VerifyGateArgs, blocking_template_failures, changed_crates, changed_packages,
     create_coverage_output, extract_snapshot, gate_steps, link_shared_caches, lock_host,
-    resolve_rev, run, run_steps, upstream_main,
+    resolve_rev, run, run_steps, upstream_main, write_changed_code_diff,
 };
 use clap::Parser;
 use std::path::Path;
@@ -260,10 +260,41 @@ fn gate_steps_follow_the_blocking_list_in_order() {
     );
     // A failing test fails the coverage run, as in CI.
     assert!(!coverage[7].args.contains(&"--ignore-run-fail".to_string()));
+    // The gate judges the change the snapshot's diff file records.
+    assert_eq!(
+        coverage[10].args[coverage[10].args.len() - 2..],
+        [
+            "--changed-diff".to_string(),
+            "target/llvm-cov/changed-code.diff".to_string()
+        ]
+    );
+}
+
+#[test]
+fn the_changed_code_diff_records_the_revision_against_its_merge_base() {
+    let repo = tempfile::tempdir().unwrap();
+    let base = fixture_repository(repo.path());
+    write(
+        &repo.path().join("crates/alpha/src/lib.rs"),
+        "fn added() {}\n",
+    );
+    git(repo.path(), &["add", "-A"]);
+    git(repo.path(), &["commit", "-q", "-m", "add"]);
+    let head = git(repo.path(), &["rev-parse", "HEAD"]);
+    let snapshot = tempfile::tempdir().unwrap();
+    create_coverage_output(snapshot.path()).unwrap();
+    write_changed_code_diff(repo.path(), &base, &head, snapshot.path()).unwrap();
+    let diff =
+        std::fs::read_to_string(snapshot.path().join("target/llvm-cov/changed-code.diff")).unwrap();
     assert!(
-        coverage[10]
-            .args
-            .contains(&"--enforce-trim-regressions".to_string())
+        diff.contains("+++ b/crates/alpha/src/lib.rs\n@@ -0,0 +1 @@\n+fn added() {}"),
+        "{diff}"
+    );
+    let error = write_changed_code_diff(repo.path(), "no-such-main", &head, snapshot.path())
+        .expect_err("an unfetched main fails the gate before it builds");
+    assert!(
+        format!("{error:#}").contains("fetch main first"),
+        "{error:#}"
     );
 }
 

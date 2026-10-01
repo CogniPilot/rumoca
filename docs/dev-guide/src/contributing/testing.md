@@ -179,7 +179,18 @@ defines what evidence a PR needs.
 cargo xtask coverage report
 ```
 
-CI enforces a coverage gate; locally you need `cargo-llvm-cov`.
+CI enforces a coverage gate; locally you need `cargo-llvm-cov`:
+
+```bash
+cargo xtask coverage run
+cargo xtask coverage report
+cargo xtask coverage gate --changed-since origin/main
+```
+
+The gate fails on every function your change adds that no test executes
+(closures are exempt) and on a workspace line-coverage drop below the
+committed baseline. `target/llvm-cov/coverage-gate.md` lists each new
+untested function by `file:line`.
 
 ## Architecture Tests
 

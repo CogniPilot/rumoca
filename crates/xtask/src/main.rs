@@ -261,7 +261,7 @@ enum CoverageCommand {
     Run(CoverageRunArgs),
     /// Generate per-package inventory and trim candidates from unified workspace llvm-cov JSON
     Report(CoverageReportArgs),
-    /// Enforce coverage-trim regression thresholds against committed baseline
+    /// Fail on new functions no test executes and on a workspace line-coverage drop
     Gate(CoverageGateArgs),
 }
 

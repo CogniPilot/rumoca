@@ -178,7 +178,9 @@ Rust developer workflow MUST remain Cargo-native.
 | The PR comment's speed report MUST take every aggregate over the trace-agreeing (high or near) models, beside a high-only line, and compare compilation three ways: compiler work (OMC frontend through templates against rumoca front end plus Solve lowering), time to runnable labelled JIT vs C toolchain, and the FMU path, printed as not measured unless a CI job exports FMUs | A speedup that compares a JIT against a C toolchain, or counts disagreeing traces, is not a like-for-like claim |
 | The speed report MUST take agreement from the comparator's band table, count initialization in rumoca's simulation time as OMC's `timeSimulation` does, time only OMC rows collected under the run's own worker count and host, and print a methodology block from recorded values: runner, per-stage parallelism, the integrator that ran and tolerance per tool, output density, cache state, and parity gating; OMC reference collection MUST run at the rumoca compile and simulation worker counts, both tools MUST take the OMC output grid (the experiment `Interval`, else 500 intervals), and unequal recorded counts or grids are flagged | Timings taken under different contention are not comparable |
 | Promoted baseline release-asset updates require a successful full main CI run and a non-regressing ratchet decision; checked-in fallback updates remain explicit via `cargo xtask repo msl promote-quality-baseline` | Prevents silent baseline drift |
-| Coverage trim/gate updates follow `cargo xtask coverage {run,report,gate}` workflow | Coverage promotion is explicit only |
+| The coverage gate (`cargo xtask coverage gate --changed-since <base>`) fails on every function the change adds (its first line lies in an added hunk of `git diff -U0 <base>...HEAD`) that no workspace test executes; closures are exempt | A changed-code check blames only the change under review; an error-path `.with_context(\|\| ...)` closure runs only on failure, and dropping error context to move a count is a regression |
+| Workspace line coverage MUST NOT drop more than 0.25 points below the committed baseline; per-package zero-execution counts are reported, never enforced | Line coverage is stable between runs; the counts drift by about one per crate and would blame whichever change lands next |
+| The line-coverage baseline is updated only by `cargo xtask coverage gate --promote-baseline` over CI's measurement artifacts | Coverage promotion is explicit only |
 
 ### 5. Code Size Budget
 
@@ -206,7 +208,7 @@ net_added_lines:
 
 | Rule | Why |
 |---|---|
-| The landed tip passed `cargo xtask verify gate --rev <tip> --coverage` (GATE_OK) before landing | The gate runs CI's blocking steps and the coverage trim gate over a committed snapshot, so a landing is never the first run of a blocking check |
+| The landed tip passed `cargo xtask verify gate --rev <tip> --coverage` (GATE_OK) before landing | The gate runs CI's blocking steps and the coverage gate over a committed snapshot, so a landing is never the first run of a blocking check |
 | At least one approving review | Two-eyes on every merge |
 | All CI checks passing | CI gates (incl. `architecture_hardening_test`, `spec_budget_test`) are the non-negotiables |
 | Capability PRs show Tier 1 evidence and source every parity number | SPEC_0033 §6a cadence must be checkable at review |

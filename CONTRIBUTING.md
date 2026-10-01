@@ -187,9 +187,10 @@ Linux), rustdoc of
 the changed crates with warnings denied (default: crates changed relative to
 upstream `main`; `--crates` overrides), and the template runtime tests. The CasADi and JAX template targets need
 Python packages a local shell may lack, so their failures are reported but
-do not fail the gate. `--coverage` adds the coverage run, report, and trim gate
-with CI's allowances (it needs `cargo-llvm-cov`); a failing test fails the
-coverage run, as it does in CI. The run stops at the first
+do not fail the gate. `--coverage` adds the coverage run, report, and gate
+(it needs `cargo-llvm-cov`); the gate judges the revision's diff against its
+merge base with upstream `main`, so fetch `main` first. A failing test fails
+the coverage run, as it does in CI. The run stops at the first
 failing step and prints `GATE_OK <rev> (<log>)` or `GATE_FAILED <rev> (<log>)`
 with the failing step; the target directory is removed after a pass unless
 `--keep` is given. The tools (FMPy, CMake, Java, `xmllint`) are taken from the

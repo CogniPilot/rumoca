@@ -565,7 +565,7 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
     },
     VerifyStep {
         label: "coverage gate",
-        args: &["coverage", "gate", "--enforce-trim-regressions"],
+        args: &["coverage", "gate", "--changed-since", "origin/main"],
         include_in_full: true,
         include_in_quick: false,
     },

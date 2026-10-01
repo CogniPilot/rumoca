@@ -889,9 +889,23 @@ jobs:
         run: |
           ./target/debug/xtask coverage report
 
-      # Publish the measurement the gate just judged. The trim metric counts
-      # what the suite actually executed, and a workstation runs a different
-      # set than this job does (cached corpora, feature availability), so a
+      - name: Enforce coverage gate
+        env:
+          # A pull request is judged against its base; a push against the
+          # previous tip of the branch. A tag push has no previous tip, and
+          # its commit was already judged when it landed on main.
+          CHANGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          base="${CHANGE_BASE:-}"
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            base="HEAD^"
+          fi
+          ./target/debug/xtask coverage gate --changed-since "$base"
+
+      # Publish the measurement and the gate report, pass or fail. Line
+      # coverage counts what the suite actually executed, and a workstation
+      # runs a different set than this job does (cached corpora, feature availability), so a
       # baseline promoted from a developer machine can never match what this
       # job enforces. Promote from these artifacts instead: download them,
       # place them under target/llvm-cov, run `xtask coverage gate
@@ -908,17 +922,6 @@ jobs:
             target/llvm-cov/coverage-trim-report.md
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Enforce coverage regression gate
-        run: |
-          # llvm-cov trim counts drift by about one function per crate between
-          # runs, so a small growth allowance absorbs that measurement noise
-          # while still catching real dead-code regressions.
-          ./target/debug/xtask coverage gate --enforce-trim-regressions \
-            --allowed-zero-count-growth 2 \
-            --allowed-dead-likely-growth 2 \
-            --allowed-total-candidate-growth 2 \
-            --allowed-needs-targeted-test-growth 2
 
   # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane. The
   # producer keeps the pinned OpenModelica closure in its own stable GitHub
