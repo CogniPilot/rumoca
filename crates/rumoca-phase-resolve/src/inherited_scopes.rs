@@ -64,10 +64,80 @@ impl Resolver {
             self.add_direct_base_members(*base_id, &mut visible);
             merge_base_members(&mut inherited, visible, declarations, &reconcilable);
         }
+        self.apply_extends_class_redeclarations(class_id, declarations, &mut inherited);
 
         visiting.remove(&class_id);
         memo.insert(class_id, inherited.clone());
         inherited
+    }
+
+    /// Replace an inherited class element by the class an `extends`-clause
+    /// redeclaration names.
+    ///
+    /// MLS §7.3: `extends PM(redeclare record State = SR)` replaces the element
+    /// `State` that the derived class inherits from `PM`, so every lookup of
+    /// `State` in the derived class (its own functions included) and in its
+    /// descendants sees `SR`. Only a short class definition without its own
+    /// modification is a plain class identity; a redeclared package keeps its
+    /// slot because instantiation applies package selections per occurrence.
+    fn apply_extends_class_redeclarations(
+        &self,
+        class_id: DefId,
+        declarations: &HashMap<DefId, InheritedDeclaration<'_>>,
+        inherited: &mut InheritedMembers,
+    ) {
+        let Some(InheritedDeclaration::Class(class)) = declarations.get(&class_id) else {
+            return;
+        };
+        let Some(&scope) = self.class_def_scopes.get(&class_id) else {
+            return;
+        };
+        let redeclarations = class
+            .extends
+            .iter()
+            .flat_map(|extend| &extend.modifications)
+            .filter(|modification| modification.redeclare)
+            .filter_map(|modification| class_alias_redeclaration(&modification.expr));
+        for (name, replacement) in redeclarations {
+            let Some(InheritedMember::Unique(slot)) = inherited.get(&name).copied() else {
+                continue;
+            };
+            if !is_redeclarable_class_identity(slot, declarations) {
+                continue;
+            }
+            let Some(target) = self.resolve_reference_in_scope(replacement, scope) else {
+                continue;
+            };
+            if target != slot
+                && matches!(
+                    declarations.get(&target),
+                    Some(InheritedDeclaration::Class(_))
+                )
+            {
+                inherited.insert(name, InheritedMember::Unique(target));
+            }
+        }
+    }
+
+    /// Resolve an unsubscripted dotted class reference written in `scope`.
+    fn resolve_reference_in_scope(
+        &self,
+        reference: &rumoca_ir_ast::ComponentReference,
+        scope: rumoca_core::ScopeId,
+    ) -> Option<DefId> {
+        if reference.local || reference.parts.iter().any(|part| part.subs.is_some()) {
+            return None;
+        }
+        let (head, tail) = reference.parts.split_first()?;
+        let mut current = self.scope_tree.lookup_excluding(
+            scope,
+            &ComponentPath::from_flat_path(&head.ident.text),
+            None,
+        )?;
+        for part in tail {
+            current = self.lookup_class_member(current, &part.ident.text)?;
+        }
+        Some(current)
     }
 
     fn add_direct_base_members(&self, base_id: DefId, visible: &mut InheritedMembers) {
@@ -82,6 +152,44 @@ impl Resolver {
             visible.insert(name.clone(), InheritedMember::Unique(*def_id));
         }
     }
+}
+
+/// The element name and class reference of `redeclare <class> Name = Type`
+/// without a modification of its own.
+fn class_alias_redeclaration(
+    expression: &rumoca_ir_ast::Expression,
+) -> Option<(ComponentPath, &rumoca_ir_ast::ComponentReference)> {
+    let rumoca_ir_ast::Expression::Modification { target, value, .. } = expression else {
+        return None;
+    };
+    let rumoca_ir_ast::Expression::ClassModification {
+        target: replacement,
+        modifications,
+        ..
+    } = value.as_ref()
+    else {
+        return None;
+    };
+    let [part] = target.parts.as_slice() else {
+        return None;
+    };
+    if part.subs.is_some() || !modifications.is_empty() {
+        return None;
+    }
+    Some((ComponentPath::from_flat_path(&part.ident.text), replacement))
+}
+
+/// A redeclared class element whose identity is the replacing class: any
+/// class except a package (a component slot is redeclared by instantiation).
+fn is_redeclarable_class_identity(
+    slot: DefId,
+    declarations: &HashMap<DefId, InheritedDeclaration<'_>>,
+) -> bool {
+    matches!(
+        declarations.get(&slot),
+        Some(InheritedDeclaration::Class(class))
+            if class.class_type != rumoca_core::ClassType::Package
+    )
 }
 
 fn collect_declarations(

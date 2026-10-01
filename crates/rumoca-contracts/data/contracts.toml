@@ -3029,6 +3029,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'INST-055'
+category = 'Instantiation'
+name = 'Extends redeclaration replaces element'
+mls_ref = '§7.3'
+requirement = 'A redeclaration in the modification of an extends-clause replaces the inherited element; the derived class and its descendants see the replacing class under the element name'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'LEX-001'
 category = 'Lexical'
 name = 'ASCII identifiers'

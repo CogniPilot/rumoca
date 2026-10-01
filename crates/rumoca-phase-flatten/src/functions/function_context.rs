@@ -92,10 +92,48 @@ fn collect_function_context_recursive<'tree>(
             &mut context.imports,
             Some(member_cache),
         );
+        respell_class_aliases_visible_from(tree, class_index, class_def, &mut context.imports);
     }
     resolve_import_pairs(&class_def.imports, class_index, &mut context.imports);
     context.algorithms.extend(class_def.algorithms.clone());
     context.components.extend(class_def.components.clone());
+}
+
+/// Respell every class alias a base's context contributed by the class that
+/// the extending class itself sees under that name.
+///
+/// A `function extends` body and the inherited sections are lowered against
+/// one alias map, and the base's lexical aliases are collected first. When
+/// the extending class's lookup (MLS §5.3) reaches a different class for the
+/// same name, for example a record that its package redeclares in an
+/// `extends` modification (MLS §7.3), that class is the meaning of the name;
+/// keeping the base's alias would spell the replaced declaration.
+fn respell_class_aliases_visible_from(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    class_def: &ast::ClassDef,
+    imports: &mut qualify::ImportMap,
+) {
+    let Some(scope) = class_def.scope_id else {
+        return;
+    };
+    for (alias, qualified) in imports.iter_mut() {
+        let Some(aliased) = class_index.def_id_by_qualified_name(qualified) else {
+            continue;
+        };
+        let Some(visible) = tree
+            .scope_tree
+            .lookup(scope, &rumoca_core::ComponentPath::from_flat_path(alias))
+        else {
+            continue;
+        };
+        if visible == aliased || class_index.get(visible).is_none() {
+            continue;
+        }
+        if let Some(visible_name) = class_index.qualified_name(visible) {
+            *qualified = visible_name.to_string();
+        }
+    }
 }
 
 fn collect_lexical_ancestor_imports(

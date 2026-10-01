@@ -449,6 +449,7 @@ Defines state-to-state transitions with priority and timing control.
 | INST-052 | Redeclaration dimension match | §7.3.2 | "Redeclaration must have same number of dimensions as original element" |
 | INST-053 | Conditional component removal | §5.6.2 | "Conditional components with false condition are removed and not part of simulation model"
 | INST-054 | Automatic inner creation | §5.4 | "If a unique non-partial class is used for all outer declarations of the same name lacking a matching inner declaration, an inner declaration of that class is automatically added at the top of the model and a diagnostic is given" (rumoca: WI013; conflicting classes EI015, partial class EI012) |
+| INST-055 | Extends redeclaration replaces element | §7.3 | "A redeclaration in the modification of an extends-clause replaces the inherited element; the derived class and its descendants see the replacing class under the element name" |
 
 ### 4.4 Expression/Operator Contracts (EXPR)
 

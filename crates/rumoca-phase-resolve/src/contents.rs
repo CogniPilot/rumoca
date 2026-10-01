@@ -134,6 +134,7 @@ impl Resolver {
                     class_scope,
                     short_class_modifier_scope.unwrap_or(class_scope),
                 );
+                self.bind_redeclared_base_slot(modification, ext.base_def_id);
             }
         }
 
@@ -242,6 +243,32 @@ impl Resolver {
             .lookup(scope, &ComponentPath::from_flat_path(first))
             .or_else(|| self.find_inherited_type(scope, first))
             .filter(|def_id| self.dynamic_member_root_ids.contains(def_id))
+    }
+
+    /// Bind the target of an `extends`-clause redeclaration to the base element
+    /// it replaces (MLS §7.3).
+    ///
+    /// The derived class's own view of that name is the replacing class (see
+    /// `apply_extends_class_redeclarations`), but the modification target
+    /// names the element of the extended base, which strict reachability and
+    /// instantiation must keep as the replaced slot.
+    fn bind_redeclared_base_slot(
+        &self,
+        modification: &mut ast::ExtendModification,
+        base_def_id: Option<DefId>,
+    ) {
+        if !modification.redeclare {
+            return;
+        }
+        let Expression::Modification { target, .. } = &mut modification.expr else {
+            return;
+        };
+        let (Some(base), [part]) = (base_def_id, target.parts.as_mut_slice()) else {
+            return;
+        };
+        if let Some(slot) = self.lookup_class_member(base, &part.ident.text) {
+            part.def_id = Some(slot);
+        }
     }
 
     /// Resolve one modification of an `extends` clause.

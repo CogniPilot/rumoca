@@ -1409,6 +1409,13 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'INST-055'
+case_id = 'inst_055_extends_modifier_redeclared_record_is_the_derived_packages_record'
+test_file = 'tests/inst_extends_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'LEX-001'
 case_id = 'lex_001_ascii_identifiers_non_ascii'
 test_file = 'tests/lex_contracts.rs'

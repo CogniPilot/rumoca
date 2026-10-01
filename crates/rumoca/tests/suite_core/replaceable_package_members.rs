@@ -701,3 +701,82 @@ fn a_local_package_alias_selects_the_package_of_its_nested_models() {
         }
     }
 }
+
+/// A package redeclares an inherited record in its `extends` modification
+/// (`extends PM(redeclare record State = SR)`, as `Media.Incompressible.TableBased`
+/// does for `ThermodynamicState`). The record constructor called by the
+/// package's own function, and by its `function extends` of an inherited
+/// function, is the redeclared `SR` (MLS §7.3), also through a further
+/// extending package selected as a replaceable package.
+const EXTENDS_MODIFIER_RECORD_REDECLARE: &str = r#"
+record R0
+end R0;
+
+partial package PM
+  replaceable record State
+    extends R0;
+  end State;
+  replaceable partial function g
+    input Real p;
+    input Real T;
+    output State s;
+  end g;
+end PM;
+
+record SR
+  extends R0;
+  Real T;
+  Real p;
+end SR;
+
+package P
+  extends PM(redeclare record State = SR);
+  function f
+    input Real p;
+    input Real T;
+    output State s;
+  algorithm
+    s := State(p = p, T = T);
+  end f;
+  redeclare function extends g
+  algorithm
+    s := State(p = 10*p, T = 10*T);
+  end g;
+end P;
+
+package G
+  extends P;
+end G;
+
+model Top
+  replaceable package Medium = G;
+  Medium.State a = Medium.f(1, 2 + time);
+  Medium.State b = Medium.g(1, 2 + time);
+end Top;
+"#;
+
+#[test]
+fn an_extends_modifier_record_redeclaration_is_the_record_of_the_derived_package() {
+    let compiled = Compiler::new()
+        .model("Top")
+        .compile_str(EXTENDS_MODIFIER_RECORD_REDECLARE, "ExtendsRecord.mo")
+        .unwrap_or_else(|error| panic!("Top compiles: {error:?}"));
+    let result = rumoca_sim::simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 0.1,
+            ..Default::default()
+        },
+    )
+    .expect("Top simulates");
+    let column = |name: &str| {
+        let index = result.names.iter().position(|n| n == name);
+        &result.data[index.unwrap_or_else(|| panic!("{name} in {:?}", result.names))]
+    };
+    for (index, time) in result.times.iter().enumerate() {
+        assert!((column("a.p")[index] - 1.0).abs() < 1e-12);
+        assert!((column("a.T")[index] - (2.0 + time)).abs() < 1e-9);
+        assert!((column("b.p")[index] - 10.0).abs() < 1e-12);
+        assert!((column("b.T")[index] - 10.0 * (2.0 + time)).abs() < 1e-8);
+    }
+}
