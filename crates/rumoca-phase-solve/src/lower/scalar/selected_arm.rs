@@ -2,12 +2,13 @@
 //!
 //! An eager selection computes every arm and discards all but one, which is
 //! sound only when every arm is total: builtin arithmetic, relations, and pure
-//! builtins over coordinates and literals with literal subscripts evaluate to
-//! a possibly non-finite IEEE 754 value and never fail or act, and the
-//! selection discards the unselected value and its tangent. A conditional with
-//! any other arm (a call, which can assert, fail, or act, or a computed
-//! subscript) is lowered as a checked function-conditional program that runs
-//! only the selected arm.
+//! builtins over coordinates and literals with literal subscripts, or with
+//! integer subscripts of family binders proven inside the indexed dimension,
+//! evaluate to a possibly non-finite IEEE 754 value and never fail or act, and
+//! the selection discards the unselected value and its tangent. A conditional
+//! with any other arm (a call, which can assert, fail, or act, or a subscript
+//! not proven in bounds) is lowered as a checked function-conditional program
+//! that runs only the selected arm.
 
 use super::*;
 
@@ -90,17 +91,100 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     .is_some_and(|operand| self.is_total(operand, visited))
             }),
             dae::ExpressionOperation::Index { base, subscripts } => {
+                let extents = self.node(base).value_type().dimensions();
                 self.is_total(base, visited)
-                    && subscripts.iter().all(|subscript| match subscript {
-                        dae::SubscriptView::Whole { .. } => true,
-                        dae::SubscriptView::Index { expression, .. }
-                        | dae::SubscriptView::Slice { expression, .. } => matches!(
-                            self.node(expression).operation(),
-                            dae::ExpressionOperation::Literal(_)
-                        ),
+                    && subscripts.iter().enumerate().all(|(axis, subscript)| {
+                        self.subscript_is_total(subscript, extents.get(axis).copied())
                     })
             }
             _ => false,
+        }
+    }
+
+    /// Whether one subscript of an indexed read cannot fail: a whole axis, a
+    /// literal, or an index proven inside the axis of extent `extent`.
+    fn subscript_is_total(&self, subscript: dae::SubscriptView<'dae>, extent: Option<u32>) -> bool {
+        let literal = |expression| {
+            matches!(
+                self.node(expression).operation(),
+                dae::ExpressionOperation::Literal(_)
+            )
+        };
+        match subscript {
+            dae::SubscriptView::Whole { .. } => true,
+            dae::SubscriptView::Slice { expression, .. } => literal(expression),
+            dae::SubscriptView::Index { expression, .. } => {
+                literal(expression)
+                    || extent.is_some_and(|extent| self.subscript_in_bounds(expression, extent))
+            }
+        }
+    }
+
+    /// Whether an integer subscript over family binders lies in `1..=extent`
+    /// at every point of its domains, so reading it cannot fail.
+    fn subscript_in_bounds(&self, expression: dae::ExprId<'dae>, extent: u32) -> bool {
+        self.binder_subscript_interval(expression)
+            .is_some_and(|(low, high)| low >= 1 && high <= i64::from(extent))
+    }
+
+    /// The closed integer interval an affine subscript of binders and integer
+    /// literals takes over its domains. A binder of the scalar row being
+    /// lowered contributes its exact value; any other binder spans its
+    /// declared `for` range. Any other operand has no proven interval.
+    fn binder_subscript_interval(&self, expression: dae::ExprId<'dae>) -> Option<(i64, i64)> {
+        match self.node(expression).operation() {
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(value)) => {
+                Some((*value, *value))
+            }
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
+                if let Some((_, point)) = self
+                    .domain_points
+                    .iter()
+                    .rev()
+                    .find(|(domain, _)| *domain == binder.domain())
+                {
+                    let value = *point.get(binder.ordinal() as usize)?;
+                    return Some((value, value));
+                }
+                let range = self
+                    .view
+                    .domain(binder.domain())?
+                    .structured()
+                    .binders
+                    .get(binder.ordinal() as usize)?;
+                Some((range.lower.min(range.upper), range.lower.max(range.upper)))
+            }
+            dae::ExpressionOperation::Unary { operator, operand } => {
+                let (low, high) = self.binder_subscript_interval(operand)?;
+                match operator {
+                    dae::UnaryOperator::Plus => Some((low, high)),
+                    dae::UnaryOperator::Negate => Some((high.checked_neg()?, low.checked_neg()?)),
+                    _ => None,
+                }
+            }
+            dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
+                let (a_low, a_high) = self.binder_subscript_interval(lhs)?;
+                let (b_low, b_high) = self.binder_subscript_interval(rhs)?;
+                match operator {
+                    dae::BinaryOperator::Add => {
+                        Some((a_low.checked_add(b_low)?, a_high.checked_add(b_high)?))
+                    }
+                    dae::BinaryOperator::Subtract => {
+                        Some((a_low.checked_sub(b_high)?, a_high.checked_sub(b_low)?))
+                    }
+                    dae::BinaryOperator::Multiply => {
+                        let products = [
+                            a_low.checked_mul(b_low)?,
+                            a_low.checked_mul(b_high)?,
+                            a_high.checked_mul(b_low)?,
+                            a_high.checked_mul(b_high)?,
+                        ];
+                        Some((*products.iter().min()?, *products.iter().max()?))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 
