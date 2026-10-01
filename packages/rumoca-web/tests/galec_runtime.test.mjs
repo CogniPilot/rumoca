@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import path from "node:path";
 import test from "node:test";
 
 import {
@@ -71,7 +70,7 @@ test("renderGalec rejects a non-GALEC target before touching the addon wasm", as
 
 test("runtime re-exports the GALEC helper", () => {
   const runtimeSource = fs.readFileSync(
-    path.resolve("runtime", "rumoca_runtime.js"),
+    new URL("../runtime/rumoca_runtime.js", import.meta.url),
     "utf8",
   );
   assert.match(

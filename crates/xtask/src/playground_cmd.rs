@@ -39,18 +39,45 @@ pub(crate) fn run_playground_smoke_check(root: &Path) -> Result<()> {
     stage_playground_vendor_assets(root)?;
     check_playground_js_syntax(root)?;
     check_playground_expected_sources(root)?;
-    run_interactive_input_tests(root)?;
+    run_web_unit_tests(root)?;
     run_results_picker_smoke(root)?;
     run_single_threaded_wasm_smoke(root)
 }
 
-/// Keyboard, gamepad, and touch input mapping of the interactive runtime.
-fn run_interactive_input_tests(root: &Path) -> Result<()> {
+const WEB_UNIT_TEST_DIRS: [&str; 2] = ["packages/rumoca-web/tests", "packages/playground/tests"];
+
+/// Every `*.test.mjs` node unit test of the browser runtime and the
+/// playground, in a stable order.
+fn web_unit_test_files(root: &Path) -> Result<Vec<String>> {
+    let mut files = Vec::new();
+    for dir in WEB_UNIT_TEST_DIRS {
+        let entries = fs::read_dir(root.join(dir))
+            .with_context(|| format!("failed to read web test directory {dir}"))?;
+        for entry in entries {
+            let name = entry
+                .with_context(|| format!("failed to read entry in {dir}"))?
+                .file_name()
+                .to_string_lossy()
+                .into_owned();
+            if name.ends_with(".test.mjs") {
+                files.push(format!("{dir}/{name}"));
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn run_web_unit_tests(root: &Path) -> Result<()> {
+    let files = web_unit_test_files(root)?;
+    if files.is_empty() {
+        bail!(
+            "no web unit tests found under {}",
+            WEB_UNIT_TEST_DIRS.join(", ")
+        );
+    }
     let mut cmd = Command::new("node");
-    cmd.arg("--test")
-        .arg("packages/rumoca-web/tests/interactive_input.test.mjs")
-        .arg("packages/rumoca-web/tests/touch_controls.test.mjs")
-        .current_dir(root);
+    cmd.arg("--test").args(&files).current_dir(root);
     run_status(cmd)
 }
 

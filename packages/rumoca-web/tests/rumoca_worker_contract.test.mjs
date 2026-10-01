@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import path from "node:path";
 import test from "node:test";
 
 const workerSource = fs.readFileSync(
-  path.resolve("runtime", "rumoca_worker.js"),
+  new URL("../runtime/rumoca_worker.js", import.meta.url),
   "utf8",
 );
 
