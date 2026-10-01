@@ -77,17 +77,7 @@ pub fn integrated_state_names(dae: &dae::Dae) -> Result<Vec<String>, LowerError>
                 span: error.source_span(),
             }
         })?;
-    Ok(selection.basis.clone().unwrap_or_else(|| {
-        selection.primary.as_dae().inspect(|view| {
-            view.variables()
-                .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
-                .flat_map(|(_, variable)| {
-                    (0..variable.scalar_count())
-                        .filter_map(move |scalar| variable.scalar_name(scalar))
-                })
-                .collect()
-        })
-    }))
+    Ok(selection.integrated_names())
 }
 
 /// Why Solve lowering kept the reducer's basis for `dae` although its

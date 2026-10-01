@@ -16,8 +16,9 @@ use rumoca_phase_structural::{FormalStageCoordinate, ReducedSelectionChart};
 use super::{AlternateSelections, selection_coordinate};
 use crate::lower::typed_functions::formal_stages::FormalStageProgram;
 
-/// Lowest eligible priority of a state-class column: a source state, a
-/// `prefer` coordinate, or a demoted `always` coordinate (see `choice`).
+/// Lowest eligible priority of a state-class column: a source state or a
+/// `prefer` coordinate (see `choice`). An `always` coordinate is forced
+/// independent and never exchanged.
 const STATE_CLASS_PRIORITY: u8 = 4;
 
 /// One single exchange over stage column indices: the primary reconstructs
@@ -451,8 +452,9 @@ mod tests {
         ];
         let ranked = rank_exchanges(&choices, &[3], all_shared);
         assert_eq!(ranked, RankedExchanges::default());
-        // A demoted `always` or `prefer` coordinate is a state-class dependent.
-        let choices = [ColumnChoice::Eligible(8), ColumnChoice::Eligible(6), STATE];
+        // A `prefer` coordinate and a stated-initial `prefer` coordinate are
+        // state-class dependents.
+        let choices = [ColumnChoice::Eligible(7), ColumnChoice::Eligible(6), STATE];
         let ranked = rank_exchanges(&choices, &[2], all_shared);
         assert_eq!(
             ranked
@@ -465,13 +467,12 @@ mod tests {
     }
 
     #[test]
-    fn a_prefer_or_demoted_always_column_may_be_exchanged_out_but_a_forced_state_may_not() {
-        // MLS 3.7 §4.9.7.1 makes `prefer` and an `always` request on a
-        // coordinate that is not a genuine state preferences: each may be
-        // reconstructed by an alternate. A forced `always` state never is.
+    fn a_prefer_column_may_be_exchanged_out_but_a_forced_always_state_may_not() {
+        // MLS 3.7 §4.9.7.1 makes `prefer` a preference, so an alternate may
+        // reconstruct it; `always` is forced (§3.7.3) and never is.
         let prefer = ColumnChoice::Eligible(6);
-        let demoted_always = ColumnChoice::Eligible(8);
-        for incoming in [prefer, demoted_always] {
+        let stated_prefer = ColumnChoice::Eligible(7);
+        for incoming in [prefer, stated_prefer] {
             let ranked = rank_exchanges(&[STATE, incoming], &[1], all_shared);
             assert_eq!(
                 ranked.issued,

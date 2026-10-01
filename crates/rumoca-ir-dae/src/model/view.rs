@@ -702,6 +702,11 @@ impl<'dae> VariableView<'dae> {
         broadcast_scalar_values(values, self.scalar_count());
     }
 
+    /// Every scalar name of this declaration, in flat order.
+    pub fn scalar_names(self) -> impl Iterator<Item = String> + 'dae {
+        (0..self.scalar_count()).filter_map(move |scalar| self.scalar_name(scalar))
+    }
+
     pub fn scalar_name(self, flat_index: usize) -> Option<String> {
         let subscripts = self.value_type.scalar_subscripts(flat_index)?;
         if subscripts.is_empty() {

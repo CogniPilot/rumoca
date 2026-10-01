@@ -109,8 +109,11 @@ fn append_derivatives<'source, 'target>(
         } else {
             equation_orders[start]
         };
-        if order > 2 {
-            *refused = Some((start, 3));
+        if order > crate::differential_structure::FORMAL_ORDER_PROFILE {
+            *refused = Some((
+                start,
+                crate::differential_structure::FORMAL_ORDER_PROFILE + 1,
+            ));
             return Err(dae::DaeConstructionError::IncompleteDefinition {
                 kind: "formal derivative order beyond shared differentiation profile",
                 index: order,

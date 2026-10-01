@@ -217,9 +217,9 @@ fn a_singular_auxiliary_matrix_is_rejected_before_integration() {
         )
         .expect_err("a singular auxiliary matrix must refuse simulation");
         assert!(
-            error
-                .to_string()
-                .contains("stage -2 has a singular dependent Jacobian"),
+            error.to_string().contains(
+                "stage -2 has no regular basis that integrates the StateSelect.always values theta"
+            ),
             "{error}"
         );
     }

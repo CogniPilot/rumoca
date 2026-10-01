@@ -7,6 +7,7 @@
 mod assignment;
 mod offsets;
 mod tensor_offsets;
+pub(crate) use tensor_offsets::FORMAL_ORDER_PROFILE;
 pub use tensor_offsets::{PreferredAdmission, TensorDifferentialOffsets};
 #[cfg(test)]
 mod tests;

@@ -70,18 +70,7 @@ pub(super) fn analyze<'analysis, 'dae>(
         })?;
         row_groups.push(start..end);
     }
-    let mut column_groups = Vec::new();
-    let mut start = 0;
-    while start < source.variables.len() {
-        let variable = source.variables[start].variable;
-        let end = source.variables[start..]
-            .iter()
-            .take_while(|coordinate| coordinate.variable == variable)
-            .count()
-            + start;
-        column_groups.push(start..end);
-        start = end;
-    }
+    let column_groups = declaration_column_groups(source);
     let groups = OwnerGroups {
         rows: &row_groups,
         columns: &column_groups,
@@ -115,7 +104,7 @@ pub(super) fn analyze<'analysis, 'dae>(
     else {
         return Ok(None);
     };
-    let preferred = admit_preferred(
+    let mut preferred = admit_preferred(
         source,
         groups,
         (&mut equations, &mut variables),
@@ -125,6 +114,29 @@ pub(super) fn analyze<'analysis, 'dae>(
         },
     )
     .map_err(|reason| contract(&spans, reason))?;
+    let undifferentiated = |group: &Range<usize>| {
+        let variable = view
+            .variable(source.variables[group.start].variable)
+            .expect("source differential coordinate");
+        variable.role() != dae::VariableRole::State
+            && matches!(
+                variable.continuous_state_select(),
+                Some(rumoca_core::StateSelect::Always | rumoca_core::StateSelect::Prefer)
+            )
+            && !withheld.contains(&source.variables[group.start].variable.index())
+    };
+    preferred.extend(
+        deepen_requested(
+            source,
+            groups,
+            (&mut equations, &mut variables),
+            (undifferentiated, |column: usize| {
+                view.variable(source.variables[column].variable)
+                    .is_some_and(|variable| variable.role() == dae::VariableRole::State)
+            }),
+        )
+        .map_err(|reason| contract(&spans, reason))?,
+    );
     if offsets::certify(
         &source.rows,
         &source.matching,
@@ -193,6 +205,89 @@ fn admit_preferred(
         (*equations, *variables) = (next_equations, next_variables);
     }
     Ok(admitted)
+}
+
+/// Deepest equation order the shared differentiation profile constructs.
+pub(crate) const FORMAL_ORDER_PROFILE: u32 = 2;
+
+/// Place each undifferentiated `StateSelect.always` or `prefer` declaration that
+/// holds a formal successor at the deepest derivative level its own equations
+/// admit: its order rises while the closure raises no differentiated source
+/// declaration and no equation beyond [`FORMAL_ORDER_PROFILE`]. An algebraic tied
+/// to position-level coordinates (a joint's `x = prismatic.s`) then competes at
+/// their stage,
+/// where MLS 3.7 §4.9.7.1 asks for it as a state; one tied to rates stays at the
+/// rate stage. Each raise is recorded like an admission, so a refused
+/// prolongation withholds it.
+fn deepen_requested(
+    source: &DifferentialStructure<'_>,
+    groups: OwnerGroups<'_>,
+    (equations, variables): (&mut Vec<u32>, &mut Vec<u32>),
+    (requested, differentiated): (impl Fn(&Range<usize>) -> bool, impl Fn(usize) -> bool),
+) -> Result<Vec<PreferredAdmission>, &'static str> {
+    let mut deepened = Vec::new();
+    for group in groups.columns {
+        if variables[group.start] == 0 || !requested(group) {
+            continue;
+        }
+        loop {
+            let mut raised = variables.clone();
+            let order = variables[group.start] + 1;
+            raised[group.clone()].fill(order);
+            let Some((next_equations, next_variables)) = refine(
+                &source.rows,
+                &source.matching,
+                (equations, &raised),
+                groups,
+                source.invariant_columns(),
+            )?
+            else {
+                break;
+            };
+            let states_unchanged = next_variables
+                .iter()
+                .zip(raised.iter())
+                .enumerate()
+                .all(|(column, (next, current))| next == current || !differentiated(column));
+            if !states_unchanged
+                || next_equations
+                    .iter()
+                    .any(|&order| order > FORMAL_ORDER_PROFILE)
+            {
+                break;
+            }
+            deepened.push(PreferredAdmission {
+                variable: source.variables[group.start].variable.index(),
+                raised_owners: groups
+                    .rows
+                    .iter()
+                    .filter(|rows| {
+                        !rows.is_empty() && next_equations[rows.start] > equations[rows.start]
+                    })
+                    .map(|rows| (rows.start, equations[rows.start]))
+                    .collect(),
+            });
+            (*equations, *variables) = (next_equations, next_variables);
+        }
+    }
+    Ok(deepened)
+}
+
+/// The column ranges of each source declaration, in canonical order.
+fn declaration_column_groups(source: &DifferentialStructure<'_>) -> Vec<Range<usize>> {
+    let mut column_groups = Vec::new();
+    let mut start = 0;
+    while start < source.variables.len() {
+        let variable = source.variables[start].variable;
+        let end = source.variables[start..]
+            .iter()
+            .take_while(|coordinate| coordinate.variable == variable)
+            .count()
+            + start;
+        column_groups.push(start..end);
+        start = end;
+    }
+    column_groups
 }
 
 #[derive(Clone, Copy)]

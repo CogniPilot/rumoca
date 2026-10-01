@@ -161,8 +161,9 @@ fn unintegrated_prefer((_, variable): (dae::VariableId<'_>, dae::VariableView<'_
         && variable.role() != dae::VariableRole::State
 }
 
-/// Whether the reducer's basis integrates a `never` value, and whether it
-/// demoted a source state that ranks above one it integrates (MLS 3.7
+/// Whether the reducer's basis violates a requirement, integrating a `never`
+/// value or omitting an `always` value, and whether it demoted a source state
+/// that ranks above one it integrates (MLS 3.7
 /// §4.9.7.1 order `never` < `avoid` < `default` < `prefer` < `always`).
 fn basis_violations(source: dae::DaeView<'_>, integrated: dae::DaeView<'_>) -> (bool, bool) {
     let kept = integrated
@@ -172,10 +173,13 @@ fn basis_violations(source: dae::DaeView<'_>, integrated: dae::DaeView<'_>) -> (
         .collect::<BTreeSet<_>>();
     let mut lowest_kept = None::<u8>;
     let mut highest_demoted = None::<u8>;
+    let mut always_omitted = false;
     for (_, variable) in source.variables() {
         let Some(selection) = variable.continuous_state_select() else {
             continue;
         };
+        always_omitted |=
+            selection == StateSelect::Always && !kept.contains(variable.name().as_str());
         if variable.role() != dae::VariableRole::State {
             continue;
         }
@@ -190,7 +194,7 @@ fn basis_violations(source: dae::DaeView<'_>, integrated: dae::DaeView<'_>) -> (
         (lowest_kept, highest_demoted),
         (Some(kept), Some(demoted)) if demoted > kept
     );
-    (lowest_kept == Some(0), ranked)
+    (lowest_kept == Some(0) || always_omitted, ranked)
 }
 
 /// Whether a named basis honors the source `StateSelect` preferences (MLS 3.7
@@ -202,9 +206,7 @@ pub(super) fn ranks_above(model: &dae::Dae, basis: &[String], incumbent: dae::Da
     let incumbent = incumbent
         .variables()
         .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
-        .flat_map(|(_, variable)| {
-            (0..variable.scalar_count()).filter_map(move |scalar| variable.scalar_name(scalar))
-        })
+        .flat_map(|(_, variable)| variable.scalar_names())
         .collect::<Vec<_>>();
     model.inspect(|source| {
         let ranks = source
@@ -214,8 +216,7 @@ pub(super) fn ranks_above(model: &dae::Dae, basis: &[String], incumbent: dae::Da
                     .continuous_state_select()
                     .unwrap_or_default()
                     .rank();
-                (0..variable.scalar_count())
-                    .filter_map(move |scalar| Some((variable.scalar_name(scalar)?, rank)))
+                variable.scalar_names().map(move |name| (name, rank))
             })
             .collect::<std::collections::HashMap<_, _>>();
         let profile = |names: &[String]| {
@@ -261,9 +262,7 @@ pub(super) fn integrates_preferred_value(
         source
             .variables()
             .filter(|&(id, variable)| unintegrated_prefer((id, variable)))
-            .flat_map(|(_, variable)| {
-                (0..variable.scalar_count()).filter_map(move |scalar| variable.scalar_name(scalar))
-            })
+            .flat_map(|(_, variable)| variable.scalar_names())
             .collect::<BTreeSet<_>>()
     });
     basis

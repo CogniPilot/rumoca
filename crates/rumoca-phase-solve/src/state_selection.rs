@@ -82,7 +82,37 @@ pub(crate) fn prepare<'source>(
         None => prepare_source(model, overrides)?,
         Some(transformed) => prepare_quotient(transformed, overrides)?,
     };
+    require_always_states(model, &selection)?;
     own_selection_loop_guards(selection)
+}
+
+/// MLS 3.7 §3.7.3: "It is an error if the variable cannot be selected as a
+/// state." Every continuous Real `StateSelect.always` scalar of `model` is one
+/// the prepared selection integrates; otherwise the selection is refused, naming
+/// the scalars.
+fn require_always_states(
+    model: &dae::Dae,
+    selection: &PreparedSelection<'_>,
+) -> Result<(), StructuralError> {
+    let integrated = selection
+        .integrated_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let omitted = model.inspect(|source| {
+        source
+            .variables()
+            .filter(|(_, variable)| requests_forced_state(*variable))
+            .flat_map(|(_, variable)| variable.scalar_names())
+            .filter(|name| !integrated.contains(name))
+            .collect::<Vec<_>>()
+    });
+    if omitted.is_empty() {
+        return Ok(());
+    }
+    Err(failure(format!(
+        "the StateSelect.always values {} cannot be selected as states (MLS 3.7 §4.9.7.1, §3.7.3)",
+        omitted.join(", ")
+    )))
 }
 
 /// SPEC_0044 ME-EVENT-008: after BLT, a relation inside `smooth` that reads
@@ -375,6 +405,19 @@ fn quotient_formal_candidate(
 }
 
 impl<'source> PreparedSelection<'source> {
+    /// The scalars the primary integrates, as source scalar names: the formal
+    /// selection's record when one chose the basis, else the primary's states.
+    pub(crate) fn integrated_names(&self) -> Vec<String> {
+        self.basis.clone().unwrap_or_else(|| {
+            self.primary.as_dae().inspect(|view| {
+                view.variables()
+                    .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
+                    .flat_map(|(_, variable)| variable.scalar_names())
+                    .collect()
+            })
+        })
+    }
+
     /// The retained (or reducer-accepted) basis with no alternate charts. Every
     /// model that keeps its source basis or reduces without a folding
     /// first-integral group carries no alternates.
@@ -460,7 +503,8 @@ type SelectionWithAlternates<'formal> = (
 );
 
 /// Refuse a `StateSelect.always` request for more independent coordinates than
-/// the differential dimension provides.
+/// the differential dimension provides, or for a value without a formal
+/// derivative.
 fn check_forced_state_count(
     formal: FormalDerivativeView<'_, '_, '_>,
 ) -> Result<(), StructuralError> {
@@ -474,6 +518,20 @@ fn check_forced_state_count(
         return Err(failure(format!(
             "StateSelect.always requires {required} independent coordinates, but the differential dimension is {}",
             formal.formal_dimension()
+        )));
+    }
+    let underived = formal
+        .source
+        .variables()
+        .filter(|&(id, variable)| {
+            requests_forced_state(variable) && formal.coordinate(id, 1).is_none()
+        })
+        .map(|(_, variable)| variable.name().to_string())
+        .collect::<Vec<_>>();
+    if !underived.is_empty() {
+        return Err(failure(format!(
+            "the StateSelect.always values {} cannot be selected as states: their equations admit no derivative (MLS 3.7 §4.9.7.1, §3.7.3)",
+            underived.join(", ")
         )));
     }
     Ok(())
@@ -730,25 +788,14 @@ impl ReducedFoldGroup {
     }
 }
 
-/// A `StateSelect.always` request forces an independent differential state only
-/// for a genuine state variable, which owns an independent integration slot. An
-/// algebraic or output coordinate carries no such slot: it is structurally
-/// determined by the equation system (an alias of another state's derivative, an
-/// acceleration-level derivative sensor, or a constraint/function output), so it
-/// cannot be an independent state. MLS 3.7 §4.9.7.1 makes `always` a request, not
-/// a guarantee: a coordinate that cannot be a state is demoted rather than failing.
+/// MLS 3.7 §4.9.7.1: `StateSelect.always` means "Do use it as a state", and
+/// §3.7.3 makes it "an error if the variable cannot be selected as a state".
+/// Every continuous Real `always` value, differentiated in the source or not, is
+/// a forced independent coordinate; a stage that cannot keep it independent is
+/// a typed refusal naming it.
 fn requests_forced_state(variable: dae::VariableView<'_>) -> bool {
-    variable.state_select() == StateSelect::Always
-        && variable.variability() == dae::ExpressionVariability::Continuous
-        && variable.role() == dae::VariableRole::State
+    variable.continuous_state_select() == Some(StateSelect::Always)
 }
-
-/// Eligibility priority for a demoted `StateSelect.always` algebraic coordinate.
-/// It is above every other group (`Prefer` peaks at 6, plus a stated-initial-
-/// value bump), so the demoted request is honored as an independent state
-/// whenever the stage's constraint structure admits it, and is released to a
-/// dependent coordinate only when it cannot be an independent state.
-const DEMOTED_ALWAYS_PRIORITY: u8 = 8;
 
 fn choice<'source, 'formal>(
     formal: FormalDerivativeView<'_, 'source, 'formal>,
@@ -758,14 +805,7 @@ fn choice<'source, 'formal>(
     let source = coordinate.source_variable();
     if coordinate.order() == 0 {
         match source.state_select() {
-            StateSelect::Always if requests_forced_state(source) => {
-                return ColumnChoice::Independent;
-            }
-            StateSelect::Always => {
-                return ColumnChoice::Eligible(
-                    DEMOTED_ALWAYS_PRIORITY + u8::from(stated_initial_value),
-                );
-            }
+            _ if requests_forced_state(source) => return ColumnChoice::Independent,
             StateSelect::Never => return ColumnChoice::Dependent,
             _ => {}
         }
@@ -791,29 +831,49 @@ fn failure(error: impl std::fmt::Display) -> StructuralError {
     }
 }
 
-/// The typed refusal for a stage without a regular dependent complement. When
-/// the stage holds `StateSelect.never` values, which the selection keeps
-/// dependent (MLS 3.7 §4.9.7.1), the refusal names them: no admissible basis
-/// avoids them.
+/// The typed refusal for a stage without a regular dependent complement. The
+/// stage's requested values are named: `StateSelect.always` values it must
+/// integrate and `StateSelect.never` values it must keep dependent (MLS 3.7
+/// §4.9.7.1; §3.7.3: "It is an error if the variable cannot be selected as a
+/// state").
 fn rank_failure(
     level: i64,
     coordinates: &[(FormalStageCoordinate<'_, '_>, usize)],
 ) -> StructuralError {
-    let never = coordinates
-        .iter()
-        .filter(|(coordinate, _)| {
-            coordinate.order() == 0
-                && coordinate.source_variable().state_select() == StateSelect::Never
-        })
-        .filter_map(|&(coordinate, scalar)| coordinate.source_variable().scalar_name(scalar))
-        .collect::<Vec<_>>();
-    if never.is_empty() {
+    let requested = |selection: StateSelect| {
+        coordinates
+            .iter()
+            .filter(|(coordinate, _)| {
+                coordinate.order() == 0
+                    && coordinate.source_variable().continuous_state_select() == Some(selection)
+            })
+            .filter_map(|&(coordinate, scalar)| coordinate.source_variable().scalar_name(scalar))
+            .collect::<Vec<_>>()
+    };
+    let (always, never) = (
+        requested(StateSelect::Always),
+        requested(StateSelect::Never),
+    );
+    let mut conditions = Vec::new();
+    if !always.is_empty() {
+        conditions.push(format!(
+            "integrates the StateSelect.always values {}",
+            always.join(", ")
+        ));
+    }
+    if !never.is_empty() {
+        conditions.push(format!(
+            "keeps the StateSelect.never values {} out of the integrated states",
+            never.join(", ")
+        ));
+    }
+    if conditions.is_empty() {
         return failure(format!(
             "stage {level} has a singular dependent Jacobian under the required state selection"
         ));
     }
     failure(format!(
-        "stage {level} has no regular basis that keeps the StateSelect.never values {} out of the integrated states",
-        never.join(", ")
+        "stage {level} has no regular basis that {} (MLS 3.7 §4.9.7.1, §3.7.3)",
+        conditions.join(" and ")
     ))
 }

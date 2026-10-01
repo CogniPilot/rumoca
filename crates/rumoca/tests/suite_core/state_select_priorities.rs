@@ -343,3 +343,65 @@ initial equation
 end EqualRank;";
     assert_eq!(integrated(source, "EqualRank"), ["a"]);
 }
+
+#[test]
+fn an_always_value_the_equations_determine_is_refused() {
+    // MLS 3.7 §4.9.7.1 "Do use it as a state" and §3.7.3 "It is an error if
+    // the variable cannot be selected as a state": y = sin(time) has no
+    // independent integration slot, so the selection is refused and names y.
+    let source = "model Determined
+  Real x(start = 1, fixed = true);
+  Real y(stateSelect = StateSelect.always);
+equation
+  der(x) = -x;
+  y = sin(time);
+end Determined;";
+    let error = rumoca_phase_solve::integrated_state_names(&dae(source, "Determined"))
+        .expect_err("y cannot be a state");
+    let message = error.to_string();
+    assert!(message.contains("StateSelect.always values y"), "{message}");
+    assert!(message.contains("MLS 3.7"), "{message}");
+}
+
+#[test]
+fn always_values_the_selection_can_integrate_are_the_states() {
+    // The tank balance with `always` on temperature and level: the formal
+    // selection integrates exactly the requested values in place of U and m.
+    let tank = TANK.replace("StateSelect.prefer", "StateSelect.always");
+    assert_eq!(integrated(&tank, "PreferredTank"), ["T", "level"]);
+    // A position-level alias and a rate alias of one oscillator, as the
+    // rolling wheel set's coordinates and wheel speeds: each `always` value
+    // is integrated at the derivative level its own equations place it.
+    let source = "model Aliased
+  Real s(start = 0, fixed = true);
+  Real v(start = 1, fixed = true);
+  Real x(stateSelect = StateSelect.always);
+  Real w(stateSelect = StateSelect.always);
+equation
+  der(s) = v;
+  der(v) = -s;
+  x = 2*s;
+  w = der(s);
+end Aliased;";
+    assert_eq!(integrated(source, "Aliased"), ["w", "x"]);
+    let result = simulate_dae_with_diagnostics(
+        &dae(source, "Aliased"),
+        &SimOptions {
+            t_end: 1.0,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .expect("the requested basis simulates");
+    let (x, w) = (column(&result, "x"), column(&result, "w"));
+    for (row, &time) in result.times.iter().enumerate() {
+        assert!(
+            (result.data[x][row] - 2.0 * time.sin()).abs() < 1e-5,
+            "x at {time}"
+        );
+        assert!(
+            (result.data[w][row] - time.cos()).abs() < 1e-5,
+            "w at {time}"
+        );
+    }
+}
