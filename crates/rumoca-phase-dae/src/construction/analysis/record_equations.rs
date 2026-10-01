@@ -1,6 +1,48 @@
 use super::*;
 use rumoca_core::DefId;
 
+/// The system that owns one field equation of a record equation.
+///
+/// A record equation is the set of its field equations (MLS 3.7 §8.3.1
+/// expands an equality of records member-wise), and each field equation belongs to the
+/// system its target's role selects: an Integer, Boolean, or enumeration
+/// field such as `state.phase` of `Modelica.Media.Water` is a discrete-valued
+/// assignment (Appendix B), a discrete Real field a discrete Real equation,
+/// and every other field a continuous residual.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::construction) enum RecordFieldSystem {
+    Continuous,
+    DiscreteReal,
+    DiscreteValue,
+}
+
+impl RecordEquationPlan {
+    /// The system each field equation belongs to, in field order.
+    pub(in crate::construction) fn field_systems<'plan>(
+        &'plan self,
+        roles: &'plan HashMap<VarName, PlannedRole>,
+    ) -> impl Iterator<Item = (&'plan RecordEquationFieldPlan, RecordFieldSystem)> + 'plan {
+        self.fields.iter().map(move |field| {
+            let system = match roles.get(&field.target) {
+                Some(PlannedRole::DiscreteValue) => RecordFieldSystem::DiscreteValue,
+                Some(PlannedRole::DiscreteReal) => RecordFieldSystem::DiscreteReal,
+                _ => RecordFieldSystem::Continuous,
+            };
+            (field, system)
+        })
+    }
+
+    /// The discrete-valued field targets, which one B.1c owner defines.
+    pub(in crate::construction) fn discrete_value_targets<'plan>(
+        &'plan self,
+        roles: &'plan HashMap<VarName, PlannedRole>,
+    ) -> impl Iterator<Item = &'plan VarName> + 'plan {
+        self.field_systems(roles)
+            .filter(|(_, system)| *system == RecordFieldSystem::DiscreteValue)
+            .map(|(field, _)| &field.target)
+    }
+}
+
 pub(super) fn analyze_record_equations(
     flat: &flat::Model,
     equations: &[flat::Equation],

@@ -57,11 +57,13 @@ pub(super) fn source_balance(input: SourceBalanceInput<'_>) -> Result<BalanceDet
             aggregate_connections,
         )? {
             EquationPartition::Continuous => {
+                if let Some(plan) = record_equations.get(&row) {
+                    add_record_equation_counts(&mut detail, flat, equation, plan, roles)?;
+                    continue;
+                }
                 detail.continuous_equations += if let Some(plan) = multi_output_equations.get(&row)
                 {
                     multi_output_equation_scalar_count(flat, equation, plan)?
-                } else if let Some(plan) = record_equations.get(&row) {
-                    record_equation_scalar_count(flat, equation, plan)?
                 } else {
                     equation.scalar_count
                 };
@@ -175,25 +177,31 @@ fn add_algorithm_target(
     Ok(())
 }
 
-fn record_equation_scalar_count(
+/// Count each field equation of a record equation in the system its target
+/// belongs to.
+fn add_record_equation_counts(
+    detail: &mut BalanceDetail,
     flat: &flat::Model,
     equation: &flat::Equation,
     plan: &RecordEquationPlan,
-) -> Result<usize, ToDaeError> {
-    plan.fields.iter().try_fold(0usize, |count, field| {
-        count
-            .checked_add(checked_shape_size(
-                &field.target,
-                &flat.variables[&field.target],
-            )?)
-            .ok_or_else(|| {
-                ToDaeError::unsupported_flat(
-                    "record equation shape",
-                    "record field scalar count overflowed",
-                    equation.span,
-                )
-            })
-    })
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Result<(), ToDaeError> {
+    for (field, system) in plan.field_systems(roles) {
+        let size = checked_shape_size(&field.target, &flat.variables[&field.target])?;
+        let count = match system {
+            RecordFieldSystem::Continuous => &mut detail.continuous_equations,
+            RecordFieldSystem::DiscreteReal => &mut detail.discrete_real_equations,
+            RecordFieldSystem::DiscreteValue => &mut detail.discrete_value_definitions,
+        };
+        *count = count.checked_add(size).ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "record equation shape",
+                "record field scalar count overflowed",
+                equation.span,
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn checked_shape_size(name: &VarName, variable: &flat::Variable) -> Result<usize, ToDaeError> {

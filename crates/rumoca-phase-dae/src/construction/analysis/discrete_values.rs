@@ -82,9 +82,11 @@ pub(super) fn analyze_discrete_value_topology(
     roles: &HashMap<VarName, PlannedRole>,
     connection_ranks: &HashMap<VarName, usize>,
     aggregate_connections: &AggregateDiscreteConnections,
+    record_equations: &HashMap<usize, RecordEquationPlan>,
 ) -> Result<DiscreteValueTopologyPlan, ToDaeError> {
     let mut owners = Vec::new();
     collect_binding_owners(flat, roles, &mut owners)?;
+    collect_record_equation_owners(flat, roles, record_equations, &mut owners);
     collect_equation_owners(
         flat,
         roles,
@@ -96,6 +98,50 @@ pub(super) fn analyze_discrete_value_topology(
     collect_when_owners(flat, roles, &mut owners)?;
     let held_targets = add_held_owners(flat, roles, &mut owners);
     order_owners(owners, held_targets)
+}
+
+/// One owner per record equation with discrete-valued fields: the fields are
+/// assigned together from the equation's right side, in row order.
+fn collect_record_equation_owners(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    record_equations: &HashMap<usize, RecordEquationPlan>,
+    owners: &mut Vec<SourceOwner>,
+) {
+    let mut rows = record_equations.keys().copied().collect::<Vec<_>>();
+    rows.sort_unstable();
+    for row in rows {
+        let equation = &flat.equations[row];
+        let Expression::Binary { rhs, .. } = &equation.residual else {
+            continue;
+        };
+        let plan = &record_equations[&row];
+        let mut dependencies = current_discrete_dependencies(rhs, roles);
+        // A record-to-record equation reads its source fields by coordinate.
+        dependencies.extend(plan.fields.iter().filter_map(|field| match &field.value {
+            RecordEquationFieldValue::Coordinate(source)
+                if matches!(roles.get(source), Some(PlannedRole::DiscreteValue)) =>
+            {
+                Some(source.clone())
+            }
+            _ => None,
+        }));
+        let targets = plan
+            .discrete_value_targets(roles)
+            .map(|target| SourceTarget {
+                name: target.clone(),
+                dependencies: dependencies.clone(),
+                span: equation.span,
+                ordered_scalar_self_dependencies: false,
+            })
+            .collect::<Vec<_>>();
+        if !targets.is_empty() {
+            owners.push(SourceOwner {
+                targets,
+                span: equation.span,
+            });
+        }
+    }
 }
 
 fn collect_binding_owners(

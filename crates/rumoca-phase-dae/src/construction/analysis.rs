@@ -143,6 +143,7 @@ pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans
 use record_array_fields::{
     analyze_record_array_fields, validate_record_array_field_runtime_coordinates,
 };
+pub(super) use record_equations::RecordFieldSystem;
 use record_equations::analyze_record_equations;
 use sample_aliases::analyze_sample_aliases;
 use source_balance::{SourceBalanceInput, source_balance};
@@ -589,7 +590,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &function_shapes,
     )?;
     let (discrete_connection_ranks, aggregate_discrete_connections, discrete_value_topology) =
-        analyze_discrete_connections(flat, &roles)?;
+        analyze_discrete_connections(flat, &roles, &record_equations.continuous)?;
     let initial = analyze_initial_owners(
         flat,
         &roles,
@@ -913,6 +914,7 @@ fn validate_source_model(flat: &flat::Model) -> Result<(), ToDaeError> {
 fn analyze_discrete_connections(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
+    record_equations: &HashMap<usize, RecordEquationPlan>,
 ) -> Result<
     (
         HashMap<VarName, usize>,
@@ -923,7 +925,8 @@ fn analyze_discrete_connections(
 > {
     let ranks = discrete_connection_ranks(flat, roles);
     let aggregates = aggregate_discrete_connections(flat, roles, &ranks)?;
-    let topology = analyze_discrete_value_topology(flat, roles, &ranks, &aggregates)?;
+    let topology =
+        analyze_discrete_value_topology(flat, roles, &ranks, &aggregates, record_equations)?;
     Ok((ranks, aggregates, topology))
 }
 
@@ -1169,8 +1172,13 @@ fn analyze_source_balance(
         connection_ranks,
         aggregate_connections,
     } = input;
-    let assigned_discrete_targets =
-        defined_discrete_targets(flat, roles, connection_ranks, aggregate_connections)?;
+    let assigned_discrete_targets = defined_discrete_targets(
+        flat,
+        roles,
+        connection_ranks,
+        aggregate_connections,
+        record_equations,
+    )?;
     let mut non_runtime_rows = clock_equation_rows.clone();
     non_runtime_rows.extend(derived_parameter_rows);
     let detail = source_balance(SourceBalanceInput {

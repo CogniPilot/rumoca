@@ -904,8 +904,16 @@ pub(super) fn defined_discrete_targets(
     roles: &HashMap<VarName, PlannedRole>,
     connection_ranks: &HashMap<VarName, usize>,
     aggregate_connections: &AggregateDiscreteConnections,
+    record_equations: &HashMap<usize, RecordEquationPlan>,
 ) -> Result<HashSet<VarName>, ToDaeError> {
     let mut targets = event_targets(flat);
+    for plan in record_equations.values() {
+        targets.extend(
+            plan.field_systems(roles)
+                .filter(|(_, system)| *system != RecordFieldSystem::Continuous)
+                .map(|(field, _)| field.target.clone()),
+        );
+    }
     targets.extend(algorithm_targets(flat).into_iter().filter(|target| {
         matches!(
             roles.get(target),

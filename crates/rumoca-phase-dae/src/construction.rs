@@ -59,14 +59,15 @@ use analysis::{
     FunctionStatementPlan, FunctionValueSeed, HistoryOperatorPlans, ModelAlgorithmPlan,
     ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan,
     MultiOutputEquationPlan, PlannedRole, RecordArrayFieldPlan, RecordArrayFieldPlans,
-    RecordEquationFieldValue, RecordEquationPlan, RuntimeVariableRole, SemiLinearRules,
-    StructuredSource, WhenBranchKey, analyze, assigned_function_targets, branch_never_completes,
-    discrete_value_assignment, effective_function_scalar_type, effective_variable_scalar_type,
-    empty_array_bound_to_declaration, equation_partition, flattened_function_loop_source,
-    function_assertion, function_record_field_name, inferred_clock_transfer, is_event_condition,
-    is_inferred_clock_condition, is_whole_clock_coordinate, materialized_discrete_real_family,
-    materialized_discrete_value_rows, model_algorithm_targets, record_field_projections,
-    selected_conditional_statements, specialized_comprehension_plan, structured_assignment_names,
+    RecordEquationFieldPlan, RecordEquationFieldValue, RecordEquationPlan, RuntimeVariableRole,
+    SemiLinearRules, StructuredSource, WhenBranchKey, analyze, assigned_function_targets,
+    branch_never_completes, discrete_value_assignment, effective_function_scalar_type,
+    effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
+    flattened_function_loop_source, function_assertion, function_record_field_name,
+    inferred_clock_transfer, is_event_condition, is_inferred_clock_condition,
+    is_whole_clock_coordinate, materialized_discrete_real_family, materialized_discrete_value_rows,
+    model_algorithm_targets, record_field_projections, selected_conditional_statements,
+    specialized_comprehension_plan, structured_assignment_names,
     when_conditional_selects_clock_structure,
 };
 use clock_operator_hosts::clock_operator_hosts;
@@ -1872,10 +1873,13 @@ fn lower_equations<'dae>(
                 construction,
                 coordinates,
                 functions,
-                equation,
-                plan,
+                (equation, plan),
                 owner,
-                input.initialization,
+                (!input.initialization).then_some(MultiOutputDiscreteOwners {
+                    discrete_values: &mut *discrete_values,
+                    topology: input.topology,
+                    owner_clock,
+                }),
             )?;
             continue;
         }
