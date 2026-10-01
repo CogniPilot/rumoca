@@ -518,5 +518,4 @@ fn unix_timestamp_seconds() -> u64 {
 }
 
 #[cfg(test)]
-#[path = "coverage_gate_tests.rs"]
 mod tests;
