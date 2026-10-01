@@ -246,3 +246,28 @@ fn variable_scalar_name(mut name: &str) -> &str {
     }
     name
 }
+
+/// Whether a named basis integrates an undifferentiated `StateSelect.prefer`
+/// value of `model` and ranks above `incumbent`. A retained manifold of
+/// conserved first integrals keeps its source coordinates against a selection
+/// that only drops lower-ranked differentiated coordinates: reducing it folds
+/// where a selected coordinate passes through zero (SPEC_0053 §1).
+pub(super) fn integrates_preferred_value(
+    model: &dae::Dae,
+    basis: &[String],
+    incumbent: dae::DaeView<'_>,
+) -> bool {
+    let preferred = model.inspect(|source| {
+        source
+            .variables()
+            .filter(|&(id, variable)| unintegrated_prefer((id, variable)))
+            .flat_map(|(_, variable)| {
+                (0..variable.scalar_count()).filter_map(move |scalar| variable.scalar_name(scalar))
+            })
+            .collect::<BTreeSet<_>>()
+    });
+    basis
+        .iter()
+        .any(|name| preferred.contains(variable_scalar_name(name)))
+        && ranks_above(model, basis, incumbent)
+}

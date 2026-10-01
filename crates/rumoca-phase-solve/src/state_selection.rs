@@ -21,7 +21,7 @@ use rumoca_phase_structural::{
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
 
 use evaluation::TrialPoint;
-use preferences::{executes_preferred_basis, prefer_or_retain, ranks_above};
+use preferences::{executes_preferred_basis, integrates_preferred_value, prefer_or_retain};
 
 /// The prepared reduced state selection: the primary basis every model executes,
 /// plus one prepared alternate DAE per alternate reduced chart, either a mirror
@@ -235,12 +235,13 @@ fn reduce_or_retain<'source>(
     })?;
     // Retain the source basis when every manifold constraint is a conserved
     // first integral, reduce when any constraint is a redundant loop closure.
-    // A selection that honors the `StateSelect` preferences better than the
-    // retained source coordinates also reduces (MLS 3.7 §4.9.7.1).
+    // A selection that integrates an undifferentiated `StateSelect.prefer`
+    // value and ranks above the retained source coordinates also reduces
+    // (MLS 3.7 §4.9.7.1).
     if !prepared.manifold_requires_reduction()
         && !prepared
             .as_dae()
-            .inspect(|view| ranks_above(model, &basis, view))
+            .inspect(|view| integrates_preferred_value(model, &basis, view))
     {
         return Ok(PreparedSelection::retained(prepared));
     }
@@ -260,8 +261,9 @@ fn reduce_or_retain<'source>(
 /// retains with a reduced state selection built from the formal derivatives of
 /// `model`: exactly when [`reduce_or_retain`] reduces, which is when the manifold
 /// is nonempty, the formal dimension is below the retained state count, and some
-/// manifold constraint is a redundant loop closure or the selection honors the
-/// `StateSelect` preferences better than the retained coordinates, or when a
+/// manifold constraint is a redundant loop closure or the selection integrates an
+/// undifferentiated `StateSelect.prefer` value and ranks above the retained
+/// coordinates, or when a
 /// manifold-free
 /// system's preferences select a basis other than the reducer's. `model` is
 /// the system `prepared` was prepared from.
@@ -279,7 +281,7 @@ pub(crate) fn executes_reduced_selection(
         })?;
         return Ok(prepared
             .as_dae()
-            .inspect(|view| ranks_above(model, &basis, view)));
+            .inspect(|view| integrates_preferred_value(model, &basis, view)));
     }
     executes_preferred_basis(model, prepared)
 }
