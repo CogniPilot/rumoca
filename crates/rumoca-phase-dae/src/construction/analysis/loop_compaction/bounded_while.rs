@@ -22,32 +22,50 @@
 //!   `k := k + d` with a positive Integer literal `d`, writes `k` after that
 //!   statement nowhere, and before it only as `k := N` (the `isEqual` early
 //!   exit), which cannot lower `k` while `c` holds;
-//! * `k` is at least 1 whenever `c` is evaluated: either `c` reads an array
-//!   element with `k` as a subscript (MLS §10.5 makes an index below 1 an
-//!   error), or `k` enters the loop holding a literal of at least 1 (its last
-//!   dominating assignment, or its declaration binding when nothing wrote it).
+//! * `k` has a proven floor `s` whenever `c` is evaluated: either `c` reads an
+//!   array element with `k` as a subscript (MLS §10.5 makes an index below 1
+//!   an error, so `s = 1`), or `k` enters the loop holding the literal `s`
+//!   (its last dominating assignment, or its declaration binding when nothing
+//!   wrote it), as the Media inversions' `Integer i = 0` counters do.
 //!
-//! Then every iteration raises `k` by at least 1 from at least 1 while `k`
-//! stays at most `N`, so `B = N` iterations suffice. A loop without such a
-//! proof is left as written and keeps its typed rejection.
+//! Then every iteration raises `k` by at least 1 from at least `s` while `k`
+//! stays at most `N`, so `B = N - min(s, 1) + 1` iterations suffice (`B = N`
+//! for `s >= 1`). A loop without such a proof is left as written and keeps
+//! its typed rejection.
 
 use super::*;
 use rumoca_core::{ForIndex, Literal, OpBinary, StatementBlock};
 
-/// Literal Integer values each name is proven to hold at the current point.
+/// Literal Integer values each name is proven to hold at the current point; a
+/// Boolean name holds 0 for `false` and 1 for `true`.
 pub(super) type EntryValues = HashMap<VarName, i64>;
 
-/// The literal Integer defaults of a function's locals, which hold at entry.
+/// The Integer or Boolean value of a literal.
+fn literal_value(expression: &Expression) -> Option<i64> {
+    match expression {
+        Expression::Literal {
+            value: Literal::Integer(value),
+            ..
+        } => Some(*value),
+        Expression::Literal {
+            value: Literal::Boolean(value),
+            ..
+        } => Some(i64::from(*value)),
+        _ => None,
+    }
+}
+
+/// The literal Integer and Boolean defaults of a function's locals, which hold
+/// at entry.
 pub(super) fn entry_values(function: &rumoca_core::Function) -> EntryValues {
     function
         .locals
         .iter()
-        .filter_map(|local| match local.default.as_ref()? {
-            Expression::Literal {
-                value: Literal::Integer(value),
-                ..
-            } => Some((VarName::new(&local.name), *value)),
-            _ => None,
+        .filter_map(|local| {
+            Some((
+                VarName::new(&local.name),
+                literal_value(local.default.as_ref()?)?,
+            ))
         })
         .collect()
 }
@@ -60,7 +78,7 @@ pub(super) fn bound_while_loops(
     let mut known = entry.clone();
     let mut bounded = Vec::with_capacity(statements.len());
     for statement in statements {
-        bounded.push(bound_statement(statement, shapes, &known));
+        bounded.extend(bound_statement(statement, shapes, &known));
         advance_known(&mut known, statement);
     }
     bounded
@@ -68,22 +86,15 @@ pub(super) fn bound_while_loops(
 
 /// The values still proven after `statement` runs.
 fn advance_known(known: &mut EntryValues, statement: &rumoca_core::Statement) {
-    if let rumoca_core::Statement::Assignment {
-        comp,
-        value:
-            Expression::Literal {
-                value: Literal::Integer(value),
-                ..
-            },
-        ..
-    } = statement
+    if let rumoca_core::Statement::Assignment { comp, value, .. } = statement
+        && let Some(value) = literal_value(value)
         && comp.parts().iter().all(|part| part.subs.is_empty())
     {
         known.insert(
             rumoca_core::component_ref_to_base_reference(comp)
                 .var_name()
                 .clone(),
-            *value,
+            value,
         );
         return;
     }
@@ -102,26 +113,103 @@ fn loop_entry(known: &EntryValues, body: &[rumoca_core::Statement]) -> EntryValu
         .collect()
 }
 
+/// `statement` with every `while` loop it contains bounded.
+///
+/// A bounded loop whose condition provably holds on entry runs its body at
+/// least once, so that first iteration is written out unconditionally ahead
+/// of the guarded remainder; the definitions it makes are then visible on
+/// every path, as the source loop guarantees.
 fn bound_statement(
+    statement: &rumoca_core::Statement,
+    shapes: &ShapeEnvironment,
+    known: &EntryValues,
+) -> Vec<rumoca_core::Statement> {
+    let rumoca_core::Statement::While { block, span } = statement else {
+        return vec![bound_nested_statement(statement, shapes, known)];
+    };
+    let body = bound_while_loops(&block.stmts, shapes, &loop_entry(known, &block.stmts));
+    let block = StatementBlock {
+        cond: block.cond.clone(),
+        stmts: body,
+    };
+    let Some(bound) = iteration_bound(&block, known, shapes) else {
+        return vec![rumoca_core::Statement::While { block, span: *span }];
+    };
+    if entry_truth(&block.cond, known, shapes) != Some(true) {
+        return vec![guarded_for(block, bound, *span)];
+    }
+    let mut peeled = block.stmts.clone();
+    if bound > 1 {
+        peeled.push(guarded_for(block, bound - 1, *span));
+    }
+    peeled
+}
+
+/// The truth value `condition` is proven to have from the known literal
+/// values, or `None` when any operand is not known.
+fn entry_truth(
+    condition: &Expression,
+    known: &EntryValues,
+    shapes: &ShapeEnvironment,
+) -> Option<bool> {
+    match condition {
+        Expression::Literal {
+            value: Literal::Boolean(value),
+            ..
+        } => Some(*value),
+        Expression::VarRef { .. } => known
+            .get(plain_reference(condition)?)
+            .map(|value| *value != 0),
+        Expression::Unary {
+            op: rumoca_core::OpUnary::Not,
+            rhs,
+            ..
+        } => entry_truth(rhs, known, shapes).map(|value| !value),
+        Expression::Binary {
+            op: OpBinary::And,
+            lhs,
+            rhs,
+            ..
+        } => Some(entry_truth(lhs, known, shapes)? && entry_truth(rhs, known, shapes)?),
+        Expression::Binary {
+            op: OpBinary::Or,
+            lhs,
+            rhs,
+            ..
+        } => Some(entry_truth(lhs, known, shapes)? || entry_truth(rhs, known, shapes)?),
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = entry_integer(lhs, known, shapes)?;
+            let rhs = entry_integer(rhs, known, shapes)?;
+            match op {
+                OpBinary::Lt => Some(lhs < rhs),
+                OpBinary::Le => Some(lhs <= rhs),
+                OpBinary::Gt => Some(lhs > rhs),
+                OpBinary::Ge => Some(lhs >= rhs),
+                OpBinary::Eq => Some(lhs == rhs),
+                OpBinary::Neq => Some(lhs != rhs),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn entry_integer(
+    expression: &Expression,
+    known: &EntryValues,
+    shapes: &ShapeEnvironment,
+) -> Option<i64> {
+    plain_reference(expression)
+        .and_then(|name| known.get(name).copied())
+        .or_else(|| shapes.proven_extent(expression))
+}
+
+fn bound_nested_statement(
     statement: &rumoca_core::Statement,
     shapes: &ShapeEnvironment,
     known: &EntryValues,
 ) -> rumoca_core::Statement {
     match statement {
-        rumoca_core::Statement::While { block, span } => {
-            let body = bound_while_loops(&block.stmts, shapes, &loop_entry(known, &block.stmts));
-            let block = StatementBlock {
-                cond: block.cond.clone(),
-                stmts: body,
-            };
-            iteration_bound(&block, known, shapes).map_or_else(
-                || rumoca_core::Statement::While {
-                    block: block.clone(),
-                    span: *span,
-                },
-                |bound| guarded_for(block.clone(), bound, *span),
-            )
-        }
         rumoca_core::Statement::For {
             indices,
             equations,
@@ -196,13 +284,28 @@ fn iteration_bound(
             limit.collect_var_refs(&mut reads);
             reads.iter().all(|name| !written.contains(name))
         };
-        let starts_positive = known.get(counter).is_some_and(|start| *start >= 1);
+        // The least value `k` can hold when `c` is evaluated: 1 when `c`
+        // indexes an array with it, otherwise its literal entry value.
+        let floor = if indexes_with(&block.cond, counter) {
+            Some(1)
+        } else {
+            known.get(counter).copied()
+        }?;
+        let iterations = iterations_from(bound, floor)?;
         (bound >= 0
             && limit_invariant
-            && advances_each_iteration(&block.stmts, counter, bound, shapes)
-            && (indexes_with(&block.cond, counter) || starts_positive))
-            .then_some(bound)
+            && advances_each_iteration(&block.stmts, counter, bound, shapes))
+        .then_some(iterations)
     })
+}
+
+/// An iteration bound for a counter that rises by at least 1 per iteration
+/// from at least `floor` while it stays at most `limit`: `limit - floor + 1`.
+/// A floor above 1 is taken as 1, which keeps the bound `limit` and only
+/// overestimates the iterations.
+fn iterations_from(limit: i64, floor: i64) -> Option<i64> {
+    let floor = floor.min(1);
+    limit.checked_sub(floor)?.checked_add(1)
 }
 
 fn collect_conjuncts<'a>(expression: &'a Expression, conjuncts: &mut Vec<&'a Expression>) {
