@@ -3632,6 +3632,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'STRM-012'
+category = 'Stream'
+name = 'actualStream flow product'
+mls_ref = '§15.3'
+requirement = 'The product of a flow variable and actualStream of a stream variable of the same connector is continuous, so a tool may treat it as smooth(0, ...)'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'TYPE-001'
 category = 'Type'
 name = 'Subtype redeclaration'

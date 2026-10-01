@@ -683,7 +683,100 @@ impl FallibleExpressionRewriter for StreamOperatorRewriter {
                 return self.rewrite_stream_call(operator, args, *span);
             }
         }
+        if let Some(product) = self.flow_weighted_actual_stream(expr)? {
+            return Ok(product);
+        }
         self.walk_expression(expr)
+    }
+}
+
+impl StreamOperatorRewriter {
+    /// Lower `port.m_flow * actualStream(port.h_outflow)` as one continuous
+    /// product.
+    ///
+    /// MLS §15.3: actualStream switches between `inStream(v)` and `v` exactly
+    /// where its own port's flow is zero, so the product with that flow is
+    /// continuous and a tool may treat it as `smooth(0, ...)` without an event.
+    /// An event there only re-detects the flow's sign change; near a zero-flow
+    /// equilibrium the flow keeps crossing zero at round-off scale and every
+    /// crossing became an event, which stalled the integration. A standalone
+    /// actualStream keeps its event (the change of the observed stream value
+    /// is discontinuous).
+    fn flow_weighted_actual_stream(
+        &mut self,
+        expr: &Expression,
+    ) -> Result<Option<Expression>, FlattenError> {
+        let Expression::Binary {
+            op: OpBinary::Mul,
+            lhs,
+            rhs,
+            span,
+        } = expr
+        else {
+            return Ok(None);
+        };
+        let lhs_is_weight = self.weights_own_actual_stream(lhs, rhs);
+        if !lhs_is_weight && !self.weights_own_actual_stream(rhs, lhs) {
+            return Ok(None);
+        }
+        let product = Expression::Binary {
+            op: OpBinary::Mul,
+            lhs: Box::new(self.rewrite_expression(lhs)?),
+            rhs: Box::new(self.rewrite_expression(rhs)?),
+            span: *span,
+        };
+        Ok(Some(Expression::BuiltinCall {
+            function: BuiltinFunction::Smooth,
+            args: vec![
+                Expression::Literal {
+                    value: Literal::Integer(0),
+                    span: *span,
+                },
+                product,
+            ],
+            span: *span,
+        }))
+    }
+
+    /// Whether `weight` is the flow variable of the port whose stream
+    /// `call` reads through `actualStream`.
+    fn weights_own_actual_stream(&self, weight: &Expression, call: &Expression) -> bool {
+        let Expression::FunctionCall {
+            name, args, span, ..
+        } = call
+        else {
+            return false;
+        };
+        if name.var_name().last_segment() != "actualStream" {
+            return false;
+        }
+        let [argument] = args.as_slice() else {
+            return false;
+        };
+        let Some(access) = stream_access(argument) else {
+            return false;
+        };
+        let Ok(endpoint) = self.endpoint_for(&access.name, *span) else {
+            return false;
+        };
+        let Some(weight) = stream_access(weight) else {
+            return false;
+        };
+        let same_connector = match (&weight.field_base, &access.field_base) {
+            (Some((weight_base, _)), Some((stream_base, _))) => {
+                rumoca_core::expressions_semantically_equal(weight_base, stream_base)
+            }
+            (None, None) => {
+                ComponentPath::from_flat_path(weight.name.as_str()).parent()
+                    == ComponentPath::from_flat_path(access.name.as_str()).parent()
+                    && rumoca_core::expressions_semantically_equal(
+                        &subscript_selection(&weight.subscripts, *span),
+                        &subscript_selection(&access.subscripts, *span),
+                    )
+            }
+            _ => false,
+        };
+        same_connector && weight.name.last_segment() == endpoint.flow.name.last_segment()
     }
 }
 
@@ -1158,4 +1251,14 @@ fn rewrite_when_equations(
         }
     }
     Ok(())
+}
+
+/// The subscripts of an access as one expression, so two accesses compare by
+/// structure rather than by source span.
+fn subscript_selection(subscripts: &[Subscript], span: Span) -> Expression {
+    Expression::Index {
+        base: Box::new(real_literal(0.0, span)),
+        subscripts: subscripts.to_vec(),
+        span,
+    }
 }

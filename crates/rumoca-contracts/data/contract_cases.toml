@@ -2039,6 +2039,13 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'STRM-012'
+case_id = 'strm_012_flow_weighted_actual_stream_owns_no_event'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'TYPE-005'
 case_id = 'type_005_class_component_mismatch'
 test_file = 'tests/type_contracts.rs'

@@ -740,3 +740,51 @@ fn strm_007_array_instream_elementwise_peer_values() {
     );
     assert_eq!(trace.final_value("v1.h_in[2]"), 5.0);
 }
+
+// =============================================================================
+// STRM-012: actualStream flow product
+// "The product of a flow variable and actualStream of a stream variable of the
+// same connector is continuous, so a tool may treat it as smooth(0, ...)"
+// =============================================================================
+
+#[test]
+fn strm_012_flow_weighted_actual_stream_owns_no_event() {
+    let result = expect_success(
+        r#"
+        model M
+            connector C
+                Real p;
+                flow Real m_flow;
+                stream Real h;
+            end C;
+            model Source
+                C port;
+            equation
+                port.h = 1;
+                port.m_flow = -sin(time);
+            end Source;
+            model Volume
+                C port;
+                Real H_flow;
+            equation
+                port.p = 1;
+                port.h = 2;
+                H_flow = port.m_flow*actualStream(port.h);
+            end Volume;
+            Source source;
+            Volume volume;
+        equation
+            connect(source.port, volume.port);
+        end M;
+    "#,
+        "M",
+    );
+    let lowered =
+        rumoca_sim::lower_dae_for_simulation(&result.dae, &rumoca_sim::SimOptions::default())
+            .expect("M lowers");
+    assert_eq!(
+        lowered.problem.events.root_conditions.output_count(),
+        0,
+        "the flow-weighted actualStream is continuous and owns no event"
+    );
+}

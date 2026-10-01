@@ -1,0 +1,86 @@
+//! MLS §15.3: `port.m_flow*actualStream(port.h_outflow)` is continuous, since
+//! actualStream switches exactly where its own port's flow is zero, so the
+//! product is lowered as `smooth(0, ..)` and owns no event. A standalone
+//! actualStream keeps its flow-reversal event. Near a zero-flow equilibrium
+//! (`Modelica.Fluid.Examples.Tanks.ThreeTanks`) the event on the product fired
+//! at every round-off sign change of the flow and stalled the integration.
+
+use rumoca::Compiler;
+use rumoca_sim::{SimOptions, lower_dae_for_simulation, simulate_dae_with_diagnostics};
+
+const SOURCE: &str = r#"
+package S
+  connector Port
+    Real p;
+    flow Real m_flow;
+    stream Real h_outflow;
+  end Port;
+  model Source
+    Port port;
+    parameter Real h = 1;
+  equation
+    port.h_outflow = h;
+    port.m_flow = -sin(time);
+  end Source;
+  model Volume
+    Port port;
+    Real H_flow;
+    Real h_seen;
+  equation
+    port.p = 1;
+    port.h_outflow = 2;
+    H_flow = port.m_flow*actualStream(port.h_outflow);
+    h_seen = actualStream(port.h_outflow);
+  end Volume;
+  model Top
+    Source source;
+    Volume volume;
+  equation
+    connect(source.port, volume.port);
+  end Top;
+end S;
+"#;
+
+#[test]
+fn a_flow_weighted_actual_stream_owns_no_event() {
+    let compiled = Compiler::new()
+        .model("S.Top")
+        .compile_str(SOURCE, "ActualStreamProduct.mo")
+        .unwrap_or_else(|error| panic!("S.Top compiles: {error:?}"));
+    let roots = lower_dae_for_simulation(&compiled.dae, &SimOptions::default())
+        .expect("S.Top lowers")
+        .problem
+        .events
+        .root_conditions
+        .output_count();
+    assert_eq!(roots, 1, "only the standalone actualStream owns an event");
+
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 10.0,
+            ..Default::default()
+        },
+    )
+    .expect("S.Top simulates");
+    let column = |name: &str| {
+        let index = result.names.iter().position(|n| n == name);
+        &result.data[index.unwrap_or_else(|| panic!("{name} in {:?}", result.names))]
+    };
+    for (index, time) in result.times.iter().enumerate() {
+        let m_flow = time.sin();
+        let upstream = if m_flow > 1e-9 {
+            1.0
+        } else if m_flow < -1e-9 {
+            2.0
+        } else {
+            continue;
+        };
+        let h_flow = column("volume.H_flow")[index];
+        assert!(
+            (h_flow - m_flow * upstream).abs() < 1e-6,
+            "H_flow({time}) = {h_flow}"
+        );
+        assert_eq!(column("volume.h_seen")[index], upstream, "h_seen({time})");
+    }
+}

@@ -27,6 +27,7 @@
 mod history_operator_checked;
 mod initial_boolean_parameter;
 
+mod actual_stream_product_events;
 mod additive_torque;
 mod affine_coefficient_aggregates;
 mod affine_switching_circuit;
