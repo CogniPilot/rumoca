@@ -299,6 +299,7 @@ fn is_forbidden_finding(finding: &ReviewFinding) -> bool {
 
 fn is_allowed_unsafe_boundary_path(path: &str) -> bool {
     path.starts_with("crates/rumoca-exec-cranelift/")
+        || path.starts_with("crates/rumoca-allocator/")
         || path.starts_with("crates/rumoca-exec-mlir/")
         || path.starts_with("crates/rumoca-exec-wasm/")
         || path == "crates/rumoca-sim/src/scheduled_sim/executor.rs"
@@ -647,9 +648,16 @@ fn nearly_zero(value: f64) -> bool {
                 line: 2,
                 excerpt: concat!("unsafe", " { jit() }").to_string(),
             },
+            ReviewFinding {
+                severity: "high",
+                rule: "unsafe-added",
+                path: "crates/rumoca-allocator/src/lib.rs".to_string(),
+                line: 3,
+                excerpt: concat!("unsafe", " { MiMalloc.alloc(layout) }").to_string(),
+            },
         ];
 
-        assert_eq!(high_severity_count(&findings), 2);
+        assert_eq!(high_severity_count(&findings), 3);
         assert_eq!(forbidden_finding_count(&findings), 0);
     }
 

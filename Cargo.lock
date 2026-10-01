@@ -7272,7 +7272,6 @@ dependencies = [
  "clap_complete",
  "lsp-types",
  "num_cpus",
- "rumoca-allocator",
  "rustc-demangle",
  "serde",
  "serde_json",

@@ -24,9 +24,6 @@ mod vscode_python_env;
 mod wasm_smoke;
 mod wasm_tooling;
 
-#[global_allocator]
-static GLOBAL: rumoca_allocator::ProcessAllocator = rumoca_allocator::ProcessAllocator;
-
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use completion_cmd::CompletionsArgs;

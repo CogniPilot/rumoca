@@ -60,7 +60,7 @@ import that path.
 | Solver pre-parameter snapshot helpers (`write_pre_params_from_sources`, `update_slot`, `commit_pre_params_after_event`) | `rumoca-solver::runtime::pre_params` | Shared `pre(...)` snapshot mechanics. |
 | Component-private algebraic settle helpers (`project_algebraics`, `project_algebraics_and_detect_changes`, `project_initial_*`) | `rumoca-solver::runtime::projection` | Used only while evaluating or initializing the FMI component; numerical plugins cannot import this policy. |
 | Component-private Solve evaluation state (`SolveRuntime`, event/discrete row application, algebraic settle, Jacobian/sensitivity reports) | `rumoca-solver::runtime::solve_runtime` | Used only behind the FMI component projection; the common host reaches it solely through the FMI ME kernel. |
-| Process global allocator and its startup configuration (`ProcessAllocator`, `ProcessAllocatorError`, `MIMALLOC_ARENA_RESERVE_KIB`, `GLIBC_MALLOC_ARENA_MAX`) | `rumoca-allocator` | Rules in §6. The only production crate that implements `GlobalAlloc` or sets mimalloc/glibc allocator options; it has no workspace dependencies, so every executable, including `xtask`, can install it. |
+| Process global allocator and its startup configuration (`ProcessAllocator`, `ProcessAllocatorError`, `MIMALLOC_ARENA_RESERVE_KIB`, `GLIBC_MALLOC_ARENA_MAX`) | `rumoca-allocator` | Rules in §6. The only production crate that implements `GlobalAlloc` or sets mimalloc/glibc allocator options; it has no workspace dependencies. `xtask` stays free of every Rumoca workspace dependency (row below) and installs no global allocator. |
 | MSL parity observation-grid policy (`msl_sim_output_dt`, `MSL_SIM_OUTPUT_INTERVALS`) | `rumoca-worker` | A valid Modelica experiment interval owns the grid; otherwise Rumoca uses the same scale-invariant uniform base grid as the OMC oracle. Solver event instants remain additional output points. |
 
 ### 2. Session-Owned Source-Root And Class-Graph Catalog (SPEC_0029 §10)
@@ -158,7 +158,8 @@ process allocator (row in §1).
 
 | Rule | Brief Justification |
 |---|---|
-| Every workspace executable installs `rumoca_allocator::ProcessAllocator` as its `#[global_allocator]`; production code has no other global allocator | One configuration, enforced by architecture test |
+| Every workspace executable except `xtask` installs `rumoca_allocator::ProcessAllocator` as its `#[global_allocator]`; production code has no other global allocator, and `xtask`, which carries no Rumoca workspace dependency (§1), uses the platform allocator | One configuration, enforced by architecture test; the orchestration tool keeps its dependency-light boundary |
+| `rumoca-allocator` is an audited `unsafe` boundary: its crate-local `unsafe_code` allowance covers only the `GlobalAlloc` forwarding and the mimalloc/glibc option calls, and the review scan treats `unsafe` added there as audit, not forbidden | The C allocator ABI cannot be crossed without `unsafe`; every other non-execution crate stays under the default deny |
 | On Linux the allocator applies its configuration inside its first allocation, before the Rust runtime reaches `main` and before any thread exists | mimalloc reserves its first arena before `main`; configuring from `main` is too late |
 | The mimalloc arena reserve is `MIMALLOC_ARENA_RESERVE_KIB` = 64 MiB (mimalloc default: 1 GiB) | The smallest reservation mimalloc makes for a regular page; later arenas keep its geometric growth |
 | On Linux glibc the malloc arena bound is `GLIBC_MALLOC_ARENA_MAX` = 1 (`mallopt(M_ARENA_MAX)`) | glibc malloc serves only libc/std internals; one 64 MiB arena per thread made address space grow with the pool |
