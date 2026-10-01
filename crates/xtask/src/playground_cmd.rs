@@ -54,11 +54,7 @@ fn web_unit_test_files(root: &Path) -> Result<Vec<String>> {
         let entries = fs::read_dir(root.join(dir))
             .with_context(|| format!("failed to read web test directory {dir}"))?;
         for entry in entries {
-            let name = entry
-                .with_context(|| format!("failed to read entry in {dir}"))?
-                .file_name()
-                .to_string_lossy()
-                .into_owned();
+            let name = entry?.file_name().to_string_lossy().into_owned();
             if name.ends_with(".test.mjs") {
                 files.push(format!("{dir}/{name}"));
             }
