@@ -39,6 +39,7 @@ deleted file mode 100644
 --- a/crates/alpha/src/gone.rs
 +++ /dev/null
 @@ -1,2 +0,0 @@
+-#[cfg_attr(coverage_nightly, coverage(off))]
 -fn gone() {}
 diff --git a/crates/beta/src/new.rs b/crates/beta/src/new.rs
 new file mode 100644
@@ -46,11 +47,13 @@ new file mode 100644
 +++ b/crates/beta/src/new.rs
 @@ -0,0 +1,5 @@
 +fn fresh() {}
++#[cfg_attr(coverage_nightly, coverage(off))]
++fn exempt() {}
 ";
 
 #[test]
 fn added_lines_come_from_new_side_hunks_only() {
-    let added = parse_added_lines(TWO_FILE_DIFF);
+    let added = parse_changed_code(TWO_FILE_DIFF).added;
     assert_eq!(
         added,
         AddedLines::from([
@@ -62,6 +65,12 @@ fn added_lines_come_from_new_side_hunks_only() {
         ]),
         "a deletion-only hunk, a deleted file, and an added line reading `++ b/...` add nothing"
     );
+    assert_eq!(
+        parse_changed_code(TWO_FILE_DIFF).exemptions,
+        ["crates/beta/src/new.rs:2"],
+        "an added exemption is located by its new-side line; a deleted one is not listed"
+    );
+    assert_eq!(parse_changed_code(""), ChangedCode::default());
     assert_eq!(added_range("-1,2 +7,0 @@"), None);
     assert_eq!(
         added_range("-1,2 +0,0 @@"),
@@ -95,7 +104,8 @@ fn only_new_named_functions_without_executions_fail() {
         function("crates/alpha/src/lib.rs", 4, "alpha::added"),
         function("crates/gamma/src/lib.rs", 4, "gamma::elsewhere"),
     ];
-    let untested = new_functions_without_executions(&functions, &parse_added_lines(TWO_FILE_DIFF));
+    let untested =
+        new_functions_without_executions(&functions, &parse_changed_code(TWO_FILE_DIFF).added);
     assert_eq!(
         untested,
         [&functions[3], &functions[2]],
@@ -211,6 +221,10 @@ fn the_gate_fails_on_a_new_untested_function_and_reports_it() {
     let report = fs::read_to_string(dir.path().join(DEFAULT_REPORT_FILE_REL)).unwrap();
     assert!(report.contains("| `crates/alpha/src/lib.rs:4` | `alpha::added` |"));
     assert!(
+        report.contains("- `crates/beta/src/new.rs:2`\n"),
+        "the reviewer sees every exemption the change adds: {report}"
+    );
+    assert!(
         report.contains("| `alpha` | 2 | 1 |"),
         "informational counts: {report}"
     );
@@ -225,6 +239,8 @@ fn the_gate_passes_when_the_change_adds_no_untested_function() {
     run_with_diff(dir.path(), diff).expect("closures and old code do not fail the gate");
     let report = fs::read_to_string(dir.path().join(DEFAULT_REPORT_FILE_REL)).unwrap();
     assert!(report.contains("| _none_ | - |"));
+    assert!(report.contains("## Coverage exemptions the change adds\n\n"));
+    assert!(report.contains("- _none_\n"));
 }
 
 #[test]
@@ -337,7 +353,7 @@ fn changed_since_diffs_the_rust_sources_from_the_merge_base() {
     let diff = changed_code_diff(repo, "base", "HEAD").unwrap();
     assert!(!diff.contains("notes.txt"), "{diff}");
     assert_eq!(
-        parse_added_lines(&diff),
+        parse_changed_code(&diff).added,
         AddedLines::from([("crates/alpha/src/lib.rs".to_string(), vec![(2, 3)])])
     );
     let candidates = r#"{"candidates": [

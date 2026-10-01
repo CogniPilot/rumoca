@@ -4,7 +4,9 @@
 //! Two checks fail the gate. Every function a change adds (its first line lies
 //! in a hunk that `git diff -U0 <base>...HEAD` adds) must execute at least once
 //! under the workspace tests; closures are exempt, since an error path's
-//! `.with_context(|| ...)` is a closure only a failure runs. And workspace line
+//! `.with_context(|| ...)` is a closure only a failure runs, and so are
+//! functions carrying the one reviewed exemption (see `EXEMPTION_MARKER`),
+//! which the report lists for the reviewer. And workspace line
 //! coverage may not drop more than the allowed margin below the committed
 //! baseline. The per-package zero-execution counts are reported for
 //! information only: they drift between runs and say nothing about the change
@@ -19,7 +21,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const DEFAULT_BASELINE_FILE_REL: &str = "crates/xtask/coverage/trim-gate-baseline.json";
+const DEFAULT_BASELINE_FILE_REL: &str = "crates/xtask/coverage/line-coverage-baseline.json";
 const DEFAULT_CANDIDATES_FILE_REL: &str = "target/llvm-cov/trim-candidates.json";
 const DEFAULT_REPORT_FILE_REL: &str = "target/llvm-cov/coverage-gate.md";
 const DEFAULT_SUMMARY_FILE_NAME: &str = "workspace-summary.json";
@@ -30,7 +32,7 @@ pub(crate) struct CoverageGateArgs {
     /// Trim candidates JSON from `coverage report` (default: target/llvm-cov/trim-candidates.json)
     #[arg(long)]
     candidates_file: Option<PathBuf>,
-    /// Committed line-coverage baseline (default: crates/xtask/coverage/trim-gate-baseline.json)
+    /// Committed line-coverage baseline (default: crates/xtask/coverage/line-coverage-baseline.json)
     #[arg(long)]
     baseline_file: Option<PathBuf>,
     /// Markdown report output path (default: target/llvm-cov/coverage-gate.md)
@@ -85,6 +87,11 @@ struct ZeroExecutionFunction {
 /// `(first, last)` ranges.
 type AddedLines = BTreeMap<String, Vec<(u64, u64)>>;
 
+/// The one coverage exemption, `#[cfg_attr(coverage_nightly, coverage(off))]`
+/// (SPEC_0025 §4): an exempt function has no coverage record, so the gate
+/// never sees it, and the report lists every exemption a change adds.
+const EXEMPTION_MARKER: &str = "coverage(off)";
+
 pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
     let candidates_path = resolve_path(
         root,
@@ -119,7 +126,8 @@ pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
     };
     let functions = load_zero_execution_functions(&candidates_path)?;
     let (diff, change) = changed_code(root, args)?;
-    let untested = new_functions_without_executions(&functions, &parse_added_lines(&diff));
+    let changed = parse_changed_code(&diff);
+    let untested = new_functions_without_executions(&functions, &changed.added);
     let allowed_drop = args.allowed_workspace_line_coverage_drop;
     let line_failure =
         compare_workspace_line_coverage(baseline_workspace, current_workspace, allowed_drop);
@@ -136,8 +144,12 @@ pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
         allowed_drop,
     ));
     report.push_str(&render_new_functions(&untested));
+    report.push_str(&render_exemptions(&changed.exemptions));
     report.push_str(&render_package_counts(&functions));
     write_text_file(&report_path, &report)?;
+    for exemption in &changed.exemptions {
+        println!("Coverage gate: the change adds a coverage exemption at {exemption}");
+    }
     gate_verdict(&report_path, &untested, line_failure)
 }
 
@@ -188,13 +200,22 @@ pub(crate) fn changed_code_diff(repo: &Path, base: &str, head: &str) -> Result<S
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// The new-side line ranges each file's hunks add. File headers are read only
-/// between `diff --git` and the first hunk, so an added line whose text starts
-/// with `++ b/` is never taken for one.
-fn parse_added_lines(diff: &str) -> AddedLines {
-    let mut added = AddedLines::new();
+/// What a change adds: the new-side line ranges of each file's hunks, and the
+/// `file:line` of every added line carrying the coverage exemption.
+#[derive(Debug, Default, PartialEq)]
+struct ChangedCode {
+    added: AddedLines,
+    exemptions: Vec<String>,
+}
+
+/// Parse a `git diff -U0`. File headers are read only between `diff --git` and
+/// the first hunk, so an added line whose text starts with `++ b/` is never
+/// taken for one.
+fn parse_changed_code(diff: &str) -> ChangedCode {
+    let mut change = ChangedCode::default();
     let mut file: Option<String> = None;
     let mut in_header = false;
+    let mut next_line = 0;
     for line in diff.lines() {
         if line.starts_with("diff --git ") {
             in_header = true;
@@ -205,11 +226,17 @@ fn parse_added_lines(diff: &str) -> AddedLines {
         } else if let Some(header) = line.strip_prefix("@@ ") {
             in_header = false;
             if let (Some(file), Some(range)) = (&file, added_range(header)) {
-                added.entry(file.clone()).or_default().push(range);
+                change.added.entry(file.clone()).or_default().push(range);
+                next_line = range.0;
             }
+        } else if let (Some(file), Some(text)) = (&file, line.strip_prefix('+')) {
+            if text.contains(EXEMPTION_MARKER) {
+                change.exemptions.push(format!("{file}:{next_line}"));
+            }
+            next_line += 1;
         }
     }
-    added
+    change
 }
 
 /// The inclusive new-side range of a hunk header `-a,b +c,d @@ ...`, or `None`
@@ -414,6 +441,21 @@ fn render_new_functions(untested: &[&ZeroExecutionFunction]) -> String {
             "| `{}:{}` | `{}` |\n",
             function.file, function.line, function.name
         ));
+    }
+    markdown.push('\n');
+    markdown
+}
+
+fn render_exemptions(exemptions: &[String]) -> String {
+    let mut markdown = String::from(
+        "## Coverage exemptions the change adds\n\n\
+         Each needs a comment naming the effect no test can drive (SPEC_0025 §4).\n\n",
+    );
+    if exemptions.is_empty() {
+        markdown.push_str("- _none_\n");
+    }
+    for exemption in exemptions {
+        markdown.push_str(&format!("- `{exemption}`\n"));
     }
     markdown.push('\n');
     markdown

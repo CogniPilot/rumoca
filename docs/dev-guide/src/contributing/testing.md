@@ -190,7 +190,8 @@ cargo xtask coverage gate --changed-since origin/main
 The gate fails on every function your change adds that no test executes
 (closures are exempt) and on a workspace line-coverage drop below the
 committed baseline. `target/llvm-cov/coverage-gate.md` lists each new
-untested function by `file:line`.
+untested function by `file:line`, and every coverage exemption the change
+adds; SPEC_0025 §4 defines the one exemption and when it applies.
 
 ## Architecture Tests
 

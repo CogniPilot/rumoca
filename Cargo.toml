@@ -208,8 +208,9 @@ pyo3 = { version = "0.22", features = ["extension-module"] }
 # `cfg(kani)` is set only by the Kani verifier in the dedicated `.#kani` shell
 # (see CONTRIBUTING.md). Declaring it here keeps the bounded-verification
 # harnesses warning-free without a blanket `allow`, so a *typo* in any other
-# cfg name still warns.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+# cfg name still warns. `cfg(coverage_nightly)` is set by `cargo llvm-cov` on
+# a nightly toolchain and gates the one coverage exemption (SPEC_0025 §4).
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(coverage_nightly)'] }
 unsafe_code = "deny"
 unreachable_pub = "deny"
 unnameable_types = "deny"
