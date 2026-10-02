@@ -50,12 +50,18 @@ pub(super) fn before_top_level_statement(
     statements: &[rumoca_core::Statement],
     plans: &[FunctionStatementPlan],
     index: usize,
+    context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
     definedness: &mut FunctionDefinednessPlan,
 ) -> Vec<VarName> {
     match &plans[index] {
         FunctionStatementPlan::If { .. } => {
-            definitions.admit_next_path_partial_join();
+            definitions.admit_next_path_partial_join(later_top_level_uses(
+                statements,
+                plans,
+                index + 1,
+                context.function,
+            ));
             statement_targets(&statements[index])
                 .into_iter()
                 .filter(|target| definitions.is_path_partial(target))
@@ -82,16 +88,24 @@ pub(super) fn after_top_level_statement(
     plans: &[FunctionStatementPlan],
     index: usize,
     partial_before: &[VarName],
+    context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
     definedness: &mut FunctionDefinednessPlan,
-) {
+) -> Result<(), ToDaeError> {
     match &plans[index] {
         FunctionStatementPlan::If { targets, .. } => {
-            let partial = targets
-                .iter()
-                .filter(|target| definitions.is_path_partial(target))
-                .map(|target| (target.clone(), partial_before.contains(target)))
-                .collect::<Vec<_>>();
+            let span = required_statement_span(&statements[index], "function conditional")?;
+            let mut partial = Vec::new();
+            for target in targets {
+                if !definitions.is_path_partial(target) {
+                    continue;
+                }
+                partial.push(PartialJoinPlan {
+                    target: target.clone(),
+                    was_partial: partial_before.contains(target),
+                    seed: definitions.whole_loop_seed(target, context, span)?,
+                });
+            }
             if !partial.is_empty() {
                 definedness.partial_joins.insert(index, partial);
             }
@@ -101,6 +115,35 @@ pub(super) fn after_top_level_statement(
         | FunctionStatementPlan::RecordFieldAssemblyMember => {}
         _ => definitions.withdraw_path_partial(&statement_targets(&statements[index])),
     }
+    Ok(())
+}
+
+/// The values a later top-level statement may read where the definedness
+/// assertion can own the read, plus the outputs the function returns.
+///
+/// A conditional joins a path-partial value only when such a use exists:
+/// a value nothing reads afterwards needs no definition past the
+/// conditional, and keeps the branch-local form it has without one.
+fn later_top_level_uses(
+    statements: &[rumoca_core::Statement],
+    plans: &[FunctionStatementPlan],
+    start: usize,
+    function: &rumoca_core::Function,
+) -> HashSet<VarName> {
+    let mut uses = function
+        .outputs
+        .iter()
+        .map(|output| VarName::new(&output.name))
+        .collect::<HashSet<_>>();
+    let mut index = start;
+    while index < statements.len() {
+        let count = flat_group_len(&plans[index]);
+        if let Some(count) = count {
+            uses.extend(flat_group_reads(&statements[index..index + count]));
+        }
+        index += count.unwrap_or(1);
+    }
+    uses
 }
 
 /// The statement count of a top-level group whose statements all evaluate at

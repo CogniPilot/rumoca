@@ -152,3 +152,56 @@ fn returning_an_output_the_executed_path_never_wrote_fails_the_call() {
     assert!(error.contains("`y` is used without a value"), "{error}");
     assert!(error.contains("t=0.5"), "{error}");
 }
+
+/// A value one arm defines that no later statement uses needs no definition
+/// past the conditional, so the join leaves it branch-local. The shape is the
+/// wall-friction characteristic of `Modelica.Fluid.Pipes`: a slope one arm
+/// receives from a multi-result call is read only inside that arm.
+const BRANCH_LOCAL_SLOPE: &str = r#"
+model BranchLocalSlope
+  function g
+    input Real x;
+    output Real y;
+    output Real c;
+  algorithm
+    assert(x > -10, "x too small");
+    y := 2*x;
+    c := 3*x;
+  end g;
+  function wf
+    input Real dp;
+    output Real m_flow;
+  protected
+    Real slope;
+  algorithm
+    if dp >= 10 then
+      m_flow := dp;
+    else
+      (m_flow, slope) := g(dp);
+      if dp > 0 then
+        m_flow := g(slope);
+      else
+        m_flow := g(-slope);
+      end if;
+    end if;
+  end wf;
+  Real m = wf(4*(time - 0.5));
+end BranchLocalSlope;
+"#;
+
+#[test]
+fn a_value_no_later_statement_uses_stays_branch_local() {
+    let result = simulate("BranchLocalSlope", BRANCH_LOCAL_SLOPE)
+        .expect("the slope is read only inside the arm that defines it");
+    let m = column(&result, "m");
+    for (sample, time) in result.times.iter().enumerate() {
+        let dp = 4.0 * (time - 0.5);
+        let slope = 3.0 * dp;
+        let expected = if dp > 0.0 { 2.0 * slope } else { -2.0 * slope };
+        assert!(
+            (m[sample] - expected).abs() < 1e-9,
+            "m({time}) = {}",
+            m[sample]
+        );
+    }
+}

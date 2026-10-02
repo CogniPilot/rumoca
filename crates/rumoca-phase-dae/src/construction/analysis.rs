@@ -251,11 +251,23 @@ pub(super) struct FunctionDefinednessPlan {
     /// Path-partial values asserted defined before the statement (or the
     /// assembly group it leads) at this index runs.
     pub(super) asserted_reads: HashMap<usize, Vec<VarName>>,
-    /// Targets the conditional at this index leaves path-partial, each with
-    /// whether it was already path-partial before the conditional.
-    pub(super) partial_joins: HashMap<usize, Vec<(VarName, bool)>>,
+    /// Targets the conditional at this index leaves path-partial.
+    pub(super) partial_joins: HashMap<usize, Vec<PartialJoinPlan>>,
     /// Path-partial outputs asserted defined when the function returns.
     pub(super) returned: Vec<VarName>,
+}
+
+/// One target a top-level conditional leaves path-partial.
+pub(super) struct PartialJoinPlan {
+    pub(super) target: VarName,
+    /// The target was already path-partial before the conditional, so the
+    /// paths that do not write it keep its earlier definedness predicate.
+    pub(super) was_partial: bool,
+    /// The typed value the join takes on paths that never write the target.
+    /// MLS §12.4.4 makes every use of it there an error owned by the
+    /// definedness assertion, so the seed is never observed; a literal
+    /// keeps the dead operand from evaluating any other path's computation.
+    pub(super) seed: FunctionValueSeed,
 }
 
 pub(super) enum FunctionPlan {

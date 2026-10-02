@@ -1165,7 +1165,9 @@ fn resolve_sequence_definitions(
     let mut index = 0usize;
     while index < statements.len() {
         let partial_before = match definedness.as_deref_mut() {
-            Some(plan) => before_top_level_statement(statements, plans, index, definitions, plan),
+            Some(plan) => {
+                before_top_level_statement(statements, plans, index, context, definitions, plan)
+            }
             None => Vec::new(),
         };
         let count = match &plans[index] {
@@ -1196,7 +1198,15 @@ fn resolve_sequence_definitions(
             }
         };
         if let Some(plan) = definedness.as_deref_mut() {
-            after_top_level_statement(statements, plans, index, &partial_before, definitions, plan);
+            after_top_level_statement(
+                statements,
+                plans,
+                index,
+                &partial_before,
+                context,
+                definitions,
+                plan,
+            )?;
         }
         index += count;
     }

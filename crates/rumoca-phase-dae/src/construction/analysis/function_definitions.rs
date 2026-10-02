@@ -15,10 +15,12 @@ pub(super) struct FunctionDefinitions {
     /// Values only some conditional branches define, keyed to the conditional
     /// that left them without a total owner.
     branch_only: HashMap<VarName, BranchOnlyCoverage>,
-    /// Set by the top-level sequence walk for exactly the next conditional it
-    /// resolves; that conditional takes it before its branches clone this
-    /// certificate, so no nested conditional or loop ever sees it.
-    admit_path_partial: bool,
+    /// The values the next resolved conditional may join path-partially: those
+    /// a later top-level statement uses or the function returns. Set by the
+    /// top-level sequence walk for exactly that conditional, which takes it
+    /// before its branches clone this certificate, so no nested conditional
+    /// or loop ever sees it.
+    admit_path_partial: HashSet<VarName>,
 }
 
 #[derive(Clone)]
@@ -114,7 +116,7 @@ impl FunctionDefinitions {
         Self {
             values,
             branch_only: HashMap::new(),
-            admit_path_partial: false,
+            admit_path_partial: HashSet::new(),
         }
     }
 
@@ -267,12 +269,12 @@ impl FunctionDefinitions {
     }
 
     /// Let the next resolved conditional join path-partial values.
-    pub(super) fn admit_next_path_partial_join(&mut self) {
-        self.admit_path_partial = true;
+    pub(super) fn admit_next_path_partial_join(&mut self, uses: HashSet<VarName>) {
+        self.admit_path_partial = uses;
     }
 
     /// Take the one-shot admission set by `admit_next_path_partial_join`.
-    pub(super) fn take_path_partial_admission(&mut self) -> bool {
+    pub(super) fn take_path_partial_admission(&mut self) -> HashSet<VarName> {
         std::mem::take(&mut self.admit_path_partial)
     }
 
@@ -515,7 +517,7 @@ impl FunctionDefinitions {
     /// other value keeps no owner past the conditional, which the read check
     /// reports exactly where the algorithm would need it.
     ///
-    /// With `admit_path_partial`, a value some paths leave undefined still
+    /// A value in `admit_path_partial` that some paths leave undefined still
     /// joins when every path that writes it defines every element: the joined
     /// definition is dead on the other paths, and the value stays path-partial
     /// until a top-level read asserts that it is defined.
@@ -524,7 +526,7 @@ impl FunctionDefinitions {
         branches: &[Self],
         exhaustive: bool,
         ordered_targets: &[VarName],
-        admit_path_partial: bool,
+        admit_path_partial: &HashSet<VarName>,
         context: FunctionValidationContext<'_>,
         span: Span,
     ) -> Result<Vec<VarName>, ToDaeError> {
@@ -533,7 +535,8 @@ impl FunctionDefinitions {
             let defines_everywhere =
                 exhaustive && branches.iter().all(|branch| branch.is_defined(target));
             if !self.is_defined(target) && !defines_everywhere {
-                let path_partial = admit_path_partial && path_partial_join(branches, target);
+                let path_partial =
+                    admit_path_partial.contains(target) && path_partial_join(branches, target);
                 self.leave_branch_only(target, path_partial, context, span)?;
                 joined.extend(path_partial.then(|| target.clone()));
                 continue;

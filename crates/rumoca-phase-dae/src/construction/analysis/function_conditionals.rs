@@ -231,7 +231,7 @@ pub(super) fn resolve_function_conditional(
         joined_states,
         exhaustive,
         &ordered,
-        admit_path_partial,
+        &admit_path_partial,
         context,
         span,
     )?;

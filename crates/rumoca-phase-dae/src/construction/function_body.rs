@@ -1772,8 +1772,8 @@ fn completed_branch_value<'dae>(
 /// A branch's own value for a target, or the target's pre-conditional
 /// definition when the branch leaves it unchanged.
 ///
-/// A path-partial target with no pre-conditional definition takes `dead`, a
-/// writing branch's value: MLS §12.4.4 makes any use of the target on this
+/// A path-partial target with no pre-conditional definition takes `dead`, its
+/// typed seed literal: MLS §12.4.4 makes any use of the target on this
 /// path an error, which the top-level definedness assertion owns, so the
 /// operand is never observed.
 fn read_unless_defined<'dae>(
@@ -1840,8 +1840,11 @@ fn join_branch_targets<'dae>(
                 .and_then(|state| state.values.get(target).copied())
                 .or(completed.filter(|_| diverges))
         };
-        let dead =
-            completed.filter(|_| input.partial.iter().any(|partial| &partial.name == target));
+        let dead = input
+            .partial
+            .iter()
+            .find(|partial| &partial.name == target)
+            .map(|partial| partial.dead);
         for ((lowered, branch), diverges) in
             branches.iter_mut().zip(branch_values).zip(&never_completes)
         {

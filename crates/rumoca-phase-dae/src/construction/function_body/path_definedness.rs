@@ -9,10 +9,12 @@
 use super::*;
 
 /// One target a top-level conditional leaves path-partial, with the predicate
-/// it already carried when an earlier conditional left it path-partial too.
+/// it already carried when an earlier conditional left it path-partial too,
+/// and the typed literal the join takes on paths that never write it.
 pub(in crate::construction) struct PartialTarget<'dae> {
     pub(in crate::construction) name: VarName,
     pub(in crate::construction) prior: Option<dae::ExprId<'dae>>,
+    pub(in crate::construction) dead: dae::ExprId<'dae>,
 }
 
 /// Definedness predicates of the path-partial values of one top-level
@@ -24,23 +26,25 @@ pub(in crate::construction) struct DefinednessPredicates<'dae> {
 
 impl<'dae> DefinednessPredicates<'dae> {
     /// The partial targets of one conditional, each with the predicate it
-    /// carries in when it was already path-partial.
+    /// carries in when it was already path-partial and its lowered seed.
     pub(in crate::construction) fn partial_targets(
         &self,
-        partial: &[(VarName, bool)],
+        construction: &mut dae::DaeConstruction<'dae>,
+        partial: &[PartialJoinPlan],
         span: Span,
     ) -> Result<Vec<PartialTarget<'dae>>, dae::DaeConstructionError> {
         partial
             .iter()
-            .map(|(name, was_partial)| {
-                let prior = if *was_partial {
-                    Some(self.predicate(name, span)?)
+            .map(|join| {
+                let prior = if join.was_partial {
+                    Some(self.predicate(&join.target, span)?)
                 } else {
                     None
                 };
                 Ok(PartialTarget {
-                    name: name.clone(),
+                    name: join.target.clone(),
                     prior,
+                    dead: lower_function_value_seed(construction, &join.seed, span)?,
                 })
             })
             .collect()
