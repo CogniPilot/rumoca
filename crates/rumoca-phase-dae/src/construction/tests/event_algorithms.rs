@@ -157,15 +157,15 @@ fn model_event_algorithm_sequential_read_after_write_uses_new_value() {
         .expect("the event transition carries the first assignment into the second RHS");
     dae.inspect(|view| {
         assert_eq!(view.model_event_transaction_count(), 0);
-        assert_eq!(view.discrete_value_owner_count(), 1);
+        // The targets order acyclically, so each owns its value separately.
+        assert_eq!(view.discrete_value_owner_count(), 2);
         let owner = view
-            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+            .discrete_value_owner(view.discrete_value_owner_id(1).unwrap())
             .unwrap();
-        assert_eq!(owner.targets().len(), 2);
-        assert_eq!(owner.targets().get(0).unwrap().index(), 0);
-        assert_eq!(owner.targets().get(1).unwrap().index(), 1);
+        assert_eq!(owner.targets().len(), 1);
+        assert_eq!(owner.targets().get(0).unwrap().index(), 1);
         let branch = owner.branches().get(0).unwrap();
-        let (value, provenance) = branch.values().get(1).unwrap();
+        let (value, provenance) = branch.values().get(0).unwrap();
         assert_eq!(provenance.span(), second_span);
         assert!(matches!(
             view.expression(value).unwrap().operation(),

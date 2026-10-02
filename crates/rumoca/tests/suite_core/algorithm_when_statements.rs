@@ -125,10 +125,12 @@ end Mixed;
     assert_eq!(value_at(&result, "n", 0.9), 1.0);
 }
 
+/// Simultaneous statements that write different targets each define their
+/// own: the first keeps `n`, the later one overrides `b` (MLS 3.7 §11.1.2).
 #[test]
-fn separate_statements_that_cannot_be_ordered_are_refused() {
+fn simultaneous_statements_writing_disjoint_targets_each_define_them() {
     let source = r#"
-model Unordered
+model Disjoint
   Boolean b(start = false, fixed = true);
   Integer n(start = 0, fixed = true);
 algorithm
@@ -139,8 +141,10 @@ algorithm
   when time > 0.5 then
     b := false;
   end when;
-end Unordered;
+end Disjoint;
 "#;
-    let error = simulate("Unordered", source).expect_err("no branch order is exact");
-    assert!(error.contains("simultaneous activation"), "{error}");
+    let result = simulate("Disjoint", source).expect("Disjoint simulates");
+    assert_eq!(value_at(&result, "n", 0.4), 0.0);
+    assert_eq!(value_at(&result, "n", 0.9), 1.0);
+    assert_eq!(value_at(&result, "b", 0.9), 0.0);
 }

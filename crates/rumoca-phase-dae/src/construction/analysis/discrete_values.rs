@@ -329,14 +329,16 @@ fn collect_algorithm_owners(
 /// Whether the discrete-valued targets of one event algorithm own their
 /// values one target at a time.
 ///
-/// A `when` condition of the algorithm that reads one of its targets needs
-/// that target issued before the guarded targets, which one atomic owner
-/// cannot do. Every target's B.1c branches already carry its own values
-/// (statements read each other through their SSA values, not through the
-/// variables), so the targets may own themselves separately exactly when
-/// their current-value reads order them acyclically and no condition reads
-/// a value a `when` body writes (that value is resolved by event iteration
-/// within one owner, as in the equation form).
+/// Every target's B.1c branches already carry its own values (statements
+/// read each other through their SSA values, not through the variables), so
+/// the targets own themselves separately whenever their current-value reads
+/// order them acyclically and no condition reads a value a `when` body
+/// writes (that value is resolved by event iteration within one owner, as in
+/// the equation form). Separate owners let simultaneously active statements
+/// that write disjoint targets each define their own (MLS 3.7 §11.1.2), and
+/// let a `when` condition that reads a target see it issued before the
+/// guarded targets. One owner, whose first active branch defines every
+/// target, remains only for targets whose reads are cyclic.
 fn owns_targets_separately(
     statements: &[rumoca_core::Statement],
     targets: &[SourceTarget],
@@ -352,7 +354,7 @@ fn owns_targets_separately(
         .iter()
         .filter(|name| names.contains(*name))
         .collect::<Vec<_>>();
-    if read_targets.is_empty() || read_targets.iter().any(|name| body_writes.contains(*name)) {
+    if read_targets.iter().any(|name| body_writes.contains(*name)) {
         return false;
     }
     targets_order_acyclically(targets, &names)
