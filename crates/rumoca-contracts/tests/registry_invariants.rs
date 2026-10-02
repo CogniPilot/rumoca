@@ -235,10 +235,13 @@ fn heading_number(line: &str) -> Option<&str> {
         .strip_prefix("## ")
         .or_else(|| line.strip_prefix("### "))?;
     let number = rest.split_whitespace().next()?.trim_end_matches('.');
-    number
-        .split('.')
-        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
-        .then_some(number)
+    // Dot-separated decimal components, none empty.
+    let well_formed = !number.is_empty()
+        && number.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && !number.starts_with('.')
+        && !number.ends_with('.')
+        && !number.contains("..");
+    well_formed.then_some(number)
 }
 
 fn section_index_drift(

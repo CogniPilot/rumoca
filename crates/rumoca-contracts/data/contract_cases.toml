@@ -2279,56 +2279,56 @@ outcome = 'Reject'
 [[cases]]
 contract_id = 'INST-013'
 case_id = 'inst_013_enclosing_package_constant_accessible'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
 contract_id = 'INST-013'
 case_id = 'inst_013_enclosing_non_constant_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-013'
 case_id = 'inst_013_enclosing_parameter_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-018'
 case_id = 'inst_018_outer_type_mismatch_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-019'
 case_id = 'inst_019_inner_of_partial_class_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-021'
 case_id = 'inst_021_partial_component_instantiation_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-023'
 case_id = 'inst_023_redeclare_to_public_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Parse'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-033'
 case_id = 'inst_033_unknown_global_class_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
@@ -3007,35 +3007,35 @@ outcome = 'Accept'
 [[cases]]
 contract_id = 'INST-009'
 case_id = 'inst_009_member_of_final_component_modification_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-017'
 case_id = 'inst_017_redeclare_with_condition_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Parse'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-020'
 case_id = 'inst_020_inner_connector_with_input_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-024'
 case_id = 'inst_024_function_extends_connector_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-030'
 case_id = 'inst_030_final_parameter_modification_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
@@ -3231,28 +3231,28 @@ outcome = 'Reject'
 [[cases]]
 contract_id = 'INST-040'
 case_id = 'inst_040_each_on_scalar_component_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-041'
 case_id = 'inst_041_modification_size_mismatch_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-047'
 case_id = 'inst_047_break_on_parameter_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-049'
 case_id = 'inst_049_break_partial_component_accepted'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
@@ -3378,14 +3378,14 @@ outcome = 'Accept'
 [[cases]]
 contract_id = 'INST-025'
 case_id = 'inst_025_diamond_inherited_equations_deduplicated'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
 contract_id = 'INST-050'
 case_id = 'inst_050_ambiguous_unqualified_import_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
@@ -3483,21 +3483,21 @@ outcome = 'Reject'
 [[cases]]
 contract_id = 'INST-004'
 case_id = 'inst_004_inherited_declaration_order_preserved'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
 contract_id = 'INST-035'
 case_id = 'inst_035_record_constructor_and_type_lookup_coexist'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
 contract_id = 'INST-036'
 case_id = 'inst_036_enum_conversion_and_type_lookup_coexist'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
@@ -3595,7 +3595,7 @@ outcome = 'Reject'
 [[cases]]
 contract_id = 'INST-048'
 case_id = 'inst_048_break_matches_conditional_component'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
@@ -3763,7 +3763,7 @@ outcome = 'Reject'
 [[cases]]
 contract_id = 'INST-026'
 case_id = 'inst_026_class_extends_of_non_replaceable_rejected'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 
@@ -3805,28 +3805,28 @@ outcome = 'Accept'
 [[cases]]
 contract_id = 'INST-028'
 case_id = 'inst_028_break_composes_with_sibling_modifications'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
 contract_id = 'INST-042'
 case_id = 'inst_042_break_modification_removes_binding'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
 contract_id = 'INST-031'
 case_id = 'inst_031_outer_class_short_definition_accepted'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
 contract_id = 'INST-032'
 case_id = 'inst_032_disabled_conditional_outer_needs_no_inner'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
@@ -3889,7 +3889,7 @@ outcome = 'Accept'
 [[cases]]
 contract_id = 'INST-038'
 case_id = 'inst_038_inner_outer_modification_accepted'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
@@ -3994,13 +3994,13 @@ outcome = 'Accept'
 [[cases]]
 contract_id = 'INST-057'
 case_id = 'inst_057_member_tail_follows_each_occurrence'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Sim'
 outcome = 'Accept'
 
 [[cases]]
 contract_id = 'INST-058'
 case_id = 'inst_058_redeclare_value_alias_selects_the_outer_redeclaration'
-test_file = 'tests/inst_contracts.rs'
+test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Sim'
 outcome = 'Accept'
