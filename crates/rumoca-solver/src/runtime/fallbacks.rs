@@ -84,6 +84,10 @@ pub struct ProjectionFallbackCounts {
     pub fallback_calls: u64,
     /// Fallbacks by [`ProjectionFallback`] in declaration order.
     pub fallbacks: [u64; 6],
+    /// Step halvings of the torn reduced Newton line search: trials at a
+    /// step fraction below one that the sufficient-decrease test asked for.
+    /// Not a fallback; it shows how often the full Newton step was refused.
+    pub torn_step_halvings: u64,
 }
 
 impl ProjectionFallbackCounts {
@@ -272,6 +276,20 @@ pub(crate) fn note_fallback(site: ProjectionSite, fallback: ProjectionFallback) 
         let entry = counts.entry(site).or_default();
         entry.fallbacks[fallback.index()] += 1;
         entry.fallback_calls += u64::from(new_call);
+    });
+}
+
+/// Count one torn line-search step halving at the innermost call in progress.
+pub(crate) fn note_torn_step_halving() {
+    let Some(site) = ACTIVE.with(|active| active.borrow().last().map(|(site, _)| *site)) else {
+        return;
+    };
+    COUNTS.with(|counts| {
+        counts
+            .borrow_mut()
+            .entry(site)
+            .or_default()
+            .torn_step_halvings += 1;
     });
 }
 

@@ -236,6 +236,7 @@ mod tests {
                 calls: 40,
                 fallback_calls: 10,
                 fallbacks: [0, 0, 10, 0, 0, 0],
+                ..crate::ProjectionFallbackCounts::default()
             },
         );
         report.sites.insert(

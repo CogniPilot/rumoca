@@ -447,8 +447,9 @@ fn tangent_reduced_jacobian(
 }
 
 /// Backtracking line search along the reduced Newton direction. Accepts the
-/// first step that reaches tolerance or strictly reduces the scaled residual
-/// norm, returning the residual at the accepted point.
+/// first step that reaches tolerance or removes `TORN_SUFFICIENT_DECREASE *
+/// alpha` of the scaled residual norm, returning the residual at the accepted
+/// point. Each halving is counted at the projection site.
 fn line_search<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
@@ -471,6 +472,7 @@ fn line_search<M: ImplicitProjectionModel>(
             return Ok(Some(residual));
         }
         step.alpha *= 0.5;
+        crate::runtime::fallbacks::note_torn_step_halving();
     }
     step.base.restore(tearing, y);
     Ok(None)
