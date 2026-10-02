@@ -110,11 +110,9 @@ manipulation.
   consumers MUST NOT infer the concatenation axis from child nesting. Expanded
   comprehensions and materialized array values remain element constructors.
 - Function bodies remain structured in `functions`.
-- No function values: a call that passes a function argument (MLS §12.4.2.1, a
-  partial application or a function name) is replaced by a call of a
-  specialization of the callee for that argument, whose body calls the
-  argument's function directly and whose extra inputs carry the bound formals.
-  No function with a function-typed input remains in `functions`.
+- No function values: a call passing a function argument (MLS §12.4.2.1) calls
+  a specialization of the callee that calls it directly; no function-typed
+  input remains in `functions`.
 - `pre()`, `der()`, `initial()`, and other Modelica built-ins are still present
   as expression nodes — semantic lowering has not occurred.
 
@@ -130,12 +128,12 @@ generate simulation code.
 | Scalar binding specialization follows [FLAT-C01](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#0-flat-stage-contract-catalog-spec_0007-stage-2) | Preserves parameter dependencies |
 | Arrays stay symbolic through Flat and DAE | Backends requesting scalar form call scalarization in structural/solver layers with shape metadata, not via display-string parsing |
 | Function algorithms remain structured; conditional joins retain checked shared-branch correlation | Downstream projections preserve call cardinality without reconstructing control flow |
-| A function-algorithm `assert` is a flow action, not an ordinary call or a value expression | A value-proven function specialization may erase the statement only when its exact specialization environment proves the condition `true`. An unsettled condition may lower only through the call-specialized guarded root/action schedule in SOLVE-C25; a proven-false or otherwise unrepresentable schedule is typed-rejected. The action is never silently discarded or routed through multi-result-call lowering. |
+| A function-algorithm `assert` is a flow action, not an ordinary call or a value expression | A value-proven function specialization may erase the statement only when its exact specialization environment proves the condition `true`. An unsettled condition may lower only through the call-specialized guarded root/action schedule in SOLVE-C25; a proven-false or otherwise unrepresentable schedule is typed-rejected. It is never discarded or lowered as a multi-result call. |
 | Model algorithms lower to DAE only when they fit the declarative subset | Unsupported forms fail explicitly with `ED013` |
-| Initial algorithms support sequential scalar assignments and `if` conditionals targeting `fixed=false` parameters or discrete coordinates. Initial equations `m = value` / `pre(m) = value` produce the same discrete initial-value owner. Assertions retain enclosing branch conditions. | Discrete initial definitions prove exact scalar type, initialization-settled reads (an initial equation of a discrete-valued coordinate may also read inputs, states, and algebraics, applied after the projection once Solve proves those reads discrete-free, SPEC_0043 §4), and unique ownership; Solve initializes both current and `pre` storage. Replayed calculated-parameter values read only parameters/constants. Settled dependencies permit exact parameter-set evaluation; dependencies on `fixed=false` parameters require post-projection binding updates, treating parameter-set values as seeds. Algebraic/state/output/input algorithm targets, loops, `when`, and non-`assert` call statements retain `ED013` without a checked owner. |
+| Initial algorithms support sequential scalar assignments and `if` conditionals targeting `fixed=false` parameters or discrete coordinates. Initial equations `m = value` / `pre(m) = value` produce the same discrete initial-value owner. Assertions retain enclosing branch conditions. | Discrete initial definitions prove scalar type, settled reads (discrete-valued targets may read continuous coordinates, SPEC_0043 §4), and unique ownership; Solve seeds current and `pre` storage. Calculated parameters read only parameters/constants; reads of `fixed=false` parameters are re-applied after the projection. Algebraic/state/output/input algorithm targets, `when`, and non-`assert` call statements retain `ED013`. |
 | Post-resolution declaration identity is keyed by `DefId`, not strings | Hashing rendered names, `VarName`, flat names, cached display strings, rendered `ComponentPath`, or rendered `ComponentReference` after resolution is a phase-boundary bug. Carry `DefId` for declarations and structured instance identity where one declaration has multiple instantiated meanings. |
 | Flat `TypeId` is the resolved effective type of that concrete instance | Two instances originating from one `DefId` may have different effective types after redeclare or modification. DAE type catalogs key by this identity and retain `DefId` only as declaration provenance. |
-| Semantic phases do not recover name hierarchy by tokenizing flattened strings | The AST, `QualifiedName`, `ComponentReference`, `DefId`, scope tree, and phase metadata carry name structure. Splitting `a.b.c` text inside compiler/evaluator/lowering logic means structure was lost too early. Textual path parsing is allowed only at source/protocol/config/display boundaries while structured IR replaces it. |
+| Semantic phases do not recover name hierarchy by tokenizing flattened strings | The AST, `QualifiedName`, `ComponentReference`, `DefId`, scope tree, and phase metadata carry name structure. Textual path parsing is allowed only at source/protocol/config/display boundaries while structured IR replaces it. |
 
 ---
 
