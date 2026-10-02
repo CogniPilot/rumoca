@@ -856,6 +856,20 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'EXPR-012'
+case_id = 'expr_012_continuous_definition_of_boolean_fails'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-012'
+case_id = 'expr_012_event_generating_boolean_definition_ok'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'EXPR-013'
 case_id = 'expr_013_end_in_subscript'
 test_file = 'tests/expr_contracts.rs'

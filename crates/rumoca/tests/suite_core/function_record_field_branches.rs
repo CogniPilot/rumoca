@@ -43,9 +43,22 @@ package FieldBranches
     aux := props(p, T);
     h := aux.h + aux.c[2];
   end h_pT;
+  function fields
+    input Real p;
+    input Real T;
+    output Real y[4];
+  protected
+    Aux aux;
+  algorithm
+    aux := props(p, T);
+    y := {aux.h, aux.cp, aux.c[1], aux.c[2]};
+  end fields;
   model Top
     Real h = h_pT(1, 300 + 200*time);
-    Aux aux = props(1, 300 + 200*time);
+    // The Integer field `region` of a model-level record bound to a call of
+    // time would be a continuous-time definition of a discrete-valued
+    // variable (MLS 3.7 §3.8.4), so the Real fields are observed through calls.
+    Real aux[4] = fields(1, 300 + 200*time);
   end Top;
 end FieldBranches;
 "#;
@@ -80,10 +93,10 @@ fn a_record_result_assigned_field_by_field_in_branches_and_loops() {
         };
         let expected = [
             ("h", h + 2.0 * cp),
-            ("aux.h", h),
-            ("aux.cp", cp),
-            ("aux.c[1]", cp),
-            ("aux.c[2]", 2.0 * cp),
+            ("aux[1]", h),
+            ("aux[2]", cp),
+            ("aux[3]", cp),
+            ("aux[4]", 2.0 * cp),
         ];
         for (name, value) in expected {
             let actual = column(name)[sample];

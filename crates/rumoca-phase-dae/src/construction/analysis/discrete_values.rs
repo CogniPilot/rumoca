@@ -156,6 +156,13 @@ fn collect_binding_owners(
         if !matches!(roles[name], PlannedRole::DiscreteValue) {
             continue;
         }
+        super::discrete_time_definitions::require_discrete_time_definition(
+            flat,
+            roles,
+            name,
+            binding,
+            expression_span(binding)?,
+        )?;
         owners.push(SourceOwner {
             targets: vec![SourceTarget {
                 name: name.clone(),
@@ -185,8 +192,28 @@ fn collect_equation_owners(
             connection_ranks,
             aggregate_connections,
         )? {
-            EquationPartition::DiscreteValue(plan) => plan,
+            EquationPartition::DiscreteValue(plan) => {
+                super::discrete_time_definitions::require_discrete_time_definition(
+                    flat,
+                    roles,
+                    plan.target,
+                    plan.value.as_ref(),
+                    equation.span,
+                )?;
+                plan
+            }
             EquationPartition::MultiOutput { receivers, call } => {
+                if let Some(receiver) = receivers.iter().find(|receiver| {
+                    matches!(roles.get(**receiver), Some(PlannedRole::DiscreteValue))
+                }) {
+                    super::discrete_time_definitions::require_discrete_time_definition(
+                        flat,
+                        roles,
+                        receiver,
+                        call,
+                        equation.span,
+                    )?;
+                }
                 push_multi_output_owner(equation, call, &receivers, roles, owners);
                 continue;
             }

@@ -2,6 +2,7 @@ mod clocks;
 mod comprehensions;
 mod delays;
 mod derived_parameters;
+mod discrete_time_definitions;
 mod discrete_values;
 mod equation_partitions;
 mod event_conditions;

@@ -103,6 +103,48 @@ fn expr_012_variable_to_parameter_fails() {
     );
 }
 
+#[test]
+fn expr_012_continuous_definition_of_boolean_fails() {
+    // MLS §3.8.4: a Boolean is discrete-time; a call with a continuous-time
+    // argument is a continuous-time expression.
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            function positive
+                input Real x;
+                output Boolean y;
+            algorithm
+                y := x > 0.5;
+            end positive;
+            Boolean b = positive(time);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::ToDae,
+        "ED023",
+    );
+}
+
+#[test]
+fn expr_012_event_generating_boolean_definition_ok() {
+    expect_success(
+        r#"
+        model Test
+            function both
+                input Boolean u;
+                input Boolean v;
+                output Boolean y;
+            algorithm
+                y := u and v;
+            end both;
+            Boolean b = both(time > 0.5, time < 0.8);
+            Integer n = integer(3*time);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
 // =============================================================================
 // EXPR-014: Non-associative chaining
 // "Non-associative operators cannot be chained: 1 < 2 < 3 is invalid"

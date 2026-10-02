@@ -149,6 +149,19 @@ pub enum ToDaeError {
         span: Span,
     },
 
+    #[error("discrete-valued definition is not a discrete-time expression: {detail}")]
+    #[diagnostic(
+        code(rumoca::todae::ED023),
+        help(
+            "MLS 3.7 §3.8.4: a Boolean, Integer, String, or enumeration variable changes only at events; define it from relations, pre(), sample(), or other discrete-time expressions, or inside a when-clause"
+        )
+    )]
+    ContinuousDiscreteDefinition {
+        detail: String,
+        #[label("continuous-time definition of a discrete-valued variable")]
+        span: Span,
+    },
+
     #[error("canonical DAE construction rejected an invalid operation: {source}")]
     #[diagnostic(
         code(rumoca::todae::ED020),
@@ -273,6 +286,7 @@ impl ToDaeError {
             | Self::UnresolvedClockSchedule { span, .. }
             | Self::UnsupportedFlatSemantics { span, .. }
             | Self::UninitializedFunctionValue { span, .. }
+            | Self::ContinuousDiscreteDefinition { span, .. }
             | Self::Construction { span, .. } => std::slice::from_ref(span),
             Self::Unbalanced { .. }
             | Self::Internal { .. }
