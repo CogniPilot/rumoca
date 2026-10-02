@@ -651,6 +651,85 @@ pub fn eval_function(
     eval_function_with_call_args(func, args, ctx, limits, depth, span)
 }
 
+/// The declared rank of the formal input an argument binds, if it names one.
+fn bound_input_rank(func: &Function, position: usize, arg: &FunctionCallArg) -> Option<usize> {
+    let input = match &arg.name {
+        Some(name) => func.inputs.iter().find(|input| &input.name == name)?,
+        None => func.inputs.get(position)?,
+    };
+    Some(input.dimensions().len().max(input.shape_expr.len()))
+}
+
+fn value_rank(value: &Value) -> usize {
+    match value {
+        Value::Array(elements) => 1 + elements.first().map_or(0, value_rank),
+        _ => 0,
+    }
+}
+
+/// MLS 3.7 §12.4.6: a function with one output called with arguments of
+/// higher rank than their formal inputs applies element-wise over the extra
+/// leading dimension. Returns that extent, which every such argument must
+/// share, or `None` for an ordinary call.
+fn vectorized_extent(
+    func: &Function,
+    args: &[FunctionCallArg],
+    span: Span,
+) -> Result<Option<usize>, EvalError> {
+    let mut extent = None;
+    for (position, arg) in args.iter().enumerate() {
+        let Some(rank) = bound_input_rank(func, position, arg) else {
+            continue;
+        };
+        if value_rank(&arg.value) <= rank {
+            continue;
+        }
+        let Value::Array(elements) = &arg.value else {
+            unreachable!("a value of positive rank is an array")
+        };
+        if extent.is_some_and(|extent| extent != elements.len()) {
+            return Err(EvalError::function_error(
+                format!(
+                    "vectorized call of {} has arguments of different sizes",
+                    func.name
+                ),
+                span,
+            ));
+        }
+        extent = Some(elements.len());
+    }
+    if extent.is_some() && func.outputs.len() != 1 {
+        return Err(EvalError::function_error(
+            format!(
+                "{} has {} outputs and cannot be applied element-wise",
+                func.name,
+                func.outputs.len()
+            ),
+            span,
+        ));
+    }
+    Ok(extent)
+}
+
+/// The argument of element `element` of a vectorized call: the element of an
+/// argument of higher rank than its formal, every other argument unchanged.
+fn element_call_arg(
+    func: &Function,
+    position: usize,
+    arg: &FunctionCallArg,
+    element: usize,
+) -> FunctionCallArg {
+    let vectorized =
+        bound_input_rank(func, position, arg).is_some_and(|rank| value_rank(&arg.value) > rank);
+    match &arg.value {
+        Value::Array(elements) if vectorized => FunctionCallArg {
+            name: arg.name.clone(),
+            value: elements[element].clone(),
+        },
+        _ => arg.clone(),
+    }
+}
+
 /// Evaluate a user-defined function with already evaluated positional/named arguments.
 pub fn eval_function_with_call_args(
     func: &Function,
@@ -685,6 +764,19 @@ pub fn eval_function_with_call_args(
         ));
     }
 
+    if let Some(extent) = vectorized_extent(func, &args, span)? {
+        return (0..extent)
+            .map(|element| {
+                let args = args
+                    .iter()
+                    .enumerate()
+                    .map(|(position, arg)| element_call_arg(func, position, arg, element))
+                    .collect();
+                eval_function_with_call_args(func, args, ctx, limits, depth, span)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array);
+    }
     let eval = EvalState {
         ctx,
         limits,

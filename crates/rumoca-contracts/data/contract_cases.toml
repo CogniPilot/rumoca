@@ -3663,6 +3663,13 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'FUNC-027'
+case_id = 'func_027_vectorized_call_evaluates_at_translation'
+test_file = 'tests/func_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'TYPE-032'
 case_id = 'type_032_if_expression_mixing_record_types_rejected'
 test_file = 'tests/type_contracts.rs'

@@ -225,6 +225,7 @@ mod time_event_when_activation;
 mod trial_residual_scale;
 mod type_attribute_inheritance;
 mod variability_classes;
+mod vectorized_constant_calls;
 mod verification_surface_wiring;
 
 mod structural_binding_functions;

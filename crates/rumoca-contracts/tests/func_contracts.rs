@@ -1367,3 +1367,35 @@ fn func_039_protected_binding_reads_record_input_fields() {
     );
     assert!((trace.final_value("dp") - 200.0).abs() < 1e-9);
 }
+
+#[test]
+fn func_027_vectorized_call_evaluates_at_translation() {
+    // MLS §12.4.6: a scalar function applied to an array argument maps over
+    // its elements, also when a parameter binding evaluates it at translation.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            function toK
+                input Real c;
+                output Real k;
+            algorithm
+                k := c + 273.15;
+            end toK;
+            function f
+                input Real T;
+                output Real y;
+            protected
+                Real invTK[2] = 1 ./ toK({10, 20});
+            algorithm
+                y := invTK[1]*T + invTK[2];
+            end f;
+            parameter Real p = f(300);
+            Real y = p*time;
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    let expected = 300.0 / 283.15 + 1.0 / 293.15;
+    assert!((trace.final_value("y") - expected).abs() < 1e-12);
+}

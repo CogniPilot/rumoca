@@ -632,7 +632,7 @@ Defines state-to-state transitions with priority and timing control.
 | FUNC-024 | Uninitialized error | §12.4.4 | "Error to use or return an uninitialized variable" |
 | FUNC-025 | LHS list output | §12.4.3 | "Left-hand side references must agree with type of corresponding output component" |
 | FUNC-026 | Vectorization non-replaceable | §12.4.6 | "Only transitively non-replaceable functions support automatic vectorization" |
-| FUNC-027 | Vectorization size match | §12.4.6 | "Array arguments have to be the same size" |
+| FUNC-027 | Vectorization size match | §12.4.6 | "Array arguments have to be the same size". Rumoca: the translation-time evaluator applies a scalar function to an array argument element-wise over the extra leading dimension and rejects arguments of different sizes; element-wise operators broadcast a scalar operand (§10.6). Tested in `suite_core/vectorized_constant_calls.rs` |
 | FUNC-028 | Record constructor scope | §12.6 | "Record constructor can only reference records found in global scope" |
 | FUNC-029 | Record cast conditional error | §12.6.1 | "A record cast is erroneous if a corresponding source model/block/connector component is conditional" |
 | FUNC-030 | Derivative outputs non-empty | §12.7.1 | "Derivative output list shall not be empty" |
