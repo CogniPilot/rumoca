@@ -111,3 +111,15 @@ end NoEventBoolean;
         Some("ED023")
     );
 }
+
+/// MLS 3.7 §3.8.5: `mod` and `rem` generate events but are not discrete-time
+/// expressions, so a String defined from `mod(time, 1)` is refused.
+#[test]
+fn a_string_of_mod_of_time_is_refused() {
+    let source = r#"
+model ModString
+  String s = String(mod(time, 1));
+end ModString;
+"#;
+    assert_eq!(rejection(source, "ModString").as_deref(), Some("ED023"));
+}

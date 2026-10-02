@@ -1,10 +1,12 @@
-//! MLS 3.7 §3.8.4: a discrete-valued variable (Boolean, Integer, String, or
+//! MLS 3.7 §3.8.5: a discrete-valued variable (Boolean, Integer, String, or
 //! enumeration; §4.5) changes value only at events, so an equation or binding
 //! outside a when-clause that defines one must be a discrete-time expression.
 //! Discrete-time expressions are built from discrete-time variables,
-//! parameters, constants, relations and the event-generating built-ins outside
-//! `noEvent`/`smooth`, `pre`/`edge`/`change`/`sample`/`initial`/`terminal`, and
-//! calls whose arguments are all discrete-time. A definition that reads `time`
+//! parameters, constants, relations and the event-generating built-ins
+//! `ceil`, `floor`, `div`, and `integer` outside `noEvent`/`smooth` (`mod` and
+//! `rem` generate events but are not discrete-time),
+//! `pre`/`edge`/`change`/`sample`/`initial`/`terminal`, and calls whose
+//! arguments are all discrete-time. A definition that reads `time`
 //! or a continuous-time variable outside those forms would change between
 //! events without one, which the event semantics cannot represent, so it is
 //! refused (ED023) instead of being held at its last event value.
@@ -141,8 +143,6 @@ impl ExpressionVisitor for ContinuousRead<'_> {
             | BuiltinFunction::Floor
             | BuiltinFunction::Ceil
             | BuiltinFunction::Div
-            | BuiltinFunction::Mod
-            | BuiltinFunction::Rem
                 if self.suppressed == 0 => {}
             BuiltinFunction::NoEvent | BuiltinFunction::Smooth => {
                 self.suppressed += 1;
