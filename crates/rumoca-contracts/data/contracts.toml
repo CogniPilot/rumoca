@@ -1833,7 +1833,7 @@ id = 'EQN-040'
 category = 'Equation'
 name = 'Initial discrete definitions'
 mls_ref = '§8.6'
-requirement = 'An initial equation pre(m) = e or m = e determines the initialization value of discrete m from the initialization solution: e may read parameters, time, inputs, states, and algebraics, and is applied after the projection that settles them once its read cone is proven free of discrete values'
+requirement = 'An initial equation pre(m) = e or m = e determines the initialization value of discrete m from the initialization solution: for a discrete-valued m, e may read parameters, time, inputs, states, and algebraics, and is applied after the projection that settles them once its read cone is proven free of discrete values'
 status = 'Implemented'
 tier = 1
 

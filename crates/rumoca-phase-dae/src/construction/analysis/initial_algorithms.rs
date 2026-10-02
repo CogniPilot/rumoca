@@ -154,6 +154,15 @@ enum InitialTargetRef<'flat> {
     Element(ElementTarget<'flat>),
 }
 
+impl InitialTargetRef<'_> {
+    fn name(&self) -> &VarName {
+        match self {
+            Self::Whole(name) => name,
+            Self::Element(element) => element.name,
+        }
+    }
+}
+
 fn initial_discrete_equation<'flat>(
     flat: &'flat flat::Model,
     residual: &'flat Expression,
@@ -186,7 +195,12 @@ fn initial_discrete_equation<'flat>(
     let Some((target, value)) = definition else {
         return Ok(None);
     };
-    if !has_only_initial_definition_reads(flat, value, roles) {
+    // A discrete Real target that reads a continuous coordinate stays a numeric
+    // initialization row, which the projection solves simultaneously with the
+    // coordinates it reads. A discrete-valued target has no numeric row, so it
+    // is the definition Solve orders after the projection.
+    let reads_continuous = matches!(roles.get(target.name()), Some(PlannedRole::DiscreteValue));
+    if !has_only_initial_definition_reads(flat, value, roles, reads_continuous) {
         return Ok(None);
     }
     Ok(Some((target, value)))
@@ -203,14 +217,18 @@ fn initial_discrete_equation<'flat>(
 /// once its read cone is proven not to depend on `m` itself.
 ///
 /// This selects the owner; the checked DAE constructor independently proves
-/// the same read set before accepting an [`InitialDiscreteValue`]. A
-/// definition that reads `pre`, a derivative, another discrete coordinate, or
-/// any other history or clocked operator remains an initialization residual,
-/// because no owner orders those reads against this definition.
+/// the same read set before accepting an [`InitialDiscreteValue`]. Continuous
+/// reads are admitted only with `reads_continuous`, for a discrete-valued
+/// target: a discrete Real target that reads one stays a numeric row the
+/// projection solves simultaneously. A definition that reads `pre`, a
+/// derivative, another discrete coordinate, or any other history or clocked
+/// operator remains an initialization residual, because no owner orders those
+/// reads against this definition.
 fn has_only_initial_definition_reads(
     flat: &flat::Model,
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
+    reads_continuous: bool,
 ) -> bool {
     match expression {
         Expression::FunctionCall { name, .. }
@@ -226,20 +244,25 @@ fn has_only_initial_definition_reads(
         }
         Expression::VarRef { name, .. } => {
             let referenced = name.var_name();
-            if referenced.as_str() != "time"
-                && !matches!(
+            let settled = referenced.as_str() == "time"
+                || matches!(
                     roles.get(referenced),
                     Some(
                         PlannedRole::Parameter
                             | PlannedRole::Constant
                             | PlannedRole::EnumerationLiteral
-                            | PlannedRole::State
-                            | PlannedRole::Algebraic
-                            | PlannedRole::Input
-                            | PlannedRole::Output
                     )
+                );
+            let continuous = matches!(
+                roles.get(referenced),
+                Some(
+                    PlannedRole::State
+                        | PlannedRole::Algebraic
+                        | PlannedRole::Input
+                        | PlannedRole::Output
                 )
-            {
+            );
+            if !(settled || reads_continuous && continuous) {
                 return false;
             }
         }
@@ -247,7 +270,7 @@ fn has_only_initial_definition_reads(
     }
     expression_children(expression)
         .into_iter()
-        .all(|child| has_only_initial_definition_reads(flat, child, roles))
+        .all(|child| has_only_initial_definition_reads(flat, child, roles, reads_continuous))
 }
 
 /// Operators whose value is a derivative, a left limit, a delayed value, or a
