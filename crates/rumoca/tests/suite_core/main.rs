@@ -108,6 +108,7 @@ mod function_projection_array_shape_test;
 mod function_proven_branch_test;
 mod function_quotient_sim;
 mod function_record_array_test;
+mod function_record_defaults;
 mod function_record_field_bindings;
 mod function_record_field_branches;
 mod function_return_checked;

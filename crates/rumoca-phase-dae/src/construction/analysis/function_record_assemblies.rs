@@ -70,11 +70,7 @@ fn plan_staged_record(
             })
             .collect::<Vec<_>>();
         let first = *field_indices.first().ok_or_else(|| {
-            ToDaeError::unsupported_flat(
-                "record output assembly",
-                format!("`{target}.{}` is left undefined", field.name),
-                field.span,
-            )
+            undefined_record_field(context.function, target.as_str(), field, None)
         })?;
         if field_indices.windows(2).any(|pair| pair[1] != pair[0] + 1) {
             return Err(ToDaeError::unsupported_flat(
@@ -342,7 +338,7 @@ fn validate_field_assembly(
         scalar_count,
         available_fields,
     )?;
-    let scalars = require_total_field_scalars(scalars, output, field)?;
+    let scalars = require_total_field_scalars(context.function, scalars, output, field)?;
     Ok(FunctionRecordFieldAssembly {
         name: VarName::new(&field.name),
         scalar_type: Some(
@@ -453,6 +449,7 @@ fn collect_field_scalar_sources(
 }
 
 fn require_total_field_scalars(
+    function: &rumoca_core::Function,
     scalars: Vec<Option<FunctionRecordScalarSource>>,
     output: &str,
     field: &rumoca_core::FunctionParam,
@@ -461,17 +458,7 @@ fn require_total_field_scalars(
         .into_iter()
         .enumerate()
         .map(|(scalar, source)| {
-            source.ok_or_else(|| {
-                ToDaeError::unsupported_flat(
-                    "record output assembly",
-                    format!(
-                        "`{output}.{}` leaves scalar {} undefined",
-                        field.name,
-                        scalar + 1
-                    ),
-                    field.span,
-                )
-            })
+            source.ok_or_else(|| undefined_record_field(function, output, field, Some(scalar + 1)))
         })
         .collect()
 }
@@ -520,13 +507,8 @@ fn validate_aggregate_field_assembly(
             ));
         }
     }
-    let aggregate_statement = source.ok_or_else(|| {
-        ToDaeError::unsupported_flat(
-            "record output assembly",
-            format!("`{output}.{}` is left undefined", field.name),
-            field.span,
-        )
-    })?;
+    let aggregate_statement =
+        source.ok_or_else(|| undefined_record_field(context.function, output, field, None))?;
     Ok(FunctionRecordFieldAssembly {
         name: VarName::new(&field.name),
         scalar_type: None,
@@ -690,4 +672,88 @@ impl RecordSelfReadChecker<'_> {
                 .get_or_insert_with(|| reference.to_string());
         }
     }
+}
+
+/// The refusal for a record field the assembly finds no value for.
+///
+/// MLS 3.7 §12.4.4: "it is an error to use or return an uninitialized
+/// variable". Flattening already assigns every field default the algorithm
+/// does not overwrite, so a field no statement anywhere in the body writes is
+/// returned uninitialized: a model error. A field the body does write, only in
+/// a form the assembly does not represent (inside a loop, for example), stays
+/// an unsupported construct.
+fn undefined_record_field(
+    function: &rumoca_core::Function,
+    output: &str,
+    field: &rumoca_core::FunctionParam,
+    scalar: Option<usize>,
+) -> ToDaeError {
+    let place = match scalar {
+        Some(scalar) => format!("scalar {scalar} of `{output}.{}`", field.name),
+        None => format!("`{output}.{}`", field.name),
+    };
+    if statements_write_field(&function.body, output, &field.name) {
+        return ToDaeError::unsupported_flat(
+            "record output assembly",
+            format!("{place} has no value the record assembly represents"),
+            field.span,
+        );
+    }
+    ToDaeError::UninitializedFunctionValue {
+        detail: format!(
+            "{place} of `{}` is never assigned and its record field has no default",
+            function.name
+        ),
+        span: field.span,
+    }
+}
+
+fn statements_write_field(
+    statements: &[rumoca_core::Statement],
+    output: &str,
+    field: &str,
+) -> bool {
+    let writes = |comp: &rumoca_core::ComponentReference| match comp.parts() {
+        [root] => root.ident == output,
+        [root, part, ..] => root.ident == output && part_names_field(&part.ident, field),
+        _ => false,
+    };
+    statements.iter().any(|statement| match statement {
+        rumoca_core::Statement::Assignment { comp, .. } => writes(comp),
+        rumoca_core::Statement::FunctionCall { outputs, .. } => {
+            outputs.iter().flatten().any(&writes)
+        }
+        rumoca_core::Statement::For { equations, .. } => {
+            statements_write_field(equations, output, field)
+        }
+        rumoca_core::Statement::While { block, .. } => {
+            statements_write_field(&block.stmts, output, field)
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            cond_blocks
+                .iter()
+                .any(|block| statements_write_field(&block.stmts, output, field))
+                || else_block
+                    .as_deref()
+                    .is_some_and(|block| statements_write_field(block, output, field))
+        }
+        rumoca_core::Statement::When { blocks, .. } => blocks
+            .iter()
+            .any(|block| statements_write_field(&block.stmts, output, field)),
+        _ => false,
+    })
+}
+
+/// Whether an assigned path segment names `field` itself or a record that a
+/// decomposed `field` lies in (`state` for `state_p`); a conservative test, so
+/// a field it cannot rule out is never reported uninitialized.
+fn part_names_field(assigned: &str, field: &str) -> bool {
+    assigned == field
+        || field
+            .strip_prefix(assigned)
+            .is_some_and(|suffix| suffix.starts_with('_'))
 }

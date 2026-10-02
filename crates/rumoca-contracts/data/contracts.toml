@@ -2439,7 +2439,8 @@ category = 'Function'
 name = 'Uninitialized error'
 mls_ref = '§12.4.4'
 requirement = 'Error to use or return an uninitialized variable'
-status = 'Deferred'
+status = 'Partial'
+notes = 'A record result or protected record field that the algorithm never writes and whose type gives no default is returned uninitialized and rejected (ED022); record field defaults the algorithm does not overwrite are assigned at entry. Uninitialized scalar and array results and reads of uninitialized locals are not yet reported with this diagnostic.'
 tier = 1
 
 [[contracts]]

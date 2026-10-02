@@ -102,8 +102,7 @@ fn conditional_update_does_not_invent_an_unwritten_record() {
         .compile_str(UNDEFINED_RECORD_UPDATE, "ObserveUndefinedRecordUpdate.mo")
         .expect_err("an unwritten record field has no checked value to preserve");
     assert!(
-        error.to_string().contains("record output assembly")
-            && error.to_string().contains("result.value"),
+        error.to_string().contains("uninitialized") && error.to_string().contains("result.value"),
         "unexpected diagnostic: {error}"
     );
 }

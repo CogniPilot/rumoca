@@ -470,7 +470,8 @@ fn incomplete_record_output_fails_before_dae_construction() {
         .compile_str(&source, "IncompleteRecord.mo")
         .expect_err("an incomplete record result must not construct a DAE");
     assert!(
-        error.to_string().contains("leaves scalar 1 undefined"),
+        error.to_string().contains("scalar 1 of `result.scalar`")
+            && error.to_string().contains("never assigned"),
         "unexpected diagnostic: {error}"
     );
 }

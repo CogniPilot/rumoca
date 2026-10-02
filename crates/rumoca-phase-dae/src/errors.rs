@@ -136,6 +136,19 @@ pub enum ToDaeError {
         span: Span,
     },
 
+    #[error("function value is used or returned uninitialized: {detail}")]
+    #[diagnostic(
+        code(rumoca::todae::ED022),
+        help(
+            "MLS 3.7 §12.4.4: it is an error to use or return an uninitialized variable; assign the value or give its type a default"
+        )
+    )]
+    UninitializedFunctionValue {
+        detail: String,
+        #[label("never assigned and without a default")]
+        span: Span,
+    },
+
     #[error("canonical DAE construction rejected an invalid operation: {source}")]
     #[diagnostic(
         code(rumoca::todae::ED020),
@@ -259,6 +272,7 @@ impl ToDaeError {
             | Self::UnsupportedRuntimeOperator { span, .. }
             | Self::UnresolvedClockSchedule { span, .. }
             | Self::UnsupportedFlatSemantics { span, .. }
+            | Self::UninitializedFunctionValue { span, .. }
             | Self::Construction { span, .. } => std::slice::from_ref(span),
             Self::Unbalanced { .. }
             | Self::Internal { .. }

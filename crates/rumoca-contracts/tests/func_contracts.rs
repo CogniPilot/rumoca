@@ -1399,3 +1399,34 @@ fn func_027_vectorized_call_evaluates_at_translation() {
     let expected = 300.0 / 283.15 + 1.0 / 293.15;
     assert!((trace.final_value("y") - expected).abs() < 1e-12);
 }
+
+// =============================================================================
+// FUNC-024: Uninitialized error (MLS §12.4.4)
+// =============================================================================
+
+#[test]
+fn func_024_uninitialized_record_result_field_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        package P
+            record Data
+                Real d;
+                Real e;
+                Real c0 = 1;
+            end Data;
+            function make
+                input Real d;
+                output Data data;
+            algorithm
+                data.d := d;
+            end make;
+            model M
+                Data r = make(time);
+            end M;
+        end P;
+    "#,
+        "P.M",
+        FailedPhase::ToDae,
+        "ED022",
+    );
+}
