@@ -2440,7 +2440,7 @@ name = 'Uninitialized error'
 mls_ref = '§12.4.4'
 requirement = 'Error to use or return an uninitialized variable'
 status = 'Partial'
-notes = 'A value that a top-level if of the function body defines on some paths and leaves unwritten on others fails the call only on the executed path that uses it (call-scoped assertion); a use inside a nested statement, or after a loop that may write the value, stays a typed construction rejection. A record result or protected record field that the algorithm never writes and whose type gives no default is returned uninitialized and rejected (ED022); record field defaults the algorithm does not overwrite are assigned at entry. Uninitialized scalar and array results and reads of uninitialized locals are not yet reported with this diagnostic.'
+notes = 'A value that a top-level if of the function body defines on some paths and leaves unwritten on others fails the call only on the executed path that uses it (call-scoped assertion); a use inside a nested statement, or after a loop that may write the value, stays a typed construction rejection. Covered by func_contracts.rs func_024_value_assigned_on_the_executed_path_is_usable and func_024_use_of_a_value_the_executed_path_never_assigned_fails. A record result or protected record field that the algorithm never writes and whose type gives no default is returned uninitialized and rejected (ED022); record field defaults the algorithm does not overwrite are assigned at entry. Uninitialized scalar and array results and reads of uninitialized locals are not yet reported with this diagnostic.'
 tier = 1
 
 [[contracts]]
