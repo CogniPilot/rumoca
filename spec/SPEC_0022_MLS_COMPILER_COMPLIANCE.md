@@ -395,7 +395,7 @@ Defines state-to-state transitions with priority and timing control.
 
 | ID | Contract | MLS | Requirement |
 |----|----------|-----|-------------|
-| INST-001 | Modification context | §7.2 | "Modifier value found in the context in which the modifier occurs" |
+| INST-001 | Modification context | §7.2 | "Modifier value found in the context in which the modifier occurs". Rumoca: flatten qualifies a modification binding from the modifier's scope, and translation-time evaluation (branch selection, ranges, sizes) reads those names from the root before the modified component's scope, so `c(p = p)` reads the enclosing `p`, never `c.p` or its declaration default. Tested in `suite_core/modifier_value_context.rs` |
 | INST-002 | Modification merging | §7.2.3 | "Outer modifiers override inner modifiers" |
 | INST-003 | Single modification | §7.2.4 | "Two arguments of a modification shall not modify the same element, attribute, or description-string" |
 | INST-004 | Unnamed extends nodes | §5.6 | Preserve declaration order in inheritance |
