@@ -67,6 +67,7 @@ mod refresh_projection;
 mod relation_memory;
 mod seed_linearization;
 mod sensitivity;
+mod singular_mode;
 mod support;
 use discrete_rows::PreparedStructuredDiscreteRows;
 pub use discrete_rows::SeededConditionMemory;

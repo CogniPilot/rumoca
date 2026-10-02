@@ -97,6 +97,18 @@ pub const ES015_CONSTANT_CALL_EVALUATION: &str = "ES015";
 /// * **owner** `crate::dae_transform::loop_guards::unlocalizable_loop_guards`;
 /// * **evidence** `suite_core::loop_guarded_smooth_relations`.
 pub const ES016_UNLOCALIZABLE_LOOP_RELATION: &str = "ES016";
+/// Typed runtime failure: an algebraic block is singular in the branch
+/// combination its rows select.
+///
+/// * **reports** when the sensitivity solve of a block whose rows select a
+///   branch finds the block Jacobian singular: the typed runtime error `SingularActiveMode`
+///   names the block unknowns, the discrete selectors and relation memories its
+///   rows read with their values, and the conditional rows;
+/// * **does not refuse at construction**: the matching holds over the union of
+///   the branches, and a singular combination may be unreachable in the run;
+/// * **owner** `rumoca_solver` `SolveRuntime::singular_active_mode`;
+/// * **evidence** `suite_core::singular_active_mode`.
+pub const ES017_SINGULAR_ACTIVE_MODE: &str = "ES017";
 
 /// Every structural diagnostic code, in numeric order.
 ///
@@ -113,6 +125,7 @@ pub const STRUCTURAL_DIAGNOSTIC_CODES: &[&str] = &[
     ES014_CONTRACT_VIOLATION,
     ES015_CONSTANT_CALL_EVALUATION,
     ES016_UNLOCALIZABLE_LOOP_RELATION,
+    ES017_SINGULAR_ACTIVE_MODE,
 ];
 
 #[cfg(test)]

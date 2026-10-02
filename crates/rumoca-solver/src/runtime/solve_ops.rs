@@ -60,6 +60,15 @@ pub enum RuntimeSolveError {
     /// forbids the event that would continue it.
     #[error("[ES016] {fold} (t={time})")]
     UnlocalizableFold { fold: String, time: f64 },
+
+    /// An algebraic block has no unique solution in the branch combination its
+    /// rows currently select (ES017): the structural matching holds over the
+    /// union of every branch, but the active branches leave unknowns of the
+    /// block undetermined.
+    #[error(
+        "[ES017] algebraic block over {unknowns} is singular in its active branch combination {mode}; the model has no unique solution there"
+    )]
+    SingularActiveMode { unknowns: String, mode: String },
 }
 
 fn span_suffix(span: Option<rumoca_core::Span>) -> String {

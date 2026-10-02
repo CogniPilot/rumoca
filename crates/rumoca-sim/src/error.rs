@@ -199,6 +199,9 @@ impl From<RuntimeSolveError> for SimError {
                 Self::SolveIr(non_finite.to_string())
             }
             fold @ RuntimeSolveError::UnlocalizableFold { .. } => Self::SolveIr(fold.to_string()),
+            singular @ RuntimeSolveError::SingularActiveMode { .. } => {
+                Self::SolveIr(singular.to_string())
+            }
         }
     }
 }

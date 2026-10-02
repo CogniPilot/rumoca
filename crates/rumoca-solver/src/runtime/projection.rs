@@ -141,6 +141,18 @@ pub(crate) trait ImplicitProjectionModel {
         &[]
     }
 
+    /// The unknowns of `block` and the branch combination its rows select at
+    /// parameters `p` (the discrete coordinates and relation memories they
+    /// read, with their values), for the ES017 report of a singular active
+    /// mode. `None` when the model cannot name them.
+    fn singular_active_mode(
+        &self,
+        _block: &solve::AlgebraicProjectionBlock,
+        _p: &[f64],
+    ) -> Option<(String, String)> {
+        None
+    }
+
     /// Return the diagnostic name for a solver variable. Implementations may
     /// omit names without changing projection semantics.
     fn variable_name_for_y_index(&self, _y_index: usize) -> Option<&str> {
@@ -565,6 +577,9 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
         );
         let Some(solution) = linearization.solve(&rhs) else {
             linearization.trace_singular(model, block_index, block, y, args, &rhs);
+            if let Some((unknowns, mode)) = model.singular_active_mode(block, args.parameters) {
+                return Err(RuntimeSolveError::SingularActiveMode { unknowns, mode });
+            }
             return Err(RuntimeSolveError::DirectionalDerivativeUnavailable {
                 reason: "algebraic projection sensitivity matrix is singular".to_string(),
             });

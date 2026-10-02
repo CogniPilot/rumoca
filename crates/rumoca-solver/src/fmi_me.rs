@@ -513,6 +513,9 @@ impl From<crate::runtime::solve_ops::RuntimeSolveError> for MeError {
             fold @ Runtime::UnlocalizableFold { .. } => Self::Evaluation {
                 message: fold.to_string(),
             },
+            singular @ Runtime::SingularActiveMode { .. } => Self::Evaluation {
+                message: singular.to_string(),
+            },
         }
     }
 }

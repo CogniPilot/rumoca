@@ -967,6 +967,14 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         self.plan_validated
     }
 
+    fn singular_active_mode(
+        &self,
+        block: &solve::AlgebraicProjectionBlock,
+        p: &[f64],
+    ) -> Option<(String, String)> {
+        self.runtime.singular_active_mode(block, p)
+    }
+
     fn unlocalizable_guards(&self) -> &[solve::UnlocalizableGuard] {
         &self.runtime.model.problem.continuous.unlocalizable_guards
     }

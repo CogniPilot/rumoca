@@ -183,6 +183,14 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
             })
     }
 
+    fn singular_active_mode(
+        &self,
+        block: &solve::AlgebraicProjectionBlock,
+        p: &[f64],
+    ) -> Option<(String, String)> {
+        self.runtime.singular_active_mode(block, p)
+    }
+
     fn variable_name_for_y_index(&self, y_index: usize) -> Option<&str> {
         self.runtime
             .model
