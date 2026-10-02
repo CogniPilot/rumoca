@@ -54,20 +54,20 @@ use analysis::{
     DelayPlan, DerivedParameterPlan, DiscreteValueAssignmentPlan, DiscreteValueTopologyPlan,
     DynamicTimeEventOperand, EquationPartition, ExpressionEventPlan, ExpressionEventPlans,
     ExternalArgumentPlan, ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
-    FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
-    FunctionRecordCallAssemblyPlan, FunctionRecordFieldAssembly, FunctionRecordFieldAssemblyPlan,
-    FunctionStatementPlan, FunctionValueSeed, HistoryOperatorPlans, ModelAlgorithmPlan,
-    ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan,
-    MultiOutputEquationPlan, PlannedRole, RecordArrayFieldPlan, RecordArrayFieldPlans,
-    RecordEquationFieldPlan, RecordEquationFieldValue, RecordEquationPlan, RuntimeVariableRole,
-    SemiLinearRules, StructuredSource, WhenBranchKey, analyze, assigned_function_targets,
-    branch_never_completes, discrete_value_assignment, effective_function_scalar_type,
-    effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
-    flattened_function_loop_source, function_assertion, function_record_field_name,
-    inferred_clock_transfer, is_event_condition, is_inferred_clock_condition,
-    is_whole_clock_coordinate, materialized_discrete_real_family, materialized_discrete_value_rows,
-    model_algorithm_targets, record_field_projections, selected_conditional_statements,
-    specialized_comprehension_plan, structured_assignment_names,
+    FunctionDefinednessPlan, FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan,
+    FunctionRecordAssemblyPlan, FunctionRecordCallAssemblyPlan, FunctionRecordFieldAssembly,
+    FunctionRecordFieldAssemblyPlan, FunctionStatementPlan, FunctionValueSeed,
+    HistoryOperatorPlans, ModelAlgorithmPlan, ModelEventFunctionCallPlan,
+    ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan, MultiOutputEquationPlan, PlannedRole,
+    RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationFieldPlan, RecordEquationFieldValue,
+    RecordEquationPlan, RuntimeVariableRole, SemiLinearRules, StructuredSource, WhenBranchKey,
+    analyze, assigned_function_targets, branch_never_completes, discrete_value_assignment,
+    effective_function_scalar_type, effective_variable_scalar_type,
+    empty_array_bound_to_declaration, equation_partition, flattened_function_loop_source,
+    function_assertion, function_record_field_name, inferred_clock_transfer, is_event_condition,
+    is_inferred_clock_condition, is_whole_clock_coordinate, materialized_discrete_real_family,
+    materialized_discrete_value_rows, model_algorithm_targets, record_field_projections,
+    selected_conditional_statements, specialized_comprehension_plan, structured_assignment_names,
     when_conditional_selects_clock_structure,
 };
 use clock_operator_hosts::clock_operator_hosts;
@@ -90,10 +90,10 @@ use expression::{
 };
 use function_array_assembly::lower_function_array_assembly;
 use function_body::{
-    FunctionConditional, FunctionFold, TotalArrayDefinition, function_value_coordinate,
-    lower_function_conditional, lower_function_fold, lower_function_value_seed,
-    lower_generated_boolean_assignment, lower_guarded_function_return, lower_integer_reduction,
-    lower_total_function_array_definition,
+    DefinednessPredicates, FunctionConditional, FunctionFold, PartialTarget, TotalArrayDefinition,
+    function_value_coordinate, lower_function_conditional, lower_function_fold,
+    lower_function_value_seed, lower_generated_boolean_assignment, lower_guarded_function_return,
+    lower_integer_reduction, lower_total_function_array_definition,
 };
 use function_construction::{
     FunctionRegistry, FunctionRegistryInput, construct_functions, function_value_type,
@@ -557,18 +557,54 @@ struct FunctionSymbols<'symbols, 'dae> {
     shapes: &'symbols ShapeEnvironment,
 }
 
+/// The MLS §12.4.4 definedness plan of a function's top-level sequence and
+/// the predicates its conditionals have produced so far.
+struct TopLevelDefinedness<'plan, 'dae> {
+    plan: &'plan FunctionDefinednessPlan,
+    predicates: DefinednessPredicates<'dae>,
+    /// The function declaration, which owns the return-point assertions.
+    span: Span,
+}
+
 fn lower_function_statements<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
     mut body: dae::FunctionBody<'dae>,
     statements: &[rumoca_core::Statement],
     plans: &[FunctionStatementPlan],
+    mut definedness: Option<&mut TopLevelDefinedness<'_, 'dae>>,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     debug_assert_eq!(statements.len(), plans.len());
     let mut index = 0usize;
     while index < statements.len() {
         let statement = &statements[index];
         let plan = &plans[index];
+        if let Some(definedness) = definedness.as_deref_mut()
+            && let Some(names) = definedness.plan.asserted_reads.get(&index)
+        {
+            let span = statement.source_span().unwrap_or(definedness.span);
+            definedness
+                .predicates
+                .assert_defined(construction, &mut body, names, span)?;
+        }
+        if let (Some(definedness), FunctionStatementPlan::If { .. }) =
+            (definedness.as_deref_mut(), plan)
+            && let Some(partial) = definedness.plan.partial_joins.get(&index)
+        {
+            let span = statement.source_span().unwrap_or(definedness.span);
+            let partial = definedness.predicates.partial_targets(partial, span)?;
+            let defined = lower_top_level_conditional(
+                construction,
+                symbols,
+                &mut body,
+                statement,
+                plan,
+                &partial,
+            )?;
+            definedness.predicates.record(defined);
+            index += 1;
+            continue;
+        }
         if let FunctionStatementPlan::ArrayAssembly(assembly) = plan {
             let statement_count = assembly.direct_count + usize::from(assembly.loop_plan.is_some());
             lower_function_array_assembly(
@@ -801,32 +837,14 @@ fn lower_function_conditional_statement<'dae>(
     let rumoca_core::Statement::If {
         cond_blocks,
         else_block,
-        span,
+        ..
     } = statement
     else {
         unreachable!("a conditional plan owns a conditional statement")
     };
     match plan {
-        FunctionStatementPlan::If {
-            branches,
-            fallback,
-            targets,
-        } => {
-            let binders = HashMap::new();
-            lower_function_conditional(
-                construction,
-                &mut body,
-                FunctionConditional {
-                    symbols,
-                    binders: &binders,
-                    blocks: cond_blocks,
-                    fallback: else_block.as_deref(),
-                    branch_plans: branches,
-                    fallback_plans: fallback.as_deref(),
-                    targets,
-                    span: *span,
-                },
-            )?;
+        FunctionStatementPlan::If { .. } => {
+            lower_top_level_conditional(construction, symbols, &mut body, statement, plan, &[])?;
             Ok(body)
         }
         FunctionStatementPlan::ProvenBranch {
@@ -835,10 +853,53 @@ fn lower_function_conditional_statement<'dae>(
         } => {
             let selected =
                 selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
-            lower_function_statements(construction, symbols, body, selected, statements)
+            lower_function_statements(construction, symbols, body, selected, statements, None)
         }
         _ => unreachable!("function analysis and construction plans remain aligned"),
     }
+}
+
+/// Lower one runtime conditional of a sequence, returning the definedness
+/// predicate of each target in `partial`.
+fn lower_top_level_conditional<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    body: &mut dae::FunctionBody<'dae>,
+    statement: &rumoca_core::Statement,
+    plan: &FunctionStatementPlan,
+    partial: &[PartialTarget<'dae>],
+) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
+    let (
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            span,
+        },
+        FunctionStatementPlan::If {
+            branches,
+            fallback,
+            targets,
+        },
+    ) = (statement, plan)
+    else {
+        unreachable!("a runtime conditional plan owns a conditional statement")
+    };
+    let binders = HashMap::new();
+    lower_function_conditional(
+        construction,
+        body,
+        FunctionConditional {
+            symbols,
+            binders: &binders,
+            blocks: cond_blocks,
+            fallback: else_block.as_deref(),
+            branch_plans: branches,
+            fallback_plans: fallback.as_deref(),
+            targets,
+            partial,
+            span: *span,
+        },
+    )
 }
 
 struct FunctionAssignment<'statement> {

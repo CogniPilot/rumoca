@@ -595,6 +595,7 @@ fn lower_function_plan<'dae>(
             source,
             statements,
             entry_seeds,
+            definedness,
             ..
         } => {
             let body = lower_named_function_seeds(
@@ -611,7 +612,26 @@ fn lower_function_plan<'dae>(
                 statements,
                 function.span,
             )?;
-            lower_function_statements(construction, symbols, body, source, statements)
+            let mut top_level = TopLevelDefinedness {
+                plan: definedness,
+                predicates: DefinednessPredicates::default(),
+                span: function.span,
+            };
+            let mut body = lower_function_statements(
+                construction,
+                symbols,
+                body,
+                source,
+                statements,
+                Some(&mut top_level),
+            )?;
+            top_level.predicates.assert_defined(
+                construction,
+                &mut body,
+                &definedness.returned,
+                function.span,
+            )?;
+            Ok(body)
         }
         FunctionPlan::GuardedReturn {
             branches,

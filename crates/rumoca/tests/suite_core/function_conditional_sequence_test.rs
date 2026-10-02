@@ -225,6 +225,23 @@ fn evaluate(source: &str, model: &str, file: &str) -> rumoca_sim::EvalAtReport {
     probe.report
 }
 
+/// Compile `model` and return the error its simulation must end in.
+fn simulate_failure(source: &str, model: &str) -> String {
+    let compiled = Compiler::new()
+        .model(model)
+        .compile_str(source, &format!("{model}.mo"))
+        .unwrap_or_else(|error| panic!("{model} compiles: {error:?}"));
+    let error = rumoca_sim::simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .expect_err("the executed path uses an unassigned value");
+    format!("{error:?}")
+}
+
 #[test]
 fn conditional_branch_keeps_assignment_order() {
     let report = evaluate(SEQUENCE_MODEL, "CondSequence", "CondSequence.mo");
@@ -378,8 +395,10 @@ fn reading_a_whole_partial_aggregate_is_rejected() {
     );
 }
 
+/// MLS §12.4.4 makes the use of an unassigned value an error of the executed
+/// path: the call fails exactly once the path that never assigned `w` runs.
 #[test]
-fn a_value_only_one_branch_defines_may_not_escape_the_conditional() {
+fn a_value_only_one_branch_defines_fails_where_it_is_used_unassigned() {
     let source = r#"
 within;
 function leak
@@ -399,19 +418,15 @@ equation
   z = leak(time);
 end LeakedBranchValue;
 "#;
-    let error = Compiler::new()
-        .model("LeakedBranchValue")
-        .compile_str(source, "LeakedBranchValue.mo")
-        .expect_err("a value only one branch defines has no owner past the conditional");
-    let rendered = format!("{error:?}");
+    let rendered = simulate_failure(source, "LeakedBranchValue");
     assert!(
-        rendered.contains("only some branches of the conditional"),
+        rendered.contains("`w` is used without a value") && rendered.contains("t=0.5"),
         "unexpected diagnostic: {rendered}"
     );
 }
 
 #[test]
-fn an_output_missing_from_one_branch_is_rejected() {
+fn an_output_missing_from_one_branch_fails_the_call_that_returns_it() {
     let source = r#"
 within;
 function branch_output
@@ -432,23 +447,12 @@ equation
   w = branch_output(time + 1.0);
 end PartialOutput;
 "#;
+    // Without the else arm, `w = branch_output(time + 1.0)` returns `y` on a
+    // path that never assigned it: MLS §12.4.4 makes that call fail.
     let missing_else = source.replace("  else\n    y := 2 * u;\n", "");
-    let error = Compiler::new()
-        .model("PartialOutput")
-        .compile_str(&missing_else, "PartialOutput.mo")
-        .expect_err("an output no path defines has no checked DAE owner");
-    let rendered = format!("{error:?}");
-    // One diagnostic, not "either of two". `guardedFill` in
-    // `function_spd_loop_compaction.rs` is rejected by the SAME owner with the
-    // OTHER message ("requires assignments or nested conditionals in every
-    // checked branch"), so accepting both here made the two tests unable to
-    // tell their own cause from each other's.
+    let rendered = simulate_failure(&missing_else, "PartialOutput");
     assert!(
-        rendered.contains("ED019"),
-        "unexpected diagnostic: {rendered}"
-    );
-    assert!(
-        rendered.contains("`branch_output` leaves output `y` without a definition on some branch"),
+        rendered.contains("`y` is used without a value"),
         "unexpected diagnostic: {rendered}"
     );
 

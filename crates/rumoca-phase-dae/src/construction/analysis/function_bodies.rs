@@ -1,8 +1,12 @@
 mod guarded_loop_analysis;
+mod top_level_definedness;
 
 use super::*;
 use crate::construction::function_shapes::ProvenValue;
 use guarded_loop_analysis::{seed_guarded_sequence_scratch, statement_reads_target};
+use top_level_definedness::{
+    after_top_level_statement, before_top_level_statement, validate_top_level_statements,
+};
 
 pub(super) fn validate_functions(
     flat: &flat::Model,
@@ -141,7 +145,8 @@ fn validate_statement_function(
         &mut definitions,
     )?;
     entry_seeds.extend(definitions.empty_value_seeds(returned_context)?);
-    let statements = validate_function_statements(&source, returned_context, &mut definitions)?;
+    let (statements, definedness) =
+        validate_top_level_statements(function, &source, returned_context, &mut definitions)?;
     require_total_outputs(function, &definitions)?;
     Ok(FunctionPlan::Statements {
         source,
@@ -152,6 +157,7 @@ fn validate_statement_function(
             .map(|guard| (guard.target.clone(), guard.span))
             .collect(),
         entry_seeds,
+        definedness,
     })
 }
 
@@ -179,7 +185,7 @@ fn validate_nonreturn_path(
     )?;
     let mut definitions = FunctionDefinitions::new(function);
     definitions.empty_value_seeds(nonreturn_context)?;
-    validate_function_statements(&source, nonreturn_context, &mut definitions)?;
+    validate_top_level_statements(function, &source, nonreturn_context, &mut definitions)?;
     require_total_outputs(function, &definitions)
 }
 
@@ -1141,22 +1147,72 @@ pub(super) fn resolve_function_definitions(
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
+    resolve_sequence_definitions(statements, plans, context, definitions, None)
+}
+
+/// Resolve one statement sequence; `definedness` is present exactly for the
+/// function's top-level sequence, the only one that admits path-partial
+/// values behind definedness assertions.
+fn resolve_sequence_definitions(
+    statements: &[rumoca_core::Statement],
+    plans: &mut [FunctionStatementPlan],
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+    mut definedness: Option<&mut FunctionDefinednessPlan>,
+) -> Result<(), ToDaeError> {
     debug_assert_eq!(statements.len(), plans.len());
     seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
     let mut index = 0usize;
     while index < statements.len() {
-        if let FunctionStatementPlan::RecordFieldAssembly(assembly) = &plans[index] {
-            resolve_record_field_assembly_definitions(
-                &statements[index..index + assembly.statement_count],
-                assembly,
-                context,
-                definitions,
-            )?;
-            index += assembly.statement_count;
-            continue;
+        let partial_before = match definedness.as_deref_mut() {
+            Some(plan) => before_top_level_statement(statements, plans, index, definitions, plan),
+            None => Vec::new(),
+        };
+        let count = match &plans[index] {
+            FunctionStatementPlan::RecordFieldAssembly(assembly) => {
+                resolve_record_field_assembly_definitions(
+                    &statements[index..index + assembly.statement_count],
+                    assembly,
+                    context,
+                    definitions,
+                )?;
+                assembly.statement_count
+            }
+            plan => {
+                if let FunctionStatementPlan::RecordAssembly(assembly) = plan {
+                    require_record_assembly_readable(
+                        &statements[index..index + assembly.statement_count],
+                        context,
+                        definitions,
+                    )?;
+                }
+                resolve_function_definition(
+                    &statements[index],
+                    &mut plans[index],
+                    context,
+                    definitions,
+                )?;
+                1
+            }
+        };
+        if let Some(plan) = definedness.as_deref_mut() {
+            after_top_level_statement(statements, plans, index, &partial_before, definitions, plan);
         }
-        resolve_function_definition(&statements[index], &mut plans[index], context, definitions)?;
-        index += 1;
+        index += count;
+    }
+    Ok(())
+}
+
+/// A record assembly reads its field values where its group stands.
+fn require_record_assembly_readable(
+    statements: &[rumoca_core::Statement],
+    context: FunctionValidationContext<'_>,
+    definitions: &FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    for statement in statements {
+        if let rumoca_core::Statement::Assignment { value, span, .. } = statement {
+            definitions.require_readable(value, context, *span)?;
+        }
     }
     Ok(())
 }

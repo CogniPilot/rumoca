@@ -3208,6 +3208,20 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'FUNC-024'
+case_id = 'func_024_value_assigned_on_the_executed_path_is_usable'
+test_file = 'tests/func_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-024'
+case_id = 'func_024_use_of_a_value_the_executed_path_never_assigned_fails'
+test_file = 'tests/func_contracts.rs'
+kind = 'Sim'
+outcome = 'Reject'
+
+[[cases]]
 contract_id = 'INST-040'
 case_id = 'inst_040_each_on_scalar_component_rejected'
 test_file = 'tests/inst_contracts.rs'

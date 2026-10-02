@@ -155,6 +155,9 @@ pub(super) fn resolve_function_conditional(
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<Vec<VarName>, ToDaeError> {
+    // Taken before any branch clones the certificate: only this conditional's
+    // own join may admit path-partial values.
+    let admit_path_partial = definitions.take_path_partial_admission();
     if let Some(selected) = statically_selected_branch(blocks, fallback_statements, context)? {
         return resolve_static_loop_branch(
             StaticLoopBranch {
@@ -224,7 +227,14 @@ pub(super) fn resolve_function_conditional(
     } else {
         &completing_states
     };
-    let joined = definitions.join_branches(joined_states, exhaustive, &ordered, context, span)?;
+    let joined = definitions.join_branches(
+        joined_states,
+        exhaustive,
+        &ordered,
+        admit_path_partial,
+        context,
+        span,
+    )?;
     if !exhaustive && blocks.len() == 1 && is_immutable_guard(&blocks[0].cond, context) {
         definitions.remember_guarded_branch(&blocks[0].cond, &branch_states[0], &ordered, span);
     }

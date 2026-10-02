@@ -826,6 +826,47 @@ fn func_023_cyclic_function_bindings_rejected() {
     );
 }
 
+// =============================================================================
+// FUNC-024: Error to use or return an uninitialized variable
+// =============================================================================
+
+const FUNC_024_SOURCE: &str = r#"
+    model M
+        function F
+            input Real u;
+            output Real y;
+        protected
+            Real t;
+        algorithm
+            if u > 0 then
+                t := 2 * u;
+            end if;
+            y := t + 1;
+        end F;
+        Real z = F(LIMIT - time);
+    end M;
+"#;
+
+#[test]
+fn func_024_value_assigned_on_the_executed_path_is_usable() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        &FUNC_024_SOURCE.replace("LIMIT", "2"),
+        "M",
+        1.0,
+    );
+    assert!((trace.final_value("z") - 3.0).abs() < 1e-9);
+}
+
+#[test]
+fn func_024_use_of_a_value_the_executed_path_never_assigned_fails() {
+    let error = rumoca_contracts::test_support::simulate_model_failure(
+        &FUNC_024_SOURCE.replace("LIMIT", "0.5"),
+        "M",
+        1.0,
+    );
+    assert!(error.contains("`t` is used without a value"), "{error}");
+}
+
 #[test]
 fn record_constructor_with_statically_present_conditional_field_accepted() {
     expect_success(

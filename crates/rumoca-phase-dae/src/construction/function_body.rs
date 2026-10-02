@@ -1,9 +1,12 @@
 mod branch_assertions;
+mod path_definedness;
 
 use super::*;
 use branch_assertions::{
     BranchAssertion, BranchState, guard_branch_assertions, lower_branch_assertion,
 };
+use path_definedness::lower_path_definedness;
+pub(super) use path_definedness::{DefinednessPredicates, PartialTarget};
 
 pub(super) fn lower_generated_boolean_assignment<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
@@ -46,6 +49,7 @@ pub(super) fn lower_integer_reduction<'dae>(
         body,
         &function.body[..initial_count],
         initial_plans,
+        None,
     )?;
     let target = function_value_coordinate(symbols.coordinates, result);
     match reduction {
@@ -277,7 +281,7 @@ pub(super) fn lower_guarded_function_return<'dae>(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    body = lower_function_statements(construction, symbols, body, tail, tail_plans)?;
+    body = lower_function_statements(construction, symbols, body, tail, tail_plans, None)?;
     let provenance =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, *span)?;
     for (target, returned) in targets.iter().zip(returned) {
@@ -331,6 +335,8 @@ pub(super) struct FunctionConditional<'scope, 'statement, 'dae> {
     pub(super) branch_plans: &'statement [Vec<FunctionStatementPlan>],
     pub(super) fallback_plans: Option<&'statement [FunctionStatementPlan]>,
     pub(super) targets: &'statement [VarName],
+    /// Targets this conditional leaves path-partial (top-level sequence only).
+    pub(super) partial: &'scope [PartialTarget<'dae>],
     pub(super) span: Span,
 }
 
@@ -340,12 +346,13 @@ pub(super) struct FunctionConditional<'scope, 'statement, 'dae> {
 /// later assignment reads what an earlier one wrote, and the last write to a
 /// value is the one the branch defines. Each branch therefore builds its own
 /// value environment first, and the join then owns one conditional expression
-/// per value the conditional defines on all of its paths.
+/// per value the conditional defines on all of its paths. Returns the
+/// definedness predicate of every path-partial target.
 pub(super) fn lower_function_conditional<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     body: &mut dae::FunctionBody<'dae>,
     input: FunctionConditional<'_, '_, 'dae>,
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
     let provenance =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, input.span)?;
     let lowered = lower_function_conditional_values(construction, body, input)?;
@@ -368,7 +375,8 @@ pub(super) fn lower_function_conditional<'dae>(
             &lowered.fallback,
             provenance,
         )
-    })
+    })?;
+    Ok(lowered.defined)
 }
 
 struct LoweredFunctionConditional<'dae> {
@@ -376,6 +384,8 @@ struct LoweredFunctionConditional<'dae> {
     conditions: Vec<dae::ExprId<'dae>>,
     branches: Vec<Vec<dae::ExprId<'dae>>>,
     fallback: Vec<dae::ExprId<'dae>>,
+    /// Definedness predicate of each path-partial target after the join.
+    defined: Vec<(VarName, dae::ExprId<'dae>)>,
     /// Branch assertions guarded by their branch selection, in source order;
     /// the enclosing action owner appends them before the joined commit so
     /// they read the pre-conditional definitions.
@@ -464,11 +474,20 @@ fn lower_function_conditional_values<'dae>(
             &mut assertions,
         )?;
     }
+    let defined = lower_path_definedness(
+        construction,
+        &input,
+        &conditions,
+        &branch_values,
+        fallback_values.as_ref(),
+        provenance,
+    )?;
     Ok(LoweredFunctionConditional {
         targets,
         conditions,
         branches,
         fallback,
+        defined,
         assertions,
     })
 }
@@ -1372,6 +1391,7 @@ fn lower_one_function_loop_statement<'dae>(
                 branch_plans: branches,
                 fallback_plans: fallback.as_deref(),
                 targets,
+                partial: &[],
                 span: *span,
             },
         );
@@ -1751,16 +1771,33 @@ fn completed_branch_value<'dae>(
 
 /// A branch's own value for a target, or the target's pre-conditional
 /// definition when the branch leaves it unchanged.
+///
+/// A path-partial target with no pre-conditional definition takes `dead`, a
+/// writing branch's value: MLS §12.4.4 makes any use of the target on this
+/// path an error, which the top-level definedness assertion owns, so the
+/// operand is never observed.
 fn read_unless_defined<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     body: &dae::FunctionBody<'dae>,
     value: Option<dae::ExprId<'dae>>,
     target: dae::FunctionValueId<'dae>,
+    dead: Option<dae::ExprId<'dae>>,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    match value {
-        Some(value) => Ok(value),
-        None => construction.functions(|functions| functions.read(body, target, provenance)),
+    if let Some(value) = value {
+        return Ok(value);
+    }
+    let read = construction.functions(|functions| functions.read(body, target, provenance));
+    match (read, dead) {
+        (
+            Err(dae::DaeConstructionError::IncompleteDefinition {
+                kind: "function value",
+                index,
+                ..
+            }),
+            Some(dead),
+        ) if index == target.ordinal() => Ok(dead),
+        (read, _) => read,
     }
 }
 
@@ -1803,6 +1840,8 @@ fn join_branch_targets<'dae>(
                 .and_then(|state| state.values.get(target).copied())
                 .or(completed.filter(|_| diverges))
         };
+        let dead =
+            completed.filter(|_| input.partial.iter().any(|partial| &partial.name == target));
         for ((lowered, branch), diverges) in
             branches.iter_mut().zip(branch_values).zip(&never_completes)
         {
@@ -1812,6 +1851,7 @@ fn join_branch_targets<'dae>(
                 body,
                 value,
                 target_id,
+                dead,
                 provenance,
             )?);
         }
@@ -1821,6 +1861,7 @@ fn join_branch_targets<'dae>(
             body,
             value,
             target_id,
+            dead,
             provenance,
         )?);
     }

@@ -238,6 +238,26 @@ struct SourceBalanceAnalysis {
     assigned_discrete_targets: HashSet<VarName>,
 }
 
+/// MLS §12.4.4 definedness assertions of a function's top-level sequence.
+///
+/// "It is an error to use or return an uninitialized variable": a value a
+/// top-level conditional defines on some paths only is joined with a dead
+/// operand on the other paths, and each top-level use of it, or its return
+/// as an output, is preceded by a call-scoped assertion that the executed
+/// path defined it. Indices are positions in the top-level statement
+/// sequence, the same positions construction lowers.
+#[derive(Default)]
+pub(super) struct FunctionDefinednessPlan {
+    /// Path-partial values asserted defined before the statement (or the
+    /// assembly group it leads) at this index runs.
+    pub(super) asserted_reads: HashMap<usize, Vec<VarName>>,
+    /// Targets the conditional at this index leaves path-partial, each with
+    /// whether it was already path-partial before the conditional.
+    pub(super) partial_joins: HashMap<usize, Vec<(VarName, bool)>>,
+    /// Path-partial outputs asserted defined when the function returns.
+    pub(super) returned: Vec<VarName>,
+}
+
 pub(super) enum FunctionPlan {
     Statements {
         /// The source statements the plans were built from. Exact tensor-native
@@ -250,6 +270,7 @@ pub(super) enum FunctionPlan {
         /// certificate proves total, and values with a zero extent, which have
         /// no element to write (MLS §12.4.4).
         entry_seeds: Vec<(VarName, FunctionValueSeed)>,
+        definedness: FunctionDefinednessPlan,
     },
     GuardedReturn {
         branches: Vec<Vec<FunctionStatementPlan>>,
