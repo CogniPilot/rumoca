@@ -245,6 +245,7 @@ pub(super) fn resolve_component_nested_type_overrides(
 ) -> InstantiateResult<NestedTypeOverrides> {
     let mut class_overrides =
         extract_component_class_overrides(tree, comp, class_def, Some(mod_env))?;
+    select_redeclare_values_in_scope(&mut class_overrides, type_overrides);
     let mut has_forwarding_class_redeclare = false;
 
     if let Some(target_class) = class_def {
@@ -316,6 +317,29 @@ pub(super) fn resolve_component_nested_type_overrides(
         has_forwarding_class_redeclare,
         nested_type_overrides,
     ))
+}
+
+/// Replace a redeclare value that names a replaceable alias of the enclosing
+/// scope with the class that scope selected for it.
+///
+/// MLS §7.3: in `Inner a(redeclare package Medium = MA)`, `MA` denotes the
+/// class `MA` is in this occurrence of the enclosing class, which a
+/// redeclaration of the enclosing occurrence may have replaced. The recorded
+/// override is the selection every later phase reads, so it names that class
+/// rather than the lexical alias, whose default would otherwise be selected.
+fn select_redeclare_values_in_scope(
+    class_overrides: &mut IndexMap<DefId, ast::ClassOverride>,
+    type_overrides: &TypeOverrideMap,
+) {
+    for class_override in class_overrides.values_mut() {
+        let mut visited = rustc_hash::FxHashSet::default();
+        while visited.insert(class_override.target_def_id)
+            && let Some(selected) =
+                type_overrides.target_for_alias_def_id(class_override.target_def_id)
+        {
+            class_override.target_def_id = selected;
+        }
+    }
 }
 
 /// Record a forwarded redeclare for every inherited declaration of the member.
