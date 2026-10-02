@@ -118,6 +118,16 @@ impl Context {
             .map(|name| (package, name.as_str()))
     }
 
+    /// The qualified name of a package declaration, as the one exposing
+    /// package of a constant read through it.
+    pub(crate) fn package_names(&self, package: rumoca_core::DefId) -> Option<&[String]> {
+        self.package_def_ids
+            .contains(&package)
+            .then(|| self.target_def_names.get(&package))
+            .flatten()
+            .map(std::slice::from_ref)
+    }
+
     /// Qualified names of every package a class occurrence selects by
     /// redeclaration or a component type is spelled through: the packages whose
     /// constants a selection exposes.

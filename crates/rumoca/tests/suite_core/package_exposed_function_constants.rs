@@ -160,3 +160,91 @@ fn packages_that_disagree_each_read_their_own_value() {
         assert!((last - expected).abs() < 1e-12, "{name}(1) = {last}");
     }
 }
+
+/// A model-level package constant whose binding reads other package
+/// constants (`X_default = ref_X = fill(1/n, n)`, the shape of
+/// `Modelica.Media.Interfaces.PartialMedium.X_default`) is evaluated in the
+/// package that exposes it, and a record built by one function and read by
+/// another keeps the extent that package gives its field.
+const DEFAULTS_SOURCE: &str = r#"
+package PM
+  constant String names[:] = {"unusable"};
+  final constant Integer n = size(names, 1);
+  constant Real ref_X[n] = fill(1/n, n);
+  constant Real X_default[n] = ref_X;
+  constant String extra[:] = fill("", 0);
+  replaceable record State
+  end State;
+  replaceable partial function setState
+    input Real p;
+    input Real X[:];
+    output State state;
+  end setState;
+  replaceable partial function density
+    input State state;
+    output Real d;
+  end density;
+  replaceable function density_pX
+    input Real p;
+    input Real X[:];
+    output Real d;
+  algorithm
+    d := density(setState(p, X));
+  end density_pX;
+end PM;
+partial package PMix
+  extends PM;
+  redeclare replaceable record extends State
+    Real p;
+    Real X[n];
+  end State;
+end PMix;
+package M
+  extends PMix(names = {"a", "b"});
+  redeclare record extends State
+  end State;
+  redeclare function extends setState
+  algorithm
+    state := State(p = p, X = X);
+  end setState;
+  redeclare function extends density
+  algorithm
+    d := state.p*sum(state.X) + state.X[2];
+  end density;
+end M;
+model Exposed
+  package Medium = M(extra = {"c"});
+  parameter Real d0 = Medium.density_pX(2, Medium.X_default);
+  Real d = Medium.density_pX(2 + time, Medium.X_default);
+end Exposed;
+"#;
+
+#[test]
+fn a_package_constant_and_record_field_take_the_exposing_package_extent() {
+    let compiled = Compiler::new()
+        .model("Exposed")
+        .compile_str(DEFAULTS_SOURCE, "Exposed.mo")
+        .unwrap_or_else(|error| panic!("Exposed compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .expect("Exposed simulates");
+    let column = |name: &str| {
+        result
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("{name} is recorded"))
+    };
+    let d = column("d");
+    for (sample, time) in result.times.iter().enumerate() {
+        // X_default = {0.5, 0.5}: d = p*sum(X) + X[2] with p = 2 + time.
+        let expected = 2.0 + time + 0.5;
+        let value = result.data[d][sample];
+        assert!((value - expected).abs() < 1e-12, "d({time}) = {value}");
+    }
+}

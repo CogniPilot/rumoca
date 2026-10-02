@@ -39,6 +39,10 @@ pub(crate) struct Context {
     /// value, so the declaration identity alone does not determine it).
     pub(crate) constant_values_by_scope:
         rustc_hash::FxHashMap<(String, rumoca_core::DefId), rumoca_core::Expression>,
+    /// The value every recorded exposure of a constant declaration agrees on,
+    /// or `None` when two packages give it different values.
+    pub(crate) constant_values_by_declaration:
+        rustc_hash::FxHashMap<rumoca_core::DefId, Option<rumoca_core::Expression>>,
     /// Component-local overrides keyed by exact instantiated occurrence and
     /// exact Resolve declaration identity.
     pub(crate) constant_values_by_occurrence:

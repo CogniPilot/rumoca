@@ -311,7 +311,7 @@ fn retain_constructor_record_type(
         .collect::<Result<Vec<_>, FlattenError>>()?;
 
     if let Some(existing) = flat.record_types.get(&record) {
-        if existing.fields != fields {
+        if !same_record_layout(&existing.fields, &fields) {
             return Err(FlattenError::missing_resolved_class_metadata(
                 function.name.as_str(),
                 "one exact record layout for the constructor declaration",
@@ -328,6 +328,24 @@ fn retain_constructor_record_type(
         },
     );
     Ok(())
+}
+
+/// Two layouts of one record declaration agree when their fields agree and
+/// every axis either has one extent or is still symbolic (`<= 0`) in one of
+/// them: a later collection may see an extent a materialized constructor
+/// already settled.
+fn same_record_layout(existing: &[flat::RecordField], collected: &[flat::RecordField]) -> bool {
+    existing.len() == collected.len()
+        && existing.iter().zip(collected).all(|(existing, collected)| {
+            existing.name == collected.name
+                && existing.def_id == collected.def_id
+                && existing.dims.len() == collected.dims.len()
+                && existing
+                    .dims
+                    .iter()
+                    .zip(&collected.dims)
+                    .all(|(a, b)| a == b || *a <= 0 || *b <= 0)
+        })
 }
 
 fn refine_existing_function_nonreplaceability(

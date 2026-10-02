@@ -17,6 +17,17 @@ impl Context {
             self.constant_values_by_scope
                 .insert((scope.to_string(), def_id), value.clone());
         }
+        self.constant_values_by_declaration
+            .entry(def_id)
+            .and_modify(|agreed| {
+                if agreed
+                    .as_ref()
+                    .is_some_and(|agreed| !agreed.semantically_eq_ignoring_spans(&value))
+                {
+                    *agreed = None;
+                }
+            })
+            .or_insert_with(|| Some(value.clone()));
         self.constant_values_by_def_id.insert(def_id, value);
     }
 

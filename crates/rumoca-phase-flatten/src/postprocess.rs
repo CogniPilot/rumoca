@@ -146,6 +146,7 @@ pub(super) fn substitute_known_constants_in_flat(
     substitute_variable_annotations(&mut flat.variables, ctx, &live_vars, &no_locals)?;
     let exposures = function_exposures::function_exposures(flat, ctx);
     substitute_function_bodies(&mut flat.functions, ctx, &live_vars, &exposures)?;
+    settle_record_field_extents(flat, &exposures);
     crate::zero_sized_arrays::materialize_referenced_zero_sized_array_variables(flat, ctx)?;
     Ok(())
 }
@@ -275,6 +276,81 @@ fn substitute_variable_annotations(
         substitute_opt_expr(&mut var.nominal, ctx, live_vars, locals, &scope)?;
     }
     Ok(())
+}
+
+/// Settle the extents a record layout left symbolic when its constructor was
+/// collected (`Real X[nX]` over a package constant).
+///
+/// Materializing the constructors' shape constants proves each field's
+/// extent in the package that exposes it. A layout is shared by every
+/// constructor of its record declaration, so an axis is settled only when all
+/// of them prove the same extent; otherwise it stays symbolic and each use
+/// keeps its own constructor's shape. A constructor no package exposes
+/// carries no evidence of the extents it was instantiated with.
+fn settle_record_field_extents(
+    flat: &mut flat::Model,
+    exposures: &rustc_hash::FxHashMap<
+        rumoca_core::FunctionInstanceId,
+        Vec<String>,
+    >,
+) {
+    let mut proven: rustc_hash::FxHashMap<(rumoca_core::DefId, usize), Option<Vec<i64>>> =
+        rustc_hash::FxHashMap::default();
+    let exposed = |function: &rumoca_core::Function| {
+        function
+            .instance_id
+            .is_some_and(|instance| exposures.contains_key(&instance))
+    };
+    for constructor in flat
+        .functions
+        .values()
+        .filter(|function| function.is_constructor && exposed(function))
+    {
+        let Some(record) = constructor.def_id else {
+            continue;
+        };
+        for (ordinal, field) in constructor.inputs.iter().enumerate() {
+            agree_on_extents(&mut proven, (record, ordinal), field.dimensions());
+        }
+    }
+    for (record, layout) in &mut flat.record_types {
+        for (ordinal, field) in layout.fields.iter_mut().enumerate() {
+            let Some(Some(dims)) = proven.get(&(*record, ordinal)) else {
+                continue;
+            };
+            if dims.len() == field.dims.len()
+                && field
+                    .dims
+                    .iter()
+                    .zip(dims)
+                    .all(|(symbolic, settled)| *symbolic == *settled || *symbolic <= 0)
+            {
+                field.dims.clone_from(dims);
+            }
+        }
+    }
+}
+
+/// Record one constructor's field extents; a still symbolic extent carries
+/// no evidence, and two different settled extents leave the field unsettled.
+fn agree_on_extents(
+    proven: &mut rustc_hash::FxHashMap<(rumoca_core::DefId, usize), Option<Vec<i64>>>,
+    field: (rumoca_core::DefId, usize),
+    dims: &[i64],
+) {
+    if dims.iter().any(|extent| *extent <= 0) {
+        return;
+    }
+    match proven.entry(field) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(Some(dims.to_vec()));
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            if entry.get().as_deref() != Some(dims) {
+                *entry.get_mut() = None;
+            }
+        }
+    }
 }
 
 fn substitute_function_bodies(

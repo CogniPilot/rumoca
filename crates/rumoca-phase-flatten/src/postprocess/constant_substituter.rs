@@ -611,6 +611,18 @@ fn substitute_resolved_source_constant(
         } else {
             &exposing_scope
         },
+        // A declaration read as an element of the package that exposes it is
+        // evaluated in that package: the names its binding reads resolve
+        // there (MLS §7.3, §5.3), not in the declaring class.
+        exposures: match semantic_id {
+            SemanticConstantId::Exposure { package, .. } => env
+                .ctx
+                .package_names(package)
+                .unwrap_or(env.exposures),
+            SemanticConstantId::Occurrence(_) | SemanticConstantId::Declaration(_) => {
+                env.exposures
+            }
+        },
         ..env
     };
     substitute_with_env(expr.clone().with_span(span), inner)
