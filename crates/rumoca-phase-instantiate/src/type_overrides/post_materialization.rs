@@ -16,7 +16,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 #[derive(Default)]
 struct ScopeProof {
     overrides: TypeOverrideMap,
-    selected_component_types: SelectedComponentTypes,
+    selected_component_types: SelectedComponentTypes<'static>,
 }
 
 #[derive(Default)]

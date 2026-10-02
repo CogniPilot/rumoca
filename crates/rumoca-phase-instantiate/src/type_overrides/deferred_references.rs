@@ -5,20 +5,12 @@
 //! selection, so it can prove the final member declarations of equations,
 //! statements, and expressions without rewriting source aliases.
 
+pub(crate) use super::occurrence_selections::SelectedComponentTypes;
 use super::override_map::TypeOverrideMap;
 use super::selected_class_members::resolve_member_reference_in_class;
 use crate::{InstantiateError, InstantiateResult};
-use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::visitor::ExpressionTransformer;
-use rustc_hash::FxHashMap;
-
-/// Selected class of each component declaration in one instantiation scope.
-///
-/// Keys are the component declaration identities Resolve records on a reference
-/// root; values are the classes instantiation actually selected for those
-/// occurrences.
-pub(crate) type SelectedComponentTypes = FxHashMap<DefId, DefId>;
 
 /// Resolve a reference deferred by Resolve across a replaceable class edge.
 ///
@@ -28,7 +20,7 @@ pub(crate) type SelectedComponentTypes = FxHashMap<DefId, DefId>;
 pub(crate) fn resolve_dynamic_expression_targets(
     tree: &ast::ClassTree,
     overrides: &TypeOverrideMap,
-    selected_component_types: &SelectedComponentTypes,
+    selected_component_types: &SelectedComponentTypes<'_>,
     expression: ast::Expression,
 ) -> InstantiateResult<ast::Expression> {
     let mut batch = DynamicExpressionTargetBatch::new(tree, overrides, selected_component_types);
@@ -39,7 +31,7 @@ pub(crate) fn resolve_dynamic_expression_targets(
 pub(crate) fn resolve_dynamic_equation_targets(
     tree: &ast::ClassTree,
     overrides: &TypeOverrideMap,
-    selected_component_types: &SelectedComponentTypes,
+    selected_component_types: &SelectedComponentTypes<'_>,
     equation: ast::Equation,
 ) -> InstantiateResult<ast::Equation> {
     let mut batch = DynamicExpressionTargetBatch::new(tree, overrides, selected_component_types);
@@ -50,7 +42,7 @@ pub(crate) fn resolve_dynamic_equation_targets(
 pub(crate) fn resolve_dynamic_statement_targets(
     tree: &ast::ClassTree,
     overrides: &TypeOverrideMap,
-    selected_component_types: &SelectedComponentTypes,
+    selected_component_types: &SelectedComponentTypes<'_>,
     statement: ast::Statement,
 ) -> InstantiateResult<ast::Statement> {
     let mut batch = DynamicExpressionTargetBatch::new(tree, overrides, selected_component_types);
@@ -73,7 +65,7 @@ impl<'a> DynamicExpressionTargetBatch<'a> {
     pub(crate) fn new(
         tree: &'a ast::ClassTree,
         overrides: &'a TypeOverrideMap,
-        selected_component_types: &'a SelectedComponentTypes,
+        selected_component_types: &'a SelectedComponentTypes<'a>,
     ) -> Self {
         Self {
             resolver: DynamicExpressionTargetResolver::new(
@@ -120,7 +112,7 @@ impl<'a> DynamicExpressionTargetBatch<'a> {
 struct DynamicExpressionTargetResolver<'a> {
     tree: &'a ast::ClassTree,
     overrides: &'a TypeOverrideMap,
-    selected_component_types: &'a SelectedComponentTypes,
+    selected_component_types: &'a SelectedComponentTypes<'a>,
     error: Option<Box<InstantiateError>>,
 }
 
@@ -138,14 +130,31 @@ impl ExpressionTransformer for DynamicExpressionTargetResolver<'_> {
         };
         // A replaceable class alias selects a class directly; a replaceable
         // component selects one through the type of its instantiated occurrence.
-        let Some(target_class_def_id) = self
-            .overrides
-            .target_for_alias_def_id(root_def_id)
-            .or_else(|| self.selected_component_types.get(&root_def_id).copied())
+        let alias_target = self.overrides.target_for_alias_def_id(root_def_id);
+        let Some(target_class_def_id) =
+            alias_target.or_else(|| self.selected_component_types.get(&root_def_id))
         else {
             return reference;
         };
-        match resolve_member_reference_in_class(self.tree, target_class_def_id, &reference, 1) {
+        // A component root's member tail follows the classes its materialized
+        // occurrences selected; a class-alias root has no occurrence.
+        let selected_component_types = self.selected_component_types;
+        let mut occurrence_selection = |path: &[rumoca_core::DefId]| {
+            if alias_target.is_some() {
+                return Ok(None);
+            }
+            let mut rooted = Vec::with_capacity(path.len() + 1);
+            rooted.push(root_def_id);
+            rooted.extend_from_slice(path);
+            selected_component_types.selected_at_path(&rooted, reference.span)
+        };
+        match resolve_member_reference_in_class(
+            self.tree,
+            target_class_def_id,
+            &reference,
+            1,
+            &mut occurrence_selection,
+        ) {
             Ok(identities) => {
                 for (part, def_id) in reference.parts.iter_mut().skip(1).zip(identities) {
                     part.def_id = Some(def_id);
@@ -161,7 +170,7 @@ impl DynamicExpressionTargetResolver<'_> {
     fn new<'a>(
         tree: &'a ast::ClassTree,
         overrides: &'a TypeOverrideMap,
-        selected_component_types: &'a SelectedComponentTypes,
+        selected_component_types: &'a SelectedComponentTypes<'a>,
     ) -> DynamicExpressionTargetResolver<'a> {
         DynamicExpressionTargetResolver {
             tree,

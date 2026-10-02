@@ -20,6 +20,7 @@ mod component_class_overrides;
 mod component_redeclare_validation;
 mod component_type_selection;
 mod deferred_references;
+mod occurrence_selections;
 mod override_collection;
 mod override_map;
 mod post_materialization;

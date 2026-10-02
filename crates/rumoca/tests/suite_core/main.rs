@@ -176,6 +176,7 @@ mod proven_tearing;
 mod public_observation_convergence;
 mod receiver_function_redeclare;
 mod reduced_state_charts;
+mod replaceable_alias_member_tails;
 mod replaceable_function_redeclare;
 mod replaceable_package_members;
 mod requested_states;

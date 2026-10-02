@@ -975,7 +975,7 @@ fn instantiate_class(
         // instance-dependent member set, so Resolve deferred its tail. The
         // component occurrences of this class instance were just materialized,
         // so their selected types now prove those members exactly.
-        let selected_component_types = selected_component_types_of_class(overlay, instance_id);
+        let selected_component_types = SelectedComponentTypes::of_scope(overlay, instance_id);
         let sections = class_instance_sections(
             tree,
             ctx,
@@ -1021,27 +1021,6 @@ struct ClassSections {
     initial_algorithms: Vec<Vec<ast::InstanceStatement>>,
 }
 
-/// Selected class of every component occurrence directly owned by `class_id`,
-/// keyed by the component's declaration identity.
-///
-/// A replaceable component declaration keeps its own `DefId` across a
-/// redeclaration, so this maps the declaration Resolve recorded on a reference
-/// root onto the class instantiation actually selected for it (MLS §7.3).
-fn selected_component_types_of_class(
-    overlay: &ast::InstanceOverlay,
-    class_id: rumoca_core::InstanceId,
-) -> SelectedComponentTypes {
-    overlay
-        .components
-        .values()
-        .filter(|component| component.owner_class_id == Some(class_id))
-        .filter_map(|component| {
-            let declaration = component.component_ref.as_ref()?.target_def_id();
-            Some((declaration, component.type_def_id?))
-        })
-        .collect()
-}
-
 /// Convert a class template's equation and algorithm sections to instance form.
 fn class_instance_sections(
     tree: &ast::ClassTree,
@@ -1049,7 +1028,7 @@ fn class_instance_sections(
     template: &templates::ClassTemplate,
     qualified_name: &ast::QualifiedName,
     type_overrides: &TypeOverrideMap,
-    selected_component_types: &SelectedComponentTypes,
+    selected_component_types: &SelectedComponentTypes<'_>,
 ) -> InstantiateResult<ClassSections> {
     let source_map = &tree.source_map;
     let eval_ctx = InstantiateEvalCtx {
@@ -1108,7 +1087,7 @@ fn class_instance_sections(
 fn resolve_dynamic_section_targets(
     tree: &ast::ClassTree,
     type_overrides: &TypeOverrideMap,
-    selected_component_types: &SelectedComponentTypes,
+    selected_component_types: &SelectedComponentTypes<'_>,
     sections: &mut ClassSections,
 ) -> InstantiateResult<()> {
     for equation in sections

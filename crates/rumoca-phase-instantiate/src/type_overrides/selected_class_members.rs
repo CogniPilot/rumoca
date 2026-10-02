@@ -10,11 +10,19 @@ use crate::{InstantiateError, InstantiateResult};
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 
+/// Prove the declaration of every member segment from `first_member` on.
+///
+/// `occurrence_selection` returns the class the materialized occurrences of a
+/// member path (the declarations proved so far) selected, when an occurrence
+/// source exists. It decides the declaring class of the next segment whenever
+/// the class tree records none for the member: a component declared through a
+/// replaceable alias is typed per occurrence (MLS §7.3).
 pub(super) fn resolve_member_reference_in_class(
     tree: &ast::ClassTree,
     selected_class_def_id: DefId,
     reference: &ast::ComponentReference,
     first_member: usize,
+    occurrence_selection: &mut dyn FnMut(&[DefId]) -> InstantiateResult<Option<DefId>>,
 ) -> InstantiateResult<Vec<DefId>> {
     let root = reference.parts.first().ok_or_else(|| {
         Box::new(InstantiateError::redeclare_error(
@@ -40,15 +48,23 @@ pub(super) fn resolve_member_reference_in_class(
                     reference.span,
                 ))
             })?;
-        if let Some((component_def_id, next_owner_def_id)) = resolve_component_member_step(
+        if let Some((component_def_id, declared_owner_def_id)) = resolve_component_member_step(
             tree,
             owner_class,
             part.ident.text.as_ref(),
-            index + 1 < reference.parts.len(),
             reference.span,
         )? {
             identities.push(component_def_id);
-            if let Some(next_owner_def_id) = next_owner_def_id {
+            if index + 1 < reference.parts.len() {
+                let next_owner_def_id = match declared_owner_def_id {
+                    Some(declared) => declared,
+                    None => occurrence_owner(
+                        occurrence_selection,
+                        &identities,
+                        part.ident.text.as_ref(),
+                        reference.span,
+                    )?,
+                };
                 owner_class_def_id = package_overrides
                     .as_ref()
                     .and_then(|overrides| overrides.target_for_alias_def_id(next_owner_def_id))
@@ -77,11 +93,28 @@ pub(super) fn resolve_member_reference_in_class(
     Ok(identities)
 }
 
+/// The class the materialized occurrences of a member path selected.
+fn occurrence_owner(
+    occurrence_selection: &mut dyn FnMut(&[DefId]) -> InstantiateResult<Option<DefId>>,
+    path: &[DefId],
+    member_name: &str,
+    span: rumoca_core::Span,
+) -> InstantiateResult<DefId> {
+    occurrence_selection(path)?.ok_or_else(|| {
+        Box::new(InstantiateError::redeclare_error(
+            member_name,
+            "intermediate redeclare member has no resolved class identity",
+            span,
+        ))
+    })
+}
+
+/// The declaration of one component member and the class the class tree
+/// records for it, if any.
 fn resolve_component_member_step(
     tree: &ast::ClassTree,
     owner_class: &ast::ClassDef,
     member_name: &str,
-    has_tail: bool,
     span: rumoca_core::Span,
 ) -> InstantiateResult<Option<(DefId, Option<DefId>)>> {
     let effective_components = crate::get_effective_components(tree, owner_class)?;
@@ -95,18 +128,7 @@ fn resolve_component_member_step(
             span,
         ))
     })?;
-    let next_owner_def_id = has_tail
-        .then(|| {
-            component.type_def_id.ok_or_else(|| {
-                Box::new(InstantiateError::redeclare_error(
-                    member_name,
-                    "intermediate redeclare member has no resolved class identity",
-                    span,
-                ))
-            })
-        })
-        .transpose()?;
-    Ok(Some((component_def_id, next_owner_def_id)))
+    Ok(Some((component_def_id, component.type_def_id)))
 }
 
 pub(crate) fn resolve_class_override_modifier_targets(
@@ -122,8 +144,13 @@ pub(crate) fn resolve_class_override_modifier_targets(
                 value,
                 span,
             } => {
-                let identities =
-                    resolve_member_reference_in_class(tree, selected_class_def_id, &target, 0)?;
+                let identities = resolve_member_reference_in_class(
+                    tree,
+                    selected_class_def_id,
+                    &target,
+                    0,
+                    &mut |_| Ok(None),
+                )?;
                 for (part, def_id) in target.parts.iter_mut().zip(identities) {
                     part.def_id = Some(def_id);
                 }
