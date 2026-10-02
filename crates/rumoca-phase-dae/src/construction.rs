@@ -553,17 +553,6 @@ fn reserve_value_types<'dae>(
     Ok(value_types)
 }
 
-fn lower_optional_expression<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    expression: Option<&Expression>,
-) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
-    expression
-        .map(|expression| lower_expression(construction, coordinates, functions, expression, None))
-        .transpose()
-}
-
 fn lower_attribute_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
@@ -732,6 +721,18 @@ fn generated_residual<'dae>(
 /// instead makes it an edge, and an assertion already violated at the
 /// initialization instant then has no edge to report on — which silently
 /// dropped the `initial algorithm` guard assertions this exists for.
+/// The MLS §8.3.7 level of one assertion whose level flattening settled.
+pub(super) fn settled_assertion_level(
+    level: Option<&Expression>,
+    span: Span,
+) -> Result<dae::AssertionLevel, dae::DaeConstructionError> {
+    match flat::AssertionLevel::of_settled(level) {
+        Some(flat::AssertionLevel::Error) => Ok(dae::AssertionLevel::Error),
+        Some(flat::AssertionLevel::Warning) => Ok(dae::AssertionLevel::Warning),
+        None => Err(dae::DaeConstructionError::UnsupportedAssertionLevel { span }),
+    }
+}
+
 fn lower_assertions<'dae, 'flat>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
@@ -740,6 +741,28 @@ fn lower_assertions<'dae, 'flat>(
     assertions: impl IntoIterator<Item = &'flat flat::AssertEquation>,
 ) -> Result<(), dae::DaeConstructionError> {
     for assertion in assertions {
+        let level = settled_assertion_level(assertion.level.as_ref(), assertion.span)?;
+        let provenance = dae::DaeProvenance::source(assertion.span)?;
+        if level == dae::AssertionLevel::Warning {
+            let holds = lower_expression(
+                construction,
+                coordinates,
+                functions,
+                &assertion.condition,
+                None,
+            )?;
+            let message = lower_expression(
+                construction,
+                coordinates,
+                functions,
+                &assertion.message,
+                None,
+            )?;
+            let always = always_condition(construction, assertion.span)?;
+            construction
+                .events(|events| events.warning(always, always, holds, message, provenance))?;
+            continue;
+        }
         let (condition, _) = lower_condition(
             construction,
             coordinates,
@@ -756,16 +779,7 @@ fn lower_assertions<'dae, 'flat>(
             &assertion.message,
             None,
         )?;
-        let level = lower_optional_expression(
-            construction,
-            coordinates,
-            functions,
-            assertion.level.as_ref(),
-        )?;
-        let provenance = dae::DaeProvenance::source(assertion.span)?;
-        construction.events(|events| {
-            events.assert_with_level(trigger, action_guard, message, level, provenance)
-        })?;
+        construction.events(|events| events.assert(trigger, action_guard, message, provenance))?;
     }
     Ok(())
 }

@@ -9,11 +9,14 @@
 static void initialize_values(ModelInstance* m) {
 {{- value_array("initial_y", "Y_LEN", fmi.initial_y) }}
 {{- value_array("initial_p", "P_LEN", fmi.initial_parameters) }}
-    m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true; m->tolerance=0.0; m->rmc_cs_substep=0.0; rmc_release_text(m);{{ workspace_reset(me_refresh) }}{{ event_reset(fmi) }}
+    m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true; m->tolerance=0.0; m->rmc_cs_substep=0.0; rmc_release_text(m);{% if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %} memset(m->rmc_warned, 0, sizeof(m->rmc_warned));{% endif %}{{ workspace_reset(me_refresh) }}{{ event_reset(fmi) }}
     memcpy(m->y, initial_y, sizeof(m->y)); memcpy(m->p, initial_p, sizeof(m->p)); m->time = 0.0;
 }
-{% if fmi.assertions and solve.events.actions|length > 0 %}
+{% if fmi.assertions and (solve.events.actions | rejectattr("kind", "equalto", "Warning") | list | length > 0) %}
 static void log_assertion(ModelInstance* m, const char* message) { if (m->logger) m->logger(m->environment, fmi3Error, "assertion", message); }
+{% endif %}
+{% if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %}
+static void log_warning(ModelInstance* m, const char* message) { if (m->logger) m->logger(m->environment, fmi3Warning, "warning", message); }
 {% endif %}
 #define RMC_LOG(m, message) do { if ((m)->logger) (m)->logger((m)->environment, fmi3Error, "error", (message)); } while (0)
 #define RMC_LOG_AT(m, category, message) do { if ((m)->logger) (m)->logger((m)->environment, fmi3Warning, (category), (message)); } while (0)
@@ -233,7 +236,7 @@ FMI_EXPORT fmi3Status fmi3GetNominalsOfContinuousStates(fmi3Instance i, fmi3Floa
 FMI_EXPORT fmi3Status fmi3GetEventIndicators(fmi3Instance i, fmi3Float64 values[], size_t ni) { ModelInstance* m=i; if (!m || m->type != INTERFACE_ME || m->state == MODEL_INSTANTIATED || m->state == MODEL_STEP || ni != {% if fmi.scalar_events %}RMC_EVENT_INDICATORS{% else %}0{% endif %} || (!values && ni)) return fmi3Error; {% if fmi.scalar_events %}return rmc_event_indicators(m, values);{% else %}(void)values; return fmi3OK;{% endif %} }
 FMI_EXPORT fmi3Status fmi3GetNumberOfContinuousStates(fmi3Instance i, size_t* nx) { ModelInstance* m=i; if(!m||m->type!=INTERFACE_ME||!nx)return fmi3Error; *nx={{ solve.solve_layout.state_scalar_count }}; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3GetNumberOfEventIndicators(fmi3Instance i, size_t* ni) { ModelInstance* m=i; if(!m||m->type!=INTERFACE_ME||!ni)return fmi3Error; *ni={% if fmi.scalar_events %}RMC_EVENT_INDICATORS{% else %}0{% endif %}; return fmi3OK; }
-FMI_EXPORT fmi3Status fmi3CompletedIntegratorStep(fmi3Instance i, fmi3Boolean noSetState, fmi3Boolean* enterEventMode, fmi3Boolean* terminate) { (void)noSetState; ModelInstance* m=i; if(!m||m->type!=INTERFACE_ME||m->state!=MODEL_CONTINUOUS||!enterEventMode||!terminate)return fmi3Error; *enterEventMode=fmi3False; *terminate=fmi3False; rmc_seed_mark(m); {% if me_refresh.switching %}bool request = false; if (rmc_chart_completed(m, &request) != fmi3OK) return fmi3Error; *enterEventMode = request; {% endif %}{% if fmi.scalar_events %}bool event = false; if (rmc_events_completed(m, &event) != fmi3OK) return fmi3Error; if (event) *enterEventMode = fmi3True; {% endif %}return fmi3OK; }
+FMI_EXPORT fmi3Status fmi3CompletedIntegratorStep(fmi3Instance i, fmi3Boolean noSetState, fmi3Boolean* enterEventMode, fmi3Boolean* terminate) { (void)noSetState; ModelInstance* m=i; if(!m||m->type!=INTERFACE_ME||m->state!=MODEL_CONTINUOUS||!enterEventMode||!terminate)return fmi3Error; *enterEventMode=fmi3False; *terminate=fmi3False; rmc_seed_mark(m); {% if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %}if (m->assertions_initialized && (refresh_algebraics(m) != fmi3OK || report_warnings(m) != fmi3OK)) return fmi3Error; {% endif %}{% if me_refresh.switching %}bool request = false; if (rmc_chart_completed(m, &request) != fmi3OK) return fmi3Error; *enterEventMode = request; {% endif %}{% if fmi.scalar_events %}bool event = false; if (rmc_events_completed(m, &event) != fmi3OK) return fmi3Error; if (event) *enterEventMode = fmi3True; {% endif %}return fmi3OK; }
 
 #define UNSUPPORTED_GET_SET(Type, Name) \
 FMI_EXPORT fmi3Status fmi3Get##Name(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, Type values[], size_t nvalues) { (void)vr;(void)values;return i&&nvr==0&&nvalues==0?fmi3OK:fmi3Error; } \

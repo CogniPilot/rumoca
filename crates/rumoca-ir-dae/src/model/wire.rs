@@ -1610,13 +1610,17 @@ fn reconstruct_events<'dae>(
             action.provenance,
         )?;
         let id = dae.events(|events| match action.kind {
-            EventActionKindWire::Assert { message, level } => events.assert_with_level(
+            EventActionKindWire::Assert { message } => events.assert(
                 trigger,
                 guard,
                 mapped(&ids.expressions, message, "expression", action.provenance)?,
-                level
-                    .map(|level| mapped(&ids.expressions, level, "expression", action.provenance))
-                    .transpose()?,
+                action.provenance,
+            ),
+            EventActionKindWire::Warning { message, condition } => events.warning(
+                trigger,
+                guard,
+                mapped(&ids.expressions, condition, "expression", action.provenance)?,
+                mapped(&ids.expressions, message, "expression", action.provenance)?,
                 action.provenance,
             ),
             EventActionKindWire::Terminate { message } => events.terminate(

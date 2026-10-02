@@ -1189,12 +1189,16 @@ pub fn event_action_request_from_values(
                     message: eval_event_action_message(action, y, p, t, context)?,
                 });
             }
+            // A violated warning never aborts or terminates the run; its
+            // report is owned by the runtime diagnostics (MLS §8.3.7).
+            SolveEventActionKind::Warning => {}
         }
     }
     Ok(EventActionRequest::Continue)
 }
 
-fn eval_event_action_message(
+/// The message of one event action, rendered at one point.
+pub fn eval_event_action_message(
     action: &rumoca_ir_solve::SolveEventAction,
     y: &[f64],
     p: &[f64],

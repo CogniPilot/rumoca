@@ -225,6 +225,23 @@ pub struct SimTermination {
     pub message: String,
 }
 
+/// One non-aborting diagnostic a simulation run reports (SPEC_0008 `WX0xx`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimDiagnostic {
+    /// Stable mnemonic of the diagnostic, such as `WX001`.
+    pub code: &'static str,
+    /// Simulation time at which the condition was first observed.
+    pub time: f64,
+    /// The message the model supplies, rendered at that time.
+    pub message: String,
+    /// Source span and origin of the reporting site.
+    pub span: rumoca_core::Span,
+    pub origin: String,
+}
+
+/// SPEC_0008 `WX001`: a warning-level assertion (MLS §8.3.7) was violated.
+pub const WARNING_ASSERTION_CODE: &str = "WX001";
+
 #[derive(Debug, Clone)]
 pub struct SimResult {
     pub times: Vec<f64>,
@@ -233,6 +250,8 @@ pub struct SimResult {
     pub n_states: usize,
     pub variable_meta: Vec<SimVariableMeta>,
     pub termination: Option<SimTermination>,
+    /// Non-aborting diagnostics in order of first occurrence.
+    pub diagnostics: Vec<SimDiagnostic>,
 }
 
 #[cfg(test)]

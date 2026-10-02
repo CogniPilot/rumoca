@@ -323,7 +323,7 @@ static {{ prefix }}Status rmc_message_rows(ModelInstance* m, double* rows) {
 {%- endif %}
 {%- endmacro %}
 
-{%- macro log_message(parts, rows, prefix) %}
+{%- macro log_message(parts, rows, prefix, sink="log_assertion") %}
         {
         RmcMessage msg = {0};
 {%- if rows.programs|length > 0 %}
@@ -337,7 +337,7 @@ static {{ prefix }}Status rmc_message_rows(ModelInstance* m, double* rows) {
         if (!rows_ok || !rmc_message_convert(&msg, {{ 0 if c.source == "real" else (1 if c.source == "integer" else 2) }}, rows[{{ c.value }}], {% if c.minimum_length is not none %}rows[{{ c.minimum_length }}]{% else %}0.0{% endif %}, {% if c.left_justified is not none %}rows[{{ c.left_justified }}]{% else %}1.0{% endif %}, {% if c.significant_digits is not none %}rows[{{ c.significant_digits }}]{% else %}6.0{% endif %})) msg.failed = true;
 {%- endif %}
 {%- endfor %}
-        log_assertion(m, msg.failed || !msg.data ? "assertion failed (its message could not be formatted)" : msg.data);
+        {{ sink }}(m, msg.failed || !msg.data ? "assertion failed (its message could not be formatted)" : msg.data);
         free(msg.data);
         }
 {%- endmacro %}
@@ -348,7 +348,7 @@ static {{ prefix }}Status rmc_message_rows(ModelInstance* m, double* rows) {
 {%- endif %}
 static {{ prefix }}Status check_assertions(ModelInstance* m) {
     (void)m;
-{%- if fmi.assertions and solve.events.actions|length > 0 %}
+{%- if fmi.assertions and (solve.events.actions | rejectattr("kind", "equalto", "Warning") | list | length > 0) %}
     if (m->assertion_failed) return {{ prefix }}Error;
     double actions[{{ solve.events.actions|length }}];
 {%- for program in solve.events.action_plan.programs %}
@@ -359,13 +359,37 @@ static {{ prefix }}Status check_assertions(ModelInstance* m) {
 {%- endfor %}
     }
 {%- endfor %}
-{%- for action in solve.events.actions %}
+{%- for action in solve.events.actions %}{% if action.kind != "Warning" %}
     if (actions[{{ loop.index0 }}] != 0.0) {
 {{- log_message(messages[loop.index0], rows, prefix) }}
         m->assertion_failed = true;
         return {{ prefix }}Error;
     }
+{%- endif %}{%- endfor %}
+{%- endif %}
+    return {{ prefix }}OK;
+}
+/* MLS §8.3.7 warning-level assertions (SPEC_0008 WX001): evaluated only at
+   an accepted point, never aborting, each site logged once at the importer's
+   warning status. */
+static {{ prefix }}Status report_warnings(ModelInstance* m) {
+    (void)m;
+{%- if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %}
+    double actions[{{ solve.events.actions|length }}];
+{%- for program in solve.events.action_plan.programs %}
+    {
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "actions", prefix ~ "Error") }}
 {%- endfor %}
+    }
+{%- endfor %}
+{%- for action in solve.events.actions %}{% if action.kind == "Warning" %}
+    if (actions[{{ loop.index0 }}] != 0.0 && !m->rmc_warned[{{ loop.index0 }}]) {
+        m->rmc_warned[{{ loop.index0 }}] = true;
+{{- log_message(messages[loop.index0], rows, prefix, "log_warning") }}
+    }
+{%- endif %}{%- endfor %}
 {%- endif %}
     return {{ prefix }}OK;
 }
@@ -400,11 +424,13 @@ static {{ prefix }}Status settle_derivative_values(ModelInstance* m) {
 static {{ prefix }}Status initialize_assertions(ModelInstance* m) {
     if (refresh_algebraics(m) != {{ prefix }}OK || update_assertion_memory(m) != {{ prefix }}OK) return {{ prefix }}Error;
     m->assertions_initialized = true;
-    return check_assertions(m);
+    if (check_assertions(m) != {{ prefix }}OK) return {{ prefix }}Error;
+    return report_warnings(m);
 }
 {%- endif %}
 static {{ prefix }}Status settle_assertion_event(ModelInstance* m) {
     if (settle_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
+    if (m->assertions_initialized && report_warnings(m) != {{ prefix }}OK) return {{ prefix }}Error;
     return update_assertion_memory(m);
 }
 {%- endmacro %}
@@ -595,4 +621,9 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
     m->time = end;
     return settle_assertion_event(m);
 }
+{%- endmacro %}
+
+{#- Instance storage of the warning sites already reported. -#}
+{%- macro warning_fields(solve, fmi) -%}
+{%- if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %} bool rmc_warned[{{ solve.events.actions|length }}];{% endif -%}
 {%- endmacro %}

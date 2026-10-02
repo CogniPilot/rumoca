@@ -1252,11 +1252,16 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             match statement {
                 dae::FunctionStatementView::Assertion {
                     condition,
+                    level: dae::AssertionLevel::Error,
                     provenance,
                     ..
                 } => {
                     self.lower_function_assertion(condition, provenance.span())?;
                 }
+                dae::FunctionStatementView::Assertion {
+                    level: dae::AssertionLevel::Warning,
+                    ..
+                } => {}
                 dae::FunctionStatementView::For {
                     fold,
                     statements,

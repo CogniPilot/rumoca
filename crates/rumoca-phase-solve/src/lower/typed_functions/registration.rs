@@ -265,6 +265,7 @@ fn assertion_layout<'dae>(
             predicate_output: result_leaf_count + index,
             message: assertion.message,
             message_values: message_values.into_boxed_slice(),
+            level: assertion.level,
             provenance: assertion.provenance,
         });
     }
@@ -286,6 +287,7 @@ fn assertion_layout<'dae>(
                     .iter()
                     .map(|&(value, output)| (value, shift(output)))
                     .collect(),
+                level: assertion.level,
                 provenance: assertion.provenance,
             }
         }));

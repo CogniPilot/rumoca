@@ -476,9 +476,16 @@ where
             match statement {
                 dae::FunctionStatementView::Assignment { .. }
                 | dae::FunctionStatementView::AssignmentGroup { .. } => {}
+                // A warning-level assertion never aborts an evaluation and has
+                // no influence on any value (MLS §8.3.7).
+                dae::FunctionStatementView::Assertion {
+                    level: dae::AssertionLevel::Warning,
+                    ..
+                } => {}
                 dae::FunctionStatementView::Assertion {
                     condition,
                     message: _,
+                    level: dae::AssertionLevel::Error,
                     provenance,
                 } => self.function_assertion(condition, provenance.span())?,
                 dae::FunctionStatementView::For {

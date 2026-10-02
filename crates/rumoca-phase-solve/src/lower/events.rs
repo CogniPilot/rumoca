@@ -1234,13 +1234,7 @@ fn lower_event_actions<'dae>(
     let mut updates = Vec::new();
     for (_, action) in view.event_actions() {
         match action.operation() {
-            dae::EventActionOperation::Assert { message, level } => {
-                if level.is_some() {
-                    return Err(LowerError::unsupported(
-                        "assertion levels do not yet have checked Solve lowering",
-                        action.provenance().span(),
-                    ));
-                }
+            dae::EventActionOperation::Assert { message } => {
                 push_message_action(
                     MessageActionContext {
                         view,
@@ -1250,6 +1244,22 @@ fn lower_event_actions<'dae>(
                     action,
                     message,
                     solve::SolveEventActionKind::Assert,
+                    None,
+                    actions,
+                    action_conditions,
+                )?;
+            }
+            dae::EventActionOperation::Warning { message, condition } => {
+                push_message_action(
+                    MessageActionContext {
+                        view,
+                        layout,
+                        clocks,
+                    },
+                    action,
+                    message,
+                    solve::SolveEventActionKind::Warning,
+                    Some(condition),
                     actions,
                     action_conditions,
                 )?;
@@ -1264,6 +1274,7 @@ fn lower_event_actions<'dae>(
                     action,
                     message,
                     solve::SolveEventActionKind::Terminate,
+                    None,
                     actions,
                     action_conditions,
                 )?;

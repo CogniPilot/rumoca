@@ -2,6 +2,7 @@ mod affine_derivative;
 mod arrays;
 mod builtins;
 mod call_scoped_actions;
+pub(in crate::lower) use call_scoped_actions::action_kind;
 mod conditions;
 mod constants;
 mod coordinates;

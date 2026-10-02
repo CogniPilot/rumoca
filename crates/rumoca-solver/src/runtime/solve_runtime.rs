@@ -70,6 +70,7 @@ mod sensitivity;
 mod singular_mode;
 mod support;
 mod tangent_evaluators;
+mod warnings;
 use discrete_rows::PreparedStructuredDiscreteRows;
 pub use discrete_rows::SeededConditionMemory;
 #[cfg(test)]
@@ -476,6 +477,8 @@ pub struct SolveRuntime {
     failed_visible_rows: RefCell<BTreeSet<usize>>,
     compiled_event_action_rows: RefCell<FxHashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
     failed_event_action_rows: RefCell<BTreeSet<usize>>,
+    /// Warning-level assertion sites reported so far (MLS §8.3.7).
+    warning_log: RefCell<warnings::WarningLog>,
     compiled_assignment_schedules: RefCell<
         FxHashMap<solve::RefreshSequenceId, Option<Rc<dyn CompiledSolveAssignmentSchedule>>>,
     >,
@@ -1008,6 +1011,7 @@ impl SolveRuntime {
             failed_visible_rows: RefCell::new(BTreeSet::new()),
             compiled_event_action_rows: RefCell::new(FxHashMap::default()),
             failed_event_action_rows: RefCell::new(BTreeSet::new()),
+            warning_log: RefCell::new(warnings::WarningLog::default()),
             compiled_assignment_schedules: RefCell::new(FxHashMap::default()),
             interpreted_assignment_schedules:
                 interpreted_schedules::InterpretedSchedules::construct(model)?,

@@ -692,6 +692,25 @@ impl SolveMeKernel {
             .map_err(MeError::from)
     }
 
+    /// Report the violated warning-level assertions at one accepted output
+    /// point (MLS §8.3.7); the observation itself is unchanged.
+    pub(crate) fn report_warnings(&self, observation: &MeObservation) -> Result<(), MeError> {
+        self.require_active_lifecycle("report_warnings")?;
+        self.require_observation_brand(observation)?;
+        self.runtime
+            .observe_warnings(
+                &observation.solver_y,
+                &observation.parameters,
+                observation.time,
+            )
+            .map_err(MeError::from)
+    }
+
+    /// The non-aborting diagnostics this component has reported.
+    pub(crate) fn diagnostics(&self) -> Vec<crate::SimDiagnostic> {
+        self.runtime.diagnostics()
+    }
+
     pub(crate) fn get_outputs(
         &self,
         observation: &MeObservation,

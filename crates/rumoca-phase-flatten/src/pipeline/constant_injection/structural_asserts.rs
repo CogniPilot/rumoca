@@ -14,7 +14,7 @@ use super::{Context, FlattenError, flat};
 /// EF030 translation diagnostic at the assertion's own span; proven false with
 /// a message this context cannot evaluate keeps the statement for the runtime
 /// owner, because a message must never be silently replaced. Warning-level
-/// assertions never reach this fold: `settle_assertion_levels` removes them.
+/// assertions are kept for the runtime owner, which reports them.
 ///
 /// `error_literal` is the predefined `AssertionLevel.error` declaration
 /// identity from the scope tree: an explicit level counts as error only by

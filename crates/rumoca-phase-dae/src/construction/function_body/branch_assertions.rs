@@ -15,6 +15,7 @@ use super::*;
 pub(super) struct BranchAssertion<'dae> {
     pub(super) condition: dae::ExprId<'dae>,
     pub(super) message: dae::ExprId<'dae>,
+    pub(super) level: dae::AssertionLevel,
     pub(super) provenance: dae::DaeProvenance,
 }
 
@@ -69,6 +70,7 @@ pub(super) fn lower_branch_assertion<'dae>(
     state.assertions.push(BranchAssertion {
         condition,
         message,
+        level: assertion.level,
         provenance,
     });
     Ok(())

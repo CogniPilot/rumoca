@@ -648,7 +648,7 @@ fn event_transaction_assertion<'dae>(
             )
         })?;
     Ok(solve::SolveEventAction {
-        kind: solve::SolveEventActionKind::Assert,
+        kind: crate::lower::scalar::action_kind(assertion.level),
         message: solve::SolveEventMessage {
             parts: vec![solve::SolveEventMessagePart::Text(message)],
         },

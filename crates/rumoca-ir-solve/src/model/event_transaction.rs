@@ -407,8 +407,10 @@ fn validate_event_transaction_assertions(
     }
     let clock_owned = !clock_owners.is_empty();
     if assertions.iter().any(|action| {
-        !matches!(action.kind, SolveEventActionKind::Assert)
-            || action.clock_owner.is_some() != clock_owned
+        !matches!(
+            action.kind,
+            SolveEventActionKind::Assert | SolveEventActionKind::Warning
+        ) || action.clock_owner.is_some() != clock_owned
             || action
                 .clock_owner
                 .is_some_and(|clock| clock_owners.binary_search(&clock).is_err())

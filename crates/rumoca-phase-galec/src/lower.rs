@@ -1935,6 +1935,12 @@ fn conditional_activation_operands(operands: dae::ExpressionOperands<'_>) -> Vec
 fn first_function_assertion(statements: dae::FunctionStatements<'_>) -> Option<Span> {
     for statement in statements {
         match statement {
+            // A warning-level assertion has no influence on behavior and no
+            // GALEC representation (MLS §8.3.7).
+            dae::FunctionStatementView::Assertion {
+                level: dae::AssertionLevel::Warning,
+                ..
+            } => {}
             dae::FunctionStatementView::Assertion { provenance, .. } => {
                 return Some(provenance.span());
             }

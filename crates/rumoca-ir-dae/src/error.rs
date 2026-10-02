@@ -56,6 +56,10 @@ pub enum DaeConstructionError {
         "event-generating relation in a structured equation requires a compact structured event owner"
     )]
     UnsupportedStructuredEvent { span: Span },
+    #[error(
+        "an assertion level must name a predefined `AssertionLevel` literal; another evaluable level expression has no checked lowering"
+    )]
+    UnsupportedAssertionLevel { span: Span },
     #[error("clock-domain analysis did not construct the required exact clock owner")]
     MissingClockDomainOwner { span: Span },
     #[error("{arena} exceeded its u32 identity capacity at {attempted_index}")]
@@ -341,6 +345,7 @@ impl DaeConstructionError {
             | Self::InvalidClockedOperand { span, .. }
             | Self::InvalidExpressionForm { span }
             | Self::UnsupportedStructuredEvent { span }
+            | Self::UnsupportedAssertionLevel { span }
             | Self::MissingClockDomainOwner { span }
             | Self::CapacityExceeded { span, .. }
             | Self::UnknownId { span, .. }

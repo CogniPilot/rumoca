@@ -617,8 +617,14 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 dae::FunctionStatementView::Assertion {
                     condition,
                     message,
+                    level,
                     provenance,
-                } => self.rebuild_assertion(target, &mut body, condition, message, provenance)?,
+                } => self.rebuild_assertion(
+                    target,
+                    &mut body,
+                    (condition, message, level),
+                    provenance,
+                )?,
                 dae::FunctionStatementView::For {
                     fold,
                     statements,
@@ -636,13 +642,18 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         &mut self,
         target: &mut dae::DaeConstruction<'target>,
         body: &mut dae::FunctionBody<'target>,
-        condition: dae::ExprId<'source>,
-        message: dae::ExprId<'source>,
+        (condition, message, level): (
+            dae::ExprId<'source>,
+            dae::ExprId<'source>,
+            dae::AssertionLevel,
+        ),
         provenance: dae::DaeProvenance,
     ) -> Result<(), dae::DaeConstructionError> {
         let condition = self.rebuild_expression(target, body, condition)?;
         let message = self.rebuild_expression(target, body, message)?;
-        target.functions(|functions| functions.assertion(body, condition, message, provenance))?;
+        target.functions(|functions| {
+            functions.assertion_with_level(body, condition, message, level, provenance)
+        })?;
         Ok(())
     }
 
@@ -1023,6 +1034,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         let dae::FunctionStatementView::Assertion {
             condition,
             message,
+            level,
             provenance,
         } = statement
         else {
@@ -1031,7 +1043,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         let condition = self.rebuild_expression(target, loop_body.body(), condition)?;
         let message = self.rebuild_expression(target, loop_body.body(), message)?;
         target.functions(|functions| {
-            functions.assertion_loop(loop_body, condition, message, provenance)
+            functions.assertion_loop_with_level(loop_body, condition, message, level, provenance)
         })
     }
 

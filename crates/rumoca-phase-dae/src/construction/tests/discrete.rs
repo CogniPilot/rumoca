@@ -2073,13 +2073,13 @@ fn nested_duplicate_diagnostic_follows_source_insertion_order() {
 }
 
 #[test]
-fn when_assert_level_reaches_checked_event_action_with_exact_provenance() {
+fn when_assert_settled_warning_level_reaches_checked_event_action() {
     let source = TestSource::new(
-        "model M equation when true then assert(false, \"failed\", 2); end when; end M;",
+        "model M equation when true then assert(false, \"failed\", 1); end when; end M;",
     );
     let condition_span = source.span("true", 0);
-    let assertion_span = source.span("assert(false, \"failed\", 2)", 0);
-    let level_span = source.span("2", 0);
+    let assertion_span = source.span("assert(false, \"failed\", 1)", 0);
+    let level_span = source.span("1", 0);
     let mut branch = flat::WhenBranch::new(
         Expression::Literal {
             value: Literal::Boolean(true),
@@ -2097,7 +2097,7 @@ fn when_assert_level_reaches_checked_event_action_with_exact_provenance() {
             span: source.span("\"failed\"", 0),
         },
         Some(Expression::Literal {
-            value: Literal::Integer(2),
+            value: Literal::Integer(1),
             span: level_span,
         }),
         assertion_span,
@@ -2105,7 +2105,7 @@ fn when_assert_level_reaches_checked_event_action_with_exact_provenance() {
     ));
     let chain = flat::WhenChain::new(
         branch,
-        source.span("when true then assert(false, \"failed\", 2); end when", 0),
+        source.span("when true then assert(false, \"failed\", 1); end when", 0),
     );
     let mut model = test_model();
     model.when_chains.push(chain);
@@ -2117,26 +2117,19 @@ fn when_assert_level_reaches_checked_event_action_with_exact_provenance() {
         assert_eq!(action.provenance().span(), assertion_span);
         assert_eq!(
             view.source_text(action.provenance()),
-            Some("assert(false, \"failed\", 2)")
+            Some("assert(false, \"failed\", 1)")
         );
-        let dae::EventActionOperation::Assert {
-            message,
-            level: Some(level),
-        } = action.operation()
-        else {
-            panic!("checked event assertion must own its optional level");
+        let dae::EventActionOperation::Warning { message, condition } = action.operation() else {
+            panic!("a settled warning-level assertion is a warning action");
         };
+        assert_eq!(
+            view.source_text(view.expression(condition).unwrap().provenance()),
+            Some("false")
+        );
         assert_eq!(
             view.source_text(view.expression(message).unwrap().provenance()),
             Some("\"failed\"")
         );
-        let level = view.expression(level).unwrap();
-        assert_eq!(level.provenance().span(), level_span);
-        assert_eq!(view.source_text(level.provenance()), Some("2"));
-        assert!(matches!(
-            level.operation(),
-            dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(2))
-        ));
     });
 }
 

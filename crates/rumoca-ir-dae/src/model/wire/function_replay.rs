@@ -225,10 +225,12 @@ fn project_statements(
             FunctionStatementWire::Assertion {
                 condition,
                 message,
+                level,
                 provenance,
             } => FunctionStatementInput::Assertion {
                 condition: *condition,
                 message: *message,
+                level: *level,
                 provenance: *provenance,
             },
             FunctionStatementWire::For {
@@ -474,6 +476,7 @@ struct AssignmentInput {
 struct AssertionInput {
     condition: u32,
     message: u32,
+    level: crate::AssertionLevel,
     provenance: DaeProvenance,
 }
 
@@ -647,10 +650,12 @@ fn assertion(statement: &FunctionStatementInput) -> Result<AssertionInput, DaeCo
         FunctionStatementInput::Assertion {
             condition,
             message,
+            level,
             provenance,
         } => Ok(AssertionInput {
             condition: *condition,
             message: *message,
+            level: *level,
             provenance: *provenance,
         }),
         FunctionStatementInput::Assignment { .. }
@@ -866,11 +871,15 @@ fn apply_assertion<'dae>(
     })?;
     dae.functions(|functions| match capability {
         ReplayCapability::Body(body) => {
-            functions.assertion(body, condition, message, input.provenance)
+            functions.assertion_with_level(body, condition, message, input.level, input.provenance)
         }
-        ReplayCapability::Fold(loop_body) => {
-            functions.assertion_loop(loop_body, condition, message, input.provenance)
-        }
+        ReplayCapability::Fold(loop_body) => functions.assertion_loop_with_level(
+            loop_body,
+            condition,
+            message,
+            input.level,
+            input.provenance,
+        ),
         ReplayCapability::External(_) => Err(malformed("functions.external")),
     })
 }

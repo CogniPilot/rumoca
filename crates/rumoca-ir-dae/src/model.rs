@@ -44,8 +44,8 @@ use crate::equations::{
     StructuredFamilyEntry,
 };
 use crate::events::{
-    EventActionEntry, EventActionKind, EventActionOperation, EventActionView, Events,
-    TimeEventEntry, TimeEventKind, TimeEventOperation, TimeEventView,
+    AssertionLevel, EventActionEntry, EventActionKind, EventActionOperation, EventActionView,
+    Events, TimeEventEntry, TimeEventKind, TimeEventOperation, TimeEventView,
 };
 use crate::expression::{
     BinaryOperator, Coordinate, CoordinateInput, ExprNode, ExpressionArenaStorage,
@@ -458,6 +458,7 @@ enum FunctionStatementWire {
     Assertion {
         condition: u32,
         message: u32,
+        level: AssertionLevel,
         provenance: DaeProvenance,
     },
     For {
@@ -1640,16 +1641,28 @@ impl<'dae> Functions<'_, 'dae> {
     }
 
     /// Append one default-level MLS §8.3.7 assertion to a Modelica function.
-    ///
-    /// The mutable top-level body capability makes the action call-scoped and
-    /// prevents it from being inserted into a loop without a loop-action owner.
-    /// Both expressions must belong to the exact current function-value state;
-    /// the constructor stores no untyped call or rendered-name surrogate.
     pub fn assertion(
         &mut self,
         body: &mut FunctionBody<'dae>,
         condition: ExprId<'dae>,
         message: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        self.assertion_with_level(body, condition, message, AssertionLevel::Error, provenance)
+    }
+
+    /// Append one MLS §8.3.7 assertion at its level to a Modelica function.
+    ///
+    /// The mutable top-level body capability makes the action call-scoped and
+    /// prevents it from being inserted into a loop without a loop-action owner.
+    /// Both expressions must belong to the exact current function-value state;
+    /// the constructor stores no untyped call or rendered-name surrogate.
+    pub fn assertion_with_level(
+        &mut self,
+        body: &mut FunctionBody<'dae>,
+        condition: ExprId<'dae>,
+        message: ExprId<'dae>,
+        level: AssertionLevel,
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         if body.domain.is_some() {
@@ -1659,7 +1672,7 @@ impl<'dae> Functions<'_, 'dae> {
                 span: provenance.span(),
             });
         }
-        self.append_assertion(body, condition, message, provenance)
+        self.append_assertion(body, condition, message, level, provenance)
     }
 
     /// Append one default-level MLS §8.3.7 assertion to every iteration of a
@@ -1671,6 +1684,25 @@ impl<'dae> Functions<'_, 'dae> {
         message: ExprId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
+        self.assertion_loop_with_level(
+            loop_body,
+            condition,
+            message,
+            AssertionLevel::Error,
+            provenance,
+        )
+    }
+
+    /// Append one MLS §8.3.7 assertion at its level to every iteration of a
+    /// checked compact function loop.
+    pub fn assertion_loop_with_level(
+        &mut self,
+        loop_body: &mut FunctionLoop<'dae>,
+        condition: ExprId<'dae>,
+        message: ExprId<'dae>,
+        level: AssertionLevel,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
         if loop_body.body.domain.is_none() {
             return Err(DaeConstructionError::IncompleteDefinition {
                 kind: "function loop domain",
@@ -1678,7 +1710,7 @@ impl<'dae> Functions<'_, 'dae> {
                 span: provenance.span(),
             });
         }
-        self.append_assertion(&mut loop_body.body, condition, message, provenance)
+        self.append_assertion(&mut loop_body.body, condition, message, level, provenance)
     }
 
     fn append_assertion(
@@ -1686,6 +1718,7 @@ impl<'dae> Functions<'_, 'dae> {
         body: &mut FunctionBody<'dae>,
         condition: ExprId<'dae>,
         message: ExprId<'dae>,
+        level: AssertionLevel,
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
@@ -1724,6 +1757,7 @@ impl<'dae> Functions<'_, 'dae> {
             .push(FunctionStatementWire::Assertion {
                 condition: condition.index(),
                 message: message.index(),
+                level,
                 provenance,
             });
         Ok(())

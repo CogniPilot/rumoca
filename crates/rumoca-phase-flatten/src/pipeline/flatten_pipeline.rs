@@ -1007,7 +1007,7 @@ pub(crate) fn finalize_flat_model(
     normalize_record_array_field_access_bindings(flat);
     drop_invalid_field_access_bindings(flat);
     propagate_unexpanded_record_array_dims(flat, overlay);
-    let assertion_levels = constant_injection::PredefinedAssertionLevels::of(tree);
+    let assertion_levels = constant_injection::predefined_assertion_levels(tree);
     constant_injection::settle_assertion_levels(flat, assertion_levels);
     constant_injection::fold_structural_initial_asserts(flat, ctx, assertion_levels.error)?;
     flat.oc_break_edge_scalar_count = vcg::compute_break_edge_scalar_count(

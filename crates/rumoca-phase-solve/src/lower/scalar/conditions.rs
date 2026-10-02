@@ -44,6 +44,61 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(self.ops)
     }
 
+    /// A warning-level action (MLS §8.3.7): `edge(trigger) and guard and not
+    /// holds`, where `holds` is an ordinary Boolean expression evaluated
+    /// without events.
+    pub(in crate::lower) fn warning_condition_program(
+        mut self,
+        trigger: dae::ConditionId<'dae>,
+        guard: dae::ConditionId<'dae>,
+        trigger_memory: usize,
+        holds: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let edge = self.trigger_edge(trigger, trigger_memory, span)?;
+        let guard = self.condition(guard)?;
+        let active = self.binary(dae::BinaryOperator::And, edge, guard, span)?;
+        let output = self.violated(active, holds, span)?;
+        self.ops.push(solve::LinearOp::StoreOutput { src: output });
+        Ok(self.ops)
+    }
+
+    /// A warning-level action owned by a clock: active on its ticks.
+    pub(in crate::lower) fn clocked_warning_condition_program(
+        mut self,
+        clock: dae::ClockId<'dae>,
+        guard: dae::ConditionId<'dae>,
+        holds: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        self.active_clock = Some(clock);
+        let guard = self.condition(guard)?;
+        let activation = self
+            .layout
+            .clock_activations
+            .get(clock.index() as usize)
+            .copied()
+            .ok_or_else(|| {
+                LowerError::contract("clocked action has no activation parameter", span)
+            })?;
+        let activation = self.load_slot(solve::scalar_slot_p(activation), span)?;
+        let active = self.binary(dae::BinaryOperator::And, activation, guard, span)?;
+        let output = self.violated(active, holds, span)?;
+        self.ops.push(solve::LinearOp::StoreOutput { src: output });
+        Ok(self.ops)
+    }
+
+    fn violated(
+        &mut self,
+        active: solve::Reg,
+        holds: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let holds = self.expression(holds, 0)?;
+        let violated = self.unary(dae::UnaryOperator::Not, holds, span)?;
+        self.binary(dae::BinaryOperator::And, active, violated, span)
+    }
+
     pub(in crate::lower) fn clocked_action_condition_program(
         mut self,
         clock: dae::ClockId<'dae>,

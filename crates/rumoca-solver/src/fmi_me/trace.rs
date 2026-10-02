@@ -351,7 +351,11 @@ impl MeTraceRecorder {
     /// Emit the published result. Only a successfully constructed and
     /// consistently grown recorder can reach this point.
     #[must_use]
-    pub(super) fn finish(self, termination: Option<SimTermination>) -> SimResult {
+    pub(super) fn finish(
+        self,
+        termination: Option<SimTermination>,
+        diagnostics: Vec<crate::SimDiagnostic>,
+    ) -> SimResult {
         SimResult {
             times: self.times,
             names: self.names,
@@ -359,6 +363,7 @@ impl MeTraceRecorder {
             n_states: self.state_count,
             variable_meta: self.meta,
             termination,
+            diagnostics,
         }
     }
 }
@@ -674,7 +679,7 @@ mod tests {
             [1.0, 2.0],
         )
         .unwrap();
-        let result = trace.finish(None);
+        let result = trace.finish(None, Vec::new());
         assert_eq!(result.times, vec![0.0]);
         assert_eq!(result.data, vec![vec![1.0], vec![2.0]]);
         assert_eq!(result.names, vec!["a".to_string(), "b".to_string()]);

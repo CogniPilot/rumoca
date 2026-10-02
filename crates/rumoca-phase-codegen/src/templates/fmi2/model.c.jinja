@@ -9,14 +9,17 @@
 static void initialize_values(ModelInstance* m) {
 {{- value_array("initial_y", "Y_LEN", fmi.initial_y) }}
 {{- value_array("initial_p", "P_LEN", fmi.initial_parameters) }}
-    m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true; m->tolerance=0.0; m->rmc_cs_substep=0.0; rmc_release_text(m);{{ workspace_reset(me_refresh) }}{{ event_reset(fmi) }}
+    m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true; m->tolerance=0.0; m->rmc_cs_substep=0.0; rmc_release_text(m);{% if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %} memset(m->rmc_warned, 0, sizeof(m->rmc_warned));{% endif %}{{ workspace_reset(me_refresh) }}{{ event_reset(fmi) }}
     memcpy(m->y, initial_y, sizeof(m->y));
     memcpy(m->p, initial_p, sizeof(m->p));
     m->time = 0.0;
 }
 
-{% if fmi.assertions and solve.events.actions|length > 0 %}
+{% if fmi.assertions and (solve.events.actions | rejectattr("kind", "equalto", "Warning") | list | length > 0) %}
 static void log_assertion(ModelInstance* m, const char* message) { if (m->callbacks.logger) m->callbacks.logger(m->callbacks.componentEnvironment, "Rumoca", fmi2Error, "assertion", "%s", message); }
+{% endif %}
+{% if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %}
+static void log_warning(ModelInstance* m, const char* message) { if (m->callbacks.logger) m->callbacks.logger(m->callbacks.componentEnvironment, "Rumoca", fmi2Warning, "warning", "%s", message); }
 {% endif %}
 #define RMC_LOG(m, message) do { if ((m)->callbacks.logger) (m)->callbacks.logger((m)->callbacks.componentEnvironment, "Rumoca", fmi2Error, "error", "%s", (message)); } while (0)
 #define RMC_LOG_AT(m, category, message) do { if ((m)->callbacks.logger) (m)->callbacks.logger((m)->callbacks.componentEnvironment, "Rumoca", fmi2Warning, (category), "%s", (message)); } while (0)
@@ -217,7 +220,7 @@ FMI_EXPORT fmi2Status fmi2GetEventIndicators(fmi2Component c, fmi2Real values[],
 FMI_EXPORT fmi2Status fmi2EnterEventMode(fmi2Component c) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || (m->state != MODEL_EVENT && m->state != MODEL_CONTINUOUS)) return fmi2Error; rmc_seed_suspend(m); m->state = MODEL_EVENT; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2NewDiscreteStates(fmi2Component c, fmi2EventInfo* info) { ModelInstance* m = c; if (!m || !info || m->state != MODEL_EVENT) return fmi2Error; {% if fmi.scalar_events %}bool reinit = false; if (rmc_events_update(m, &reinit) != fmi2OK) return fmi2Error; {% endif %}{% if me_refresh.switching %}bool changed = false, nominals = false; if (m->rmc_chart_pending ? rmc_chart_transfer(m, &changed, &nominals) != fmi2OK : settle_assertion_event(m) != fmi2OK) return fmi2Error; memset(info, 0, sizeof(*info)); info->valuesOfContinuousStatesChanged = changed; info->nominalsOfContinuousStatesChanged = nominals; {% else %}{% if not fmi.scalar_events %}if (settle_assertion_event(m) != fmi2OK) return fmi2Error; {% endif %}memset(info, 0, sizeof(*info)); {% endif %}{% if fmi.scalar_events %}if (reinit) info->valuesOfContinuousStatesChanged = fmi2True; {% endif %}return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2EnterContinuousTimeMode(fmi2Component c) { ModelInstance* m = c; if (!m || m->state != MODEL_EVENT{% if fmi.scalar_events %} || rmc_events_continuous(m) != fmi2OK{% endif %}) return fmi2Error; rmc_seed_commit(m); m->state = MODEL_CONTINUOUS; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2CompletedIntegratorStep(fmi2Component c, fmi2Boolean noSetState, fmi2Boolean* enterEventMode, fmi2Boolean* terminate) { ModelInstance* m = c; (void)noSetState; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || !enterEventMode || !terminate) return fmi2Error; *enterEventMode = 0; *terminate = 0; rmc_seed_mark(m); {% if me_refresh.switching %}bool request = false; if (rmc_chart_completed(m, &request) != fmi2OK) return fmi2Error; *enterEventMode = request; {% endif %}{% if fmi.scalar_events %}bool event = false; if (rmc_events_completed(m, &event) != fmi2OK) return fmi2Error; if (event) *enterEventMode = 1; {% endif %}return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2CompletedIntegratorStep(fmi2Component c, fmi2Boolean noSetState, fmi2Boolean* enterEventMode, fmi2Boolean* terminate) { ModelInstance* m = c; (void)noSetState; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || !enterEventMode || !terminate) return fmi2Error; *enterEventMode = 0; *terminate = 0; rmc_seed_mark(m); {% if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %}if (m->assertions_initialized && (refresh_algebraics(m) != fmi2OK || report_warnings(m) != fmi2OK)) return fmi2Error; {% endif %}{% if me_refresh.switching %}bool request = false; if (rmc_chart_completed(m, &request) != fmi2OK) return fmi2Error; *enterEventMode = request; {% endif %}{% if fmi.scalar_events %}bool event = false; if (rmc_events_completed(m, &event) != fmi2OK) return fmi2Error; if (event) *enterEventMode = 1; {% endif %}return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2GetFMUstate(fmi2Component c, fmi2FMUstate* s) { (void)c; (void)s; return fmi2Error; }
 FMI_EXPORT fmi2Status fmi2SetFMUstate(fmi2Component c, fmi2FMUstate s) { (void)c; (void)s; return fmi2Error; }
 FMI_EXPORT fmi2Status fmi2FreeFMUstate(fmi2Component c, fmi2FMUstate* s) { (void)c; (void)s; return fmi2Error; }

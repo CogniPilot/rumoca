@@ -325,11 +325,13 @@ fn project_function_statement(statement: dae::FunctionStatementView<'_>) -> Valu
         dae::FunctionStatementView::Assertion {
             condition,
             message,
+            level,
             provenance,
         } => json!({
             "kind": "assertion",
             "condition": condition.index(),
             "message": message.index(),
+            "level": level,
             "provenance": provenance,
         }),
         dae::FunctionStatementView::For {
@@ -967,10 +969,14 @@ fn project_events(view: dae::DaeView<'_>) -> Value {
 
 fn project_event_action(operation: dae::EventActionOperation<'_>) -> Value {
     match operation {
-        dae::EventActionOperation::Assert { message, level } => json!({
+        dae::EventActionOperation::Assert { message } => json!({
             "kind": "assert",
             "message": message.index(),
-            "level": level.map(|id| id.index()),
+        }),
+        dae::EventActionOperation::Warning { message, condition } => json!({
+            "kind": "warning",
+            "message": message.index(),
+            "condition": condition.index(),
         }),
         dae::EventActionOperation::Terminate { message } => json!({
             "kind": "terminate",

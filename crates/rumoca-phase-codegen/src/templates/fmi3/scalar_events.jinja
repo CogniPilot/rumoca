@@ -530,10 +530,11 @@ static {{ prefix }}Status rmc_event_iterate(ModelInstance* m, bool canonicalize)
     double held[{{ ev.condition_memories|length }}];
     for (size_t k = 0; k < {{ ev.condition_memories|length }}; ++k) { held[k] = m->p[memories[k]]; m->p[memories[k]] = m->rmc_entry_p[memories[k]]; }
     {{ prefix }}Status actions = check_assertions(m);
+    if (actions == {{ prefix }}OK) actions = report_warnings(m);
     for (size_t k = 0; k < {{ ev.condition_memories|length }}; ++k) m->p[memories[k]] = held[k];
     if (actions != {{ prefix }}OK) return {{ prefix }}Error;
 {%- else %}
-    if (check_assertions(m) != {{ prefix }}OK) return {{ prefix }}Error;
+    if (check_assertions(m) != {{ prefix }}OK || report_warnings(m) != {{ prefix }}OK) return {{ prefix }}Error;
 {%- endif %}
     /* pre_params.rs commit_pre_params_after_event_at. */
     bool history = false;

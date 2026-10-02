@@ -618,6 +618,34 @@ fn lower_algorithm_assertion<'dae>(
     level: Option<&Expression>,
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
+    let activation = owner.activation();
+    let provenance = dae::DaeProvenance::source(span)?;
+    if settled_assertion_level(level, span)? == dae::AssertionLevel::Warning {
+        let holds = lower_expression(
+            construction,
+            environment.coordinates,
+            environment.functions,
+            condition,
+            None,
+        )?;
+        let message = lower_expression(
+            construction,
+            environment.coordinates,
+            environment.functions,
+            message,
+            None,
+        )?;
+        construction.events(|events| {
+            events.warning(
+                activation.trigger,
+                activation.condition,
+                holds,
+                message,
+                provenance,
+            )
+        })?;
+        return Ok(());
+    }
     let (condition, _) = lower_condition(
         construction,
         environment.coordinates,
@@ -626,7 +654,6 @@ fn lower_algorithm_assertion<'dae>(
         condition,
     )?;
     let failed = negate_condition(construction, condition, span)?;
-    let activation = owner.activation();
     // An unconditional activation contributes nothing to conjoin: the failure
     // condition alone is the action guard.
     let action_guard = if activation.always {
@@ -642,16 +669,7 @@ fn lower_algorithm_assertion<'dae>(
         message,
         None,
     )?;
-    let level = lower_optional_expression(
-        construction,
-        environment.coordinates,
-        environment.functions,
-        level,
-    )?;
-    let provenance = dae::DaeProvenance::source(span)?;
-    construction.events(|events| {
-        events.assert_with_level(trigger, action_guard, message, level, provenance)
-    })?;
+    construction.events(|events| events.assert(trigger, action_guard, message, provenance))?;
     Ok(())
 }
 

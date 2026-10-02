@@ -1143,8 +1143,13 @@ pub enum SolveStringConversionFormat {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum SolveEventActionKind {
+    /// An error-level assertion: a true action condition aborts the run.
     Assert,
     Terminate,
+    /// A warning-level assertion (MLS §8.3.7): a true action condition is
+    /// reported and never aborts the run, creates an event, or influences
+    /// step control. It owns no root program.
+    Warning,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

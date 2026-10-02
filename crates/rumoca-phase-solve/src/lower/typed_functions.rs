@@ -247,6 +247,7 @@ pub(crate) struct RegisteredAssertion<'dae> {
     /// Owner output carrying each converted message value, keyed by the value
     /// expression the message converts.
     pub(crate) message_values: Box<[(dae::ExprId<'dae>, usize)]>,
+    pub(crate) level: dae::AssertionLevel,
     pub(crate) provenance: dae::DaeProvenance,
 }
 

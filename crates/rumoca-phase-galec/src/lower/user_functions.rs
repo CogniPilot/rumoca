@@ -508,7 +508,12 @@ fn lower_function_statement<'a, 'dae>(
             lowerer.finish_statement_group();
         }
         dae::FunctionStatementView::Assertion {
+            level: dae::AssertionLevel::Warning,
+            ..
+        } => {}
+        dae::FunctionStatementView::Assertion {
             condition,
+            level: dae::AssertionLevel::Error,
             provenance,
             ..
         } => {

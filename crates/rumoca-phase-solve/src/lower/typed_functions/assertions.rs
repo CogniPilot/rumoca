@@ -9,6 +9,7 @@ use rumoca_ir_solve as solve;
 pub(super) struct FunctionAssertion<'dae> {
     pub(super) condition: dae::ExprId<'dae>,
     pub(super) message: dae::ExprId<'dae>,
+    pub(crate) level: dae::AssertionLevel,
     pub(super) provenance: dae::DaeProvenance,
     /// Whether the assertion lies inside a `for` statement, where its
     /// message values differ per iteration.
@@ -37,10 +38,12 @@ fn collect_assertion_conditions<'dae>(
             dae::FunctionStatementView::Assertion {
                 condition,
                 message,
+                level,
                 provenance,
             } => assertions.push(FunctionAssertion {
                 condition,
                 message,
+                level,
                 provenance,
                 in_loop,
             }),

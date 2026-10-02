@@ -546,6 +546,27 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
         level: Option<&Expression>,
         span: Span,
     ) -> Result<(), dae::DaeConstructionError> {
+        let provenance = dae::DaeProvenance::source(span)?;
+        if settled_assertion_level(level, span)? == dae::AssertionLevel::Warning {
+            let holds = lower_expression(
+                self.construction,
+                self.request.coordinates,
+                self.request.functions,
+                condition,
+                None,
+            )?;
+            let message = lower_expression(
+                self.construction,
+                self.request.coordinates,
+                self.request.functions,
+                message,
+                None,
+            )?;
+            self.construction.events(|events| {
+                events.warning(guard.trigger, guard.condition, holds, message, provenance)
+            })?;
+            return Ok(());
+        }
         let (condition, _) = lower_condition(
             self.construction,
             self.request.coordinates,
@@ -563,16 +584,8 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             message,
             None,
         )?;
-        let level = lower_optional_expression(
-            self.construction,
-            self.request.coordinates,
-            self.request.functions,
-            level,
-        )?;
-        let provenance = dae::DaeProvenance::source(span)?;
-        self.construction.events(|events| {
-            events.assert_with_level(guard.trigger, action_guard, message, level, provenance)
-        })?;
+        self.construction
+            .events(|events| events.assert(guard.trigger, action_guard, message, provenance))?;
         Ok(())
     }
 

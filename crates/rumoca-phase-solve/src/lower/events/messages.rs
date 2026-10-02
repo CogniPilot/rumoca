@@ -17,6 +17,7 @@ pub(super) fn push_message_action<'dae>(
     action: dae::EventActionView<'dae>,
     message: dae::ExprId<'dae>,
     kind: solve::SolveEventActionKind,
+    holds: Option<dae::ExprId<'dae>>,
     actions: &mut Vec<solve::SolveEventAction>,
     conditions: &mut ScalarRows,
 ) -> Result<(), LowerError> {
@@ -29,16 +30,30 @@ pub(super) fn push_message_action<'dae>(
     let message = lower_message(view, layout, message)?;
     let compiler = ScalarCompiler::new(view, layout, None);
     let clock = condition_clock_owner(view, action.guard());
-    let program = match clock {
-        Some(clock) => compiler.clocked_action_condition_program(clock, action.guard(), span)?,
-        None => {
+    let program = match (clock, holds) {
+        (Some(clock), None) => {
+            compiler.clocked_action_condition_program(clock, action.guard(), span)?
+        }
+        (Some(clock), Some(holds)) => {
+            compiler.clocked_warning_condition_program(clock, action.guard(), holds, span)?
+        }
+        (None, holds) => {
             let trigger_memory = condition_memory(layout, action.trigger(), span)?;
-            compiler.edge_condition_program(
-                action.trigger(),
-                action.guard(),
-                trigger_memory,
-                span,
-            )?
+            match holds {
+                None => compiler.edge_condition_program(
+                    action.trigger(),
+                    action.guard(),
+                    trigger_memory,
+                    span,
+                )?,
+                Some(holds) => compiler.warning_condition_program(
+                    action.trigger(),
+                    action.guard(),
+                    trigger_memory,
+                    holds,
+                    span,
+                )?,
+            }
         }
     };
     conditions.push(program, span, actions.len());

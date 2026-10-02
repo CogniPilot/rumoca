@@ -917,6 +917,7 @@ impl SolveRuntime {
             &mut values,
         )?;
         self.project_event_transaction_action_values(t, row_filter, &mut values)?;
+        self.report_violated_warnings(&values, y, &action_p, t)?;
         match solve_eval::event_action_request_from_values(
             events,
             y,

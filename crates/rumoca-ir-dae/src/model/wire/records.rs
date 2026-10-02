@@ -135,6 +135,8 @@ pub(super) enum FunctionStatementInput {
     Assertion {
         condition: u32,
         message: u32,
+        #[serde(default)]
+        level: crate::AssertionLevel,
         #[serde(deserialize_with = "deserialize_provenance")]
         provenance: DaeProvenance,
     },
@@ -424,7 +426,8 @@ pub(super) struct TimeEventEntryWire {
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum EventActionKindWire {
-    Assert { message: u32, level: Option<u32> },
+    Assert { message: u32 },
+    Warning { message: u32, condition: u32 },
     Terminate { message: u32 },
     Reinitialize { state: u32, value: u32 },
 }

@@ -282,6 +282,7 @@ pub(super) const fn origin_name(origin: dae::VariableOrigin) -> &'static str {
 pub(super) const fn event_name(operation: dae::EventActionOperation<'_>) -> &'static str {
     match operation {
         dae::EventActionOperation::Assert { .. } => "assert",
+        dae::EventActionOperation::Warning { .. } => "warning",
         dae::EventActionOperation::Terminate { .. } => "terminate",
         dae::EventActionOperation::Reinitialize { .. } => "reinitialize",
     }

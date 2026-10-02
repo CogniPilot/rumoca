@@ -198,13 +198,32 @@ fn proven_false_error_assert_is_a_translation_diagnostic() {
 }
 
 #[test]
-fn warning_level_assert_owns_no_runtime_action() {
-    // MLS §8.3.7: a warning never aborts and the assertion "shall have no
-    // influence on the behavior of the model", so the level settlement
-    // removes it before any owner could evaluate its condition.
+fn warning_level_assert_is_kept_in_its_settled_form() {
+    // MLS §8.3.7: a warning never aborts, so a structurally false warning is
+    // no translation failure. It stays for the runtime owner that reports it,
+    // its level settled and its condition evaluated without events.
     let (flat, _) = flatten_model("P.WarningKept");
     let flat = flat.expect("warning-level assertions never fail translation");
-    assert!(initial_asserts(&flat).is_empty());
+    let asserts = initial_asserts(&flat);
+    let [
+        rumoca_core::Statement::Assert {
+            condition, level, ..
+        },
+    ] = asserts.as_slice()
+    else {
+        panic!("the warning is kept: {asserts:?}");
+    };
+    assert_eq!(
+        rumoca_ir_flat::AssertionLevel::of_settled(level.as_deref()),
+        Some(rumoca_ir_flat::AssertionLevel::Warning)
+    );
+    assert!(matches!(
+        condition,
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::NoEvent,
+            ..
+        }
+    ));
 }
 
 #[test]

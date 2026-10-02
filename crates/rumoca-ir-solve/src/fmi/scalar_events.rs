@@ -199,11 +199,12 @@ fn refuse_unsupported_owners(model: &SolveModel) -> Result<(), &'static str> {
     {
         return Err("the C profile cannot execute time events");
     }
-    if events
-        .actions
-        .iter()
-        .any(|action| action.kind != SolveEventActionKind::Assert || action.clock_owner.is_some())
-    {
+    if events.actions.iter().any(|action| {
+        !matches!(
+            action.kind,
+            SolveEventActionKind::Assert | SolveEventActionKind::Warning
+        ) || action.clock_owner.is_some()
+    }) {
         return Err("the C profile executes only unscheduled assertions");
     }
     if !discrete.structured_rhs.is_empty()

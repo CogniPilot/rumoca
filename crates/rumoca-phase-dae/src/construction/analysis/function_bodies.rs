@@ -669,8 +669,21 @@ fn plan_one_function_statement(
 pub(in crate::construction) struct FunctionAssertion<'statement> {
     pub(in crate::construction) condition: &'statement Expression,
     pub(in crate::construction) message: &'statement Expression,
-    pub(in crate::construction) level: Option<&'statement Expression>,
+    pub(in crate::construction) level: dae::AssertionLevel,
     pub(in crate::construction) span: Span,
+}
+
+/// The MLS §8.3.7 level of one function assertion whose level flattening
+/// settled.
+fn function_assertion_level(
+    level: Option<&Expression>,
+    span: Span,
+) -> Result<dae::AssertionLevel, ToDaeError> {
+    match flat::AssertionLevel::of_settled(level) {
+        Some(flat::AssertionLevel::Error) => Ok(dae::AssertionLevel::Error),
+        Some(flat::AssertionLevel::Warning) => Ok(dae::AssertionLevel::Warning),
+        None => Err(dae::DaeConstructionError::UnsupportedAssertionLevel { span }.into()),
+    }
 }
 
 /// Recognize MLS §8.3.7 `assert` in both statement shapes Flat retains.
@@ -692,7 +705,7 @@ pub(in crate::construction) fn function_assertion<'statement>(
         } => Ok(Some(FunctionAssertion {
             condition,
             message,
-            level: level.as_deref(),
+            level: function_assertion_level(level.as_deref(), *span)?,
             span: *span,
         })),
         rumoca_core::Statement::FunctionCall {
@@ -724,7 +737,7 @@ pub(in crate::construction) fn function_assertion<'statement>(
             Ok(Some(FunctionAssertion {
                 condition,
                 message,
-                level,
+                level: function_assertion_level(level, *span)?,
                 span: *span,
             }))
         }
@@ -756,29 +769,11 @@ fn plan_proven_function_assertion(
         context.flat,
         context.shapes,
     )?;
-    if let Some(level) = assertion.level {
-        validate_function_expression_with_roles(
-            level,
-            context.roles,
-            context.flat,
-            context.shapes,
-        )?;
-    }
     if matches!(
         context.shapes.proven_value(assertion.condition),
         Some(ProvenValue::Boolean(true))
     ) {
         return Ok(FunctionStatementPlan::ProvenAssertion);
-    }
-    if assertion.level.is_some() {
-        return Err(ToDaeError::unsupported_flat(
-            "function assertion",
-            format!(
-                "`{}` contains a non-default assertion level without a checked severity owner",
-                context.function.name
-            ),
-            assertion.span,
-        ));
     }
     if !context.call_scoped_actions {
         return Err(ToDaeError::unsupported_flat(

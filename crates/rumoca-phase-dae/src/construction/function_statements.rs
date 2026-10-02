@@ -251,8 +251,9 @@ pub(in crate::construction) fn lower_runtime_function_assertion<'dae>(
         assertion.message,
     )?;
     let provenance = dae::DaeProvenance::source(assertion.span)?;
-    construction
-        .functions(|functions| functions.assertion(&mut body, condition, message, provenance))?;
+    construction.functions(|functions| {
+        functions.assertion_with_level(&mut body, condition, message, assertion.level, provenance)
+    })?;
     Ok(body)
 }
 

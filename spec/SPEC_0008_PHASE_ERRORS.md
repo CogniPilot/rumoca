@@ -144,6 +144,7 @@ Error codes use mnemonic prefixes for readability:
 | ES0xx | structural | **S**tructural | Matching/BLT/singularity (`ES001`-`ES002` warnings, `ES01x` errors) |
 | EL0xx | solve lowering | so**L**ve | DAE → Solve-IR lowering (`EL001`-`EL011` rows, `EL02x` assembly, `EL03x` overrides) |
 | EX0xx | sim runtime | e**X**ecution | Solver, runtime-preparation, parameter-override, singular active mode |
+| WX0xx | sim runtime | e**X**ecution | Non-aborting runtime diagnostics: `WX001` a violated warning-level assertion (MLS §8.3.7) |
 | EG0xx | GALEC IR | **G**ALEC | GALEC IR parse/validation errors |
 | EGT0xx | GALEC target projection | **G**ALEC **T**arget | DAE-to-GALEC projection/export errors |
 | EFM0xx | eFMI packaging | e**FM**I | eFMI manifest/packaging errors |
@@ -160,6 +161,12 @@ retire it rather than renumber or reuse.
 The former GALEC-target meanings of `ET001`–`ET023` are retired because they
 collided with typecheck. GALEC target projection now emits `EGT001`–`EGT023`;
 the typecheck meanings of `ET0xx` are unchanged.
+
+`WX0xx` diagnostics never abort a run. The simulation result carries them as an
+ordered list of (mnemonic, first-occurrence time, rendered message, source
+span); a run reports each warning site once, at the first accepted point that
+observes it (SPEC_0022 EQN-036). Generated FMI components emit them through the
+importer's logger at its warning status.
 
 `EI013` is retired. Older builds used it for the non-fatal synthesized-inner
 notice; the phase-owned diagnostic is `WI013`, whose prefix records its warning

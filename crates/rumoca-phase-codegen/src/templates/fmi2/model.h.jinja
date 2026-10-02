@@ -1,5 +1,5 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- from "fmi-c-kernel.jinja" import text_fields, linear_solve_kernel %}
+{%- from "fmi-c-kernel.jinja" import text_fields, warning_fields, linear_solve_kernel %}
 {%- from "fmi-me-projection.jinja" import workspace_fields, kernel_declarations %}
 {%- from "fmi-typed-functions.jinja" import function_prototypes %}
 {%- from "fmi-scalar-events.jinja" import event_fields %}
@@ -37,7 +37,7 @@ typedef struct {
     double derivative[STATE_LEN];
     enum ModelState state;
     fmi2Type type;
-    fmi2CallbackFunctions callbacks;{{ text_fields(fmi_text_starts) }}
+    fmi2CallbackFunctions callbacks;{{ text_fields(fmi_text_starts) }}{{ warning_fields(solve, fmi) }}
    {{ workspace_fields(me_refresh) }}{{ event_fields(fmi) }}
 } ModelInstance;
 {{ kernel_declarations(me_refresh) }}{{ linear_solve_kernel() }}

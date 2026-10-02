@@ -811,7 +811,12 @@ fn lower_event_actions<'dae>(
         .with_emission(emission);
     for (_, action) in view.event_actions() {
         let span = action.provenance().span();
-        let dae::EventActionOperation::Assert { level: None, .. } = action.operation() else {
+        // A warning-level assertion has no influence on behavior and no
+        // GALEC representation (MLS §8.3.7).
+        if let dae::EventActionOperation::Warning { .. } = action.operation() {
+            continue;
+        }
+        let dae::EventActionOperation::Assert { .. } = action.operation() else {
             return Err(unsupported(
                 "event-action",
                 format!(

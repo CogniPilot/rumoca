@@ -20,14 +20,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let action_program =
             self.typed_pure_call_assertion_program(call, function, registered, call_span, false)?;
         let action_program = std::sync::Arc::<[solve::LinearOp]>::from(action_program);
-        let root_program = self
-            .active_clock
-            .is_none()
-            .then(|| {
-                self.typed_pure_call_assertion_program(call, function, registered, call_span, true)
-            })
-            .transpose()?
-            .map(std::sync::Arc::<[solve::LinearOp]>::from);
+        let root_program = (registered
+            .assertions
+            .iter()
+            .any(|assertion| self.event_root_owned(assertion.level)))
+        .then(|| {
+            self.typed_pure_call_assertion_program(call, function, registered, call_span, true)
+        })
+        .transpose()?
+        .map(std::sync::Arc::<[solve::LinearOp]>::from);
         for (output_offset, assertion) in registered.assertions.iter().enumerate() {
             let message_owner = AssertionMessageOwner::Specialized {
                 call,
@@ -39,6 +40,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             self.insert_assertion(
                 root_program
                     .as_ref()
+                    .filter(|_| self.event_root_owned(assertion.level))
                     .map(|program| CollectedCallAssertionRoot::Shared {
                         owner: registered.owner,
                         program: std::sync::Arc::clone(program),
@@ -50,6 +52,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     output_offset,
                 },
                 message,
+                assertion.level,
                 assertion.provenance,
                 Some(CallAssertionProjection {
                     owner: registered.owner,
@@ -205,8 +208,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::FunctionStatementView::Assertion {
                 condition,
                 message,
+                level,
                 provenance,
-            } => self.collect_assertion(condition, message, provenance, call_span),
+            } => self.collect_assertion(condition, message, level, provenance, call_span),
             dae::FunctionStatementView::For {
                 fold, statements, ..
             } => self.schedule_asserting_fold(fold, statements, call_span),
@@ -249,8 +253,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::FunctionStatementView::Assertion {
                 condition,
                 message,
+                level,
                 provenance,
-            } => self.collect_fold_assertion(fold, condition, message, provenance, call_span),
+            } => {
+                self.collect_fold_assertion(fold, condition, message, level, provenance, call_span)
+            }
             dae::FunctionStatementView::For { statements, .. }
                 if has_assertion(statements.clone()) =>
             {
@@ -267,19 +274,26 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         &self,
         condition: dae::ExprId<'dae>,
         message: dae::ExprId<'dae>,
+        level: dae::AssertionLevel,
         provenance: dae::DaeProvenance,
         call_span: Span,
     ) -> Result<(), LowerError> {
         let message =
             self.assertion_message(&AssertionMessageOwner::TextOnly, message, call_span)?;
         let root_program = self
-            .active_clock
-            .is_none()
+            .event_root_owned(level)
             .then(|| self.assertion_root_program(condition, call_span))
             .transpose()?
             .map(CollectedCallAssertionRoot::Ready);
         let action_program = self.call_assertion_action(condition, None, call_span)?;
-        self.insert_assertion(root_program, action_program, message, provenance, None)
+        self.insert_assertion(
+            root_program,
+            action_program,
+            message,
+            level,
+            provenance,
+            None,
+        )
     }
 
     fn collect_fold_assertion(
@@ -287,19 +301,26 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         fold: dae::FunctionFoldId<'dae>,
         condition: dae::ExprId<'dae>,
         message: dae::ExprId<'dae>,
+        level: dae::AssertionLevel,
         provenance: dae::DaeProvenance,
         call_span: Span,
     ) -> Result<(), LowerError> {
         let message =
             self.assertion_message(&AssertionMessageOwner::TextOnly, message, call_span)?;
         let root_program = self
-            .active_clock
-            .is_none()
+            .event_root_owned(level)
             .then(|| self.fold_assertion_root_program(fold, condition, call_span))
             .transpose()?
             .map(CollectedCallAssertionRoot::Ready);
         let action_program = self.call_assertion_action(condition, Some(fold), call_span)?;
-        self.insert_assertion(root_program, action_program, message, provenance, None)
+        self.insert_assertion(
+            root_program,
+            action_program,
+            message,
+            level,
+            provenance,
+            None,
+        )
     }
 
     fn insert_assertion(
@@ -307,6 +328,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         root_program: Option<CollectedCallAssertionRoot>,
         action_program: CollectedCallAssertionProgram<'dae>,
         message: solve::SolveEventMessage,
+        level: dae::AssertionLevel,
         provenance: dae::DaeProvenance,
         projection: Option<CallAssertionProjection>,
     ) -> Result<(), LowerError> {
@@ -317,7 +339,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 root_program,
                 action_program,
                 action: solve::SolveEventAction {
-                    kind: solve::SolveEventActionKind::Assert,
+                    kind: action_kind(level),
                     message,
                     span: provenance.span(),
                     origin: provenance.origin().to_string(),
@@ -933,4 +955,24 @@ fn has_assertion(statements: dae::FunctionStatements<'_>) -> bool {
         dae::FunctionStatementView::Assertion { .. } => true,
         dae::FunctionStatementView::For { statements, .. } => has_assertion(statements),
     })
+}
+
+impl ScalarCompiler<'_, '_> {
+    /// Whether an assertion at `level` owns an event root here.
+    ///
+    /// An error-level assertion outside a clock partition is checked at its
+    /// crossing. A warning-level assertion "shall have no influence on the
+    /// behavior of the model", so evaluating it never triggers an event
+    /// (MLS §8.3.7): it owns no root anywhere.
+    fn event_root_owned(&self, level: dae::AssertionLevel) -> bool {
+        level == dae::AssertionLevel::Error && self.active_clock.is_none()
+    }
+}
+
+/// The Solve action kind of an assertion at `level`.
+pub(in crate::lower) fn action_kind(level: dae::AssertionLevel) -> solve::SolveEventActionKind {
+    match level {
+        dae::AssertionLevel::Error => solve::SolveEventActionKind::Assert,
+        dae::AssertionLevel::Warning => solve::SolveEventActionKind::Warning,
+    }
 }

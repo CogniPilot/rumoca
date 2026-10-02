@@ -5,6 +5,7 @@
 //!
 //! The Flat Model is produced by the flatten phase from the Instance Tree.
 
+mod assertion_levels;
 pub mod clocks;
 pub mod connections;
 pub mod name_utils;
@@ -80,6 +81,7 @@ pub use visitor::{
     StateVariableCollector, StatementScope, StatementVisitor, VarRefCollector,
 };
 
+pub use assertion_levels::{AssertionLevel, AssertionLevelLiterals};
 pub use when_equations::{WhenBranch, WhenChain, WhenEquation};
 
 /// MLS §5.6: "flat equation system with globally unique variable names"

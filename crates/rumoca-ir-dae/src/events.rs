@@ -26,9 +26,26 @@ pub(crate) struct TimeEventEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EventActionKind {
-    Assert { message: u32, level: Option<u32> },
+    Assert { message: u32 },
+    Warning { message: u32, condition: u32 },
     Terminate { message: u32 },
     Reinitialize { state: u32, value: u32 },
+}
+
+/// The MLS §8.3.7 level of a function assertion.
+///
+/// An error-level assertion aborts the current evaluation when its condition
+/// is false. A warning-level assertion never aborts it and has no influence
+/// on the behavior of the model: its condition is evaluated without events
+/// and a violation is only reported.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AssertionLevel {
+    #[default]
+    Error,
+    Warning,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -80,7 +97,15 @@ impl<'dae> TimeEventView<'dae> {
 pub enum EventActionOperation<'dae> {
     Assert {
         message: ExprId<'dae>,
-        level: Option<ExprId<'dae>>,
+    },
+    /// A warning-level assertion (MLS §8.3.7). `condition` is the Boolean
+    /// expression that holds unless the warning is violated; it is evaluated
+    /// without events and is no event condition, so it owns no relation,
+    /// memory, or root. The action reports while its guard is active and
+    /// `condition` is false, and never aborts.
+    Warning {
+        message: ExprId<'dae>,
+        condition: ExprId<'dae>,
     },
     Terminate {
         message: ExprId<'dae>,
@@ -188,27 +213,6 @@ impl<'dae> Events<'_, 'dae> {
         message: ExprId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<EventActionId<'dae>, DaeConstructionError> {
-        self.assert_with_level(trigger, guard, message, None, provenance)
-    }
-
-    pub fn assert_with_level(
-        &mut self,
-        trigger: ConditionId<'dae>,
-        guard: ConditionId<'dae>,
-        message: ExprId<'dae>,
-        level: Option<ExprId<'dae>>,
-        provenance: DaeProvenance,
-    ) -> Result<EventActionId<'dae>, DaeConstructionError> {
-        if let Some(level) = level {
-            self.storage.expect_closed_expression(level, provenance)?;
-            let ty = self.storage.expr_type(level, provenance)?;
-            if !ty.is_scalar() || !ty.scalar_type().is_numeric() {
-                return Err(DaeConstructionError::ExpectedNumeric {
-                    found: ty.scalar_type(),
-                    span: provenance.span(),
-                });
-            }
-        }
         self.message_action(
             trigger,
             guard,
@@ -216,7 +220,38 @@ impl<'dae> Events<'_, 'dae> {
             provenance,
             EventActionKind::Assert {
                 message: message.index(),
-                level: level.map(ExprId::index),
+            },
+        )
+    }
+
+    /// One MLS §8.3.7 warning-level assertion: report `message` while `guard`
+    /// is active on `trigger` and the Boolean `condition` is false.
+    pub fn warning(
+        &mut self,
+        trigger: ConditionId<'dae>,
+        guard: ConditionId<'dae>,
+        condition: ExprId<'dae>,
+        message: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<EventActionId<'dae>, DaeConstructionError> {
+        self.storage
+            .expect_closed_expression(condition, provenance)?;
+        let ty = self.storage.expr_type(condition, provenance)?;
+        if !ty.is_scalar() || ty.scalar_type() != ScalarType::Boolean {
+            return Err(DaeConstructionError::TypeMismatch {
+                expected: ScalarType::Boolean,
+                found: ty.scalar_type(),
+                span: provenance.span(),
+            });
+        }
+        self.message_action(
+            trigger,
+            guard,
+            message,
+            provenance,
+            EventActionKind::Warning {
+                message: message.index(),
+                condition: condition.index(),
             },
         )
     }

@@ -31,10 +31,12 @@ pub(super) fn validate(model: &SolveModel) -> Result<DiscreteOrder, &'static str
             .root_relation_memory_targets
             .iter()
             .any(Option::is_some)
-        || events
-            .actions
-            .iter()
-            .any(|a| a.kind != SolveEventActionKind::Assert || a.clock_owner.is_some())
+        || events.actions.iter().any(|a| {
+            !matches!(
+                a.kind,
+                SolveEventActionKind::Assert | SolveEventActionKind::Warning
+            ) || a.clock_owner.is_some()
+        })
     {
         return Err("only unscheduled assertions without relation memory are supported");
     }
@@ -77,7 +79,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<DiscreteOrder, &'static str
         }
     }
     require_static(model, &events.root_conditions, &y, &p)?;
-    require_static(model, &events.action_conditions, &y, &p)?;
+    require_static_actions(model, &y, &p)?;
     Ok(order)
 }
 
@@ -152,6 +154,29 @@ fn discrete_order(
         equations,
         memories,
     })
+}
+
+/// Every error-level action condition is static. A warning-level action
+/// (MLS §8.3.7) owns no event and is observed only at accepted points, so
+/// its condition may read any coordinate.
+fn require_static_actions(model: &SolveModel, y: &[bool], p: &[bool]) -> Result<(), &'static str> {
+    let events = &model.problem.events;
+    match scalar_dependencies::outputs(&model.pure_calls, &events.action_conditions, y, p) {
+        Some(outputs)
+            if outputs.len() == events.actions.len()
+                && outputs
+                    .iter()
+                    .zip(&events.actions)
+                    .all(|(is_static, action)| {
+                        *is_static || action.kind == SolveEventActionKind::Warning
+                    }) =>
+        {
+            Ok(())
+        }
+        _ => Err(
+            "assertion depends on time, a continuous state, an input, or an unsupported dependence operation",
+        ),
+    }
 }
 
 fn require_static(

@@ -8,7 +8,7 @@ mod context;
 mod function_resolution;
 mod structural_asserts;
 
-pub(crate) use assertion_levels::{PredefinedAssertionLevels, settle_assertion_levels};
+pub(crate) use assertion_levels::{predefined_assertion_levels, settle_assertion_levels};
 pub(crate) use component_binding_values::collect_component_binding_values;
 pub(crate) use context::{ConstantOccurrenceId, Context};
 pub(crate) use function_resolution::resolve_function_name;

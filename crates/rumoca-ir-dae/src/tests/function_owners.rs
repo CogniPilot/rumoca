@@ -881,6 +881,7 @@ fn function_assertion_is_a_checked_call_scoped_statement_and_round_trips() {
             condition,
             message,
             provenance,
+            ..
         } = statements[0].clone()
         else {
             panic!("the first function statement retains the assertion action");

@@ -204,11 +204,17 @@ fn rebuild_event_action<'target>(
     let trigger = conditions[action.trigger().index() as usize];
     let guard = conditions[action.guard().index() as usize];
     target.events(|events| match action.operation() {
-        dae::EventActionOperation::Assert { message, level } => events.assert_with_level(
+        dae::EventActionOperation::Assert { message } => events.assert(
             trigger,
             guard,
             expressions[message.index() as usize],
-            level.map(|level| expressions[level.index() as usize]),
+            action.provenance(),
+        ),
+        dae::EventActionOperation::Warning { message, condition } => events.warning(
+            trigger,
+            guard,
+            expressions[condition.index() as usize],
+            expressions[message.index() as usize],
             action.provenance(),
         ),
         dae::EventActionOperation::Terminate { message } => events.terminate(

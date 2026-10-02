@@ -148,6 +148,7 @@ mod tests {
             data: vec![vec![1.0, 2.0]],
             n_states: 1,
             termination: None,
+            diagnostics: Vec::new(),
             variable_meta: vec![SimVariableMeta {
                 name: "x".to_string(),
                 role: "state".to_string(),
@@ -188,6 +189,7 @@ mod tests {
             data: vec![vec![1.0, 2.0], vec![3.0, 4.0]],
             n_states: 1,
             termination: None,
+            diagnostics: Vec::new(),
             variable_meta: Vec::new(),
         };
         let dir = std::env::temp_dir().join(format!("rumoca-csv-test-{}", std::process::id()));
@@ -274,6 +276,7 @@ y = ["*states", "*outputs", "energy"]
             data: vec![vec![1.0]],
             n_states: 1,
             termination: None,
+            diagnostics: Vec::new(),
             variable_meta: Vec::new(),
         };
         let dir = std::env::temp_dir().join(format!("rumoca-csv-trunc-{}", std::process::id()));

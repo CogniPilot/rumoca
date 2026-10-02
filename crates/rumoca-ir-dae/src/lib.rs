@@ -146,7 +146,8 @@ pub use equations::{
 };
 pub use error::DaeConstructionError;
 pub use events::{
-    EventActionOperation, EventActionView, Events, TimeEventOperation, TimeEventView,
+    AssertionLevel, EventActionOperation, EventActionView, Events, TimeEventOperation,
+    TimeEventView,
 };
 pub use expr_query::{
     ExpressionTraversal, expr_contains_der_of, expr_contains_der_of_any, expr_contains_var,

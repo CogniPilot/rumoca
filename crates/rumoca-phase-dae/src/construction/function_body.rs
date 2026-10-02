@@ -358,10 +358,11 @@ pub(super) fn lower_function_conditional<'dae>(
     let lowered = lower_function_conditional_values(construction, body, input)?;
     for assertion in &lowered.assertions {
         construction.functions(|functions| {
-            functions.assertion(
+            functions.assertion_with_level(
                 body,
                 assertion.condition,
                 assertion.message,
+                assertion.level,
                 assertion.provenance,
             )
         })?;
@@ -1188,7 +1189,13 @@ fn lower_total_function_assertions<'dae>(
         )?;
         let provenance = dae::DaeProvenance::source(assertion.span)?;
         construction.functions(|functions| {
-            functions.assertion_loop(loop_body, condition, message, provenance)
+            functions.assertion_loop_with_level(
+                loop_body,
+                condition,
+                message,
+                assertion.level,
+                provenance,
+            )
         })?;
     }
     Ok(())
@@ -1482,10 +1489,11 @@ fn lower_loop_conditional<'dae>(
     )?;
     for assertion in &lowered.assertions {
         construction.functions(|functions| {
-            functions.assertion_loop(
+            functions.assertion_loop_with_level(
                 &mut loop_body,
                 assertion.condition,
                 assertion.message,
+                assertion.level,
                 assertion.provenance,
             )
         })?;
@@ -1681,8 +1689,15 @@ fn lower_function_loop_assertion<'dae>(
         assertion.message,
     )?;
     let provenance = dae::DaeProvenance::source(assertion.span)?;
-    construction
-        .functions(|functions| functions.assertion_loop(loop_body, condition, message, provenance))
+    construction.functions(|functions| {
+        functions.assertion_loop_with_level(
+            loop_body,
+            condition,
+            message,
+            assertion.level,
+            provenance,
+        )
+    })
 }
 
 fn lower_function_loop_assignment<'dae>(

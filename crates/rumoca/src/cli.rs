@@ -1927,6 +1927,12 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         sim.times.len(),
         sim.names.len()
     );
+    for diagnostic in &sim.diagnostics {
+        eprintln!(
+            "warning[{}]: t={}: {}",
+            diagnostic.code, diagnostic.time, diagnostic.message
+        );
+    }
     let projection_fallbacks = projection_report::report_projection_fallbacks();
 
     let out_path = match run.output {

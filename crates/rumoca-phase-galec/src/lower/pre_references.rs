@@ -40,10 +40,9 @@ fn collect_event_action_pre<'dae>(
         collect_condition_pre(view, action.guard(), seen, ids)?;
         let value = match action.operation() {
             dae::EventActionOperation::Reinitialize { value, .. } => Some(value),
-            dae::EventActionOperation::Assert { message, level } => {
-                collect_pre(view, message, seen, ids)?;
-                level
-            }
+            dae::EventActionOperation::Assert { message } => Some(message),
+            // A warning has no GALEC representation (MLS §8.3.7).
+            dae::EventActionOperation::Warning { .. } => None,
             dae::EventActionOperation::Terminate { message } => Some(message),
         };
         if let Some(value) = value {
