@@ -94,6 +94,7 @@ mod formal_state_candidates;
 mod forward_param_jacobian_test;
 mod forwarding_function_constraint;
 mod function_assertion_message_projection;
+mod function_assertion_scopes;
 mod function_branch_assertions;
 mod function_conditional_sequence_test;
 mod function_equation_shape;

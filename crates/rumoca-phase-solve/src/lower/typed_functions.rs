@@ -121,22 +121,27 @@ pub(crate) enum AssertionSlot {
     /// The Boolean condition of one assertion reached by the invocation.
     Predicate,
     /// One scalar an assertion message converts to text, evaluated in the
-    /// frame of the function that declares that assertion.
-    MessageValue(solve::SolveValueType),
+    /// frame of the function that declares that assertion. `predicate` is
+    /// the backward distance to that assertion's predicate slot, which slot
+    /// tuples keep when they are concatenated.
+    MessageValue {
+        value_type: solve::SolveValueType,
+        predicate: usize,
+    },
 }
 
 impl AssertionSlot {
     fn value_type(&self) -> solve::SolveValueType {
         match self {
             Self::Predicate => solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
-            Self::MessageValue(value_type) => value_type.clone(),
+            Self::MessageValue { value_type, .. } => value_type.clone(),
         }
     }
 
     fn output(&self) -> solve::SolvePureCallOutput {
         match self {
             Self::Predicate => solve::SolvePureCallOutput::assertion_predicate(),
-            Self::MessageValue(value_type) => {
+            Self::MessageValue { value_type, .. } => {
                 solve::SolvePureCallOutput::assertion_message_value(value_type.clone())
             }
         }
@@ -156,7 +161,7 @@ impl AssertionSlot {
     ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
         let value = match self {
             Self::Predicate => solve::SolveValue::boolean(true),
-            Self::MessageValue(value_type) => match value_type.element_type() {
+            Self::MessageValue { value_type, .. } => match value_type.element_type() {
                 solve::SolveScalarType::Real { .. } => {
                     solve::SolveValue::real(arithmetic_profile(), 0.0)
                 }
@@ -954,15 +959,14 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         {
             return Err(solve::SolveProgramConstructionError::InvalidCallOutput { provenance });
         }
-        if !self
-            .pending_predicates(std::iter::once(*condition_expression))
-            .is_empty()
-        {
-            return Err(solve::SolveProgramConstructionError::InvalidCallInterface { provenance });
-        }
         let condition = self
             .expression(*condition_expression)?
             .only_register(provenance)?;
+        // The calls the condition reaches run in this scope before either arm,
+        // so the assertion slots they settle are published from here; the arms
+        // publish only the slots still pending.
+        let all_pending = pending;
+        let pending = &self.still_pending(all_pending);
         let mut output_types = Vec::new();
         for value_type in value_types {
             output_types.extend(lower_value_type_leaves(
@@ -999,7 +1003,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         let false_conditions = conditions[1..].to_vec();
         let false_branches = branches[1..].to_vec();
         let false_fallback = fallback.to_vec();
-        self.builder.conditional(
+        let destinations = self.builder.conditional(
             condition,
             &captures,
             output_types,
@@ -1035,7 +1039,49 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                     },
                 )
             },
-        )
+        )?;
+        self.publish_chain_slots(&destinations, all_pending, pending, provenance)
+    }
+
+    /// The slots of `pending` no call of this scope has settled yet.
+    fn still_pending(&self, pending: &[usize]) -> Vec<usize> {
+        pending
+            .iter()
+            .copied()
+            .filter(|slot| {
+                self.predicate_values
+                    .get(*slot)
+                    .is_some_and(Option::is_none)
+            })
+            .collect()
+    }
+
+    /// A chain's values followed by every slot of `all_pending`: the arms'
+    /// value for a slot they published, and this scope's value for a slot its
+    /// condition settled.
+    fn publish_chain_slots(
+        &self,
+        destinations: &[solve::ProgramRegister<'program>],
+        all_pending: &[usize],
+        regional_slots: &[usize],
+        provenance: rumoca_core::Span,
+    ) -> Result<Vec<solve::ProgramRegister<'program>>, solve::SolveProgramConstructionError> {
+        let value_count = destinations.len() - regional_slots.len();
+        let mut published = destinations[..value_count].to_vec();
+        let mut regional = destinations[value_count..].iter().copied();
+        for slot in all_pending {
+            let value = if regional_slots.contains(slot) {
+                regional.next()
+            } else {
+                self.predicate_values.get(*slot).copied().flatten()
+            };
+            published.push(
+                value.ok_or(solve::SolveProgramConstructionError::InvalidCallOutput {
+                    provenance,
+                })?,
+            );
+        }
+        Ok(published)
     }
 
     fn conditional_assignment(
@@ -1122,10 +1168,16 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             let value = self.predicate_values.get_mut(slot).ok_or(
                 solve::SolveProgramConstructionError::InvalidCallOutput { provenance: at },
             )?;
-            if value.replace(predicate).is_some() {
-                return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
-                    provenance: at,
-                });
+            // A slot the chain's first condition settled in this scope comes
+            // back as the value this scope already holds.
+            match value {
+                Some(existing) if *existing == predicate => {}
+                Some(_) => {
+                    return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
+                        provenance: at,
+                    });
+                }
+                None => *value = Some(predicate),
             }
         }
         Ok(())

@@ -259,7 +259,11 @@ fn assertion_layout<'dae>(
             };
             direct_message_values.push((value, slots.len()));
             message_values.push((value, result_leaf_count + slots.len()));
-            slots.push(AssertionSlot::MessageValue(value_type));
+            let predicate = slots.len() - index;
+            slots.push(AssertionSlot::MessageValue {
+                value_type,
+                predicate,
+            });
         }
         registered.push(RegisteredAssertion {
             predicate_output: result_leaf_count + index,
