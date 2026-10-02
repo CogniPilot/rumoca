@@ -394,10 +394,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 self.target.at(provenance).record(value_type, fields)
             }
             dae::ExpressionOperation::Field { base, field } => {
-                let (projected, projected_context) = self
-                    .function_context
-                    .projected_field(self.source, base, field)
-                    .expect("instantiation proof resolves this record field");
+                let Some((projected, projected_context)) =
+                    self.function_context
+                        .projected_field(self.source, base, field)
+                else {
+                    // A field of a record value no straight-line projection
+                    // resolves (the result of a multi-statement call such as
+                    // IF97 `waterBaseProp_pT`) is the field of that rebuilt
+                    // record value.
+                    let base = self.rebuild_instantiated(base)?;
+                    return self.target.at(provenance).field(base, field as usize);
+                };
                 let previous = std::mem::replace(&mut self.function_context, projected_context);
                 let rebuilt = self.rebuild_instantiated(projected);
                 self.function_context = previous;
