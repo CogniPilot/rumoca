@@ -117,6 +117,22 @@ impl SolveMeKernel {
             .boundary_event_pre_p
             .clone()
             .unwrap_or_else(|| self.params.clone());
+        // The right limit observes the same event: it starts again from the
+        // event-entry discrete values, not from the values the event-time
+        // probe already updated, so a `when` body runs once per event.
+        let terminal = self
+            .runtime
+            .model
+            .problem
+            .solve_layout
+            .terminal_event_parameter_index
+            .and_then(|index| self.params.get(index).copied().map(|value| (index, value)));
+        self.params.clone_from(&event_pre_p);
+        if let Some((index, value)) = terminal
+            && let Some(slot) = self.params.get_mut(index)
+        {
+            *slot = value;
+        }
         self.pending_event_pre_y = Some(event_pre_y);
         self.pending_event_pre_p = Some(event_pre_p);
         let row_filter = if self.state_time_coincidence.is_some() {

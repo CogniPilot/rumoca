@@ -246,6 +246,7 @@ mod type_attribute_inheritance;
 mod variability_classes;
 mod vectorized_constant_calls;
 mod verification_surface_wiring;
+mod when_right_limit_events;
 
 mod structural_binding_functions;
 mod structural_parameters;
