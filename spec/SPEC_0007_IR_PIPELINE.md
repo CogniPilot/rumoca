@@ -110,6 +110,11 @@ manipulation.
   consumers MUST NOT infer the concatenation axis from child nesting. Expanded
   comprehensions and materialized array values remain element constructors.
 - Function bodies remain structured in `functions`.
+- No function values: a call that passes a function argument (MLS §12.4.2.1, a
+  partial application or a function name) is replaced by a call of a
+  specialization of the callee for that argument, whose body calls the
+  argument's function directly and whose extra inputs carry the bound formals.
+  No function with a function-typed input remains in `functions`.
 - `pre()`, `der()`, `initial()`, and other Modelica built-ins are still present
   as expression nodes — semantic lowering has not occurred.
 

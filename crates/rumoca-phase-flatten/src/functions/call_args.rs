@@ -532,9 +532,9 @@ impl ExpressionRewriter for DefaultInputSubstituter<'_> {
     }
 }
 
-fn rewrite_model_expressions(
+pub(super) fn rewrite_model_expressions<R: FallibleStatementRewriter<Error = FlattenError>>(
     flat: &mut flat::Model,
-    rewriter: &mut CallArgumentMaterializer,
+    rewriter: &mut R,
 ) -> Result<(), FlattenError> {
     for variable in flat.variables.values_mut() {
         for expression in [
@@ -576,9 +576,9 @@ fn rewrite_model_expressions(
     rewrite_function_expressions(flat, rewriter)
 }
 
-fn rewrite_structured_templates(
+fn rewrite_structured_templates<R: FallibleStatementRewriter<Error = FlattenError>>(
     flat: &mut flat::Model,
-    rewriter: &mut CallArgumentMaterializer,
+    rewriter: &mut R,
 ) -> Result<(), FlattenError> {
     for family in flat
         .structured_equations
@@ -593,9 +593,9 @@ fn rewrite_structured_templates(
     Ok(())
 }
 
-fn rewrite_assertions(
+fn rewrite_assertions<R: FallibleStatementRewriter<Error = FlattenError>>(
     assertions: &mut [flat::AssertEquation],
-    rewriter: &mut CallArgumentMaterializer,
+    rewriter: &mut R,
 ) -> Result<(), FlattenError> {
     for assertion in assertions {
         assertion.condition = rewriter.rewrite_expression(&assertion.condition)?;
@@ -607,9 +607,9 @@ fn rewrite_assertions(
     Ok(())
 }
 
-fn rewrite_when_equations(
+fn rewrite_when_equations<R: FallibleStatementRewriter<Error = FlattenError>>(
     equations: &mut [flat::WhenEquation],
-    rewriter: &mut CallArgumentMaterializer,
+    rewriter: &mut R,
 ) -> Result<(), FlattenError> {
     for equation in equations {
         match equation {
@@ -652,9 +652,9 @@ fn rewrite_when_equations(
     Ok(())
 }
 
-fn rewrite_function_expressions(
+fn rewrite_function_expressions<R: FallibleStatementRewriter<Error = FlattenError>>(
     flat: &mut flat::Model,
-    rewriter: &mut CallArgumentMaterializer,
+    rewriter: &mut R,
 ) -> Result<(), FlattenError> {
     for function in flat.functions.values_mut() {
         for parameter in function

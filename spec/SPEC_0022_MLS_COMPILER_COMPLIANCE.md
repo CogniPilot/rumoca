@@ -26,7 +26,7 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.5 EQN contracts | 490–532 | Equation rules (38 contracts) |
 | §4.6 ALG contracts | 533–554 | Algorithm rules (18 contracts) |
 | §4.7 CONN contracts | 555–589 | Connection rules (30 contracts) |
-| §4.8 FUNC contracts | 590–632 | Function rules (39 contracts) |
+| §4.8 FUNC contracts | 590–632 | Function rules (40 contracts) |
 | §4.9 TYPE contracts | 633–673 | Type/interface rules (36 contracts) |
 | §4.10 ARR contracts | 673–719 | Array rules (44 contracts) |
 | §4.11 PKG contracts | 720–736 | Package/import rules (12 contracts) |
@@ -645,6 +645,7 @@ Defines state-to-state transitions with priority and timing control.
 | FUNC-037 | ExternalObject lifecycle signatures | §12.9.7 | "Constructor has exactly one output of the owning ExternalObject type; destructor has exactly one input of that type and no outputs" |
 | FUNC-038 | ExternalObject lifecycle calls | §12.9.7 | "Constructor and destructor cannot be called explicitly; each constructed object is constructed and destroyed exactly once" |
 | FUNC-039 | Component bindings read inputs | §12.4.4 | Output and protected component declaration bindings are evaluated in the function, with its inputs available, including fields of a record input (`Real k1 = f(if data.zeta1_at_a then data.diameter_a else data.diameter_b)`). Rumoca: record inputs are decomposed into field inputs, and the declaration expressions of outputs and locals are rewritten to those fields like the algorithm section. Tested in `suite_core/fluid_function_data.rs` |
+| FUNC-040 | Function arguments | §12.4.2.1 | "A function partial application is specified by the function keyword followed by a function call to func_name giving named formal parameter associations for the formal parameters to be bound". Rumoca: flattening specializes the callee once per distinct function argument; calls of the formal function become direct calls with the bound formals as extra inputs, so no function value reaches DAE or Solve. An argument that is not a partial application (a Real value at a function input, for example) is refused (EF016). Tested in `suite_core/function_valued_arguments.rs` |
 
 ### 4.9 Type/Interface Contracts (TYPE)
 
@@ -972,7 +973,7 @@ areas.
 | Equations | EQN | 40 |
 | Algorithms | ALG | 18 |
 | Connections | CONN | 30 |
-| Functions | FUNC | 39 |
+| Functions | FUNC | 40 |
 | Types/Interfaces | TYPE | 36 |
 | Arrays | ARR | 44 |
 | Packages | PKG | 12 |
@@ -983,7 +984,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **453** |
+| **Total** | | **456** |
 
 ---
 

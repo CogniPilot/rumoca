@@ -488,11 +488,11 @@ mod tests {
     #[test]
     fn test_registry_has_all_contracts() {
         let registry = create_registry();
-        // SPEC_0022 defines 455 contracts
+        // SPEC_0022 defines 456 contracts
         assert_eq!(
             registry.len(),
-            455,
-            "Expected 455 contracts, got {}",
+            456,
+            "Expected 456 contracts, got {}",
             registry.len()
         );
     }
@@ -526,7 +526,7 @@ mod tests {
             registry.by_category(ContractCategory::Connection).count(),
             30
         );
-        assert_eq!(registry.by_category(ContractCategory::Function).count(), 39);
+        assert_eq!(registry.by_category(ContractCategory::Function).count(), 40);
         assert_eq!(registry.by_category(ContractCategory::Type).count(), 36);
         assert_eq!(registry.by_category(ContractCategory::Array).count(), 44);
         assert_eq!(registry.by_category(ContractCategory::Package).count(), 12);

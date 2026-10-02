@@ -1060,6 +1060,7 @@ pub(crate) fn finalize_flat_model(
     // source signatures. Record-field bindings belong to the constructor and
     // must not be copied onto the scalar ABI parameters created below.
     functions::materialize_flat_function_call_args(flat)?;
+    functions::specialize_function_arguments(flat)?;
     // Record parameter signatures and every call site must change together.
     // Run this only after the rewrite fixed point: earlier lowering allowed a
     // later rewrite to reintroduce source-shaped record arguments against an
