@@ -5,6 +5,21 @@ use super::param_binding::ParamBinding;
 use super::*;
 
 impl Context {
+    /// Record one extracted constant under its declaration identity and under
+    /// the package scope that exposes it (SPEC_0040 FLAT-C02).
+    pub(crate) fn record_constant_value(
+        &mut self,
+        qualified_name: &str,
+        def_id: rumoca_core::DefId,
+        value: rumoca_core::Expression,
+    ) {
+        if let Some(scope) = crate::path_utils::enclosing_scope(qualified_name) {
+            self.constant_values_by_scope
+                .insert((scope.to_string(), def_id), value.clone());
+        }
+        self.constant_values_by_def_id.insert(def_id, value);
+    }
+
     /// Try to evaluate integer parameters in one pass.
     ///
     /// Uses full context including enums to handle conditional bindings like:

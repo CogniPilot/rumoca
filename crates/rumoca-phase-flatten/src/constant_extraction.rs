@@ -1678,7 +1678,7 @@ fn record_exact_constant_value(
                 })
         });
     if let Some(value) = value {
-        ctx.constant_values_by_def_id.insert(def_id, value);
+        ctx.record_constant_value(qualified_name, def_id, value);
     }
 }
 

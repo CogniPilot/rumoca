@@ -11,6 +11,7 @@ use crate::{Context, FlattenError};
 pub(super) fn materialize_function_shape_constants(
     function: &mut rumoca_core::Function,
     ctx: &Context,
+    exposure: Option<&str>,
 ) -> Result<(), FlattenError> {
     let local_def_ids = function
         .inputs
@@ -21,6 +22,7 @@ pub(super) fn materialize_function_shape_constants(
         .collect();
     let mut materializer = FunctionShapeConstantMaterializer {
         ctx,
+        exposure,
         local_def_ids,
         expansion_stack: Vec::new(),
     };
@@ -59,6 +61,9 @@ pub(super) fn materialize_function_shape_constants(
 
 struct FunctionShapeConstantMaterializer<'a> {
     ctx: &'a Context,
+    /// The package that exposes the function (see `function_exposures`): a
+    /// constant it gives its own value takes that value.
+    exposure: Option<&'a str>,
     local_def_ids: FxHashSet<DefId>,
     expansion_stack: Vec<DefId>,
 }
@@ -87,9 +92,13 @@ impl FunctionShapeConstantMaterializer<'_> {
         rendered_name: &str,
         span: Span,
     ) -> Result<Expression, FlattenError> {
-        self.ctx
-            .constant_values_by_def_id
-            .get(&target)
+        let exposed = self.exposure.and_then(|package| {
+            self.ctx
+                .constant_values_by_scope
+                .get(&(package.to_string(), target))
+        });
+        exposed
+            .or_else(|| self.ctx.constant_values_by_def_id.get(&target))
             .cloned()
             .ok_or_else(|| FlattenError::UnresolvedFlatReference {
                 name: rendered_name.to_owned(),
@@ -206,8 +215,10 @@ mod tests {
 
         let mut left = function_with_shape("Left.makeState", left_id, left_span);
         let mut right = function_with_shape("Right.makeState", right_id, right_span);
-        materialize_function_shape_constants(&mut left, &ctx).expect("left shape materializes");
-        materialize_function_shape_constants(&mut right, &ctx).expect("right shape materializes");
+        materialize_function_shape_constants(&mut left, &ctx, None)
+            .expect("left shape materializes");
+        materialize_function_shape_constants(&mut right, &ctx, None)
+            .expect("right shape materializes");
 
         assert_shape(&left, 4, left_span);
         assert_shape(&right, 9, right_span);

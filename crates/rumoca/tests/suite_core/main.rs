@@ -175,6 +175,7 @@ mod orientation_rate_reduction;
 mod overdetermined_connection_loop;
 mod overdetermined_rooted_consistency;
 mod override_promoted_array_mask;
+mod package_exposed_function_constants;
 mod parameter_comprehension_values;
 mod parameter_inventory;
 mod parameter_relations;

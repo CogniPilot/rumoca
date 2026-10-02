@@ -11,6 +11,7 @@ mod constant_lookup;
 mod constant_substituter;
 mod constructor_calls;
 mod field_access;
+mod function_exposures;
 mod function_shape_constants;
 mod index_collapse;
 mod indexed_dimension_recovery;
@@ -143,7 +144,8 @@ pub(super) fn substitute_known_constants_in_flat(
     substitute_algorithms(&mut flat.algorithms, ctx, &live_vars, &no_locals)?;
     substitute_algorithms(&mut flat.initial_algorithms, ctx, &live_vars, &no_locals)?;
     substitute_variable_annotations(&mut flat.variables, ctx, &live_vars, &no_locals)?;
-    substitute_function_bodies(&mut flat.functions, ctx, &live_vars)?;
+    let exposures = function_exposures::function_exposures(flat, ctx);
+    substitute_function_bodies(&mut flat.functions, ctx, &live_vars, &exposures)?;
     crate::zero_sized_arrays::materialize_referenced_zero_sized_array_variables(flat, ctx)?;
     Ok(())
 }
@@ -279,9 +281,14 @@ fn substitute_function_bodies(
     functions: &mut flat::VarNameIndexMap<rumoca_core::Function>,
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
+    exposures: &rustc_hash::FxHashMap<rumoca_core::FunctionInstanceId, String>,
 ) -> Result<(), FlattenError> {
     for function in functions.values_mut() {
-        materialize_function_shape_constants(function, ctx)?;
+        let exposure = function
+            .instance_id
+            .and_then(|instance| exposures.get(&instance))
+            .map(String::as_str);
+        materialize_function_shape_constants(function, ctx, exposure)?;
         let function_locals: HashSet<String> = function
             .inputs
             .iter()
@@ -298,21 +305,25 @@ fn substitute_function_bodies(
             .chain(function.outputs.iter_mut())
             .chain(function.locals.iter_mut())
         {
-            substitute_opt_expr(
-                &mut param.default,
-                ctx,
-                live_vars,
-                &function_locals,
-                function_scope,
-            )?;
+            if let Some(default) = &mut param.default {
+                *default = constant_substituter::substitute_exposed_constants_expr(
+                    default.clone(),
+                    ctx,
+                    live_vars,
+                    &function_locals,
+                    function_scope,
+                    exposure,
+                )?;
+            }
         }
         for statement in &mut function.body {
-            substitute_known_constants_statement(
+            constant_substituter::substitute_exposed_constants_statement(
                 statement,
                 ctx,
                 live_vars,
                 &function_locals,
                 function_scope,
+                exposure,
             )?;
         }
     }

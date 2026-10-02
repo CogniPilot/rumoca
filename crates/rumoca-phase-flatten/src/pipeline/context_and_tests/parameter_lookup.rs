@@ -26,6 +26,7 @@ impl Context {
             enum_parameter_values: rustc_hash::FxHashMap::default(),
             constant_values: rustc_hash::FxHashMap::default(),
             constant_values_by_def_id: rustc_hash::FxHashMap::default(),
+            constant_values_by_scope: rustc_hash::FxHashMap::default(),
             constant_values_by_occurrence: rustc_hash::FxHashMap::default(),
             class_owner_components: rustc_hash::FxHashMap::default(),
             class_package_selections: rustc_hash::FxHashMap::default(),
