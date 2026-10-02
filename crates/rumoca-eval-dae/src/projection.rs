@@ -130,7 +130,7 @@ pub fn for_each_scalar_coordinate<'dae>(
 /// parameter-scalar summary, then substitute the actual call arguments.
 #[derive(Default)]
 pub struct ScalarCoordinateProjectionCache<'dae> {
-    function_results: HashMap<FunctionResultDependency, Vec<FunctionParameterDependency>>,
+    function_results: HashMap<FunctionSummaryKey, FunctionSummaryEntry>,
     zero_coefficients: zero_coefficients::ZeroCoefficients<'dae>,
     marker: std::marker::PhantomData<&'dae ()>,
 }
@@ -149,12 +149,13 @@ pub fn for_each_scalar_coordinate_cached<'dae>(
             Some((domain, point)) => vec![(domain, point.to_vec())],
             None => Vec::new(),
         },
-        integer_stack: vec![false; view.expression_count()],
+        integer_stack: HashSet::new(),
         function_frames: Vec::new(),
         function_call_active: HashSet::new(),
         function_fold_active: HashSet::new(),
         function_summary_captures: Vec::new(),
         model_visited: HashSet::new(),
+        frame_memos: Vec::new(),
         cache,
         visit: &mut visit,
     };
@@ -166,12 +167,14 @@ pub fn for_each_scalar_coordinate_cached<'dae>(
 struct Projection<'visit, 'dae> {
     view: dae::DaeView<'dae>,
     domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
-    integer_stack: Vec<bool>,
+    integer_stack: HashSet<u32>,
     function_frames: Vec<FunctionFrame<'dae>>,
     function_call_active: HashSet<FunctionResultDependency>,
     function_fold_active: HashSet<FunctionFoldDependency>,
     function_summary_captures: Vec<FunctionSummaryCapture>,
     model_visited: HashSet<ScalarExpressionDependency>,
+    /// One memo per entry of `function_frames`.
+    frame_memos: Vec<FrameMemo>,
     cache: &'visit mut ScalarCoordinateProjectionCache<'dae>,
     visit: &'visit mut dyn FnMut(dae::CoordinateView<'dae>, usize),
 }
@@ -183,6 +186,26 @@ struct FunctionFoldDependency {
     carried: u32,
     field: Option<usize>,
     scalar: usize,
+}
+
+/// What one call frame has already projected.
+///
+/// Within one frame every revisit of a scalar dependency, or of a completed
+/// fold dependency under the same enclosing fold points, reaches the same
+/// coordinates through the same frames. Remembering both keeps a body whose
+/// definitions share subexpressions, and a fold whose carried values read
+/// each other, linear in the body instead of exponential in its paths.
+#[derive(Debug, Default)]
+struct FrameMemo {
+    visited: HashSet<ScalarExpressionDependency>,
+    folds: HashSet<FoldVisit>,
+}
+
+/// One completed fold dependency under the enclosing fold points.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FoldVisit {
+    dependency: FunctionFoldDependency,
+    context: Vec<(u32, Vec<i64>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -199,7 +222,45 @@ enum FunctionFrame<'dae> {
         function: dae::FunctionId<'dae>,
         arguments: Vec<dae::ExprId<'dae>>,
     },
-    Summary(dae::FunctionId<'dae>),
+    /// A call-site independent summary of one function result, specialized
+    /// to the proven values of the integer parameter scalars it reads.
+    Summary {
+        function: dae::FunctionId<'dae>,
+        integers: Vec<IntegerBinding>,
+    },
+}
+
+impl<'dae> FunctionFrame<'dae> {
+    const fn function(&self) -> dae::FunctionId<'dae> {
+        match self {
+            Self::Actual { function, .. } | Self::Summary { function, .. } => *function,
+        }
+    }
+}
+
+/// The proven value of one integer parameter scalar a summary depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct IntegerBinding {
+    parameter: u32,
+    scalar: usize,
+    value: i64,
+}
+
+/// A function result summary under one set of integer parameter values.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FunctionSummaryKey {
+    dependency: FunctionResultDependency,
+    integers: Vec<IntegerBinding>,
+}
+
+/// What a function result depends on under one [`FunctionSummaryKey`].
+#[derive(Debug, Clone)]
+enum FunctionSummaryEntry {
+    /// The exact parameter scalars the result reads.
+    Complete(Vec<FunctionParameterDependency>),
+    /// The result also reads the values of these integer parameter scalars
+    /// (an index or a size), which the key does not bind yet.
+    NeedsIntegers(Vec<(u32, usize)>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,7 +280,7 @@ enum FunctionParameterDependency {
 struct FunctionSummaryCapture {
     function: u32,
     dependencies: Vec<FunctionParameterDependency>,
-    cacheable: bool,
+    needed_integers: Vec<(u32, usize)>,
     visited: HashSet<ScalarExpressionDependency>,
 }
 
@@ -367,23 +428,55 @@ impl<'dae> Projection<'_, 'dae> {
             field,
             scalar,
         };
-        if !self.function_fold_active.insert(dependency.clone()) {
-            return Ok(());
-        }
         let fold_view = self
             .view
             .function_fold(fold)
             .expect("checked function fold identity resolves");
+        let fold_domain = fold_view.domain();
+        // The dependency spans every point of the fold, so it is independent
+        // of any point of the fold's own domain (or a domain nested in it)
+        // that is current where the carried value is read: a read from inside
+        // the fold's own update reaches the same coordinates as a read after
+        // it. Projecting it under those points would key every iteration's
+        // visits by a point that does not change them, and re-walk the whole
+        // fold once per enclosing point.
+        let enclosing = self
+            .domain_points
+            .iter()
+            .filter(|(domain, _)| !self.domain_is_within(*domain, fold_domain))
+            .cloned()
+            .collect::<Vec<_>>();
+        // Within one call frame and one enclosing fold point, a completed fold
+        // dependency has already reached every coordinate it can reach; a
+        // second read of the same carried scalar adds nothing.
+        let completed = FoldVisit {
+            dependency: dependency.clone(),
+            context: enclosing
+                .iter()
+                .map(|(domain, point)| (domain.index(), point.clone()))
+                .collect(),
+        };
+        if self
+            .frame_memos
+            .last()
+            .is_some_and(|memo| memo.folds.contains(&completed))
+        {
+            return Ok(());
+        }
+        if !self.function_fold_active.insert(dependency.clone()) {
+            return Ok(());
+        }
+        let current = std::mem::replace(&mut self.domain_points, enclosing);
         let carried = carried as usize;
-        let initial = fold_view
-            .initial_values()
-            .rhs(carried)
-            .expect("checked fold carried ordinal has an initial value");
         let projected = (|| {
+            let initial = fold_view
+                .initial_values()
+                .rhs(carried)
+                .expect("checked fold carried ordinal has an initial value");
             self.projected_value(initial, field, scalar)?;
             let domain = self
                 .view
-                .domain(fold_view.domain())
+                .domain(fold_domain)
                 .expect("checked function fold domain resolves");
             let update = fold_view
                 .update_values()
@@ -393,15 +486,39 @@ impl<'dae> Projection<'_, 'dae> {
                 .structured()
                 .index_tuples()
                 .expect("checked fold domain remains representable");
+            let depth = self.domain_points.len();
             for point in points {
-                self.domain_points.push((fold_view.domain(), point));
-                self.projected_value(update, field, scalar)?;
-                self.domain_points.pop();
+                self.domain_points.push((fold_domain, point));
+                let result = self.projected_value(update, field, scalar);
+                self.domain_points.truncate(depth);
+                result?;
             }
             Ok(())
         })();
+        self.domain_points = current;
         self.function_fold_active.remove(&dependency);
+        if projected.is_ok()
+            && let Some(memo) = self.frame_memos.last_mut()
+        {
+            memo.folds.insert(completed);
+        }
         projected
+    }
+
+    /// Whether `domain` is `ancestor` or lexically nested inside it.
+    fn domain_is_within(&self, domain: dae::DomainId<'dae>, ancestor: dae::DomainId<'dae>) -> bool {
+        let mut current = Some(domain);
+        while let Some(candidate) = current {
+            if candidate == ancestor {
+                return true;
+            }
+            current = self
+                .view
+                .domain(candidate)
+                .expect("checked domain resolves")
+                .parent();
+        }
+        false
     }
 
     /// Project either one scalar of a value or one scalar of a record field.
@@ -472,29 +589,63 @@ impl<'dae> Projection<'_, 'dae> {
         scalar_index: usize,
         span: Span,
     ) -> Result<(), ProjectionError> {
-        let Some(frame) = self.function_frames.last().cloned() else {
+        let Some(frame) = self.function_frames.last() else {
             return Err(ProjectionError::FunctionRecursion { span });
         };
+        if frame.function() != parameter.function() {
+            return Err(ProjectionError::FunctionRecursion { span });
+        }
         match frame {
-            FunctionFrame::Actual {
-                function,
-                arguments,
-            } if function == parameter.function() => arguments
-                .get(parameter.ordinal() as usize)
-                .copied()
-                .ok_or(ProjectionError::FunctionRecursion { span })
-                .and_then(|argument| self.expression(argument, scalar_index)),
-            FunctionFrame::Summary(function) if function == parameter.function() => self
-                .capture_function_parameter(
+            FunctionFrame::Actual { arguments, .. } => {
+                let argument = arguments
+                    .get(parameter.ordinal() as usize)
+                    .copied()
+                    .ok_or(ProjectionError::FunctionRecursion { span })?;
+                self.in_caller_context(|projection| projection.expression(argument, scalar_index))
+            }
+            FunctionFrame::Summary { function, .. } => {
+                let function = *function;
+                self.capture_function_parameter(
                     function,
                     FunctionParameterDependency::Scalar {
                         parameter: parameter.ordinal(),
                         scalar: scalar_index,
                     },
                     span,
-                ),
-            _ => Err(ProjectionError::FunctionRecursion { span }),
+                )
+            }
         }
+    }
+
+    fn push_frame(&mut self, frame: FunctionFrame<'dae>) {
+        self.function_frames.push(frame);
+        self.frame_memos.push(FrameMemo::default());
+    }
+
+    fn pop_frame(&mut self) -> Option<(FunctionFrame<'dae>, FrameMemo)> {
+        let frame = self.function_frames.pop()?;
+        let memo = self
+            .frame_memos
+            .pop()
+            .expect("every function frame owns one memo");
+        Some((frame, memo))
+    }
+
+    /// Run `walk` with the innermost call frame removed.
+    ///
+    /// An actual argument is an expression of the caller, so its parameters,
+    /// fold points, and integer values resolve against the caller's frames.
+    fn in_caller_context<T>(
+        &mut self,
+        walk: impl FnOnce(&mut Self) -> Result<T, ProjectionError>,
+    ) -> Result<T, ProjectionError> {
+        let callee = self.pop_frame();
+        let result = walk(self);
+        if let Some((frame, memo)) = callee {
+            self.function_frames.push(frame);
+            self.frame_memos.push(memo);
+        }
+        result
     }
 
     fn function_call(
@@ -558,6 +709,15 @@ impl<'dae> Projection<'_, 'dae> {
         self.project_function_result(dependency, function, arguments, span)
     }
 
+    /// Project one function result scalar at a call site.
+    ///
+    /// The summary of a result is the set of parameter scalars it reads,
+    /// which is a property of the function alone once every integer value it
+    /// reads (an index, a size, a loop bound) is known. A summary that reads
+    /// integer parameter scalars is keyed by their values: the call site
+    /// proves them from its own arguments, and every later call with the same
+    /// values reuses the summary. Only a call whose integer arguments are not
+    /// translation-time values walks the body directly.
     fn project_function_result(
         &mut self,
         dependency: FunctionResultDependency,
@@ -565,15 +725,80 @@ impl<'dae> Projection<'_, 'dae> {
         arguments: Vec<dae::ExprId<'dae>>,
         span: Span,
     ) -> Result<(), ProjectionError> {
-        let summary = match self.cache.function_results.get(&dependency).cloned() {
-            Some(summary) => Some(summary),
-            None => self.derive_function_summary(&dependency, function, span)?,
-        };
-        let Some(summary) = summary else {
-            return self.project_function_result_direct(&dependency, function, arguments, span);
-        };
+        let mut integers: Vec<IntegerBinding> = Vec::new();
+        loop {
+            let key = FunctionSummaryKey {
+                dependency: dependency.clone(),
+                integers: integers.clone(),
+            };
+            let entry = match self.cache.function_results.get(&key).cloned() {
+                Some(entry) => entry,
+                None => {
+                    let entry =
+                        self.derive_function_summary(&dependency, function, &integers, span)?;
+                    self.cache.function_results.insert(key, entry.clone());
+                    entry
+                }
+            };
+            let needed = match entry {
+                FunctionSummaryEntry::Complete(summary) => {
+                    return self.apply_function_summary(&summary, &arguments, span);
+                }
+                FunctionSummaryEntry::NeedsIntegers(needed) => needed,
+            };
+            if !self.bind_integer_arguments(&needed, &arguments, &mut integers, span)? {
+                return self.project_function_result_direct(&dependency, function, arguments, span);
+            }
+        }
+    }
+
+    /// Bind the integer parameter scalars a summary reads to the values the
+    /// call site proves from its arguments. Returns whether at least one new
+    /// value was bound; `false` (nothing new, or an argument that is not a
+    /// translation-time integer) leaves the call to the direct walk.
+    fn bind_integer_arguments(
+        &mut self,
+        needed: &[(u32, usize)],
+        arguments: &[dae::ExprId<'dae>],
+        integers: &mut Vec<IntegerBinding>,
+        span: Span,
+    ) -> Result<bool, ProjectionError> {
+        let mut bound_more = false;
+        for &(parameter, scalar) in needed {
+            let bound = integers
+                .iter()
+                .any(|binding| binding.parameter == parameter && binding.scalar == scalar);
+            if bound {
+                continue;
+            }
+            let argument = arguments
+                .get(parameter as usize)
+                .copied()
+                .ok_or(ProjectionError::FunctionRecursion { span })?;
+            let value = match self.integer(argument, scalar) {
+                Ok(value) => value,
+                Err(ProjectionError::DynamicSubscript { .. }) => return Ok(false),
+                Err(error) => return Err(error),
+            };
+            integers.push(IntegerBinding {
+                parameter,
+                scalar,
+                value,
+            });
+            bound_more = true;
+        }
+        integers.sort_unstable();
+        Ok(bound_more)
+    }
+
+    fn apply_function_summary(
+        &mut self,
+        summary: &[FunctionParameterDependency],
+        arguments: &[dae::ExprId<'dae>],
+        span: Span,
+    ) -> Result<(), ProjectionError> {
         for parameter in summary {
-            match parameter {
+            match *parameter {
                 FunctionParameterDependency::Scalar { parameter, scalar } => {
                     let argument = arguments
                         .get(parameter as usize)
@@ -601,37 +826,40 @@ impl<'dae> Projection<'_, 'dae> {
         &mut self,
         dependency: &FunctionResultDependency,
         function: dae::FunctionId<'dae>,
+        integers: &[IntegerBinding],
         span: Span,
-    ) -> Result<Option<Vec<FunctionParameterDependency>>, ProjectionError> {
+    ) -> Result<FunctionSummaryEntry, ProjectionError> {
         if !self.function_call_active.insert(dependency.clone()) {
             return Err(ProjectionError::FunctionRecursion { span });
         }
         self.function_summary_captures.push(FunctionSummaryCapture {
             function: function.index(),
             dependencies: Vec::new(),
-            cacheable: true,
+            needed_integers: Vec::new(),
             visited: HashSet::new(),
         });
-        self.function_frames.push(FunctionFrame::Summary(function));
-        let result = self.function_result(function, dependency.output, span)?;
-        let projected = match dependency.field {
-            Some(field) => self.record_field(result, field, dependency.scalar),
-            None => self.expression(result, dependency.scalar),
-        };
-        self.function_frames.pop();
+        self.push_frame(FunctionFrame::Summary {
+            function,
+            integers: integers.to_vec(),
+        });
+        let projected = self
+            .function_result(function, dependency.output, span)
+            .and_then(|result| match dependency.field {
+                Some(field) => self.record_field(result, field, dependency.scalar),
+                None => self.expression(result, dependency.scalar),
+            });
+        self.pop_frame();
         let capture = self
             .function_summary_captures
             .pop()
             .expect("function summary capture was just pushed");
         self.function_call_active.remove(dependency);
         projected?;
-        if !capture.cacheable {
-            return Ok(None);
+        if capture.needed_integers.is_empty() {
+            Ok(FunctionSummaryEntry::Complete(capture.dependencies))
+        } else {
+            Ok(FunctionSummaryEntry::NeedsIntegers(capture.needed_integers))
         }
-        self.cache
-            .function_results
-            .insert(dependency.clone(), capture.dependencies.clone());
-        Ok(Some(capture.dependencies))
     }
 
     fn project_function_result_direct(
@@ -642,7 +870,7 @@ impl<'dae> Projection<'_, 'dae> {
         span: Span,
     ) -> Result<(), ProjectionError> {
         let result = self.function_result(function, dependency.output, span)?;
-        self.function_frames.push(FunctionFrame::Actual {
+        self.push_frame(FunctionFrame::Actual {
             function,
             arguments,
         });
@@ -650,7 +878,7 @@ impl<'dae> Projection<'_, 'dae> {
             Some(field) => self.record_field(result, field, dependency.scalar),
             None => self.expression(result, dependency.scalar),
         };
-        self.function_frames.pop();
+        self.pop_frame();
         projected
     }
 
@@ -685,12 +913,17 @@ impl<'dae> Projection<'_, 'dae> {
         };
         match self.function_frames.last() {
             None => self.model_visited.insert(dependency),
-            Some(FunctionFrame::Summary(function)) => self
-                .function_summary_captures
+            Some(FunctionFrame::Summary { function, .. }) => {
+                let function = function.index();
+                self.function_summary_captures
+                    .last_mut()
+                    .filter(|capture| capture.function == function)
+                    .is_none_or(|capture| capture.visited.insert(dependency))
+            }
+            Some(FunctionFrame::Actual { .. }) => self
+                .frame_memos
                 .last_mut()
-                .filter(|capture| capture.function == function.index())
-                .is_none_or(|capture| capture.visited.insert(dependency)),
-            Some(FunctionFrame::Actual { .. }) => true,
+                .is_none_or(|memo| memo.visited.insert(dependency)),
         }
     }
 
@@ -812,20 +1045,25 @@ impl<'dae> Projection<'_, 'dae> {
         scalar_index: usize,
         span: Span,
     ) -> Result<(), ProjectionError> {
-        let Some(frame) = self.function_frames.last().cloned() else {
+        let Some(frame) = self.function_frames.last() else {
             return Err(ProjectionError::FunctionRecursion { span });
         };
+        if frame.function() != parameter.function() {
+            return Err(ProjectionError::FunctionRecursion { span });
+        }
         match frame {
-            FunctionFrame::Actual {
-                function,
-                arguments,
-            } if function == parameter.function() => arguments
-                .get(parameter.ordinal() as usize)
-                .copied()
-                .ok_or(ProjectionError::FunctionRecursion { span })
-                .and_then(|argument| self.record_field(argument, field, scalar_index)),
-            FunctionFrame::Summary(function) if function == parameter.function() => self
-                .capture_function_parameter(
+            FunctionFrame::Actual { arguments, .. } => {
+                let argument = arguments
+                    .get(parameter.ordinal() as usize)
+                    .copied()
+                    .ok_or(ProjectionError::FunctionRecursion { span })?;
+                self.in_caller_context(|projection| {
+                    projection.record_field(argument, field, scalar_index)
+                })
+            }
+            FunctionFrame::Summary { function, .. } => {
+                let function = *function;
+                self.capture_function_parameter(
                     function,
                     FunctionParameterDependency::RecordField {
                         parameter: parameter.ordinal(),
@@ -833,8 +1071,8 @@ impl<'dae> Projection<'_, 'dae> {
                         scalar: scalar_index,
                     },
                     span,
-                ),
-            _ => Err(ProjectionError::FunctionRecursion { span }),
+                )
+            }
         }
     }
 
@@ -1334,15 +1572,14 @@ impl<'dae> Projection<'_, 'dae> {
         expression: dae::ExprId<'dae>,
         scalar_index: usize,
     ) -> Result<i64, ProjectionError> {
-        let raw = expression.index() as usize;
-        if self.integer_stack[raw] {
+        let raw = expression.index();
+        if !self.integer_stack.insert(raw) {
             return Err(ProjectionError::DynamicSubscript {
                 span: self.node(expression).provenance().span(),
             });
         }
-        self.integer_stack[raw] = true;
         let result = self.integer_inner(expression, scalar_index);
-        self.integer_stack[raw] = false;
+        self.integer_stack.remove(&raw);
         result
     }
 
@@ -1452,29 +1689,39 @@ impl<'dae> Projection<'_, 'dae> {
         scalar_index: usize,
         span: Span,
     ) -> Result<i64, ProjectionError> {
-        let Some(frame) = self.function_frames.last().cloned() else {
+        let Some(frame) = self.function_frames.last() else {
             return Err(ProjectionError::FunctionRecursion { span });
         };
+        if frame.function() != parameter.function() {
+            return Err(ProjectionError::FunctionRecursion { span });
+        }
+        let ordinal = parameter.ordinal();
         match frame {
-            FunctionFrame::Actual {
-                function,
-                arguments,
-            } if function == parameter.function() => arguments
-                .get(parameter.ordinal() as usize)
-                .copied()
-                .ok_or(ProjectionError::FunctionRecursion { span })
-                .and_then(|argument| self.integer(argument, scalar_index)),
-            FunctionFrame::Summary(function) if function == parameter.function() => {
+            FunctionFrame::Actual { arguments, .. } => {
+                let argument = arguments
+                    .get(ordinal as usize)
+                    .copied()
+                    .ok_or(ProjectionError::FunctionRecursion { span })?;
+                self.in_caller_context(|projection| projection.integer(argument, scalar_index))
+            }
+            FunctionFrame::Summary { function, integers } => {
+                if let Some(binding) = integers
+                    .iter()
+                    .find(|binding| binding.parameter == ordinal && binding.scalar == scalar_index)
+                {
+                    return Ok(binding.value);
+                }
+                let function = function.index();
                 if let Some(capture) = self
                     .function_summary_captures
                     .last_mut()
-                    .filter(|capture| capture.function == function.index())
+                    .filter(|capture| capture.function == function)
+                    && !capture.needed_integers.contains(&(ordinal, scalar_index))
                 {
-                    capture.cacheable = false;
+                    capture.needed_integers.push((ordinal, scalar_index));
                 }
                 Err(ProjectionError::DynamicSubscript { span })
             }
-            _ => Err(ProjectionError::FunctionRecursion { span }),
         }
     }
 
@@ -1490,12 +1737,12 @@ impl<'dae> Projection<'_, 'dae> {
             return Err(ProjectionError::FunctionRecursion { span });
         }
         let result = self.function_result(function, output, span)?;
-        self.function_frames.push(FunctionFrame::Actual {
+        self.push_frame(FunctionFrame::Actual {
             function,
             arguments: arguments.iter().collect(),
         });
         let value = self.integer(result, scalar_index);
-        self.function_frames.pop();
+        self.pop_frame();
         value
     }
 
