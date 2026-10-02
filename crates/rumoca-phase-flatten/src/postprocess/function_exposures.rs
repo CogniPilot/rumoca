@@ -7,9 +7,9 @@
 //! package extends it with modifications (`MoistAir` extends
 //! `PartialCondensingGases(substanceNames = {"water", "air"})`). The call's
 //! structured prefix proves the exposure; a call inside a function without a
-//! prefix inherits the exposures of the calling function. Every function is
-//! also exposed by the package it was instantiated from, the enclosing scope
-//! of its own flat path.
+//! prefix inherits the exposures of the calling function. A function no call
+//! proves an exposure for is exposed by the package it was instantiated
+//! from, the enclosing scope of its own flat path.
 //!
 //! One function instance can be reached through several packages (a helper
 //! that two media share). It keeps every exposure; a constant it reads takes
@@ -56,21 +56,43 @@ pub(super) fn function_exposures(
             model_calls.visit_statement(statement);
         }
     }
-    // Every function is exposed by the package it was instantiated from: the
-    // enclosing scope of its own flat path.
     let mut exposures: FxHashMap<FunctionInstanceId, BTreeSet<String>> = FxHashMap::default();
-    for function in flat.functions.values() {
-        if let (Some(instance), Some(scope)) = (
-            function.instance_id,
-            crate::path_utils::enclosing_scope(function.name.as_str()),
-        ) {
-            exposures
-                .entry(instance)
-                .or_default()
-                .insert(scope.to_string());
-        }
-    }
     extend(&mut exposures, model_calls.calls);
+    propagate(flat, ctx, &mut exposures, &rustc_hash::FxHashSet::default());
+    // A function no call proves an exposure for is exposed by the package it
+    // was instantiated from: the enclosing scope of its own flat path. A
+    // proven exposure takes precedence, because the declaration path of a
+    // replaceable package alias (`PartialDistributedVolume.Medium`) names its
+    // default, not the package an instance selects.
+    let unexposed = flat
+        .functions
+        .values()
+        .filter_map(|function| {
+            let instance = function.instance_id?;
+            let scope = crate::path_utils::enclosing_scope(function.name.as_str())?;
+            (!exposures.contains_key(&instance)).then(|| (instance, scope.to_string()))
+        })
+        .collect::<Vec<_>>();
+    let proven = exposures
+        .keys()
+        .copied()
+        .collect::<rustc_hash::FxHashSet<_>>();
+    extend(&mut exposures, unexposed);
+    propagate(flat, ctx, &mut exposures, &proven);
+    exposures
+        .into_iter()
+        .map(|(instance, packages)| (instance, packages.into_iter().collect()))
+        .collect()
+}
+
+/// Pass every exposure of a function to its unprefixed calls, to a fixed point.
+/// A `settled` instance keeps the exposures it has.
+fn propagate(
+    flat: &flat::Model,
+    ctx: &Context,
+    exposures: &mut FxHashMap<FunctionInstanceId, BTreeSet<String>>,
+    settled: &rustc_hash::FxHashSet<FunctionInstanceId>,
+) {
     // Function bodies inherit every exposure of the caller for unprefixed
     // calls. The sets only grow and are bounded by the packages the model
     // names, so the iteration reaches a fixed point; it stops at the first
@@ -96,16 +118,17 @@ pub(super) fn function_exposures(
             for default in defaults {
                 calls.visit_expression(default);
             }
-            extend(&mut exposures, calls.calls);
+            let calls = calls
+                .calls
+                .into_iter()
+                .filter(|(instance, _)| !settled.contains(instance))
+                .collect();
+            extend(exposures, calls);
         }
-        if exposures == before {
+        if *exposures == before {
             break;
         }
     }
-    exposures
-        .into_iter()
-        .map(|(instance, packages)| (instance, packages.into_iter().collect()))
-        .collect()
 }
 
 fn extend(
