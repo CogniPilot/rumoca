@@ -20,6 +20,7 @@
 
 mod code_size_budget_test;
 mod dae_loc_trigger_test;
+mod diagnostic_code_registry_test;
 // Pure-text metrics over emitted C, plus their unit tests. Ungated on purpose:
 // they need no corpus and no release binary, so gating them would mean the
 // detectors' own correctness tests compiled only under a feature nothing in CI

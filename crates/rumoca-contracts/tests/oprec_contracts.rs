@@ -165,7 +165,7 @@ fn oprec_002_multiple_outputs_rejected() {
         end Test;
     "#,
         "Test",
-        "ER055",
+        "ER135",
     );
 }
 
@@ -231,7 +231,7 @@ fn oprec_003_missing_record_input_rejected() {
         end Test;
     "#,
         "Test",
-        "ER056",
+        "ER136",
     );
 }
 
@@ -295,7 +295,7 @@ fn oprec_004_constructor_output_rejected() {
         end Test;
     "#,
         "Test",
-        "ER057",
+        "ER137",
     );
 }
 
@@ -457,7 +457,7 @@ fn oprec_010_non_string_output_rejected() {
         end Test;
     "#,
         "Test",
-        "ER058",
+        "ER138",
     );
 }
 

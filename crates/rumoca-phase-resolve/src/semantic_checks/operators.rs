@@ -4,10 +4,10 @@ pub(super) const ER048_OPERATOR_PLACEMENT: &str = "ER048";
 pub(super) const ER049_CONNECTOR_COMPONENT_TYPES: &str = "ER049";
 pub(super) const ER050_OPERATOR_RECORD_BASE: &str = "ER050";
 pub(super) const ER054_CONSTANT_FIXED_FALSE: &str = "ER054";
-pub(super) const ER055_OPERATOR_SINGLE_OUTPUT: &str = "ER055";
-pub(super) const ER056_OPERATOR_RECORD_INPUT: &str = "ER056";
-pub(super) const ER057_OPERATOR_CONSTRUCTOR_OUTPUT: &str = "ER057";
-pub(super) const ER058_OPERATOR_STRING_OUTPUT: &str = "ER058";
+pub(super) const ER135_OPERATOR_SINGLE_OUTPUT: &str = "ER135";
+pub(super) const ER136_OPERATOR_RECORD_INPUT: &str = "ER136";
+pub(super) const ER137_OPERATOR_CONSTRUCTOR_OUTPUT: &str = "ER137";
+pub(super) const ER138_OPERATOR_STRING_OUTPUT: &str = "ER138";
 pub(super) const ER071_OPERATOR_ENCAPSULATION: &str = "ER071";
 pub(super) const ER072_ZERO_OPERATOR_SIGNATURE: &str = "ER072";
 
@@ -190,7 +190,7 @@ fn check_operator_function_contracts(
 
     if output_count != 1 {
         diags.push(semantic_error(
-            ER055_OPERATOR_SINGLE_OUTPUT,
+            ER135_OPERATOR_SINGLE_OUTPUT,
             format!(
                 "operator function '{}' must declare exactly one output",
                 class.name.text
@@ -228,7 +228,7 @@ fn check_operator_record_input_contract(
         return;
     }
     diags.push(semantic_error(
-        ER056_OPERATOR_RECORD_INPUT,
+        ER136_OPERATOR_RECORD_INPUT,
         format!(
             "operator function '{}' must declare at least one input of operator record type '{}'",
             class.name.text, record.name
@@ -257,7 +257,7 @@ fn check_operator_constructor_output_contract(
         return;
     }
     diags.push(semantic_error(
-        ER057_OPERATOR_CONSTRUCTOR_OUTPUT,
+        ER137_OPERATOR_CONSTRUCTOR_OUTPUT,
         format!(
             "constructor function '{}' must return the operator record type '{}'",
             class.name.text, record.name
@@ -283,7 +283,7 @@ fn check_operator_string_output_contract(
         return;
     }
     diags.push(semantic_error(
-        ER058_OPERATOR_STRING_OUTPUT,
+        ER138_OPERATOR_STRING_OUTPUT,
         format!(
             "operator 'String' function '{}' must return exactly one String output",
             class.name.text
