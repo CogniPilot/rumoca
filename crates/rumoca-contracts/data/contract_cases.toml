@@ -3411,6 +3411,13 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'ARR-036'
+case_id = 'arr_036_zero_sized_generator_argument_simulates'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'ARR-039'
 case_id = 'arr_039_empty_array_reduction_identities'
 test_file = 'tests/arr_contracts.rs'

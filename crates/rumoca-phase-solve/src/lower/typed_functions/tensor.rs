@@ -242,6 +242,15 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             let register = self.builder.constant(value, at)?;
             return Ok(LoweredValue::scalar(value_type, register));
         }
+        // MLS 3.7 §10.4: a zero-size array holds no scalar, so it holds no leaf,
+        // whichever generator builds it.
+        if matches!(
+            builtin,
+            dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones | dae::PureBuiltin::Fill
+        ) && self.is_zero_size(value_type)?
+        {
+            return Ok(LoweredValue::empty(value_type));
+        }
         if matches!(builtin, dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones) {
             let value = if builtin == dae::PureBuiltin::Zeros {
                 0.0

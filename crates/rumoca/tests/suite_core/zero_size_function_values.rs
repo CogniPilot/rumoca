@@ -61,6 +61,22 @@ package ZeroSize
     parameter Real e[0, 2] = fill(0.0, 0, 2);
     Real y = sumBoth({1, 2, time}, e);
   end EmptyParameterArgument;
+  function doubled
+    input Real p;
+    input Real X[:];
+    output Real y;
+  algorithm
+    y := 2*p + sum(X);
+  end doubled;
+  function doubledPure
+    input Real p;
+    output Real y;
+  algorithm
+    y := doubled(p, fill(0, 0)) + doubled(p, zeros(0)) - doubled(p, ones(0));
+  end doubledPure;
+  model GeneratedEmptyArgument
+    Real y = doubledPure(1 + time);
+  end GeneratedEmptyArgument;
   model InitialCall
     parameter Real w = 3;
     parameter Real cr[2] = {1, 2};
@@ -125,6 +141,10 @@ fn an_unwritten_zero_size_local_is_defined_from_entry() {
 fn a_zero_size_value_crosses_a_time_varying_call() {
     assert_endpoints(&simulate("ZeroSize.ForwardedLocal"), "y", 4.0, 5.0);
     assert_endpoints(&simulate("ZeroSize.EmptyParameterArgument"), "y", 4.0, 5.0);
+    // `Medium.setState_pT(p, T)` forwards `setState_pTX(p, T, fill(0, 0))`: a
+    // zero-size generator, Integer-typed for `fill(0, 0)`, passed to a Real
+    // array input.
+    assert_endpoints(&simulate("ZeroSize.GeneratedEmptyArgument"), "y", 2.0, 4.0);
 }
 
 #[test]

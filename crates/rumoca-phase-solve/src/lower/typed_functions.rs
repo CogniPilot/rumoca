@@ -856,6 +856,10 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 dae::ScalarType::Integer | dae::ScalarType::Enumeration
             )
         {
+            // A zero-size array holds no scalar to convert (MLS 3.7 §10.4).
+            if source_type.dimensions().contains(&0) {
+                return Ok(LoweredValue::empty(target));
+            }
             let register = value.only_register(provenance)?;
             value.leaves = vec![self.builder.convert(
                 solve::SolveConversionOperator::IntegerToReal,

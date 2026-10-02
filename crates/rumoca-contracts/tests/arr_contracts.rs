@@ -935,6 +935,36 @@ fn arr_036_zero_sized_array_operations_accepted() {
     );
 }
 
+#[test]
+fn arr_036_zero_sized_generator_argument_simulates() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            function g
+                input Real p;
+                input Real X[:];
+                output Real y;
+            algorithm
+                y := 2*p + sum(X);
+            end g;
+            function f
+                input Real p;
+                output Real y;
+            algorithm
+                y := g(p, fill(0, 0)) + g(p, zeros(0)) - g(p, ones(0));
+            end f;
+            Real y = f(1 + time);
+            Real t(start = 0, fixed = true);
+        equation
+            der(t) = 1;
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    assert!((trace.final_value("y") - 4.0).abs() < 1e-9);
+}
+
 // =============================================================================
 // ARR-039: Empty array: sum returns zeros, product returns 1
 // =============================================================================
