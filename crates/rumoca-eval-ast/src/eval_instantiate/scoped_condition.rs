@@ -6,7 +6,7 @@ pub(super) fn eval_scoped_string_condition_with_depth(
     scope_prefix: Option<&str>,
     depth: usize,
 ) -> Option<bool> {
-    if depth > MAX_CONDITION_DEPTH {
+    if depth > MAX_EXPR_EVAL_DEPTH {
         return None;
     }
 

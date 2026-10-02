@@ -89,7 +89,7 @@ fn eval_state_select_expr_with_depth(
     scope_prefix: Option<&str>,
     depth: usize,
 ) -> Option<rumoca_core::StateSelect> {
-    if depth > super::MAX_CONDITION_DEPTH {
+    if depth > super::MAX_EXPR_EVAL_DEPTH {
         return None;
     }
     if let Some(value) = parse_state_select(expr) {

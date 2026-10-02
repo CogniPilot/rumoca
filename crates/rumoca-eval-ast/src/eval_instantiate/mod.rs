@@ -40,10 +40,11 @@ pub use component_params::{
 pub use function_eval::{evaluate_array_dimensions, try_eval_integer_shape_expr};
 use scoped_condition::eval_scoped_string_condition_with_depth;
 
-/// Maximum recursion depth for condition evaluation (prevents stack overflow)
-const MAX_CONDITION_DEPTH: usize = 10;
-
-/// Maximum recursion depth for expression evaluation.
+/// Maximum combined recursion depth for instantiation-time evaluation.
+///
+/// Integer, Boolean, enumeration, and condition evaluators recurse into one
+/// another and share one depth count, so they share one bound: a condition
+/// reached from an array dimension continues the dimension's depth.
 const MAX_EXPR_EVAL_DEPTH: usize = 20;
 
 /// Context for instantiation-phase AST expression evaluation.
@@ -197,7 +198,7 @@ fn evaluate_component_condition_with_depth(
     ) -> IndexMap<String, ast::Component>,
     depth: usize,
 ) -> Option<bool> {
-    if depth > MAX_CONDITION_DEPTH {
+    if depth > MAX_EXPR_EVAL_DEPTH {
         return None;
     }
     let adapter = InstantiateScalarAdapter {
@@ -341,7 +342,7 @@ fn evaluate_enum_equality_with_depth(
     depth: usize,
 ) -> Option<bool> {
     // Prevent deep recursion
-    if depth > MAX_CONDITION_DEPTH {
+    if depth > MAX_EXPR_EVAL_DEPTH {
         return None;
     }
 
@@ -467,7 +468,7 @@ fn get_enum_value_with_depth(
     depth: usize,
 ) -> Option<ResolvedValueText> {
     // Prevent deep recursion
-    if depth > MAX_CONDITION_DEPTH {
+    if depth > MAX_EXPR_EVAL_DEPTH {
         return None;
     }
 
