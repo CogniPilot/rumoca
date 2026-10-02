@@ -62,11 +62,11 @@ pub enum RuntimeSolveError {
     UnlocalizableFold { fold: String, time: f64 },
 
     /// An algebraic block has no unique solution in the branch combination its
-    /// rows currently select (ES017): the structural matching holds over the
+    /// rows currently select (EX004): the structural matching holds over the
     /// union of every branch, but the active branches leave unknowns of the
     /// block undetermined.
     #[error(
-        "[ES017] algebraic block over {unknowns} is singular in its active branch combination {mode}; the model has no unique solution there"
+        "[EX004] algebraic block over {unknowns} is singular in its active branch combination {mode}; the model has no unique solution there"
     )]
     SingularActiveMode { unknowns: String, mode: String },
 }

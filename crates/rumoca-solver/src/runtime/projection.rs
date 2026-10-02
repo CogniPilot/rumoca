@@ -143,7 +143,7 @@ pub(crate) trait ImplicitProjectionModel {
 
     /// The unknowns of `block` and the branch combination its rows select at
     /// parameters `p` (the discrete coordinates and relation memories they
-    /// read, with their values), for the ES017 report of a singular active
+    /// read, with their values), for the EX004 report of a singular active
     /// mode. `None` when the model cannot name them.
     fn singular_active_mode(
         &self,

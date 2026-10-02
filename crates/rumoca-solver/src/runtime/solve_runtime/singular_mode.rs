@@ -1,4 +1,4 @@
-//! Naming a singular active mode (ES017).
+//! Naming a singular active mode (EX004).
 //!
 //! The structural matching of an algebraic block holds over the union of every
 //! branch of its runtime `if` equations. A branch combination can still leave

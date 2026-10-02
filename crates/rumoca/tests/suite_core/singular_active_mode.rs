@@ -1,5 +1,5 @@
 //! A branch combination that leaves an algebraic block without a unique
-//! solution (ES017).
+//! solution (EX004).
 //!
 //! Two closed ports each state `m = 0`, and nothing then fixes the pressures
 //! of the connection between them. The matching holds over the union of the
@@ -58,7 +58,7 @@ fn simulate(model: &str) -> Result<rumoca_sim::SimResult, String> {
 #[test]
 fn closed_closed_ports_report_the_singular_branch_combination() {
     let message = simulate("Ports").expect_err("both ports closed leave the pressures free");
-    assert!(message.contains("[ES017]"), "{message}");
+    assert!(message.contains("[EX004]"), "{message}");
     assert!(message.contains("openA = false"), "{message}");
     assert!(message.contains("openB = false"), "{message}");
 }
