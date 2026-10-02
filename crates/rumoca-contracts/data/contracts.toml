@@ -2585,8 +2585,7 @@ category = 'Function'
 name = 'Function arguments'
 mls_ref = '§12.4.2.1'
 requirement = 'A function argument is a function name or a partial application binding named formals; the call evaluates the function with the bound values'
-status = 'Partial'
-notes = 'Partial applications (including `function f()` with no bindings) are specialized statically; a bare function name argument is not yet collected as a function and is refused (EF016).'
+status = 'Implemented'
 tier = 1
 
 [[contracts]]

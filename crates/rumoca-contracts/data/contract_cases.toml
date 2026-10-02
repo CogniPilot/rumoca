@@ -3670,6 +3670,13 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'FUNC-040'
+case_id = 'func_040_function_name_and_partial_application_arguments'
+test_file = 'tests/func_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'FUNC-027'
 case_id = 'func_027_vectorized_args_size_mismatch_rejected'
 test_file = 'tests/func_contracts.rs'

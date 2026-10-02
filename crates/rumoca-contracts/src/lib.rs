@@ -301,6 +301,7 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "FUNC-036",
     "FUNC-037",
     "FUNC-039",
+    "FUNC-040",
     "INST-001",
     "INST-002",
     "INST-003",

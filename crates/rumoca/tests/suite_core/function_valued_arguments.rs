@@ -1,7 +1,8 @@
 //! Function-valued arguments (MLS 3.7 §12.4.2.1), as
 //! `Modelica.Media.Incompressible.TableBased.T_ph` passes
 //! `function f_nonlinear(p = p, h = h)` to `solveOneNonlinearEquation`.
-//! Flattening specializes the callee once per distinct function argument:
+//! A bare function name (`solve(square, ...)`) and a partial application with no
+//! bindings (`function square()`) denote the same function. Flattening specializes the callee once per distinct function argument:
 //! calls of the formal function call the argument's function directly, and
 //! the formals a partial application binds become extra inputs the call site
 //! passes, so no function value reaches the executable IR. A formal function
@@ -69,7 +70,8 @@ package FunctionArgs
   end nested;
   model Top
     Real T = T_ph(2, 8 + time);
-    Real r = solve(function square(), 0, 10) + time;
+    Real r = solve(square, 0, 10) + time;
+    Real e = solve(function square(), 0, 10) + time;
     Real n = nested(function residual(p = 1, h = 9 + time), 10);
   end Top;
 end FunctionArgs;
@@ -104,6 +106,7 @@ fn partial_applications_specialize_their_callees() {
         // 2*T^2 = 8 + time; root of u^2 - 4 is 2; n^2 = 9 + time.
         assert!((column("T")[row] - ((8.0 + time) / 2.0).sqrt()).abs() < 1e-9);
         assert!((column("r")[row] - (2.0 + time)).abs() < 1e-9);
+        assert!((column("e")[row] - (2.0 + time)).abs() < 1e-9);
         assert!((column("n")[row] - (9.0 + time).sqrt()).abs() < 1e-9);
     }
 }

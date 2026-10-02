@@ -1430,3 +1430,48 @@ fn func_024_uninitialized_record_result_field_rejected() {
         "ED022",
     );
 }
+
+// =============================================================================
+// FUNC-040: Function arguments (MLS §12.4.2.1)
+// =============================================================================
+
+#[test]
+fn func_040_function_name_and_partial_application_arguments() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        package P
+            partial function Equation
+                input Real u;
+                output Real y;
+            end Equation;
+            function apply
+                input Equation f;
+                input Real x;
+                output Real y;
+            algorithm
+                y := f(x);
+            end apply;
+            function square
+                extends Equation;
+            algorithm
+                y := u*u;
+            end square;
+            function affine
+                extends Equation;
+                input Real a;
+                input Real b;
+            algorithm
+                y := a*u + b;
+            end affine;
+            model M
+                Real s = apply(square, 1 + time);
+                Real a = apply(function affine(a = 2, b = time), 3);
+            end M;
+        end P;
+    "#,
+        "P.M",
+        1.0,
+    );
+    assert!((trace.final_value("s") - 4.0).abs() < 1e-12);
+    assert!((trace.final_value("a") - 7.0).abs() < 1e-12);
+}

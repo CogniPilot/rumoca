@@ -109,12 +109,10 @@ impl Specializer {
         match argument {
             rumoca_core::Expression::VarRef {
                 name, subscripts, ..
-            } if subscripts.is_empty() && self.functions.contains_key(name.var_name()) => {
-                Ok(FunctionArgument {
-                    target: name.clone(),
-                    bound: Vec::new(),
-                })
-            }
+            } if subscripts.is_empty() => Ok(FunctionArgument {
+                target: self.named_function(name).ok_or_else(refusal)?,
+                bound: Vec::new(),
+            }),
             rumoca_core::Expression::FunctionCall {
                 name,
                 args,
@@ -132,6 +130,30 @@ impl Specializer {
             }
             _ => Err(refusal()),
         }
+    }
+
+    /// The function a bare name argument denotes: the Flat function of that
+    /// name, or the one function whose declaration the name resolved to.
+    fn named_function(&self, name: &rumoca_core::Reference) -> Option<rumoca_core::Reference> {
+        let function = self.functions.get(name.var_name()).or_else(|| {
+            let declaration = name.target_def_id()?;
+            let mut matches = self
+                .functions
+                .values()
+                .filter(|function| function.def_id == Some(declaration));
+            let function = matches.next()?;
+            matches.next().is_none().then_some(function)
+        })?;
+        let instance_id = function.instance_id?;
+        Some(
+            rumoca_core::Reference::from_var_name(function.name.clone()).with_resolved_function(
+                rumoca_core::ResolvedFunctionReference {
+                    instance_id,
+                    base_part_count: 0,
+                    transitively_non_replaceable: function.transitively_non_replaceable,
+                },
+            ),
+        )
     }
 
     /// The specialization of `callee` for `arguments` (one per functional
