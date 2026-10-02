@@ -9,6 +9,16 @@ pub(super) fn lower_equation_systems<'dae>(
     functions: &FunctionRegistry<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
+    let continuous_excluded_families = analysis
+        .derived_parameter_families
+        .union(&analysis.record_equality_families)
+        .copied()
+        .collect::<HashSet<_>>();
+    let initial_excluded_families = analysis
+        .initial_discrete_families
+        .union(&analysis.initial_record_equality_families)
+        .copied()
+        .collect::<HashSet<_>>();
     let mut excluded_equation_rows = analysis.continuous_family_rows.clone();
     excluded_equation_rows.extend(&analysis.clock_equation_rows);
     excluded_equation_rows.extend(&analysis.derived_parameter_rows);
@@ -52,7 +62,7 @@ pub(super) fn lower_equation_systems<'dae>(
         StructuredEquationRows {
             equations: &flat.equations,
             families: &flat.structured_equations,
-            excluded_families: &analysis.derived_parameter_families,
+            excluded_families: &continuous_excluded_families,
             environment: Some(StructuredEquationEnvironment {
                 flat,
                 roles: &analysis.roles,
@@ -96,7 +106,7 @@ pub(super) fn lower_equation_systems<'dae>(
         StructuredEquationRows {
             equations: &flat.initial_equations,
             families: &flat.initial_structured_equations,
-            excluded_families: &analysis.initial_discrete_families,
+            excluded_families: &initial_excluded_families,
             environment: None,
             initialization: true,
         },

@@ -695,6 +695,24 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'ARR-043'
+category = 'Array'
+name = 'Record array equality element-wise'
+mls_ref = '§10.6.1'
+requirement = 'Equality of arrays of records is element-wise: each element pair is one whole-record equality, so a slice `s[1:n] = m[1:n].r`, a whole array `s = m.r`, and a for-equation over elements state the same field equations'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-044'
+category = 'Array'
+name = 'der and pre element-wise shape'
+mls_ref = '§3.7.4.2'
+requirement = 'der(expr) and pre(y) of an array apply to every element, so the result has the operand shape; an equation between zero-sized operands has no scalar equations'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'CLK-001'
 category = 'Clock'
 name = 'Clock not in function'

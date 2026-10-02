@@ -354,6 +354,9 @@ fn infer_array_builtin_shape(
         .map(|argument| infer_expression_shape(argument, prefix, ctx))
         .collect::<Vec<_>>();
     match (function, shapes.as_slice()) {
+        // MLS §3.7.4.2 and §3.7.5: `der(expr)` and `pre(y)` of an array apply
+        // element-wise, so the result has the operand's shape.
+        (rumoca_core::BuiltinFunction::Der | rumoca_core::BuiltinFunction::Pre, [shape]) => *shape,
         (
             rumoca_core::BuiltinFunction::Cross,
             [ExpressionShape::Vector(3), ExpressionShape::Vector(3)],

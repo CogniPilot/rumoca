@@ -10,6 +10,9 @@ pub(super) struct PartitionFamilies<'flat> {
     /// discrete-time `v` is an unknown, so the Appendix B solved form of
     /// discrete-valued equations governs only the simulation partition.
     pub(super) initialization: bool,
+    /// Families that are not owners of their rows (MLS 3.7 §10.6.1: an
+    /// equation between arrays of records is owned by its record equalities).
+    pub(super) excluded: &'flat HashSet<usize>,
 }
 
 pub(super) fn validate_structured_families(
@@ -22,7 +25,10 @@ pub(super) fn validate_structured_families(
 ) -> Result<HashSet<usize>, ToDaeError> {
     let mut covered = HashSet::new();
     let equation_count = partition.equations.len();
-    for family in partition.families {
+    for (index, family) in partition.families.iter().enumerate() {
+        if partition.excluded.contains(&index) {
+            continue;
+        }
         require_span(family.span, "structured equation family")?;
         let domain_count = family.domain.scalar_count().map_err(|error| {
             ToDaeError::unsupported_flat(
@@ -259,4 +265,47 @@ fn checked_materialized_rows(
                 family.span,
             )
         })
+}
+
+/// Indices of the materialized families every represented row of which is a
+/// whole-record equality with a record-equation plan.
+///
+/// MLS §10.6.1 makes an equation between arrays of records the element-wise
+/// whole-record equality of its element pairs. Such a family is only a second
+/// view of rows whose leaf owners the record-equation plans already prove from
+/// exact record and field identities, so it is not a structured owner: each
+/// row keeps its record-equation owner.
+pub(super) fn record_equality_families(
+    families: &[flat::StructuredEquationFamily],
+    records: &HashMap<usize, RecordEquationPlan>,
+) -> HashSet<usize> {
+    families
+        .iter()
+        .enumerate()
+        .filter(|(_, family)| {
+            materialized_family_rows(family).is_some_and(|rows| {
+                !rows.is_empty() && rows.into_iter().all(|row| records.contains_key(&row))
+            })
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn materialized_family_rows(
+    family: &flat::StructuredEquationFamily,
+) -> Option<std::ops::Range<usize>> {
+    let template = family.template.as_ref()?;
+    if !family.interiors_materialized {
+        return None;
+    }
+    let count = match template.scalar_view {
+        rumoca_core::ComprehensionScalarView::RowMajorProjection => family.equations_per_point,
+        rumoca_core::ComprehensionScalarView::BinderSubstitution => family
+            .domain
+            .scalar_count()
+            .ok()?
+            .checked_mul(family.equations_per_point)?,
+        rumoca_core::ComprehensionScalarView::BinderPrefixProjection { .. } => return None,
+    };
+    Some(family.first_equation_index..family.first_equation_index.checked_add(count)?)
 }

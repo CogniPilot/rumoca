@@ -197,6 +197,7 @@ mod zero_size_function_values;
 // scalarized IR for minutes instead of failing fast.
 mod noncommutative_product_derivatives;
 mod record_array_dimension_chain;
+mod record_array_equation;
 mod record_array_member_slice_test;
 mod record_connector_equation_test;
 mod record_equation_discrete_fields;

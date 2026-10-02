@@ -138,7 +138,7 @@ fn equation_diagnosis(
 ) -> UnmatchedEquationDiagnosis {
     let index = name
         .strip_prefix("f_x[")
-        .and_then(|rest| rest.strip_suffix(']'))
+        .and_then(|rest| rest.split(']').next())
         .and_then(|digits| digits.parse::<usize>().ok());
     let provenance = index
         .and_then(|index| view.continuous_owner_for_scalar_row(index))

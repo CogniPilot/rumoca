@@ -28,7 +28,7 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.7 CONN contracts | 555–589 | Connection rules (30 contracts) |
 | §4.8 FUNC contracts | 590–632 | Function rules (38 contracts) |
 | §4.9 TYPE contracts | 633–673 | Type/interface rules (36 contracts) |
-| §4.10 ARR contracts | 673–719 | Array rules (42 contracts) |
+| §4.10 ARR contracts | 673–719 | Array rules (44 contracts) |
 | §4.11 PKG contracts | 720–736 | Package/import rules (12 contracts) |
 | §4.12 OPREC contracts | 737–752 | Operator record rules (11 contracts) |
 | §4.13 SIM contracts | 753–767 | Simulation rules (10 contracts) |
@@ -731,6 +731,8 @@ Defines state-to-state transitions with priority and timing control.
 | ARR-040 | min/max type restriction | §10.3.4 | "min/max require scalar enumeration, Boolean, Integer, or Real types" |
 | ARR-041 | diagonal vector shape | §10.3.5 | "diagonal(v) requires a vector and returns a square matrix with both extents equal to size(v, 1)" |
 | ARR-042 | outer product shape | §10.3.5 | "outerProduct(v1, v2) requires two vectors and returns a matrix with extents size(v1, 1) and size(v2, 1)" |
+| ARR-043 | Record array equality element-wise | §10.6.1 | "Equality a=b ... of scalars, vectors, matrices, and arrays is defined element-wise". Each element pair of an equation between arrays of records is one whole-record equality, so a slice `s[1:n] = m[1:n].r`, a whole array `s = m.r` (Flat spells the member of a component array as the array of its element records), and a for-equation over elements state the same field equations. Rumoca: DAE record-equation analysis resolves each operand to its element record occurrences, proving the indexed declaration, the element subscript, and every projected field declaration, and owns the leaf equalities of every pair; a structured family whose rows are all such equalities is not a separate owner. Tested in `suite_core/record_array_equation.rs` |
+| ARR-044 | der and pre element-wise shape | §3.7.4.2 | "der(expr) ... If expr is an array, the operator is applied to all elements of the array" (likewise `pre(y)`, §3.7.5), so the result has the operand shape and an equation between zero-sized operands has no scalar equations. Tested in `suite_core/record_array_equation.rs` |
 
 ### 4.11 Package/Import Contracts (PKG)
 
@@ -970,7 +972,7 @@ areas.
 | Connections | CONN | 30 |
 | Functions | FUNC | 38 |
 | Types/Interfaces | TYPE | 36 |
-| Arrays | ARR | 42 |
+| Arrays | ARR | 44 |
 | Packages | PKG | 12 |
 | Operator Records | OPREC | 11 |
 | Simulation | SIM | 10 |
@@ -979,7 +981,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **449** |
+| **Total** | | **451** |
 
 ---
 
