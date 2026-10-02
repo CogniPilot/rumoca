@@ -1,5 +1,5 @@
 //! Equations between arrays of records (MLS §10.6.1) and zero-sized `der`
-//! equations (MLS §3.7.4.2) inside a component, in the form the
+//! equations (MLS §3.7.4) inside a component, in the form the
 //! Modelica.Fluid distributed pipe writes them:
 //!
 //! - `statesFM[1:n] = mediums[1:n].state` equates element records of a record

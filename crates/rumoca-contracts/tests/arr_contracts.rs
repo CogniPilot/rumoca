@@ -1681,7 +1681,7 @@ fn arr_043_record_array_equality_is_element_wise() {
 
 // =============================================================================
 // ARR-044: der and pre element-wise shape
-// "If expr is an array, the operator is applied to all elements" (§3.7.4.2)
+// "If expr is an array, the operator is applied to all elements" (§3.7.4)
 // =============================================================================
 
 #[test]

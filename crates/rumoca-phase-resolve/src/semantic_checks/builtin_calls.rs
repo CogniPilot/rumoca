@@ -222,7 +222,7 @@ impl BuiltinCallVisitor<'_> {
                 diags.push(semantic_error(
                     ER057_CARDINALITY_INVALID_TARGET,
                     format!(
-                        "cardinality() cannot be applied to connector array '{}' (MLS §3.7.4.2)",
+                        "cardinality() cannot be applied to connector array '{}' (MLS §3.7.4.1)",
                         cref_text
                     ),
                     label_from_token(
@@ -236,7 +236,7 @@ impl BuiltinCallVisitor<'_> {
                 diags.push(semantic_error(
                     ER057_CARDINALITY_INVALID_TARGET,
                     format!(
-                        "cardinality() cannot be applied to expandable connector '{}' (MLS §3.7.4.2)",
+                        "cardinality() cannot be applied to expandable connector '{}' (MLS §3.7.4.1)",
                         cref_text
                     ),
                     label_from_token(
