@@ -2900,6 +2900,13 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'EQN-036'
+case_id = 'eqn_036_violated_warning_level_assertion_never_aborts'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'EQN-038'
 case_id = 'eqn_038_connections_root_in_noneval_if_rejected'
 test_file = 'tests/eqn_contracts.rs'

@@ -11,10 +11,10 @@ use super::{Context, FlattenError, flat};
 /// value the broader structural context happens to know. A condition proven
 /// true folds away (and any function it alone referenced stops needing a DAE
 /// owner); proven false at error level with an evaluable message is the
-/// EF030 translation diagnostic at the assertion's own span; proven false at
-/// `AssertionLevel.warning`, or with a message this context cannot evaluate,
-/// keeps the statement for the runtime owner — MLS warning-level failures
-/// are runtime behavior, and a message must never be silently replaced.
+/// EF030 translation diagnostic at the assertion's own span; proven false with
+/// a message this context cannot evaluate keeps the statement for the runtime
+/// owner, because a message must never be silently replaced. Warning-level
+/// assertions never reach this fold: `settle_assertion_levels` removes them.
 ///
 /// `error_literal` is the predefined `AssertionLevel.error` declaration
 /// identity from the scope tree: an explicit level counts as error only by

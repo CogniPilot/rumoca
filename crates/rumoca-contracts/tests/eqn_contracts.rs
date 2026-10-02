@@ -1176,6 +1176,30 @@ fn eqn_036_assert_level_not_evaluable_rejected() {
     );
 }
 
+#[test]
+fn eqn_036_violated_warning_level_assertion_never_aborts() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            function F
+                input Real u;
+                output Real y;
+            algorithm
+                assert(u < 0.5, "u beyond range", level = AssertionLevel.warning);
+                y := 2 * u;
+            end F;
+            Real x(start = 0, fixed = true);
+        equation
+            der(x) = F(time);
+            assert(x < 0.1, "x beyond range", level = AssertionLevel.warning);
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    assert!((trace.final_value("x") - 1.0).abs() < 1e-6);
+}
+
 // =============================================================================
 // EQN-038: Connections.branch/root/potentialRoot same restrictions as connect
 // in for/if-equations

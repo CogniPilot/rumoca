@@ -39,6 +39,7 @@ mod annotated_function_constraint;
 mod array_constructor_equation_shape;
 mod array_der_coupling_test;
 mod array_subscript_test;
+mod assertion_warning_level;
 mod backend_executor_differential;
 mod balance_diagnostic;
 mod bilinear_function_constraint;
