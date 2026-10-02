@@ -141,6 +141,7 @@ mod initialization_parameter_scale;
 mod initialization_tensor_incidence;
 mod inline_calls;
 mod integer_builtin_checked;
+mod integer_elementwise_operators;
 mod integer_step_events;
 mod interface_flow_balance;
 mod invariant_pure_call_frames;

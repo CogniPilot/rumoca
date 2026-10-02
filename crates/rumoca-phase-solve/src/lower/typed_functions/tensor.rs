@@ -42,27 +42,55 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             operator,
             dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide
         );
-        let lhs_integral = matches!(
-            lhs_type.scalar_type(),
-            dae::ScalarType::Integer | dae::ScalarType::Enumeration
+        let power = matches!(
+            operator,
+            dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower
         );
-        let rhs_integral = matches!(
-            rhs_type.scalar_type(),
-            dae::ScalarType::Integer | dae::ScalarType::Enumeration
+        let real_result = self
+            .view
+            .value_type(value_type)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+            .scalar_type()
+            == dae::ScalarType::Real;
+        // Operand conversion follows the registers the operands lowered to,
+        // which may already be Real where the DAE type is Integer (a literal
+        // array in a Real context). Division and power are computed in Real
+        // (MLS 3.7 §10.6.5, §10.6.7), and an Integer operand meeting a Real one
+        // is converted.
+        let lhs_integer = self.integer_register(lhs_value, at)?;
+        let rhs_integer = self.integer_register(rhs_value, at)?;
+        let in_real = division
+            || power
+            || real_result
+            || lhs_integer != rhs_integer
+            || lhs_type.scalar_type() == dae::ScalarType::Real
+            || rhs_type.scalar_type() == dae::ScalarType::Real;
+        let comparison = matches!(
+            operator,
+            dae::BinaryOperator::Equal
+                | dae::BinaryOperator::NotEqual
+                | dae::BinaryOperator::Less
+                | dae::BinaryOperator::LessEqual
+                | dae::BinaryOperator::Greater
+                | dae::BinaryOperator::GreaterEqual
         );
-        if lhs_integral && (division || rhs_type.scalar_type() == dae::ScalarType::Real) {
-            lhs_value = self.builder.convert(
-                solve::SolveConversionOperator::IntegerToReal,
-                lhs_value,
-                at,
-            )?;
-        }
-        if rhs_integral && (division || lhs_type.scalar_type() == dae::ScalarType::Real) {
-            rhs_value = self.builder.convert(
-                solve::SolveConversionOperator::IntegerToReal,
-                rhs_value,
-                at,
-            )?;
+        let numeric = lhs_type.scalar_type() != dae::ScalarType::Boolean
+            && rhs_type.scalar_type() != dae::ScalarType::Boolean;
+        if numeric && (in_real || comparison && lhs_integer != rhs_integer) {
+            if lhs_integer {
+                lhs_value = self.builder.convert(
+                    solve::SolveConversionOperator::IntegerToReal,
+                    lhs_value,
+                    at,
+                )?;
+            }
+            if rhs_integer {
+                rhs_value = self.builder.convert(
+                    solve::SolveConversionOperator::IntegerToReal,
+                    rhs_value,
+                    at,
+                )?;
+            }
         }
         let register = match operator {
             dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply
@@ -130,6 +158,19 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 .builder
                 .binary(binary_operator(operator)?, lhs_value, rhs_value, at),
         }?;
+        // An Integer result computed in Real (`{2, 3} .^ 2`) is the exact
+        // integer the Real value rounds to.
+        let integer_result = self
+            .view
+            .value_type(value_type)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+            .scalar_type()
+            == dae::ScalarType::Integer;
+        let register = if integer_result && !self.integer_register(register, at)? {
+            self.round_to_integer(register, at)?
+        } else {
+            register
+        };
         Ok(LoweredValue::scalar(value_type, register))
     }
 
@@ -833,4 +874,52 @@ fn binary_operator(
         _ => return Err(solve::SolveProgramConstructionError::WireMismatch),
     };
     Ok(operator)
+}
+
+impl<'program> ExpressionLowerer<'_, 'program, '_> {
+    /// Whether a lowered register holds Integer elements.
+    fn integer_register(
+        &self,
+        register: solve::ProgramRegister<'program>,
+        at: rumoca_core::Span,
+    ) -> Result<bool, solve::SolveProgramConstructionError> {
+        Ok(matches!(
+            self.builder.value_type_of(register, at)?.element_type(),
+            solve::SolveScalarType::Integer(_)
+        ))
+    }
+
+    /// The nearest Integer to every element of a Real register,
+    /// `floor(x + 0.5)`.
+    fn round_to_integer(
+        &mut self,
+        register: solve::ProgramRegister<'program>,
+        at: rumoca_core::Span,
+    ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
+        let half = self
+            .builder
+            .constant(solve::SolveValue::real(arithmetic_profile(), 0.5), at)?;
+        let shifted = if self
+            .builder
+            .value_type_of(register, at)?
+            .dimensions()
+            .is_empty()
+        {
+            self.builder
+                .binary(solve::SolveBinaryOperator::Add, register, half, at)?
+        } else {
+            self.builder.broadcast_binary(
+                solve::SolveBinaryOperator::Add,
+                register,
+                half,
+                false,
+                at,
+            )?
+        };
+        self.builder.convert(
+            solve::SolveConversionOperator::RealToIntegerTowardNegativeInfinity,
+            shifted,
+            at,
+        )
+    }
 }

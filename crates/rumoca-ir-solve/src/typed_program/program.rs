@@ -1704,6 +1704,15 @@ impl<'program> TypedProgramBuilder<'program> {
             .ok_or(SolveProgramConstructionError::UnknownSlot { provenance })
     }
 
+    /// The checked type of a register this builder issued.
+    pub fn value_type_of(
+        &self,
+        register: ProgramRegister<'program>,
+        provenance: Span,
+    ) -> Result<&SolveValueType, SolveProgramConstructionError> {
+        self.register_type(register, provenance)
+    }
+
     fn register_type(
         &self,
         register: ProgramRegister<'program>,

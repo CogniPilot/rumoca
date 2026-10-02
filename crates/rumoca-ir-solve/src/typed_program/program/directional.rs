@@ -1291,6 +1291,24 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind_expanded(destinations, &values, provenance)
     }
 
+    /// An Integer-valued tensor result is piecewise constant, so its tangent
+    /// is zero, like an Integer quotient's.
+    fn integer_valued(
+        &mut self,
+        primal: ProgramRegister<'program>,
+        value_type: &SolveValueType,
+        provenance: Span,
+    ) -> Result<Option<Directional<ProgramRegister<'program>>>, SolveProgramConstructionError> {
+        if !matches!(value_type.element_type(), SolveScalarType::Integer(_)) {
+            return Ok(None);
+        }
+        let tangent = self.zero(value_type, provenance)?;
+        Ok(Some(Directional {
+            primal,
+            tangent: Some(tangent),
+        }))
+    }
+
     fn derive_scale(
         &mut self,
         destination: SolveRegisterId,
@@ -1304,6 +1322,9 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             .builder
             .scale(aggregate.primal, scalar.primal, provenance)?;
         let value_type = self.primal.register_types()[destination.index()].clone();
+        if let Some(directional) = self.integer_valued(primal, &value_type, provenance)? {
+            return self.bind(destination, directional, provenance);
+        }
         let aggregate_tangent = self.tangent_or_zero(aggregate, &value_type, provenance)?;
         let scalar_type = SolveValueType::scalar(value_type.element_type());
         let scalar_tangent = self.tangent_or_zero(scalar, &scalar_type, provenance)?;
@@ -1345,6 +1366,9 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             provenance,
         )?;
         let value_type = self.primal.register_types()[destination.index()].clone();
+        if let Some(directional) = self.integer_valued(primal, &value_type, provenance)? {
+            return self.bind(destination, directional, provenance);
+        }
         let aggregate_tangent = self.tangent_or_zero(aggregate, &value_type, provenance)?;
         let scalar_type = SolveValueType::scalar(value_type.element_type());
         let scalar_tangent = self.tangent_or_zero(scalar, &scalar_type, provenance)?;
