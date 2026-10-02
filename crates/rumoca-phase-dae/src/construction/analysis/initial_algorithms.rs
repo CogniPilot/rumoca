@@ -43,10 +43,12 @@
 mod checking_calls;
 mod element_definitions;
 mod loops;
+mod relations;
 
 use super::*;
 use checking_calls::{checking_call, expand_checking_call, reject_unsupported_checking_call};
 use element_definitions::{ElementDefinitions, ElementTarget, element_ordinal};
+use relations::{InitialEquationShape, InitialRelation, settle_initial_relations};
 use rumoca_core::ExpressionRewriter;
 
 pub(super) struct InitialAlgorithmAnalysis {
@@ -75,10 +77,20 @@ pub(super) fn claim_initial_discrete_equations(
 ) -> Result<HashSet<usize>, ToDaeError> {
     let mut claimed = HashSet::new();
     let mut elements = ElementDefinitions::default();
+    let mut relations = Vec::new();
     for (row, equation) in flat.initial_equations.iter().enumerate() {
-        let Some((target, value)) = initial_discrete_equation(flat, &equation.residual, roles)?
-        else {
-            continue;
+        let (target, value) = match initial_discrete_equation(flat, &equation.residual, roles)? {
+            Some(InitialEquationShape::Definition(target, value)) => (target, value),
+            Some(InitialEquationShape::Relation(lhs, rhs)) => {
+                relations.push(InitialRelation {
+                    row,
+                    lhs,
+                    rhs,
+                    span: equation.span,
+                });
+                continue;
+            }
+            None => continue,
         };
         match target {
             InitialTargetRef::Whole(target) => {
@@ -98,6 +110,7 @@ pub(super) fn claim_initial_discrete_equations(
         insert_initial_definition(definitions, target, definition)?;
         claimed.extend(rows);
     }
+    settle_initial_relations(flat, roles, &relations, definitions, &mut claimed)?;
     Ok(claimed)
 }
 
@@ -161,7 +174,7 @@ fn initial_discrete_equation<'flat>(
     flat: &'flat flat::Model,
     residual: &'flat Expression,
     roles: &HashMap<VarName, PlannedRole>,
-) -> Result<Option<(InitialTargetRef<'flat>, &'flat Expression)>, ToDaeError> {
+) -> Result<Option<InitialEquationShape<'flat>>, ToDaeError> {
     let Expression::Binary {
         op: OpBinary::Sub,
         lhs,
@@ -178,6 +191,9 @@ fn initial_discrete_equation<'flat>(
         (Some(target), None) => Some((target, rhs.as_ref())),
         (None, Some(target)) => Some((target, lhs.as_ref())),
         (None, None) => None,
+        (Some(InitialTargetRef::Whole(lhs)), Some(InitialTargetRef::Whole(rhs))) => {
+            return Ok(Some(InitialEquationShape::Relation(lhs, rhs)));
+        }
         (Some(_), Some(_)) => {
             return Err(unsupported(
                 "an initial equation relating two unsettled discrete coordinates has no proven \
@@ -197,7 +213,7 @@ fn initial_discrete_equation<'flat>(
     if !has_only_initial_definition_reads(flat, value, roles, reads_continuous) {
         return Ok(None);
     }
-    Ok(Some((target, value)))
+    Ok(Some(InitialEquationShape::Definition(target, value)))
 }
 
 /// Whether a definition reads only values the initialization system settles
