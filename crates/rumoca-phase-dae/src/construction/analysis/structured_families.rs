@@ -180,13 +180,9 @@ pub(in crate::construction) fn materialized_discrete_value_rows(
     {
         return true;
     }
-    let Ok(points) = family.domain.scalar_count() else {
-        return false;
-    };
-    let Some(rows) = points
-        .checked_mul(family.equations_per_point)
-        .and_then(|count| family.first_equation_index.checked_add(count))
-        .and_then(|end| equations.get(family.first_equation_index..end))
+    let Some(rows) = family
+        .materialized_rows()
+        .and_then(|rows| equations.get(rows))
     else {
         return false;
     };

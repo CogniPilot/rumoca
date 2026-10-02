@@ -1455,6 +1455,37 @@ pub struct StructuredEquationFamily {
     pub interiors_materialized: bool,
 }
 
+impl StructuredEquationFamily {
+    /// The flat equation rows this family's materialized interior occupies.
+    ///
+    /// A template projected row-major (an array equation `x = e` over its
+    /// element domain) materializes as its `equations_per_point` whole rows; a
+    /// binder-prefix projection materializes one row block per prefix point;
+    /// every other family materializes `equations_per_point` rows per domain
+    /// point. `None` when the count overflows or the domain is invalid.
+    pub fn materialized_rows(&self) -> Option<std::ops::Range<usize>> {
+        let points = self.domain.scalar_count().ok()?;
+        let count = match self.template.as_ref().map(|template| template.scalar_view) {
+            Some(rumoca_core::ComprehensionScalarView::RowMajorProjection) => {
+                self.equations_per_point
+            }
+            Some(rumoca_core::ComprehensionScalarView::BinderPrefixProjection { binder_count }) => {
+                let extents = self.domain.extents().ok()?;
+                extents
+                    .get(..usize::try_from(binder_count).ok()?)?
+                    .iter()
+                    .try_fold(self.equations_per_point, |count, extent| {
+                        count.checked_mul(*extent)
+                    })?
+            }
+            Some(rumoca_core::ComprehensionScalarView::BinderSubstitution) | None => {
+                points.checked_mul(self.equations_per_point)?
+            }
+        };
+        Some(self.first_equation_index..self.first_equation_index.checked_add(count)?)
+    }
+}
+
 /// Default scalar count for equations (1 for serde deserialization).
 fn default_scalar_count() -> usize {
     1

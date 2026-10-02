@@ -125,18 +125,12 @@ pub(super) fn claimed_initial_families(
         .iter()
         .enumerate()
         .filter(|(_, family)| {
-            let Ok(points) = family.domain.scalar_count() else {
-                return false;
-            };
-            let Some(end) = points
-                .checked_mul(family.equations_per_point)
-                .and_then(|rows| family.first_equation_index.checked_add(rows))
-            else {
+            let Some(rows) = family.materialized_rows() else {
                 return false;
             };
             family.interiors_materialized
-                && end > family.first_equation_index
-                && (family.first_equation_index..end).all(|row| claimed.contains(&row))
+                && !rows.is_empty()
+                && rows.into_iter().all(|row| claimed.contains(&row))
         })
         .map(|(index, _)| index)
         .collect()
