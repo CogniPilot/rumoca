@@ -31,7 +31,10 @@ pub(super) fn reversed_alias_owners(
             continue;
         };
         let defined_elsewhere = producers.get(source).copied().unwrap_or(0) > 1;
-        let undefined = !producers.contains_key(target) && !connection_ranks.contains_key(target);
+        // Rank 0 without a producer is a connection source this alias feeds
+        // (`alias_fed_connection_sources`).
+        let undefined = !producers.contains_key(target)
+            && connection_ranks.get(target).is_none_or(|rank| *rank == 0);
         if !(defined_elsewhere && undefined) {
             continue;
         }
@@ -108,4 +111,31 @@ fn producer_counts(
         count(name);
     }
     counts
+}
+
+/// The connection coordinates a reversed alias feeds: `b` of an alias
+/// `a = b` whose written side `a` has another defining owner, when no
+/// producer reaches `b` through connections and `b` is connected.
+pub(super) fn alias_fed_connection_sources(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    ranks: &HashMap<VarName, usize>,
+    neighbors: &HashMap<VarName, Vec<VarName>>,
+) -> Vec<VarName> {
+    let producers = producer_counts(flat, roles);
+    let mut sources = flat
+        .equations
+        .iter()
+        .filter_map(|equation| plain_alias(equation, roles))
+        .filter(|(target, source)| {
+            producers.get(*source).copied().unwrap_or(0) > 1
+                && !producers.contains_key(*target)
+                && !ranks.contains_key(*target)
+                && neighbors.contains_key(*target)
+        })
+        .map(|(target, _)| target.clone())
+        .collect::<Vec<_>>();
+    sources.sort_unstable();
+    sources.dedup();
+    sources
 }

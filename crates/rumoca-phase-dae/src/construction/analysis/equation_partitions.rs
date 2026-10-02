@@ -631,6 +631,27 @@ pub(super) fn discrete_connection_ranks(
         .map(|producer| (producer, 0usize))
         .collect::<HashMap<_, _>>();
     let mut frontier = ranks.keys().cloned().collect::<Vec<_>>();
+    spread_connection_ranks(&mut ranks, frontier.clone(), &neighbors);
+    // A connection set no producer reaches is fed by a plain alias `a = b`
+    // whose written side already has its own definition (a binding
+    // modification, as `CompositeStepState.suspend = subgraphStatePort.suspend`
+    // of `Modelica.StateGraph`): the alias defines `b`, so `b` produces the
+    // set (see `alias_orientation`).
+    frontier = alias_orientation::alias_fed_connection_sources(flat, roles, &ranks, &neighbors);
+    for source in &frontier {
+        ranks.insert(source.clone(), 0);
+    }
+    spread_connection_ranks(&mut ranks, frontier, &neighbors);
+    ranks
+}
+
+/// Breadth-first connection distance from `frontier` to every coordinate its
+/// connection sets reach that has no rank yet.
+fn spread_connection_ranks(
+    ranks: &mut HashMap<VarName, usize>,
+    mut frontier: Vec<VarName>,
+    neighbors: &HashMap<VarName, Vec<VarName>>,
+) {
     let mut cursor = 0usize;
     while let Some(current) = frontier.get(cursor).cloned() {
         cursor += 1;
@@ -643,7 +664,6 @@ pub(super) fn discrete_connection_ranks(
             frontier.push(neighbor.clone());
         }
     }
-    ranks
 }
 
 /// Turn an element connection into a whole-coordinate definition only when

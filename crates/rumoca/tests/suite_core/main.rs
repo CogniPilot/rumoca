@@ -67,6 +67,7 @@ mod derivative_alias_initial_acceleration;
 mod derivative_kinks;
 mod derivative_reads_in_derivative_rows;
 mod differential_structure;
+mod discrete_alias_fed_connections;
 mod discrete_alias_orientation;
 mod discrete_array_element_equations;
 mod discrete_time_definitions;

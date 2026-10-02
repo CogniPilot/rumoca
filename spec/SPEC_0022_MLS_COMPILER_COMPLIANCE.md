@@ -574,7 +574,7 @@ Defines state-to-state transitions with priority and timing control.
 | CONN-001 | Homogeneity | §9.2 | "Connection set shall contain either only flow or only non-flow variables" |
 | CONN-002 | Type matching | §9.2 | "Matched primitive components must have the same primitive types" |
 | CONN-003 | Flow-to-flow | §9.2 | "Flow variables may only connect to other flow variables" |
-| CONN-004 | Single source | §9.2 | "At most one inside output connector or one public outside input connector" |
+| CONN-004 | Single source | §9.2 | "At most one inside output connector or one public outside input connector". Rumoca: the equalities of a discrete-valued connection set are oriented away from its one producer (a defined coordinate), each defining the member farther from it; a set whose output member is the right side of a plain alias `a = b` whose `a` already has a definition (`Modelica.StateGraph.Interfaces.CompositeStepState.suspend = subgraphStatePort.suspend` under the composite step's binding) is produced by that member through the reversed alias (MLS Appendix B). Tested in `suite_core/discrete_alias_fed_connections.rs` |
 | CONN-005 | Quantity matching | §9.2 | "Variables with non-empty quantity attribute must match" |
 | CONN-006 | No outer-to-outer | §9.2 | "Cannot connect two connectors of outer elements" |
 | CONN-007 | Connector not parameter | §9.1 | "Connector component shall not be declared with parameter or constant" |
