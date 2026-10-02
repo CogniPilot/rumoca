@@ -561,7 +561,7 @@ Defines state-to-state transitions with priority and timing control.
 | ALG-010 | When not in control | §11.2 | "When-statements shall not occur inside while/for/if in algorithms" |
 | ALG-011 | When discrete Boolean | §11.2 | "Expression of when-statement shall be discrete-time Boolean" |
 | ALG-012 | break scope | §11.2 | "break can only be used in while or for loop" |
-| ALG-013 | return scope | §11.2 | "return can only be used inside functions" |
+| ALG-013 | return scope | §11.2 | "return can only be used inside functions". A `return` ends the function's algorithm (§11.2.6): statements after a top-level `return` never run, a conditional all of whose branches return guards the statements after it, and a conditional only some of whose branches return (the else part of `Modelica.Fluid.Utilities.regRoot2_utility`) continues each non-returning branch with the statements after it. A further `return` after such a conditional, or one inside a loop, is a typed refusal. |
 | ALG-014 | terminate not in function | §11.2 | "terminate-statement shall not be used in functions" |
 | ALG-015 | Assert execution halt | §11.2.8.1 | "A failed assert stops the execution of the current algorithm" |
 | ALG-016 | For range fixed | §11.2.2 | "For-statement range expressions are evaluated once before entering loop". Rumoca: an `initial algorithm` `for` whose range bounds read only literals, constants, and evaluable parameters unrolls into its iterations, each replayed with the index bound, so `y[i]` names the element coordinate `y[k]`; a range that reads a settable parameter is refused (ED013). Tested in `suite_core/initial_algorithm_test.rs` |
