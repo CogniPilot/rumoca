@@ -246,6 +246,21 @@ pub(super) fn exact_override_package_for_source_package<'a>(
             }
         }
     }
+    // MLS 7.3: a call spelled through a package alias selects that alias's
+    // package in this instance, even when the instance's redeclaration keeps
+    // the alias name (`redeclare package Medium = Medium`) and so is not an
+    // active override of its own; an enclosing scope's alias selecting the
+    // same source package is a different binding.
+    let prefix_alias = reference
+        .component_ref()
+        .and_then(|component_ref| component_ref.component_scope().prefix_parts().last())
+        .map(|prefix| prefix.ident.as_str());
+    let mut by_alias = inherited
+        .iter()
+        .filter(|package| Some(package.alias.as_str()) == prefix_alias);
+    if let (Some(package), None) = (by_alias.next(), by_alias.next()) {
+        return Ok(Some(*package));
+    }
     let has_active = !active.is_empty();
     let mut candidates = if has_active { active } else { inherited };
     // MLS §4.5.1: a short class definition without modifications
