@@ -166,3 +166,75 @@ fn an_arm_that_only_fails_defines_nothing_the_conditional_must_join() {
     .expect_err("reaching the failing arm fails the simulation");
     assert!(format!("{error:?}").contains("region"), "{error:?}");
 }
+
+/// One asserting call whose outputs feed both a nested conditional and a
+/// later unconditional read of the same branch (the `regFun3` branches of
+/// the `WallFriction` `pressureLoss_m_flow_staticHead` functions in
+/// `Modelica.Fluid.Pipes.BaseClasses`): the conditional publishes the
+/// call's assertion before the unconditional read evaluates the call again.
+fn shared_call(bound: &str) -> String {
+    format!(
+        r#"
+model SharedCall
+  function g
+    input Real x;
+    output Real y;
+    output Real c;
+  algorithm
+    assert(x > {bound}, "x too small");
+    y := 2*x;
+    c := 3*x;
+  end g;
+  function wf
+    input Real dp;
+    output Real m_flow;
+  protected
+    Real dm;
+  algorithm
+    dm := 0;
+    if dp >= 10 then
+      m_flow := dp;
+    else
+      (m_flow, dm) := g(dp);
+      if dp > 0 then
+        m_flow := g(dm);
+      else
+        m_flow := g(-dm);
+      end if;
+    end if;
+    m_flow := m_flow + 0*dm;
+  end wf;
+  Real m = wf(4*(time - 0.5));
+end SharedCall;
+"#
+    )
+}
+
+fn simulate_shared_call(bound: &str) -> Result<SimResult, String> {
+    let compiled = Compiler::new()
+        .model("SharedCall")
+        .compile_str(&shared_call(bound), "SharedCall.mo")
+        .unwrap_or_else(|error| panic!("SharedCall compiles: {error:?}"));
+    simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| format!("{error:?}"))
+}
+
+#[test]
+fn a_call_read_inside_and_after_a_nested_conditional_keeps_one_assertion() {
+    let result = simulate_shared_call("-10").expect("SharedCall simulates");
+    let column = result.names.iter().position(|n| n == "m").expect("m");
+    for (sample, time) in result.times.iter().enumerate() {
+        // dm = 3 dp, then m = g(+-dm).y = 6 |dp|.
+        let expected = 6.0 * (4.0 * (time - 0.5)).abs();
+        let value = result.data[column][sample];
+        assert!((value - expected).abs() < 1e-9, "m({time}) = {value}");
+    }
+    let error = simulate_shared_call("-1").expect_err("g(dp) fails while dp <= -1");
+    assert!(error.contains("x too small"), "{error}");
+}

@@ -1893,11 +1893,14 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                     let destination = self.predicate_values.get_mut(slot).ok_or(
                         solve::SolveProgramConstructionError::InvalidCallOutput { provenance: at },
                     )?;
-                    if destination.replace(predicate).is_some() {
-                        return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
-                            provenance: at,
-                        });
-                    }
+                    // A slot already holds a value only when a conditional
+                    // region of this lowerer evaluated the same call owner
+                    // and published its predicate (a region's call values
+                    // stay inside the region). This evaluation is the same
+                    // pure call in the same environment, unconditional here,
+                    // so its predicate is exact on every path and the
+                    // region's selected-or-vacuous value is subsumed by it.
+                    *destination = Some(predicate);
                 }
                 self.call_values.insert(owner, values.clone());
                 values
