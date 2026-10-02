@@ -558,16 +558,21 @@ fn substitute_resolved_generated_constant(
 /// constant `key` names, read in `env.scope` (MLS §7.2): the rendered
 /// exposing-package key itself, or, for a reference written inside the
 /// package (`tableDensity` in a sibling binding), its scoped candidates.
+/// Only a simple name is looked up through the enclosing scopes (MLS 3.7
+/// §5.3.1); a composite name such as `world.g` starts at the component its
+/// first part names and never reaches a same-spelled constant of an
+/// enclosing scope.
 fn modified_constant_value<'e>(
     key: &str,
     env: ConstantSubstitutionEnv<'e>,
 ) -> Option<(String, &'e rumoca_core::Expression)> {
+    let scoped = if !key.contains('.') {
+        scoped_lookup_candidates_with_scope(key, env.scope)
+    } else {
+        Vec::new()
+    };
     std::iter::once(key.to_string())
-        .chain(
-            scoped_lookup_candidates_with_scope(key, env.scope)
-                .into_iter()
-                .map(|(candidate, _)| candidate),
-        )
+        .chain(scoped.into_iter().map(|(candidate, _)| candidate))
         .find(|candidate| env.ctx.modified_constant_keys.contains(candidate.as_str()))
         .and_then(|candidate| {
             let value = resolve_constant_value_expr(&candidate, env.ctx)?;
