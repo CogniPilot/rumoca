@@ -6,6 +6,7 @@
 //! re-prove those deferred member tails without rendered-name recovery.
 
 use super::deferred_references::{DynamicExpressionTargetBatch, SelectedComponentTypes};
+use super::occurrence_selections::OccurrenceIndex;
 use super::override_map::TypeOverrideMap;
 use crate::{InstantiateError, InstantiateResult};
 use indexmap::IndexMap;
@@ -13,15 +14,14 @@ use rumoca_core::{ComponentPath, DefId, InstanceId};
 use rumoca_ir_ast as ast;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-#[derive(Default)]
-struct ScopeProof {
+struct ScopeProof<'i> {
     overrides: TypeOverrideMap,
-    selected_component_types: SelectedComponentTypes<'static>,
+    selected_component_types: SelectedComponentTypes<'i>,
 }
 
 #[derive(Default)]
-struct ProofIndex {
-    proofs: FxHashMap<InstanceId, ScopeProof>,
+struct ProofIndex<'i> {
+    proofs: FxHashMap<InstanceId, ScopeProof<'i>>,
     scope_ids: FxHashMap<ComponentPath, InstanceId>,
     selected_roots: FxHashSet<DefId>,
 }
@@ -47,20 +47,31 @@ pub(crate) fn resolve_post_materialization_component_targets(
     tree: &ast::ClassTree,
     overlay: &mut ast::InstanceOverlay,
 ) -> InstantiateResult<()> {
-    let index = build_scope_proofs(tree, overlay)?;
+    // MLS §7.3: a member tail below a selected root follows the classes its
+    // materialized occurrences selected. The index is built before the
+    // overlay is mutated, so every surface reads the same occurrence graph.
+    let occurrences = OccurrenceIndex::new(overlay);
+    let index = build_scope_proofs(tree, overlay, &occurrences)?;
     for component in overlay.components.values_mut() {
         resolve_component_surfaces(component, &index, tree)?;
     }
     Ok(())
 }
 
-fn build_scope_proofs(
+fn build_scope_proofs<'i>(
     tree: &ast::ClassTree,
     overlay: &ast::InstanceOverlay,
-) -> InstantiateResult<ProofIndex> {
+    occurrences: &'i OccurrenceIndex,
+) -> InstantiateResult<ProofIndex<'i>> {
     let mut index = ProofIndex::default();
     for class in overlay.classes.values() {
-        let mut proof = ScopeProof::default();
+        let mut proof = ScopeProof {
+            overrides: TypeOverrideMap::default(),
+            selected_component_types: SelectedComponentTypes::in_index(
+                occurrences,
+                class.instance_id,
+            ),
+        };
         for class_override in class.class_overrides.values() {
             proof.overrides.insert_class_override(class_override);
         }
@@ -113,7 +124,7 @@ fn build_scope_proofs(
 
 fn resolve_component_surfaces(
     component: &mut ast::InstanceData,
-    index: &ProofIndex,
+    index: &ProofIndex<'_>,
     tree: &ast::ClassTree,
 ) -> InstantiateResult<()> {
     let owner = component.owner_class_id.ok_or_else(|| {

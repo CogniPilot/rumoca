@@ -28,14 +28,23 @@ pub(crate) struct SelectedComponentTypes<'o> {
 
 struct ScopeOccurrences<'o> {
     scope: InstanceId,
-    overlay: &'o ast::InstanceOverlay,
-    index: OnceCell<OccurrenceIndex>,
+    source: OccurrenceSource<'o>,
+}
+
+/// Where the occurrences are read from: an overlay still being materialized,
+/// indexed on first use, or an index built before the overlay is mutated.
+enum OccurrenceSource<'o> {
+    Overlay {
+        overlay: &'o ast::InstanceOverlay,
+        index: OnceCell<OccurrenceIndex>,
+    },
+    Index(&'o OccurrenceIndex),
 }
 
 /// Component occurrences grouped by owning class occurrence, and the class
 /// occurrence each composite component materialized.
 #[derive(Default)]
-struct OccurrenceIndex {
+pub(crate) struct OccurrenceIndex {
     members: FxHashMap<InstanceId, Vec<MemberOccurrence>>,
     classes: FxHashMap<InstanceId, InstanceId>,
 }
@@ -63,8 +72,22 @@ impl<'o> SelectedComponentTypes<'o> {
             direct,
             occurrences: Some(ScopeOccurrences {
                 scope,
-                overlay,
-                index: OnceCell::new(),
+                source: OccurrenceSource::Overlay {
+                    overlay,
+                    index: OnceCell::new(),
+                },
+            }),
+        }
+    }
+
+    /// An empty selection set for `scope` whose nested member paths are proved
+    /// from a prebuilt occurrence index.
+    pub(crate) fn in_index(index: &'o OccurrenceIndex, scope: InstanceId) -> Self {
+        Self {
+            direct: FxHashMap::default(),
+            occurrences: Some(ScopeOccurrences {
+                scope,
+                source: OccurrenceSource::Index(index),
             }),
         }
     }
@@ -78,7 +101,9 @@ impl<'o> SelectedComponentTypes<'o> {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.direct.is_empty() && self.occurrences.is_none()
+        // A deferred reference starts at a selected root, so without one the
+        // occurrence source has nothing to prove.
+        self.direct.is_empty()
     }
 
     /// The class every occurrence of the declaration path selected.
@@ -95,9 +120,12 @@ impl<'o> SelectedComponentTypes<'o> {
         let Some(occurrences) = &self.occurrences else {
             return Ok(None);
         };
-        let index = occurrences
-            .index
-            .get_or_init(|| OccurrenceIndex::new(occurrences.overlay));
+        let index = match &occurrences.source {
+            OccurrenceSource::Overlay { overlay, index } => {
+                index.get_or_init(|| OccurrenceIndex::new(overlay))
+            }
+            OccurrenceSource::Index(index) => index,
+        };
         let mut owners = vec![occurrences.scope];
         let mut selected = None;
         for declaration in path {
@@ -121,7 +149,7 @@ impl<'o> SelectedComponentTypes<'o> {
 }
 
 impl OccurrenceIndex {
-    fn new(overlay: &ast::InstanceOverlay) -> Self {
+    pub(crate) fn new(overlay: &ast::InstanceOverlay) -> Self {
         let mut index = Self::default();
         for component in overlay.components.values() {
             let (Some(owner), Some(reference)) =

@@ -4,7 +4,8 @@
 //! `replaceable package Medium`, and an enclosing model reads `tank.medium.T`.
 //! The class of `medium` is selected per occurrence by the redeclarations that
 //! reach it, so the member `T` is proved against the class each materialized
-//! occurrence selected, never a single class of the declaration.
+//! occurrence selected, never a single class of the declaration, whether the
+//! reference is written in an equation or in a modifier binding.
 
 use rumoca::Compiler;
 
@@ -36,6 +37,10 @@ model Tank
   Medium.BaseProperties medium;
 end Tank;
 
+model Sensor
+  Real u;
+end Sensor;
+
 model Plant
   replaceable package PlantMedium = Media.Two constrainedby Media.PartialMedium;
   Tank redeclared(redeclare package Medium = PlantMedium);
@@ -44,6 +49,8 @@ model Plant
   Real redeclaredT;
   Real nominalT;
   Real arrayT;
+  Sensor redeclaredSensor(u = redeclared.medium.T);
+  Sensor nominalSensor(u = nominal.medium.T);
 equation
   redeclaredT = redeclared.medium.T;
   nominalT = nominal.medium.T;
@@ -76,4 +83,8 @@ fn member_tails_follow_the_class_each_occurrence_selected() {
     assert_eq!(value("redeclaredT"), 2.0);
     assert_eq!(value("nominalT"), 1.0);
     assert_eq!(value("arrayT"), 2.0);
+    // A binding written in a modifier of the enclosing class proves the same
+    // member tail against the same occurrences.
+    assert_eq!(value("redeclaredSensor.u"), 2.0);
+    assert_eq!(value("nominalSensor.u"), 1.0);
 }
