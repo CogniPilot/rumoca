@@ -195,7 +195,7 @@ mod public_observation_convergence;
 mod receiver_function_redeclare;
 mod redeclare_value_scope_selection;
 mod reduced_state_charts;
-mod replaceable_alias_member_tails;
+mod replaceable_alias_member_suffixes;
 mod replaceable_function_redeclare;
 mod replaceable_package_members;
 mod requested_states;
