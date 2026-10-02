@@ -91,7 +91,7 @@ struct FunctionArgument {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct SpecializationKey {
     callee: FunctionIdentity,
-    arguments: Vec<(usize, FunctionIdentity, Vec<String>)>,
+    arguments: Vec<(usize, FunctionIdentity, Vec<rumoca_core::VarName>)>,
 }
 
 /// A Flat function by its instance identity, or by name when it has none.
@@ -251,7 +251,7 @@ impl Specializer {
                     let bound = argument
                         .bound
                         .iter()
-                        .map(|(formal, _)| formal.clone())
+                        .map(|(formal, _)| rumoca_core::VarName::new(formal))
                         .collect();
                     (*index, target, bound)
                 })
