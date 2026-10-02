@@ -39,7 +39,12 @@ pub(crate) fn settle_assertion_levels(flat: &mut flat::Model, levels: AssertionL
         .iter_mut()
         .chain(flat.initial_assert_equations.iter_mut())
     {
-        settle(levels, &mut assertion.level, &mut assertion.condition);
+        settle(
+            levels,
+            &mut assertion.level,
+            &mut assertion.condition,
+            assertion.span,
+        );
     }
     for algorithm in flat
         .algorithms
@@ -59,25 +64,26 @@ pub(crate) fn settle_assertion_levels(flat: &mut flat::Model, levels: AssertionL
 }
 
 /// Normalize one level and, at warning level, the condition it guards.
+/// `owner` is the span of the assertion, which a settled level or condition
+/// without a span of its own takes.
 fn settle(
     levels: AssertionLevelLiterals,
     level: &mut Option<Expression>,
     condition: &mut Expression,
+    owner: rumoca_core::Span,
 ) {
     match levels.classify(level.as_ref()) {
         Some(AssertionLevel::Error) => *level = None,
         Some(AssertionLevel::Warning) => {
-            *level = settled_warning(level.as_ref());
-            without_events(condition);
+            *level = settled_warning(level.as_ref(), owner);
+            without_events(condition, owner);
         }
         None => {}
     }
 }
 
-fn settled_warning(level: Option<&Expression>) -> Option<Expression> {
-    let span = level
-        .and_then(Expression::span)
-        .unwrap_or(rumoca_core::Span::DUMMY);
+fn settled_warning(level: Option<&Expression>, owner: rumoca_core::Span) -> Option<Expression> {
+    let span = level.and_then(Expression::span).unwrap_or(owner);
     AssertionLevel::Warning.settled_expression(span)
 }
 
@@ -85,19 +91,20 @@ fn settle_boxed(
     levels: AssertionLevelLiterals,
     level: &mut Option<Box<Expression>>,
     condition: &mut Expression,
+    owner: rumoca_core::Span,
 ) {
     match levels.classify(level.as_deref()) {
         Some(AssertionLevel::Error) => *level = None,
         Some(AssertionLevel::Warning) => {
-            *level = settled_warning(level.as_deref()).map(Box::new);
-            without_events(condition);
+            *level = settled_warning(level.as_deref(), owner).map(Box::new);
+            without_events(condition, owner);
         }
         None => {}
     }
 }
 
 /// Wrap a warning-level condition in `noEvent` unless it already is.
-fn without_events(condition: &mut Expression) {
+fn without_events(condition: &mut Expression, owner: rumoca_core::Span) {
     if matches!(
         condition,
         Expression::BuiltinCall {
@@ -107,7 +114,7 @@ fn without_events(condition: &mut Expression) {
     ) {
         return;
     }
-    let span = condition.span().unwrap_or(rumoca_core::Span::DUMMY);
+    let span = condition.span().unwrap_or(owner);
     let inner = std::mem::replace(condition, Expression::Empty { span });
     *condition = Expression::BuiltinCall {
         function: BuiltinFunction::NoEvent,
@@ -125,13 +132,16 @@ fn settle_statements(statements: &mut [Statement], levels: AssertionLevelLiteral
 fn settle_statement(statement: &mut Statement, levels: AssertionLevelLiterals) {
     match statement {
         Statement::Assert {
-            condition, level, ..
-        } => settle_boxed(levels, level, condition),
+            condition,
+            level,
+            span,
+            ..
+        } => settle_boxed(levels, level, condition, *span),
         Statement::FunctionCall {
             comp,
             args,
             outputs,
-            ..
+            span,
         } if outputs.iter().all(Option::is_none)
             && rumoca_core::runtime_flow_action_function_short_name(comp.as_str())
                 == Some("assert")
@@ -140,10 +150,10 @@ fn settle_statement(statement: &mut Statement, levels: AssertionLevelLiterals) {
             match levels.classify(args.get(2)) {
                 Some(AssertionLevel::Error) => args.truncate(2),
                 Some(AssertionLevel::Warning) => {
-                    if let Some(settled) = settled_warning(args.get(2)) {
+                    if let Some(settled) = settled_warning(args.get(2), *span) {
                         args[2] = settled;
                     }
-                    without_events(&mut args[0]);
+                    without_events(&mut args[0], *span);
                 }
                 None => {}
             }
@@ -175,8 +185,11 @@ fn settle_when_equations(equations: &mut [flat::WhenEquation], levels: Assertion
     for equation in equations {
         match equation {
             flat::WhenEquation::Assert {
-                condition, level, ..
-            } => settle_boxed(levels, level, condition),
+                condition,
+                level,
+                span,
+                ..
+            } => settle_boxed(levels, level, condition, *span),
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,

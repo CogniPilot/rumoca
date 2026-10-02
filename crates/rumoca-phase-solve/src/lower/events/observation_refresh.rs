@@ -52,10 +52,9 @@ pub(super) fn derive_observation_refresh(
         seeded += 1;
     }
     if seeded != observed.len() {
-        return Err(LowerError::contract(
+        // The observed row that owns no scalar program has no span of its own.
+        return Err(LowerError::unspanned_non_computable(
             "an observed discrete row has no scalar observation row",
-            rows.first()
-                .map_or(rumoca_core::Span::DUMMY, |row| row.span),
         ));
     }
     let selected = select_refresh_closure(&rows);
