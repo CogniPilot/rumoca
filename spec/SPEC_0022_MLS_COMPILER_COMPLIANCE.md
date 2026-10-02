@@ -18,28 +18,28 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 |---------|-------|---------|
 | §1. Key Definitions | 46–57 | MLS terminology (component, element, flattening, etc.) |
 | §2. Compilation Pipeline | 58–73 | Source → Class Tree → Instance Tree → Flat → DAE → Simulation |
-| §3. Data Structures | 74–325 | Class tree, instance tree, modification env, connection set, DAE, type attributes, variability, class types, prefixes, arrays, state machines |
-| §4.1 LEX contracts | 326–345 | Contract catalog heading + lexical rules (13 contracts) |
-| §4.2 DECL contracts | 346–386 | Declaration rules (37 contracts) |
-| §4.3 INST contracts | 387–444 | Instantiation rules (56 contracts) |
-| §4.4 EXPR contracts | 445–489 | Expression/operator rules (41 contracts) |
-| §4.5 EQN contracts | 490–532 | Equation rules (38 contracts) |
-| §4.6 ALG contracts | 533–554 | Algorithm rules (18 contracts) |
-| §4.7 CONN contracts | 555–589 | Connection rules (30 contracts) |
-| §4.8 FUNC contracts | 590–632 | Function rules (40 contracts) |
-| §4.9 TYPE contracts | 633–673 | Type/interface rules (36 contracts) |
-| §4.10 ARR contracts | 673–719 | Array rules (44 contracts) |
-| §4.11 PKG contracts | 720–736 | Package/import rules (12 contracts) |
-| §4.12 OPREC contracts | 737–752 | Operator record rules (11 contracts) |
-| §4.13 SIM contracts | 753–767 | Simulation rules (10 contracts) |
-| §4.14 CLK contracts | 768–792 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 793–808 | Stream connector rules (11 contracts) |
-| §4.16 SM contracts | 809–861 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 862–883 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 882–897 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 898–923 | Category counts and totals |
-| §6. Compiler Phases | 924–973 | Phase input/output mapping |
-| §7. MLS Chapter Index | 974–1001 | MLS chapter → contract category mapping |
+| §3. Data Structures | 74–331 | Class tree, instance tree, modification env, connection set, DAE, type attributes, variability, class types, prefixes, arrays, state machines |
+| §4.1 LEX contracts | 332–351 | Contract catalog heading + lexical rules (13 contracts) |
+| §4.2 DECL contracts | 352–393 | Declaration rules (37 contracts) |
+| §4.3 INST contracts | 394–456 | Instantiation rules (58 contracts) |
+| §4.4 EXPR contracts | 457–502 | Expression/operator rules (41 contracts) |
+| §4.5 EQN contracts | 503–547 | Equation rules (40 contracts) |
+| §4.6 ALG contracts | 548–569 | Algorithm rules (18 contracts) |
+| §4.7 CONN contracts | 570–604 | Connection rules (30 contracts) |
+| §4.8 FUNC contracts | 605–649 | Function rules (40 contracts) |
+| §4.9 TYPE contracts | 650–690 | Type/interface rules (36 contracts) |
+| §4.10 ARR contracts | 691–739 | Array rules (44 contracts) |
+| §4.11 PKG contracts | 740–756 | Package/import rules (12 contracts) |
+| §4.12 OPREC contracts | 757–772 | Operator record rules (11 contracts) |
+| §4.13 SIM contracts | 773–787 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 788–812 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 813–829 | Stream connector rules (12 contracts) |
+| §4.16 SM contracts | 830–926 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 927–948 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 949–964 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 965–990 | Category counts and totals |
+| §6. Compiler Phases | 991–1040 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1041–1068 | MLS chapter → contract category mapping |
 
 ---
 
@@ -968,7 +968,7 @@ areas.
 |----------|--------|-------|
 | Lexical | LEX | 13 |
 | Declarations | DECL | 37 |
-| Instantiation | INST | 57 |
+| Instantiation | INST | 58 |
 | Expressions | EXPR | 41 |
 | Equations | EQN | 40 |
 | Algorithms | ALG | 18 |
@@ -980,7 +980,7 @@ areas.
 | Operator Records | OPREC | 11 |
 | Simulation | SIM | 10 |
 | Clocks/Synchronous | CLK | 20 |
-| Stream Connectors | STRM | 11 |
+| Stream Connectors | STRM | 12 |
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
@@ -1073,5 +1073,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 439 |
+| Total Contracts | 456 |
 | MLS Chapters Referenced | 21 |

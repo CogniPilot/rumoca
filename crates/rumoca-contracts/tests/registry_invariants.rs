@@ -144,3 +144,167 @@ fn contract_id_shaped(cell: &str) -> Option<&str> {
         && digits.chars().all(|c| c.is_ascii_digit());
     shaped.then_some(cell)
 }
+
+/// SPEC_0022's summary tables restate the catalog: the §5 per-category
+/// counts and total, the document summary total, and the section index
+/// (per-category contract counts and each section's line range). They are
+/// derived facts, so any drift from the catalog is caught here.
+#[test]
+fn spec_0022_summaries_match_the_catalog() {
+    let catalog = std::fs::read_to_string(spec_0022_path())
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", spec_0022_path().display()));
+    let mut by_prefix = std::collections::BTreeMap::<String, usize>::new();
+    for id in catalog_contract_ids(&catalog) {
+        *by_prefix.entry(split_contract_id(&id).0.to_string()).or_default() += 1;
+    }
+    let total: usize = by_prefix.values().sum();
+    let mut drift = Vec::new();
+
+    let summary = table_rows_after(&catalog, "## 5. Contract Summary by Category");
+    for cells in &summary {
+        let [_, prefix, count] = cells.as_slice() else {
+            continue;
+        };
+        let count = count.trim_matches('*');
+        if prefix.is_empty() {
+            if count != total.to_string() {
+                drift.push(format!("§5 total is {count}, catalog has {total}"));
+            }
+        } else if by_prefix.get(*prefix).map(usize::to_string).as_deref() != Some(count) {
+            drift.push(format!(
+                "§5 {prefix} count is {count}, catalog has {:?}",
+                by_prefix.get(*prefix)
+            ));
+        }
+    }
+    let summary_prefixes = summary
+        .iter()
+        .filter_map(|cells| cells.get(1).filter(|prefix| !prefix.is_empty()))
+        .map(|prefix| prefix.to_string())
+        .collect::<BTreeSet<_>>();
+    let catalog_prefixes = by_prefix.keys().cloned().collect::<BTreeSet<_>>();
+    if summary_prefixes != catalog_prefixes {
+        drift.push(format!(
+            "§5 lists {summary_prefixes:?}, catalog has {catalog_prefixes:?}"
+        ));
+    }
+
+    for cells in table_rows_after(&catalog, "## Document Summary") {
+        if let ["Total Contracts", count] = cells.as_slice()
+            && *count != total.to_string()
+        {
+            drift.push(format!("document summary total is {count}, catalog has {total}"));
+        }
+    }
+
+    drift.extend(section_index_drift(&catalog, &by_prefix));
+    assert!(drift.is_empty(), "SPEC_0022 summaries drift:\n{}", drift.join("\n"));
+}
+
+/// Rows (trimmed cells) of the first Markdown table after `heading`, header
+/// and separator rows excluded.
+fn table_rows_after<'a>(text: &'a str, heading: &str) -> Vec<Vec<&'a str>> {
+    text.lines()
+        .skip_while(|line| !line.starts_with(heading))
+        .skip(1)
+        .skip_while(|line| !line.starts_with('|'))
+        .take_while(|line| line.starts_with('|'))
+        .skip(2)
+        .map(|line| {
+            line.trim()
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect()
+        })
+        .collect()
+}
+
+/// The section number a `##`/`###` heading opens (`## 4. Contract Catalog`
+/// is `4`, `### 4.3 Instantiation ...` is `4.3`).
+fn heading_number(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("## ").or_else(|| line.strip_prefix("### "))?;
+    let number = rest.split_whitespace().next()?.trim_end_matches('.');
+    number
+        .split('.')
+        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        .then_some(number)
+}
+
+fn section_index_drift(
+    catalog: &str,
+    by_prefix: &std::collections::BTreeMap<String, usize>,
+) -> Vec<String> {
+    let lines = catalog.lines().collect::<Vec<_>>();
+    let mut headings = std::collections::BTreeMap::<&str, usize>::new();
+    for (index, line) in lines.iter().enumerate() {
+        if let Some(number) = heading_number(line) {
+            headings.entry(number).or_insert(index + 1);
+        }
+    }
+    let rows = table_rows_after(catalog, "### Section Index");
+    let numbers = rows
+        .iter()
+        .map(|cells| {
+            cells[0]
+                .trim_start_matches('§')
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('.')
+        })
+        .collect::<Vec<_>>();
+    // A section starts at its heading; the first numbered child of an
+    // unindexed parent (`§4.1` under `## 4. Contract Catalog`) also owns the
+    // parent heading.
+    let starts = numbers
+        .iter()
+        .map(|number| {
+            let parent = number.strip_suffix(".1").filter(|parent| !numbers.contains(parent));
+            parent
+                .and_then(|parent| headings.get(parent))
+                .or_else(|| headings.get(number))
+                .copied()
+        })
+        .collect::<Vec<_>>();
+    let mut drift = Vec::new();
+    for (row, cells) in rows.iter().enumerate() {
+        let Some(start) = starts[row] else {
+            drift.push(format!("section index row {} names no heading", cells[0]));
+            continue;
+        };
+        let end = match starts.get(row + 1) {
+            Some(Some(next)) => next - 1,
+            Some(None) => continue,
+            None => lines
+                .iter()
+                .enumerate()
+                .skip(start)
+                .find(|(_, line)| line.starts_with("## "))
+                .map_or(lines.len(), |(index, _)| index),
+        };
+        let expected = format!("{start}–{end}");
+        if cells.get(1) != Some(&expected.as_str()) {
+            drift.push(format!(
+                "section index {} lines are {:?}, expected {expected}",
+                cells[0],
+                cells.get(1)
+            ));
+        }
+        let prefix = cells[0].split_whitespace().nth(1).unwrap_or_default();
+        if let Some(count) = by_prefix.get(prefix) {
+            let stated = cells
+                .get(2)
+                .and_then(|content| content.split_once('('))
+                .and_then(|(_, rest)| rest.split_once(" contracts)"))
+                .map(|(count, _)| count);
+            if stated != Some(count.to_string().as_str()) {
+                drift.push(format!(
+                    "section index {} states {stated:?} contracts, catalog has {count}",
+                    cells[0]
+                ));
+            }
+        }
+    }
+    drift
+}
