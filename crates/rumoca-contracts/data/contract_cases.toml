@@ -1416,6 +1416,13 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'INST-056'
+case_id = 'inst_056_sibling_binding_selects_from_modified_constant'
+test_file = 'tests/inst_extends_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'LEX-001'
 case_id = 'lex_001_ascii_identifiers_non_ascii'
 test_file = 'tests/lex_contracts.rs'
@@ -2956,6 +2963,13 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'FUNC-039'
+case_id = 'func_039_protected_binding_reads_record_input_fields'
+test_file = 'tests/func_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'INST-009'
 case_id = 'inst_009_member_of_final_component_modification_rejected'
 test_file = 'tests/inst_contracts.rs'
@@ -3915,15 +3929,15 @@ kind = 'Sim'
 outcome = 'Accept'
 
 [[cases]]
-contract_id = 'INST-056'
-case_id = 'inst_056_member_tail_follows_each_occurrence'
+contract_id = 'INST-057'
+case_id = 'inst_057_member_tail_follows_each_occurrence'
 test_file = 'tests/inst_contracts.rs'
 kind = 'Sim'
 outcome = 'Accept'
 
 [[cases]]
-contract_id = 'INST-057'
-case_id = 'inst_057_redeclare_value_alias_selects_the_outer_redeclaration'
+contract_id = 'INST-058'
+case_id = 'inst_058_redeclare_value_alias_selects_the_outer_redeclaration'
 test_file = 'tests/inst_contracts.rs'
 kind = 'Sim'
 outcome = 'Accept'

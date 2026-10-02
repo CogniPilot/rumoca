@@ -1,6 +1,6 @@
 //! INST (Instantiation) contract tests - MLS §5, §7
 //!
-//! Tests for the 56 instantiation contracts defined in SPEC_0022.
+//! Tests for the 57 instantiation contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
@@ -1979,10 +1979,10 @@ fn inst_038_inner_outer_modification_accepted() {
 }
 
 // =============================================================================
-// INST-056 / INST-057: per-occurrence class selection through replaceable aliases
+// INST-057 / INST-058: per-occurrence class selection through replaceable aliases
 // =============================================================================
 
-const INST_056_057_MODEL: &str = r#"
+const INST_057_058_MODEL: &str = r#"
 package Media
   partial package PartialMedium
     replaceable partial model BaseProperties
@@ -2030,15 +2030,15 @@ end Plant;
 "#;
 
 #[test]
-fn inst_056_member_tail_follows_each_occurrence() {
-    let trace = rumoca_contracts::test_support::simulate_model(INST_056_057_MODEL, "Plant", 0.1);
+fn inst_057_member_tail_follows_each_occurrence() {
+    let trace = rumoca_contracts::test_support::simulate_model(INST_057_058_MODEL, "Plant", 0.1);
     assert_eq!(trace.final_value("sensorA.u"), 2.0);
     assert_eq!(trace.final_value("tB"), 1.0);
 }
 
 #[test]
-fn inst_057_redeclare_value_alias_selects_the_outer_redeclaration() {
-    let trace = rumoca_contracts::test_support::simulate_model(INST_056_057_MODEL, "Plant", 0.1);
+fn inst_058_redeclare_value_alias_selects_the_outer_redeclaration() {
+    let trace = rumoca_contracts::test_support::simulate_model(INST_057_058_MODEL, "Plant", 0.1);
     assert_eq!(trace.final_value("pair.a.medium.T"), 2.0);
     assert_eq!(trace.final_value("pair.b.medium.T"), 1.0);
 }

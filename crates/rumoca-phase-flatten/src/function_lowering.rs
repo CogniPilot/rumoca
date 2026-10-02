@@ -86,10 +86,17 @@ fn rewrite_decomposed_params_in_defaults(
         .chain(func.outputs.iter_mut())
         .chain(func.locals.iter_mut())
     {
-        if let Some(default) = &mut parameter.default {
-            *default = RecordFieldAccessRewriter { params }.rewrite_expression(default);
+        for expression in [
+            &mut parameter.default,
+            &mut parameter.min,
+            &mut parameter.max,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *expression = RecordFieldAccessRewriter { params }.rewrite_expression(expression);
             if reconstruct_whole_records {
-                *default = WholeRecordParamRewriter { params }.rewrite_expression(default);
+                *expression = WholeRecordParamRewriter { params }.rewrite_expression(expression);
             }
         }
     }

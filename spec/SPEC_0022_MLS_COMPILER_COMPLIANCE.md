@@ -21,12 +21,12 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §3. Data Structures | 74–325 | Class tree, instance tree, modification env, connection set, DAE, type attributes, variability, class types, prefixes, arrays, state machines |
 | §4.1 LEX contracts | 326–345 | Contract catalog heading + lexical rules (13 contracts) |
 | §4.2 DECL contracts | 346–386 | Declaration rules (37 contracts) |
-| §4.3 INST contracts | 387–444 | Instantiation rules (53 contracts) |
+| §4.3 INST contracts | 387–444 | Instantiation rules (56 contracts) |
 | §4.4 EXPR contracts | 445–489 | Expression/operator rules (41 contracts) |
 | §4.5 EQN contracts | 490–532 | Equation rules (38 contracts) |
 | §4.6 ALG contracts | 533–554 | Algorithm rules (18 contracts) |
 | §4.7 CONN contracts | 555–589 | Connection rules (30 contracts) |
-| §4.8 FUNC contracts | 590–632 | Function rules (38 contracts) |
+| §4.8 FUNC contracts | 590–632 | Function rules (39 contracts) |
 | §4.9 TYPE contracts | 633–673 | Type/interface rules (36 contracts) |
 | §4.10 ARR contracts | 673–719 | Array rules (44 contracts) |
 | §4.11 PKG contracts | 720–736 | Package/import rules (12 contracts) |
@@ -450,8 +450,9 @@ Defines state-to-state transitions with priority and timing control.
 | INST-053 | Conditional component removal | §5.6.2 | "Conditional components with false condition are removed and not part of simulation model"
 | INST-054 | Automatic inner creation | §5.4 | "If a unique non-partial class is used for all outer declarations of the same name lacking a matching inner declaration, an inner declaration of that class is automatically added at the top of the model and a diagnostic is given" (rumoca: WI013; conflicting classes EI015, partial class EI012) |
 | INST-055 | Extends redeclaration replaces element | §7.3 | "A redeclaration in the modification of an extends-clause replaces the inherited element; the derived class and its descendants see the replacing class under the element name" |
-| INST-056 | Occurrence-selected member class | §7.3 | A redeclaration modifies one occurrence, so a component declared through a replaceable alias (`Medium.BaseProperties medium`) therefore has its class selected per occurrence, and a reference `tank.medium.T` written outside `tank` (in an equation or a modifier binding) names the member of the class that occurrence of `tank.medium` selected; occurrences of one declaration that select different classes have no single member tail and are rejected |
-| INST-057 | Redeclare value through the enclosing occurrence | §7.3 | A redeclare value that names a replaceable element of the enclosing class (`Inner a(redeclare package Medium = MA)`) denotes the class that occurrence of the enclosing class selected for `MA`, which an outer redeclaration may have replaced, never the default of the lexical declaration |
+| INST-056 | Extends-modified package constant in sibling bindings | §7.2 | Modifications of an extends clause apply to the inherited elements, so a constant an extends modification binds (`extends TableBased(tableDensity = [...])`) has that value wherever the package is read, including inside the binding of a sibling constant (`poly_rho = fitting(tableDensity[:, 1], ...)`) and through an element selection. Rumoca: constant substitution reads a constant's binding in the package it is exposed through and resolves modified constants, whole or indexed, from that scope. Tested in `suite_core/fluid_function_data.rs` |
+| INST-057 | Occurrence-selected member class | §7.3 | A redeclaration modifies one occurrence, so a component declared through a replaceable alias (`Medium.BaseProperties medium`) therefore has its class selected per occurrence, and a reference `tank.medium.T` written outside `tank` (in an equation or a modifier binding) names the member of the class that occurrence of `tank.medium` selected; occurrences of one declaration that select different classes have no single member tail and are rejected |
+| INST-058 | Redeclare value through the enclosing occurrence | §7.3 | A redeclare value that names a replaceable element of the enclosing class (`Inner a(redeclare package Medium = MA)`) denotes the class that occurrence of the enclosing class selected for `MA`, which an outer redeclaration may have replaced, never the default of the lexical declaration |
 
 ### 4.4 Expression/Operator Contracts (EXPR)
 
@@ -643,6 +644,7 @@ Defines state-to-state transitions with priority and timing control.
 | FUNC-036 | ExternalObject lifecycle shape | §12.9.7 | "ExternalObject owner uses the specialized class `class`, directly extends ExternalObject, owns exactly non-replaceable constructor and destructor functions, and owns no other elements" |
 | FUNC-037 | ExternalObject lifecycle signatures | §12.9.7 | "Constructor has exactly one output of the owning ExternalObject type; destructor has exactly one input of that type and no outputs" |
 | FUNC-038 | ExternalObject lifecycle calls | §12.9.7 | "Constructor and destructor cannot be called explicitly; each constructed object is constructed and destroyed exactly once" |
+| FUNC-039 | Component bindings read inputs | §12.4.4 | Output and protected component declaration bindings are evaluated in the function, with its inputs available, including fields of a record input (`Real k1 = f(if data.zeta1_at_a then data.diameter_a else data.diameter_b)`). Rumoca: record inputs are decomposed into field inputs, and the declaration expressions of outputs and locals are rewritten to those fields like the algorithm section. Tested in `suite_core/fluid_function_data.rs` |
 
 ### 4.9 Type/Interface Contracts (TYPE)
 
@@ -965,12 +967,12 @@ areas.
 |----------|--------|-------|
 | Lexical | LEX | 13 |
 | Declarations | DECL | 37 |
-| Instantiation | INST | 56 |
+| Instantiation | INST | 57 |
 | Expressions | EXPR | 41 |
 | Equations | EQN | 40 |
 | Algorithms | ALG | 18 |
 | Connections | CONN | 30 |
-| Functions | FUNC | 38 |
+| Functions | FUNC | 39 |
 | Types/Interfaces | TYPE | 36 |
 | Arrays | ARR | 44 |
 | Packages | PKG | 12 |
@@ -981,7 +983,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **451** |
+| **Total** | | **453** |
 
 ---
 

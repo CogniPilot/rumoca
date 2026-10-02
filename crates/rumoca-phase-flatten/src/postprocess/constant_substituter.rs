@@ -296,7 +296,15 @@ fn substitute_indexed_constant_var_ref(
         return Ok(None);
     }
 
-    let constant_expr = if name.is_generated() {
+    // MLS §7.2: an element of a constant an extends modification of the
+    // exposing package binds (`extends Base(table = [...])`, read as `table[:, 1]`)
+    // selects from that binding, exactly as an unsubscripted read does.
+    let modified = (!name.is_generated())
+        .then(|| modified_constant_value(name.as_str(), env))
+        .flatten();
+    let constant_expr = if let Some((key, value)) = modified {
+        substitute_resolved_generated_constant(&key, value, span, env)?
+    } else if name.is_generated() {
         let Some(value) = resolve_constant_value_expr(name.as_str(), env.ctx) else {
             return Ok(None);
         };
@@ -395,11 +403,8 @@ fn substitute_source_scalar_var_ref(
     // MLS §7.2: a constant an extends modification of the exposing package
     // binds (`extends Base(k = 1)`) takes that binding, which outranks the
     // declaration default and is keyed by the rendered exposing-package name.
-    let key = name.as_str();
-    if env.ctx.modified_constant_keys.contains(key)
-        && let Some(value) = resolve_constant_value_expr(key, env.ctx)
-    {
-        return substitute_resolved_generated_constant(key, value, span, env).map(Some);
+    if let Some((key, value)) = modified_constant_value(name.as_str(), env) {
+        return substitute_resolved_generated_constant(&key, value, span, env).map(Some);
     }
     let Some((identity, value)) = resolve_source_constant(name, env.ctx) else {
         return Ok(None);
@@ -547,6 +552,27 @@ fn substitute_resolved_generated_constant(
     substitute_with_env(expr.clone().with_span(span), inner)
 }
 
+/// The binding an extends modification of the exposing package gives the
+/// constant `key` names, read in `env.scope` (MLS §7.2): the rendered
+/// exposing-package key itself, or, for a reference written inside the
+/// package (`tableDensity` in a sibling binding), its scoped candidates.
+fn modified_constant_value<'e>(
+    key: &str,
+    env: ConstantSubstitutionEnv<'e>,
+) -> Option<(String, &'e rumoca_core::Expression)> {
+    std::iter::once(key.to_string())
+        .chain(
+            scoped_lookup_candidates_with_scope(key, env.scope)
+                .into_iter()
+                .map(|(candidate, _)| candidate),
+        )
+        .find(|candidate| env.ctx.modified_constant_keys.contains(candidate.as_str()))
+        .and_then(|candidate| {
+            let value = resolve_constant_value_expr(&candidate, env.ctx)?;
+            Some((candidate, value))
+        })
+}
+
 fn substitute_resolved_source_constant(
     display: &str,
     semantic_id: SemanticConstantId,
@@ -563,6 +589,9 @@ fn substitute_resolved_source_constant(
             span,
         ));
     }
+    // The binding reads the package the constant is exposed through, so a
+    // sibling constant it names resolves there (MLS §5.3.2).
+    let exposing_scope = parent_component_scope(display);
     let frame = ConstantExpansion {
         identity,
         display,
@@ -570,6 +599,11 @@ fn substitute_resolved_source_constant(
     };
     let inner = ConstantSubstitutionEnv {
         expanding: Some(&frame),
+        scope: if exposing_scope.is_empty() {
+            env.scope
+        } else {
+            &exposing_scope
+        },
         ..env
     };
     substitute_with_env(expr.clone().with_span(span), inner)

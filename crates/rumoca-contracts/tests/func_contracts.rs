@@ -1,6 +1,6 @@
 //! FUNC (Function) contract tests - MLS §12
 //!
-//! Tests for the 38 function contracts defined in SPEC_0022.
+//! Tests for the 39 function contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
@@ -1323,4 +1323,47 @@ fn func_038_explicit_destructor_call_rejected() {
         "M",
         "ER134",
     );
+}
+
+// =============================================================================
+// FUNC-039: Component bindings read inputs (MLS §12.4.4)
+// =============================================================================
+
+#[test]
+fn func_039_protected_binding_reads_record_input_fields() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        package F1
+          record Data
+            Real diameter_a;
+            Real diameter_b;
+            Boolean zeta1_at_a = true;
+            Real zeta1;
+          end Data;
+          function k
+            input Real D;
+            input Real zeta;
+            output Real y;
+          algorithm
+            y := zeta/D^2;
+          end k;
+          function loss
+            input Real m;
+            input Data data;
+            output Real dp;
+          protected
+            Real k1 = k(if data.zeta1_at_a then data.diameter_a else data.diameter_b, data.zeta1);
+          algorithm
+            dp := k1*m;
+          end loss;
+          model Top
+            parameter Data data(diameter_a = 0.1, diameter_b = 0.2, zeta1 = 1);
+            Real dp = loss(1 + time, data);
+          end Top;
+        end F1;
+    "#,
+        "F1.Top",
+        1.0,
+    );
+    assert!((trace.final_value("dp") - 200.0).abs() < 1e-9);
 }
