@@ -464,6 +464,28 @@ pub enum FlattenError {
         #[label("non-uniform `fixed` on a parameter or constant")]
         span: Span,
     },
+
+    /// A function reached through several packages reads a constant those
+    /// packages give different values (MLS §7.3).
+    ///
+    /// One function instance is shared by every exposure, so a constant its
+    /// declarations or body read has one value; packages that disagree leave
+    /// the read without one, and no package is preferred over another.
+    #[error(
+        "constant `{name}` read by a function exposed through {packages} has a different value in each package"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF034),
+        help(
+            "MLS §7.3: a function shared by several packages reads one value of each constant; give the packages the same value, or call the function through one package"
+        )
+    )]
+    ConflictingExposedConstant {
+        name: String,
+        packages: String,
+        #[label("read through packages that disagree on its value")]
+        span: Span,
+    },
 }
 
 impl FlattenError {
@@ -501,6 +523,19 @@ impl FlattenError {
             b: String
         }
     );
+
+    /// Create a ConflictingExposedConstant error.
+    pub fn conflicting_exposed_constant(
+        name: impl Into<String>,
+        packages: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::ConflictingExposedConstant {
+            name: name.into(),
+            packages: packages.into(),
+            span,
+        }
+    }
 
     /// Create a CyclicConstantBinding error.
     pub fn cyclic_constant_binding(
@@ -782,6 +817,7 @@ impl PhaseError for FlattenError {
             | Self::UnhonoredFunctionRedeclare { span, .. }
             | Self::InvalidDerivativeAnnotation { span, .. }
             | Self::NonUniformParameterFixed { span, .. }
+            | Self::ConflictingExposedConstant { span, .. }
             | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
             | Self::CyclicConstantBinding { span, .. }
             | Self::InvalidConnectionGraph { span, .. }

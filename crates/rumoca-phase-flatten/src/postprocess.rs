@@ -281,13 +281,13 @@ fn substitute_function_bodies(
     functions: &mut flat::VarNameIndexMap<rumoca_core::Function>,
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
-    exposures: &rustc_hash::FxHashMap<rumoca_core::FunctionInstanceId, String>,
+    exposures: &rustc_hash::FxHashMap<rumoca_core::FunctionInstanceId, Vec<String>>,
 ) -> Result<(), FlattenError> {
     for function in functions.values_mut() {
         let exposure = function
             .instance_id
             .and_then(|instance| exposures.get(&instance))
-            .map(String::as_str);
+            .map_or(&[][..], Vec::as_slice);
         materialize_function_shape_constants(function, ctx, exposure)?;
         let function_locals: HashSet<String> = function
             .inputs

@@ -49,7 +49,7 @@ pub(super) fn substitute_known_constants_expr_with_options(
             scope,
             prefer_scoped_parameters,
             expanding: None,
-            exposure: None,
+            exposures: &[],
         },
     )
 }
@@ -310,7 +310,7 @@ fn substitute_indexed_constant_var_ref(
             return Ok(None);
         };
         substitute_resolved_generated_constant(name.as_str(), value, span, env)?
-    } else if let Some((identity, value)) = resolve_exposed_source_constant(name, env) {
+    } else if let Some((identity, value)) = resolve_exposed_source_constant(name, span, env)? {
         substitute_resolved_source_constant(name.as_str(), identity, value, span, env)?
     } else {
         if name.target_def_id().is_none()
@@ -407,7 +407,7 @@ fn substitute_source_scalar_var_ref(
     if let Some((key, value)) = modified_constant_value(name.as_str(), env) {
         return substitute_resolved_generated_constant(&key, value, span, env).map(Some);
     }
-    let Some((identity, value)) = resolve_exposed_source_constant(name, env) else {
+    let Some((identity, value)) = resolve_exposed_source_constant(name, span, env)? else {
         return Ok(None);
     };
     Ok(Some(substitute_resolved_source_constant(
@@ -549,7 +549,7 @@ fn substitute_resolved_generated_constant(
         scope,
         prefer_scoped_parameters: env.prefer_scoped_parameters,
         expanding: Some(&frame),
-        exposure: env.exposure,
+        exposures: env.exposures,
     };
     substitute_with_env(expr.clone().with_span(span), inner)
 }
@@ -680,18 +680,18 @@ pub(super) fn substitute_known_constants_statement(
     locals: &HashSet<String>,
     scope: &str,
 ) -> Result<(), FlattenError> {
-    substitute_exposed_constants_statement(statement, ctx, live_vars, locals, scope, None)
+    substitute_exposed_constants_statement(statement, ctx, live_vars, locals, scope, &[])
 }
 
 /// [`substitute_known_constants_statement`] inside a function body exposed
-/// through `exposure` (see `function_exposures`).
+/// through `exposures` (see `function_exposures`).
 pub(super) fn substitute_exposed_constants_statement(
     statement: &mut rumoca_core::Statement,
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
     scope: &str,
-    exposure: Option<&str>,
+    exposures: &[String],
 ) -> Result<(), FlattenError> {
     *statement = KnownConstantSubstituter {
         env: ConstantSubstitutionEnv {
@@ -701,40 +701,43 @@ pub(super) fn substitute_exposed_constants_statement(
             scope,
             prefer_scoped_parameters: false,
             expanding: None,
-            exposure,
+            exposures,
         },
     }
     .rewrite_statement(statement)?;
     Ok(())
 }
 
-/// Resolve a source constant reference, preferring the value the package
-/// that exposes the enclosing function gives the declaration (MLS §7.3).
+/// Resolve a source constant reference, taking the value the packages that
+/// expose the enclosing function give the declaration (MLS §7.3).
 fn resolve_exposed_source_constant<'a>(
     name: &rumoca_core::Reference,
+    span: rumoca_core::Span,
     env: ConstantSubstitutionEnv<'a>,
-) -> Option<(SemanticConstantId, &'a rumoca_core::Expression)> {
-    if let Some(package) = env.exposure
-        && let Some(declaration) = name.target_def_id()
-        && let Some(value) = env
-            .ctx
-            .constant_values_by_scope
-            .get(&(package.to_string(), declaration))
+) -> Result<Option<(SemanticConstantId, &'a rumoca_core::Expression)>, FlattenError> {
+    if let Some(declaration) = name.target_def_id()
+        && let Some(value) = super::function_exposures::exposed_constant_value(
+            env.ctx,
+            env.exposures,
+            declaration,
+            name.as_str(),
+            span,
+        )?
     {
-        return Some((SemanticConstantId::Declaration(declaration), value));
+        return Ok(Some((SemanticConstantId::Declaration(declaration), value)));
     }
-    resolve_source_constant(name, env.ctx)
+    Ok(resolve_source_constant(name, env.ctx))
 }
 
 /// Fold known constants in one expression of a function exposed through
-/// `exposure` (see `function_exposures`).
+/// `exposures` (see `function_exposures`).
 pub(super) fn substitute_exposed_constants_expr(
     expr: rumoca_core::Expression,
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
     scope: &str,
-    exposure: Option<&str>,
+    exposures: &[String],
 ) -> Result<rumoca_core::Expression, FlattenError> {
     substitute_with_env(
         expr,
@@ -745,7 +748,7 @@ pub(super) fn substitute_exposed_constants_expr(
             scope,
             prefer_scoped_parameters: false,
             expanding: None,
-            exposure,
+            exposures,
         },
     )
 }

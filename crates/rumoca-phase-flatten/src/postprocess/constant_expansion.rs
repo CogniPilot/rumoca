@@ -72,9 +72,9 @@ pub(super) struct ConstantSubstitutionEnv<'a> {
     pub(super) scope: &'a str,
     pub(super) prefer_scoped_parameters: bool,
     pub(super) expanding: Option<&'a ConstantExpansion<'a>>,
-    /// The package that exposes the function whose body is being folded
-    /// (see `function_exposures`); `None` outside function bodies.
-    pub(super) exposure: Option<&'a str>,
+    /// The packages that expose the function whose body is being folded
+    /// (see `function_exposures`); empty outside function bodies.
+    pub(super) exposures: &'a [String],
 }
 
 impl<'a> ConstantSubstitutionEnv<'a> {
@@ -86,7 +86,7 @@ impl<'a> ConstantSubstitutionEnv<'a> {
             scope,
             prefer_scoped_parameters: self.prefer_scoped_parameters,
             expanding: self.expanding,
-            exposure: self.exposure,
+            exposures: self.exposures,
         }
     }
 

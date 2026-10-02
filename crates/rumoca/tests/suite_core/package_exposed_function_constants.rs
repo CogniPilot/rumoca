@@ -70,3 +70,93 @@ fn a_redeclared_record_and_function_use_the_exposing_package_constants() {
         assert!((value - expected).abs() < 1e-12, "y({time}) = {value}");
     }
 }
+
+/// A helper called without a prefix from functions of two packages reads
+/// the value the exposing package gives its constant: packages that agree
+/// share it, and packages that disagree each get their own (no package is
+/// read through another). A single instance exposed through packages that
+/// disagree is refused (EF034, `function_exposures` unit tests).
+const SHARED_HELPER: &str = r#"
+package Base
+  constant Real k = 1;
+  function h
+    input Real x;
+    output Real y;
+  algorithm
+    y := k*x;
+  end h;
+  function g
+    input Real x;
+    output Real y;
+  algorithm
+    y := h(x);
+  end g;
+end Base;
+package A
+  extends Base(k = 2);
+end A;
+package B
+  extends Base(k = 2);
+end B;
+package C
+  extends Base(k = 3);
+end C;
+model Agree
+  Real ya = A.g(time);
+  Real yb = B.g(time);
+end Agree;
+model Disagree
+  Real ya = A.g(time);
+  Real yc = C.g(time);
+end Disagree;
+"#;
+
+#[test]
+fn a_helper_shared_by_packages_that_agree_reads_their_value() {
+    let compiled = Compiler::new()
+        .model("Agree")
+        .compile_str(SHARED_HELPER, "SharedHelper.mo")
+        .unwrap_or_else(|error| panic!("Agree compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .expect("Agree simulates");
+    for name in ["ya", "yb"] {
+        let column = result
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("{name} is recorded"));
+        let last = *result.data[column].last().expect("samples");
+        assert!((last - 2.0).abs() < 1e-12, "{name}(1) = {last}");
+    }
+}
+
+#[test]
+fn packages_that_disagree_each_read_their_own_value() {
+    let compiled = Compiler::new()
+        .model("Disagree")
+        .compile_str(SHARED_HELPER, "SharedHelper.mo")
+        .unwrap_or_else(|error| panic!("Disagree compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .expect("Disagree simulates");
+    for (name, expected) in [("ya", 2.0), ("yc", 3.0)] {
+        let column = result
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("{name} is recorded"));
+        let last = *result.data[column].last().expect("samples");
+        assert!((last - expected).abs() < 1e-12, "{name}(1) = {last}");
+    }
+}
