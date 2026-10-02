@@ -190,6 +190,7 @@ mod requested_states;
 mod root_time_event_coincidence;
 mod sampled_integral_consistency;
 mod sampled_timer_accuracy;
+mod selected_package_vectorization;
 mod semi_linear_zero_flow;
 mod state_select_priorities;
 mod switched_integral_accuracy;

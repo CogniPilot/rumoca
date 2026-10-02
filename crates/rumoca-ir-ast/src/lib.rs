@@ -341,6 +341,42 @@ impl<'tree> ClassDefIndex<'tree> {
         })
     }
 
+    /// Prove that a function-call exposure path selects one function at
+    /// translation time: every enclosing segment is transitively
+    /// non-replaceable (MLS 3.7 §6.3.1), so the last segment, the function,
+    /// is the member that fixed class selects, even when the function is
+    /// declared `replaceable` there. A long function needs nothing more; a
+    /// short function alias must name a transitively non-replaceable class.
+    /// This is the documented SPEC_0022 FUNC-026 extension for MLS §12.4.6
+    /// vectorized calls through a selected package.
+    pub fn proves_selected_function_path(&self, path: impl IntoIterator<Item = DefId>) -> bool {
+        let path = path.into_iter().collect::<Vec<_>>();
+        let Some((function, prefix)) = path.split_last() else {
+            return false;
+        };
+        let mut proven = FxHashMap::default();
+        let mut active = FxHashSet::default();
+        let prefix_proven = prefix.iter().all(|def_id| {
+            prove_transitively_non_replaceable_reference(self, *def_id, &mut proven, &mut active)
+        });
+        let Some(class) = self.get(*function) else {
+            return false;
+        };
+        prefix_proven
+            && !prefix.is_empty()
+            && class.class_type == rumoca_core::ClassType::Function
+            && (class.end_name_token.is_some()
+                || class.extends.len() == 1
+                    && class.extends[0].base_def_id.is_some_and(|base| {
+                        prove_transitively_non_replaceable_reference(
+                            self,
+                            base,
+                            &mut proven,
+                            &mut active,
+                        )
+                    }))
+    }
+
     fn insert_class_tree(
         &mut self,
         class_def: &'tree ClassDef,

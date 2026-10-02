@@ -576,9 +576,10 @@ fn request_proves_transitive_non_replaceability(
                 .parts()
                 .iter()
                 .all(|part| !part.ident.contains('.'))
-            && class_index.proves_transitively_non_replaceable_path(
+            && (class_index.proves_transitively_non_replaceable_path(
                 reference.parts().iter().map(|part| part.def_id),
-            )
+            ) || class_index
+                .proves_selected_function_path(reference.parts().iter().map(|part| part.def_id)))
     })
 }
 
