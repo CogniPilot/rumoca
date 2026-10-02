@@ -5,6 +5,12 @@ use rumoca_eval_solve::dense_basis::DenseStageMatrix;
 use rumoca_eval_solve::{TypedValue, eval_pure_call, eval_pure_call_directional};
 use rumoca_ir_solve as solve;
 
+/// Units in the last place a settled trial residual may keep relative to the
+/// magnitude of the terms it balances (SPEC_0053). Like the runtime projection's
+/// `scaled_tolerance` over each unknown's `InitializationUnknownScale`, the bound
+/// follows the scale of the quantity, never a looser absolute threshold.
+const RESIDUAL_ROUNDING: f64 = 16.0 * f64::EPSILON;
+
 /// Trial values never become runtime seeds or initialization equations.
 pub(super) struct TrialPoint {
     values: Vec<Option<Vec<f64>>>,
@@ -105,8 +111,15 @@ impl TrialPoint {
         columns: &[(FormalStageCoordinate<'_, '_>, usize)],
     ) -> Result<DenseStageMatrix, StructuralError> {
         for _ in 0..12 {
-            let (residual, matrix) = self.evaluate(programs, stage, columns)?;
-            if residual.iter().all(|r| r.abs() <= 1e-10) {
+            let (residual, matrix, scales) = self.evaluate(programs, stage, columns)?;
+            // A constraint balancing large terms cannot reach an absolute bound
+            // below its own rounding: it is settled once its residual is within
+            // the rounding of the linearized term magnitudes |J_ij| |x_j|.
+            if residual
+                .iter()
+                .zip(&scales)
+                .all(|(r, scale)| r.abs() <= 1e-10 || r.abs() <= RESIDUAL_ROUNDING * scale)
+            {
                 return Ok(matrix);
             }
             let step = matrix
@@ -129,9 +142,18 @@ impl TrialPoint {
         programs: &FormalDerivativePrograms<'_, '_, '_>,
         stage: &FormalStageProgram<'_, '_, '_>,
         columns: &[(FormalStageCoordinate<'_, '_>, usize)],
-    ) -> Result<(Vec<f64>, DenseStageMatrix), StructuralError> {
+    ) -> Result<(Vec<f64>, DenseStageMatrix, Vec<f64>), StructuralError> {
         let mut residual = Vec::new();
         let mut matrix = Vec::new();
+        let magnitudes = columns
+            .iter()
+            .map(|(coordinate, scalar)| {
+                self.values[coordinate.value().index() as usize]
+                    .as_ref()
+                    .map(|values| values[*scalar].abs())
+                    .ok_or_else(|| failure("trial column has no numeric value"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         for equation in stage.equations() {
             let arguments = equation
                 .inputs()
@@ -149,9 +171,18 @@ impl TrialPoint {
                 programs, equation, &arguments, columns, count,
             )?);
         }
+        let scales = matrix
+            .chunks(columns.len().max(1))
+            .map(|row| {
+                row.iter()
+                    .zip(&magnitudes)
+                    .map(|(entry, magnitude)| entry.abs() * magnitude)
+                    .sum()
+            })
+            .collect();
         let matrix = DenseStageMatrix::new(residual.len(), columns.len(), &matrix)
             .map_err(|e| failure(format!("stage Jacobian: {e:?}")))?;
-        Ok((residual, matrix))
+        Ok((residual, matrix, scales))
     }
 
     fn argument(
