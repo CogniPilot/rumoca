@@ -574,3 +574,24 @@ end ArrayBistable;
     );
     Ok(())
 }
+
+/// MLS §3.7.4.4 makes both operands Real expressions; an Integer operand is
+/// one by the implicit conversion of §10.6.13. `Modelica.Fluid.Machines`
+/// writes `homotopy(if s > 0 then s/rho else 0, if open then s/rho0 else 0)`,
+/// whose simplified operand folds to the Integer literal `0`.
+#[test]
+fn reads_actual_with_an_integer_operand() -> Result<(), Box<dyn std::error::Error>> {
+    let source = r#"
+model IntegerOperand
+  parameter Boolean open = false;
+  Real s = time - 0.5;
+  Real v = homotopy(if s > 0 then 2*s else 0, if open then s else 0);
+  Real w = homotopy(1, 0);
+end IntegerOperand;
+"#;
+    let sim = simulate(source, "IntegerOperand", 1.0)?;
+    assert_close(last(&sim, "v"), 1.0, 1e-9, "v(1)");
+    assert_close(first(&sim, "v"), 0.0, 1e-9, "v(0)");
+    assert_close(last(&sim, "w"), 1.0, 1e-12, "w");
+    Ok(())
+}

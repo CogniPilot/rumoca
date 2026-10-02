@@ -487,11 +487,11 @@ Defines state-to-state transitions with priority and timing control.
 | EXPR-027 | delay expr type | §3.7.2 | "Expression shall be subtype of Real, Integer, Boolean, or enumeration" |
 | EXPR-028 | delay time type | §3.7.2 | "Time arguments shall be subtypes of Real" |
 | EXPR-029 | delay delayTime param | §3.7.2 | "When delayMax not provided, delayTime > 0 shall be parameter expression" |
-| EXPR-030 | spatialDistribution params | §3.7.4.1 | "initialPoints and initialValues shall be parameter expressions of equal size" |
-| EXPR-031 | spatialDistribution no vectorize | §3.7.4.1 | "Operator cannot be vectorized according to §12.4.6" |
+| EXPR-030 | spatialDistribution params | §3.7.2.2 | "initialPoints and initialValues shall be parameter expressions of equal size" |
+| EXPR-031 | spatialDistribution no vectorize | §3.7.2.2 | "Operator cannot be vectorized according to §12.4.6" |
 | EXPR-032 | cardinality scope | §3.7.4.1 | "Should only be used in condition of assert and if-statements without connect" |
 | EXPR-033 | cardinality not in function | §3.7.4.1 | "cardinality operator not allowed inside function classes" |
-| EXPR-034 | homotopy types | §3.7.4.3 | "Scalar expressions actual and simplified are subtypes of Real" |
+| EXPR-034 | homotopy types | §3.7.4.2 | "Scalar expressions actual and simplified are subtypes of Real". An Integer operand is a Real expression by the implicit Integer-to-Real conversion (§10.6.13), so `homotopy(if s > 0 then s/rho else 0, 0)` is a Real homotopy; both operands share one shape and the result is Real. |
 | EXPR-035 | inStream not in function | §3.7.4 | "inStream operator not allowed inside function classes" |
 | EXPR-036 | actualStream not in function | §3.7.4 | "actualStream operator not allowed inside function classes" |
 | EXPR-037 | pre not in function | §3.7.5 | "pre operator is not allowed inside function classes" |

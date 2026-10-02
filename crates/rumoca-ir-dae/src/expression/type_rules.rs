@@ -556,12 +556,17 @@ fn homotopy_result(
 ) -> Result<ValueType, DaeConstructionError> {
     expect_arity(arguments, 2, at)?;
     // MLS §3.7.4.4: `actual` and `simplified` are Real expressions of one
-    // common shape; an array homotopy blends each element independently.
+    // common shape; an array homotopy blends each element independently. An
+    // Integer argument is a Real expression by the implicit conversion of
+    // MLS §10.6.13 (`homotopy(if s > 0 then s/rho else 0, 0)` in
+    // `Modelica.Fluid.Machines`).
     let simplified = storage.expr_type(arguments[1], at)?;
-    if actual.scalar_type() != ScalarType::Real || simplified != &actual {
+    expect_numeric(actual.scalar_type(), at)?;
+    expect_numeric(simplified.scalar_type(), at)?;
+    if simplified.dimensions() != actual.dimensions() {
         return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
     }
-    Ok(actual)
+    Ok(ValueType::array(ScalarType::Real, actual.dimensions()))
 }
 
 fn size_result(
