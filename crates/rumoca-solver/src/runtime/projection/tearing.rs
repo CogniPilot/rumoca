@@ -41,7 +41,9 @@ use super::{
     TornBlock, implicit_selected_jacobian_v_rows,
 };
 
-use rumoca_eval_solve::projection_policy::{TORN_BACKTRACK_STEPS, TORN_OUTER_MAX_ITERS};
+use rumoca_eval_solve::projection_policy::{
+    TORN_BACKTRACK_STEPS, TORN_OUTER_MAX_ITERS, TORN_SUFFICIENT_DECREASE,
+};
 
 /// Attempt the torn solve of one coupled block.
 ///
@@ -567,7 +569,8 @@ fn line_search_step<M: ImplicitProjectionModel>(
     }
     let norm = scaled_residual_norm(&residual, step.row_scales);
     let accepted = norm.is_finite()
-        && (scaled_residual_converged(&residual, step.row_scales, step.tol) || norm < step.before);
+        && (scaled_residual_converged(&residual, step.row_scales, step.tol)
+            || norm <= (1.0 - TORN_SUFFICIENT_DECREASE * step.alpha) * step.before);
     Ok(accepted.then_some(residual))
 }
 

@@ -40,6 +40,20 @@ pub const TORN_OUTER_MAX_ITERS: usize = 64;
 /// Maximum step halvings in the reduced Newton line search.
 pub const TORN_BACKTRACK_STEPS: usize = 24;
 
+/// Fraction of the scaled residual norm a reduced Newton trial at step
+/// fraction `alpha` must remove to be accepted: the trial norm may be at most
+/// `(1 - TORN_SUFFICIENT_DECREASE * alpha)` times the norm it starts from.
+///
+/// A Newton step over a tear whose residual is a square-root characteristic of
+/// it (a flow `m(dp)` driven to a fixed value through the inverse of a quadratic
+/// pressure loss) lands near the mirror image of the start: the residual flips
+/// sign and shrinks by a few percent. Accepting any strict decrease lets the
+/// iteration oscillate across the root for every iteration it has; requiring
+/// this decrease halves the step instead, and the halved step lands at the root
+/// of such a characteristic. A smooth residual near its root loses far more than
+/// half its norm in a full Newton step, so the full step stays accepted there.
+pub const TORN_SUFFICIENT_DECREASE: f64 = 0.5;
+
 /// Whether a colored projection Jacobian evaluates each application program
 /// once with one tangent lane per color that calls it
 /// (`rumoca_ir_solve::ColoredTangentPlan`) instead of once per color. Each

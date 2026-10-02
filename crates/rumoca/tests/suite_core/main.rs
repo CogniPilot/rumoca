@@ -233,6 +233,7 @@ mod structured_family_corner_lowering;
 mod terminate_when_regression;
 mod tiered_models;
 mod time_event_when_activation;
+mod torn_square_root_characteristic;
 mod trial_residual_scale;
 mod type_attribute_inheritance;
 mod variability_classes;

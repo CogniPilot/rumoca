@@ -63,6 +63,7 @@ static int {{ name }}({{ signature }}) {
 #define RMC_TRUST_FRACTION {{ me.policy.trust_fraction }}
 #define RMC_TORN_ITERS {{ me.policy.torn_iters }}
 #define RMC_TORN_BACKTRACKS {{ me.policy.torn_backtracks }}
+#define RMC_TORN_DECREASE {{ me.policy.torn_decrease }}
 #define RMC_SEED_LEN {{ me.seed_len if me.seed_len > 0 else 1 }}
 #define RMC_DWORK {{ me.work.doubles }}
 #define RMC_SWORK {{ me.work.sizes }}
@@ -617,7 +618,7 @@ static int rmc_torn_trial(ModelInstance* m, const RmcBlock* b, const double* bas
     if (swept <= 0) return swept;
     if (!rmc_all_finite(residual, b->k)) return 0;
     double norm = rmc_scaled_norm(residual, rscale, b->k);
-    return isfinite(norm) && (rmc_scaled_converged(m->rmc_tol, residual, rscale, b->k) || norm < before) ? 1 : 0;
+    return isfinite(norm) && (rmc_scaled_converged(m->rmc_tol, residual, rscale, b->k) || norm <= (1.0 - RMC_TORN_DECREASE * alpha) * before) ? 1 : 0;
 }
 /* tearing.rs: recovered_correction_converged */
 static bool rmc_recovered_converged(double tol, const RmcBlock* b, const double* base, const double* recovered, const double* delta) {
