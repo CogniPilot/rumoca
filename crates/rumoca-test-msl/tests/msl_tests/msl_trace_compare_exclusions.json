@@ -469,6 +469,20 @@
       "retired_by": "event_instant_alignment"
     },
     {
+      "model_name": "Modelica.StateGraph.Examples.ControlledTanks",
+      "kind": "reference_failure",
+      "reason": "OMC a96aa1a-cmake stops at t = 13 s with too many event iterations, so the parity harness records the reference as an error and writes no reference trace. At that instant the start button is released while the stop button is pressed, and the two RadioButtonSource blocks reset each other (start.reset = {stop.on, shut.on}, stop.reset = {start.on, shut.on}); OMC still fails with the event-iteration limit raised to 1000. Up to that instant the Rumoca trace agrees with the result OMC writes before it stops, and after it Rumoca pauses the process as the model documentation specifies for the stop button. This is a reference-generation failure, not strict-high credit.",
+      "evidence": {
+        "facts": [
+          "OMC log: Simulation terminated due to too many, i.e. 20, event iterations (also with -mei=1000); the last result row OMC writes is t = 13",
+          "harness omc_simulation_reference status: error, result_file null",
+          "Rumoca vs the OMC-written result over t in [0, 13): 104 of 104 shared channels, max abs difference 8.7e-6 (tank1.level, range 0.98) away from event instants",
+          "Rumoca at t = 13: start.on false, stop.on true, valve1, valve2 and valve3 closed until the start press at t = 15; at t = 21 shut.on true opens valve2 and valve3"
+        ],
+        "artifact": "msl:Modelica.StateGraph.Examples.ControlledTanks"
+      }
+    },
+    {
       "model_name": "Modelica.Thermal.FluidHeatFlow.Examples.ParallelPumpDropOut",
       "kind": "model_issue",
       "reason": "The DoubleRamp pump drop-out holds V_flow at exactly zero during t in [0.4, 0.6] s. At exactly zero flow the semiLinear outflow enthalpy observables (pipe T_b, dT, and flowPort h aliases; 9 deviation plus 6 minor of 121 channels, zero severe) are underdetermined by MLS 3.7.4.5 at the model's three-way FlowPort junction, so OMC holds the previous value while rumoca reports a different admissible value. 100.0 percent of every deviating channel's integral error mass lies inside that zero-flow window and the maximum deviation outside it is 2.3e-3 K, while every state (pipe and heat capacitor temperatures) agrees within 1.5e-3 K over the whole 2 s horizon; pointwise comparison of the zero-flow observable is non-identifying.",

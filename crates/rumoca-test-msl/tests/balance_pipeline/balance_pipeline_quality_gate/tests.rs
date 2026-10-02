@@ -1728,11 +1728,10 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
         reference.metric.strict_high_after
     );
     // The typed-exception boundary types every reviewed row and removes none;
-    // the v9 boundary adds the ComparisonPullInStroke stopper loss-power row
-    // and the SignalGenerator and SMEE_Generator reference-failure rows to the
-    // promoted v8 file.
+    // the v10 boundary adds the ControlledTanks reference-failure row to the
+    // v9 file.
     assert_eq!(
-        reference.policy_excluded_before + 3,
+        reference.policy_excluded_before + 1,
         reference.metric.policy_excluded_after
     );
     assert_eq!(reference.metric.excluded_strict_high_before, 0);
@@ -1889,8 +1888,8 @@ fn quality_context_rejects_baseline_partial_roster_drift() {
 }
 
 /// A roster addition must name its defect and be in the roster it adds to;
-/// the v8 boundary's LogicalSample addition is reviewed and the v9 boundary
-/// adds none (SPEC_0050).
+/// the v8 boundary's LogicalSample addition is reviewed and the v9 and v10
+/// boundaries add none (SPEC_0050).
 #[test]
 fn roster_additions_name_their_defect_and_join_the_roster() {
     let baseline =
@@ -1899,10 +1898,12 @@ fn roster_additions_name_their_defect_and_join_the_roster() {
     let head = baseline
         .reference_boundary_migration
         .as_ref()
-        .expect("checked v9 boundary");
+        .expect("checked v10 boundary");
     assert!(head.roster_additions.is_empty());
+    let v9 = head.previous.as_deref().expect("checked v9 boundary");
+    assert!(v9.roster_additions.is_empty());
     assert_eq!(
-        head.previous
+        v9.previous
             .as_ref()
             .map(|migration| migration.roster_additions.clone()),
         Some(vec![schema_migrations::logical_sample_roster_addition()])
@@ -1913,6 +1914,7 @@ fn roster_additions_name_their_defect_and_join_the_roster() {
         .reference_boundary_migration
         .as_mut()
         .and_then(|migration| migration.previous.as_mut())
+        .and_then(|migration| migration.previous.as_mut())
         .unwrap()
         .roster_additions[0]
         .cause = " ".to_string();
@@ -1922,6 +1924,7 @@ fn roster_additions_name_their_defect_and_join_the_roster() {
     let mut outside = baseline;
     outside.reference_boundary_migration = outside
         .reference_boundary_migration
+        .and_then(|migration| migration.previous.map(|previous| *previous))
         .and_then(|migration| migration.previous.map(|previous| *previous));
     outside
         .unexcepted_non_high_models
