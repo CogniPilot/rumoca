@@ -494,6 +494,25 @@ end SimulationResult;"#;
     }
 
     #[test]
+    fn an_event_iteration_limit_is_an_omc_failure_not_a_model_assertion() {
+        let record = r#"record SimulationResult
+    resultFile = "",
+    messages = "Simulation execution failed for model: ControlledTanks
+LOG_ASSERT        | debug   | Simulation terminated due to too many, i.e. 20, event iterations.
+",
+    timeSimulation = 0.014,
+    timeTotal = 0.831
+end SimulationResult;"#;
+        let outcome = parse_sim_record(record, String::new());
+        let result = super::super::build_session_model_result(&outcome, 1.0);
+
+        assert_eq!(result.status, "error");
+        let error = result.error.expect("solver failure diagnostic");
+        assert!(error.contains("event iterations"));
+        assert!(super::super::omc_assertion_failure_lines(&error).is_empty());
+    }
+
+    #[test]
     fn reference_outcome_requires_a_result_even_without_diagnostics() {
         let outcome = parse_sim_record(
             "record SimulationResult resultFile = \"\", messages = \"\" end SimulationResult;",

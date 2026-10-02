@@ -1064,7 +1064,17 @@ fn omc_assertion_failure_lines(error_text: &str) -> Vec<String> {
         if line.is_empty() {
             continue;
         }
-        let lower = line.to_ascii_lowercase();
+        // An OMC log line names its stream and severity (`LOG_ASSERT | debug |
+        // ...`); only its message says whether a model assertion caused the
+        // failure. `LOG_ASSERT | debug | Simulation terminated due to too many
+        // ... event iterations` is a solver failure on the assertion stream, not
+        // a model assertion.
+        let message = if line.starts_with("LOG_") {
+            line.splitn(3, '|').nth(2).unwrap_or_default()
+        } else {
+            line
+        };
+        let lower = message.to_ascii_lowercase();
         if lower.contains("assert")
             && (lower.contains("error")
                 || lower.contains("violat")
