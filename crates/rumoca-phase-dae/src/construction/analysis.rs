@@ -18,6 +18,7 @@ mod function_definitions;
 mod function_externals;
 mod function_impurity;
 mod function_loops;
+mod function_native_lapack;
 mod function_ranges;
 mod function_record_assemblies;
 mod function_reductions;
@@ -293,6 +294,13 @@ pub(super) enum FunctionPlan {
         initial: Vec<FunctionStatementPlan>,
         result: VarName,
         reduction: FunctionIntegerReduction,
+    },
+    /// LAPACK `dgesv` with one right-hand side, owned as a checked linear
+    /// solve (see `function_native_lapack`).
+    NativeLinearSolve {
+        matrix: VarName,
+        solution: VarName,
+        info: VarName,
     },
     /// MLS §12.9 external interface; the function has no Modelica body.
     External(ExternalFunctionPlan),

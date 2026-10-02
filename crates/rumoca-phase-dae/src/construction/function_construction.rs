@@ -399,21 +399,27 @@ fn define_function<'dae>(
     }
     let provenance = dae::DaeProvenance::source(function.span)?;
     let mut body = construction.functions(|functions| functions.begin(reservation, provenance))?;
-    for (value, declaration) in mutable_values {
-        let Some(default) = &declaration.default else {
-            continue;
-        };
-        let expression = lower_function_expression(
+    assign_declaration_defaults(
+        construction,
+        (&coordinates, &functions, &certificate.values),
+        &mut body,
+        mutable_values,
+    )?;
+    if let FunctionPlan::NativeLinearSolve {
+        matrix,
+        solution,
+        info,
+    } = plan
+    {
+        lower_native_linear_solve(
             construction,
             &coordinates,
-            &functions,
-            &certificate.values,
-            &body,
-            default,
+            &mut body,
+            (matrix, solution, info),
+            provenance,
         )?;
-        let assignment = dae::DaeProvenance::source(declaration.span)?;
-        construction
-            .functions(|functions| functions.assign(&mut body, value, expression, assignment))?;
+        construction.functions(|owner| owner.define(body, provenance))?;
+        return Ok(());
     }
     let mut plan_shapes = certificate.values.clone();
     for (name, _) in generated_boolean_values(plan) {
@@ -547,7 +553,7 @@ fn record_staging_fields(plan: &FunctionPlan) -> Vec<(VarName, VarName)> {
         FunctionPlan::IntegerReduction { initial, .. } => {
             collect_record_staging_fields(initial, &mut fields)
         }
-        FunctionPlan::External(_) => {}
+        FunctionPlan::External(_) | FunctionPlan::NativeLinearSolve { .. } => {}
     }
     fields.sort();
     fields.dedup();
@@ -591,6 +597,9 @@ fn lower_function_plan<'dae>(
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match plan {
         FunctionPlan::External(_) => unreachable!("external bodies define through their interface"),
+        FunctionPlan::NativeLinearSolve { .. } => {
+            unreachable!("a native linear solve defines its body directly")
+        }
         FunctionPlan::Statements {
             source,
             statements,
@@ -660,4 +669,71 @@ fn lower_function_plan<'dae>(
             reduction,
         ),
     }
+}
+
+/// Define the body of a LAPACK `dgesv` call with one right-hand side: the
+/// solution output, initialized to the right-hand side by its declaration
+/// equation, becomes the linear solve of the matrix argument, and `info`
+/// reports success (see `analysis::function_native_lapack`).
+fn lower_native_linear_solve<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    body: &mut dae::FunctionBody<'dae>,
+    (matrix, solution, info): (&VarName, &VarName, &VarName),
+    provenance: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let read = |construction: &mut dae::DaeConstruction<'dae>,
+                body: &dae::FunctionBody<'dae>,
+                name: &VarName| {
+        match coordinates[name] {
+            Coordinate::FunctionValue(value) => {
+                construction.functions(|functions| functions.read(body, value, provenance))
+            }
+            Coordinate::FunctionParameter(parameter) => construction.expressions(|expressions| {
+                expressions.at(provenance).function_parameter(parameter)
+            }),
+            _ => unreachable!("analysis proves the linear-solve operands are function values"),
+        }
+    };
+    let matrix = read(construction, body, matrix)?;
+    let rhs = read(construction, body, solution)?;
+    let solved = construction.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .builtin(dae::PureBuiltin::LinearSolve, [matrix, rhs])
+    })?;
+    let solution = function_value_coordinate(coordinates, solution);
+    construction.functions(|functions| functions.assign(body, solution, solved, provenance))?;
+    let success = construction.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .literal(dae::DaeLiteral::Integer(0))
+    })?;
+    let info = function_value_coordinate(coordinates, info);
+    construction.functions(|functions| functions.assign(body, info, success, provenance))
+}
+
+/// MLS §12.4.4: the declaration equations of outputs and protected locals
+/// define their values before the algorithm runs.
+fn assign_declaration_defaults<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    (coordinates, functions, shapes): (
+        &HashMap<VarName, Coordinate<'dae>>,
+        &FunctionRegistry<'_, 'dae>,
+        &ShapeEnvironment,
+    ),
+    body: &mut dae::FunctionBody<'dae>,
+    mutable_values: Vec<(dae::FunctionValueId<'dae>, &rumoca_core::FunctionParam)>,
+) -> Result<(), dae::DaeConstructionError> {
+    for (value, declaration) in mutable_values {
+        let Some(default) = &declaration.default else {
+            continue;
+        };
+        let expression =
+            lower_function_expression(construction, coordinates, functions, shapes, body, default)?;
+        let assignment = dae::DaeProvenance::source(declaration.span)?;
+        construction
+            .functions(|functions| functions.assign(body, value, expression, assignment))?;
+    }
+    Ok(())
 }

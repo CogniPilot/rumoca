@@ -105,6 +105,9 @@ fn validate_external_body(
             function.span,
         ));
     }
+    if let Some(plan) = super::function_native_lapack::native_linear_solve_plan(function, context) {
+        return Ok(plan);
+    }
     Ok(FunctionPlan::External(validate_external_function(
         function, context,
     )?))
