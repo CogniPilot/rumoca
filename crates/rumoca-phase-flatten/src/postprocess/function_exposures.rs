@@ -7,7 +7,9 @@
 //! package extends it with modifications (`MoistAir` extends
 //! `PartialCondensingGases(substanceNames = {"water", "air"})`). The call's
 //! structured prefix proves the exposure; a call inside a function without a
-//! prefix inherits the exposures of the calling function.
+//! prefix inherits the exposures of the calling function. A function no call
+//! proves an exposure for is exposed by the package it was instantiated
+//! from, the enclosing scope of its own flat path.
 //!
 //! One function instance can be reached through several packages (a helper
 //! that two media share). It keeps every exposure; a constant it reads takes
@@ -86,6 +88,19 @@ pub(super) fn function_exposures(
         if exposures == before {
             break;
         }
+    }
+    // A function no call proves an exposure for is exposed by the package it
+    // was instantiated from: the enclosing scope of its own flat path.
+    for function in flat.functions.values() {
+        let (Some(instance), Some(scope)) = (
+            function.instance_id,
+            crate::path_utils::enclosing_scope(function.name.as_str()),
+        ) else {
+            continue;
+        };
+        exposures
+            .entry(instance)
+            .or_insert_with(|| BTreeSet::from([scope.to_string()]));
     }
     exposures
         .into_iter()
