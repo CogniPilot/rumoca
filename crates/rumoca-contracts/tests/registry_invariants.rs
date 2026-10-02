@@ -155,7 +155,9 @@ fn spec_0022_summaries_match_the_catalog() {
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", spec_0022_path().display()));
     let mut by_prefix = std::collections::BTreeMap::<String, usize>::new();
     for id in catalog_contract_ids(&catalog) {
-        *by_prefix.entry(split_contract_id(&id).0.to_string()).or_default() += 1;
+        *by_prefix
+            .entry(split_contract_id(&id).0.to_string())
+            .or_default() += 1;
     }
     let total: usize = by_prefix.values().sum();
     let mut drift = Vec::new();
@@ -193,12 +195,18 @@ fn spec_0022_summaries_match_the_catalog() {
         if let ["Total Contracts", count] = cells.as_slice()
             && *count != total.to_string()
         {
-            drift.push(format!("document summary total is {count}, catalog has {total}"));
+            drift.push(format!(
+                "document summary total is {count}, catalog has {total}"
+            ));
         }
     }
 
     drift.extend(section_index_drift(&catalog, &by_prefix));
-    assert!(drift.is_empty(), "SPEC_0022 summaries drift:\n{}", drift.join("\n"));
+    assert!(
+        drift.is_empty(),
+        "SPEC_0022 summaries drift:\n{}",
+        drift.join("\n")
+    );
 }
 
 /// Rows (trimmed cells) of the first Markdown table after `heading`, header
@@ -223,7 +231,9 @@ fn table_rows_after<'a>(text: &'a str, heading: &str) -> Vec<Vec<&'a str>> {
 /// The section number a `##`/`###` heading opens (`## 4. Contract Catalog`
 /// is `4`, `### 4.3 Instantiation ...` is `4.3`).
 fn heading_number(line: &str) -> Option<&str> {
-    let rest = line.strip_prefix("## ").or_else(|| line.strip_prefix("### "))?;
+    let rest = line
+        .strip_prefix("## ")
+        .or_else(|| line.strip_prefix("### "))?;
     let number = rest.split_whitespace().next()?.trim_end_matches('.');
     number
         .split('.')
@@ -260,7 +270,9 @@ fn section_index_drift(
     let starts = numbers
         .iter()
         .map(|number| {
-            let parent = number.strip_suffix(".1").filter(|parent| !numbers.contains(parent));
+            let parent = number
+                .strip_suffix(".1")
+                .filter(|parent| !numbers.contains(parent));
             parent
                 .and_then(|parent| headings.get(parent))
                 .or_else(|| headings.get(number))
