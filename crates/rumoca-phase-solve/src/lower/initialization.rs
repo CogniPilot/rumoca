@@ -58,7 +58,7 @@ pub(super) fn lower_initialization<'dae>(
     lower_manifold_rows(context, manifold, &mut rows, &mut row_incidence)?;
     let manifold_row_count = rows.len() - manifold_start;
     let plan = initial_projection::plan_initialization_projection(&space, &row_incidence)?;
-    let mut updates = initial_discrete::lower_initial_discrete_values(view, layout)?;
+    let mut updates = initial_discrete::lower_initial_discrete_values(view, layout, &space)?;
     updates.rows.extend(transferred.start_updates);
     updates.targets.extend(transferred.start_update_targets);
     // MLS §8.6 orders these after the projection that solves the `fixed = false`

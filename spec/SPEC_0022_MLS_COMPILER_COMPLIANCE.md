@@ -540,6 +540,7 @@ Defines state-to-state transitions with priority and timing control.
 | EQN-037 | When not in initial eq | §8.6 | "It is not allowed to use when-clauses in initial equation/algorithm sections" |
 | EQN-038 | Connections.branch scope | §8.3.3 | "Connections.branch/root/potentialRoot same restrictions as connect in for/if-equations"
 | EQN-039 | If-equation evaluable conditions | §8.3.4 | "The if-equations which do not have exclusively evaluable expressions as switching conditions shall satisfy the following: [...] Have the same number of equations in each branch, where the number of equations is defined as in definition 4.4." An ordinary parameter (MLS 3.7 §4.5: evaluable, and neither `final` nor `Evaluate = true`) is determined by the initialization problem, which §4.5 leaves to the tool, so a guard reading one over branches with the same scalar equation count and the same unknown incidence is kept as a run-time branch; otherwise the tool determines those parameters during translation instead (structural selection), publishes them non-settable, and warns at the equation (WD001). A guard reading a non-evaluable parameter (§4.5: `fixed = false`, `Evaluate = false`, or a binding that is not an evaluable expression) is never selected at translation, so an if-equation whose branches differ in equation count under such a guard is rejected |
+| EQN-040 | Initial discrete definitions | §8.6 | "During this phase, also the derivatives `der(...)` and the pre-variables `pre(...)` are interpreted as unknown algebraic variables. The initialization uses all equations and algorithms that are utilized in the intended operation." An initial equation `pre(m) = e` or `m = e` therefore determines the initialization value of a discrete `m` from the initialization solution, not only from parameters. Rumoca: `e` may read parameters, constants, `time`, inputs, states, and algebraics (directly or through a binding or connection); Solve applies the definition as an initialization update after the projection, and construction proves that its reads, expanded through matched algebraic definitions, derivative rows, and substituted bindings, reach no discrete or `pre` value, so the projection settles them independently of `m` (SPEC_0043 §4). A read that leads back to a discrete value is rejected rather than iterated; a definition reading `pre`, a derivative, or another discrete coordinate stays an initialization residual |
 
 ### 4.6 Algorithm Contracts (ALG)
 
@@ -962,7 +963,7 @@ areas.
 | Declarations | DECL | 37 |
 | Instantiation | INST | 54 |
 | Expressions | EXPR | 41 |
-| Equations | EQN | 39 |
+| Equations | EQN | 40 |
 | Algorithms | ALG | 18 |
 | Connections | CONN | 30 |
 | Functions | FUNC | 38 |
@@ -976,7 +977,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **446** |
+| **Total** | | **447** |
 
 ---
 

@@ -128,8 +128,9 @@ fn assert_definitions(dae: &Dae) {
     });
 }
 
-/// A read that has no proven value at the initialization instant is refused:
-/// the update row runs before any trajectory exists.
+/// A read of another discrete coordinate has no owner that orders it against
+/// the definition, so it is refused. A state read is settled by the
+/// initialization projection, which Solve applies the definition after.
 #[test]
 fn discrete_initial_value_rejects_a_read_that_is_not_settled_at_initialization() {
     let (source_map, declaration, owner) = fixture();
@@ -151,26 +152,40 @@ fn discrete_initial_value_rejects_a_read_that_is_not_settled_at_initialization()
                 VariableAttributes::default(),
             )
         })?;
-        let value = dae.expressions(|expressions| {
+        let t_other = dae.variables(|variables| {
+            variables.discrete_real(
+                VarName::new("T_other"),
+                real,
+                declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let discrete = dae.expressions(|expressions| {
+            expressions
+                .at(owner)
+                .coordinate(CoordinateInput::DiscreteReal(t_other))
+        })?;
+        let continuous = dae.expressions(|expressions| {
             expressions
                 .at(owner)
                 .coordinate(CoordinateInput::State(state))
         })?;
         dae.initialization(|initialization| {
-            let rejected = initialization.discrete_real_initial_value(t_start, value, owner);
+            let rejected = initialization.discrete_real_initial_value(t_start, discrete, owner);
             assert!(
                 matches!(
                     rejected,
                     Err(DaeConstructionError::InvalidExpressionForm { span })
                         if span == owner.span()
                 ),
-                "a state read has no proven initialization-instant value: {rejected:?}"
+                "a discrete read has no ordering owner: {rejected:?}"
             );
+            initialization.discrete_real_initial_value(t_start, continuous, owner)?;
             Ok(())
         })
     })
     .expect("the rejected definition leaves no partial owner")
-    .inspect(|view| assert_eq!(view.initial_discrete_value_count(), 0));
+    .inspect(|view| assert_eq!(view.initial_discrete_value_count(), 1));
 }
 
 /// One coordinate has exactly one initialization-instant value.

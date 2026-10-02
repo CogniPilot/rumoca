@@ -1,6 +1,6 @@
 //! EQN (Equation) contract tests - MLS §8
 //!
-//! Tests for the 39 equation contracts defined in SPEC_0022.
+//! Tests for the 40 equation contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::{ExpressionOperation, FailedPhase, VariableRole};
 use rumoca_compile::{Session, SessionConfig};
@@ -1593,4 +1593,58 @@ fn eqn_039_fixed_false_guard_with_unequal_counts_rejected() {
         FailedPhase::Flatten,
         "EF004",
     );
+}
+
+// =============================================================================
+// EQN-040: Initial discrete definitions read the initialization solution
+// "The initialization uses all equations and algorithms that are utilized in
+// the intended operation"; pre-variables are unknowns of that system.
+// =============================================================================
+
+#[test]
+fn eqn_040_initial_pre_reads_a_bound_continuous_variable() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            parameter Real h = 0.5;
+            Real hIn = h;
+            Real level(start = 1, fixed = true);
+            Boolean above;
+        equation
+            der(level) = -0.1;
+            above = level >= hIn + 0.1 or pre(above) and level >= hIn - 0.1;
+        initial equation
+            pre(above) = level >= hIn;
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    assert_eq!(trace.channel("above")[0], 1.0);
+    assert_eq!(trace.final_value("above"), 1.0);
+}
+
+#[test]
+fn eqn_040_initial_pre_reads_the_initialized_state() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            parameter Real l0 = 0.45;
+            Real level(start = 1, fixed = false);
+            Boolean above;
+        equation
+            der(level) = -0.1;
+            above = level >= 0.6 or pre(above) and level >= 0.4;
+        initial equation
+            level = l0;
+            pre(above) = level >= 0.5;
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    // The projection settles level = 0.45 before the definition reads it, so
+    // the start guess of 1 never selects the initial branch.
+    assert_eq!(trace.channel("above")[0], 0.0);
+    assert_eq!(trace.final_value("above"), 0.0);
 }

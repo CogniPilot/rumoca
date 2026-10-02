@@ -2,15 +2,19 @@
 //!
 //! The DAE owner is a definition, not a residual: nothing solves for it, so it
 //! becomes an assignment the runtime applies at the initialization instant
-//! through `apply_initialization_updates`. The DAE constructor already proved
-//! the value reads only `time`, parameters, and constants and calls no impure
-//! function — none of which any update row writes — so the first application is
-//! already the fixed point `settle_initialization_system` looks for.
+//! through `apply_initialization_updates`. The DAE constructor proved the value
+//! calls no impure function and reads only `time`, parameters, constants, and
+//! continuous coordinates. A continuous read is settled by the initialization
+//! projection, so `settle_initialization_system` applies the update after it;
+//! `initial_projection::prove_initial_definition_reads` proves here that the
+//! projection settles those reads independently of every discrete value, so the
+//! application after the projection is the fixed point the loop looks for.
 
 use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
+use super::initial_projection::{self, InitializationUnknownSpace};
 use super::{ScalarRows, variable_scalar_slot};
 use crate::LowerError;
 use crate::layout::LoweredLayout;
@@ -32,6 +36,7 @@ pub(super) struct InitialDiscreteUpdates {
 pub(super) fn lower_initial_discrete_values<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
+    space: &InitializationUnknownSpace<'_, 'dae>,
 ) -> Result<InitialDiscreteUpdates, LowerError> {
     let mut rows = ScalarRows::default();
     let mut targets = Vec::new();
@@ -47,6 +52,12 @@ pub(super) fn lower_initial_discrete_values<'dae>(
         // An array coordinate's definition is its whole aggregate; each scalar
         // writes its own lane and the matching lane of its `pre` storage.
         for scalar in 0..scalar_count {
+            initial_projection::prove_initial_definition_reads(
+                space,
+                definition.value(),
+                scalar,
+                span,
+            )?;
             let program =
                 ScalarCompiler::new(view, layout, None).program(definition.value(), scalar)?;
             let current = variable_scalar_slot(layout, variable, scalar, span)?;

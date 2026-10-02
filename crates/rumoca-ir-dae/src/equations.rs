@@ -349,14 +349,16 @@ impl<'dae> InitializationEquations<'_, 'dae> {
 
 /// Insert one checked discrete initial-value definition.
 ///
-/// The local integrity this checks is what makes an unsettled read
-/// unrepresentable rather than merely unlikely: the initialization update rows
-/// are applied at the known initialization instant, before any trajectory
-/// exists, so the defining value may read only coordinates that are already
-/// settled there — parameters, constants, and `time`. A read of a state,
-/// algebraic, output, input, `pre`, delay, or any other discrete coordinate has
-/// no proven evaluation order at that instant, so it fails here instead of
-/// producing a numerically plausible but unproven initial value.
+/// The local integrity this checks is what makes an unordered read
+/// unrepresentable rather than merely unlikely. MLS 3.7 §8.6 solves the
+/// initial equations together with the model equations, so the defining value
+/// may read what that system settles: parameters, constants, and `time`, which
+/// are known before it, and the continuous coordinates (states, algebraics,
+/// inputs), which its projection determines. Solve applies the definition after
+/// that projection and proves that the read cone excludes the target's own
+/// storage. A read of a derivative, `pre`, delay, or any discrete coordinate
+/// has no such ordering owner, so it fails here instead of producing a
+/// numerically plausible but unproven initial value.
 fn insert_initial_discrete_value<'dae>(
     source_map: &rumoca_core::SourceMap,
     storage: &mut Storage,
@@ -440,7 +442,12 @@ fn expect_initialization_settled_reads(
         let settled = match node {
             ExprNode::Coordinate(coordinate) => matches!(
                 coordinate,
-                Coordinate::Parameter(_) | Coordinate::Time | Coordinate::ClockInterval(_)
+                Coordinate::Parameter(_)
+                    | Coordinate::Time
+                    | Coordinate::ClockInterval(_)
+                    | Coordinate::Input(_)
+                    | Coordinate::State(_)
+                    | Coordinate::Algebraic(_)
             ),
             ExprNode::Call { function, .. } => storage.function_is_pure(*function, owner)?,
             _ => true,

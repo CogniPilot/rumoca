@@ -1814,8 +1814,11 @@ fn initial_pre_equation_uses_checked_discrete_initial_value_owner() {
     });
 }
 
+/// MLS 3.7 §8.6 lets the initial value of `d` read an input, which the
+/// environment supplies before initialization, so the initial equation is the
+/// coordinate's initial-value definition rather than a numeric row.
 #[test]
-fn coupled_initial_discrete_real_definition_remains_a_numeric_initialization_row() {
+fn initial_discrete_real_definition_from_an_input_is_a_definition() {
     let source = TestSource::new(
         "model M discrete Real d; input Real u; initial equation d = u; equation d = u; end M;",
     );
@@ -1879,8 +1882,8 @@ fn coupled_initial_discrete_real_definition_remains_a_numeric_initialization_row
 
     let dae = construct(&model, source.map).unwrap();
     dae.inspect(|view| {
-        assert_eq!(view.initial_discrete_value_count(), 0);
-        assert_eq!(view.initialization_owner_count(), 1);
+        assert_eq!(view.initial_discrete_value_count(), 1);
+        assert_eq!(view.initialization_owner_count(), 0);
     });
 }
 

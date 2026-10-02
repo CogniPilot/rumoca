@@ -3878,3 +3878,17 @@ case_id = 'eqn_039_fixed_false_guard_with_unequal_counts_rejected'
 test_file = 'tests/eqn_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EQN-040'
+case_id = 'eqn_040_initial_pre_reads_a_bound_continuous_variable'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-040'
+case_id = 'eqn_040_initial_pre_reads_the_initialized_state'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'

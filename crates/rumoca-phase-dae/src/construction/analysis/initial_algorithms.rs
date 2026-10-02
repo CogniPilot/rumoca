@@ -186,49 +186,94 @@ fn initial_discrete_equation<'flat>(
     let Some((target, value)) = definition else {
         return Ok(None);
     };
-    if !has_only_initialization_settled_reads(flat, value, roles) {
+    if !has_only_initial_definition_reads(flat, value, roles) {
         return Ok(None);
     }
     Ok(Some((target, value)))
 }
 
-/// Whether a definition can be evaluated directly at the initialization
-/// instant, without participating in the numeric initialization system.
+/// Whether a definition reads only values the initialization system settles
+/// before it is applied.
+///
+/// MLS 3.7 §8.6 solves the initial equations together with the model
+/// equations, so `pre(m) = f(x)` determines `m` from whatever value the
+/// continuous unknowns `x` take in that solution. `time`, parameters, and
+/// constants are settled before it; states, algebraics, inputs, and outputs
+/// are settled by the projection, after which Solve applies the definition
+/// once its read cone is proven not to depend on `m` itself.
 ///
 /// This selects the owner; the checked DAE constructor independently proves
-/// the same property before accepting an [`InitialDiscreteValue`]. A discrete
-/// target defined from an input, output, state, algebraic, `pre`, or another
-/// discrete coordinate remains an initialization residual, because those
-/// values are settled together by that system rather than before it.
-fn has_only_initialization_settled_reads(
+/// the same read set before accepting an [`InitialDiscreteValue`]. A
+/// definition that reads `pre`, a derivative, another discrete coordinate, or
+/// any other history or clocked operator remains an initialization residual,
+/// because no owner orders those reads against this definition.
+fn has_only_initial_definition_reads(
     flat: &flat::Model,
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
 ) -> bool {
-    if let Expression::FunctionCall { name, .. } = expression
-        && let Some(function) = flat.functions.get(name.var_name())
-        && !function.body_is_pure()
-    {
-        return false;
-    }
-    if let Expression::VarRef { name, .. } = expression {
-        let referenced = name.var_name();
-        if referenced.as_str() != "time"
-            && !matches!(
-                roles.get(referenced),
-                Some(
-                    PlannedRole::Parameter
-                        | PlannedRole::Constant
-                        | PlannedRole::EnumerationLiteral
-                )
-            )
+    match expression {
+        Expression::FunctionCall { name, .. }
+            if flat
+                .functions
+                .get(name.var_name())
+                .is_some_and(|function| !function.body_is_pure()) =>
         {
             return false;
         }
+        Expression::BuiltinCall { function, .. } if reads_history_or_clock(*function) => {
+            return false;
+        }
+        Expression::VarRef { name, .. } => {
+            let referenced = name.var_name();
+            if referenced.as_str() != "time"
+                && !matches!(
+                    roles.get(referenced),
+                    Some(
+                        PlannedRole::Parameter
+                            | PlannedRole::Constant
+                            | PlannedRole::EnumerationLiteral
+                            | PlannedRole::State
+                            | PlannedRole::Algebraic
+                            | PlannedRole::Input
+                            | PlannedRole::Output
+                    )
+                )
+            {
+                return false;
+            }
+        }
+        _ => {}
     }
     expression_children(expression)
         .into_iter()
-        .all(|child| has_only_initialization_settled_reads(flat, child, roles))
+        .all(|child| has_only_initial_definition_reads(flat, child, roles))
+}
+
+/// Operators whose value is a derivative, a left limit, a delayed value, or a
+/// clocked quantity rather than a function of the current coordinates.
+fn reads_history_or_clock(function: BuiltinFunction) -> bool {
+    matches!(
+        function,
+        BuiltinFunction::Der
+            | BuiltinFunction::Pre
+            | BuiltinFunction::Edge
+            | BuiltinFunction::Change
+            | BuiltinFunction::Reinit
+            | BuiltinFunction::Delay
+            | BuiltinFunction::Sample
+            | BuiltinFunction::Clock
+            | BuiltinFunction::Hold
+            | BuiltinFunction::Previous
+            | BuiltinFunction::Interval
+            | BuiltinFunction::FirstTick
+            | BuiltinFunction::SubSample
+            | BuiltinFunction::SuperSample
+            | BuiltinFunction::ShiftSample
+            | BuiltinFunction::BackSample
+            | BuiltinFunction::NoClock
+            | BuiltinFunction::Terminal
+    )
 }
 
 fn initial_discrete_target<'flat>(

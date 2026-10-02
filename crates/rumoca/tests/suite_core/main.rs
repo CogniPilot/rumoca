@@ -130,6 +130,7 @@ mod indexed_function_constraint;
 mod initial_algorithm_test;
 mod initial_alias_domain;
 mod initial_discrete_array_definitions;
+mod initial_discrete_continuous_reads;
 mod initial_value_alias_transfer;
 mod initialization_ordering;
 mod initialization_parameter_scale;

@@ -544,6 +544,46 @@ fn row_unknowns<'dae>(
     }
 }
 
+/// Prove that one MLS §8.6 discrete initial definition reads only coordinates
+/// the projection settles independently of every discrete value.
+///
+/// The definition is applied as an update after the projection. Its reads are
+/// expanded exactly as an initialization row's are: an algebraic through its
+/// matched continuous definition, `der(x)` through its defining row, a bound
+/// parameter through its substituted binding. What remains is parameters,
+/// inputs, `time`, states, and `fixed = false` parameters. The projection
+/// determines those from rows that read no discrete coordinate (a row that
+/// does is never planned), and the algebraic expansion reached none either, so
+/// the value cannot depend on the coordinate it defines: one application after
+/// the projection is the simultaneous solution, and the next pass of
+/// `settle_initialization_system` changes nothing. A read that reaches a
+/// discrete or `pre` value, an algebraic without a matched definition, or any
+/// other unplanned coordinate has no such proof and is rejected here.
+pub(super) fn prove_initial_definition_reads<'dae>(
+    space: &InitializationUnknownSpace<'_, 'dae>,
+    value: dae::ExprId<'dae>,
+    scalar: usize,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    let mut cache = rumoca_eval_dae::ScalarCoordinateProjectionCache::default();
+    let source = InitialRowIncidence::Residual(ScalarRowSource {
+        expression: value,
+        scalar,
+        domain_point: None,
+    });
+    match row_unknowns(space, &source, &mut cache) {
+        RowIncidence::Owned { .. } => Ok(()),
+        RowIncidence::Unowned(kind) => Err(LowerError::unsupported(
+            format!(
+                "a discrete initial value reads a coordinate ({kind:?}) whose initialization \
+                 value is not proven independent of discrete values, so applying it after the \
+                 initialization projection has no proven evaluation order"
+            ),
+            span,
+        )),
+    }
+}
+
 /// What one initialization row contributes to the plan.
 enum RowIncidence {
     /// The projection coordinates the row reads. May be empty: the row is then a
