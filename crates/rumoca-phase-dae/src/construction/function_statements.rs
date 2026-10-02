@@ -279,8 +279,8 @@ pub(in crate::construction) fn lower_record_multi_output_statement<'dae>(
 
 /// Lower one MLS §11.5 conditional statement of a function body.
 ///
-/// The conditional reaches the DAE either as its own branches, or — when
-/// analysis settled every condition this specialization evaluates — as the
+/// The conditional reaches the DAE either as its own branches, or (when
+/// analysis settled every condition this specialization evaluates) as the
 /// unconditional sequence the executed branch denotes, in which case no
 /// condition reaches the DAE at all.
 pub(in crate::construction) fn lower_function_conditional_statement<'dae>(
