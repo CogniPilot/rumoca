@@ -774,7 +774,7 @@ Defines state-to-state transitions with priority and timing control.
 
 | ID | Contract | MLS | Requirement |
 |----|----------|-----|-------------|
-| SIM-001 | Event iteration | §8.6/App B | "Iterate solving equations until z == pre(z) and m == pre(m)" |
+| SIM-001 | Event iteration | §8.6/App B | "Iterate solving equations until z == pre(z) and m == pre(m)". Known difference from OpenModelica, not yet resolved: coupled `Modelica.Blocks.Sources.RadioButtonSource` instances whose `reset` inputs read each other settle to different outputs when two of them fire at the same instant; the equivalent equation form shows the same difference, so it belongs to event iteration rather than to algorithm `when` lowering (DAE-C25). |
 | SIM-002 | Initialization fixed | §8.6 | "Continuous Real with fixed=true adds equation vc = startExpression" |
 | SIM-003 | Parameter fixed default | §8.6 | "For parameters: fixed defaults to true" |
 | SIM-004 | Variable fixed default | §8.6 | "For other variables: fixed defaults to false" |
