@@ -21,17 +21,35 @@ pub(super) fn validate_model_algorithm(
         &algorithm.statements,
         &mut HashSet::new(),
         &mut HashSet::new(),
-        false,
+        SequentialScope {
+            event_guarded: false,
+            later_writes: &HashSet::new(),
+        },
     )
+}
+
+/// Where one statement sequence of a model algorithm stands.
+#[derive(Clone, Copy)]
+struct SequentialScope<'scope> {
+    /// The sequence runs inside a `when` body.
+    event_guarded: bool,
+    /// Values some statement after this sequence, in an enclosing sequence,
+    /// may still write.
+    later_writes: &'scope HashSet<VarName>,
 }
 
 fn reject_unrepresented_sequential_reads(
     statements: &[rumoca_core::Statement],
     written: &mut HashSet<VarName>,
     unrepresented: &mut HashSet<VarName>,
-    event_guarded: bool,
+    scope: SequentialScope<'_>,
 ) -> Result<(), ToDaeError> {
-    for statement in statements {
+    for (index, statement) in statements.iter().enumerate() {
+        let later_writes = || {
+            let mut later = scope.later_writes.clone();
+            collect_algorithm_writes(&statements[index + 1..], &mut later);
+            later
+        };
         match statement {
             rumoca_core::Statement::Assignment { comp, value, span } => {
                 reject_sequential_assignment(comp, value, *span, written, unrepresented)?;
@@ -54,11 +72,14 @@ fn reject_unrepresented_sequential_reads(
                     else_block.as_deref(),
                     written,
                     unrepresented,
-                    event_guarded,
+                    SequentialScope {
+                        later_writes: &later_writes(),
+                        ..scope
+                    },
                 )?;
             }
             rumoca_core::Statement::When { blocks, .. } => {
-                reject_sequential_when(blocks, written, unrepresented)?;
+                reject_sequential_when(blocks, written, unrepresented, &later_writes())?;
             }
             rumoca_core::Statement::For {
                 indices, equations, ..
@@ -129,14 +150,14 @@ fn reject_sequential_if(
     fallback: Option<&[rumoca_core::Statement]>,
     written: &mut HashSet<VarName>,
     unrepresented: &mut HashSet<VarName>,
-    event_guarded: bool,
+    scope: SequentialScope<'_>,
 ) -> Result<(), ToDaeError> {
     let incoming = written.clone();
     let incoming_unrepresented = unrepresented.clone();
     let mut exits = Vec::with_capacity(blocks.len() + usize::from(fallback.is_some()));
     let mut unsupported_exits = Vec::with_capacity(exits.capacity());
     for block in blocks {
-        let unavailable = if event_guarded {
+        let unavailable = if scope.event_guarded {
             &incoming_unrepresented
         } else {
             &incoming
@@ -144,24 +165,14 @@ fn reject_sequential_if(
         reject_reads_of_written(&block.cond, unavailable)?;
         let mut branch = incoming.clone();
         let mut unsupported = incoming_unrepresented.clone();
-        reject_unrepresented_sequential_reads(
-            &block.stmts,
-            &mut branch,
-            &mut unsupported,
-            event_guarded,
-        )?;
+        reject_unrepresented_sequential_reads(&block.stmts, &mut branch, &mut unsupported, scope)?;
         exits.push(branch);
         unsupported_exits.push(unsupported);
     }
     if let Some(fallback) = fallback {
         let mut branch = incoming;
         let mut unsupported = incoming_unrepresented;
-        reject_unrepresented_sequential_reads(
-            fallback,
-            &mut branch,
-            &mut unsupported,
-            event_guarded,
-        )?;
+        reject_unrepresented_sequential_reads(fallback, &mut branch, &mut unsupported, scope)?;
         exits.push(branch);
         unsupported_exits.push(unsupported);
     }
@@ -169,26 +180,95 @@ fn reject_sequential_if(
     Ok(())
 }
 
+/// A `when` condition reads the algorithm's values where the statement
+/// stands (MLS §11.1.2), and the checked condition reads each variable's
+/// current value. Those agree for a variable no later statement writes: an
+/// earlier write is then its final one, and a variable the algorithm never
+/// writes is its own value. A value a later statement writes, or an earlier
+/// value the `when` body itself writes again, lacks a checked owner for the
+/// condition. A value only the `when` body writes is read the way the
+/// equation form of the same `when` reads it, through event iteration.
 fn reject_sequential_when(
     blocks: &[rumoca_core::StatementBlock],
     written: &mut HashSet<VarName>,
     unrepresented: &mut HashSet<VarName>,
+    later_writes: &HashSet<VarName>,
 ) -> Result<(), ToDaeError> {
     let incoming = written.clone();
     let incoming_unrepresented = unrepresented.clone();
+    let mut body_writes = HashSet::new();
+    for block in blocks {
+        collect_algorithm_writes(&block.stmts, &mut body_writes);
+    }
+    let unavailable = later_writes
+        .iter()
+        .chain(incoming.intersection(&body_writes))
+        .chain(&incoming_unrepresented)
+        .cloned()
+        .collect::<HashSet<_>>();
     let mut exits = Vec::with_capacity(blocks.len());
     let mut unsupported_exits = Vec::with_capacity(blocks.len());
     for block in blocks {
-        reject_reads_of_written(&block.cond, &incoming)?;
+        reject_reads_of_written(&block.cond, &unavailable)?;
         let mut branch = incoming.clone();
         let mut unsupported = incoming_unrepresented.clone();
-        reject_unrepresented_sequential_reads(&block.stmts, &mut branch, &mut unsupported, true)?;
+        reject_unrepresented_sequential_reads(
+            &block.stmts,
+            &mut branch,
+            &mut unsupported,
+            SequentialScope {
+                event_guarded: true,
+                later_writes,
+            },
+        )?;
         unsupported.extend(branch.difference(&incoming).cloned());
         exits.push(branch);
         unsupported_exits.push(unsupported);
     }
     merge_sequential_exits(written, unrepresented, exits, unsupported_exits);
     Ok(())
+}
+
+/// Every variable a statement sequence may write, at any nesting depth.
+fn collect_algorithm_writes(statements: &[rumoca_core::Statement], writes: &mut HashSet<VarName>) {
+    for statement in statements {
+        match statement {
+            rumoca_core::Statement::Assignment { comp, .. } => {
+                writes.insert(
+                    rumoca_core::component_ref_to_base_reference(comp)
+                        .var_name()
+                        .clone(),
+                );
+            }
+            rumoca_core::Statement::FunctionCall { outputs, .. } => {
+                writes.extend(outputs.iter().flatten().map(|output| output.to_var_name()));
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                for block in cond_blocks {
+                    collect_algorithm_writes(&block.stmts, writes);
+                }
+                if let Some(block) = else_block {
+                    collect_algorithm_writes(block, writes);
+                }
+            }
+            rumoca_core::Statement::When { blocks, .. } => {
+                for block in blocks {
+                    collect_algorithm_writes(&block.stmts, writes);
+                }
+            }
+            rumoca_core::Statement::For { equations, .. } => {
+                collect_algorithm_writes(equations, writes);
+            }
+            rumoca_core::Statement::While { block, .. } => {
+                collect_algorithm_writes(&block.stmts, writes);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn merge_sequential_exits(
@@ -239,7 +319,7 @@ fn reject_reads_of_written(
     Err(ToDaeError::unsupported_algorithm(
         "model",
         format!(
-            "sequential read of `{target}` after an earlier write requires an SSA event transition"
+            "sequential read of `{target}`, whose value where it is read differs from its value after the algorithm, requires an SSA event transition"
         ),
         expression_span(expression)?,
     ))

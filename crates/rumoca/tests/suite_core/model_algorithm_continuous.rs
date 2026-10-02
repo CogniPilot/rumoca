@@ -305,15 +305,18 @@ end InvalidAlgorithmMemory;
     );
 }
 
+/// A continuous target with one top-level assignment that reads no event
+/// target is its own declarative section beside the event section
+/// (SPEC_0040 DAE-C25), so the mixed algorithm keeps MLS §11.1.2 semantics.
 #[test]
-fn mixed_continuous_event_algorithm_fails_before_construction() {
-    let error = Compiler::new()
+fn mixed_continuous_event_algorithm_splits_into_sections() {
+    let compiled = Compiler::new()
         .model("MixedAlgorithm")
         .compile_str(
             r#"
 model MixedAlgorithm
   Real x;
-  discrete Real z;
+  discrete Real z(start = 0, fixed = true);
 algorithm
   x := 1;
   when time > 0.5 then
@@ -323,12 +326,51 @@ end MixedAlgorithm;
 "#,
             "mixed_algorithm.mo",
         )
+        .expect("the continuous assignment and the event section own separate targets");
+    let sim = rumoca_sim::simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 1.0,
+            ..rumoca_sim::SimOptions::default()
+        },
+    )
+    .expect("the split algorithm simulates");
+    let value = |name: &str, time: f64| {
+        let column = sim.names.iter().position(|n| n == name).expect("recorded");
+        let sample = sim.times.iter().rposition(|t| *t <= time).expect("sampled");
+        sim.data[column][sample]
+    };
+    assert_eq!(value("x", 0.2), 1.0);
+    assert_eq!(value("z", 0.4), 0.0);
+    assert_eq!(value("z", 0.9), 1.0);
+}
+
+/// An event section that reads a continuous target before the statement that
+/// assigns it would see a different value in the split sections, so the
+/// algorithm keeps the refusal.
+#[test]
+fn mixed_algorithm_reading_a_continuous_target_before_its_assignment_is_rejected() {
+    let error = Compiler::new()
+        .model("MixedAlgorithm")
+        .compile_str(
+            r#"
+model MixedAlgorithm
+  Real x;
+  discrete Real z;
+algorithm
+  when x > 0.5 then
+    z := 1;
+  end when;
+  x := time;
+end MixedAlgorithm;
+"#,
+            "mixed_algorithm.mo",
+        )
         .expect_err("mixed partitions need an explicit checked atomic owner");
     let message = error.to_string();
     assert!(
-        message.contains("mixed continuous/event algorithm")
-            && message.contains("checked atomic owner"),
-        "mixed ownership must fail at the source algorithm: {message}"
+        message.contains("sequential read of `x`"),
+        "the read before the assignment must be refused at the source algorithm: {message}"
     );
 }
 

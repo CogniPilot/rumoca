@@ -254,6 +254,10 @@ pub enum DaeConstructionError {
     #[error("an unconditional B.1c owner must contain exactly one `always` branch")]
     InvalidDiscreteBranchSet { span: Span },
     #[error(
+        "separate algorithm statements write different targets of one B.1c owner, so their simultaneous activation has no checked owner"
+    )]
+    UnorderedSimultaneousStatements { span: Span },
+    #[error(
         "B.1c target identity {target} reads not-yet-issued current discrete value {dependency}"
     )]
     UnissuedDiscreteDependency {
@@ -390,6 +394,7 @@ impl DaeConstructionError {
             | Self::UndeclaredModelEventTarget { span, .. }
             | Self::IncompleteModelEventTransaction { span }
             | Self::InvalidDiscreteBranchSet { span }
+            | Self::UnorderedSimultaneousStatements { span }
             | Self::UnissuedDiscreteDependency { span, .. }
             | Self::InvalidExternalSymbol { span, .. }
             | Self::InvalidExternalLinkage { span }

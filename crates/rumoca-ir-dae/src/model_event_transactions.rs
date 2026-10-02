@@ -109,6 +109,11 @@ impl<'dae> ModelEventStep<'dae> {
             provenance,
         }
     }
+
+    /// The clock whose ticks activate this step, if any.
+    pub const fn clock(&self) -> Option<ClockId<'dae>> {
+        self.clock
+    }
 }
 
 pub struct ModelEventTransactions<'storage, 'dae> {

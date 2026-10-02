@@ -311,12 +311,121 @@ fn collect_algorithm_owners(
                 })
             })
             .collect::<Result<Vec<_>, ToDaeError>>()?;
-        owners.push(SourceOwner {
-            targets,
-            span: algorithm.span,
-        });
+        if event_algorithm && owns_targets_separately(&algorithm.statements, &targets) {
+            owners.extend(targets.into_iter().map(|target| SourceOwner {
+                targets: vec![target],
+                span: algorithm.span,
+            }));
+        } else {
+            owners.push(SourceOwner {
+                targets,
+                span: algorithm.span,
+            });
+        }
     }
     Ok(())
+}
+
+/// Whether the discrete-valued targets of one event algorithm own their
+/// values one target at a time.
+///
+/// A `when` condition of the algorithm that reads one of its targets needs
+/// that target issued before the guarded targets, which one atomic owner
+/// cannot do. Every target's B.1c branches already carry its own values
+/// (statements read each other through their SSA values, not through the
+/// variables), so the targets may own themselves separately exactly when
+/// their current-value reads order them acyclically and no condition reads
+/// a value a `when` body writes (that value is resolved by event iteration
+/// within one owner, as in the equation form).
+fn owns_targets_separately(
+    statements: &[rumoca_core::Statement],
+    targets: &[SourceTarget],
+) -> bool {
+    let names = targets
+        .iter()
+        .map(|target| target.name.clone())
+        .collect::<HashSet<_>>();
+    let mut condition_reads = Vec::new();
+    let mut body_writes = HashSet::new();
+    collect_when_condition_reads(statements, &mut condition_reads, &mut body_writes, false);
+    let read_targets = condition_reads
+        .iter()
+        .filter(|name| names.contains(*name))
+        .collect::<Vec<_>>();
+    if read_targets.is_empty() || read_targets.iter().any(|name| body_writes.contains(*name)) {
+        return false;
+    }
+    targets_order_acyclically(targets, &names)
+}
+
+fn collect_when_condition_reads(
+    statements: &[rumoca_core::Statement],
+    reads: &mut Vec<VarName>,
+    body_writes: &mut HashSet<VarName>,
+    in_when: bool,
+) {
+    for statement in statements {
+        match statement {
+            rumoca_core::Statement::Assignment { comp, .. } if in_when => {
+                body_writes.insert(
+                    rumoca_core::component_ref_to_base_reference(comp)
+                        .var_name()
+                        .clone(),
+                );
+            }
+            rumoca_core::Statement::FunctionCall { outputs, .. } if in_when => {
+                body_writes.extend(outputs.iter().flatten().map(|output| output.to_var_name()));
+            }
+            rumoca_core::Statement::When { blocks, .. } => {
+                for block in blocks {
+                    block.cond.collect_var_refs(reads);
+                    collect_when_condition_reads(&block.stmts, reads, body_writes, true);
+                }
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                for block in cond_blocks {
+                    collect_when_condition_reads(&block.stmts, reads, body_writes, in_when);
+                }
+                if let Some(block) = else_block {
+                    collect_when_condition_reads(block, reads, body_writes, in_when);
+                }
+            }
+            rumoca_core::Statement::For { equations, .. } => {
+                collect_when_condition_reads(equations, reads, body_writes, in_when);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether the current-value reads among one algorithm's targets admit an order.
+fn targets_order_acyclically(targets: &[SourceTarget], names: &HashSet<VarName>) -> bool {
+    let mut remaining = targets
+        .iter()
+        .map(|target| {
+            let reads = target
+                .dependencies
+                .iter()
+                .filter(|dependency| *dependency != &target.name && names.contains(*dependency))
+                .cloned()
+                .collect::<HashSet<_>>();
+            (target.name.clone(), reads)
+        })
+        .collect::<Vec<_>>();
+    while !remaining.is_empty() {
+        let Some(ready) = remaining.iter().position(|(_, reads)| reads.is_empty()) else {
+            return false;
+        };
+        let (issued, _) = remaining.swap_remove(ready);
+        for (_, reads) in &mut remaining {
+            reads.remove(&issued);
+        }
+    }
+    true
 }
 
 /// Prove whether a model-algorithm target reads its entry value before an SSA

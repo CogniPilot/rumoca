@@ -1282,36 +1282,22 @@ fn a_chain_whose_first_branch_is_true_at_the_start_reaches_its_second() {
     assert_eq!(value_at(&sim, "y", 1.0), 2.0);
 }
 
-/// A relational `when` statement is rejected until its transaction owns the
-/// complete ordered activation program.
+/// A relational `when`/`elsewhen` statement runs each branch at its own
+/// rising edge (MLS §11.2.7), exactly like the equation form.
 ///
-/// MLS §11.2.7 requires the same edge semantics as a when-equation, but a
-/// model-event transaction cannot obtain that semantics by selecting a final
-/// value from the branch *levels*: the first level remains true when the second
-/// branch rises.  The checked transaction currently owns total clock-level
-/// final definitions, not this ordered edge program, so accepting the projected
-/// source rows would bypass the transaction and violate DAE-C21/SOLVE-C55.
-/// Refusal is preferable to compiling a model whose result can depend on which
-/// projection a backend happens to execute.
+/// An unclocked event algorithm is owned by its B.1c definitions and discrete
+/// `Real` residuals (SPEC_0040 DAE-C25), whose branches activate on edges, not
+/// on levels: the first branch's level stays true when the second rises, and
+/// the second still runs.
 ///
-/// The proof the refusal names is *exact periodic-clock activation*, not "one
-/// periodic clock": an eligible transaction owns a set of clock owners and
-/// needs a clock-level final definition for every target under them, so the
-/// count of clocks was never the property being checked. The chain here is
-/// refused one step earlier than either wording, because no branch of it has a
-/// periodic clock at all, and the assertion pins the proof by name so a
-/// refusal that stopped naming it, or that arrived from some unrelated
-/// failure, would still be red.
-///
-/// omc establishes the future positive oracle: `y = 0` through `t = 0.25`, `1`
-/// from `t = 0.3`, and `2` from `t = 0.7`.
+/// omc: `y = 0` through `t = 0.25`, `1` from `t = 0.3`, and `2` from `t = 0.7`.
 #[test]
-fn an_algorithm_section_chain_without_an_activation_owner_is_rejected() {
+fn an_algorithm_section_chain_runs_each_branch_at_its_own_instant() {
     let compiled = rumoca::Compiler::new()
         .model("ElseWhenAlgorithm")
         .compile_str(ELSE_WHEN_ALGORITHM, "time_event_when_activation.mo")
-        .expect("front-end compilation preserves the unsupported transaction for diagnosis");
-    let error = simulate_dae_with_diagnostics(
+        .expect("the algorithm chain compiles");
+    let sim = simulate_dae_with_diagnostics(
         &compiled.dae,
         &SimOptions {
             t_end: 1.0,
@@ -1320,13 +1306,10 @@ fn an_algorithm_section_chain_without_an_activation_owner_is_rejected() {
             ..SimOptions::default()
         },
     )
-    .expect_err("a relational algorithm transaction has no checked activation program yet");
-    assert!(
-        error.to_string().contains(
-            "model-event transaction has no construction-issued final definition for every target under exact periodic-clock activation"
-        ),
-        "the rejection must identify the missing construction proof: {error}"
-    );
+    .expect("the algorithm chain simulates");
+    assert_eq!(value_at(&sim, "y", 0.25), 0.0);
+    assert_eq!(value_at(&sim, "y", 0.5), 1.0);
+    assert_eq!(value_at(&sim, "y", 0.95), 2.0);
 }
 
 /// `when initial() … elsewhen …` runs both, each at its own instant.

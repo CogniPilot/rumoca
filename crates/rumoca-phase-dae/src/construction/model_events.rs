@@ -280,6 +280,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                 branch_provenance: dae::DaeProvenance::source(branch.span)?,
                 always: false,
                 parent_activation: None,
+                statement: None,
             });
         }
         Ok(guards)
@@ -638,6 +639,7 @@ pub(super) fn lower_when_assignment<'dae>(
                     trigger: guard.trigger,
                     guard: guard.condition,
                     parent: guard.parent_activation,
+                    statement: guard.statement,
                     target,
                     value,
                     branch_provenance: guard.branch_provenance,
@@ -776,7 +778,11 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             owner_clock: parent.owner_clock,
             branch_provenance: dae::DaeProvenance::source(branch_span)?,
             always: false,
-            parent_activation: Some((parent.trigger, parent.condition)),
+            parent_activation: Some(ParentActivation::When {
+                trigger: parent.trigger,
+                guard: parent.condition,
+            }),
+            statement: parent.statement,
         };
         self.lower_equations(owners, guard, equations)?;
         match previous {
@@ -808,7 +814,11 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             owner_clock: parent.owner_clock,
             branch_provenance: dae::DaeProvenance::source(span)?,
             always: false,
-            parent_activation: Some((parent.trigger, parent.condition)),
+            parent_activation: Some(ParentActivation::When {
+                trigger: parent.trigger,
+                guard: parent.condition,
+            }),
+            statement: parent.statement,
         };
         self.lower_equations(owners, guard, equations)
     }

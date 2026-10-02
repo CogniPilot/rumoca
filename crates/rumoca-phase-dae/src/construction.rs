@@ -1390,6 +1390,19 @@ fn lower_assertions<'dae, 'flat>(
     Ok(())
 }
 
+/// The B.1c branch one guarded branch nests under.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ParentActivation<'dae> {
+    /// The unconditional statements of the enclosing algorithm section: a
+    /// top-level `when` or `if` of an event algorithm starts from the values
+    /// those statements have defined (MLS §11.1.2).
+    Section,
+    When {
+        trigger: dae::ConditionId<'dae>,
+        guard: dae::ConditionId<'dae>,
+    },
+}
+
 #[derive(Clone, Copy)]
 struct EventGuard<'dae> {
     trigger: dae::ConditionId<'dae>,
@@ -1397,7 +1410,12 @@ struct EventGuard<'dae> {
     owner_clock: Option<dae::ClockId<'dae>>,
     branch_provenance: dae::DaeProvenance,
     always: bool,
-    parent_activation: Option<(dae::ConditionId<'dae>, dae::ConditionId<'dae>)>,
+    parent_activation: Option<ParentActivation<'dae>>,
+    /// The top-level algorithm statement this branch belongs to. Separate
+    /// statements of one section run in source order, so a later statement
+    /// overrides an earlier one (MLS §11.1.2); the branches of one
+    /// `when`/`elsewhen` or `if`/`elseif` chain keep their textual priority.
+    statement: Option<Span>,
 }
 
 #[derive(Clone, Copy)]

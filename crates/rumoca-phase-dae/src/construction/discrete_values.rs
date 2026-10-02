@@ -19,6 +19,11 @@ enum BranchActivation<'dae> {
 struct StagedBranch<'dae> {
     activation: BranchActivation<'dae>,
     values: Vec<Option<(dae::ExprId<'dae>, dae::DaeProvenance)>>,
+    /// The targets this branch writes itself, as opposed to values it
+    /// inherits from its parent branch or retains.
+    written: Vec<bool>,
+    /// The top-level algorithm statement the branch belongs to.
+    statement: Option<Span>,
     provenance: dae::DaeProvenance,
 }
 
@@ -41,7 +46,8 @@ pub(super) struct DiscreteWhenAssignment<'dae> {
     pub(super) owner: DiscreteValueOwnerHandle,
     pub(super) trigger: dae::ConditionId<'dae>,
     pub(super) guard: dae::ConditionId<'dae>,
-    pub(super) parent: Option<(dae::ConditionId<'dae>, dae::ConditionId<'dae>)>,
+    pub(super) parent: Option<ParentActivation<'dae>>,
+    pub(super) statement: Option<Span>,
     pub(super) target: dae::DiscreteValueId<'dae>,
     pub(super) value: dae::ExprId<'dae>,
     pub(super) branch_provenance: dae::DaeProvenance,
@@ -52,6 +58,7 @@ struct StagedAssignment<'dae> {
     owner: DiscreteValueOwnerHandle,
     activation: BranchActivation<'dae>,
     parent: Option<BranchActivation<'dae>>,
+    statement: Option<Span>,
     target: dae::DiscreteValueId<'dae>,
     value: dae::ExprId<'dae>,
     branch_provenance: dae::DaeProvenance,
@@ -181,6 +188,7 @@ impl<'dae> DiscreteValueStaging<'dae> {
             owner,
             activation: BranchActivation::Always,
             parent: None,
+            statement: None,
             target,
             value,
             branch_provenance,
@@ -197,6 +205,7 @@ impl<'dae> DiscreteValueStaging<'dae> {
             trigger,
             guard,
             parent,
+            statement,
             target,
             value,
             branch_provenance,
@@ -205,7 +214,13 @@ impl<'dae> DiscreteValueStaging<'dae> {
         self.assign(StagedAssignment {
             owner,
             activation: BranchActivation::When { trigger, guard },
-            parent: parent.map(|(trigger, guard)| BranchActivation::When { trigger, guard }),
+            parent: parent.map(|parent| match parent {
+                ParentActivation::Section => BranchActivation::Always,
+                ParentActivation::When { trigger, guard } => {
+                    BranchActivation::When { trigger, guard }
+                }
+            }),
+            statement,
             target,
             value,
             branch_provenance,
@@ -221,6 +236,7 @@ impl<'dae> DiscreteValueStaging<'dae> {
             owner,
             activation,
             parent,
+            statement,
             target,
             value,
             branch_provenance,
@@ -268,6 +284,8 @@ impl<'dae> DiscreteValueStaging<'dae> {
                 owner.branches.push(StagedBranch {
                     activation,
                     values,
+                    written: vec![false; owner.targets.len()],
+                    statement,
                     provenance: branch_provenance,
                 });
                 owner.branches.len() - 1
@@ -285,6 +303,7 @@ impl<'dae> DiscreteValueStaging<'dae> {
         for ordinal in affected {
             owner.branches[ordinal].values[target_ordinal] = Some((value, action_provenance));
         }
+        owner.branches[branch_ordinal].written[target_ordinal] = true;
         Ok(())
     }
 
@@ -464,10 +483,103 @@ fn fill_owner_retained_values<'dae>(
     for branch in &mut owner.branches {
         fill_branch_retained_values(construction, &owner.targets, branch)?;
     }
+    order_owner_branches(owner)?;
+    activate_section_branch(construction, owner)
+}
+
+/// Order the branches of one owner by priority: the first active branch
+/// defines every target.
+///
+/// A nested branch precedes the branch it refines. Among the branches of
+/// separate top-level statements of one algorithm section, a later
+/// statement precedes an earlier one, because its assignments run after and
+/// override the earlier ones when both are active (MLS §11.1.2); the
+/// branches of one `when`/`elsewhen` or `if`/`elseif` chain keep their
+/// textual priority. That ordering is exact only when the later statement
+/// writes every target the earlier one writes; otherwise their simultaneous
+/// activation would drop the earlier writes, so it is rejected.
+fn order_owner_branches(owner: &mut StagedOwner<'_>) -> Result<(), dae::DaeConstructionError> {
+    let mut statements: Vec<Span> = Vec::new();
+    for branch in &owner.branches {
+        if let Some(statement) = branch.statement
+            && !statements.contains(&statement)
+        {
+            statements.push(statement);
+        }
+    }
+    let rank = |statement: Option<Span>| {
+        statement.map_or(0, |statement| {
+            statements
+                .iter()
+                .position(|candidate| *candidate == statement)
+                .map_or(0, |position| position + 1)
+        })
+    };
+    for (earlier, branch) in owner.branches.iter().enumerate() {
+        for later in &owner.branches[earlier + 1..] {
+            let separate = matches!(
+                (branch.statement, later.statement),
+                (Some(first), Some(second)) if first != second
+            );
+            let (before, after) = if rank(branch.statement) <= rank(later.statement) {
+                (branch, later)
+            } else {
+                (later, branch)
+            };
+            let overridden = before
+                .written
+                .iter()
+                .zip(&after.written)
+                .all(|(earlier_writes, later_writes)| !earlier_writes || *later_writes);
+            if separate && !overridden {
+                return Err(dae::DaeConstructionError::UnorderedSimultaneousStatements {
+                    span: after.provenance.span(),
+                });
+            }
+        }
+    }
     let parents = &owner.parents;
-    owner
+    owner.branches.sort_by_key(|branch| {
+        (
+            std::cmp::Reverse(branch_depth(parents, branch.activation)),
+            std::cmp::Reverse(rank(branch.statement)),
+        )
+    });
+    Ok(())
+}
+
+/// Give the section-level branch of an owner that also has guarded branches
+/// the always-active condition of the section.
+///
+/// The unconditional statements of an algorithm section run whenever the
+/// section runs. Beneath the guarded branches of its `when` and `if`
+/// statements they are the lowest-priority branch, active whenever no
+/// guarded branch is, which is exactly a branch guarded by the section's
+/// `Always` condition (it has no edge memory, so its edge is its level).
+fn activate_section_branch<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    owner: &mut StagedOwner<'dae>,
+) -> Result<(), dae::DaeConstructionError> {
+    let Some(section) = owner
         .branches
-        .sort_by_key(|branch| std::cmp::Reverse(branch_depth(parents, branch.activation)));
+        .iter()
+        .position(|branch| branch.activation == BranchActivation::Always)
+    else {
+        return Ok(());
+    };
+    if owner.branches.len() == 1 {
+        return Ok(());
+    }
+    if section + 1 != owner.branches.len() {
+        return Err(dae::DaeConstructionError::InvalidDiscreteBranchSet {
+            span: owner.branches[section].provenance.span(),
+        });
+    }
+    let always = always_condition(construction, owner.branches[section].provenance.span())?;
+    owner.branches[section].activation = BranchActivation::When {
+        trigger: always,
+        guard: always,
+    };
     Ok(())
 }
 

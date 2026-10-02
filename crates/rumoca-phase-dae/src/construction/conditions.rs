@@ -172,6 +172,13 @@ fn lower_condition_tree<'dae>(
         _ => {
             let expression =
                 lower_expression(construction, coordinates, functions, expression, None)?;
+            let value_type = construction
+                .expressions(|expressions| expressions.value_type(expression, provenance))?;
+            if let [extent] = value_type.dimensions() {
+                let condition =
+                    lower_vector_value_condition(construction, expression, *extent, provenance)?;
+                return Ok((condition, Vec::new(), None));
+            }
             (dae::ConditionInput::Discrete(expression), Vec::new(), None)
         }
     };
@@ -344,6 +351,58 @@ fn lower_vector_condition<'dae>(
         owner_clock = merge_condition_clock(owner_clock, rhs_clock, true, generated)?;
     }
     Ok((condition, relations, owner_clock))
+}
+
+/// MLS §8.3.5 vector activation by a Boolean vector value: `when c` with
+/// `Boolean c[n]` activates when any element becomes true, exactly like the
+/// constructor `{c[1], …, c[n]}`, so each element is one discrete leaf under
+/// [`dae::ConditionInput::AnyRise`]. An empty vector never activates.
+fn lower_vector_value_condition<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    vector: dae::ExprId<'dae>,
+    extent: u32,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ConditionId<'dae>, dae::DaeConstructionError> {
+    let span = provenance.span();
+    let generated = dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, span)?;
+    let mut combined: Option<dae::ConditionId<'dae>> = None;
+    for element in 1..=extent {
+        let value = construction.expressions(|expressions| {
+            let index = expressions
+                .at(generated)
+                .literal(dae::DaeLiteral::Integer(i64::from(element)))?;
+            expressions.at(generated).index(
+                vector,
+                [dae::Subscript::Index {
+                    expression: index,
+                    provenance: generated,
+                }],
+            )
+        })?;
+        let leaf = construction.conditions(|conditions| conditions.reserve(generated))?;
+        construction.conditions(|conditions| {
+            conditions.define(leaf, dae::ConditionInput::Discrete(value), generated)
+        })?;
+        combined = Some(match combined {
+            Some(previous) => combine_element_activations(construction, previous, leaf, span)?,
+            None => leaf,
+        });
+    }
+    match combined {
+        Some(condition) => Ok(condition),
+        None => {
+            let never = construction.expressions(|expressions| {
+                expressions
+                    .at(generated)
+                    .literal(dae::DaeLiteral::Boolean(false))
+            })?;
+            let condition = construction.conditions(|conditions| conditions.reserve(generated))?;
+            construction.conditions(|conditions| {
+                conditions.define(condition, dae::ConditionInput::Discrete(never), generated)
+            })?;
+            Ok(condition)
+        }
+    }
 }
 
 /// Join two vector elements under [`dae::ConditionInput::AnyRise`].

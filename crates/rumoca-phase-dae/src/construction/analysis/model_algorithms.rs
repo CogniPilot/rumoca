@@ -24,6 +24,13 @@ pub(in crate::construction) enum ModelAlgorithmPlan {
     Assertions {
         assertions: Vec<flat::AssertEquation>,
     },
+    /// An event algorithm whose continuous targets are each defined by one
+    /// top-level assignment: every such assignment is its own declarative
+    /// section and the rest is the event section (see
+    /// `split_mixed_event_algorithm`).
+    Sections {
+        sections: Vec<(flat::Algorithm, ModelAlgorithmPlan)>,
+    },
 }
 
 #[derive(Clone)]
@@ -51,11 +58,21 @@ pub(super) fn analyze_model_algorithm(
                 PlannedRole::DiscreteReal | PlannedRole::DiscreteValue
             )
         }) {
-            return Err(ToDaeError::unsupported_algorithm(
-                "model",
-                "a mixed continuous/event algorithm requires one checked atomic owner",
-                algorithm.span,
-            ));
+            let Some(sections) = split_mixed_event_algorithm(flat, algorithm, roles) else {
+                return Err(ToDaeError::unsupported_algorithm(
+                    "model",
+                    "a mixed continuous/event algorithm requires one checked atomic owner",
+                    algorithm.span,
+                ));
+            };
+            let sections = sections
+                .into_iter()
+                .map(|section| {
+                    analyze_model_algorithm(flat, &section, roles, shapes)
+                        .map(|plan| (section, plan))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(ModelAlgorithmPlan::Sections { sections });
         }
         let mut tensor_loops = HashMap::new();
         analyze_event_tensor_loops(flat, &algorithm.statements, model_values, &mut tensor_loops)?;
@@ -1013,4 +1030,155 @@ fn assignment_target(component: &rumoca_core::ComponentReference) -> VarName {
     rumoca_core::component_ref_to_base_reference(component)
         .var_name()
         .clone()
+}
+
+/// Split an event algorithm that also defines continuous targets into
+/// sections that each own one kind of target, when that preserves MLS
+/// §11.1.2 sequential semantics.
+///
+/// A continuous target must be defined by exactly one top-level assignment
+/// whose value reads no discrete target of the algorithm and no continuous
+/// target the algorithm assigns later; its value is then the same at every
+/// point after that assignment, so the assignment is its own declarative
+/// section. Every other statement must write only discrete targets and may
+/// read a continuous target only after its assignment, where the variable
+/// already holds the assigned value. Returns `None` when any of this fails.
+fn split_mixed_event_algorithm(
+    flat: &flat::Model,
+    algorithm: &flat::Algorithm,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Option<Vec<flat::Algorithm>> {
+    let targets = model_algorithm_targets(flat, algorithm);
+    let is_discrete = |name: &VarName| {
+        matches!(
+            roles.get(name),
+            Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+        )
+    };
+    let continuous = targets
+        .iter()
+        .filter(|target| !is_discrete(target))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let discrete = targets
+        .iter()
+        .filter(|target| is_discrete(target))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut defined = HashSet::new();
+    let mut declarative = Vec::new();
+    let mut event = Vec::new();
+    for statement in &algorithm.statements {
+        let mut written = HashSet::new();
+        collect_statement_targets(std::slice::from_ref(statement), &mut written);
+        let written = resolve_written_targets(flat, written);
+        let mut reads = Vec::new();
+        collect_statement_reads(statement, &mut reads);
+        if written.iter().any(|target| continuous.contains(target)) {
+            let rumoca_core::Statement::Assignment { comp, .. } = statement else {
+                return None;
+            };
+            let target = written.iter().next().cloned()?;
+            let reads_unready = reads.iter().any(|read| {
+                discrete.contains(read) || (continuous.contains(read) && !defined.contains(read))
+            });
+            if written.len() != 1
+                || !comp.parts().iter().all(|part| part.subs.is_empty())
+                || reads_unready
+                || !defined.insert(target)
+            {
+                return None;
+            }
+            declarative.push(statement.clone());
+            continue;
+        }
+        if reads
+            .iter()
+            .any(|read| continuous.contains(read) && !defined.contains(read))
+        {
+            return None;
+        }
+        event.push(statement.clone());
+    }
+    if defined.len() != continuous.len() {
+        return None;
+    }
+    let mut sections = declarative
+        .into_iter()
+        .map(|statement| {
+            flat::Algorithm::new(vec![statement], algorithm.span, algorithm.origin.clone())
+        })
+        .collect::<Vec<_>>();
+    sections.push(flat::Algorithm::new(
+        event,
+        algorithm.span,
+        algorithm.origin.clone(),
+    ));
+    Some(sections)
+}
+
+/// Every variable a statement reads, at any nesting depth.
+fn collect_statement_reads(statement: &rumoca_core::Statement, reads: &mut Vec<VarName>) {
+    match statement {
+        rumoca_core::Statement::Assignment { comp, value, .. } => {
+            value.collect_var_refs(reads);
+            let subscripts = comp.parts().iter().flat_map(|part| &part.subs);
+            for subscript in subscripts {
+                if let Subscript::Expr { expr, .. } = subscript {
+                    expr.collect_var_refs(reads);
+                }
+            }
+        }
+        rumoca_core::Statement::FunctionCall { args, .. } => {
+            for argument in args {
+                argument.collect_var_refs(reads);
+            }
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            for block in cond_blocks {
+                block.cond.collect_var_refs(reads);
+                for statement in &block.stmts {
+                    collect_statement_reads(statement, reads);
+                }
+            }
+            for statement in else_block.iter().flatten() {
+                collect_statement_reads(statement, reads);
+            }
+        }
+        rumoca_core::Statement::When { blocks, .. } => {
+            for block in blocks {
+                block.cond.collect_var_refs(reads);
+                for statement in &block.stmts {
+                    collect_statement_reads(statement, reads);
+                }
+            }
+        }
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        } => {
+            for index in indices {
+                index.range.collect_var_refs(reads);
+            }
+            for statement in equations {
+                collect_statement_reads(statement, reads);
+            }
+        }
+        rumoca_core::Statement::While { block, .. } => {
+            block.cond.collect_var_refs(reads);
+            for statement in &block.stmts {
+                collect_statement_reads(statement, reads);
+            }
+        }
+        rumoca_core::Statement::Assert {
+            condition, message, ..
+        } => {
+            condition.collect_var_refs(reads);
+            message.collect_var_refs(reads);
+        }
+        _ => {}
+    }
 }

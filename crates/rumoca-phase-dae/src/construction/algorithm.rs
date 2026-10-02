@@ -43,6 +43,7 @@ fn statement_guard<'dae>(
                 )?,
                 always: true,
                 parent_activation: None,
+                statement: None,
             })
         }
     }

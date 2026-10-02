@@ -1,53 +1,38 @@
-use rumoca_core::{Reference, TypeId};
+use rumoca_core::Reference;
 
 use super::super::*;
 use super::support::*;
 
 /// MLS §11.1: the statements of a model algorithm section that are not inside a
 /// `when` run whenever the section runs. A discrete assignment written there is
-/// therefore not a statement without an activation — its activation is the
-/// section's own unconditional one, and the transaction step it produces must
-/// carry that `Always` condition rather than borrowing an enclosing branch that
-/// does not exist.
-/// Declare one `Real` whose variability is discrete, so it lands on a
-/// `DiscreteReal` coordinate rather than the B.1c discrete-value arena.
-fn add_discrete_real_variable(
-    model: &mut flat::Model,
-    source: &TestSource,
-    name: &str,
-    declaration: &str,
-    type_id: u32,
-) {
-    let mut variable = flat::Variable::empty_with_span(source.span(declaration, 0));
-    variable.name = VarName::new(name);
-    variable.instance_id = test_instance_id(name);
-    variable.type_id = TypeId::new(type_id);
-    variable.variability = Variability::Discrete(Default::default());
-    variable.is_primitive = true;
-    register_test_real_type(model, variable.type_id, &[]);
-    model.add_variable(variable.name.clone(), variable);
-    model
-        .variable_type_names
-        .insert(VarName::new(name), "Real".to_string());
-}
-
+/// therefore not a statement without an activation: it is the section branch,
+/// active on the section's own `Always` activation beneath every guarded
+/// branch of the section.
 #[test]
 fn model_algorithm_assignment_outside_when_activates_unconditionally() {
     let source = TestSource::new(
-        "model M discrete Real y; algorithm y := 0.0; when true then y := 1.0; end when; end M;",
+        "model M discrete Boolean y; algorithm y := false; when true then y := true; end when; end M;",
     );
     let mut model = test_model();
-    add_discrete_real_variable(&mut model, &source, "y", "discrete Real y", 63);
-    let unguarded_span = source.span("y := 0.0", 0);
-    let guarded_span = source.span("y := 1.0", 0);
-    let when_span = source.span("when true then y := 1.0; end when", 0);
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "y",
+        "discrete Boolean y",
+        51,
+        Vec::new(),
+        true,
+    );
+    let unguarded_span = source.span("y := false", 0);
+    let guarded_span = source.span("y := true", 0);
+    let when_span = source.span("when true then y := true; end when", 0);
     model.algorithms.push(flat::Algorithm::new(
         vec![
             rumoca_core::Statement::Assignment {
                 comp: test_component_reference("y", unguarded_span),
                 value: Expression::Literal {
-                    value: Literal::Real(0.0),
-                    span: source.span("0.0", 0),
+                    value: Literal::Boolean(false),
+                    span: source.span("false", 0),
                 },
                 span: unguarded_span,
             },
@@ -60,8 +45,8 @@ fn model_algorithm_assignment_outside_when_activates_unconditionally() {
                     stmts: vec![rumoca_core::Statement::Assignment {
                         comp: test_component_reference("y", guarded_span),
                         value: Expression::Literal {
-                            value: Literal::Real(1.0),
-                            span: source.span("1.0", 0),
+                            value: Literal::Boolean(true),
+                            span: source.span("true", 1),
                         },
                         span: guarded_span,
                     }],
@@ -77,33 +62,37 @@ fn model_algorithm_assignment_outside_when_activates_unconditionally() {
     let dae = construct(&model, source.map)
         .expect("a statement written outside every when lowers on the section activation");
     dae.inspect(|view| {
-        assert_eq!(view.model_event_transaction_count(), 1);
-        let transaction = view
-            .model_event_transaction(view.model_event_transaction_id(0).unwrap())
+        // SPEC_0040 DAE-C25: an unclocked event algorithm is owned by its B.1c
+        // definitions, not by a model-event transaction.
+        assert_eq!(view.model_event_transaction_count(), 0);
+        assert_eq!(view.discrete_value_owner_count(), 1);
+        let owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
             .unwrap();
-        assert_eq!(transaction.steps().len(), 2);
-        let unguarded = transaction.steps().next().unwrap();
-        for condition in [unguarded.trigger(), unguarded.guard()] {
-            assert!(
-                matches!(
-                    view.condition(condition).unwrap().operation(),
-                    dae::ConditionOperation::Always
-                ),
-                "an unbranched section statement runs on the section's own activation"
-            );
-        }
-        assert_eq!(unguarded.definitions().len(), 1);
-        assert_eq!(
-            unguarded.definitions().next().unwrap().provenance().span(),
-            unguarded_span
-        );
-        // The `when` beside it keeps its own event activation, so the section
-        // activation never leaks into a guarded step.
-        let guarded = transaction.steps().nth(1).unwrap();
+        assert_eq!(owner.branches().len(), 2);
+        // The `when` nested under the section takes priority over it ...
+        let guarded = owner.branches().get(0).unwrap();
+        let dae::DiscreteBranchActivation::When { guard, .. } = guarded.activation() else {
+            panic!("the `when` branch keeps its event activation");
+        };
         assert!(!matches!(
-            view.condition(guarded.guard()).unwrap().operation(),
+            view.condition(guard).unwrap().operation(),
             dae::ConditionOperation::Always
         ));
+        assert_eq!(guarded.values().get(0).unwrap().1.span(), guarded_span);
+        // ... and the section statement is the lowest-priority branch, active
+        // on the section's own `Always` activation.
+        let section = owner.branches().get(1).unwrap();
+        let dae::DiscreteBranchActivation::When { trigger, guard } = section.activation() else {
+            panic!("the section branch is guarded by the section activation");
+        };
+        for condition in [trigger, guard] {
+            assert!(matches!(
+                view.condition(condition).unwrap().operation(),
+                dae::ConditionOperation::Always
+            ));
+        }
+        assert_eq!(section.values().get(0).unwrap().1.span(), unguarded_span);
     });
 }
 
@@ -167,21 +156,7 @@ fn model_event_algorithm_sequential_read_after_write_uses_new_value() {
     let dae = construct(&model, source.map)
         .expect("the event transition carries the first assignment into the second RHS");
     dae.inspect(|view| {
-        assert_eq!(view.model_event_transaction_count(), 1);
-        let transaction = view
-            .model_event_transaction(view.model_event_transaction_id(0).unwrap())
-            .unwrap();
-        assert_eq!(transaction.targets().len(), 2);
-        assert_eq!(transaction.steps().len(), 2);
-        let second_step = transaction.steps().nth(1).unwrap();
-        let second_definition = second_step.definitions().next().unwrap();
-        assert_eq!(second_definition.provenance().span(), second_span);
-        assert!(matches!(
-            view.expression(second_definition.value())
-                .unwrap()
-                .operation(),
-            dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(true))
-        ));
+        assert_eq!(view.model_event_transaction_count(), 0);
         assert_eq!(view.discrete_value_owner_count(), 1);
         let owner = view
             .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
