@@ -248,3 +248,71 @@ fn a_package_constant_and_record_field_take_the_exposing_package_extent() {
         assert!((value - expected).abs() < 1e-12, "d({time}) = {value}");
     }
 }
+
+/// A function's signature extents take the value the package it is called
+/// through gives the constant they read (MLS 3.7 §7.2 modifications of
+/// extends, §7.3, §10.1): `M.f` of `package M extends PM(nS = 2)` returns
+/// `y[2]`, directly, through a model-level alias, and through a component's
+/// alias redeclared to the selected package. OpenModelica gives `w(1) = 4`
+/// in every model and `v.z(1) = 2`.
+const SHAPE_SOURCE: &str = r#"
+package PMs
+  constant Integer nS = 1;
+  function f
+    input Real x;
+    output Real y[nS];
+  algorithm
+    y := fill(x, nS);
+  end f;
+end PMs;
+package Ms
+  extends PMs(nS = 2);
+end Ms;
+model Direct
+  Real w = sum(Ms.f(2*time));
+end Direct;
+model ThroughAlias
+  replaceable package Medium = Ms;
+  Real w = sum(Medium.f(2*time));
+end ThroughAlias;
+model Vol
+  replaceable package Medium = PMs;
+  Real z = sum(Medium.f(time));
+end Vol;
+model ThroughComponent
+  replaceable package Medium = Ms;
+  Vol v(redeclare package Medium = Medium);
+  Real w = sum(Medium.f(2*time));
+end ThroughComponent;
+"#;
+
+#[test]
+fn a_signature_extent_takes_the_calling_package_value() {
+    for (model, expected) in [
+        ("Direct", &[("w", 4.0)][..]),
+        ("ThroughAlias", &[("w", 4.0)][..]),
+        ("ThroughComponent", &[("w", 4.0), ("v.z", 2.0)][..]),
+    ] {
+        let compiled = Compiler::new()
+            .model(model)
+            .compile_str(SHAPE_SOURCE, "Shapes.mo")
+            .unwrap_or_else(|error| panic!("{model} compiles: {error:?}"));
+        let result = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 1.0,
+                ..SimOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("{model} simulates: {error}"));
+        for (name, value) in expected {
+            let column = result
+                .names
+                .iter()
+                .position(|candidate| candidate == name)
+                .unwrap_or_else(|| panic!("{model}.{name} is recorded"));
+            let last = *result.data[column].last().expect("samples");
+            assert!((last - value).abs() < 1e-12, "{model}.{name}(1) = {last}");
+        }
+    }
+}

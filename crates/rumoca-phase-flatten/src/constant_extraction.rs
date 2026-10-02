@@ -65,6 +65,12 @@ pub(super) fn inject_referenced_qualified_class_constants(
         }
         // MLS §7.3: a selected package exposes its constants under its own name.
         scopes.extend(ctx.selected_package_names());
+        // MLS §7.3: the package a function is instantiated from (`M.f` of
+        // `package M extends PM(nS = 2)`) gives the constants the function
+        // reads, including the extents of its signature, their values there.
+        scopes.extend(flat.functions.keys().filter_map(|name| {
+            crate::path_utils::enclosing_scope(name.as_str()).map(str::to_string)
+        }));
 
         for scope in &scopes {
             let resolved = resolve_referenced_scope_class(class_index, scope, model_name);
@@ -1088,14 +1094,20 @@ pub(super) fn extract_extends_modification_constants(
         if ext_mod.redeclare {
             continue;
         }
-        let _ = extract_extends_modification_expr(
+        // MLS 3.7 §7.2: the modification gives the inherited declaration its
+        // value in `prefix`, the package that extends with it (FLAT-C02).
+        if let Some((def_id, value)) = extract_extends_modification_expr(
             tree,
             class_index,
             prefix,
             &ext_mod.expr,
             resolve_context,
             ctx,
-        );
+        ) && let ast::Expression::Modification { target, .. } = &ext_mod.expr
+        {
+            let full_name = make_prefixed_name(prefix, &target.to_string());
+            ctx.record_constant_value(&full_name, def_id, value);
+        }
     }
 }
 

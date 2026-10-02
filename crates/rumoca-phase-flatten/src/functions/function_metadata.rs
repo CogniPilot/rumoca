@@ -746,10 +746,16 @@ pub(super) fn resolve_component_constant_integer(
     }
     let result = component_by_def_id(class_index, def_id)
         .filter(|component| {
-            matches!(
-                component.variability,
-                rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
-            )
+            // MLS 3.7 §7.2: a public non-final declaration can be modified by
+            // the package that exposes it (`package M extends PM(nS = 2)`), so
+            // only a final or protected one (a protected element cannot be
+            // modified) fixes its value here; any other stays a shape
+            // expression that the exposing package settles (FLAT-C02).
+            (component.is_final || component.is_protected)
+                && matches!(
+                    component.variability,
+                    rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
+                )
         })
         .and_then(|component| component.binding.as_ref())
         .and_then(|binding| {
