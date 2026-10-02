@@ -3,7 +3,7 @@ use rumoca_core::Reference;
 use super::super::*;
 use super::support::*;
 
-/// MLS §11.1: the statements of a model algorithm section that are not inside a
+/// MLS §11.1.2: the statements of a model algorithm section that are not inside a
 /// `when` run whenever the section runs. A discrete assignment written there is
 /// therefore not a statement without an activation: it is the section branch,
 /// active on the section's own `Always` activation beneath every guarded

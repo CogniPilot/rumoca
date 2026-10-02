@@ -149,7 +149,7 @@ tier = 1
 id = 'ALG-017'
 category = 'Algorithm'
 name = 'LHS initialization'
-mls_ref = '§11.1'
+mls_ref = '§11.1.2'
 requirement = 'Variables on the left-hand side of := must be initialized when algorithm is invoked'
 status = 'Implemented'
 tier = 1
@@ -707,7 +707,7 @@ tier = 1
 id = 'ARR-044'
 category = 'Array'
 name = 'der and pre element-wise shape'
-mls_ref = '§3.7.4.2'
+mls_ref = '§3.7.4, §3.7.5'
 requirement = 'der(expr) and pre(y) of an array apply to every element, so the result has the operand shape; an equation between zero-sized operands has no scalar equations'
 status = 'Implemented'
 tier = 1

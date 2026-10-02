@@ -30,7 +30,7 @@ struct AlgorithmOwner<'dae> {
 impl<'dae> AlgorithmOwner<'dae> {
     /// The activation every statement beneath this owner executes under.
     ///
-    /// MLS §11.1 runs the statements of an algorithm section that are not
+    /// MLS §11.1.2 runs the statements of an algorithm section that are not
     /// inside a `when` every time the section runs, so a statement written
     /// outside every branch does not lack an activation — its activation is
     /// `true`. Reading it through this one accessor is what keeps the discrete

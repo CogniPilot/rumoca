@@ -748,7 +748,7 @@ fn resolve_mod_to_array_depth(
             return resolved;
         }
     }
-    // MLS §11.1.2.1: Evaluate array comprehensions like {j for j in 1:m}
+    // MLS §10.4.1: Evaluate array comprehensions like {j for j in 1:m}
     if let Some(array) = try_eval_array_comprehension(expr, mod_env, effective_components, tree) {
         return array;
     }
@@ -1048,7 +1048,7 @@ fn make_real_lit(value: f64, span: rumoca_core::Span) -> ast::Expression {
 
 /// Evaluate an array comprehension `{expr for j in start:end}` to a concrete array.
 ///
-/// MLS §11.1.2.1: For simple comprehensions like `{j for j in 1:m}`,
+/// MLS §10.4.1: For simple comprehensions like `{j for j in 1:m}`,
 /// evaluates the range and substitutes the loop variable for each value.
 fn try_eval_array_comprehension(
     expr: &ast::Expression,
