@@ -116,7 +116,8 @@ impl InvarianceScope<'_> {
 /// The accepted forms mirror the whole-model constancy that differentiation
 /// resolves to zero: literals, parameter coordinates, invariant algebraic
 /// coordinates, fixed domain binders, and total arithmetic, aggregate, record,
-/// builtin, pure-call, and fixed index operations over such operands. Every
+/// builtin, pure-call, comprehension, and fixed index operations over such
+/// operands. Every
 /// other operation and coordinate refuses, so an accepted expression is a
 /// genuine constant of the whole model. A domain binder is a compile-time loop
 /// index whose value is fixed while differentiating at a domain point, so it
@@ -160,6 +161,9 @@ fn expression_is_time_invariant<'dae>(
             arguments,
             ..
         } => scope.pure_function(function) && all(arguments),
+        // A comprehension domain is fixed at translation (MLS 3.7 §10.4.1), so
+        // its value is fixed when its body is: the binder coordinate is invariant.
+        dae::ExpressionOperation::Comprehension { body, .. } => invariant(body),
         dae::ExpressionOperation::Index { base, subscripts } => {
             invariant(base)
                 && subscripts.iter().all(|subscript| match subscript {

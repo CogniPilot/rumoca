@@ -53,6 +53,7 @@ mod clocked_partition_semantics;
 mod clocked_sample_regression;
 mod component_redeclare_constraints;
 mod component_redeclare_dimensions;
+mod comprehension_time_invariance;
 mod conditional_arm_selection;
 mod connection_normalization_golden;
 mod constant_folding;
