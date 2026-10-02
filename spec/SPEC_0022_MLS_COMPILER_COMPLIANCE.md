@@ -450,6 +450,8 @@ Defines state-to-state transitions with priority and timing control.
 | INST-053 | Conditional component removal | §5.6.2 | "Conditional components with false condition are removed and not part of simulation model"
 | INST-054 | Automatic inner creation | §5.4 | "If a unique non-partial class is used for all outer declarations of the same name lacking a matching inner declaration, an inner declaration of that class is automatically added at the top of the model and a diagnostic is given" (rumoca: WI013; conflicting classes EI015, partial class EI012) |
 | INST-055 | Extends redeclaration replaces element | §7.3 | "A redeclaration in the modification of an extends-clause replaces the inherited element; the derived class and its descendants see the replacing class under the element name" |
+| INST-056 | Occurrence-selected member class | §7.3 | A redeclaration modifies one occurrence, so a component declared through a replaceable alias (`Medium.BaseProperties medium`) therefore has its class selected per occurrence, and a reference `tank.medium.T` written outside `tank` (in an equation or a modifier binding) names the member of the class that occurrence of `tank.medium` selected; occurrences of one declaration that select different classes have no single member tail and are rejected |
+| INST-057 | Redeclare value through the enclosing occurrence | §7.3 | A redeclare value that names a replaceable element of the enclosing class (`Inner a(redeclare package Medium = MA)`) denotes the class that occurrence of the enclosing class selected for `MA`, which an outer redeclaration may have replaced, never the default of the lexical declaration |
 
 ### 4.4 Expression/Operator Contracts (EXPR)
 
@@ -961,7 +963,7 @@ areas.
 |----------|--------|-------|
 | Lexical | LEX | 13 |
 | Declarations | DECL | 37 |
-| Instantiation | INST | 54 |
+| Instantiation | INST | 56 |
 | Expressions | EXPR | 41 |
 | Equations | EQN | 40 |
 | Algorithms | ALG | 18 |
@@ -977,7 +979,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **447** |
+| **Total** | | **449** |
 
 ---
 

@@ -1,6 +1,6 @@
 //! INST (Instantiation) contract tests - MLS §5, §7
 //!
-//! Tests for the 54 instantiation contracts defined in SPEC_0022.
+//! Tests for the 56 instantiation contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
@@ -1976,4 +1976,69 @@ fn inst_038_inner_outer_modification_accepted() {
     "#,
         "M",
     );
+}
+
+// =============================================================================
+// INST-056 / INST-057: per-occurrence class selection through replaceable aliases
+// =============================================================================
+
+const INST_056_057_MODEL: &str = r#"
+package Media
+  partial package PartialMedium
+    replaceable partial model BaseProperties
+      Real T;
+    end BaseProperties;
+  end PartialMedium;
+  package One
+    extends PartialMedium;
+    redeclare model extends BaseProperties
+    equation
+      T = 1;
+    end BaseProperties;
+  end One;
+  package Two
+    extends PartialMedium;
+    redeclare model extends BaseProperties
+    equation
+      T = 2;
+    end BaseProperties;
+  end Two;
+end Media;
+
+model Tank
+  replaceable package Medium = Media.One constrainedby Media.PartialMedium;
+  Medium.BaseProperties medium;
+end Tank;
+
+model Sensor
+  Real u;
+end Sensor;
+
+model Pair
+  replaceable package MediumA = Media.One constrainedby Media.PartialMedium;
+  Tank a(redeclare package Medium = MediumA);
+  Tank b;
+end Pair;
+
+model Plant
+  Pair pair(redeclare package MediumA = Media.Two);
+  Sensor sensorA(u = pair.a.medium.T);
+  Real tB;
+equation
+  tB = pair.b.medium.T;
+end Plant;
+"#;
+
+#[test]
+fn inst_056_member_tail_follows_each_occurrence() {
+    let trace = rumoca_contracts::test_support::simulate_model(INST_056_057_MODEL, "Plant", 0.1);
+    assert_eq!(trace.final_value("sensorA.u"), 2.0);
+    assert_eq!(trace.final_value("tB"), 1.0);
+}
+
+#[test]
+fn inst_057_redeclare_value_alias_selects_the_outer_redeclaration() {
+    let trace = rumoca_contracts::test_support::simulate_model(INST_056_057_MODEL, "Plant", 0.1);
+    assert_eq!(trace.final_value("pair.a.medium.T"), 2.0);
+    assert_eq!(trace.final_value("pair.b.medium.T"), 1.0);
 }

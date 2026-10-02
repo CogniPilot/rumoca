@@ -3892,3 +3892,17 @@ case_id = 'eqn_040_initial_pre_reads_the_initialized_state'
 test_file = 'tests/eqn_contracts.rs'
 kind = 'Sim'
 outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-056'
+case_id = 'inst_056_member_tail_follows_each_occurrence'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-057'
+case_id = 'inst_057_redeclare_value_alias_selects_the_outer_redeclaration'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'

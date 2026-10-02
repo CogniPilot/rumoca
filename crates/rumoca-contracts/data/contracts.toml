@@ -3047,6 +3047,24 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'INST-056'
+category = 'Instantiation'
+name = 'Occurrence-selected member class'
+mls_ref = '§7.3'
+requirement = 'A reference through a component declared by a replaceable alias names the member of the class each occurrence selected, in equations and modifier bindings alike'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-057'
+category = 'Instantiation'
+name = 'Redeclare value through the enclosing occurrence'
+mls_ref = '§7.3'
+requirement = 'A redeclare value naming a replaceable element of the enclosing class denotes the class that occurrence selected for it, not the lexical default'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'LEX-001'
 category = 'Lexical'
 name = 'ASCII identifiers'
