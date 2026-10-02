@@ -61,9 +61,9 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 18,250 | Retain checked conditional/tensor/loop-region and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
-| `dae-wire-loc` | 3,250 | 5,500 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
-| `dae-total-loc` | 14,250 | 23,750 | Both items above; total follows their sum |
+| `dae-core-loc` | 11,000 | 18,500 | Retain checked conditional/tensor/loop-region and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
+| `dae-wire-loc` | 3,250 | 5,750 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
+| `dae-total-loc` | 14,250 | 24,000 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
@@ -118,6 +118,15 @@ clocked value conversion proof, DAE-C23) and the Boolean `min`/`max` type rule
 250-line step, so the `dae-core-loc` ceiling moves from 18,000 to 18,250 and
 the `dae-total-loc` ceiling from 23,500 to 23,750; the review triggers, the
 wire ceiling, and the totality-debt ceilings are unchanged.
+
+**2026-10-02 warning-assertion review:** measured production source moved to
+18,372 core, 5,511 wire, and 23,883 total lines with the warning-level
+assertion event action and function assertion level (DAE-C27), the observed
+discrete owners (SPEC_0022 EXPR-012), and the dgesv status (DAE-C26). The
+derived rule rounds each measured value up to the next 250-line step, so the
+`dae-core-loc` ceiling moves to 18,500, `dae-wire-loc` to 5,750, and
+`dae-total-loc` to 24,000; the review triggers and totality-debt ceilings are
+unchanged.
 
 ### 2. Reservation Owner Catalog (SPEC_0036 §Storage and Forward References)
 

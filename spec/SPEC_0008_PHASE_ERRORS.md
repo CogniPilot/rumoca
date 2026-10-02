@@ -107,9 +107,9 @@ Three mechanisms are used; choosing the wrong one defeats the fail-fast contract
 
 | Mechanism | When to use | Phase scope |
 |---|---|---|
-| `emit()` on `&mut Diagnostics` | User errors in early phases — multiple independent errors exist; collecting all at once gives better IDE diagnostics | parse, resolve, flatten, instantiate |
-| `?` (bubble up `Result`) | User errors in late phases, or intra-phase propagation — input is already validated; one error aborts the phase | DAE, structural, solve lowering |
-| `panic!` / `expect("invariant")` | Internal compiler invariant violations — a bug in rumoca, not in the user's Modelica; earlier phases must have guaranteed this cannot happen | any phase, any location |
+| `emit()` on `&mut Diagnostics` | User errors in early phases, where collecting every independent error gives better IDE diagnostics | parse, resolve, flatten, instantiate |
+| `?` (bubble up `Result`) | User errors in late phases or intra-phase propagation over validated input; one error aborts the phase | DAE, structural, solve lowering |
+| `panic!` / `expect("invariant")` | Internal invariant violations (a rumoca bug, not a Modelica error) that earlier phases guarantee cannot happen | any phase, any location |
 | `debug_assert!` | Hot-loop invariants guaranteed by construction where an always-on check would add measurable overhead | tight loops in structural/solve |
 
 **Classifying an error:**
@@ -158,15 +158,11 @@ match by mnemonic **suffix**. Contract tests implement this comparison locally
 in `crates/rumoca-contracts/src/test_support.rs`. A shipped code is stable:
 retire it rather than renumber or reuse.
 
-The former GALEC-target meanings of `ET001`–`ET023` are retired because they
-collided with typecheck. GALEC target projection now emits `EGT001`–`EGT023`;
-the typecheck meanings of `ET0xx` are unchanged.
+`ET0xx` codes belong to typecheck; GALEC target projection emits
+`EGT001`–`EGT023`.
 
-`WX0xx` diagnostics never abort a run. The simulation result carries them as an
-ordered list of (mnemonic, first-occurrence time, rendered message, source
-span); a run reports each warning site once, at the first accepted point that
-observes it (SPEC_0022 EQN-036). Generated FMI components emit them through the
-importer's logger at its warning status.
+`WX0xx` diagnostics never abort a run; each site is reported once, at its
+first observation (SPEC_0022 EQN-036).
 
 `EI013` is retired. Older builds used it for the non-fatal synthesized-inner
 notice; the phase-owned diagnostic is `WI013`, whose prefix records its warning
