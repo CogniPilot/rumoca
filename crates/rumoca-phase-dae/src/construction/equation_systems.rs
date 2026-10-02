@@ -14,11 +14,7 @@ pub(super) fn lower_equation_systems<'dae>(
         .union(&analysis.record_equality_families)
         .copied()
         .collect::<HashSet<_>>();
-    let initial_excluded_families = analysis
-        .initial_discrete_families
-        .union(&analysis.initial_record_equality_families)
-        .copied()
-        .collect::<HashSet<_>>();
+    let initial_excluded_families = initial_excluded_families(analysis);
     let mut excluded_equation_rows = analysis.continuous_family_rows.clone();
     excluded_equation_rows.extend(&analysis.clock_equation_rows);
     excluded_equation_rows.extend(&analysis.derived_parameter_rows);
@@ -145,4 +141,15 @@ pub(super) fn lower_equation_expression<'dae>(
             generated_root,
         ),
     }
+}
+
+/// Initialization families that own none of their rows: families of typed
+/// initial discrete-value definitions and families that are a second view of
+/// whole-record equalities (MLS 3.7 §10.6.1).
+fn initial_excluded_families(analysis: &Analysis) -> HashSet<usize> {
+    analysis
+        .initial_discrete_families
+        .union(&analysis.initial_record_equality_families)
+        .copied()
+        .collect()
 }
