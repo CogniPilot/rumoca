@@ -207,7 +207,7 @@ fn collect_equation_owners(
     owners: &mut Vec<SourceOwner>,
 ) -> Result<(), ToDaeError> {
     for (row, equation) in flat.equations.iter().enumerate() {
-        let plan = match equation_partition(
+        let plans = match equation_partition(
             flat,
             row,
             equation,
@@ -215,21 +215,8 @@ fn collect_equation_owners(
             connection_ranks,
             aggregate_connections,
         )? {
-            EquationPartition::DiscreteValue(plan) => {
-                if discrete_definition_time(
-                    flat,
-                    roles,
-                    reads,
-                    &[plan.target],
-                    plan.value.as_ref(),
-                    Some(row),
-                    equation.span,
-                )? == DefinitionTime::Observed
-                {
-                    observed.insert(plan.target.clone());
-                }
-                plan
-            }
+            EquationPartition::DiscreteValue(plan) => vec![plan],
+            EquationPartition::DiscreteElements(plans) => plans,
             EquationPartition::MultiOutput { receivers, call } => {
                 let targets = receivers
                     .iter()
@@ -256,15 +243,29 @@ fn collect_equation_owners(
             }
             _ => continue,
         };
-        owners.push(SourceOwner {
-            targets: vec![SourceTarget {
-                name: plan.target.clone(),
-                dependencies: current_discrete_dependencies(plan.value.as_ref(), roles),
+        for plan in plans {
+            if discrete_definition_time(
+                flat,
+                roles,
+                reads,
+                &[plan.target],
+                plan.value.as_ref(),
+                Some(row),
+                equation.span,
+            )? == DefinitionTime::Observed
+            {
+                observed.insert(plan.target.clone());
+            }
+            owners.push(SourceOwner {
+                targets: vec![SourceTarget {
+                    name: plan.target.clone(),
+                    dependencies: current_discrete_dependencies(plan.value.as_ref(), roles),
+                    span: equation.span,
+                    ordered_scalar_self_dependencies: plan.ordered_scalar_self_dependencies,
+                }],
                 span: equation.span,
-                ordered_scalar_self_dependencies: plan.ordered_scalar_self_dependencies,
-            }],
-            span: equation.span,
-        });
+            });
+        }
     }
     Ok(())
 }

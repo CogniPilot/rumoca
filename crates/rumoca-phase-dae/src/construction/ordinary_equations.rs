@@ -65,31 +65,22 @@ pub(super) fn lower_ordinary_equation<'dae>(
             })?;
         }
         EquationPartition::DiscreteValue(plan) => {
-            let generation = if plan.generated {
-                Some(dae::DaeGeneration::DiscreteUpdate)
-            } else {
-                generation
-            };
-            let value = lower_equation_expression(
+            let plans = [plan];
+            lower_discrete_value_plans(
                 construction,
-                coordinates,
-                functions,
-                owner_clock,
-                plan.value.as_ref(),
-                generation,
+                discrete_values,
+                (coordinates, functions, input),
+                (equation, owner, generation, owner_clock),
+                &plans,
             )?;
-            let Coordinate::DiscreteValue(target) = coordinates[plan.target] else {
-                unreachable!("analysis classifies the equation target as discrete-valued")
-            };
-            let semantic_owner = discrete_values
-                .owner(owner, [plan.target.clone()], coordinates, input.topology)?
-                .expect("a discrete equation has one planned B.1c owner");
-            discrete_values.always(
-                semantic_owner,
-                target,
-                value,
-                owner,
-                dae::DaeProvenance::source(equation.span)?,
+        }
+        EquationPartition::DiscreteElements(plans) => {
+            lower_discrete_value_plans(
+                construction,
+                discrete_values,
+                (coordinates, functions, input),
+                (equation, owner, generation, owner_clock),
+                &plans,
             )?;
         }
         EquationPartition::ConsumedDiscreteValue => {}
@@ -99,6 +90,55 @@ pub(super) fn lower_ordinary_equation<'dae>(
                 span: equation.span,
             });
         }
+    }
+    Ok(())
+}
+
+/// Lower each discrete-value assignment of one equation row into its own B.1c
+/// owner.
+fn lower_discrete_value_plans<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    (coordinates, functions, input): (
+        &HashMap<VarName, Coordinate<'dae>>,
+        &FunctionRegistry<'_, 'dae>,
+        &EquationRows<'_, 'dae>,
+    ),
+    (equation, owner, generation, owner_clock): (
+        &flat::Equation,
+        dae::DaeProvenance,
+        Option<dae::DaeGeneration>,
+        Option<dae::ClockId<'dae>>,
+    ),
+    plans: &[DiscreteValueAssignmentPlan<'_>],
+) -> Result<(), dae::DaeConstructionError> {
+    for plan in plans {
+        let generation = if plan.generated {
+            Some(dae::DaeGeneration::DiscreteUpdate)
+        } else {
+            generation
+        };
+        let value = lower_equation_expression(
+            construction,
+            coordinates,
+            functions,
+            owner_clock,
+            plan.value.as_ref(),
+            generation,
+        )?;
+        let Coordinate::DiscreteValue(target) = coordinates[plan.target] else {
+            unreachable!("analysis classifies the equation target as discrete-valued")
+        };
+        let semantic_owner = discrete_values
+            .owner(owner, [plan.target.clone()], coordinates, input.topology)?
+            .expect("a discrete equation has one planned B.1c owner");
+        discrete_values.always(
+            semantic_owner,
+            target,
+            value,
+            owner,
+            dae::DaeProvenance::source(equation.span)?,
+        )?;
     }
     Ok(())
 }

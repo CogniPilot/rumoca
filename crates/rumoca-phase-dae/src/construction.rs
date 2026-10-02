@@ -1017,7 +1017,8 @@ fn structured_family_partition<'flat>(
                     EquationPartition::ConsumedDiscreteValue => Some(Err(())),
                     EquationPartition::Continuous
                     | EquationPartition::DiscreteReal { .. }
-                    | EquationPartition::MultiOutput { .. } => None,
+                    | EquationPartition::MultiOutput { .. }
+                    | EquationPartition::DiscreteElements(_) => None,
                 };
             }
             discrete_value_assignment(body, environment.roles, family.span)

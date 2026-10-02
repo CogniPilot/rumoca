@@ -75,33 +75,16 @@ pub(super) fn source_balance(input: SourceBalanceInput<'_>) -> Result<BalanceDet
                 detail.discrete_value_definitions +=
                     plan.scalar_count.unwrap_or(equation.scalar_count);
             }
+            EquationPartition::DiscreteElements(plans) => {
+                detail.discrete_value_definitions += plans.len();
+            }
             EquationPartition::MultiOutput { receivers, .. } => {
                 add_multi_output_receivers(&mut detail, flat, roles, &receivers)?;
             }
             EquationPartition::ConsumedDiscreteValue => {}
         }
     }
-    for (name, variable) in &flat.variables {
-        if variable.binding.is_none() {
-            continue;
-        }
-        let scalar_count = checked_shape_size(name, variable)?;
-        match roles[name] {
-            PlannedRole::UnusedExpandable
-            | PlannedRole::Parameter
-            | PlannedRole::Constant
-            | PlannedRole::Input
-            | PlannedRole::Clock => {}
-            PlannedRole::State | PlannedRole::Algebraic | PlannedRole::Output => {
-                detail.continuous_equations += scalar_count;
-            }
-            PlannedRole::DiscreteReal => detail.discrete_real_equations += scalar_count,
-            PlannedRole::DiscreteValue => detail.discrete_value_definitions += scalar_count,
-            PlannedRole::EnumerationLiteral | PlannedRole::Aggregate => {
-                unreachable!("expression-only roles are not model variables")
-            }
-        }
-    }
+    add_binding_counts(&mut detail, flat, roles)?;
     for target in when_chain_targets(flat) {
         add_algorithm_target(&mut detail, flat, roles, &target)?;
     }
@@ -212,4 +195,34 @@ fn checked_shape_size(name: &VarName, variable: &flat::Variable) -> Result<usize
             variable.source_span,
         )
     })
+}
+
+/// Count the definitions variable bindings contribute (MLS §4.4.1).
+fn add_binding_counts(
+    detail: &mut BalanceDetail,
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Result<(), ToDaeError> {
+    for (name, variable) in &flat.variables {
+        if variable.binding.is_none() {
+            continue;
+        }
+        let scalar_count = checked_shape_size(name, variable)?;
+        match roles[name] {
+            PlannedRole::UnusedExpandable
+            | PlannedRole::Parameter
+            | PlannedRole::Constant
+            | PlannedRole::Input
+            | PlannedRole::Clock => {}
+            PlannedRole::State | PlannedRole::Algebraic | PlannedRole::Output => {
+                detail.continuous_equations += scalar_count;
+            }
+            PlannedRole::DiscreteReal => detail.discrete_real_equations += scalar_count,
+            PlannedRole::DiscreteValue => detail.discrete_value_definitions += scalar_count,
+            PlannedRole::EnumerationLiteral | PlannedRole::Aggregate => {
+                unreachable!("expression-only roles are not model variables")
+            }
+        }
+    }
+    Ok(())
 }

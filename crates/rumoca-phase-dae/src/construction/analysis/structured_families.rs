@@ -166,6 +166,20 @@ pub(in crate::construction) fn materialized_discrete_value_rows(
     equations: &[flat::Equation],
     roles: &HashMap<VarName, PlannedRole>,
 ) -> bool {
+    // A component-array slice equation `split.set = fill(v, n)` is one
+    // materialized row `{split[1].set, ...} = e` whose element equations
+    // define each element (MLS 3.7 §10.6.1); its template is that same row.
+    if family.interiors_materialized
+        && family.template.as_ref().is_some_and(|template| {
+            !template.body.is_empty()
+                && template
+                    .body
+                    .iter()
+                    .all(|body| discrete_element_array_body(body, roles))
+        })
+    {
+        return true;
+    }
     let Ok(points) = family.domain.scalar_count() else {
         return false;
     };
