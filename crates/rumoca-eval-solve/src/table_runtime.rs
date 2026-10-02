@@ -313,6 +313,16 @@ fn eval_table_1d_lookup(
     }
 
     let last_idx = table.data.len() - 1;
+    // Every row at one abscissa is a step there (`BooleanTable` with one
+    // switching time gives `[t1, 0; t1, 1]`): before it the first row holds,
+    // from it on the last row, as the table's left and right limits.
+    if x_min == x_max {
+        let row = if x < x_min { 0 } else { last_idx };
+        return Ok(TableLookupResult {
+            value: table_row_value(table, row, output_col)?,
+            slope: 0.0,
+        });
+    }
     let k = lookup_segment_index(table, x_real)?;
     let next_idx = (k + 1).min(last_idx);
     let x0 = table_row_x(table, k)?;
@@ -633,6 +643,21 @@ mod tests {
     const AKIMA: i64 = 2;
     const LAST_TWO_POINTS: i64 = 2;
     const HOLD_LAST_POINT: i64 = 1;
+    const CONSTANT_SEGMENTS: i64 = 3;
+
+    #[test]
+    fn a_table_with_one_abscissa_steps_there() {
+        // `BooleanTable(table = {700})` builds `[700, 0; 700, 1]`.
+        let table = table_1d(
+            &[(700.0, 0.0), (700.0, 1.0)],
+            CONSTANT_SEGMENTS,
+            HOLD_LAST_POINT,
+        );
+        assert_eq!(value_at(&table, 0.0), 0.0);
+        assert_eq!(value_at(&table, 699.9), 0.0);
+        assert_eq!(value_at(&table, 700.0), 1.0);
+        assert_eq!(value_at(&table, 800.0), 1.0);
+    }
 
     #[test]
     fn akima_reproduces_a_quadratic_exactly() {
