@@ -3,16 +3,17 @@
 //! MLS §12.9 gives an external function the semantics of its foreign body,
 //! called after the function's protected and output components are
 //! initialized from their declaration equations (§12.4.4, §12.9.1). The
-//! Solve runtime executes only programs it owns, so a foreign body has no
-//! executable denotation there; LAPACK `dgesv` is the exception whose
-//! semantics the checked DAE already owns. For a square `n`-by-`n` matrix
-//! `A` in column-major storage with leading dimension `max(1, n)` and one
-//! right-hand side `B` of extent `n`, `dgesv` overwrites `B` with the
-//! solution of `A*X = B` and sets `info = 0`, or sets `info > 0` when `A` is
-//! exactly singular. The DAE `LinearSolve` builtin computes that solution
-//! by Gaussian elimination with partial pivoting and fails the call on an
-//! exactly singular matrix; the MSL callers (`Modelica.Math.Matrices.solve`) fail on
-//! `info <> 0` as well, so the call reports `info = 0` whenever it returns.
+//! Solve runtime executes only programs the checked DAE defines, so a
+//! foreign body has no executable meaning there unless the DAE defines it;
+//! LAPACK `dgesv` with one right-hand side is defined here. For a square
+//! `n`-by-`n` matrix `A` in column-major storage with leading dimension
+//! `max(1, n)` and one right-hand side `B` of extent `n`, `dgesv` factors `A`
+//! with partial pivoting and sets `info` to the first step whose pivot is
+//! exactly zero, leaving `B` unchanged, or sets `info = 0` and overwrites `B`
+//! with the solution of `A*X = B`. The body computes the same `info` by
+//! elimination with partial pivoting over the translation-time extent and,
+//! when it is 0, the solution with the DAE `LinearSolve` builtin; a caller
+//! receives `info` and decides what a singular matrix means.
 //!
 //! The interface is proven from the declaration, never from spelling: the
 //! FORTRAN 77 entry point `dgesv`, eight plain arguments, a proven square
