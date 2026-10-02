@@ -1,6 +1,6 @@
 //! FUNC (Function) contract tests - MLS §12
 //!
-//! Tests for the 39 function contracts defined in SPEC_0022.
+//! Tests for the 40 function contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
@@ -1515,4 +1515,56 @@ fn func_040_function_name_and_partial_application_arguments() {
     );
     assert!((trace.final_value("s") - 4.0).abs() < 1e-12);
     assert!((trace.final_value("a") - 7.0).abs() < 1e-12);
+}
+
+// =============================================================================
+// FUNC-026: Vectorization non-replaceable (MLS §12.4.6, §6.3.1, §7.3)
+// =============================================================================
+
+const FUNC_026_SOURCE: &str = r#"
+    package V
+        partial package Base
+            replaceable function prop
+                input Real T;
+                output Real y;
+            algorithm
+                y := T;
+            end prop;
+        end Base;
+        package A
+            extends Base;
+            redeclare function prop
+                input Real T;
+                output Real y;
+            algorithm
+                y := 2*T + 1;
+            end prop;
+        end A;
+        partial package Abstract
+            replaceable partial function prop
+                input Real T;
+                output Real y;
+            end prop;
+        end Abstract;
+        model Selected
+            replaceable package Medium = A;
+            Real y[2] = Medium.prop({1, 2}*time);
+        end Selected;
+        model Unselected
+            replaceable package Medium = Abstract;
+            Real y[2] = Medium.prop({1, 2}*time);
+        end Unselected;
+    end V;
+"#;
+
+#[test]
+fn func_026_vectorized_call_through_selected_replaceable_package_accepted() {
+    let trace = rumoca_contracts::test_support::simulate_model(FUNC_026_SOURCE, "V.Selected", 1.0);
+    assert!((trace.final_value("y[1]") - 3.0).abs() < 1e-12);
+    assert!((trace.final_value("y[2]") - 5.0).abs() < 1e-12);
+}
+
+#[test]
+fn func_026_vectorized_call_of_unselected_callee_rejected() {
+    expect_failure_in_phase_with_code(FUNC_026_SOURCE, "V.Unselected", FailedPhase::ToDae, "ED008");
 }

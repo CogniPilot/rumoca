@@ -3684,6 +3684,20 @@ kind = 'Sim'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'FUNC-026'
+case_id = 'func_026_vectorized_call_through_selected_replaceable_package_accepted'
+test_file = 'tests/func_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-026'
+case_id = 'func_026_vectorized_call_of_unselected_callee_rejected'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
 contract_id = 'FUNC-027'
 case_id = 'func_027_vectorized_args_size_mismatch_rejected'
 test_file = 'tests/func_contracts.rs'

@@ -2457,8 +2457,8 @@ id = 'FUNC-026'
 category = 'Function'
 name = 'Vectorization non-replaceable'
 mls_ref = '§12.4.6'
-requirement = 'Only transitively non-replaceable functions support automatic vectorization'
-status = 'Deferred'
+requirement = '''"Only function classes that are transitively non-replaceable (see section 6.3.1 and section 7.1.4) may be called vectorized." §6.3.1: "A class reference is transitively non-replaceable if and only if all parts of the name satisfy the following: If the class definition is long it is transitively non-replaceable if not declared replaceable. If the class definition is short (i.e., class A = P.B) it is transitively non-replaceable if it is non-replaceable and equal to class reference (P.B) that is transitively non-replaceable." Rumoca (documented deviation, accepted extension that MSL 4.1 relies on, e.g. `Medium.prandtlNumber(states)` in `Fluid.Pipes.BaseClasses.HeatTransfer.LocalPipeFlowHeatTransfer`): a vectorized call is also accepted when, after replaceable-package selection (MLS §7.3), the call's exposure path names the function through enclosing classes that are all transitively non-replaceable, so the selected package fixes the function at translation even though the function itself is declared `replaceable` there (the restriction exists so the callee is known at translation, and it then is). A call spelled through a replaceable package alias (`replaceable package Medium = A` in the model) is accepted on the same ground when the classes enclosing the alias and its right-hand side are transitively non-replaceable: the declared selection, or the redeclaration flattening resolves to one exact function instance, fixes the package. A call whose callee is still unresolved after selection (an alias to a replaceable package, or a partial function) is refused. Tested in `suite_core/selected_package_vectorization.rs` and `func_contracts.rs`'''
+status = 'Implemented'
 tier = 1
 
 [[contracts]]

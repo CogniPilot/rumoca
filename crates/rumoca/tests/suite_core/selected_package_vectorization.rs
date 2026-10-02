@@ -4,8 +4,10 @@
 //! selection (§7.3) a call such as `Medium.prandtlNumber(states)` is respelled
 //! through the selected package, whose enclosing classes are all transitively
 //! non-replaceable, so the selected package fixes the function at translation
-//! even though the function is declared `replaceable` in it. A call still
-//! spelled through a replaceable package alias is refused.
+//! even though the function is declared `replaceable` in it. A call spelled
+//! through a model-level replaceable package alias (`replaceable package
+//! Medium = A`) is equally fixed by that selection. A call whose callee is
+//! still unresolved after selection (a partial function) is refused.
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, simulate_dae_with_diagnostics};
@@ -42,6 +44,16 @@ package VSel
     replaceable package Medium = A;
     Real y[2] = Medium.prop({1, 2}*time);
   end Root;
+  partial package PartialAbstract
+    replaceable partial function prop
+      input Real T;
+      output Real y;
+    end prop;
+  end PartialAbstract;
+  model Unresolved
+    replaceable package Medium = PartialAbstract;
+    Real y[2] = Medium.prop({1, 2}*time);
+  end Unresolved;
 end VSel;
 "#;
 
@@ -71,13 +83,37 @@ fn a_vectorized_call_through_a_selected_package_is_accepted() {
 }
 
 #[test]
-fn a_vectorized_call_through_a_replaceable_alias_is_refused() {
-    let error = Compiler::new()
+fn a_vectorized_call_through_a_model_level_replaceable_alias_is_accepted() {
+    let compiled = Compiler::new()
         .model("VSel.Root")
         .compile_str(SOURCE, "VSel.mo")
-        .expect_err("a call spelled through a replaceable package alias is not vectorizable");
+        .unwrap_or_else(|error| panic!("VSel.Root compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("VSel.Root simulates: {error}"));
+    let column = |name: &str| {
+        let index = result.names.iter().position(|n| n == name).expect(name);
+        &result.data[index]
+    };
+    for (row, &time) in result.times.iter().enumerate() {
+        assert!((column("y[1]")[row] - (2.0 * time + 1.0)).abs() < 1e-9);
+        assert!((column("y[2]")[row] - (4.0 * time + 1.0)).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn a_vectorized_call_of_a_callee_unresolved_after_selection_is_refused() {
+    let error = Compiler::new()
+        .model("VSel.Unresolved")
+        .compile_str(SOURCE, "VSel.mo")
+        .expect_err("a partial callee is not selected at translation");
     assert!(
-        error.to_string().contains("FUNC-026"),
+        error.to_string().contains("Medium.prop"),
         "unexpected diagnostic: {error}"
     );
 }

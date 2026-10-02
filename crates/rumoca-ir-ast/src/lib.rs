@@ -343,12 +343,17 @@ impl<'tree> ClassDefIndex<'tree> {
 
     /// Prove that a function-call exposure path selects one function at
     /// translation time: every enclosing segment is transitively
-    /// non-replaceable (MLS 3.7 §6.3.1), so the last segment, the function,
-    /// is the member that fixed class selects, even when the function is
-    /// declared `replaceable` there. A long function needs nothing more; a
-    /// short function alias must name a transitively non-replaceable class.
-    /// This is the documented SPEC_0022 FUNC-026 extension for MLS §12.4.6
-    /// vectorized calls through a selected package.
+    /// non-replaceable (MLS 3.7 §6.3.1) or is a replaceable package alias
+    /// (`replaceable package Medium = A`) whose enclosing classes are
+    /// transitively non-replaceable and whose right-hand side is, so the
+    /// selection (MLS §7.3: the declared class or a redeclaration that
+    /// flattening resolves to an exact function instance) fixes the package.
+    /// The last segment, the function, is the member that fixed class
+    /// selects, even when the function is declared `replaceable` there. A
+    /// long function needs nothing more; a short function alias must name a
+    /// transitively non-replaceable class. This is the documented SPEC_0022
+    /// FUNC-026 extension for MLS §12.4.6 vectorized calls through a selected
+    /// package.
     pub fn proves_selected_function_path(&self, path: impl IntoIterator<Item = DefId>) -> bool {
         let path = path.into_iter().collect::<Vec<_>>();
         let Some((function, prefix)) = path.split_last() else {
@@ -358,6 +363,7 @@ impl<'tree> ClassDefIndex<'tree> {
         let mut active = FxHashSet::default();
         let prefix_proven = prefix.iter().all(|def_id| {
             prove_transitively_non_replaceable_reference(self, *def_id, &mut proven, &mut active)
+                || prove_selected_package_alias(self, *def_id, &mut proven, &mut active)
         });
         let Some(class) = self.get(*function) else {
             return false;
@@ -426,6 +432,36 @@ impl<'tree> ClassDefIndex<'tree> {
             self.insert_class_tree(nested, child_parent_def_id, child_parent_qualified_name);
         }
     }
+}
+
+/// A replaceable package alias is selected at translation when every class
+/// enclosing it is transitively non-replaceable and its right-hand side
+/// (`replaceable package Medium = A`) is a transitively non-replaceable
+/// class reference: the declared selection, or the redeclaration flattening
+/// resolves, then names one package.
+fn prove_selected_package_alias(
+    index: &ClassDefIndex<'_>,
+    def_id: DefId,
+    proven: &mut FxHashMap<DefId, bool>,
+    active: &mut FxHashSet<DefId>,
+) -> bool {
+    let ancestry = index.def_ancestry(def_id);
+    let Some((alias, enclosing)) = ancestry.split_last() else {
+        return false;
+    };
+    let Some(class) = index.get(*alias) else {
+        return false;
+    };
+    class.is_replaceable
+        && class.class_type == rumoca_core::ClassType::Package
+        && class.end_name_token.is_none()
+        && class.extends.len() == 1
+        && enclosing
+            .iter()
+            .all(|part| prove_transitively_non_replaceable_definition(index, *part, proven, active))
+        && class.extends[0].base_def_id.is_some_and(|base| {
+            prove_transitively_non_replaceable_reference(index, base, proven, active)
+        })
 }
 
 fn prove_transitively_non_replaceable_reference(
@@ -609,6 +645,41 @@ mod transitive_nonreplaceability_tests {
         let index = ClassDefIndex::from_tree(&tree);
 
         assert!(!index.proves_transitively_non_replaceable_path([function_id]));
+    }
+
+    /// `model M  replaceable package Medium = Base; ... Medium.f(..)`: the
+    /// alias segment is selected at translation when its right-hand side is
+    /// transitively non-replaceable, and not when that side is replaceable.
+    fn selected_alias_path(base_replaceable: bool) -> bool {
+        let model_id = DefId::new(91_061);
+        let alias_id = DefId::new(91_062);
+        let base_id = DefId::new(91_063);
+        let function_id = DefId::new(91_064);
+        let mut function = long_class("f", function_id);
+        function.class_type = rumoca_core::ClassType::Function;
+        function.is_replaceable = true;
+        let mut base = long_class("Base", base_id);
+        base.is_replaceable = base_replaceable;
+        base.classes.insert("f".to_string(), function);
+        let mut alias = short_alias("Medium", alias_id, Some(base_id));
+        alias.class_type = rumoca_core::ClassType::Package;
+        alias.is_replaceable = true;
+        let mut model = long_class("M", model_id);
+        model.classes.insert("Medium".to_string(), alias);
+        let tree = index([("M".to_string(), model), ("Base".to_string(), base)]);
+        let index = ClassDefIndex::from_tree(&tree);
+        assert!(!index.proves_transitively_non_replaceable_path([alias_id]));
+        index.proves_selected_function_path([alias_id, function_id])
+    }
+
+    #[test]
+    fn replaceable_package_alias_to_a_fixed_package_selects_its_function() {
+        assert!(selected_alias_path(false));
+    }
+
+    #[test]
+    fn replaceable_package_alias_to_a_replaceable_package_is_not_selected() {
+        assert!(!selected_alias_path(true));
     }
 }
 
