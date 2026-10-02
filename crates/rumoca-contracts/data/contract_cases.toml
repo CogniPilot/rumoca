@@ -1143,6 +1143,13 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'FUNC-014'
+case_id = 'func_014_extended_function_with_second_algorithm_rejected'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
 contract_id = 'FUNC-017'
 case_id = 'func_017_return_in_function'
 test_file = 'tests/func_contracts.rs'

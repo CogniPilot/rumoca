@@ -486,6 +486,21 @@ pub enum FlattenError {
         #[label("read through packages that disagree on its value")]
         span: Span,
     },
+
+    /// A function class with more than one algorithm section (MLS §12.2).
+    #[error("function `{name}` has {sections} algorithm sections")]
+    #[diagnostic(
+        code(rumoca::flatten::EF035),
+        help(
+            "MLS 3.7 §12.2: \"A function can have at most one algorithm section or one external function interface (not both), which, if present, is the body of the function.\" A function that extends another with an algorithm section must not add its own"
+        )
+    )]
+    MultipleFunctionBodies {
+        name: String,
+        sections: usize,
+        #[label("function with more than one algorithm section")]
+        span: Span,
+    },
 }
 
 impl FlattenError {
@@ -818,6 +833,7 @@ impl PhaseError for FlattenError {
             | Self::InvalidDerivativeAnnotation { span, .. }
             | Self::NonUniformParameterFixed { span, .. }
             | Self::ConflictingExposedConstant { span, .. }
+            | Self::MultipleFunctionBodies { span, .. }
             | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
             | Self::CyclicConstantBinding { span, .. }
             | Self::InvalidConnectionGraph { span, .. }

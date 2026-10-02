@@ -2,13 +2,13 @@
 //! exactly one selected implementation.  A short-class function alias inherits
 //! its implementation, so the alias chain must terminate in a single body.
 //!
-//! When it does not — two `extends` clauses each contributing a distinct
-//! implementation — there is no exact selection to record, and guessing one
-//! would silently pick an arbitrary body.  Flatten therefore refuses the call
-//! with `EF025`, naming the callable and the fact it could not establish.
+//! When it does not, two `extends` clauses each contributing an algorithm
+//! section, the function has two bodies, which MLS 3.7 §12.2 forbids (\"A
+//! function can have at most one algorithm section\"). Flatten refuses the
+//! function with `EF035` rather than pick an arbitrary body.
 
 use miette::Diagnostic;
-use rumoca_core::{ExpressionVisitor, PhaseError};
+use rumoca_core::ExpressionVisitor;
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 use rumoca_phase_flatten::FlattenError;
@@ -120,77 +120,18 @@ impl ExpressionVisitor for CallReferences {
 }
 
 #[test]
-fn ambiguous_alias_fails_function_selection_identity_at_the_call_site() {
+fn ambiguous_alias_is_refused_as_a_function_with_two_bodies() {
     let fixture = Fixture::prepare(AMBIGUOUS_ALIAS, AMBIGUOUS_FILE, "UsesAmbiguous");
     let error = fixture
         .flatten()
-        .expect_err("an alias inheriting two implementations has no exact selection");
-
-    let FlattenError::MissingFunctionSelectionIdentity {
-        function,
-        reason,
-        span,
-    } = &error
-    else {
-        panic!("expected a missing-selection-identity failure, got {error:?}");
+        .expect_err("a function inheriting two algorithm sections has two bodies");
+    let FlattenError::MultipleFunctionBodies { sections, .. } = &error else {
+        panic!("expected a multiple-function-bodies failure, got {error:?}");
     };
-    assert_eq!(function, "ambiguous");
-    assert_eq!(
-        reason,
-        "exposed function has no unique exact extends implementation"
-    );
-    assert_eq!(
-        error.to_string(),
-        "missing exact function-selection identity for `ambiguous`: \
-exposed function has no unique exact extends implementation"
-    );
-
+    assert_eq!(*sections, 2);
     assert_eq!(
         error.code().map(|code| code.to_string()).as_deref(),
-        Some("rumoca::flatten::EF025"),
-        "EF025 is the shipped identity of this diagnostic"
-    );
-    assert!(
-        error
-            .help()
-            .map(|help| help.to_string())
-            .is_some_and(|help| help.contains("selected implementation")),
-        "the help text must name the missing exposure/implementation pair"
-    );
-
-    assert_eq!(
-        span.source,
-        rumoca_core::source_id_for_name(AMBIGUOUS_FILE),
-        "the failure must be attributed to the source that declared the call"
-    );
-    assert_eq!(
-        &AMBIGUOUS_ALIAS[span.start.0..span.end.0],
-        "ambiguous(1.0)",
-        "the span must point at the call whose selection could not be established"
-    );
-
-    let diagnostic = error.to_diagnostic();
-    assert_eq!(diagnostic.code.as_deref(), Some("EF025"));
-    assert_eq!(
-        diagnostic.severity,
-        rumoca_core::DiagnosticSeverity::Error,
-        "an `E` range code must be reported at error severity (SPEC_0008)"
-    );
-    assert_eq!(
-        diagnostic
-            .labels
-            .iter()
-            .map(|label| label.span)
-            .collect::<Vec<_>>(),
-        vec![*span],
-        "the diagnostic must carry the call-site span as its only label"
-    );
-    assert!(
-        diagnostic
-            .notes
-            .iter()
-            .any(|note| note.contains("selected implementation")),
-        "the rendered diagnostic must keep the help text as a note"
+        Some("rumoca::flatten::EF035")
     );
 }
 

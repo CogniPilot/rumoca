@@ -1127,6 +1127,14 @@ fn convert_function<'tree>(
     let mut func = rumoca_core::Function::new(qualified_name, span);
     func.def_id = class_def.def_id;
     let mut context = collect_function_context(tree, class_index, class_def, member_cache);
+    // MLS 3.7 §12.2: at most one algorithm section, own or inherited.
+    if context.algorithms.len() > 1 {
+        return Err(FlattenError::MultipleFunctionBodies {
+            name: qualified_name.to_string(),
+            sections: context.algorithms.len(),
+            span,
+        });
+    }
     // MLS §7.3: a function body is converted from the class tree rather than
     // instantiated, so the member tails Resolve deferred across replaceable
     // class edges are proved here before lowering demands exact identity.

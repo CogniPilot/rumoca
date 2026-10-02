@@ -13,6 +13,8 @@ use super::*;
 pub(super) struct FunctionClassContext {
     pub(super) components: IndexMap<String, ast::Component>,
     pub(super) algorithms: Vec<Vec<ast::Statement>>,
+    /// The declaring class and section ordinal of each of `algorithms`.
+    algorithm_identities: Vec<Option<(rumoca_core::DefId, usize)>>,
     pub(super) imports: qualify::ImportMap,
 }
 
@@ -95,7 +97,26 @@ fn collect_function_context_recursive<'tree>(
         respell_class_aliases_visible_from(tree, class_index, class_def, &mut context.imports);
     }
     resolve_import_pairs(&class_def.imports, class_index, &mut context.imports);
-    context.algorithms.extend(class_def.algorithms.clone());
+    for (ordinal, section) in class_def.algorithms.iter().enumerate() {
+        let identity = class_def.def_id.map(|def_id| (def_id, ordinal));
+        match identity.and_then(|identity| {
+            context
+                .algorithm_identities
+                .iter()
+                .position(|known| *known == Some(identity))
+        }) {
+            // A copy of a class already reached (a redeclared `function
+            // extends` inside a modified package copy reaches its own original)
+            // is the same definition, so its section is the same section, not
+            // a second body (MLS 3.7 §12.2); the copy reached last is the one
+            // the converted class sees.
+            Some(known) => context.algorithms[known] = section.clone(),
+            None => {
+                context.algorithms.push(section.clone());
+                context.algorithm_identities.push(identity);
+            }
+        }
+    }
     context.components.extend(class_def.components.clone());
 }
 

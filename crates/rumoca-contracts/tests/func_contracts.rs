@@ -301,6 +301,31 @@ fn func_014_single_algorithm() {
     );
 }
 
+#[test]
+fn func_014_extended_function_with_second_algorithm_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        function Base
+            input Real x;
+            output Real y;
+        algorithm
+            y := x;
+        end Base;
+        function Twice
+            extends Base;
+        algorithm
+            y := 2 * x;
+        end Twice;
+        model Test
+            Real z = Twice(time);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Flatten,
+        "EF035",
+    );
+}
+
 // =============================================================================
 // FUNC-017: Return in algorithm only
 // "Return statement can only be used in an algorithm section of a function"

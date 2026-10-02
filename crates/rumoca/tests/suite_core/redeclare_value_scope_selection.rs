@@ -12,11 +12,9 @@ use rumoca::Compiler;
 
 const SOURCE: &str = r#"
 package Base
-  replaceable function f
+  replaceable partial function f
     input Real x;
     output Real y;
-  algorithm
-    y := x;
   end f;
 end Base;
 
