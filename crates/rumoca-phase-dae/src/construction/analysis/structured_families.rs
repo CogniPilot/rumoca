@@ -186,14 +186,34 @@ pub(in crate::construction) fn materialized_discrete_value_rows(
     else {
         return false;
     };
-    family.template.is_none()
-        && family.interiors_materialized
-        && rows.iter().any(|equation| {
+    if !family.interiors_materialized {
+        return false;
+    }
+    let Some(template) = &family.template else {
+        return rows.iter().any(|equation| {
             structured_discrete_element_assignments(std::slice::from_ref(&equation.residual), roles)
                 || matches!(
                     discrete_value_assignment(&equation.residual, roles, equation.span),
                     Ok(Some(_))
                 )
+        });
+    };
+    // A template over the fields of a component array
+    // (`inPort[i].occupied = ...` in `Modelica.StateGraph.Step`) names no
+    // declared coordinate, so it classifies as no discrete owner, while each
+    // materialized row is the discrete-value assignment of one element field.
+    // Those rows are the definitions; the template is only their grouping.
+    !rows.is_empty()
+        && matches!(
+            structured_discrete_assignments(&template.body, roles, family.span),
+            Ok(None)
+        )
+        && !structured_discrete_element_assignments(&template.body, roles)
+        && rows.iter().all(|equation| {
+            matches!(
+                discrete_value_assignment(&equation.residual, roles, equation.span),
+                Ok(Some(_))
+            )
         })
 }
 
