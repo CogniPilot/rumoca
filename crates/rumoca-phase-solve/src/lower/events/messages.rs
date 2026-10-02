@@ -124,6 +124,25 @@ fn lower_message_parts<'dae>(
             });
             Ok(())
         }
+        // MLS 3.7 §8.3.7, §8.3.8: a message is any String expression. A
+        // String parameter (`terminate(terminationText)` in
+        // `Modelica.Blocks.Logical.TerminateSimulation`) has the value of
+        // its declaration; the runtime owns no String storage, so that
+        // value is the message.
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(parameter))
+            if expression.value_type().scalar_type() == dae::ScalarType::String =>
+        {
+            let value = view
+                .variable(dae::VariableId::from(parameter))
+                .and_then(|variable| variable.start().or_else(|| variable.binding()))
+                .ok_or_else(|| {
+                    LowerError::unsupported(
+                        "a String parameter read by a Solve event message has no declared value",
+                        expression.provenance().span(),
+                    )
+                })?;
+            lower_message_parts(view, layout, value, parts)
+        }
         _ => Err(LowerError::unsupported(
             "Solve event messages require String literals, concatenation, or checked String conversions",
             expression.provenance().span(),

@@ -200,3 +200,43 @@ fn pre_state_in_reinit_reads_the_event_entry_left_limit() {
         "reinit must reverse the pre-impact velocity, got {final_velocity}"
     );
 }
+
+/// MLS 3.7 §8.3.8: the message is a String expression. A String parameter
+/// (`Modelica.Blocks.Logical.TerminateSimulation.terminationText`) has the
+/// value of its declaration, and an assertion message may concatenate one.
+const PARAMETER_MESSAGES: &str = r#"
+model ParameterMessages
+  parameter String text = "... End condition reached";
+  parameter String prefix = "x is ";
+  Real x(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  assert(x < 2, prefix + String(x));
+  when time >= 0.5 then
+    terminate(text);
+  end when;
+end ParameterMessages;
+"#;
+
+#[test]
+fn a_string_parameter_is_the_message_it_names() {
+    let compiled = Compiler::new()
+        .model("ParameterMessages")
+        .compile_str(PARAMETER_MESSAGES, "parameter_messages.mo")
+        .expect("compile ParameterMessages");
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .expect("ParameterMessages simulates");
+    let termination = result.termination.expect("the when clause terminates");
+    assert_eq!(termination.message, "... End condition reached");
+    assert!(
+        (termination.time - 0.5).abs() < 1e-9,
+        "{}",
+        termination.time
+    );
+}
