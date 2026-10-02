@@ -30,6 +30,9 @@ pub(crate) fn specialize_function_arguments(flat: &mut flat::Model) -> Result<()
     // A function with a functional input runs only through its
     // specializations, so its own body (which passes its formal on) is never
     // rewritten, and every remaining call must pass a function.
+    // One specialization per (callee, function arguments, bound formals),
+    // across rounds: the key, never the generated spelling, identifies it.
+    let mut keys = HashMap::new();
     let mut generics = IndexMap::default();
     flat.functions.retain(|name, function| {
         let generic = has_function_input(function);
@@ -49,9 +52,11 @@ pub(crate) fn specialize_function_arguments(flat: &mut flat::Model) -> Result<()
             functions,
             created: IndexMap::default(),
             next_instance,
+            keys: std::mem::take(&mut keys),
         };
         super::call_args::rewrite_model_expressions(flat, &mut specializer)?;
         next_instance = specializer.next_instance;
+        keys = std::mem::take(&mut specializer.keys);
         if specializer.created.is_empty() {
             // Specialized bodies call the argument functions with named
             // bound formals; give those calls their declaration-order slots.
@@ -81,10 +86,34 @@ struct FunctionArgument {
     bound: Vec<(String, rumoca_core::Expression)>,
 }
 
+/// What identifies one specialization: the callee, and per functional input
+/// its index, the argument's function, and the formals it binds.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct SpecializationKey {
+    callee: FunctionIdentity,
+    arguments: Vec<(usize, FunctionIdentity, Vec<String>)>,
+}
+
+/// A Flat function by its instance identity, or by name when it has none.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum FunctionIdentity {
+    Instance(rumoca_core::FunctionInstanceId),
+    Name(rumoca_core::VarName),
+}
+
+impl FunctionIdentity {
+    fn of(function: &rumoca_core::Function) -> Self {
+        function
+            .instance_id
+            .map_or_else(|| Self::Name(function.name.clone()), Self::Instance)
+    }
+}
+
 struct Specializer {
     functions: IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     created: IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     next_instance: u32,
+    keys: HashMap<SpecializationKey, rumoca_core::VarName>,
 }
 
 impl Specializer {
@@ -163,22 +192,12 @@ impl Specializer {
         callee: &rumoca_core::Function,
         arguments: &[(usize, FunctionArgument)],
     ) -> Result<rumoca_core::VarName, FlattenError> {
-        let mut name = callee.name.as_str().to_string();
-        for (index, argument) in arguments {
-            name.push_str(&format!(
-                "__{}_{}",
-                callee.inputs[*index].name,
-                argument.target.as_str().replace('.', "_")
-            ));
-            for (formal, _) in &argument.bound {
-                name.push('_');
-                name.push_str(formal);
-            }
+        let key = self.specialization_key(callee, arguments);
+        if let Some(name) = self.keys.get(&key) {
+            return Ok(name.clone());
         }
-        let name = rumoca_core::VarName::new(name);
-        if self.functions.contains_key(&name) || self.created.contains_key(&name) {
-            return Ok(name);
-        }
+        let name = self.fresh_specialization_name(callee, arguments);
+        self.keys.insert(key, name.clone());
         let mut specialized = callee.clone();
         specialized.name = name.clone();
         specialized.instance_id = Some(rumoca_core::FunctionInstanceId::new(self.next_instance));
@@ -211,6 +230,67 @@ impl Specializer {
         specialized.inputs = inputs;
         self.created.insert(name.clone(), specialized);
         Ok(name)
+    }
+}
+
+impl Specializer {
+    fn specialization_key(
+        &self,
+        callee: &rumoca_core::Function,
+        arguments: &[(usize, FunctionArgument)],
+    ) -> SpecializationKey {
+        SpecializationKey {
+            callee: FunctionIdentity::of(callee),
+            arguments: arguments
+                .iter()
+                .map(|(index, argument)| {
+                    let target = self.functions.get(argument.target.var_name()).map_or_else(
+                        || FunctionIdentity::Name(argument.target.var_name().clone()),
+                        FunctionIdentity::of,
+                    );
+                    let bound = argument
+                        .bound
+                        .iter()
+                        .map(|(formal, _)| formal.clone())
+                        .collect();
+                    (*index, target, bound)
+                })
+                .collect(),
+        }
+    }
+
+    /// A readable name for a new specialization that no Flat function holds.
+    ///
+    /// The spelling joins names with `_`, so two keys can spell alike
+    /// (`P.f_g` and `P_f.g`, bound `{a_b}` and `{a, b}`); a taken spelling
+    /// gets the first free numeric suffix instead of reusing that function.
+    fn fresh_specialization_name(
+        &self,
+        callee: &rumoca_core::Function,
+        arguments: &[(usize, FunctionArgument)],
+    ) -> rumoca_core::VarName {
+        let mut base = callee.name.as_str().to_string();
+        for (index, argument) in arguments {
+            base.push_str(&format!(
+                "__{}_{}",
+                callee.inputs[*index].name,
+                argument.target.as_str().replace('.', "_")
+            ));
+            for (formal, _) in &argument.bound {
+                base.push('_');
+                base.push_str(formal);
+            }
+        }
+        let taken = |name: &rumoca_core::VarName| {
+            self.functions.contains_key(name) || self.created.contains_key(name)
+        };
+        let mut name = rumoca_core::VarName::new(&base);
+        let mut suffix = 2;
+        while taken(&name) {
+            name = rumoca_core::VarName::new(format!("{base}__{suffix}"));
+            suffix += 1;
+        }
+        name
     }
 }
 

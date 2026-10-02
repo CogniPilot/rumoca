@@ -126,3 +126,74 @@ fn a_non_function_value_at_a_function_input_is_refused() {
         "unexpected diagnostic: {error}"
     );
 }
+
+/// Specializations are identified by callee, argument function, and bound
+/// formals, never by their generated spelling: `P.f_g` and `P_f.g`, and the
+/// bindings `{a_b}` and `{a, b}`, spell alike once joined with `_`.
+const COLLIDING: &str = r#"
+package Colliding
+  partial function Eq
+    input Real u;
+    output Real y;
+  end Eq;
+  function apply
+    input Eq f;
+    input Real x;
+    output Real y;
+  algorithm
+    y := f(x);
+  end apply;
+  package P
+    function f_g
+      extends Eq;
+    algorithm
+      y := 2*u;
+    end f_g;
+  end P;
+  package P_f
+    function g
+      extends Eq;
+    algorithm
+      y := 3*u;
+    end g;
+  end P_f;
+  function r
+    extends Eq;
+    input Real a_b = 0;
+    input Real a = 0;
+    input Real b = 0;
+  algorithm
+    y := u + 10*a_b + 100*a + 1000*b;
+  end r;
+  model Top
+    Real y1 = apply(P.f_g, 1 + 0*time);
+    Real y2 = apply(P_f.g, 1 + 0*time);
+    Real y3 = apply(function r(a_b = 1), 1 + 0*time);
+    Real y4 = apply(function r(a = 1, b = 1), 1 + 0*time);
+  end Top;
+end Colliding;
+"#;
+
+#[test]
+fn specializations_with_colliding_spellings_stay_distinct() {
+    let compiled = Compiler::new()
+        .model("Colliding.Top")
+        .compile_str(COLLIDING, "Colliding.mo")
+        .unwrap_or_else(|error| panic!("Colliding.Top compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.1,
+            ..SimOptions::default()
+        },
+    )
+    .expect("Colliding.Top simulates");
+    for (name, expected) in [("y1", 2.0), ("y2", 3.0), ("y3", 11.0), ("y4", 1101.0)] {
+        let column = result
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("{name} is recorded"));
+        assert_eq!(result.data[column][0], expected, "{name}");
+    }
+}
