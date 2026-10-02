@@ -615,13 +615,10 @@ fn substitute_resolved_source_constant(
         // evaluated in that package: the names its binding reads resolve
         // there (MLS §7.3, §5.3), not in the declaring class.
         exposures: match semantic_id {
-            SemanticConstantId::Exposure { package, .. } => env
-                .ctx
-                .package_names(package)
-                .unwrap_or(env.exposures),
-            SemanticConstantId::Occurrence(_) | SemanticConstantId::Declaration(_) => {
-                env.exposures
+            SemanticConstantId::Exposure { package, .. } => {
+                env.ctx.package_names(package).unwrap_or(env.exposures)
             }
+            SemanticConstantId::Occurrence(_) | SemanticConstantId::Declaration(_) => env.exposures,
         },
         ..env
     };

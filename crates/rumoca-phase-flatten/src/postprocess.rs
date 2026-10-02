@@ -289,10 +289,7 @@ fn substitute_variable_annotations(
 /// carries no evidence of the extents it was instantiated with.
 fn settle_record_field_extents(
     flat: &mut flat::Model,
-    exposures: &rustc_hash::FxHashMap<
-        rumoca_core::FunctionInstanceId,
-        Vec<String>,
-    >,
+    exposures: &rustc_hash::FxHashMap<rumoca_core::FunctionInstanceId, Vec<String>>,
 ) {
     let mut proven: rustc_hash::FxHashMap<(rumoca_core::DefId, usize), Option<Vec<i64>>> =
         rustc_hash::FxHashMap::default();
