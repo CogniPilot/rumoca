@@ -290,6 +290,15 @@ pub(in crate::construction) fn function_expressions(
     expressions
 }
 
+/// Root expressions owned by `statements` and all nested flow statements.
+pub(in crate::construction) fn statement_expression_roots(
+    statements: &[rumoca_core::Statement],
+) -> Vec<&Expression> {
+    let mut expressions = Vec::new();
+    collect_statement_expression_roots(statements, &mut expressions);
+    expressions
+}
+
 fn collect_statement_expression_roots<'function>(
     statements: &'function [rumoca_core::Statement],
     expressions: &mut Vec<&'function Expression>,

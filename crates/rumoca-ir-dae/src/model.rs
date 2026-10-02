@@ -162,7 +162,9 @@ pub(crate) use construction_checks::{
 /// 41 adds the MLS §16.5.2 shifted event clock kind.
 /// 42 records each variable's declared `input`/`output` prefix beside its
 /// exported causality.
-pub const DAE_SCHEMA_VERSION: u16 = 42;
+/// 43 marks a B.1c owner whose targets are unread observations of a
+/// continuous-time definition, evaluated at every output point.
+pub const DAE_SCHEMA_VERSION: u16 = 43;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;

@@ -257,6 +257,8 @@ pub enum DaeConstructionError {
     IncompleteModelEventTransaction { span: Span },
     #[error("an unconditional B.1c owner must contain exactly one `always` branch")]
     InvalidDiscreteBranchSet { span: Span },
+    #[error("an observed B.1c owner must be unstructured and contain exactly one `always` branch")]
+    InvalidObservedDiscreteOwner { span: Span },
     #[error(
         "separate algorithm statements write different targets of one B.1c owner, so their simultaneous activation has no checked owner"
     )]
@@ -399,6 +401,7 @@ impl DaeConstructionError {
             | Self::UndeclaredModelEventTarget { span, .. }
             | Self::IncompleteModelEventTransaction { span }
             | Self::InvalidDiscreteBranchSet { span }
+            | Self::InvalidObservedDiscreteOwner { span }
             | Self::UnorderedSimultaneousStatements { span }
             | Self::UnissuedDiscreteDependency { span, .. }
             | Self::InvalidExternalSymbol { span, .. }

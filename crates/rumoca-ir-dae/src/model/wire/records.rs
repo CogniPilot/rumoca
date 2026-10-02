@@ -262,6 +262,7 @@ pub(super) struct DiscreteValueOwnerWire<Targets = Vec<u32>> {
     pub(super) targets: Targets,
     pub(super) branches: Vec<DiscreteValueBranchWire>,
     pub(super) structure: Option<StructuredDiscreteValueWire>,
+    pub(super) observed: bool,
     #[serde(deserialize_with = "deserialize_provenance")]
     pub(super) provenance: DaeProvenance,
 }
@@ -340,6 +341,7 @@ pub(super) fn discrete_value_owner_output(
                         domain: structure.domain,
                         scalar_view: structure.scalar_view,
                     }),
+                observed: owner.observed,
                 provenance: owner.provenance,
             }
         })

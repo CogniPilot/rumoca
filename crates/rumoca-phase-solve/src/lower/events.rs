@@ -289,6 +289,9 @@ struct DiscreteRows<'dae> {
     clock_partition_intermediates: ScalarRows,
     clock_partition_intermediate_targets: Vec<solve::ScalarSlot>,
     clock_partition_intermediate_clocks: Vec<Vec<solve::PeriodicClockId>>,
+    /// Rows of observed B.1c owners (SPEC_0022 EXPR-012): unread
+    /// observations refreshed at every output point.
+    observed_rows: Vec<usize>,
 }
 
 struct PendingGuardedAssignment {
@@ -298,6 +301,47 @@ struct PendingGuardedAssignment {
     role: solve::DiscreteRowRole,
     pre_mode: solve::DiscreteEventPreMode,
     clock_owner: Option<solve::PeriodicClockId>,
+}
+
+/// The post-commit plan under construction and the runtime targets it copies.
+struct PostCommitIssue<'rows> {
+    rows: &'rows mut ScalarRows,
+    targets: &'rows mut Vec<solve::ScalarSlot>,
+    runtime_targets: &'rows [solve::ScalarSlot],
+}
+
+/// Copy every relation-free, root-reachable runtime row into the post-commit
+/// plan, returning the copied runtime row of each post-commit row.
+fn issue_post_commit_rows(
+    issue: PostCommitIssue<'_>,
+    runtime_assignment_rhs: &solve::ScalarProgramBlock,
+    runtime_assignment_roles: &[solve::RuntimeAssignmentRole],
+    root_reachable: Vec<bool>,
+) -> Vec<usize> {
+    let mut runtime_rows = Vec::new();
+    for (runtime_row, (role, reachable)) in runtime_assignment_roles
+        .iter()
+        .zip(root_reachable)
+        .enumerate()
+    {
+        if *role != solve::RuntimeAssignmentRole::RelationFree || !reachable {
+            continue;
+        }
+        let output = issue.targets.len();
+        issue.rows.push(
+            runtime_assignment_rhs
+                .program(runtime_row)
+                .expect("runtime assignment certificate is row-aligned")
+                .to_vec(),
+            runtime_assignment_rhs
+                .program_span(runtime_row)
+                .expect("runtime assignment provenance is checked"),
+            output,
+        );
+        issue.targets.push(issue.runtime_targets[runtime_row]);
+        runtime_rows.push(runtime_row);
+    }
+    runtime_rows
 }
 
 /// Join the integrator-history effect across every target range of one pending
@@ -758,6 +802,7 @@ impl<'dae> DiscreteRows<'dae> {
         state_scalar_count: usize,
     ) -> Result<solve::DiscreteSolveSystem, LowerError> {
         self.partition_root_relation_refresh(root_relation_targets);
+        let observed_rows = std::mem::take(&mut self.observed_rows);
         let runtime_assignment_rhs = self.runtime_rows.into_scalar_block()?;
         let runtime_assignment_roles = solve::derive_runtime_assignment_roles(
             &runtime_assignment_rhs,
@@ -776,30 +821,16 @@ impl<'dae> DiscreteRows<'dae> {
             root_relation_targets,
             &runtime_assignment_roles,
         )?;
-        let mut post_commit_assignment_runtime_rows = Vec::new();
-        for (runtime_row, (role, reachable)) in runtime_assignment_roles
-            .iter()
-            .zip(root_reachable)
-            .enumerate()
-        {
-            if *role != solve::RuntimeAssignmentRole::RelationFree || !reachable {
-                continue;
-            }
-            let output = self.post_commit_targets.len();
-            self.post_commit_rows.push(
-                runtime_assignment_rhs
-                    .program(runtime_row)
-                    .expect("runtime assignment certificate is row-aligned")
-                    .to_vec(),
-                runtime_assignment_rhs
-                    .program_span(runtime_row)
-                    .expect("runtime assignment provenance is checked"),
-                output,
-            );
-            self.post_commit_targets
-                .push(self.runtime_targets[runtime_row]);
-            post_commit_assignment_runtime_rows.push(runtime_row);
-        }
+        let post_commit_assignment_runtime_rows = issue_post_commit_rows(
+            PostCommitIssue {
+                rows: &mut self.post_commit_rows,
+                targets: &mut self.post_commit_targets,
+                runtime_targets: &self.runtime_targets,
+            },
+            &runtime_assignment_rhs,
+            &runtime_assignment_roles,
+            root_reachable,
+        );
         let post_commit_assignment_rhs = self.post_commit_rows.into_scalar_block()?;
         let clock_partition_intermediates =
             self.clock_partition_intermediates.into_scalar_block()?;
@@ -857,7 +888,11 @@ impl<'dae> DiscreteRows<'dae> {
         if let Some(sensitive) = history_sensitive.as_ref() {
             apply_integrator_history_effects(&mut discrete, sensitive, state_scalar_count);
         }
-        derive_observation_refresh(&mut discrete, clock_activation_parameter_indices)?;
+        derive_observation_refresh(
+            &mut discrete,
+            clock_activation_parameter_indices,
+            &observed_rows,
+        )?;
         Ok(discrete)
     }
 

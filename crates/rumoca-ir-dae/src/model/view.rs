@@ -523,6 +523,7 @@ impl<'dae> DaeView<'dae> {
                     scalar_view: structure.scalar_view,
                     scalar_rows: structure.scalar_rows,
                 }),
+            observed: entry.observed,
             provenance: entry.provenance,
         })
     }

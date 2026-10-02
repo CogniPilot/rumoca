@@ -16,7 +16,7 @@ pub(in crate::construction) use integer_bounds::infer_function_integer_bounds;
 use rumoca_core::{DefId, FunctionInstanceId};
 use rumoca_eval_flat::constant::{DeferredParameterSource, EvalEnvironment};
 use value_relevance::ValueReadInputs;
-pub(super) use value_relevance::function_expressions;
+pub(super) use value_relevance::{function_expressions, statement_expression_roots};
 
 pub(super) type ValueShape = Vec<u32>;
 

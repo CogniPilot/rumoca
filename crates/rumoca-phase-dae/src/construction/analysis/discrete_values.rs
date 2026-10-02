@@ -1,3 +1,5 @@
+use super::discrete_time_definitions::{DefinitionTime, discrete_definition_time};
+use super::observed_reads::LazyModelReads;
 use super::*;
 use std::collections::BTreeSet;
 
@@ -6,6 +8,9 @@ pub(in crate::construction) struct DiscreteValueTopologyPlan {
     ordered_owners: Vec<Vec<VarName>>,
     order_by_target: HashMap<VarName, TargetOrder>,
     held_targets: Vec<HeldTargetPlan>,
+    /// Per ordered owner: every target is an unread observation whose
+    /// definition is not a discrete-time expression.
+    observed_owners: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -31,6 +36,11 @@ impl DiscreteValueTopologyPlan {
 
     pub(in crate::construction) fn held_targets(&self) -> &[HeldTargetPlan] {
         &self.held_targets
+    }
+
+    /// Whether ordered owner `owner` defines only unread observations.
+    pub(in crate::construction) fn owner_is_observed(&self, owner: usize) -> bool {
+        self.observed_owners.get(owner).copied().unwrap_or(false)
     }
 
     pub(in crate::construction) fn matches_owner_targets(
@@ -85,19 +95,23 @@ pub(super) fn analyze_discrete_value_topology(
     record_equations: &HashMap<usize, RecordEquationPlan>,
 ) -> Result<DiscreteValueTopologyPlan, ToDaeError> {
     let mut owners = Vec::new();
-    collect_binding_owners(flat, roles, &mut owners)?;
+    let reads = LazyModelReads::new(flat);
+    let mut observed = HashSet::new();
+    collect_binding_owners(flat, roles, &reads, &mut observed, &mut owners)?;
     collect_record_equation_owners(flat, roles, record_equations, &mut owners);
     collect_equation_owners(
         flat,
         roles,
         connection_ranks,
         aggregate_connections,
+        &reads,
+        &mut observed,
         &mut owners,
     )?;
     collect_algorithm_owners(flat, roles, &mut owners)?;
     collect_when_owners(flat, roles, &mut owners)?;
     let held_targets = add_held_owners(flat, roles, &mut owners);
-    order_owners(owners, held_targets)
+    order_owners(owners, held_targets, &observed)
 }
 
 /// One owner per record equation with discrete-valued fields: the fields are
@@ -147,6 +161,8 @@ fn collect_record_equation_owners(
 fn collect_binding_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
+    reads: &LazyModelReads<'_>,
+    observed: &mut HashSet<VarName>,
     owners: &mut Vec<SourceOwner>,
 ) -> Result<(), ToDaeError> {
     for (name, variable) in &flat.variables {
@@ -156,13 +172,18 @@ fn collect_binding_owners(
         if !matches!(roles[name], PlannedRole::DiscreteValue) {
             continue;
         }
-        super::discrete_time_definitions::require_discrete_time_definition(
+        if discrete_definition_time(
             flat,
             roles,
-            name,
+            reads,
+            &[name],
             binding,
+            None,
             expression_span(binding)?,
-        )?;
+        )? == DefinitionTime::Observed
+        {
+            observed.insert(name.clone());
+        }
         owners.push(SourceOwner {
             targets: vec![SourceTarget {
                 name: name.clone(),
@@ -181,6 +202,8 @@ fn collect_equation_owners(
     roles: &HashMap<VarName, PlannedRole>,
     connection_ranks: &HashMap<VarName, usize>,
     aggregate_connections: &AggregateDiscreteConnections,
+    reads: &LazyModelReads<'_>,
+    observed: &mut HashSet<VarName>,
     owners: &mut Vec<SourceOwner>,
 ) -> Result<(), ToDaeError> {
     for (row, equation) in flat.equations.iter().enumerate() {
@@ -193,26 +216,40 @@ fn collect_equation_owners(
             aggregate_connections,
         )? {
             EquationPartition::DiscreteValue(plan) => {
-                super::discrete_time_definitions::require_discrete_time_definition(
+                if discrete_definition_time(
                     flat,
                     roles,
-                    plan.target,
+                    reads,
+                    &[plan.target],
                     plan.value.as_ref(),
+                    Some(row),
                     equation.span,
-                )?;
+                )? == DefinitionTime::Observed
+                {
+                    observed.insert(plan.target.clone());
+                }
                 plan
             }
             EquationPartition::MultiOutput { receivers, call } => {
-                if let Some(receiver) = receivers.iter().find(|receiver| {
-                    matches!(roles.get(**receiver), Some(PlannedRole::DiscreteValue))
-                }) {
-                    super::discrete_time_definitions::require_discrete_time_definition(
+                let targets = receivers
+                    .iter()
+                    .copied()
+                    .filter(|receiver| {
+                        matches!(roles.get(*receiver), Some(PlannedRole::DiscreteValue))
+                    })
+                    .collect::<Vec<_>>();
+                if !targets.is_empty()
+                    && discrete_definition_time(
                         flat,
                         roles,
-                        receiver,
+                        reads,
+                        &targets,
                         call,
+                        Some(row),
                         equation.span,
-                    )?;
+                    )? == DefinitionTime::Observed
+                {
+                    observed.extend(targets.into_iter().cloned());
                 }
                 push_multi_output_owner(equation, call, &receivers, roles, owners);
                 continue;
@@ -614,6 +651,7 @@ fn add_held_owners(
 fn order_owners(
     mut owners: Vec<SourceOwner>,
     held_targets: Vec<HeldTargetPlan>,
+    observed: &HashSet<VarName>,
 ) -> Result<DiscreteValueTopologyPlan, ToDaeError> {
     let mut owner_by_target = HashMap::new();
     for (owner_index, owner) in owners.iter().enumerate() {
@@ -672,6 +710,15 @@ fn order_owners(
         ));
     }
 
+    let observed_owners = order
+        .iter()
+        .map(|&index| {
+            owners[index]
+                .targets
+                .iter()
+                .all(|target| observed.contains(&target.name))
+        })
+        .collect();
     let ordered_owners = order
         .into_iter()
         .map(|index| {
@@ -697,6 +744,7 @@ fn order_owners(
         ordered_owners,
         order_by_target,
         held_targets,
+        observed_owners,
     })
 }
 

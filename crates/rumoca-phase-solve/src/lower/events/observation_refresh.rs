@@ -5,6 +5,9 @@
 //! represents their periodic leaves with hidden activation parameters. This
 //! module derives the exact unclocked, history-free scalar rows that must be
 //! recomputed when those leaves are projected to a public observation time.
+//! An observed B.1c owner (SPEC_0022 EXPR-012), an unread discrete-valued
+//! variable defined by a continuous-time expression, is a seed as well: its
+//! rows are recomputed at every public observation.
 //! Runtime receives only the resulting row-aligned proof; it never inspects
 //! bytecode, names, or model provenance to rediscover this ownership.
 
@@ -18,6 +21,7 @@ use crate::LowerError;
 #[derive(Debug)]
 struct ObservationRow {
     row: usize,
+    span: rumoca_core::Span,
     target: HistoryDependencySlot,
     reads: BTreeSet<HistoryDependencySlot>,
     safe: bool,
@@ -27,13 +31,33 @@ struct ObservationRow {
 pub(super) fn derive_observation_refresh(
     discrete: &mut solve::DiscreteSolveSystem,
     clock_activation_parameters: &[usize],
+    observed_rows: &[usize],
 ) -> Result<(), LowerError> {
     let activation_parameters = clock_activation_parameters
         .iter()
         .copied()
         .map(HistoryDependencySlot::P)
         .collect::<BTreeSet<_>>();
-    let rows = observation_rows(discrete, &activation_parameters)?;
+    let mut rows = observation_rows(discrete, &activation_parameters)?;
+    let observed = observed_rows.iter().copied().collect::<BTreeSet<_>>();
+    let mut seeded = 0usize;
+    for row in rows.iter_mut().filter(|row| observed.contains(&row.row)) {
+        if !row.safe {
+            return Err(LowerError::contract(
+                "an observed discrete row must be unclocked and follow its current value",
+                row.span,
+            ));
+        }
+        row.seed = true;
+        seeded += 1;
+    }
+    if seeded != observed.len() {
+        return Err(LowerError::contract(
+            "an observed discrete row has no scalar observation row",
+            rows.first()
+                .map_or(rumoca_core::Span::DUMMY, |row| row.span),
+        ));
+    }
     let selected = select_refresh_closure(&rows);
     discrete.observation_refresh_reads_y = rows.iter().zip(&selected).any(|(row, selected)| {
         *selected
@@ -125,6 +149,7 @@ fn observation_rows(
                 .is_disjoint(activation_parameters);
             rows.push(ObservationRow {
                 row,
+                span,
                 target,
                 reads,
                 safe,
@@ -183,6 +208,7 @@ mod tests {
         let rows = vec![
             ObservationRow {
                 row: 0,
+                span: rumoca_core::Span::DUMMY,
                 target: HistoryDependencySlot::P(9),
                 reads: BTreeSet::from([HistoryDependencySlot::P(200)]),
                 safe: true,
@@ -190,6 +216,7 @@ mod tests {
             },
             ObservationRow {
                 row: 1,
+                span: rumoca_core::Span::DUMMY,
                 target: HistoryDependencySlot::P(10),
                 reads: BTreeSet::from([HistoryDependencySlot::P(9), HistoryDependencySlot::P(100)]),
                 safe: true,
@@ -197,6 +224,7 @@ mod tests {
             },
             ObservationRow {
                 row: 2,
+                span: rumoca_core::Span::DUMMY,
                 target: HistoryDependencySlot::P(11),
                 reads: BTreeSet::from([HistoryDependencySlot::P(10)]),
                 safe: true,
@@ -204,6 +232,7 @@ mod tests {
             },
             ObservationRow {
                 row: 3,
+                span: rumoca_core::Span::DUMMY,
                 target: HistoryDependencySlot::P(12),
                 reads: BTreeSet::from([HistoryDependencySlot::P(11)]),
                 safe: false,

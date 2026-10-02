@@ -34,6 +34,7 @@ mod model_algorithms;
 mod model_expression_owners;
 mod model_roles;
 mod multi_output_equations;
+mod observed_reads;
 mod record_array_fields;
 mod record_equation_elements;
 mod record_equations;

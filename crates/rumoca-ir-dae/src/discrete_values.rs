@@ -36,6 +36,9 @@ pub(crate) struct DiscreteValueOwnerEntry {
     pub(crate) targets: PackedRange,
     pub(crate) branches: PackedRange,
     pub(crate) structure: Option<StructuredDiscreteValueEntry>,
+    /// The targets are unread observations of a continuous-time definition,
+    /// evaluated at every output point (SPEC_0022 EXPR-012).
+    pub(crate) observed: bool,
     pub(crate) provenance: DaeProvenance,
 }
 
@@ -70,6 +73,7 @@ pub struct DiscreteValueOwnerView<'dae> {
     pub(crate) targets: DiscreteValueTargets<'dae>,
     pub(crate) branches: DiscreteValueBranches<'dae>,
     pub(crate) structure: Option<StructuredDiscreteValueView<'dae>>,
+    pub(crate) observed: bool,
     pub(crate) provenance: DaeProvenance,
 }
 
@@ -84,6 +88,13 @@ impl<'dae> DiscreteValueOwnerView<'dae> {
 
     pub const fn structure(self) -> Option<StructuredDiscreteValueView<'dae>> {
         self.structure
+    }
+
+    /// Whether the targets are unread observations of a continuous-time
+    /// definition: the owner has one `always` branch, and a runtime evaluates
+    /// it at every output point instead of holding it between events.
+    pub const fn observed(self) -> bool {
+        self.observed
     }
 
     pub const fn provenance(self) -> DaeProvenance {
@@ -398,7 +409,18 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         targets: impl IntoIterator<Item = DiscreteValueId<'dae>>,
         build: impl FnOnce(&mut DiscreteValueOwner<'_, 'dae>) -> Result<(), DaeConstructionError>,
     ) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {
-        self.build_owner(provenance, targets, None, build)
+        self.build_owner(provenance, targets, None, false, build)
+    }
+
+    /// An unstructured owner whose targets nothing reads and whose single
+    /// `always` branch is not a discrete-time expression (SPEC_0022 EXPR-012).
+    pub fn observed_owner(
+        &mut self,
+        provenance: DaeProvenance,
+        targets: impl IntoIterator<Item = DiscreteValueId<'dae>>,
+        build: impl FnOnce(&mut DiscreteValueOwner<'_, 'dae>) -> Result<(), DaeConstructionError>,
+    ) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {
+        self.build_owner(provenance, targets, None, true, build)
     }
 
     pub fn structured_owner(
@@ -414,6 +436,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
             provenance,
             targets,
             Some((domain, scalar_view, scalar_count)),
+            false,
             build,
         )
     }
@@ -423,6 +446,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         provenance: DaeProvenance,
         targets: impl IntoIterator<Item = DiscreteValueId<'dae>>,
         structure: Option<(crate::DomainId<'dae>, ComprehensionScalarView, usize)>,
+        observed: bool,
         build: impl FnOnce(&mut DiscreteValueOwner<'_, 'dae>) -> Result<(), DaeConstructionError>,
     ) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
@@ -481,8 +505,11 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                 provenance,
                 &targets,
                 structure,
-                target_start,
-                target_len,
+                observed,
+                PackedRange {
+                    start: target_start,
+                    len: target_len,
+                },
                 branch_start,
             )
         });
@@ -502,13 +529,23 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         provenance: DaeProvenance,
         targets: &[u32],
         structure: Option<(crate::DomainId<'dae>, ComprehensionScalarView, usize)>,
-        target_start: u32,
-        target_len: u32,
+        observed: bool,
+        target_range: PackedRange,
         branch_start: usize,
     ) -> Result<(), DaeConstructionError> {
         let branch_len = self.storage.discrete_value_branches.len() - branch_start;
         if branch_len == 0 {
             return Err(DaeConstructionError::EmptyDiscreteValueOwner {
+                span: provenance.span(),
+            });
+        }
+        if observed
+            && (structure.is_some()
+                || branch_len != 1
+                || self.storage.discrete_value_branches[branch_start].activation
+                    != DiscreteBranchActivationEntry::Always)
+        {
+            return Err(DaeConstructionError::InvalidObservedDiscreteOwner {
                 span: provenance.span(),
             });
         }
@@ -539,15 +576,13 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         self.storage
             .discrete_value_owners
             .push(DiscreteValueOwnerEntry {
-                targets: PackedRange {
-                    start: target_start,
-                    len: target_len,
-                },
+                targets: target_range,
                 branches: PackedRange {
                     start: branch_start,
                     len: branch_len,
                 },
                 structure,
+                observed,
                 provenance,
             });
         Ok(())

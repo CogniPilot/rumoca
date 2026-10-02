@@ -364,7 +364,8 @@ impl<'dae> DiscreteValueStaging<'dae> {
             .collect::<Vec<_>>();
         construction.b1c(topology, |b1c| {
             for owner in self.owners {
-                append_owner(b1c, owner)?;
+                let observed = plan.owner_is_observed(owner.rank);
+                append_owner(b1c, owner, observed)?;
             }
             Ok(())
         })
@@ -427,6 +428,7 @@ where
 fn append_owner<'dae>(
     topology: &mut dae::DiscreteValueTopology<'_, 'dae>,
     owner: StagedOwner<'dae>,
+    observed: bool,
 ) -> Result<(), dae::DaeConstructionError> {
     let StagedOwner {
         targets,
@@ -442,6 +444,11 @@ fn append_owner<'dae>(
         Ok(())
     };
     match structure {
+        Some(_) if observed => {
+            return Err(dae::DaeConstructionError::InvalidObservedDiscreteOwner {
+                span: provenance.span(),
+            });
+        }
         Some(structure) => topology.structured_owner(
             provenance,
             structure.domain,
@@ -449,6 +456,7 @@ fn append_owner<'dae>(
             targets,
             append,
         )?,
+        None if observed => topology.observed_owner(provenance, targets, append)?,
         None => topology.owner(provenance, targets, append)?,
     };
     Ok(())

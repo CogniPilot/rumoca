@@ -809,3 +809,57 @@ fn empty_b1c_topology_cannot_be_reopened_by_a_late_discrete_target() {
     .unwrap();
     dae.inspect(|view| assert_eq!(view.variable_count(), 0));
 }
+
+#[test]
+fn observed_b1c_owner_holds_one_always_branch_and_survives_the_wire() {
+    let source = TestSource::new("discrete Integer k; pre(k); owner;");
+    let declaration = source.source("discrete Integer k", 0);
+    let value_at = source.source("pre(k)", 0);
+    let owner_at = source.source("owner", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let integer = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::scalar(ScalarType::Integer),
+                declaration,
+            )
+        })?;
+        let k = dae.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("k"),
+                integer,
+                declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let value = dae.expressions(|expressions| {
+            expressions
+                .at(value_at)
+                .coordinate(CoordinateInput::PreDiscreteValue(k))
+        })?;
+        dae.b1c([k], |topology| {
+            let rejected = topology.observed_owner(owner_at, [k], |owner| {
+                owner.always(owner_at, [(value, value_at)])?;
+                owner.always(owner_at, [(value, value_at)])
+            });
+            assert!(rejected.is_err());
+            topology.observed_owner(owner_at, [k], |owner| {
+                owner.always(owner_at, [(value, value_at)])
+            })?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    let observed = |dae: &Dae| {
+        dae.inspect(|view| {
+            view.discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+                .unwrap()
+                .observed()
+        })
+    };
+    assert!(observed(&dae));
+    let json = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&json).unwrap();
+    assert!(observed(&decoded));
+}

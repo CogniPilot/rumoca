@@ -26,6 +26,12 @@ pub(super) fn lower_discrete_value_owners<'dae>(
             .iter()
             .find_map(|target| clocks.variable_trigger(dae::VariableId::from(target)));
         match (first.activation(), tick) {
+            (_, Some(_)) if owner.observed() => {
+                return Err(LowerError::contract(
+                    "an observed B.1c owner must not be clock-triggered",
+                    owner.provenance().span(),
+                ));
+            }
             (_, Some(tick)) => {
                 lower_triggered_discrete_value_owner(view, layout, rows, owner, tick)?;
             }
@@ -89,6 +95,14 @@ fn lower_unconditional_discrete_value_owner<'dae>(
         })
         .collect::<Vec<_>>();
     let total_outputs = owner_values.iter().map(|entry| entry.6).sum::<usize>();
+    // SPEC_0022 EXPR-012: an observed owner's rows are unclocked scalar rows
+    // refreshed at every output point.
+    if owner.observed() && owner_values.iter().any(|entry| entry.4.is_some()) {
+        return Err(LowerError::contract(
+            "an observed B.1c owner must not be clock-owned",
+            owner.provenance().span(),
+        ));
+    }
     // Family fusion is restored: a multi-variable owner keeps its single
     // program whenever no member observes another member on the tick. Where a
     // member *does* observe another, the members stay separate producers and
@@ -212,6 +226,9 @@ fn lower_unconditional_discrete_value_owner<'dae>(
             let pre_mode = expression_pre_mode(view, value, sampled);
             if clock.is_none() && pre_mode == solve::DiscreteEventPreMode::FollowCurrent {
                 rows.push_root_refresh_candidate(program.clone(), span, target);
+            }
+            if owner.observed() {
+                rows.observed_rows.push(rows.targets.len());
             }
             rows.push(
                 program,

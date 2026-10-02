@@ -1694,6 +1694,9 @@ fn replay_discrete_value_owner<'dae>(
         Ok(())
     };
     match owner.structure {
+        Some(_) if owner.observed => Err(DaeConstructionError::InvalidObservedDiscreteOwner {
+            span: owner.provenance.span(),
+        }),
         Some(structure) => topology.structured_owner(
             owner.provenance,
             mapped(&ids.domains, structure.domain, "domain", owner.provenance)?,
@@ -1701,6 +1704,7 @@ fn replay_discrete_value_owner<'dae>(
             targets,
             replay,
         ),
+        None if owner.observed => topology.observed_owner(owner.provenance, targets, replay),
         None => topology.owner(owner.provenance, targets, replay),
     }
 }

@@ -870,6 +870,13 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'EXPR-012'
+case_id = 'expr_012_unread_continuous_definition_of_integer_is_observed'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'EXPR-013'
 case_id = 'expr_013_end_in_subscript'
 test_file = 'tests/expr_contracts.rs'

@@ -153,7 +153,7 @@ pub enum ToDaeError {
     #[diagnostic(
         code(rumoca::todae::ED023),
         help(
-            "MLS 3.7 §3.8.4: a Boolean, Integer, String, or enumeration variable changes only at events; define it from relations, pre(), sample(), or other discrete-time expressions, or inside a when-clause"
+            "MLS 3.7 §3.8.5: a Boolean, Integer, String, or enumeration variable changes only at events; define it from relations, pre(), sample(), or other discrete-time expressions, or inside a when-clause"
         )
     )]
     ContinuousDiscreteDefinition {

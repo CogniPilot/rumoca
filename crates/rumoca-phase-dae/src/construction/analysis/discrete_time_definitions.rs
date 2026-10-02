@@ -10,19 +10,40 @@
 //! or a continuous-time variable outside those forms would change between
 //! events without one, which the event semantics cannot represent, so it is
 //! refused (ED023) instead of being held at its last event value.
+//!
+//! Documented deviation: such a definition is accepted when nothing reads the
+//! variable (`observed_reads`). MSL `Media.Water` binds the Integer
+//! `ThermodynamicState.phase` field from `setState_phX(p, h)` of continuous
+//! port values, and only passes it to functions that never read it. An unread
+//! variable cannot influence the simulation, so it is an observation: it is
+//! evaluated at every output point, as OpenModelica reports it, and never held.
 
+use super::observed_reads::LazyModelReads;
 use super::*;
 use rumoca_core::{BuiltinFunction, ExpressionVisitor};
 
-/// Refuse a definition of the discrete-valued `target` whose `value` is not a
-/// discrete-time expression.
-pub(super) fn require_discrete_time_definition(
+/// How a discrete-valued definition outside a when-clause changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DefinitionTime {
+    /// A discrete-time expression: the value changes only at events.
+    Discrete,
+    /// A continuous-time expression of unread targets, evaluated at every
+    /// output point.
+    Observed,
+}
+
+/// Classify a definition of the discrete-valued `targets` by `value`, the
+/// value of model equation row `defining_row` or of a binding, and refuse it
+/// when it is not a discrete-time expression and a target is read.
+pub(super) fn discrete_definition_time(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    target: &VarName,
+    reads: &LazyModelReads<'_>,
+    targets: &[&VarName],
     value: &Expression,
+    defining_row: Option<usize>,
     span: Span,
-) -> Result<(), ToDaeError> {
+) -> Result<DefinitionTime, ToDaeError> {
     let mut visitor = ContinuousRead {
         flat,
         roles,
@@ -30,12 +51,19 @@ pub(super) fn require_discrete_time_definition(
         found: None,
     };
     visitor.visit_expression(value);
-    match visitor.found {
-        None => Ok(()),
-        Some(read) => Err(ToDaeError::ContinuousDiscreteDefinition {
+    let Some(read) = visitor.found else {
+        return Ok(DefinitionTime::Discrete);
+    };
+    let reads = reads.get();
+    match targets
+        .iter()
+        .find(|target| !reads.is_unread(target, defining_row, value))
+    {
+        None => Ok(DefinitionTime::Observed),
+        Some(target) => Err(ToDaeError::ContinuousDiscreteDefinition {
             detail: format!(
-                "`{target}` is discrete-valued but its definition reads the continuous-time \
-                 `{read}` outside any event-generating relation"
+                "`{target}` is discrete-valued and read by the model, but its definition reads \
+                 the continuous-time `{read}` outside any event-generating relation"
             ),
             span,
         }),

@@ -57,7 +57,7 @@ package FieldBranches
     Real h = h_pT(1, 300 + 200*time);
     // The Integer field `region` of a model-level record bound to a call of
     // time would be a continuous-time definition of a discrete-valued
-    // variable (MLS 3.7 §3.8.4), so the Real fields are observed through calls.
+    // variable (MLS 3.7 §3.8.5), so the Real fields are observed through calls.
     Real aux[4] = fields(1, 300 + 200*time);
   end Top;
 end FieldBranches;
