@@ -63,7 +63,7 @@ valid LOC reductions.
 |---|---|---|---|
 | `dae-core-loc` | 11,000 | 18,500 | Retain checked conditional/tensor/loop-region and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
 | `dae-wire-loc` | 3,250 | 5,750 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
-| `dae-total-loc` | 14,250 | 24,000 | Both items above; total follows their sum |
+| `dae-total-loc` | 14,250 | 24,250 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
@@ -127,6 +127,13 @@ derived rule rounds each measured value up to the next 250-line step, so the
 `dae-core-loc` ceiling moves to 18,500, `dae-wire-loc` to 5,750, and
 `dae-total-loc` to 24,000; the review triggers and totality-debt ceilings are
 unchanged.
+
+**2026-10-03 native-body review:** measured production source moved to
+18,491 core, 5,511 wire, and 24,002 total lines with the proven native body
+binding of an external interface (DAE-C30) and its view. The derived rule
+rounds the total up to the next 250-line step, so the `dae-total-loc` ceiling
+moves to 24,250; the review triggers, core and wire ceilings, and
+totality-debt ceilings are unchanged.
 
 ### 2. Reservation Owner Catalog (SPEC_0036 §Storage and Forward References)
 
