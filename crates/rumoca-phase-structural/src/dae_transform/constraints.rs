@@ -30,9 +30,10 @@ mod value_identity;
 use holonomic_walk::HolonomicProofWalk;
 use state_derivative::has_state_only_first_derivative;
 
-use materialization::{
-    can_materialize_holonomic_value, can_materialize_holonomic_value_in_context,
-};
+pub(super) use materialization::MaterializedAnchors;
+use materialization::can_materialize_holonomic_value;
+#[cfg(test)]
+pub(super) use materialization::witness_proofs;
 
 use rumoca_core::{Span, StateSelect};
 use rumoca_eval_dae::FunctionCallContext;
@@ -179,39 +180,20 @@ impl DifferentiationFacts {
             })
     }
 
+    /// A one-shot proof; a caller proving many roots against the same facts
+    /// shares one [`MaterializedAnchors`] instead.
     pub(super) fn can_materialize_value(&self, view: dae::DaeView<'_>, expression: u32) -> bool {
-        self.materialized_state_anchors(view, expression).is_some()
+        MaterializedAnchors::new(self).can_materialize(view, expression)
     }
 
+    /// A one-shot proof; a caller proving many roots against the same facts
+    /// shares one [`MaterializedAnchors`] instead.
     pub(super) fn materialized_state_anchors(
         &self,
         view: dae::DaeView<'_>,
         expression: u32,
     ) -> Option<Vec<u32>> {
-        self.materialized_state_anchors_in_context(
-            view,
-            expression,
-            &FunctionCallContext::default(),
-        )
-    }
-
-    pub(super) fn materialized_state_anchors_in_context<'dae>(
-        &self,
-        view: dae::DaeView<'dae>,
-        expression: u32,
-        context: &FunctionCallContext<'dae>,
-    ) -> Option<Vec<u32>> {
-        let expression = view.expression_id(expression as usize)?;
-        let mut states = Vec::new();
-        can_materialize_holonomic_value_in_context(
-            view,
-            self,
-            expression,
-            &mut VisitMarks::default(),
-            context,
-            &mut states,
-        )
-        .then_some(states)
+        MaterializedAnchors::new(self).state_anchors(view, expression)
     }
 
     /// Whether the finalized source proves this instantiated expression is the
@@ -1155,10 +1137,15 @@ fn prove_holonomic_differentiation<'dae>(
         return None;
     }
     let mut value_visited = VisitMarks::default();
-    if !leaves
-        .iter()
-        .all(|&leaf| can_materialize_holonomic_value(view, facts, leaf, &mut value_visited))
-    {
+    if !leaves.iter().all(|&leaf| {
+        can_materialize_holonomic_value(
+            view,
+            facts,
+            leaf,
+            &mut value_visited,
+            &FunctionCallContext::default(),
+        )
+    }) {
         return None;
     }
     let second_order = leaves
@@ -1269,6 +1256,7 @@ fn prove_algebraic_lift_differentiation<'dae>(
             facts,
             view.expression_id(source as usize).unwrap(),
             &mut value_visited,
+            &FunctionCallContext::default(),
         )
     }) {
         return None;
@@ -1460,13 +1448,12 @@ fn selected_derivative_is_differentiable<'dae>(
         .arguments
         .iter()
         .all(|argument| match argument.order {
-            0 => can_materialize_holonomic_value_in_context(
+            0 => can_materialize_holonomic_value(
                 view,
                 facts,
                 argument.source,
                 &mut value_visited,
                 context,
-                &mut Vec::new(),
             ),
             1 => is_differentiable_in_context(
                 view,

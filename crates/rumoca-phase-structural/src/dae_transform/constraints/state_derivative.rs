@@ -5,8 +5,8 @@ use rumoca_ir_dae as dae;
 
 use super::{
     DifferentiationFacts, EqualityAnchor, Visit, VisitMarks, can_materialize_holonomic_value,
-    can_materialize_holonomic_value_in_context, has_invariant_subscripts, is_differentiable_binary,
-    is_differentiable_builtin, projected_element,
+    has_invariant_subscripts, is_differentiable_binary, is_differentiable_builtin,
+    projected_element,
 };
 
 pub(super) fn has_state_only_first_derivative<'dae>(
@@ -55,13 +55,12 @@ impl<'dae> StateDerivativeWalk<'_, 'dae> {
                 .arguments
                 .iter()
                 .all(|argument| match argument.order {
-                    0 => can_materialize_holonomic_value_in_context(
+                    0 => can_materialize_holonomic_value(
                         self.view,
                         self.facts,
                         argument.source,
                         self.value_visited,
                         &context,
-                        &mut Vec::new(),
                     ),
                     1 => self.expression(argument.source, &context),
                     _ => false,
@@ -191,6 +190,7 @@ impl<'dae> StateDerivativeWalk<'_, 'dae> {
                     self.facts,
                     definition,
                     self.value_visited,
+                    &FunctionCallContext::default(),
                 )
             });
         self.state_visited[state as usize] = visit_result(materializable);

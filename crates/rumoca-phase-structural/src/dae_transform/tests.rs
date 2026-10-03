@@ -13,6 +13,7 @@ mod initial_values;
 mod invariant_balances;
 mod lift_owners;
 mod manifold_fields;
+mod materialized_witnesses;
 mod projected_initial_pins;
 mod rate_values;
 mod reconstruction_failures;

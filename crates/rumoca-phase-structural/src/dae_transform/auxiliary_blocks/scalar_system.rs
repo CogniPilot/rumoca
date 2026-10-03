@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use rumoca_ir_dae as dae;
 
-use super::super::constraints::DifferentiationFacts;
+use super::linear_map::MaterializedSources;
 use super::tensor_expression::TensorExpression;
 use super::{AuxiliaryBlock, AuxiliarySystem};
 use affine::{AffineExpression, AffineProof};
@@ -18,11 +18,11 @@ struct ScalarEquation {
 }
 
 pub(super) fn derive_systems(
-    view: dae::DaeView<'_>,
-    facts: &DifferentiationFacts,
+    sources: &mut MaterializedSources<'_, '_>,
     blocks: &mut [Option<Arc<AuxiliaryBlock>>],
 ) {
-    let mut proof = AffineProof::new(view, facts);
+    let view = sources.view;
+    let mut proof = AffineProof::new(sources);
     let rows: Vec<_> = view
         .continuous_owners()
         .filter_map(|owner| {
@@ -49,7 +49,7 @@ pub(super) fn derive_systems(
         if variables.len() != component.len() {
             continue;
         }
-        let block = source_block(view, facts, &rows, &variables, &component);
+        let block = source_block(sources, &rows, &variables, &component);
         if let Some(block) = block {
             let block = Arc::new(block);
             for variable in variables {
@@ -94,8 +94,7 @@ fn discover_variables(
 }
 
 fn source_block(
-    view: dae::DaeView<'_>,
-    facts: &DifferentiationFacts,
+    sources: &mut MaterializedSources<'_, '_>,
     rows: &[ScalarEquation],
     variables: &BTreeSet<u32>,
     selected: &BTreeSet<usize>,
@@ -131,7 +130,7 @@ fn source_block(
     rhs.operands(&mut operands);
     let mut states = BTreeSet::new();
     for operand in operands {
-        states.extend(facts.materialized_state_anchors(view, operand.expression)?);
+        states.extend(sources.value_anchors(operand.expression)?.iter());
     }
     Some(AuxiliaryBlock {
         variable: *variables.first()?,

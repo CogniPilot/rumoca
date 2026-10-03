@@ -31,13 +31,12 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
         let mut value_visited = VisitMarks::default();
         selected.arguments.iter().all(|argument| {
             if argument.order == 0 {
-                can_materialize_holonomic_value_in_context(
+                can_materialize_holonomic_value(
                     self.view,
                     self.facts,
                     argument.source,
                     &mut value_visited,
                     &self.function_context,
-                    &mut Vec::new(),
                 )
             } else {
                 self.can_differentiate_order(argument.source, argument.order, on_residual)

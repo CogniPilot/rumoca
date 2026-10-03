@@ -41,7 +41,7 @@ fn alternative_definitions_cannot_close_a_cycle_without_value_anchors() {
     });
 }
 
-fn alternative_definitions(dimensions: Vec<u32>, cycle: bool) -> dae::Dae {
+pub(super) fn alternative_definitions(dimensions: Vec<u32>, cycle: bool) -> dae::Dae {
     let shape = if dimensions.is_empty() { "" } else { "[3]" };
     let equations = if cycle {
         "value=x+dependent; value=y+dependent; dependent=value+x;"

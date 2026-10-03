@@ -4,25 +4,23 @@ mod affine;
 mod materialized_sources;
 mod state_rows;
 
-use super::super::constraints::DifferentiationFacts;
 use super::tensor_expression::{SourceValue, TensorExpression};
 use super::{AuxiliaryBlock, AuxiliarySystem, vector_unknown};
 use affine::AffineMap;
-use materialized_sources::MaterializedSources;
+pub(super) use materialized_sources::MaterializedSources;
 use rumoca_eval_dae::FunctionCallContext;
 use rumoca_ir_dae as dae;
 pub(in crate::dae_transform) use state_rows::derive_state_blocks;
 use std::sync::Arc;
 
-pub(super) fn derive_maps(
-    view: dae::DaeView<'_>,
-    facts: &DifferentiationFacts,
+pub(super) fn derive_maps<'dae>(
+    sources: &mut MaterializedSources<'dae, '_>,
     blocks: &mut [Option<Arc<AuxiliaryBlock>>],
 ) {
-    let mut sources = MaterializedSources::new(view, facts);
+    let view = sources.view;
     let mut traversal = dae::ExpressionTraversal::new();
     for residual in view.continuous_owners().flat_map(source_residuals) {
-        derive_equation_map(&mut sources, residual, blocks, &mut traversal);
+        derive_equation_map(sources, residual, blocks, &mut traversal);
     }
 }
 
@@ -33,7 +31,6 @@ fn derive_equation_map<'dae>(
     traversal: &mut dae::ExpressionTraversal<'dae>,
 ) {
     let view = sources.view;
-    let facts = sources.facts;
     let node = view.expression(residual).unwrap();
     let [extent] = node.value_type().dimensions() else {
         return;
@@ -45,7 +42,7 @@ fn derive_equation_map<'dae>(
         return;
     };
     for (map, value) in [(lhs, rhs), (rhs, lhs)] {
-        let Some(anchors) = facts.materialized_state_anchors(view, value.index()) else {
+        let Some(anchors) = sources.value_anchors(value.index()) else {
             continue;
         };
         let mut candidates = Vec::new();
@@ -53,7 +50,7 @@ fn derive_equation_map<'dae>(
             if let Some((variable, size)) = vector_unknown(view, expression)
                 && size == *extent
                 && blocks[variable as usize].is_none()
-                && !facts.can_materialize_value(view, expression.index())
+                && !sources.can_materialize(expression.index())
             {
                 candidates.push(variable);
             }
@@ -82,16 +79,17 @@ fn derive_equation_map<'dae>(
             let mut leaves = Vec::new();
             matrix.operands(&mut leaves);
             rhs.operands(&mut leaves);
-            let mut states = anchors.clone();
+            let mut states = anchors.to_vec();
             for leaf in leaves {
+                let leaf_expression = view
+                    .expression_id(leaf.expression as usize)
+                    .expect("independent coefficient leaf resolves");
                 states.extend(
-                    facts
-                        .materialized_state_anchors_in_context(
-                            view,
-                            leaf.expression,
-                            &leaf.context(view),
-                        )
-                        .expect("independent coefficient leaf"),
+                    sources
+                        .state_anchors(leaf_expression, &leaf.context(view))
+                        .expect("independent coefficient leaf")
+                        .iter()
+                        .copied(),
                 );
             }
             states.sort_unstable();

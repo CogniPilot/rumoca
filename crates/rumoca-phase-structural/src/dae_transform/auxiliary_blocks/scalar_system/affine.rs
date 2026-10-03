@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use rumoca_ir_dae as dae;
 
-use super::super::super::constraints::DifferentiationFacts;
+use super::super::linear_map::MaterializedSources;
 use super::super::tensor_expression::{Product, SourceValue, TensorExpression};
 
 #[derive(Clone)]
@@ -14,17 +14,17 @@ pub(super) struct AffineExpression {
     pub(super) offset: TensorExpression,
 }
 
-pub(super) struct AffineProof<'dae, 'facts> {
+pub(super) struct AffineProof<'dae, 'facts, 'sources> {
     view: dae::DaeView<'dae>,
-    facts: &'facts DifferentiationFacts,
+    sources: &'sources mut MaterializedSources<'dae, 'facts>,
     cache: BTreeMap<u32, Option<AffineExpression>>,
 }
 
-impl<'dae, 'facts> AffineProof<'dae, 'facts> {
-    pub(super) fn new(view: dae::DaeView<'dae>, facts: &'facts DifferentiationFacts) -> Self {
+impl<'dae, 'facts, 'sources> AffineProof<'dae, 'facts, 'sources> {
+    pub(super) fn new(sources: &'sources mut MaterializedSources<'dae, 'facts>) -> Self {
         Self {
-            view,
-            facts,
+            view: sources.view,
+            sources,
             cache: BTreeMap::new(),
         }
     }
@@ -68,7 +68,7 @@ impl<'dae, 'facts> AffineProof<'dae, 'facts> {
     }
 
     fn operation(
-        &self,
+        &mut self,
         expression: dae::ExprId<'dae>,
         operation: dae::ExpressionOperation<'dae>,
     ) -> Option<AffineExpression> {
@@ -115,9 +115,7 @@ impl<'dae, 'facts> AffineProof<'dae, 'facts> {
                 }
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(variable))
-                if !self
-                    .facts
-                    .can_materialize_value(self.view, expression.index()) =>
+                if !self.sources.can_materialize(expression.index()) =>
             {
                 let declaration = self.view.variable(variable.into())?;
                 (declaration.value_type().scalar_type() == dae::ScalarType::Real
@@ -128,8 +126,8 @@ impl<'dae, 'facts> AffineProof<'dae, 'facts> {
                     })
             }
             _ => self
-                .facts
-                .can_materialize_value(self.view, expression.index())
+                .sources
+                .can_materialize(expression.index())
                 .then(|| constant(expression)),
         }
     }
