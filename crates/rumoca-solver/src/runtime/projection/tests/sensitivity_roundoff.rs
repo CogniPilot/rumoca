@@ -74,12 +74,15 @@ fn a_large_direction_does_not_pollute_exact_zero_acceleration() {
             &model,
             &model.plan,
             &[1.0, 0.0, 0.0, LOAD, 0.0],
-            AlgebraicProjectionArgs {
-                parameters: &[],
-                time: 0.0,
-                state_count: 1,
-                tolerance: 1e-10,
-            },
+            (
+                AlgebraicProjectionArgs {
+                    parameters: &[],
+                    time: 0.0,
+                    state_count: 1,
+                    tolerance: 1e-10,
+                },
+                &unnamed_singular_mode,
+            ),
             &mut seed,
         )
         .unwrap();

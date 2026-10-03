@@ -635,12 +635,15 @@ fn coupled_projection_sensitivity_uses_selected_jacobian_rows() {
         &model,
         &model.plan,
         &y,
-        AlgebraicProjectionArgs {
-            parameters: &[],
-            time: 0.0,
-            state_count: 0,
-            tolerance: 1.0e-12,
-        },
+        (
+            AlgebraicProjectionArgs {
+                parameters: &[],
+                time: 0.0,
+                state_count: 0,
+                tolerance: 1.0e-12,
+            },
+            &unnamed_singular_mode,
+        ),
         &mut seed,
     )
     .expect("coupled sensitivity projection should evaluate selected scalar rows");
@@ -1866,4 +1869,11 @@ fn nudge_singular_zero_seed_advances_only_vanished_zero_columns() {
     ));
     assert_eq!(y[2], 0.0);
     assert_eq!(y[3], 7.0);
+}
+
+fn unnamed_singular_mode(
+    _block: &solve::AlgebraicProjectionBlock,
+    _p: &[f64],
+) -> Option<(String, String)> {
+    None
 }

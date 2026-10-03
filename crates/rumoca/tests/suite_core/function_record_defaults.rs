@@ -96,3 +96,21 @@ fn a_default_that_reads_a_constant_initializes_its_unwritten_field() {
         assert!((result.data[index][row] - expected).abs() < 1e-12);
     }
 }
+
+#[test]
+fn an_unwritten_field_whose_default_reads_a_sibling_is_refused() {
+    let source = PARTIAL_DEFAULTS
+        .replace(
+            "    Real c0 = 1;\n",
+            "    Real c0 = 1;\n    Real c2 = c0 + k;\n",
+        )
+        .replace("r.d + r.k + r.c0;", "r.d + r.k + r.c0 + r.c2;");
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("Defaults.mo", &source)
+        .expect("fixture parses");
+    let failure = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed("Defaults.Top")
+        .expect_err("a default that reads a written sibling is not seeded");
+    assert_eq!(failure.error_code.as_deref(), Some("ED022"));
+}

@@ -141,18 +141,6 @@ pub(crate) trait ImplicitProjectionModel {
         &[]
     }
 
-    /// The unknowns of `block` and the branch combination its rows select at
-    /// parameters `p` (the discrete coordinates and relation memories they
-    /// read, with their values), for the EX004 report of a singular active
-    /// mode. `None` when the model cannot name them.
-    fn singular_active_mode(
-        &self,
-        _block: &solve::AlgebraicProjectionBlock,
-        _p: &[f64],
-    ) -> Option<(String, String)> {
-        None
-    }
-
     /// Return the diagnostic name for a solver variable. Implementations may
     /// omit names without changing projection semantics.
     fn variable_name_for_y_index(&self, _y_index: usize) -> Option<&str> {
@@ -524,11 +512,18 @@ pub(crate) fn project_algebraics<M: ImplicitProjectionModel>(
     )
 }
 
+/// The unknowns of a block and the branch combination its rows select at the
+/// given parameters (the discrete coordinates and relation memories they
+/// read, with their values), for the EX004 report of a singular active mode.
+/// `None` when the caller cannot name them.
+pub(crate) type SingularModeNames<'a> =
+    &'a dyn Fn(&solve::AlgebraicProjectionBlock, &[f64]) -> Option<(String, String)>;
+
 pub(crate) fn project_algebraic_seed_with_plan<M: ImplicitProjectionModel>(
     model: &M,
     plan: &solve::AlgebraicProjectionPlan,
     y: &[f64],
-    args: AlgebraicProjectionArgs<'_>,
+    (args, singular_mode): (AlgebraicProjectionArgs<'_>, SingularModeNames<'_>),
     seed: &mut [f64],
 ) -> Result<(), RuntimeSolveError> {
     validate_projection_plan_if_needed(model, plan, args.state_count, y.len())?;
@@ -540,7 +535,8 @@ pub(crate) fn project_algebraic_seed_with_plan<M: ImplicitProjectionModel>(
         )));
     }
     let snapshot = projection_unknown_values(plan, seed);
-    let result = project_algebraic_seed_with_plan_inner(model, plan, y, args, seed);
+    let result =
+        project_algebraic_seed_with_plan_inner(model, plan, y, (args, singular_mode), seed);
     if result.is_err() {
         restore_projection_unknown_values(plan, seed, &snapshot);
     }
@@ -551,7 +547,7 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
     model: &M,
     plan: &solve::AlgebraicProjectionPlan,
     y: &[f64],
-    args: AlgebraicProjectionArgs<'_>,
+    (args, singular_mode): (AlgebraicProjectionArgs<'_>, SingularModeNames<'_>),
     seed: &mut [f64],
 ) -> Result<(), RuntimeSolveError> {
     for block in &plan.blocks {
@@ -577,7 +573,7 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
         );
         let Some(solution) = linearization.solve(&rhs) else {
             linearization.trace_singular(model, block_index, block, y, args, &rhs);
-            if let Some((unknowns, mode)) = model.singular_active_mode(block, args.parameters) {
+            if let Some((unknowns, mode)) = singular_mode(block, args.parameters) {
                 return Err(RuntimeSolveError::SingularActiveMode { unknowns, mode });
             }
             return Err(RuntimeSolveError::DirectionalDerivativeUnavailable {

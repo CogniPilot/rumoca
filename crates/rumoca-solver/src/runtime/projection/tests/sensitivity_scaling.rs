@@ -63,12 +63,15 @@ fn project_seed(model: &LinearSensitivity, seed: &mut [f64]) -> Result<(), Runti
         model,
         &model.plan,
         &[1.0, 271.0 / 235.0, 42.0 / 235.0],
-        AlgebraicProjectionArgs {
-            parameters: &[],
-            time: 0.0,
-            state_count: 1,
-            tolerance: 1e-10,
-        },
+        (
+            AlgebraicProjectionArgs {
+                parameters: &[],
+                time: 0.0,
+                state_count: 1,
+                tolerance: 1e-10,
+            },
+            &unnamed_singular_mode,
+        ),
         seed,
     )
 }

@@ -637,12 +637,15 @@ impl SolveRuntime {
             &projection_model,
             plan,
             solver_y,
-            crate::runtime::projection::AlgebraicProjectionArgs {
-                parameters: lin.params,
-                time: lin.t,
-                state_count: self.state_count,
-                tolerance: lin.settle.tol,
-            },
+            (
+                crate::runtime::projection::AlgebraicProjectionArgs {
+                    parameters: lin.params,
+                    time: lin.t,
+                    state_count: self.state_count,
+                    tolerance: lin.settle.tol,
+                },
+                &|block, p| self.singular_active_mode(block, p),
+            ),
             seed,
         );
         if result.is_err()

@@ -216,12 +216,15 @@ fn seed_projection_rejects_mismatched_structure_and_restores_seed() {
         &model,
         &model.plan,
         &[0.0; 5],
-        AlgebraicProjectionArgs {
-            parameters: &[11.0],
-            time: 0.0,
-            state_count: 0,
-            tolerance: 1.0e-12,
-        },
+        (
+            AlgebraicProjectionArgs {
+                parameters: &[11.0],
+                time: 0.0,
+                state_count: 0,
+                tolerance: 1.0e-12,
+            },
+            &unnamed_singular_mode,
+        ),
         &mut seed,
     )
     .expect_err("a checked structure from another block must be rejected");
@@ -241,12 +244,15 @@ fn singular_seed_projection_without_a_named_mode_reports_the_singular_matrix() {
         &model,
         &model.plan,
         &[0.0; 5],
-        AlgebraicProjectionArgs {
-            parameters: &[11.0],
-            time: 0.0,
-            state_count: 0,
-            tolerance: 1.0e-12,
-        },
+        (
+            AlgebraicProjectionArgs {
+                parameters: &[11.0],
+                time: 0.0,
+                state_count: 0,
+                tolerance: 1.0e-12,
+            },
+            &unnamed_singular_mode,
+        ),
         &mut seed,
     )
     .expect_err("a vanishing row leaves the block singular");
@@ -268,12 +274,15 @@ fn seed_projection_uses_coloring_and_preserves_known_directions() {
         &model,
         &model.plan,
         &[0.0; 5],
-        AlgebraicProjectionArgs {
-            parameters: &[11.0],
-            time: 0.0,
-            state_count: 0,
-            tolerance: 1.0e-12,
-        },
+        (
+            AlgebraicProjectionArgs {
+                parameters: &[11.0],
+                time: 0.0,
+                state_count: 0,
+                tolerance: 1.0e-12,
+            },
+            &unnamed_singular_mode,
+        ),
         &mut seed,
     )
     .unwrap();
