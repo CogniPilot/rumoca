@@ -10,6 +10,7 @@ mod model_calls;
 mod model_coordinates;
 pub(in crate::lower) mod model_events;
 mod native;
+mod recursive_groups;
 mod regions;
 mod registration;
 mod tensor;
@@ -105,10 +106,18 @@ pub(super) fn lower_exact_call<'dae>(
     Ok(table.finish())
 }
 
+/// One issued pure-call owner together with its checked call site.
 #[derive(Clone)]
 pub(crate) struct RegisteredCall<'dae> {
-    pub(crate) owner: solve::SolvePureCallOwnerId,
+    pub(crate) callee: CalleeInterface<'dae>,
     pub(crate) site: solve::SolvePureCallSite,
+}
+
+/// The owner interface a caller body lowers a call against. A SOLVE-C62
+/// recursive group member has it before the group, and so its site, exists.
+#[derive(Clone)]
+pub(crate) struct CalleeInterface<'dae> {
+    pub(crate) owner: solve::SolvePureCallOwnerId,
     pub(crate) result_ranges: Box<[Range<usize>]>,
     pub(crate) result_leaf_count: usize,
     /// Every call-scoped assertion output after the result leaves, in owner
@@ -116,6 +125,9 @@ pub(crate) struct RegisteredCall<'dae> {
     /// each nested call's complete slot tuple.
     pub(crate) assertion_slots: std::sync::Arc<[AssertionSlot]>,
     pub(crate) assertions: Box<[RegisteredAssertion<'dae>]>,
+    /// Whether an invocation can enter a SOLVE-C62 recursive group, whose
+    /// body no caller may expand in place.
+    pub(crate) recursive: bool,
 }
 
 /// One call-scoped assertion output of a pure-call owner.
@@ -300,6 +312,8 @@ struct CallRegistration<'dae> {
     reserved: Option<solve::SolvePureCallIdentity>,
     next: u64,
     calls: HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
+    /// Functions whose call SCC was already examined for a SOLVE-C62 group.
+    examined_functions: std::collections::HashSet<dae::FunctionId<'dae>>,
 }
 
 impl CallRegistration<'_> {
@@ -308,6 +322,7 @@ impl CallRegistration<'_> {
             reserved,
             next: 1,
             calls: HashMap::new(),
+            examined_functions: std::collections::HashSet::new(),
         }
     }
 
@@ -536,7 +551,7 @@ struct ExpressionLowerer<'builder, 'program, 'dae> {
     fold_parameters: HashMap<(dae::FunctionFoldId<'dae>, u32), LoweredValue<'program, 'dae>>,
     fold_values: HashMap<dae::FunctionFoldId<'dae>, Vec<LoweredValue<'program, 'dae>>>,
     binders: HashMap<(u32, u32), solve::ProgramRegister<'program>>,
-    callees: HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
+    callees: HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>,
     predicate_ranges: HashMap<dae::ExprId<'dae>, Range<usize>>,
     cache: HashMap<dae::ExprId<'dae>, LoweredValue<'program, 'dae>>,
     call_values: HashMap<dae::ExprId<'dae>, Vec<solve::ProgramRegister<'program>>>,

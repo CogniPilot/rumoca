@@ -1,8 +1,32 @@
 //! Conservative dependence on values that can change in Continuous-Time Mode.
 
 use crate::{
-    SolveOperation as Op, SolvePureCallTable, SolveRegisterId, SolveStorageClass, TypedProgram,
+    SolveOperation as Op, SolvePureCallOwner, SolvePureCallTable, SolveRegisterId,
+    SolveStorageClass, TypedProgram,
 };
+
+/// The settled state of each output of one owner invocation. A SOLVE-C62
+/// recursive group member is read through its least-fixed-point dependency
+/// summary, since walking its body would re-enter it without bound.
+pub(super) fn owner_outputs(
+    table: &SolvePureCallTable,
+    owner: &SolvePureCallOwner,
+    inputs: &[bool],
+) -> Vec<bool> {
+    if table.recursive_group(owner.id()).is_none() {
+        return outputs(table, owner.body(), inputs);
+    }
+    owner
+        .call_site()
+        .output_dependencies()
+        .iter()
+        .map(|dependencies| {
+            dependencies
+                .iter()
+                .all(|dependency| inputs.get(dependency.input_index()) == Some(&true))
+        })
+        .collect()
+}
 
 pub(super) fn outputs(
     table: &SolvePureCallTable,
@@ -50,7 +74,7 @@ fn transfer(table: &SolvePureCallTable, op: &Op, slots: &mut [bool], registers: 
         } => {
             let values = table
                 .owner(*owner)
-                .map(|owner| outputs(table, owner.body(), &read(registers, arguments)))
+                .map(|owner| owner_outputs(table, owner, &read(registers, arguments)))
                 .unwrap_or_else(|| vec![false; destinations.len()]);
             write(registers, destinations, &values);
         }

@@ -1146,15 +1146,17 @@ impl<'a> AdBuilder<'a> {
         input_starts: &[Reg],
         site: rumoca_ir_solve::SolvePureCallSite,
     ) -> Result<(), LowerError> {
-        let directional = site.directional().cloned().ok_or_else(|| {
-            unsupported("typed pure-call directional owner has not been constructed")
-        })?;
         if input_starts.len() != site.inputs().len() {
             return Err(unsupported("typed pure-call AD input interface mismatch"));
         }
+        // A call whose inputs carry no tangent has a zero tangent result and
+        // needs no directional relation (a SOLVE-C62 group member has none).
         if self.lower_zero_tangent_call(dst_start, input_starts, &site)? {
             return Ok(());
         }
+        let directional = site.directional().cloned().ok_or_else(|| {
+            unsupported("typed pure-call directional owner has not been constructed")
+        })?;
         let mut directional_inputs = Vec::with_capacity(directional.inputs().len());
         for (&start, value_type) in input_starts.iter().zip(site.inputs()) {
             let count = value_type.scalar_count() as usize;

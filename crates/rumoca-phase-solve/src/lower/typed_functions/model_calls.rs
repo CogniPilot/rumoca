@@ -1,6 +1,6 @@
 //! Shared registration of nested calls and their assertion ownership.
 
-use super::{AssertionSlot, PureCallRegistry, RegisteredAssertion, RegisteredCall};
+use super::{AssertionSlot, CalleeInterface, PureCallRegistry, RegisteredAssertion};
 use crate::lower::call_scoped_actions::CallAssertionProjection;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
@@ -30,7 +30,7 @@ fn is_native_table_operator<'dae>(
 }
 
 type RegisteredExpressionCalls<'dae, Scope> = (
-    HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
+    HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>,
     HashMap<dae::ExprId<'dae>, Range<usize>>,
     Vec<RegisteredExpressionAssertion<'dae, Scope>>,
     std::sync::Arc<[AssertionSlot]>,
@@ -93,7 +93,7 @@ impl<'dae> PureCallRegistry<'dae> {
         let mut slots = Vec::new();
         let mut assertions = Vec::new();
         for (owner, projection, scope) in roots {
-            let registered = self.register_root(view, projection)?;
+            let registered = self.register_root(view, projection)?.callee;
             let start = slots.len();
             slots.extend(registered.assertion_slots.iter().cloned());
             let end = slots.len();

@@ -194,10 +194,7 @@ end ParameterBindings;
     }
 }
 
-#[test]
-fn recursive_parameter_binding_returns_a_diagnostic_without_expanding_call_owners() {
-    let model = compile(
-        r#"
+const COUNT_DOWN: &str = r#"
 function countDown
  input Integer n;
  output Real value;
@@ -211,17 +208,37 @@ model RecursiveParameterBinding
 equation
  der(x) = rate;
 end RecursiveParameterBinding;
-"#,
-        "RecursiveParameterBinding",
-    );
+"#;
+
+#[test]
+fn recursive_parameter_binding_executes_one_checked_recursive_group() {
+    let model = compile(COUNT_DOWN, "RecursiveParameterBinding");
+    for solver_mode in [SimSolverMode::RkLike, SimSolverMode::Bdf] {
+        let mut session = SimulationSession::new(
+            &model,
+            SimOptions {
+                solver_mode,
+                ..SimOptions::default()
+            },
+        )
+        .unwrap();
+        session.advance_to(1.0).unwrap();
+        assert!(
+            (session.get("x").unwrap().unwrap() - 3.0).abs() < 1e-9,
+            "{solver_mode:?}"
+        );
+    }
+}
+
+#[test]
+fn recursive_call_beyond_the_profile_depth_limit_is_a_typed_failure() {
+    let source = COUNT_DOWN.replace("parameter Integer n = 3;", "parameter Integer n = 100;");
+    let model = compile(&source, "RecursiveParameterBinding");
     let error = match SimulationSession::new(&model, SimOptions::default()) {
-        Ok(_) => panic!("recursive function must not enter the finite acyclic call profile"),
+        Ok(mut session) => session
+            .advance_to(1.0)
+            .expect_err("a recursion deeper than the profile limit must fail"),
         Err(error) => error,
     };
-    assert!(
-        error
-            .to_string()
-            .contains("recursive functions cannot enter an acyclic pure-call graph"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("depth limit"), "{error}");
 }

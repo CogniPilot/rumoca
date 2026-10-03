@@ -2625,6 +2625,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'FUNC-043'
+category = 'Function'
+name = 'Recursive functions'
+mls_ref = '§12.2'
+requirement = 'A function can be recursive; each call evaluates in its own frame, bounded by the execution profile recursion depth limit'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'INST-001'
 category = 'Instantiation'
 name = 'Modification context'

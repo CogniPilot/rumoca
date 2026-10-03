@@ -62,6 +62,7 @@ pub(super) fn register_native_call<'dae>(
                 assertion_slots: std::sync::Arc::from(Vec::new()),
                 next_direct_assertion: 0,
                 direct_assertion_count: 0,
+                totality: HashMap::new(),
             };
             let operands = binding
                 .inputs()
@@ -87,18 +88,21 @@ pub(super) fn register_native_call<'dae>(
         .call_site(owner)
         .ok_or(solve::SolveProgramConstructionError::UnknownCallOwner { provenance })?;
     Ok(RegisteredCall {
-        owner,
+        callee: CalleeInterface {
+            owner,
+            result_ranges: result_ranges.into_boxed_slice(),
+            result_leaf_count,
+            assertion_slots: std::sync::Arc::from(Vec::new()),
+            assertions: Box::new([]),
+            recursive: false,
+        },
         site,
-        result_ranges: result_ranges.into_boxed_slice(),
-        result_leaf_count,
-        assertion_slots: std::sync::Arc::from(Vec::new()),
-        assertions: Box::new([]),
     })
 }
 
 type LeafLayout = (Vec<solve::SolveValueType>, Vec<Range<usize>>);
 
-fn leaf_layout<'dae>(
+pub(super) fn leaf_layout<'dae>(
     view: dae::DaeView<'dae>,
     types: &[dae::ValueTypeId<'dae>],
     arithmetic: solve::SolveArithmeticProfile,

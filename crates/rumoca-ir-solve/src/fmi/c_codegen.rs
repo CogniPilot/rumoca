@@ -40,6 +40,7 @@ pub struct FmiCCodegenView {
 impl FmiCodegenView {
     pub fn try_c(self) -> Result<FmiCCodegenView, FmiCCodegenError> {
         validate_variables(&self.metadata)?;
+        refuse_recursive_groups(&self.model.pure_calls)?;
         let (update_order, update_levels) =
             super::parameter_updates::validate(&self.model.problem, &self.model.pure_calls)
                 .map_err(FmiCCodegenError)?;
@@ -78,6 +79,7 @@ impl TryFrom<FmiEventFreeCodegenView> for FmiCCodegenView {
     type Error = FmiCCodegenError;
     fn try_from(value: FmiEventFreeCodegenView) -> Result<Self, Self::Error> {
         validate_variables(&value.metadata)?;
+        refuse_recursive_groups(value.pure_calls())?;
         let (update_order, update_levels) =
             super::parameter_updates::validate(value.problem(), value.pure_calls())
                 .map_err(FmiCCodegenError)?;
@@ -87,6 +89,18 @@ impl TryFrom<FmiEventFreeCodegenView> for FmiCCodegenView {
             update_levels,
             discrete_order: super::static_assertions::DiscreteOrder::default(),
         })
+    }
+}
+
+/// The C profile emits no recursive call or depth-carrying frame, so a
+/// SOLVE-C62 recursive owner group is refused before any C is generated.
+fn refuse_recursive_groups(table: &crate::SolvePureCallTable) -> Result<(), FmiCCodegenError> {
+    if table.recursive_groups().is_empty() {
+        Ok(())
+    } else {
+        Err(FmiCCodegenError(
+            "recursive function calls (SOLVE-C62 recursive owner groups) are not supported by the C FMI profile",
+        ))
     }
 }
 

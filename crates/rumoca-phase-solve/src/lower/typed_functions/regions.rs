@@ -6,8 +6,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::{
-    AssertionSlot, ConditionalDefinitionGroup, ExpressionLowerer, LoweredValue, ModelCoordinateKey,
-    RegisteredCall,
+    AssertionSlot, CalleeInterface, ConditionalDefinitionGroup, ExpressionLowerer, LoweredValue,
+    ModelCoordinateKey,
 };
 
 #[derive(Clone)]
@@ -39,7 +39,7 @@ pub(super) struct EnvironmentLayout<'dae> {
 #[derive(Clone)]
 pub(super) struct RegionContext<'dae> {
     pub(super) view: dae::DaeView<'dae>,
-    pub(super) callees: HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
+    pub(super) callees: HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>,
     pub(super) predicate_ranges: HashMap<dae::ExprId<'dae>, Range<usize>>,
     pub(super) conditional_groups:
         HashMap<dae::FunctionDefinitionId<'dae>, ConditionalDefinitionGroup<'dae>>,

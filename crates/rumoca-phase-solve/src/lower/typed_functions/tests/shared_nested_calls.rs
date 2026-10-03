@@ -176,14 +176,17 @@ fn finishing_a_call_table_discards_its_source_registration_scope() {
         for _ in 0..2 {
             let registered = registry.register_root(view, call).unwrap();
             assert_eq!(
-                registry.register_root(view, call).unwrap().owner,
-                registered.owner
+                registry.register_root(view, call).unwrap().callee.owner,
+                registered.callee.owner
             );
             let table = registry.finish();
             assert_eq!(table.owners().len(), 5);
-            let values =
-                rumoca_eval_solve::eval_pure_call(&table, registered.owner, &[real_value(2.0)])
-                    .unwrap();
+            let values = rumoca_eval_solve::eval_pure_call(
+                &table,
+                registered.callee.owner,
+                &[real_value(2.0)],
+            )
+            .unwrap();
             assert_eq!(
                 values[0].elements(),
                 &[solve::SolveValueKind::Real64(54.0_f64.to_bits())]

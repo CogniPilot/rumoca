@@ -130,6 +130,12 @@ pub enum TypedProgramEvalError {
         reason: String,
         provenance: Span,
     },
+    /// A SOLVE-C62 recursive call would exceed its group's declared depth
+    /// limit; `provenance` is that call.
+    RecursionDepthExceeded {
+        limit: u32,
+        provenance: Span,
+    },
 }
 
 impl TypedProgramEvalError {
@@ -142,7 +148,8 @@ impl TypedProgramEvalError {
             | Self::IntegerArithmetic { provenance, .. }
             | Self::InvalidIntegerConversion { provenance }
             | Self::LinearSolve { provenance, .. }
-            | Self::NativeBody { provenance, .. } => Some(*provenance),
+            | Self::NativeBody { provenance, .. }
+            | Self::RecursionDepthExceeded { provenance, .. } => Some(*provenance),
         }
     }
 }
@@ -154,6 +161,10 @@ impl std::fmt::Display for TypedProgramEvalError {
                 write!(formatter, "tensor linear solve failed: {reason}")
             }
             Self::NativeBody { reason, .. } => write!(formatter, "native body failed: {reason}"),
+            Self::RecursionDepthExceeded { limit, .. } => write!(
+                formatter,
+                "recursive call exceeds the execution profile's depth limit of {limit} active invocations"
+            ),
             Self::UnknownOwner { owner } => {
                 write!(formatter, "unknown pure-call owner {}", owner.index())
             }
@@ -190,7 +201,8 @@ pub fn eval_pure_call(
     let owner = table
         .owner(owner)
         .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
-    eval_owner(table, owner, arguments)
+    let chain = RecursionChain::ROOT.enter(table, owner.id(), owner.provenance())?;
+    eval_owner(table, owner, arguments, chain)
 }
 
 /// Evaluate the construction-issued compact directional relation of one
@@ -204,7 +216,55 @@ pub fn eval_pure_call_directional(
     let owner = table
         .owner(owner)
         .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
-    eval_directional_owner(table, owner, arguments)
+    let chain = RecursionChain::ROOT.enter(table, owner.id(), owner.provenance())?;
+    eval_directional_owner(table, owner, arguments, chain)
+}
+
+/// The owner of one evaluated frame and its position in a SOLVE-C62
+/// recursive group chain: `depth` counts the active invocations of that
+/// owner's group along the chain and is zero outside every group.
+#[derive(Clone, Copy)]
+struct RecursionChain {
+    owner: Option<SolvePureCallOwnerId>,
+    depth: u32,
+}
+
+impl RecursionChain {
+    const ROOT: Self = Self {
+        owner: None,
+        depth: 0,
+    };
+
+    /// The chain of a call from this frame to `callee`. Entering a group
+    /// from outside it has depth 1; each member-to-member call adds 1.
+    fn enter(
+        self,
+        table: &SolvePureCallTable,
+        callee: SolvePureCallOwnerId,
+        provenance: Span,
+    ) -> Result<Self, TypedProgramEvalError> {
+        let Some(group) = table.recursive_group(callee) else {
+            return Ok(Self {
+                owner: Some(callee),
+                depth: 0,
+            });
+        };
+        let depth = if self.owner.is_some_and(|caller| group.contains(caller)) {
+            self.depth.saturating_add(1)
+        } else {
+            1
+        };
+        if depth > group.depth_limit() {
+            return Err(TypedProgramEvalError::RecursionDepthExceeded {
+                limit: group.depth_limit(),
+                provenance,
+            });
+        }
+        Ok(Self {
+            owner: Some(callee),
+            depth,
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -217,6 +277,7 @@ fn eval_owner(
     table: &SolvePureCallTable,
     owner: &SolvePureCallOwner,
     arguments: &[TypedValue],
+    chain: RecursionChain,
 ) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
     let mut invocations = InvocationScope::new(table);
     eval_owner_in_scope(
@@ -225,6 +286,7 @@ fn eval_owner(
         arguments,
         &mut invocations,
         EvaluationMode::Primal,
+        chain,
     )
 }
 
@@ -232,6 +294,7 @@ fn eval_directional_owner(
     table: &SolvePureCallTable,
     owner: &SolvePureCallOwner,
     arguments: &[TypedValue],
+    chain: RecursionChain,
 ) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
     let mut invocations = InvocationScope::new(table);
     eval_owner_in_scope(
@@ -240,6 +303,7 @@ fn eval_directional_owner(
         arguments,
         &mut invocations,
         EvaluationMode::Directional,
+        chain,
     )
 }
 
@@ -249,6 +313,7 @@ fn eval_owner_in_scope(
     arguments: &[TypedValue],
     invocations: &mut InvocationScope,
     mode: EvaluationMode,
+    chain: RecursionChain,
 ) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
     let (inputs, outputs, body) = match mode {
         EvaluationMode::Primal => (owner.inputs(), owner.outputs(), owner.body()),
@@ -268,7 +333,7 @@ fn eval_owner_in_scope(
         }
     };
     validate_arguments(inputs, arguments, owner.provenance())?;
-    let mut frame = EvalFrame::new(table, body, invocations, mode);
+    let mut frame = EvalFrame::new(table, body, invocations, mode, chain);
     for (slot, value) in frame.slots.iter_mut().zip(arguments) {
         *slot = Some(value.clone());
     }
@@ -306,6 +371,7 @@ fn eval_pure_call_with_invocation_counts(
         arguments,
         &mut invocations,
         EvaluationMode::Primal,
+        RecursionChain::ROOT,
     )?;
     let counts = table
         .owners()
@@ -340,6 +406,7 @@ fn eval_region(
     arguments: &[TypedValue],
     invocations: &mut InvocationScope,
     mode: EvaluationMode,
+    chain: RecursionChain,
 ) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
     if region.inputs().len() != arguments.len()
         || region
@@ -353,7 +420,7 @@ fn eval_region(
             provenance: region.provenance(),
         });
     }
-    let mut frame = EvalFrame::new(table, region.body(), invocations, mode);
+    let mut frame = EvalFrame::new(table, region.body(), invocations, mode, chain);
     for (slot, value) in frame.slots.iter_mut().zip(arguments) {
         *slot = Some(value.clone());
     }
@@ -433,6 +500,7 @@ struct EvalFrame<'model, 'scope> {
     program: &'model TypedProgram,
     invocations: &'scope mut InvocationScope,
     mode: EvaluationMode,
+    chain: RecursionChain,
     slots: Vec<Option<TypedValue>>,
     registers: Vec<Option<TypedValue>>,
 }
@@ -443,12 +511,14 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         program: &'model TypedProgram,
         invocations: &'scope mut InvocationScope,
         mode: EvaluationMode,
+        chain: RecursionChain,
     ) -> Self {
         Self {
             table,
             program,
             invocations,
             mode,
+            chain,
             slots: vec![None; program.slots().len()],
             registers: vec![None; program.register_types().len()],
         }
@@ -754,6 +824,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                 &arguments,
                 &mut iteration,
                 self.mode,
+                self.chain,
             )?;
         }
         if carried.len() != destinations.len() {
@@ -791,7 +862,14 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                     .collect::<Result<Vec<_>, _>>()?,
             );
             let mut iteration = InvocationScope::new(self.table);
-            let outputs = eval_region(self.table, body, &arguments, &mut iteration, self.mode)?;
+            let outputs = eval_region(
+                self.table,
+                body,
+                &arguments,
+                &mut iteration,
+                self.mode,
+                self.chain,
+            )?;
             let [output] = outputs.as_slice() else {
                 return invalid("collect compact map output", provenance);
             };
@@ -831,7 +909,14 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .iter()
             .map(|capture| self.read(*capture, provenance).cloned())
             .collect::<Result<Vec<_>, _>>()?;
-        let outputs = eval_region(self.table, selected, &captures, self.invocations, self.mode)?;
+        let outputs = eval_region(
+            self.table,
+            selected,
+            &captures,
+            self.invocations,
+            self.mode,
+            self.chain,
+        )?;
         if outputs.len() != destinations.len() {
             return invalid("transfer structured region outputs", provenance);
         }
@@ -1099,9 +1184,12 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .table
             .owner(owner)
             .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
+        let chain = self.chain.enter(self.table, owner, provenance)?;
         let outputs = match self.mode {
-            EvaluationMode::Primal => eval_owner(self.table, called, &arguments)?,
-            EvaluationMode::Directional => eval_directional_owner(self.table, called, &arguments)?,
+            EvaluationMode::Primal => eval_owner(self.table, called, &arguments, chain)?,
+            EvaluationMode::Directional => {
+                eval_directional_owner(self.table, called, &arguments, chain)?
+            }
         };
         self.invocations
             .insert(owner, outputs.clone(), provenance)?;

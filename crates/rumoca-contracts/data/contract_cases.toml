@@ -3740,6 +3740,20 @@ kind = 'Sim'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'FUNC-043'
+case_id = 'func_043_recursive_and_mutually_recursive_calls'
+test_file = 'tests/func_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-043'
+case_id = 'func_043_recursion_beyond_the_profile_depth_limit_fails'
+test_file = 'tests/func_contracts.rs'
+kind = 'Sim'
+outcome = 'Reject'
+
+[[cases]]
 contract_id = 'FUNC-026'
 case_id = 'func_026_vectorized_call_through_selected_replaceable_package_accepted'
 test_file = 'tests/func_contracts.rs'

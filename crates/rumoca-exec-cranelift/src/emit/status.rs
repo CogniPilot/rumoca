@@ -11,6 +11,8 @@ const INTEGER_QUOTIENT_FAILURE: i64 = 3;
 pub(super) const NATIVE_BODY_FAILURE: u8 = 4;
 /// A native body reported its foreign error for these operands.
 pub(super) const NATIVE_BODY_FOREIGN_ERROR: u8 = 5;
+/// A SOLVE-C62 member call would exceed its group's declared depth limit.
+const RECURSION_DEPTH_EXCEEDED: i64 = 6;
 
 pub(super) fn check(status: u8) -> Result<(), CompileError> {
     match status {
@@ -29,6 +31,9 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
         )),
         NATIVE_BODY_FOREIGN_ERROR => Err(CompileError::Input(
             "a native foreign body reported an error for its operands".into(),
+        )),
+        6 => Err(CompileError::Input(
+            "recursive call exceeds the execution profile's depth limit".into(),
         )),
         _ => Err(CompileError::Backend(format!(
             "unknown native kernel status {status}"
@@ -58,6 +63,10 @@ pub(super) fn require_index(builder: &mut FunctionBuilder<'_>, valid: Value) {
 
 pub(super) fn require_linear_solve(builder: &mut FunctionBuilder<'_>, valid: Value) {
     require(builder, valid, LINEAR_SOLVE_FAILURE);
+}
+
+pub(super) fn require_recursion_depth(builder: &mut FunctionBuilder<'_>, valid: Value) {
+    require(builder, valid, RECURSION_DEPTH_EXCEEDED);
 }
 
 pub(super) fn require_integer_quotient(builder: &mut FunctionBuilder<'_>, valid: Value) {

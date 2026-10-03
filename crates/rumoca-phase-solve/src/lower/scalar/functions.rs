@@ -4130,7 +4130,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .borrow_mut()
             .register_root(self.view, call)
             .map_err(|error| LowerError::contract(error.to_string(), span))?;
-        let scheduled = self.active_clock.is_none() && !registered.assertions.is_empty();
+        let scheduled = self.active_clock.is_none() && !registered.callee.assertions.is_empty();
         if scheduled {
             self.schedule_typed_pure_call_assertions(call, function, &registered, span)
                 .map_err(|error| match error {
@@ -4189,9 +4189,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .borrow_mut()
             .register_root(self.view, call)
             .map_err(|error| LowerError::contract(error.to_string(), span))?;
+        // A call without a directional relation is expanded in place for
+        // scalar differentiation, except one that can enter a SOLVE-C62
+        // recursive group: that body has no finite expansion.
         if self.active_clock.is_none()
             && !self.call_action_compilation
             && registered.site.directional().is_none()
+            && !registered.callee.recursive
         {
             return Ok(None);
         }
@@ -4244,7 +4248,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         });
         self.typed_pure_call_cache
             .insert(key, (start, registered.clone()));
-        if !self.call_action_compilation && !registered.assertions.is_empty() {
+        if !self.call_action_compilation && !registered.callee.assertions.is_empty() {
             self.schedule_typed_pure_call_assertions(call, function_id, &registered, span)?;
         }
         Ok(Some((start, registered)))
@@ -4338,7 +4342,7 @@ fn typed_call_result_scalar_range(
     output: usize,
     span: Span,
 ) -> Result<std::ops::Range<usize>, LowerError> {
-    let leaves = registered.result_ranges.get(output).ok_or_else(|| {
+    let leaves = registered.callee.result_ranges.get(output).ok_or_else(|| {
         LowerError::contract("typed pure-call result ordinal is out of range", span)
     })?;
     let scalar_offset = |leaf: usize| {
@@ -4378,7 +4382,7 @@ fn typed_call_record_field_scalar_range<'dae>(
             span,
         ));
     }
-    let result_leaves = registered.result_ranges.get(output).ok_or_else(|| {
+    let result_leaves = registered.callee.result_ranges.get(output).ok_or_else(|| {
         LowerError::contract("typed pure-call record result is out of range", span)
     })?;
     for (leaf, ordinal) in (result_leaves.start..).zip(0..record.record_field_count()) {

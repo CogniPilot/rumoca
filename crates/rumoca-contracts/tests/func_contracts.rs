@@ -1543,6 +1543,57 @@ fn func_040_function_name_and_partial_application_arguments() {
 }
 
 // =============================================================================
+// FUNC-043: Recursive functions (MLS §12.2)
+// =============================================================================
+
+const FUNC_043_SOURCE: &str = r#"
+    package R
+        function fib
+            input Integer n;
+            output Real y;
+        algorithm
+            y := if n < 2 then n else fib(n - 1) + fib(n - 2);
+        end fib;
+        function isEven
+            input Integer n;
+            output Boolean even;
+        algorithm
+            even := if n == 0 then true else isOdd(n - 1);
+        end isEven;
+        function isOdd
+            input Integer n;
+            output Boolean odd;
+        algorithm
+            odd := if n == 0 then false else isEven(n - 1);
+        end isOdd;
+        model M
+            parameter Integer n = 10;
+            parameter Real f = fib(n);
+            parameter Boolean even = isEven(n);
+            Real x(start = 0, fixed = true);
+        equation
+            der(x) = if even then f else -f;
+        end M;
+    end R;
+"#;
+
+#[test]
+fn func_043_recursive_and_mutually_recursive_calls() {
+    let trace = rumoca_contracts::test_support::simulate_model(FUNC_043_SOURCE, "R.M", 1.0);
+    // fib(10) = 55 and 10 is even.
+    assert!((trace.final_value("x") - 55.0).abs() < 1e-9);
+}
+
+#[test]
+fn func_043_recursion_beyond_the_profile_depth_limit_fails() {
+    let source = FUNC_043_SOURCE
+        .replace("parameter Integer n = 10;", "parameter Integer n = 100;")
+        .replace("parameter Real f = fib(n);", "parameter Real f = 1;");
+    let error = rumoca_contracts::test_support::simulate_model_failure(&source, "R.M", 1.0);
+    assert!(error.contains("depth limit"), "{error}");
+}
+
+// =============================================================================
 // FUNC-026: Vectorization non-replaceable (MLS §12.4.6, §6.3.1, §7.3)
 // =============================================================================
 

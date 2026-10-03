@@ -119,6 +119,23 @@ pub(in crate::typed_program) fn derive(
         .collect())
 }
 
+/// Replace every coordinate relation by dependence on its whole input leaf.
+pub(in crate::typed_program) fn widen(
+    summaries: Box<[Box<[SolveCallDependency]>]>,
+) -> Box<[Box<[SolveCallDependency]>]> {
+    summaries
+        .into_vec()
+        .into_iter()
+        .map(|output| {
+            let mut whole = Vec::new();
+            for dependency in output.iter() {
+                insert(&mut whole, SolveCallDependency::whole(dependency.input));
+            }
+            whole.into_boxed_slice()
+        })
+        .collect()
+}
+
 fn insert(target: &mut Vec<SolveCallDependency>, dependency: SolveCallDependency) {
     if target
         .iter()

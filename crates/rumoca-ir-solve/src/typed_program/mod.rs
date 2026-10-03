@@ -9,6 +9,7 @@ pub use call::{
     SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite, SolvePureCallIdentity,
     SolvePureCallInputCoordinate, SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner,
     SolvePureCallOwnerId, SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
+    SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember,
 };
 pub use program::{
     ProgramRegister, ProgramSlot, ProgramTensorViewAxis, SolveBinaryOperator, SolveCompareOperator,

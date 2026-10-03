@@ -1,4 +1,5 @@
 pub(super) mod dependency;
+mod recursion;
 mod view;
 
 use rumoca_core::Span;
@@ -9,15 +10,17 @@ use std::sync::Arc;
 use dependency::SolveCallDependency;
 use dependency::affinity::{self, Affinity};
 use dependency::value_projection::{self, ValueProjections};
+pub use recursion::{SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember};
 pub(super) use view::SolvePureCallTableView;
 
 /// Complete runtime input coordinate of its issuing pure-call owner.
 ///
 /// Pure-call construction admits only input/output/method-local slots and the
 /// closed typed-operation vocabulary. Region construction enforces the same
-/// slot restriction; calls name earlier checked owners. Thus every result,
-/// assertion predicate, and numerical failure is determined by these input
-/// cells at the owner's fixed arithmetic profile. No ambient runtime state is
+/// slot restriction; calls name earlier checked owners or members of the
+/// owner's own recursive group. Thus every result, assertion predicate,
+/// recursion-depth failure, and numerical failure is determined by these
+/// input cells at the owner's fixed arithmetic and recursion profiles. No ambient runtime state is
 /// readable. Directional owners include all tangent cells in their coordinate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SolvePureCallInputCoordinate {
@@ -480,6 +483,8 @@ impl SolvePureCallOwner {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolvePureCallTable {
     arithmetic: SolveArithmeticProfile,
+    recursion: SolveRecursionProfile,
+    groups: Box<[SolveRecursiveGroup]>,
     owners: Box<[SolvePureCallOwner]>,
 }
 
@@ -490,6 +495,8 @@ impl Default for SolvePureCallTable {
                 super::types::SolveRealFormat::Binary64,
                 super::types::SolveIntegerDomain::FULL,
             ),
+            recursion: SolveRecursionProfile::HOSTED,
+            groups: Box::new([]),
             owners: Box::new([]),
         }
     }
@@ -509,8 +516,28 @@ impl SolvePureCallTable {
     pub fn builder(arithmetic: SolveArithmeticProfile) -> SolvePureCallTableBuilder {
         SolvePureCallTableBuilder {
             arithmetic,
+            recursion: SolveRecursionProfile::HOSTED,
+            groups: Vec::new(),
             owners: Vec::new(),
         }
+    }
+
+    /// The execution profile whose recursion limits every group applies.
+    #[must_use]
+    pub const fn recursion(&self) -> SolveRecursionProfile {
+        self.recursion
+    }
+
+    /// Every SOLVE-C62 recursive owner group, in owner order.
+    #[must_use]
+    pub const fn recursive_groups(&self) -> &[SolveRecursiveGroup] {
+        &self.groups
+    }
+
+    /// The recursive group `owner` belongs to, if any.
+    #[must_use]
+    pub fn recursive_group(&self, owner: SolvePureCallOwnerId) -> Option<&SolveRecursiveGroup> {
+        self.groups.iter().find(|group| group.contains(owner))
     }
 
     #[must_use]
@@ -559,6 +586,8 @@ impl SolvePureCallTable {
 
 pub struct SolvePureCallTableBuilder {
     arithmetic: SolveArithmeticProfile,
+    recursion: SolveRecursionProfile,
+    groups: Vec<SolveRecursiveGroup>,
     owners: Vec<SolvePureCallOwner>,
 }
 
@@ -567,8 +596,49 @@ impl SolvePureCallTableBuilder {
     pub fn finish(self) -> SolvePureCallTable {
         SolvePureCallTable {
             arithmetic: self.arithmetic,
+            recursion: self.recursion,
+            groups: self.groups.into_boxed_slice(),
             owners: self.owners.into_boxed_slice(),
         }
+    }
+
+    /// Reserve one recursive owner group (SOLVE-C62) and construct every
+    /// member body; `build` receives the member ordinal and the reserved ids
+    /// of all members, in member order.
+    pub fn add_recursive_group(
+        &mut self,
+        members: Vec<SolveRecursiveMember>,
+        mut build: impl for<'program> FnMut(
+            usize,
+            &[SolvePureCallOwnerId],
+            &mut TypedProgramBuilder<'program>,
+            &[ProgramSlot<'program>],
+            &[ProgramSlot<'program>],
+        ) -> Result<(), SolveProgramConstructionError>,
+    ) -> Result<Vec<SolvePureCallOwnerId>, SolveProgramConstructionError> {
+        let interfaces = members
+            .iter()
+            .map(SolveRecursiveMember::interface)
+            .collect::<Vec<_>>();
+        let arithmetic = self.arithmetic;
+        let group = recursion::construct_group(
+            &mut self.owners,
+            &mut self.groups,
+            arithmetic,
+            self.recursion,
+            members,
+            |ordinal, ids, view| {
+                let (inputs, outputs, provenance) = &interfaces[ordinal];
+                TypedProgram::construct_with_calls(arithmetic, view, |builder| {
+                    let (input_slots, output_slots) =
+                        declare_owner_slots(builder, inputs, outputs, *provenance)?;
+                    build(ordinal, ids, builder, &input_slots, &output_slots)
+                })
+            },
+        )?;
+        Ok((group.start()..group.end())
+            .map(SolvePureCallOwnerId::from_index)
+            .collect())
     }
 
     pub fn add_owner(
@@ -590,29 +660,8 @@ impl SolvePureCallTableBuilder {
         let id = next_owner_id(self.owners.len(), provenance)?;
         let interfaces = SolvePureCallTableView::primal(&self.owners);
         let body = TypedProgram::construct_with_calls(self.arithmetic, interfaces, |builder| {
-            let input_slots = inputs
-                .iter()
-                .cloned()
-                .map(|value_type| {
-                    builder.declare_slot(
-                        value_type,
-                        SolveStorageClass::Input,
-                        SolveSlotAccess::ReadOnly,
-                        provenance,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let output_slots = outputs
-                .iter()
-                .map(|output| {
-                    builder.declare_slot(
-                        output.value_type.clone(),
-                        SolveStorageClass::Output,
-                        SolveSlotAccess::ReadWrite,
-                        provenance,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let (input_slots, output_slots) =
+                declare_owner_slots(builder, &inputs, &outputs, provenance)?;
             build(builder, &input_slots, &output_slots)
         })?;
         let input_coordinate = validate_owner_body(&body, &inputs, &outputs, provenance)?;
@@ -645,6 +694,42 @@ impl SolvePureCallTableBuilder {
             .filter(|owner| owner.id == id)
             .map(SolvePureCallOwner::call_site)
     }
+}
+
+/// Input slots, then output slots, of one owner body.
+type OwnerSlots<'program> = (Vec<ProgramSlot<'program>>, Vec<ProgramSlot<'program>>);
+
+/// Declare an owner's input slots, then its output slots, in interface order.
+fn declare_owner_slots<'program>(
+    builder: &mut TypedProgramBuilder<'program>,
+    inputs: &[SolveValueType],
+    outputs: &[SolvePureCallOutput],
+    provenance: Span,
+) -> Result<OwnerSlots<'program>, SolveProgramConstructionError> {
+    let input_slots = inputs
+        .iter()
+        .cloned()
+        .map(|value_type| {
+            builder.declare_slot(
+                value_type,
+                SolveStorageClass::Input,
+                SolveSlotAccess::ReadOnly,
+                provenance,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let output_slots = outputs
+        .iter()
+        .map(|output| {
+            builder.declare_slot(
+                output.value_type.clone(),
+                SolveStorageClass::Output,
+                SolveSlotAccess::ReadWrite,
+                provenance,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((input_slots, output_slots))
 }
 
 /// The identity the next owner receives: the table's current length, which
@@ -784,6 +869,64 @@ fn validate_owner_body(
     SolvePureCallInputCoordinate::construct(inputs, outputs, provenance)
 }
 
+#[derive(Deserialize)]
+struct OwnerWire {
+    id: SolvePureCallOwnerId,
+    identity: SolvePureCallIdentity,
+    inputs: Box<[SolveValueType]>,
+    outputs: Box<[SolvePureCallOutput]>,
+    body: TypedProgramWire,
+    provenance: Span,
+}
+
+fn wire_mismatch<E: serde::de::Error>() -> E {
+    E::custom(SolveProgramConstructionError::WireMismatch)
+}
+
+/// Rebuild one serialized recursive group through its construction.
+/// The serialized group must equal the one its construction derives.
+fn replay_group(
+    owners: &mut Vec<SolvePureCallOwner>,
+    groups: &mut Vec<SolveRecursiveGroup>,
+    (arithmetic, recursion): (SolveArithmeticProfile, SolveRecursionProfile),
+    members: &[OwnerWire],
+    serialized: &SolveRecursiveGroup,
+) -> Result<(), SolveProgramConstructionError> {
+    let first = owners.len();
+    if members.len() != (serialized.end() - serialized.start()) as usize
+        || members
+            .iter()
+            .enumerate()
+            .any(|(ordinal, member)| member.id.index() as usize != first + ordinal)
+    {
+        return Err(SolveProgramConstructionError::WireMismatch);
+    }
+    let interfaces = members
+        .iter()
+        .map(|member| {
+            SolveRecursiveMember::new(
+                member.identity,
+                member.inputs.to_vec(),
+                member.outputs.to_vec(),
+                member.provenance,
+            )
+        })
+        .collect();
+    recursion::construct_group(
+        owners,
+        groups,
+        arithmetic,
+        recursion,
+        interfaces,
+        |ordinal, _, view| replay_program(&members[ordinal].body, view),
+    )
+    .and_then(|replayed| {
+        (replayed == *serialized)
+            .then_some(())
+            .ok_or(SolveProgramConstructionError::WireMismatch)
+    })
+}
+
 impl<'de> Deserialize<'de> for SolvePureCallTable {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -792,22 +935,32 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
         #[derive(Deserialize)]
         struct Wire {
             arithmetic: SolveArithmeticProfile,
+            recursion: SolveRecursionProfile,
+            groups: Vec<SolveRecursiveGroup>,
             owners: Vec<OwnerWire>,
-        }
-
-        #[derive(Deserialize)]
-        struct OwnerWire {
-            id: SolvePureCallOwnerId,
-            identity: SolvePureCallIdentity,
-            inputs: Box<[SolveValueType]>,
-            outputs: Box<[SolvePureCallOutput]>,
-            body: TypedProgramWire,
-            provenance: Span,
         }
 
         let wire = Wire::deserialize(deserializer)?;
         let mut owners: Vec<SolvePureCallOwner> = Vec::with_capacity(wire.owners.len());
-        for (index, owner) in wire.owners.into_iter().enumerate() {
+        let mut groups = Vec::with_capacity(wire.groups.len());
+        let mut pending_groups = wire.groups.iter().peekable();
+        let mut wire_owners = wire.owners.into_iter().enumerate().peekable();
+        while let Some((index, owner)) = wire_owners.next() {
+            if let Some(group) = pending_groups.next_if(|group| group.start() as usize == index) {
+                let rest = (group.end() - group.start()).saturating_sub(1) as usize;
+                let members = std::iter::once(owner)
+                    .chain(wire_owners.by_ref().take(rest).map(|(_, member)| member))
+                    .collect::<Vec<_>>();
+                replay_group(
+                    &mut owners,
+                    &mut groups,
+                    (wire.arithmetic, wire.recursion),
+                    &members,
+                    group,
+                )
+                .map_err(serde::de::Error::custom)?;
+                continue;
+            }
             if owner.id.index() as usize != index {
                 return Err(serde::de::Error::custom(
                     SolveProgramConstructionError::WireMismatch,
@@ -859,8 +1012,13 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
                 provenance: owner.provenance,
             });
         }
+        if pending_groups.next().is_some() {
+            return Err(wire_mismatch());
+        }
         Ok(Self {
             arithmetic: wire.arithmetic,
+            recursion: wire.recursion,
+            groups: groups.into_boxed_slice(),
             owners: owners.into_boxed_slice(),
         })
     }
@@ -871,6 +1029,7 @@ mod tests {
     mod affinity;
     mod block_split;
     mod dependencies;
+    mod recursion;
     mod shared_values;
     mod value_projections;
     mod views;

@@ -1,4 +1,4 @@
-use super::super::{EvaluationMode, InvocationScope, eval_owner_in_scope};
+use super::super::{EvaluationMode, InvocationScope, RecursionChain, eval_owner_in_scope};
 use super::*;
 
 fn leaf_table(count: u64) -> SolvePureCallTable {
@@ -42,6 +42,7 @@ fn leaf_invocation_storage_is_independent_of_unrelated_owners() {
         &[real_value(3.0)],
         &mut scope,
         EvaluationMode::Primal,
+        RecursionChain::ROOT,
     )
     .unwrap();
     assert_eq!(outputs, [real_value(3.0)]);

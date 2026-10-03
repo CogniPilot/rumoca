@@ -54,6 +54,17 @@ struct TypedProgramCompilation<'a> {
     input_count: usize,
     output_count: usize,
     coordinate: solve::SolvePureCallInputCoordinate,
+    /// The SOLVE-C62 group whose depth-carrying member form this unit is.
+    recursion: Option<solve::SolveRecursiveGroup>,
+}
+
+/// Member-to-member calls inside one SOLVE-C62 group body: each passes the
+/// caller's active depth plus one to the callee's depth-carrying form.
+#[derive(Clone, Copy)]
+struct RecursiveCalls<'a> {
+    group: solve::SolveRecursiveGroup,
+    functions: &'a [Option<FuncId>],
+    depth: Value,
 }
 
 #[derive(Clone)]
@@ -239,6 +250,8 @@ struct TableCompiler {
     math: MathImports,
     functions: Vec<FuncId>,
     directional_functions: Vec<Option<FuncId>>,
+    /// Depth-carrying form of each SOLVE-C62 group member.
+    recursive_functions: Vec<Option<FuncId>>,
     input_results: Vec<InputResults>,
 }
 
@@ -252,9 +265,24 @@ impl TableCompiler {
         signature.returns.push(AbiParam::new(types::I8));
         signature.params.push(AbiParam::new(pointer_type));
         signature.params.push(AbiParam::new(pointer_type));
+        let mut recursive_signature = signature.clone();
+        recursive_signature.params.push(AbiParam::new(types::I64));
         let mut functions = Vec::with_capacity(table.owners().len());
         let mut directional_functions = Vec::with_capacity(table.owners().len());
+        let mut recursive_functions = Vec::with_capacity(table.owners().len());
         for owner in table.owners() {
+            recursive_functions.push(match table.recursive_group(owner.id()) {
+                Some(_) => Some(
+                    module
+                        .declare_function(
+                            &recursive_owner_symbol(table_id, owner.id()),
+                            Linkage::Local,
+                            &recursive_signature,
+                        )
+                        .map_err(to_backend_err)?,
+                ),
+                None => None,
+            });
             let name = owner_symbol(table_id, owner.id());
             functions.push(
                 module
@@ -282,12 +310,17 @@ impl TableCompiler {
             math: MathImports::default(),
             functions,
             directional_functions,
+            recursive_functions,
             input_results: Vec::new(),
         })
     }
 
     fn compile_all(&mut self, table: &solve::SolvePureCallTable) -> Result<(), CompileError> {
         for owner in table.owners() {
+            if let Some(group) = table.recursive_group(owner.id()) {
+                self.compile_recursive_owner(owner, *group)?;
+                continue;
+            }
             self.compile_owner(owner)?;
             if owner.directional().is_some() {
                 self.compile_directional_owner(owner)?;
@@ -309,52 +342,47 @@ impl TableCompiler {
                 input_count: owner.inputs().len(),
                 output_count: owner.outputs().len(),
                 coordinate: owner.input_coordinate(),
+                recursion: None,
             },
             &functions,
         )
     }
 
-    fn compile_directional_owner(
+    /// A group member compiles to its depth-carrying form and to the public
+    /// owner function, which enters the group at depth 1.
+    fn compile_recursive_owner(
         &mut self,
         owner: &solve::SolvePureCallOwner,
+        group: solve::SolveRecursiveGroup,
     ) -> Result<(), CompileError> {
-        let directional = owner
-            .directional()
-            .ok_or_else(|| CompileError::Backend("typed directional owner is missing".into()))?;
-        let function = self
-            .directional_functions
+        let recursive = self
+            .recursive_functions
             .get(owner.id().index() as usize)
             .copied()
             .flatten()
-            .ok_or_else(|| CompileError::Backend("typed directional function is missing".into()))?;
-        let functions = self.directional_functions.clone();
+            .ok_or_else(|| CompileError::Backend("typed recursive owner is missing".into()))?;
+        let functions = self.functions.iter().copied().map(Some).collect::<Vec<_>>();
         self.compile_program(
             TypedProgramCompilation {
-                function,
-                program: directional.body(),
-                input_count: directional.inputs().len(),
-                output_count: directional.outputs().len(),
-                coordinate: directional.input_coordinate(),
+                function: recursive,
+                program: owner.body(),
+                input_count: owner.inputs().len(),
+                output_count: owner.outputs().len(),
+                coordinate: owner.input_coordinate(),
+                recursion: Some(group),
             },
             &functions,
-        )
+        )?;
+        let public = self.functions[owner.id().index() as usize];
+        self.compile_group_entry(public, recursive)
     }
 
-    fn compile_program(
+    fn compile_group_entry(
         &mut self,
-        unit: TypedProgramCompilation<'_>,
-        functions: &[Option<FuncId>],
+        public: FuncId,
+        recursive: FuncId,
     ) -> Result<(), CompileError> {
-        let TypedProgramCompilation {
-            function,
-            program,
-            input_count,
-            output_count,
-            coordinate,
-        } = unit;
-        let config = self.module.target_config();
-        let pointer_type = config.pointer_type();
-        let input_results = InputResults::new(coordinate)?;
+        let pointer_type = self.module.target_config().pointer_type();
         let mut context = self.module.make_context();
         context
             .func
@@ -379,6 +407,113 @@ impl TableCompiler {
             builder.switch_to_block(entry);
             builder.seal_block(entry);
             let parameters = builder.block_params(entry).to_vec();
+            let depth = builder.ins().iconst(types::I64, 1);
+            let local = declare_far_call_in_func(&mut self.module, recursive, builder.func);
+            let call = builder
+                .ins()
+                .call(local, &[parameters[0], parameters[1], depth]);
+            let status = builder.inst_results(call)[0];
+            builder.ins().return_(&[status]);
+            builder.finalize();
+        }
+        self.module
+            .define_function(public, &mut context)
+            .map_err(to_backend_err)?;
+        self.module.clear_context(&mut context);
+        Ok(())
+    }
+
+    fn compile_directional_owner(
+        &mut self,
+        owner: &solve::SolvePureCallOwner,
+    ) -> Result<(), CompileError> {
+        let directional = owner
+            .directional()
+            .ok_or_else(|| CompileError::Backend("typed directional owner is missing".into()))?;
+        let function = self
+            .directional_functions
+            .get(owner.id().index() as usize)
+            .copied()
+            .flatten()
+            .ok_or_else(|| CompileError::Backend("typed directional function is missing".into()))?;
+        let functions = self.directional_functions.clone();
+        self.compile_program(
+            TypedProgramCompilation {
+                function,
+                program: directional.body(),
+                input_count: directional.inputs().len(),
+                output_count: directional.outputs().len(),
+                coordinate: directional.input_coordinate(),
+                recursion: None,
+            },
+            &functions,
+        )
+    }
+
+    fn compile_program(
+        &mut self,
+        unit: TypedProgramCompilation<'_>,
+        functions: &[Option<FuncId>],
+    ) -> Result<(), CompileError> {
+        let TypedProgramCompilation {
+            function,
+            program,
+            input_count,
+            output_count,
+            coordinate,
+            recursion,
+        } = unit;
+        let config = self.module.target_config();
+        let pointer_type = config.pointer_type();
+        let input_results = InputResults::new(coordinate)?;
+        let mut context = self.module.make_context();
+        context
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I8));
+        context
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(pointer_type));
+        context
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(pointer_type));
+        if recursion.is_some() {
+            context
+                .func
+                .signature
+                .params
+                .push(AbiParam::new(types::I64));
+        }
+        let mut builder_context = FunctionBuilderContext::new();
+        {
+            let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            builder.seal_block(entry);
+            let parameters = builder.block_params(entry).to_vec();
+            let recursive_calls = match recursion {
+                Some(group) => {
+                    let depth = parameters[2];
+                    let within = builder.ins().icmp_imm(
+                        IntCC::SignedLessThanOrEqual,
+                        depth,
+                        i64::from(group.depth_limit()),
+                    );
+                    status::require_recursion_depth(&mut builder, within);
+                    Some(RecursiveCalls {
+                        group,
+                        functions: &self.recursive_functions,
+                        depth,
+                    })
+                }
+                None => None,
+            };
             let cache = input_results.enter(&mut builder, config, parameters[0], parameters[1])?;
             let layout = ProgramLayout::new(program, input_count, output_count)?;
             let tape = create_tape(&mut builder, pointer_type, layout.tape_cells)?;
@@ -392,6 +527,7 @@ impl TableCompiler {
                 tape,
                 layout: &layout,
                 functions,
+                recursive_calls,
                 flags: MemFlags::new(),
             };
             lowerer.lower(program)?;
@@ -464,6 +600,10 @@ impl TableCompiler {
 
 fn owner_symbol(table: usize, owner: solve::SolvePureCallOwnerId) -> String {
     format!("rumoca_typed_pure_call_{table}_{}", owner.index())
+}
+
+fn recursive_owner_symbol(table: usize, owner: solve::SolvePureCallOwnerId) -> String {
+    format!("rumoca_typed_recursive_call_{table}_{}", owner.index())
 }
 
 fn directional_owner_symbol(table: usize, owner: solve::SolvePureCallOwnerId) -> String {
@@ -802,6 +942,7 @@ struct ProgramLowerer<'a, 'b> {
     tape: Value,
     layout: &'a ProgramLayout,
     functions: &'a [Option<FuncId>],
+    recursive_calls: Option<RecursiveCalls<'a>>,
     flags: MemFlags,
 }
 
@@ -1161,15 +1302,37 @@ impl ProgramLowerer<'_, '_> {
         arguments: &[solve::SolveRegisterId],
         output: Value,
     ) -> Result<(), CompileError> {
-        let function = self
-            .functions
-            .get(owner.index() as usize)
-            .copied()
-            .flatten()
-            .ok_or_else(|| CompileError::Backend("nested typed call owner is missing".into()))?;
         let input = self.packed_tape(arguments, "nested typed input")?;
-        let local = declare_far_call_in_func(self.module, function, self.builder.func);
-        let call = self.builder.ins().call(local, &[input, output]);
+        let call = match self
+            .recursive_calls
+            .filter(|calls| calls.group.contains(owner))
+        {
+            Some(calls) => {
+                let function = calls
+                    .functions
+                    .get(owner.index() as usize)
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| {
+                        CompileError::Backend("recursive typed call owner is missing".into())
+                    })?;
+                let local = declare_far_call_in_func(self.module, function, self.builder.func);
+                let depth = self.builder.ins().iadd_imm(calls.depth, 1);
+                self.builder.ins().call(local, &[input, output, depth])
+            }
+            None => {
+                let function = self
+                    .functions
+                    .get(owner.index() as usize)
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| {
+                        CompileError::Backend("nested typed call owner is missing".into())
+                    })?;
+                let local = declare_far_call_in_func(self.module, function, self.builder.func);
+                self.builder.ins().call(local, &[input, output])
+            }
+        };
         let status = self.builder.inst_results(call)[0];
         status::propagate(self.builder, status);
         Ok(())

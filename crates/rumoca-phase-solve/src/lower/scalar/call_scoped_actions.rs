@@ -14,13 +14,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
         call_span: Span,
     ) -> Result<(), LowerError> {
-        if registered.assertions.is_empty() {
+        if registered.callee.assertions.is_empty() {
             return Ok(());
         }
         let action_program =
             self.typed_pure_call_assertion_program(call, function, registered, call_span, false)?;
         let action_program = std::sync::Arc::<[solve::LinearOp]>::from(action_program);
         let root_program = (registered
+            .callee
             .assertions
             .iter()
             .any(|assertion| self.event_root_owned(assertion.level)))
@@ -29,7 +30,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         })
         .transpose()?
         .map(std::sync::Arc::<[solve::LinearOp]>::from);
-        for (output_offset, assertion) in registered.assertions.iter().enumerate() {
+        for (output_offset, assertion) in registered.callee.assertions.iter().enumerate() {
             let message_owner = AssertionMessageOwner::Specialized {
                 call,
                 function,
@@ -42,12 +43,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     .as_ref()
                     .filter(|_| self.event_root_owned(assertion.level))
                     .map(|program| CollectedCallAssertionRoot::Shared {
-                        owner: registered.owner,
+                        owner: registered.callee.owner,
                         program: std::sync::Arc::clone(program),
                         output_offset,
                     }),
                 CollectedCallAssertionProgram::Shared {
-                    owner: registered.owner,
+                    owner: registered.callee.owner,
                     program: std::sync::Arc::clone(&action_program),
                     output_offset,
                 },
@@ -55,7 +56,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 assertion.level,
                 assertion.provenance,
                 Some(CallAssertionProjection {
-                    owner: registered.owner,
+                    owner: registered.callee.owner,
                     output_offset,
                 }),
             )?;
@@ -87,14 +88,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .ok_or_else(|| {
                 LowerError::contract("typed pure-call assertion lost its issued invocation", span)
             })?;
-        if replayed.owner != registered.owner || replayed.site != registered.site {
+        if replayed.callee.owner != registered.callee.owner || replayed.site != registered.site {
             return Err(LowerError::contract(
                 "typed pure-call assertion changed its issued owner",
                 span,
             ));
         }
         let activation = compiler.activation(span)?;
-        for assertion in registered.assertions.iter() {
+        for assertion in registered.callee.assertions.iter() {
             let predicate_offset = replayed.site.outputs()[..assertion.predicate_output]
                 .iter()
                 .try_fold(0usize, |count, output| {
@@ -865,7 +866,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     span,
                 )
             })?;
-        if replayed.owner != registered.owner || replayed.site != registered.site {
+        if replayed.callee.owner != registered.callee.owner || replayed.site != registered.site {
             return Err(LowerError::contract(
                 "typed pure-call assertion message changed its issued owner",
                 span,

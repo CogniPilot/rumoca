@@ -521,6 +521,7 @@ mod tangent_lane_refusal_tests;
 #[cfg(test)]
 mod tests {
     mod projection_jacobian;
+    mod recursive_groups;
     mod register_constants;
     mod selected_jvp;
     mod selected_residual;

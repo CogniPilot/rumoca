@@ -132,7 +132,7 @@ fn transfer(
                 })
                 .collect::<Option<Vec<_>>>()?;
             let owner = table.owner(site.owner())?;
-            let values = super::typed_dependencies::outputs(table, owner.body(), &inputs);
+            let values = super::typed_dependencies::owner_outputs(table, owner, &inputs);
             let mut start = *dst_start as usize;
             for (value, output) in values.iter().zip(owner.outputs()) {
                 let end = start + output.value_type().scalar_count() as usize;

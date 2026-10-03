@@ -18,6 +18,9 @@ pub enum SolveProgramConstructionError {
     UnknownCallOwner { provenance: Span },
     InvalidCallInterface { provenance: Span },
     RecursiveCall { provenance: Span },
+    InvalidRecursiveGroup { provenance: Span },
+    RecursiveAssertion { provenance: Span },
+    RecursionFrameBound { provenance: Span },
     EmptyCallOutput { provenance: Span },
     InvalidCallOutput { provenance: Span },
     InvalidRegion { provenance: Span },
@@ -46,6 +49,9 @@ impl SolveProgramConstructionError {
             | Self::UnknownCallOwner { provenance }
             | Self::InvalidCallInterface { provenance }
             | Self::RecursiveCall { provenance }
+            | Self::InvalidRecursiveGroup { provenance }
+            | Self::RecursiveAssertion { provenance }
+            | Self::RecursionFrameBound { provenance }
             | Self::EmptyCallOutput { provenance }
             | Self::InvalidCallOutput { provenance }
             | Self::InvalidRegion { provenance }
@@ -76,7 +82,16 @@ impl std::fmt::Display for SolveProgramConstructionError {
             Self::UnknownCallOwner { .. } => "pure-call owner was not issued by this table",
             Self::InvalidCallInterface { .. } => "pure-call argument or slot interface is invalid",
             Self::RecursiveCall { .. } => {
-                "recursive functions cannot enter an acyclic pure-call graph"
+                "recursive call does not belong to a constructed recursive owner group"
+            }
+            Self::InvalidRecursiveGroup { .. } => {
+                "recursive owner group members do not form one recursive call cycle"
+            }
+            Self::RecursiveAssertion { .. } => {
+                "recursive function groups cannot carry call-scoped assertions"
+            }
+            Self::RecursionFrameBound { .. } => {
+                "recursive owner group frame times the profile depth limit exceeds the profile stack budget"
             }
             Self::EmptyCallOutput { .. } => "pure-call owner has no value or assertion output",
             Self::InvalidCallOutput { .. } => "pure-call output kind does not match its type",

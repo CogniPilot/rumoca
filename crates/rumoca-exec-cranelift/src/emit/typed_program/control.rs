@@ -206,6 +206,7 @@ impl ProgramLowerer<'_, '_> {
             tape,
             layout: &layout,
             functions: self.functions,
+            recursive_calls: self.recursive_calls,
             flags: self.flags,
         };
         nested.lower(region.body())

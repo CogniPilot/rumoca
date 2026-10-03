@@ -26,20 +26,20 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.5 EQN contracts | 504–548 | Equation rules (40 contracts) |
 | §4.6 ALG contracts | 549–570 | Algorithm rules (18 contracts) |
 | §4.7 CONN contracts | 571–605 | Connection rules (30 contracts) |
-| §4.8 FUNC contracts | 606–652 | Function rules (42 contracts) |
-| §4.9 TYPE contracts | 653–693 | Type/interface rules (36 contracts) |
-| §4.10 ARR contracts | 694–744 | Array rules (46 contracts) |
-| §4.11 PKG contracts | 745–762 | Package/import rules (13 contracts) |
-| §4.12 OPREC contracts | 763–779 | Operator record rules (12 contracts) |
-| §4.13 SIM contracts | 780–794 | Simulation rules (10 contracts) |
-| §4.14 CLK contracts | 795–819 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 820–837 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 838–936 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 937–958 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 959–974 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 975–1000 | Category counts and totals |
-| §6. Compiler Phases | 1001–1050 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1051–1078 | MLS chapter → contract category mapping |
+| §4.8 FUNC contracts | 606–653 | Function rules (43 contracts) |
+| §4.9 TYPE contracts | 654–694 | Type/interface rules (36 contracts) |
+| §4.10 ARR contracts | 695–745 | Array rules (46 contracts) |
+| §4.11 PKG contracts | 746–763 | Package/import rules (13 contracts) |
+| §4.12 OPREC contracts | 764–780 | Operator record rules (12 contracts) |
+| §4.13 SIM contracts | 781–795 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 796–820 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 821–838 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 839–937 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 938–959 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 960–975 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 976–1001 | Category counts and totals |
+| §6. Compiler Phases | 1002–1051 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1052–1079 | MLS chapter → contract category mapping |
 
 ---
 
@@ -649,6 +649,7 @@ Defines state-to-state transitions with priority and timing control.
 | FUNC-040 | Function arguments | §12.4.2.1 | "A function partial application is specified by the function keyword followed by a function call to func_name giving named formal parameter associations for the formal parameters to be bound". Rumoca: flattening specializes the callee once per distinct function argument; calls of the formal function become direct calls with the bound formals as extra inputs, so no function value reaches DAE or Solve. A bare function name is collected and specialized like a partial application with no bindings. An argument that is neither (a Real value at a function input, for example) is refused (EF016). Tested in `suite_core/function_valued_arguments.rs` |
 | FUNC-041 | Element definedness through comprehensions | §12.4.4, §10.4.2 | A comprehension iterator takes each value of its range in turn, so an element-written function local is readable inside `{e(i) for i in r}` exactly when every element the settled points of `r` name is defined. Rumoca: a comprehension whose ranges settle to static integers is checked per point (Vandermonde column fill of `Math.Polynomials.fitting`); a range that does not settle keeps the whole-body check. Tested in `suite_core/function_comprehension_definedness.rs` |
 | FUNC-042 | Text in pure-call interfaces | §4.9.4, §12.4 | A `String` value carries no numeric value. Rumoca: a `String` scalar, array, or record field occupies no leaf of a Solve pure-call interface, so neither a call inside a function nor a model-level call lowers a text argument, and a record constructor does not lower its text fields; any numeric use of a text value is refused at construction. Tested in `suite_core/text_record_fields.rs` |
+| FUNC-043 | Recursive functions | §12.2 | "A function can be recursive." The MLS states no termination requirement. Rumoca: a recursive call SCC of pure Modelica functions executes as one recursive owner group of the Solve pure-call table (SPEC_0040 SOLVE-C62). The declared recursion depth limit of the execution profile bounds every chain of active group invocations; a call beyond it fails with a typed recursion-depth error at its span (never truncated or replaced). DAE incidence projection reads every argument scalar of a call to a function already being projected, a bound that holds for every pure function and needs no unrolling. A call whose arguments carry no tangent differentiates to zero without a directional relation. A recursive group whose functions carry call-scoped assertions, a nonzero derivative through a recursive call, and the FMI C profile are refused with typed diagnostics. Tested in `suite_core/recursive_functions.rs` and `func_contracts.rs` |
 
 ### 4.9 Type/Interface Contracts (TYPE)
 
@@ -983,7 +984,7 @@ areas.
 | Equations | EQN | 40 |
 | Algorithms | ALG | 18 |
 | Connections | CONN | 30 |
-| Functions | FUNC | 42 |
+| Functions | FUNC | 43 |
 | Types/Interfaces | TYPE | 36 |
 | Arrays | ARR | 46 |
 | Packages | PKG | 13 |
@@ -994,7 +995,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **464** |
+| **Total** | | **465** |
 
 ---
 
@@ -1083,5 +1084,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 464 |
+| Total Contracts | 465 |
 | MLS Chapters Referenced | 21 |

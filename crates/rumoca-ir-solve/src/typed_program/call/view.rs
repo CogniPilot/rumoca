@@ -1,10 +1,15 @@
+use super::recursion::PendingOwner;
 use super::{SolvePureCallInterface, SolvePureCallOwner};
 
-/// A borrowed prefix of already-issued owners. Lookup preserves their exact
-/// identities and selects the primal or directional contract without copying.
+/// A borrowed prefix of already-issued owners, optionally followed by the
+/// reserved members of one recursive group under construction (SOLVE-C62).
+/// Lookup preserves their exact identities and selects the primal or
+/// directional contract without copying. Reserved members have no
+/// directional form.
 #[derive(Clone, Copy, Default)]
 pub(in crate::typed_program) struct SolvePureCallTableView<'owner> {
     owners: &'owner [SolvePureCallOwner],
+    pending: &'owner [PendingOwner],
     directional: bool,
 }
 
@@ -12,6 +17,7 @@ impl<'owner> SolvePureCallTableView<'owner> {
     pub(in crate::typed_program) const fn primal(owners: &'owner [SolvePureCallOwner]) -> Self {
         Self {
             owners,
+            pending: &[],
             directional: false,
         }
     }
@@ -21,7 +27,20 @@ impl<'owner> SolvePureCallTableView<'owner> {
     ) -> Self {
         Self {
             owners,
+            pending: &[],
             directional: true,
+        }
+    }
+
+    /// The primal prefix followed by the reserved members of one group.
+    pub(in crate::typed_program) const fn with_pending(
+        owners: &'owner [SolvePureCallOwner],
+        pending: &'owner [PendingOwner],
+    ) -> Self {
+        Self {
+            owners,
+            pending,
+            directional: false,
         }
     }
 
@@ -29,10 +48,19 @@ impl<'owner> SolvePureCallTableView<'owner> {
         self,
         index: usize,
     ) -> Option<SolvePureCallInterface<'owner>> {
-        let owner = self
-            .owners
-            .get(index)
-            .filter(|owner| owner.id.index() as usize == index)?;
+        let Some(owner) = self.owners.get(index) else {
+            if self.directional {
+                return None;
+            }
+            return self
+                .pending
+                .get(index - self.owners.len())
+                .filter(|pending| pending.id().index() as usize == index)
+                .map(PendingOwner::interface);
+        };
+        if owner.id.index() as usize != index {
+            return None;
+        }
         if self.directional {
             Some(owner.directional.as_ref()?.interface(owner.id))
         } else {

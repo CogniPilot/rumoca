@@ -214,6 +214,7 @@ mod process_allocator_address_space;
 mod proven_tearing;
 mod public_observation_convergence;
 mod receiver_function_redeclare;
+mod recursive_functions;
 mod redeclare_value_scope_selection;
 mod reduced_state_charts;
 mod replaceable_alias_member_suffixes;
