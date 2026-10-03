@@ -372,6 +372,17 @@ fn arithmetic_profile() -> solve::SolveArithmeticProfile {
     )
 }
 
+/// Whether a value is text: a `String` scalar or array (MLS §4.9.4).
+///
+/// Text carries no numeric value, so it occupies no leaf of a pure-call
+/// interface; a record such as `IdealGases.Common.DataRecord` passes its
+/// numeric fields and leaves its `name` out. Every numeric consumer of a value
+/// demands a register, so a body or call site that computes with a text value
+/// is refused at construction rather than handed an empty one.
+pub(crate) fn is_text_value(value_type: &dae::ValueType) -> bool {
+    !value_type.is_record() && value_type.scalar_type() == dae::ScalarType::String
+}
+
 /// Typed leaves one DAE value type occupies in a pure-call interface.
 ///
 /// A leaf holds scalars, so a value type holds exactly as many leaves as it
@@ -389,7 +400,7 @@ fn lower_value_type_leaves<'dae>(
     let value_type = view
         .value_type(id)
         .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-    if value_type.dimensions().contains(&0) {
+    if value_type.dimensions().contains(&0) || is_text_value(value_type) {
         return Ok(Vec::new());
     }
     if !value_type.is_record() {
@@ -1347,6 +1358,14 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             let (_, field_type) = self.view.record_field(value_type, ordinal).ok_or(
                 solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
             )?;
+            if is_text_value(
+                self.view
+                    .value_type(field_type)
+                    .ok_or(solve::SolveProgramConstructionError::WireMismatch)?,
+            ) {
+                // A text field occupies no leaf, so its value is not lowered.
+                continue;
+            }
             let field = self.expression(argument)?;
             leaves.extend(self.coerce_value(field, field_type, at)?.leaves);
         }
@@ -1753,6 +1772,15 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         }
         let mut lowered = Vec::new();
         for (argument, target) in arguments.iter().zip(parameter_types.iter()) {
+            if is_text_value(
+                self.view
+                    .value_type(target)
+                    .ok_or(solve::SolveProgramConstructionError::WireMismatch)?,
+            ) {
+                // A text input occupies no leaf (a decomposed record's `name`
+                // field, for example), so its argument is not lowered.
+                continue;
+            }
             let value = self.expression(argument)?;
             lowered.extend(self.coerce_value(value, target, at)?.leaves);
         }

@@ -256,6 +256,7 @@ mod stream_one_direction_flow;
 mod structured_event_roots;
 mod structured_family_corner_lowering;
 mod terminate_when_regression;
+mod text_record_fields;
 mod tiered_models;
 mod time_event_when_activation;
 mod torn_square_root_characteristic;

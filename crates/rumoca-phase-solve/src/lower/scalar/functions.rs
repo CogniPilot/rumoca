@@ -4263,7 +4263,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         // A zero-size array holds no scalars, so the owner's interface holds no
         // leaf for it (see `lower_value_type_leaves`). Packing a start here
         // would make the call site one leaf wider than the owner it calls.
-        if value.dimensions().contains(&0) {
+        // A text input occupies no leaf either (`is_text_value`).
+        if value.dimensions().contains(&0) || crate::lower::typed_functions::is_text_value(value) {
             return Ok(());
         }
         if !value.is_record() {
@@ -4289,7 +4290,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     span,
                 ));
             }
-            if field_value.dimensions().contains(&0) {
+            if field_value.dimensions().contains(&0)
+                || crate::lower::typed_functions::is_text_value(field_value)
+            {
                 continue;
             }
             starts.push(self.pack_record_field(argument, field, span)?);
