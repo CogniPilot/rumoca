@@ -621,6 +621,18 @@ pub(crate) fn try_eval_const_flat_expr_with_scope(
             }),
             _ => None,
         },
+        // MLS 3.7 §3.5: `not` of a constant expression is a constant
+        // expression, kept as the operator over its constant operand like a
+        // binary operator below.
+        ast::Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => Some(rumoca_core::Expression::Unary {
+            op: OpUnary::Not,
+            rhs: Box::new(try_eval_const_flat_expr_with_scope(rhs, ctx, scope)?),
+            span: expr.span(),
+        }),
         ast::Expression::Parenthesized { inner, .. } => {
             try_eval_const_flat_expr_with_scope(inner, ctx, scope)
         }

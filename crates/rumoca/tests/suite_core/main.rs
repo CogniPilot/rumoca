@@ -105,6 +105,7 @@ mod function_assertion_scopes;
 mod function_branch_assertions;
 mod function_comprehension_definedness;
 mod function_conditional_sequence_test;
+mod function_constant_binding_scope;
 mod function_equation_shape;
 mod function_fold_projection;
 mod function_inner_index_slice_compaction;

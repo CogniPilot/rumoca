@@ -545,7 +545,7 @@ fn substitute_resolved_generated_constant(
     let inner = ConstantSubstitutionEnv {
         ctx: env.ctx,
         live_vars: env.live_vars,
-        locals: env.locals,
+        locals: binding_locals(),
         scope,
         prefer_scoped_parameters: env.prefer_scoped_parameters,
         expanding: Some(&frame),
@@ -606,6 +606,7 @@ fn substitute_resolved_source_constant(
     };
     let inner = ConstantSubstitutionEnv {
         expanding: Some(&frame),
+        locals: binding_locals(),
         scope: if exposing_scope.is_empty() {
             env.scope
         } else {
@@ -806,4 +807,17 @@ fn record_member_source_constant(
         return substitute_resolved_generated_constant(name.as_str(), value, span, env).map(Some);
     }
     Ok(None)
+}
+
+/// The function locals visible in an expanded constant binding: none.
+///
+/// A reference to a function local is never expanded (it keeps its symbolic
+/// form above), so every binding this module expands belongs to a constant
+/// declared outside the function. Its names resolve where it is declared
+/// (MLS 3.7 §5.3), so a function local of the same name (`npol` in
+/// `TableBased.specificEntropy`, shadowing the package constant a sibling
+/// binding names) must not capture them.
+fn binding_locals() -> &'static HashSet<String> {
+    static NO_LOCALS: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(HashSet::new);
+    &NO_LOCALS
 }

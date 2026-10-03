@@ -25,7 +25,14 @@ pub(super) fn immutable_integer_defaults(
             let Some(default) = &local.default else {
                 continue;
             };
-            let Some(value) = static_shape_integer_expression(default, &values, shapes)? else {
+            // A declaration value this scope cannot settle (`size` of a call
+            // result, whose shape only the callee specialization proves) leaves
+            // the local without a static value; a read that needs one is
+            // rejected where it is made.
+            let Some(value) = static_shape_integer_expression(default, &values, shapes)
+                .ok()
+                .flatten()
+            else {
                 continue;
             };
             values.insert(name, value);
