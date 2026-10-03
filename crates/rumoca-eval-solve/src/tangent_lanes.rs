@@ -89,12 +89,27 @@ pub struct TornTangentJacobian {
 /// `false` to decline.
 pub type DirectionCall<'a> = dyn FnMut(usize, &[f64], &mut Vec<f64>) -> bool + 'a;
 
+/// The multi-lane sweep buffers of one [`TornTangentEvaluator`], kept between
+/// evaluations so a sweep allocates and zeroes nothing proportional to the
+/// point. `seed` is element-major, sized to the point times the lane count,
+/// and all zero between evaluations: a sweep writes only its tear and step
+/// target entries and restores exactly those. `out` holds one program's
+/// lane outputs, every entry of which the program writes.
+#[derive(Default)]
+struct LaneBuffers {
+    seed: Vec<f64>,
+    out: Vec<f64>,
+}
+
 /// A [`TornTangentPlan`] prepared for repeated evaluation.
 pub struct TornTangentEvaluator {
     plan: TornTangentPlan,
     programs: Vec<PreparedTangentLaneProgram>,
     /// The JVP rows a one-direction plan evaluates.
     directions: Option<std::rc::Rc<crate::PreparedScalarProgramBlock>>,
+    /// The multi-lane sweep buffers, kept between evaluations; see
+    /// [`LaneBuffers`].
+    buffers: RefCell<LaneBuffers>,
 }
 
 impl TornTangentEvaluator {
@@ -134,6 +149,7 @@ impl TornTangentEvaluator {
             plan,
             programs,
             directions,
+            buffers: RefCell::new(LaneBuffers::default()),
         })
     }
 
@@ -165,21 +181,44 @@ impl TornTangentEvaluator {
             return self.eval_directions(directions, point, call);
         }
         let lanes = self.plan.lanes();
+        let mut buffers = self.buffers.borrow_mut();
+        let LaneBuffers { seed, out } = &mut *buffers;
+        if seed.len() != point.y.len() * lanes {
+            seed.clear();
+            seed.resize(point.y.len() * lanes, 0.0);
+        }
+        let result = self.eval_lanes_through(point, seed, out);
+        for (column, &target) in self.plan.tear_targets().iter().enumerate() {
+            seed[target * lanes + column] = 0.0;
+        }
+        for step in self.plan.steps() {
+            seed[step.target * lanes..(step.target + 1) * lanes].fill(0.0);
+        }
+        result
+    }
+
+    /// The multi-lane sweep of [`Self::eval_through`] over `seed`, which is
+    /// all zero on entry; it writes only tear and step target entries.
+    fn eval_lanes_through(
+        &self,
+        point: TangentPoint<'_>,
+        seed: &mut [f64],
+        out: &mut Vec<f64>,
+    ) -> Result<Option<TornTangentJacobian>, EvalSolveError> {
+        let lanes = self.plan.lanes();
         let tears = lanes - 1;
         let steps = self.plan.steps();
-        let mut seed = vec![0.0; point.y.len() * lanes];
         for (column, &target) in self.plan.tear_targets().iter().enumerate() {
             seed[target * lanes + column] = 1.0;
         }
         let mut recovered = Vec::with_capacity(steps.len() * tears);
-        let mut out = Vec::new();
         let mut outputs = 0;
         for (index, step) in steps.iter().enumerate() {
             if step.group > 0 {
                 let group = &steps[index..index + step.group];
-                seed_group(&mut seed, group, (lanes, tears), 1.0);
-                outputs = self.eval_lanes(point, &seed, step.source.program, &mut out)?;
-                seed_group(&mut seed, group, (lanes, tears), 0.0);
+                seed_group(seed, group, (lanes, tears), 1.0);
+                outputs = self.eval_lanes(point, seed, step.source.program, out)?;
+                seed_group(seed, group, (lanes, tears), 0.0);
             }
             let tangent = |lane: usize| out[lane * outputs + step.source.output];
             let coefficient = tangent(tears);
@@ -195,7 +234,7 @@ impl TornTangentEvaluator {
         let mut residual = vec![0.0; tears * tears];
         for (row, entry) in self.plan.residuals().iter().enumerate() {
             if entry.group > 0 {
-                outputs = self.eval_lanes(point, &seed, entry.source.program, &mut out)?;
+                outputs = self.eval_lanes(point, seed, entry.source.program, out)?;
             }
             for lane in 0..tears {
                 residual[row * tears + lane] = out[lane * outputs + entry.source.output];

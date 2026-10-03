@@ -286,6 +286,14 @@ fn check_torn_block(
         let exact = evaluator
             .eval(point(rows, &y))
             .expect("evaluate the tangent Jacobian");
+        let fresh = TornTangentEvaluator::new(evaluator.plan().clone(), &rows.jvp)
+            .expect("prepare the tear Jacobian plan")
+            .eval(point(rows, &y))
+            .expect("evaluate the tangent Jacobian");
+        assert_eq!(
+            exact, fresh,
+            "{label}: a reused evaluator restores its seed between points"
+        );
         let Some(exact) = exact else {
             // Construction proves every causal slope a nonzero constant, so the
             // plan declines only where run-time values make one non-finite.
