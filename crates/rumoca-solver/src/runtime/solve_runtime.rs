@@ -145,11 +145,13 @@ pub trait CompiledSolveExpression {
 
 /// Backend-neutral callable for a checked forward-mode Solve-IR expression.
 pub trait CompiledSolveJacobianExpression {
-    fn prepare_projection(
+    /// Prepare every application at once, one entry per application in
+    /// order; `None` leaves an application to the generic evaluator.
+    fn prepare_projections(
         &self,
-        _application: &solve::ProjectionJacobianApplication,
-    ) -> Result<Option<Rc<dyn CompiledSolveProjectionJacobian>>, String> {
-        Ok(None)
+        applications: &[&solve::ProjectionJacobianApplication],
+    ) -> Result<Vec<Option<Rc<dyn CompiledSolveProjectionJacobian>>>, String> {
+        Ok(vec![None; applications.len()])
     }
     /// Execute one already compiled program and return all of its local
     /// outputs. `false` declines this optional entry point before execution.

@@ -21,10 +21,35 @@ struct ProjectionScratch {
 }
 
 impl CompiledProjectionJacobian {
-    pub(crate) fn new(
+    /// Prepare every application into the shared projection module, which is
+    /// finalized once for all of them.
+    pub(crate) fn new_all(
+        prepared: Vec<(Rc<CompiledJacobianRows>, ProjectionJacobianApplication)>,
+        shared: &super::SharedProjectionModule,
+    ) -> Result<Vec<Self>, CompileError> {
+        let pure_calls = prepared
+            .first()
+            .and_then(|(jit, _)| jit._pure_calls.clone());
+        let applications = prepared
+            .iter()
+            .map(|(_, application)| application)
+            .collect::<Vec<_>>();
+        let batches = super::projection_batch::ProjectionBatch::compile_all(
+            &applications,
+            pure_calls.as_ref(),
+            shared,
+        )?;
+        prepared
+            .into_iter()
+            .zip(batches)
+            .map(|((jit, application), batch)| Self::with_batch(jit, application, batch))
+            .collect()
+    }
+
+    fn with_batch(
         jit: Rc<CompiledJacobianRows>,
         application: ProjectionJacobianApplication,
-        shared: &super::SharedProjectionModule,
+        batch: super::projection_batch::ProjectionBatch,
     ) -> Result<Self, CompileError> {
         let output_count = program_output_capacity(&jit, &application)?;
         let required_y_len = application
@@ -35,11 +60,6 @@ impl CompiledProjectionJacobian {
             .map_or(Some(0), |index| index.checked_add(1))
             .ok_or_else(|| CompileError::Input("projection seed extent overflows".into()))?;
         let seed_len = required_y_len.max(jit.input_requirements.seed_len);
-        let batch = super::projection_batch::ProjectionBatch::compile(
-            &application,
-            jit._pure_calls.as_ref(),
-            shared,
-        )?;
         let validate = application.colors().iter().any(|color| {
             color.outputs().programs().iter().any(|program| {
                 let row = &jit.rows[program.program()];

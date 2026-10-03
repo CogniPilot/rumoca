@@ -8219,10 +8219,23 @@ fn to_backend_err<E: std::fmt::Display>(err: E) -> CompileError {
     CompileError::Backend(err.to_string())
 }
 
+#[cfg(test)]
+thread_local! {
+    static FINALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many JIT module finalizations this thread has run.
+#[cfg(test)]
+pub(crate) fn take_finalizations() -> usize {
+    FINALIZATIONS.with(|count| count.replace(0))
+}
+
 // The closure returns cranelift-module's `ModuleError`, whose size this crate
 // does not control; boxing it here would only move the allocation.
 #[allow(clippy::result_large_err)]
 pub(super) fn finalize_jit_module(module: &mut JITModule) -> Result<(), CompileError> {
+    #[cfg(test)]
+    FINALIZATIONS.with(|count| count.set(count.get() + 1));
     catch_cranelift_unwind("finalization", || module.finalize_definitions())?
         .map_err(to_backend_err)
 }

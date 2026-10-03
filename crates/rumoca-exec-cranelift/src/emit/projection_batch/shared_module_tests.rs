@@ -247,3 +247,38 @@ fn prepared_projections_of_one_source_share_its_module() {
         assert_eq!(left.map(f64::to_bits), right.map(f64::to_bits));
     }
 }
+
+#[test]
+fn projections_prepared_together_finalize_their_module_once() {
+    let table = reciprocal_table();
+    let pure_calls = crate::compile_pure_call_table(&table).unwrap();
+    let source = source(2.0, &table);
+    let compiled =
+        crate::compile_jacobian_scalar_program_block_with_pure_calls(&source, &pure_calls).unwrap();
+    let applications = [
+        application(&source),
+        application(&source),
+        application(&source),
+    ];
+    let separate = applications
+        .each_ref()
+        .map(|application| compiled.prepare_projection(application).unwrap());
+    crate::emit::take_finalizations();
+    let together = compiled
+        .prepare_projections(&applications.each_ref())
+        .unwrap();
+    assert_eq!(
+        crate::emit::take_finalizations(),
+        1,
+        "one finalization serves every application prepared together"
+    );
+    for (y, p) in POINTS {
+        for (joint, single) in together.iter().zip(&separate) {
+            let mut left = [0.0; 4];
+            let mut right = [0.0; 4];
+            joint.call(&[y, 3.0], &p, 0.25, &[], &mut left).unwrap();
+            single.call(&[y, 3.0], &p, 0.25, &[], &mut right).unwrap();
+            assert_eq!(left.map(f64::to_bits), right.map(f64::to_bits));
+        }
+    }
+}

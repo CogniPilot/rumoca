@@ -22,33 +22,39 @@ pub(crate) fn prepare_projection_jacobians(
     source: &solve::ScalarProgramBlock,
     compiled: Option<&dyn CompiledSolveJacobianExpression>,
 ) -> Result<Vec<Option<Rc<dyn CompiledSolveProjectionJacobian>>>, EvalSolveError> {
-    structures
-        .algebraic_projection()
+    let blocks = structures.algebraic_projection();
+    let mut prepared = vec![None; blocks.len()];
+    let Some(compiled) = compiled else {
+        return Ok(prepared);
+    };
+    let (slots, applications): (Vec<usize>, Vec<&solve::ProjectionJacobianApplication>) = blocks
         .iter()
-        .map(|structure| {
-            let Some((compiled, application)) = compiled.zip(structure.jacobian_application())
-            else {
-                return Ok(None);
-            };
-            if !source.shares_program_owner(application.canonical_source()) {
-                return Ok(None);
-            }
+        .enumerate()
+        .filter_map(|(slot, structure)| {
+            let application = structure.jacobian_application()?;
             let all_forward = application.rows().iter().all(|&row| {
                 primal
                     .row_output_position(row)
                     .is_some_and(|(program, _)| !primal.reverse_row_y_gradient_supported(program))
             });
-            if !all_forward {
-                return Ok(None);
-            }
-            compiled
-                .prepare_projection(application)
-                .map_err(|message| EvalSolveError::InvalidRow {
-                    message,
-                    span: application.source().first_source_span(),
-                })
+            (source.shares_program_owner(application.canonical_source()) && all_forward)
+                .then_some((slot, application))
         })
-        .collect()
+        .unzip();
+    // One preparation for every application, so a native backend compiles
+    // them into one module and finalizes it once.
+    let compiled = compiled
+        .prepare_projections(&applications)
+        .map_err(|message| EvalSolveError::InvalidRow {
+            message,
+            span: applications
+                .first()
+                .and_then(|application| application.source().first_source_span()),
+        })?;
+    for (slot, compiled) in slots.into_iter().zip(compiled) {
+        prepared[slot] = compiled;
+    }
+    Ok(prepared)
 }
 
 impl RefreshProjectionModel<'_> {

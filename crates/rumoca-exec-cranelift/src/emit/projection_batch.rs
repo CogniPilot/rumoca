@@ -73,12 +73,33 @@ impl ProjectionModule {
         })
     }
 
-    fn compile(
+    /// Define every application in this module, then finalize the module once
+    /// for all of them: finalizing patches and protects every function the
+    /// module holds, so finalizing per application is quadratic in the module.
+    fn compile_all(
         &self,
-        application: &ProjectionJacobianApplication,
-    ) -> Result<JacobianRowFn, CompileError> {
+        applications: &[&ProjectionJacobianApplication],
+    ) -> Result<Vec<JacobianRowFn>, CompileError> {
         let mut state = self.state.borrow_mut();
         let state = &mut *state;
+        let ids = applications
+            .iter()
+            .map(|application| state.define(application))
+            .collect::<Result<Vec<_>, _>>()?;
+        let module = &mut state.emitter.module;
+        finalize_jit_module(module)?;
+        ids.into_iter()
+            .map(|id| finalized_jacobian_fn(module, id))
+            .collect()
+    }
+}
+
+impl ProjectionModuleState {
+    fn define(
+        &mut self,
+        application: &ProjectionJacobianApplication,
+    ) -> Result<FuncId, CompileError> {
+        let state = self;
         let scope = match state
             .scopes
             .iter()
@@ -102,17 +123,17 @@ impl ProjectionModule {
             state.applications
         );
         state.applications += 1;
-        let compiled = emit_projection_application(emitter, application, &name);
+        let defined = define_projection_application(emitter, application, &name);
         state.scopes[scope].functions = std::mem::take(&mut emitter.conditional_functions);
-        compiled
+        defined
     }
 }
 
-fn emit_projection_application(
+fn define_projection_application(
     emitter: &mut CraneliftEmitter,
     application: &ProjectionJacobianApplication,
     name: &str,
-) -> Result<JacobianRowFn, CompileError> {
+) -> Result<FuncId, CompileError> {
     for color in application.colors() {
         for program in color.outputs().programs() {
             let row = &application.source().programs()[program.program()];
@@ -120,9 +141,7 @@ fn emit_projection_application(
             emitter.ensure_conditional_programs(row, RowKind::JacobianV)?;
         }
     }
-    let id = emitter.compile_projection_application(application, name)?;
-    finalize_jit_module(&mut emitter.module)?;
-    finalized_jacobian_fn(&emitter.module, id)
+    emitter.compile_projection_application(application, name)
 }
 
 pub(super) struct ProjectionBatch {
@@ -131,17 +150,31 @@ pub(super) struct ProjectionBatch {
 }
 
 impl ProjectionBatch {
+    #[cfg(test)]
     pub(super) fn compile(
         application: &ProjectionJacobianApplication,
         pure_calls: Option<&Rc<typed_program::CompiledPureCallTable>>,
         shared: &SharedProjectionModule,
     ) -> Result<Self, CompileError> {
+        let mut batches = Self::compile_all(&[application], pure_calls, shared)?;
+        Ok(batches.remove(0))
+    }
+
+    /// Compile every application into the shared module with one finalization.
+    pub(super) fn compile_all(
+        applications: &[&ProjectionJacobianApplication],
+        pure_calls: Option<&Rc<typed_program::CompiledPureCallTable>>,
+        shared: &SharedProjectionModule,
+    ) -> Result<Vec<Self>, CompileError> {
         let module = shared.module(pure_calls)?;
-        match module.compile(application) {
-            Ok(function) => Ok(Self {
-                function,
-                _module: module,
-            }),
+        match module.compile_all(applications) {
+            Ok(functions) => Ok(functions
+                .into_iter()
+                .map(|function| Self {
+                    function,
+                    _module: module.clone(),
+                })
+                .collect()),
             Err(error) => {
                 shared.discard();
                 Err(error)

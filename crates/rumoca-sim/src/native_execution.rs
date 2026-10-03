@@ -60,13 +60,18 @@ impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
 }
 
 impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpression {
-    fn prepare_projection(
+    fn prepare_projections(
         &self,
-        application: &rumoca_ir_solve::ProjectionJacobianApplication,
-    ) -> Result<Option<Rc<dyn rumoca_solver::CompiledSolveProjectionJacobian>>, String> {
+        applications: &[&rumoca_ir_solve::ProjectionJacobianApplication],
+    ) -> Result<Vec<Option<Rc<dyn rumoca_solver::CompiledSolveProjectionJacobian>>>, String> {
         self.0
-            .prepare_projection(application)
-            .map(|compiled| Some(Rc::new(CraneliftProjectionJacobian(compiled)) as Rc<_>))
+            .prepare_projections(applications)
+            .map(|compiled| {
+                compiled
+                    .into_iter()
+                    .map(|compiled| Some(Rc::new(CraneliftProjectionJacobian(compiled)) as Rc<_>))
+                    .collect()
+            })
             .map_err(|error| error.to_string())
     }
     fn call_program_outputs(

@@ -46,12 +46,17 @@ struct PreparedNative {
 struct Compiler(Rc<PreparedNative>);
 
 impl CompiledSolveJacobianExpression for Compiler {
-    fn prepare_projection(
+    fn prepare_projections(
         &self,
-        _application: &solve::ProjectionJacobianApplication,
-    ) -> Result<Option<Rc<dyn CompiledSolveProjectionJacobian>>, String> {
-        self.0.prepares.set(self.0.prepares.get() + 1);
-        Ok(Some(self.0.clone()))
+        applications: &[&solve::ProjectionJacobianApplication],
+    ) -> Result<Vec<Option<Rc<dyn CompiledSolveProjectionJacobian>>>, String> {
+        self.0
+            .prepares
+            .set(self.0.prepares.get() + applications.len());
+        Ok(applications
+            .iter()
+            .map(|_| Some(self.0.clone() as Rc<dyn CompiledSolveProjectionJacobian>))
+            .collect())
     }
 
     fn call(
