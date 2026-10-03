@@ -72,6 +72,7 @@ mod discrete_alias_fed_connections;
 mod discrete_alias_orientation;
 mod discrete_array_element_equations;
 mod discrete_time_definitions;
+mod element_connection_sets;
 mod enumeration_compact_range_test;
 mod enumeration_literal_assertions;
 mod evaluable_parameters;

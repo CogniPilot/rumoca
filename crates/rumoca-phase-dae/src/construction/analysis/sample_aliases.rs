@@ -21,7 +21,7 @@ pub(super) fn analyze_sample_aliases(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     expression_events: &ExpressionEventPlans,
-    connection_ranks: &HashMap<VarName, usize>,
+    connection_ranks: &DiscreteConnectionRanks,
     aggregate_connections: &AggregateDiscreteConnections,
 ) -> Result<HashMap<VarName, PeriodicClockSchedule>, ToDaeError> {
     let mut definitions = HashMap::new();

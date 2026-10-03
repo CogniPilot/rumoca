@@ -90,7 +90,7 @@ fn require_target_occurrence(
 pub(super) fn analyze_discrete_value_topology(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
+    connection_ranks: &DiscreteConnectionRanks,
     aggregate_connections: &AggregateDiscreteConnections,
     record_equations: &HashMap<usize, RecordEquationPlan>,
 ) -> Result<DiscreteValueTopologyPlan, ToDaeError> {
@@ -200,7 +200,7 @@ fn collect_binding_owners(
 fn collect_equation_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
+    connection_ranks: &DiscreteConnectionRanks,
     aggregate_connections: &AggregateDiscreteConnections,
     reads: &LazyModelReads<'_>,
     observed: &mut HashSet<VarName>,

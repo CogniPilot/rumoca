@@ -19,7 +19,7 @@ use super::*;
 pub(super) fn reversed_alias_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
+    connection_ranks: &DiscreteConnectionRanks,
     result: &mut AggregateDiscreteConnections,
 ) -> Result<(), ToDaeError> {
     let producers = producer_counts(flat, roles);
@@ -33,8 +33,8 @@ pub(super) fn reversed_alias_owners(
         let defined_elsewhere = producers.get(source).copied().unwrap_or(0) > 1;
         // Rank 0 without a producer is a connection source this alias feeds
         // (`alias_fed_connection_sources`).
-        let undefined = !producers.contains_key(target)
-            && connection_ranks.get(target).is_none_or(|rank| *rank == 0);
+        let undefined =
+            !producers.contains_key(target) && connection_ranks.is_source_or_unranked(target);
         if !(defined_elsewhere && undefined) {
             continue;
         }
@@ -119,8 +119,8 @@ fn producer_counts(
 pub(super) fn alias_fed_connection_sources(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    ranks: &HashMap<VarName, usize>,
-    neighbors: &HashMap<VarName, Vec<VarName>>,
+    is_ranked: impl Fn(&VarName) -> bool,
+    is_connected: impl Fn(&VarName) -> bool,
 ) -> Vec<VarName> {
     let producers = producer_counts(flat, roles);
     let mut sources = flat
@@ -130,8 +130,8 @@ pub(super) fn alias_fed_connection_sources(
         .filter(|(target, source)| {
             producers.get(*source).copied().unwrap_or(0) > 1
                 && !producers.contains_key(*target)
-                && !ranks.contains_key(*target)
-                && neighbors.contains_key(*target)
+                && !is_ranked(target)
+                && is_connected(target)
         })
         .map(|(target, _)| target.clone())
         .collect::<Vec<_>>();

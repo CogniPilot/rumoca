@@ -182,7 +182,7 @@ impl SemiLinearRowFilter<'_> {
 pub(super) fn analyze_semi_linear_rules(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
+    connection_ranks: &DiscreteConnectionRanks,
     aggregate_connections: &AggregateDiscreteConnections,
     filter: &SemiLinearRowFilter<'_>,
 ) -> SemiLinearRules {

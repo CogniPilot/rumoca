@@ -7,7 +7,7 @@ pub(super) struct SourceBalanceInput<'scope> {
     pub(super) excluded_equation_rows: &'scope HashSet<usize>,
     pub(super) record_equations: &'scope HashMap<usize, RecordEquationPlan>,
     pub(super) multi_output_equations: &'scope HashMap<usize, MultiOutputEquationPlan>,
-    pub(super) connection_ranks: &'scope HashMap<VarName, usize>,
+    pub(super) connection_ranks: &'scope DiscreteConnectionRanks,
     pub(super) aggregate_connections: &'scope AggregateDiscreteConnections,
 }
 

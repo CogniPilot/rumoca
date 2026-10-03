@@ -1,4 +1,9 @@
 mod alias_orientation;
+mod connection_ranks;
+
+pub(in crate::construction) use connection_ranks::{
+    ConnectionOrientation, DiscreteConnectionRanks, discrete_connection_ranks,
+};
 
 use super::*;
 use std::borrow::Cow;
@@ -85,7 +90,7 @@ pub(in crate::construction) fn equation_partition<'flat>(
     row: usize,
     equation: &'flat flat::Equation,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
+    connection_ranks: &DiscreteConnectionRanks,
     aggregate_connections: &'flat AggregateDiscreteConnections,
 ) -> Result<EquationPartition<'flat>, ToDaeError> {
     if let Some(plan) = aggregate_connections.owners.get(&row) {
@@ -231,7 +236,7 @@ fn discrete_connection_assignment<'flat>(
     flat: &'flat flat::Model,
     equation: &'flat flat::Equation,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
+    connection_ranks: &DiscreteConnectionRanks,
 ) -> Result<Option<DiscreteValueAssignmentPlan<'flat>>, ToDaeError> {
     let Some((target, target_subscripts, value)) =
         oriented_discrete_connection(flat, equation, roles, connection_ranks)
@@ -241,7 +246,7 @@ fn discrete_connection_assignment<'flat>(
     let value = full_aggregate_connection_value(
         &flat.variables[target],
         target_subscripts,
-        value,
+        element_connection_value(flat, roles, connection_ranks, target_subscripts, value),
         equation.span,
     )?;
     Ok(Some(DiscreteValueAssignmentPlan {
@@ -257,7 +262,7 @@ fn oriented_discrete_connection<'flat>(
     flat: &'flat flat::Model,
     equation: &'flat flat::Equation,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
+    connection_ranks: &DiscreteConnectionRanks,
 ) -> Option<(&'flat VarName, &'flat [Subscript], &'flat Expression)> {
     if !matches!(equation.origin, flat::EquationOrigin::Connection { .. }) {
         return None;
@@ -275,18 +280,13 @@ fn oriented_discrete_connection<'flat>(
     let (rhs_name, rhs_subscripts) = discrete_value_base_reference(rhs, roles)?;
     let lhs_variable = flat.variables.get(lhs_name)?;
     let rhs_variable = flat.variables.get(rhs_name)?;
-    let lhs_rank = connection_ranks.get(lhs_name).copied();
-    let rhs_rank = connection_ranks.get(rhs_name).copied();
-    let (target, target_subscripts, value) = match (lhs_rank, rhs_rank) {
-        (Some(lhs_rank), Some(rhs_rank)) if lhs_rank < rhs_rank => {
-            (rhs_name, rhs_subscripts, lhs.as_ref())
-        }
-        (Some(lhs_rank), Some(rhs_rank)) if rhs_rank < lhs_rank => {
-            (lhs_name, lhs_subscripts, rhs.as_ref())
-        }
-        (Some(_), None) => (rhs_name, rhs_subscripts, lhs.as_ref()),
-        (None, Some(_)) => (lhs_name, lhs_subscripts, rhs.as_ref()),
-        _ => match (&lhs_variable.causality, &rhs_variable.causality) {
+    let orientation = connection_ranks
+        .orientation(flat, (lhs_name, lhs_subscripts), (rhs_name, rhs_subscripts))
+        .ok()?;
+    let (target, target_subscripts, value) = match orientation {
+        Some(ConnectionOrientation::DefinesRhs) => (rhs_name, rhs_subscripts, lhs.as_ref()),
+        Some(ConnectionOrientation::DefinesLhs) => (lhs_name, lhs_subscripts, rhs.as_ref()),
+        None => match (&lhs_variable.causality, &rhs_variable.causality) {
             (Causality::Output(_), Causality::Input(_)) => (rhs_name, rhs_subscripts, lhs.as_ref()),
             (Causality::Input(_), Causality::Output(_)) => (lhs_name, lhs_subscripts, rhs.as_ref()),
             _ => return None,
@@ -295,10 +295,28 @@ fn oriented_discrete_connection<'flat>(
     Some((target, target_subscripts, value))
 }
 
+/// The value an oriented connection gives its target. An element
+/// connection reads its set's producer (see `connection_ranks`); a
+/// connection between whole coordinates reads the side it names.
+fn element_connection_value<'flat>(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    connection_ranks: &DiscreteConnectionRanks,
+    target_subscripts: &[Subscript],
+    value: &'flat Expression,
+) -> Cow<'flat, Expression> {
+    discrete_value_base_reference(value, roles)
+        .filter(|(_, subscripts)| !subscripts.is_empty() || !target_subscripts.is_empty())
+        .and_then(|(name, subscripts)| connection_ranks.producer_reference(flat, name, subscripts))
+        .map_or(Cow::Borrowed(value), |producer| {
+            Cow::Owned(producer.clone())
+        })
+}
+
 pub(super) fn aggregate_discrete_connections(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
+    connection_ranks: &DiscreteConnectionRanks,
 ) -> Result<AggregateDiscreteConnections, ToDaeError> {
     let mut groups = HashMap::<VarName, AggregateConnectionGroup>::new();
     for (row, equation) in flat.equations.iter().enumerate() {
@@ -306,11 +324,13 @@ pub(super) fn aggregate_discrete_connections(
             if let Some((target, subscripts, value)) =
                 oriented_discrete_connection(flat, equation, roles, connection_ranks)
             {
+                let value =
+                    element_connection_value(flat, roles, connection_ranks, subscripts, value);
                 (target, subscripts, value, false, false)
             } else if let Some((target, subscripts, value)) =
                 discrete_element_assignment(equation, roles)
             {
-                (target, subscripts, value, true, true)
+                (target, subscripts, Cow::Borrowed(value), true, true)
             } else {
                 continue;
             };
@@ -334,7 +354,7 @@ pub(super) fn aggregate_discrete_connections(
         group.insert(
             row,
             prefix,
-            value,
+            &value,
             ordered_scalar_self_dependencies,
             equation,
         )?;
@@ -559,113 +579,6 @@ fn pack_connection_prefix(values: &[Expression], extents: &[usize], span: Span) 
     }
 }
 
-/// Prove the exact discrete coordinates that already have a semantic owner
-/// outside the connection graph.
-///
-/// An `output` connector may either produce a value or merely forward one to
-/// an enclosing connector. Causality therefore cannot orient output-to-output
-/// edges by itself. The source owners are the exact evidence: bindings,
-/// ordinary equations, algorithms, and when chains define producers, while
-/// connection equations do not. A multi-source graph walk then assigns every
-/// pass-through coordinate its minimum distance from a proven producer, so a
-/// chain is oriented outward without rendered-name or model-specific rules.
-/// Building the ranks once keeps connection classification linear in the model
-/// size.
-pub(super) fn discrete_connection_ranks(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-) -> HashMap<VarName, usize> {
-    let mut producers = flat
-        .variables
-        .iter()
-        .filter(|(name, variable)| {
-            variable.binding.is_some() && matches!(roles[*name], PlannedRole::DiscreteValue)
-        })
-        .map(|(name, _)| name.clone())
-        .collect::<HashSet<_>>();
-    for equation in &flat.equations {
-        if matches!(equation.origin, flat::EquationOrigin::Connection { .. }) {
-            continue;
-        }
-        if let Ok(Some(plan)) = discrete_value_assignment(&equation.residual, roles, equation.span)
-        {
-            producers.insert(plan.target.clone());
-        }
-        // An element equation `x[i] = e` defines the coordinate `x` outside the
-        // connection graph, so `x` is a producer that orients any connections
-        // from it outward. Without this, a discrete array fed by a for-loop of
-        // element equations looks source-free and a fan-out to same-causality
-        // consumers cannot be oriented from the true producer.
-        if let Some((target, _, _)) = discrete_element_assignment(equation, roles) {
-            producers.insert(target.clone());
-        }
-    }
-    producers.extend(event_targets(flat));
-    producers.extend(algorithm_targets(flat));
-
-    let mut neighbors = HashMap::<VarName, Vec<VarName>>::new();
-    for equation in &flat.equations {
-        if !matches!(equation.origin, flat::EquationOrigin::Connection { .. }) {
-            continue;
-        }
-        let Expression::Binary {
-            op: OpBinary::Sub,
-            lhs,
-            rhs,
-            ..
-        } = &equation.residual
-        else {
-            continue;
-        };
-        let Some((lhs, _)) = discrete_value_base_reference(lhs, roles) else {
-            continue;
-        };
-        let Some((rhs, _)) = discrete_value_base_reference(rhs, roles) else {
-            continue;
-        };
-        neighbors.entry(lhs.clone()).or_default().push(rhs.clone());
-        neighbors.entry(rhs.clone()).or_default().push(lhs.clone());
-    }
-    let mut ranks = producers
-        .into_iter()
-        .map(|producer| (producer, 0usize))
-        .collect::<HashMap<_, _>>();
-    let mut frontier = ranks.keys().cloned().collect::<Vec<_>>();
-    spread_connection_ranks(&mut ranks, frontier.clone(), &neighbors);
-    // A connection set no producer reaches is fed by a plain alias `a = b`
-    // whose written side already has its own definition (a binding
-    // modification, as `CompositeStepState.suspend = subgraphStatePort.suspend`
-    // of `Modelica.StateGraph`): the alias defines `b`, so `b` produces the
-    // set (see `alias_orientation`).
-    frontier = alias_orientation::alias_fed_connection_sources(flat, roles, &ranks, &neighbors);
-    for source in &frontier {
-        ranks.insert(source.clone(), 0);
-    }
-    spread_connection_ranks(&mut ranks, frontier, &neighbors);
-    ranks
-}
-
-/// Breadth-first connection distance from `frontier` to every coordinate its
-/// connection sets reach that has no rank yet.
-fn spread_connection_ranks(
-    ranks: &mut HashMap<VarName, usize>,
-    mut frontier: Vec<VarName>,
-    neighbors: &HashMap<VarName, Vec<VarName>>,
-) {
-    let mut cursor = 0usize;
-    while let Some(current) = frontier.get(cursor).cloned() {
-        cursor += 1;
-        let next_rank = ranks[&current] + 1;
-        for neighbor in neighbors.get(&current).into_iter().flatten() {
-            if ranks.contains_key(neighbor) {
-                continue;
-            }
-            ranks.insert(neighbor.clone(), next_rank);
-            frontier.push(neighbor.clone());
-        }
-    }
-}
-
 /// Turn an element connection into a whole-coordinate definition only when
 /// every selected leading axis is a singleton selected at its sole index.
 /// This is a construction proof that the element denotes the entire aggregate,
@@ -673,16 +586,16 @@ fn spread_connection_ranks(
 fn full_aggregate_connection_value<'flat>(
     target: &flat::Variable,
     subscripts: &[Subscript],
-    value: &'flat Expression,
+    value: Cow<'flat, Expression>,
     owner: Span,
 ) -> Result<Cow<'flat, Expression>, ToDaeError> {
     if subscripts.is_empty() {
-        return Ok(Cow::Borrowed(value));
+        return Ok(value);
     }
     if !selection_denotes_whole_aggregate(target, subscripts) {
         return Err(invalid_discrete_lhs(owner));
     }
-    let mut aggregate = value.clone();
+    let mut aggregate = value.into_owned();
     for _ in subscripts.iter().rev() {
         aggregate = Expression::Array {
             elements: vec![aggregate],
@@ -1018,7 +931,7 @@ fn collect_assignment_target_names<'flat>(
 pub(super) fn defined_discrete_targets(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
+    connection_ranks: &DiscreteConnectionRanks,
     aggregate_connections: &AggregateDiscreteConnections,
     record_equations: &HashMap<usize, RecordEquationPlan>,
 ) -> Result<HashSet<VarName>, ToDaeError> {
