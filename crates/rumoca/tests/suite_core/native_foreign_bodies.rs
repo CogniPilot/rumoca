@@ -175,7 +175,7 @@ fn an_unproven_interface_keeps_its_foreign_body() {
 fn a_parameter_binding_evaluates_the_native_body() {
     let source = generator_source("pure", 2).replace(
         "  discrete Real r(",
-        "  parameter Real p = xorshift({1, 1});\n  Real q = p;\n  discrete Real r(",
+        "  parameter Real p = xorshift({1, 1});\n  parameter Integer s0[2] = {1, 1};\n  Real q = p;\n  Real v = xorshift(s0);\n  discrete Real r(",
     );
     let compiled = Compiler::new()
         .model("Draw")
@@ -195,4 +195,5 @@ fn a_parameter_binding_evaluates_the_native_body() {
     };
     let drawn = *column("r").last().unwrap();
     assert_eq!(column("q")[0].to_bits(), drawn.to_bits());
+    assert_eq!(column("v")[0].to_bits(), drawn.to_bits());
 }

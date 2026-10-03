@@ -259,3 +259,17 @@ fn foreign_state_rows_thread_their_declared_interface() {
         assert!(!access.cell.name().is_empty());
     }
 }
+
+/// The interface tables are built by the same constructors at run time.
+#[test]
+fn interface_constructors_build_the_cataloged_rows() {
+    assert_eq!(xorshift_interface(2), XORSHIFT64STAR_INTERFACE);
+    assert_eq!(xorshift_interface(33), XORSHIFT1024STAR_INTERFACE);
+    assert_eq!(
+        [input(INTEGER, None), output(REAL, None)],
+        [
+            argument(NativeArgumentRole::Input, INTEGER, None),
+            argument(NativeArgumentRole::Output, REAL, None)
+        ]
+    );
+}
