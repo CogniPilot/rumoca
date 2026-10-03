@@ -10,6 +10,7 @@ homepage.workspace = true
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-ir-flat = { workspace = true }
+flate2 = { workspace = true }
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }

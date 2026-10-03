@@ -7,12 +7,13 @@ use rumoca_core::{
     InstanceId, Literal, Reference, Span, Subscript, Variability,
 };
 use rumoca_eval_flat::constant::{DeferredParameterSource, EvalEnvironment, Value, eval_expr};
+use rumoca_eval_flat::translation_reads::ResourceRoots;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 
 /// Fold the invariant bindings SPEC_0040 FLAT-C01 proves into their values.
-pub(crate) fn fold_invariant_bindings(flat: &mut flat::Model) {
-    let mut evaluator = BindingEvaluator::new(flat);
+pub(crate) fn fold_invariant_bindings(flat: &mut flat::Model, resources: &ResourceRoots) {
+    let mut evaluator = BindingEvaluator::new(flat, resources);
     for variable in flat.variables.values() {
         evaluator.value(variable.instance_id);
     }
@@ -49,7 +50,7 @@ struct BindingEvaluator<'a> {
 }
 
 impl<'a> BindingEvaluator<'a> {
-    fn new(flat: &'a flat::Model) -> Self {
+    fn new(flat: &'a flat::Model, resources: &'a ResourceRoots) -> Self {
         let mut variables = FxHashMap::default();
         for variable in flat.variables.values() {
             variables
@@ -60,7 +61,7 @@ impl<'a> BindingEvaluator<'a> {
         Self {
             flat,
             variables,
-            functions: FunctionInventory(flat),
+            functions: FunctionInventory { flat, resources },
             values: FxHashMap::default(),
         }
     }
@@ -223,7 +224,10 @@ impl FallibleExpressionRewriter for BindingEvaluator<'_> {
 
 /// Model values are supplied only by exact, recursively proven substitutions.
 /// Function locals and recursion remain owned by the constant interpreter.
-struct FunctionInventory<'a>(&'a flat::Model);
+struct FunctionInventory<'a> {
+    flat: &'a flat::Model,
+    resources: &'a ResourceRoots,
+}
 
 impl EvalEnvironment for FunctionInventory<'_> {
     fn get_value(&self, _name: &str) -> Option<Cow<'_, Value>> {
@@ -235,7 +239,7 @@ impl EvalEnvironment for FunctionInventory<'_> {
     }
 
     fn get_function(&self, name: &str) -> Option<&Function> {
-        self.0
+        self.flat
             .functions
             .values()
             .find(|function| function.name.as_str() == name)
@@ -247,5 +251,9 @@ impl EvalEnvironment for FunctionInventory<'_> {
 
     fn deferred_parameter(&self, _name: &str) -> Option<DeferredParameterSource> {
         None
+    }
+
+    fn translation_resources(&self) -> Option<&ResourceRoots> {
+        Some(self.resources)
     }
 }

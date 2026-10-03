@@ -4448,6 +4448,7 @@ dependencies = [
 name = "rumoca-eval-flat"
 version = "0.10.2"
 dependencies = [
+ "flate2",
  "indexmap 2.14.0",
  "rumoca-core",
  "rumoca-ir-flat",

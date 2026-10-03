@@ -6,6 +6,7 @@ use rumoca_core::Function;
 use rustc_hash::FxHashMap;
 
 use crate::constant::{DeferredParameterSource, EvalContext, EvalEnvironment, Value};
+use crate::translation_reads::ResourceRoots;
 
 use super::ParamEvalContext;
 use super::enum_identity::EnumCanonicalizer;
@@ -92,5 +93,9 @@ impl EvalEnvironment for BorrowedContext<'_> {
 
     fn deferred_parameter(&self, name: &str) -> Option<DeferredParameterSource> {
         self.literals.deferred_parameter(name)
+    }
+
+    fn translation_resources(&self) -> Option<&ResourceRoots> {
+        self.parameters.resources
     }
 }

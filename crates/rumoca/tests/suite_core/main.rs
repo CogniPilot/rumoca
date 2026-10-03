@@ -271,6 +271,7 @@ mod text_record_fields;
 mod tiered_models;
 mod time_event_when_activation;
 mod torn_square_root_characteristic;
+mod translation_file_reads;
 mod trial_residual_scale;
 mod type_attribute_inheritance;
 mod variability_classes;

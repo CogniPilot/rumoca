@@ -1072,7 +1072,7 @@ pub(crate) fn finalize_flat_model(
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     substitute_known_constants_in_flat(flat, ctx)?;
     resolve_nested_constructor_field_access_bindings(flat);
-    crate::postprocess::fold_invariant_bindings(flat);
+    crate::postprocess::fold_invariant_bindings(flat, &ctx.resource_roots);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
     ctx.refresh_enum_parameter_lookup(flat);

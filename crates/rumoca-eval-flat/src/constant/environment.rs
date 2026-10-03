@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 
 use super::{DeferredParameterSource, EvalContext, Function, Value};
+use crate::translation_reads::ResourceRoots;
 
 /// Values and definitions available to constant expression evaluation.
 ///
@@ -19,6 +20,12 @@ pub trait EvalEnvironment {
     fn get_array_dimensions(&self, name: &str) -> Option<&[i64]>;
     /// Identify declared parameters whose values await initialization.
     fn deferred_parameter(&self, name: &str) -> Option<DeferredParameterSource>;
+    /// The resource roots of a translation that evaluates parameter bindings,
+    /// which alone admits the cataloged foreign file readers (SPEC_0040
+    /// FLAT-C06). Any other evaluation leaves their calls unevaluated.
+    fn translation_resources(&self) -> Option<&ResourceRoots> {
+        None
+    }
 }
 
 impl EvalEnvironment for EvalContext {

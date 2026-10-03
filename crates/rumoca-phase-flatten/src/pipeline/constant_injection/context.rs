@@ -31,6 +31,9 @@ pub(crate) struct Context {
     /// function result shape reads them whole or by element.
     pub(crate) aggregate_parameter_values:
         rustc_hash::FxHashMap<String, rumoca_eval_flat::constant::Value>,
+    /// The directory of each loaded top-level package, against which a
+    /// foreign file reader resolves MLS §13.5 URIs (SPEC_0040 FLAT-C06).
+    pub(crate) resource_roots: rumoca_eval_flat::translation_reads::ResourceRoots,
     /// General constant expression values (scalars/arrays) extracted from
     /// class/package constants and redeclare/extends modifications.
     pub constant_values: rustc_hash::FxHashMap<String, rumoca_core::Expression>,

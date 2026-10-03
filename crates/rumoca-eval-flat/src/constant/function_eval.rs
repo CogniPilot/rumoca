@@ -751,13 +751,14 @@ pub fn eval_function_with_call_args(
     // Refused before any environment or result construction: a body the
     // evaluator cannot execute must never yield the zero-valued outputs an
     // empty environment would produce.
-    if !func.pure {
+    let translation_read = foreign_reads::translation_read(func, ctx);
+    if !func.pure && translation_read.is_none() {
         return Err(EvalError::not_constant(
             format!("impure function: {}", func.name),
             span,
         ));
     }
-    if func.external.is_some() {
+    if func.external.is_some() && translation_read.is_none() {
         return Err(EvalError::not_constant(
             format!("external function: {}", func.name),
             span,
@@ -784,6 +785,10 @@ pub fn eval_function_with_call_args(
         span,
     };
     let mut env = FunctionEnv::new_with_call_args(func, args, &eval)?;
+    if let Some((read, resources)) = translation_read {
+        foreign_reads::execute(func, read, resources, &mut env, &eval)?;
+        return env.return_value(span);
+    }
     if func.is_constructor {
         return record_constructor_value(func, &env, span);
     }
@@ -1967,5 +1972,6 @@ fn apply_subscripts_flat(
     )
 }
 
+mod foreign_reads;
 #[cfg(test)]
 mod tests;

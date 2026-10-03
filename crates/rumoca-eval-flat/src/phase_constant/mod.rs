@@ -18,6 +18,7 @@ mod enum_identity;
 use rustc_hash::FxHashMap;
 
 use crate::constant::Value;
+use crate::translation_reads::ResourceRoots;
 use rumoca_ir_flat as flat;
 
 use rumoca_core::{ComponentPath, ExpressionVisitor, scoped_component_path_candidates};
@@ -48,6 +49,9 @@ pub struct ParamEvalContext<'a> {
     /// Evaluated String and array parameter values, read whole by the
     /// interpreter and indexed by it (MLS §10.1, §12.4).
     pub known_values: &'a FxHashMap<String, Value>,
+    /// The resource roots of a translation, which admit the cataloged
+    /// foreign file readers (SPEC_0040 FLAT-C06).
+    pub resources: Option<&'a ResourceRoots>,
     /// Functions available for evaluation.
     pub functions: &'a FxHashMap<String, rumoca_core::Function>,
     /// The fully qualified name of the variable whose binding we're evaluating.
@@ -72,15 +76,22 @@ impl<'a> ParamEvalContext<'a> {
             known_enums,
             array_dims,
             known_values: no_known_values(),
+            resources: None,
             functions,
             var_context,
         }
     }
 
-    /// The same context reading `known_values` for String and array values.
-    pub fn with_known_values(self, known_values: &'a FxHashMap<String, Value>) -> Self {
+    /// The same context of a translation: it reads `known_values` for String
+    /// and array values and admits the readers `resources` resolves for.
+    pub fn with_translation(
+        self,
+        known_values: &'a FxHashMap<String, Value>,
+        resources: &'a ResourceRoots,
+    ) -> Self {
         Self {
             known_values,
+            resources: Some(resources),
             ..self
         }
     }
@@ -222,6 +233,7 @@ pub fn infer_array_dimensions_full_with_conds(
         known_enums,
         array_dims,
         known_values: no_known_values(),
+        resources: None,
         functions: &functions,
         var_context: None,
     };
@@ -354,6 +366,7 @@ fn infer_user_function_call_dimensions(
         known_enums: ctx.known_enums,
         array_dims: ctx.array_dims,
         known_values: &locals.values,
+        resources: None,
         functions: ctx.functions,
         var_context: None,
     };
@@ -790,6 +803,7 @@ pub fn try_eval_flat_expr_enum(
         known_enums,
         array_dims: &FxHashMap::default(),
         known_values: no_known_values(),
+        resources: None,
         functions: &FxHashMap::default(),
         var_context: None,
     };

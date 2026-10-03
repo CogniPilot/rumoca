@@ -164,7 +164,7 @@ impl Context {
             &self.functions,
             var_context,
         )
-        .with_known_values(&self.aggregate_parameter_values)
+        .with_translation(&self.aggregate_parameter_values, &self.resource_roots)
     }
 
     /// Evaluate String and array parameter bindings in one pass (MLS §10.1).

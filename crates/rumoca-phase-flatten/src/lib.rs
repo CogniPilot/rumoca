@@ -55,6 +55,7 @@ pub mod qualify;
 pub(crate) mod record_constant_arrays;
 #[cfg(test)]
 mod reference_contract_tests;
+mod resource_roots;
 mod source_spans;
 mod static_subscripts;
 #[cfg(test)]
@@ -349,6 +350,7 @@ pub fn flatten_ref_with_options(
         .scope_tree
         .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String"));
     ctx.predefined_intrinsics = ast_lower::PredefinedIntrinsicIds::from_tree(tree);
+    ctx.resource_roots = resource_roots::resource_roots(tree);
     ctx.materialize_structured_families = options.materialize_structured_families;
     if !model_name.is_empty() {
         ctx.simulated_root_name = Some(crate::path_utils::leaf_segment(model_name).to_string());
