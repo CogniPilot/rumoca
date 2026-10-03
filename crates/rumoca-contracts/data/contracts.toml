@@ -3147,6 +3147,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'INST-059'
+category = 'Instantiation'
+name = 'Predefined function names'
+mls_ref = '§5.3.1, §5.3.3'
+requirement = 'A predefined function name is looked up like any other name: an import or enclosing declaration of it shadows the predefined function, and a leading-dot name is looked up in the global scope alone'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'LEX-001'
 category = 'Lexical'
 name = 'ASCII identifiers'

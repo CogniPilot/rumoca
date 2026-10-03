@@ -810,22 +810,22 @@ fn eqn_020_same_variable_in_two_when_equations_rejected() {
 }
 
 #[test]
-fn eqn_020_equivalent_local_references_fail_at_second_typed_owner() {
+fn eqn_020_second_when_owner_is_the_reported_site() {
     let source = r#"
         model Test
-            discrete Real d;
+            discrete Real level;
             Boolean firstTrigger = time > 0.5;
             Boolean secondTrigger = time > 0.7;
         equation
             when firstTrigger then
-                d = 1;
+                level = 1;
             end when;
             when secondTrigger then
-                .d = 2;
+                level = 2;
             end when;
         end Test;
     "#;
-    expect_compile_failure_at_last_source_slice(source, "Test", "ED020", ".d");
+    expect_compile_failure_at_last_source_slice(source, "Test", "ED020", "level");
 }
 
 fn expect_compile_failure_at_last_source_slice(
@@ -862,15 +862,10 @@ fn expect_compile_failure_at_last_source_slice(
     let expected_start = source
         .rfind(expected_slice)
         .expect("expected offending source slice is present");
-    let (expected_start, expected_label) = expected_slice
-        .strip_prefix('.')
-        .map_or((expected_start, expected_slice), |identifier| {
-            (expected_start + 1, identifier)
-        });
     assert_eq!(label.span.start.0, expected_start);
     assert_eq!(
         &source[label.span.start.0..label.span.end.0],
-        expected_label
+        expected_slice
     );
 }
 

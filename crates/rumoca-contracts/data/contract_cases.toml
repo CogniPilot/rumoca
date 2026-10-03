@@ -4053,3 +4053,10 @@ case_id = 'inst_058_redeclare_value_alias_selects_the_outer_redeclaration'
 test_file = 'tests/inst_lookup_contracts.rs'
 kind = 'Sim'
 outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-059'
+case_id = 'inst_059_imported_function_shadows_a_predefined_name_and_dot_reaches_global'
+test_file = 'tests/inst_lookup_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'

@@ -825,3 +825,53 @@ fn inst_058_redeclare_value_alias_selects_the_outer_redeclaration() {
     assert_eq!(trace.final_value("pair.a.medium.T"), 2.0);
     assert_eq!(trace.final_value("pair.b.medium.T"), 1.0);
 }
+
+// =============================================================================
+// INST-059: Predefined function names (MLS §5.3.1, §5.3.3)
+// A predefined function is a member of the global scope: an import or an
+// enclosing declaration of its name shadows it, and a leading-dot name is
+// looked up in the global scope alone.
+// =============================================================================
+
+const INST_059_MODEL: &str = r#"
+package P
+  function exp
+    input Real x;
+    output Real y;
+  algorithm
+    y := 2*x;
+  end exp;
+  model M
+    import P.exp;
+    Real x(start = 0, fixed = true);
+    Real imported = exp(1.0);
+    Real global = .exp(1.0);
+  equation
+    der(x) = imported + global;
+  end M;
+end P;
+"#;
+
+#[test]
+fn inst_059_imported_function_shadows_a_predefined_name_and_dot_reaches_global() {
+    let trace = rumoca_contracts::test_support::simulate_model(INST_059_MODEL, "P.M", 1.0);
+    let x = trace.final_value("x");
+    let expected = 2.0 + 1.0_f64.exp();
+    assert!((x - expected).abs() < 1e-6, "x = {x}, expected {expected}");
+}
+
+#[test]
+fn inst_059_leading_dot_does_not_find_a_component_of_the_enclosing_model() {
+    // `.d` is looked up in the global scope alone, which declares no `d`.
+    expect_resolve_failure_with_code(
+        r#"
+        model Test
+            Real d;
+        equation
+            .d = 1;
+        end Test;
+    "#,
+        "Test",
+        "ER002",
+    );
+}

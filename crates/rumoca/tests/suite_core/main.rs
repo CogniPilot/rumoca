@@ -203,6 +203,7 @@ mod parameter_relations;
 mod periodic_source_counter_regression;
 mod piecewise_index_reduction;
 mod pipeline_test;
+mod predefined_function_lookup;
 mod prepared_vectors_refresh;
 mod process_allocator_address_space;
 mod proven_tearing;

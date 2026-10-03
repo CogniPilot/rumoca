@@ -358,6 +358,7 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "INST-056",
     "INST-057",
     "INST-058",
+    "INST-059",
     "LEX-001",
     "LEX-002",
     "LEX-003",
@@ -497,11 +498,11 @@ mod tests {
     #[test]
     fn test_registry_has_all_contracts() {
         let registry = create_registry();
-        // SPEC_0022 defines 463 contracts
+        // SPEC_0022 defines 464 contracts
         assert_eq!(
             registry.len(),
-            463,
-            "Expected 463 contracts, got {}",
+            464,
+            "Expected 464 contracts, got {}",
             registry.len()
         );
     }
@@ -520,7 +521,7 @@ mod tests {
             registry
                 .by_category(ContractCategory::Instantiation)
                 .count(),
-            58
+            59
         );
         assert_eq!(
             registry.by_category(ContractCategory::Expression).count(),

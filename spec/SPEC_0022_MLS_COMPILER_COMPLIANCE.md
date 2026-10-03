@@ -21,25 +21,25 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §3. Data Structures | 74–331 | Class tree, instance tree, modification env, connection set, DAE, type attributes, variability, class types, prefixes, arrays, state machines |
 | §4.1 LEX contracts | 332–351 | Contract catalog heading + lexical rules (13 contracts) |
 | §4.2 DECL contracts | 352–393 | Declaration rules (37 contracts) |
-| §4.3 INST contracts | 394–456 | Instantiation rules (58 contracts) |
-| §4.4 EXPR contracts | 457–502 | Expression/operator rules (41 contracts) |
-| §4.5 EQN contracts | 503–547 | Equation rules (40 contracts) |
-| §4.6 ALG contracts | 548–569 | Algorithm rules (18 contracts) |
-| §4.7 CONN contracts | 570–604 | Connection rules (30 contracts) |
-| §4.8 FUNC contracts | 605–651 | Function rules (42 contracts) |
-| §4.9 TYPE contracts | 652–692 | Type/interface rules (36 contracts) |
-| §4.10 ARR contracts | 693–743 | Array rules (46 contracts) |
-| §4.11 PKG contracts | 744–761 | Package/import rules (13 contracts) |
-| §4.12 OPREC contracts | 762–778 | Operator record rules (12 contracts) |
-| §4.13 SIM contracts | 779–793 | Simulation rules (10 contracts) |
-| §4.14 CLK contracts | 794–818 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 819–836 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 837–935 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 936–957 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 958–973 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 974–999 | Category counts and totals |
-| §6. Compiler Phases | 1000–1049 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1050–1077 | MLS chapter → contract category mapping |
+| §4.3 INST contracts | 394–457 | Instantiation rules (59 contracts) |
+| §4.4 EXPR contracts | 458–503 | Expression/operator rules (41 contracts) |
+| §4.5 EQN contracts | 504–548 | Equation rules (40 contracts) |
+| §4.6 ALG contracts | 549–570 | Algorithm rules (18 contracts) |
+| §4.7 CONN contracts | 571–605 | Connection rules (30 contracts) |
+| §4.8 FUNC contracts | 606–652 | Function rules (42 contracts) |
+| §4.9 TYPE contracts | 653–693 | Type/interface rules (36 contracts) |
+| §4.10 ARR contracts | 694–744 | Array rules (46 contracts) |
+| §4.11 PKG contracts | 745–762 | Package/import rules (13 contracts) |
+| §4.12 OPREC contracts | 763–779 | Operator record rules (12 contracts) |
+| §4.13 SIM contracts | 780–794 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 795–819 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 820–837 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 838–936 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 937–958 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 959–974 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 975–1000 | Category counts and totals |
+| §6. Compiler Phases | 1001–1050 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1051–1078 | MLS chapter → contract category mapping |
 
 ---
 
@@ -453,6 +453,7 @@ Defines state-to-state transitions with priority and timing control.
 | INST-056 | Extends-modified package constant in sibling bindings | §7.2 | Modifications of an extends clause apply to the inherited elements, so a constant an extends modification binds (`extends TableBased(tableDensity = [...])`) has that value wherever the package is read, including inside the binding of a sibling constant (`poly_rho = fitting(tableDensity[:, 1], ...)`) and through an element selection. Rumoca: constant substitution reads a constant's binding in the package it is exposed through and resolves modified constants, whole or indexed, from that scope. Tested in `suite_core/fluid_function_data.rs` |
 | INST-057 | Occurrence-selected member class | §7.3 | A redeclaration modifies one occurrence, so a component declared through a replaceable alias (`Medium.BaseProperties medium`) therefore has its class selected per occurrence, and a reference `tank.medium.T` written outside `tank` (in an equation or a modifier binding) names the member of the class that occurrence of `tank.medium` selected; occurrences of one declaration that select different classes have no single member tail and are rejected |
 | INST-058 | Redeclare value through the enclosing occurrence | §7.3 | A redeclare value that names a replaceable element of the enclosing class (`Inner a(redeclare package Medium = MA)`) denotes the class that occurrence of the enclosing class selected for `MA`, which an outer redeclaration may have replaced, never the default of the lexical declaration |
+| INST-059 | Predefined function names | §5.3.1, §5.3.3 | Lookup that reaches no enclosing declaration continues in the global scope, and the first identifier of a name starting with a dot (`.A`) is looked up in the global scope alone. The predefined functions (`exp`, `sqrt`, ...) are members of the global scope, so an import or an enclosing declaration of the same name (`import Modelica.ComplexMath.exp`, `Modelica.Math.exp` inside `Modelica.Math`) shadows one, and `.exp` reaches the predefined function past any enclosing declaration. Rumoca: Resolve starts the lookup of a leading-dot name at the global scope, and flatten lowers a call spelled as a predefined function to that intrinsic only when its resolved declaration is the predefined one; any other declaration is called as the function it is. Tested in `suite_core/predefined_function_lookup.rs` |
 
 ### 4.4 Expression/Operator Contracts (EXPR)
 
@@ -977,7 +978,7 @@ areas.
 |----------|--------|-------|
 | Lexical | LEX | 13 |
 | Declarations | DECL | 37 |
-| Instantiation | INST | 58 |
+| Instantiation | INST | 59 |
 | Expressions | EXPR | 41 |
 | Equations | EQN | 40 |
 | Algorithms | ALG | 18 |
@@ -993,7 +994,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **463** |
+| **Total** | | **464** |
 
 ---
 
@@ -1082,5 +1083,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 463 |
+| Total Contracts | 464 |
 | MLS Chapters Referenced | 21 |

@@ -464,18 +464,21 @@ impl Resolver {
         }
 
         let first_name = &comp.parts[0].ident.text;
+        // MLS §5.3.3: a name with a leading dot (`.exp`) is looked up in the
+        // global scope only, never in the enclosing classes.
+        let lookup_scope = if comp.local { ScopeId::GLOBAL } else { scope };
 
         // Look up the name in the scope tree
         if let Some(def_id) = self
             .scope_tree
-            .lookup(scope, &ComponentPath::from_flat_path(first_name))
+            .lookup(lookup_scope, &ComponentPath::from_flat_path(first_name))
         {
             comp.parts[0].def_id = Some(def_id);
             self.stats.comp_refs_resolved += 1;
         } else {
             self.stats.comp_refs_unresolved += 1;
         }
-        match self.resolve_component_reference_full_path(comp, scope) {
+        match self.resolve_component_reference_full_path(comp, lookup_scope) {
             FullPathResolution::Exact(_)
             | FullPathResolution::DeferredDynamic
             | FullPathResolution::UnresolvedRoot => {}
