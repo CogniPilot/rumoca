@@ -7,8 +7,11 @@ use std::cell::Cell;
 /// Stable interior-mutable cells referenced only by this table's native code.
 /// `Cell` makes the table !Sync, so its shared compiled callers cannot cross
 /// threads. Moving an exclusively owned table preserves the boxed addresses.
-/// The acyclic call graph excludes reentry into the same owner; distinct
-/// owners and primal/directional forms have distinct storage.
+/// Distinct owners and primal/directional forms have distinct storage. A
+/// SOLVE-C62 group member re-enters its own owner: each invocation clears the
+/// flag on a miss and publishes one complete input/output pair after its body
+/// returns, and invocations nest without interleaving, so the cells always
+/// hold either no result or a pure result for exactly the inputs they name.
 pub(super) struct InputResults {
     cells: Box<[Cell<u64>]>,
     input_cells: u32,

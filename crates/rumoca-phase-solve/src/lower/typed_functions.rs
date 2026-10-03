@@ -41,7 +41,8 @@ use rumoca_ir_solve as solve;
 /// Registration happens at the DAE expression boundary, before a consumer can
 /// emit a projection. It never scans, hashes, or reconstructs an already
 /// lowered scalar program. Nested owners are issued before their caller, so
-/// the resulting table is finite and topological by construction.
+/// the resulting table is finite and topological by construction, except
+/// that the members of one SOLVE-C62 recursive group are issued together.
 pub(crate) struct PureCallRegistry<'dae> {
     table: solve::SolvePureCallTableBuilder,
     identities: CallRegistration<'dae>,
