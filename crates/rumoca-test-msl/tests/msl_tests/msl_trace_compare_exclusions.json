@@ -175,6 +175,20 @@
       "retired_by": "event_instant_alignment"
     },
     {
+      "model_name": "Modelica.Electrical.Digital.Examples.Counter",
+      "kind": "reference_failure",
+      "reason": "The default OMC reference (stopTime=100, 500 output intervals) reports a state event at t=0.4 on all eight integer(delay(xr, delayTime)) crossings of the flip-flop transport delays, although every delay source has been constant since t=0.001 and the next input change is the clock edge at t=0.5. From that event every flip-flop output is 'X' to the end. The OMC result depends on the output grid, not on the model: the same OMC executable with stopTime=10, 20, or 50, or with stopTime=100 and 1000 or 5000 output intervals, counts exactly as Counter3 and as this counter with n=3 do. The Rumoca trace agrees with the 1000- and 5000-interval OMC runs on every shared channel. This is a reference-generation failure, not strict-high credit.",
+      "evidence": {
+        "facts": [
+          "OMC a96aa1a-cmake LOG_EVENTS at the default grid: state event at time=0.4 on the 8 integer(delay(Counter.FF[i].RS{1,2}.TD1.xr, delayTime)) crossings, with no input change in (0.001, 0.5)",
+          "default OMC reference: Counter.q[1..4] are 'X' (ordinal 2) from t=0.4 to t=100",
+          "OMC stopTime=100 with numberOfIntervals=1000 or 5000, and stopTime=10, 20, or 50: Counter.q[4] rises at t=8.5 and toggles every 8 s (16.5, 24.5, ..., 96.5)",
+          "Rumoca vs OMC stopTime=100 numberOfIntervals=5000: 196 of 196 shared channels identical at every output sample outside 2e-3 s of an event instant; the same against 1000 intervals"
+        ],
+        "artifact": "msl:Modelica.Electrical.Digital.Examples.Counter"
+      }
+    },
+    {
       "model_name": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_CurrentControlled",
       "kind": "comparator_limitation",
       "reason": "At the 0.1 s current-command step, OMC records the pre-event PID error at t=0.1 and the post-event value at t=0.1000000001100014, while Rumoca records the post-event value at t=0.1. The seven minor channels are PID error aliases of this event-side phase shift; all 200 other channels are strict-high and the post-event response agrees, so raw pointwise interpolation at the discontinuity is non-identifying.",
