@@ -476,7 +476,7 @@ Defines state-to-state transitions with priority and timing control.
 | EXPR-016 | If-expr Boolean condition | §3.6.5 | "First expression of if-expression must be Boolean expression" |
 | EXPR-017 | If-expr type compatible | §3.6.5 | "The two branch expressions must be type compatible expressions (§6.7)" |
 | EXPR-018 | abs argument type | §3.7.1 | "Argument v of abs(v) needs to be Integer or Real expression" |
-| EXPR-019 | sign argument type | §3.7.1 | "Argument v of sign(v) needs to be Integer or Real expression" |
+| EXPR-019 | sign argument type | §3.7.1 | "Argument v of sign(v) needs to be Integer or Real expression". MLS 3.7 also gives the result: `sign(v)` "expands into noEvent(if v > 0 then 1 else if v < 0 then -1 else 0)", an Integer for a Real operand too, so typecheck, the DAE, and typed Solve programs type it Integer and an Integer may receive it. Tested in `suite_core/sign_integer_result.rs` |
 | EXPR-020 | nthRoot constraints | §3.7.1 | "v shall be Real expression, n>0 shall be Integer; if n even, v must be non-negative" |
 | EXPR-021 | EnumTypeName error | §3.7.1 | "Error to attempt to convert values of i that do not correspond to enumeration values" |
 | EXPR-022 | String no coercion | §3.7.1 | "Standard type coercion shall not be applied for first argument of String()" |

@@ -436,9 +436,15 @@ pub(super) fn builtin_result<'dae>(
     }
     expect_numeric(first.scalar_type(), at)?;
     match builtin {
-        PureBuiltin::Abs | PureBuiltin::Sign => {
+        PureBuiltin::Abs => {
             expect_arity(arguments, 1, at)?;
             Ok(first)
+        }
+        // MLS 3.7 §3.7.1: `sign(v)` "expands into noEvent(if v > 0 then 1 else
+        // if v < 0 then -1 else 0)", an Integer expression for either operand type.
+        PureBuiltin::Sign => {
+            expect_arity(arguments, 1, at)?;
+            Ok(ValueType::array(ScalarType::Integer, first.dimensions()))
         }
         PureBuiltin::Sqrt
         | PureBuiltin::Floor

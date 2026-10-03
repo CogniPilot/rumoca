@@ -494,9 +494,21 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             dae::PureBuiltin::Abs => self
                 .builder
                 .unary(solve::SolveUnaryOperator::Abs, value, at),
+            // MLS 3.7 §3.7.1 expands `sign(v)` into an if-expression over the
+            // Integer literals -1, 0 and 1, so a Real operand yields an Integer.
             dae::PureBuiltin::Sign => {
-                self.builder
-                    .unary(solve::SolveUnaryOperator::Sign, value, at)
+                let sign = self
+                    .builder
+                    .unary(solve::SolveUnaryOperator::Sign, value, at)?;
+                if self.integer_register(sign, at)? {
+                    Ok(sign)
+                } else {
+                    self.builder.convert(
+                        solve::SolveConversionOperator::RealToIntegerTowardZero,
+                        sign,
+                        at,
+                    )
+                }
             }
             dae::PureBuiltin::Sqrt => {
                 self.builder

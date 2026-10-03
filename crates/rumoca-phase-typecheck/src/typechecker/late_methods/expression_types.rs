@@ -262,7 +262,10 @@ impl TypeChecker {
             | BuiltinFunction::Edge
             | BuiltinFunction::Change
             | BuiltinFunction::FirstTick => Some(type_table.boolean()),
+            // MLS 3.7 §3.7.1 expands `sign(v)` into an if-expression over Integer
+            // literals, an Integer for either operand type.
             BuiltinFunction::Integer
+            | BuiltinFunction::Sign
             | BuiltinFunction::Ndims
             | BuiltinFunction::Size
             | BuiltinFunction::Identity => Some(type_table.integer()),
@@ -308,7 +311,6 @@ impl TypeChecker {
             | BuiltinFunction::Der
             | BuiltinFunction::Pre
             | BuiltinFunction::Abs
-            | BuiltinFunction::Sign
             | BuiltinFunction::Min
             | BuiltinFunction::Max
             | BuiltinFunction::Div
