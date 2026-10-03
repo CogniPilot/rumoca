@@ -1392,9 +1392,9 @@ impl SolveRuntime {
             .map_err(Into::into)
     }
 
-    /// Refresh every delayed value from its source while the initial event
-    /// settles, before the history is committed; `true` when one moved
-    /// beyond `tol`, the same change test every other settle step uses.
+    /// Refresh every delayed value: from its source while the initialization
+    /// problem settles, from the committed history afterwards; `true` when one
+    /// moved beyond `tol`, the same change test every other settle step uses.
     fn refresh_initial_delay_identity(
         &self,
         time: f64,
