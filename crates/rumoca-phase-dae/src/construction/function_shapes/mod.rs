@@ -115,6 +115,11 @@ pub(super) struct ShapeEnvironment {
     /// `integer(...)` floor conversion, `mod`/`div`, enumeration ordinals — instead of
     /// a second rule set written for shapes alone.
     values: EvalContext,
+    /// The model's functions, which an extent may call (MLS §12.2: a
+    /// dimension of a function local is any Integer expression of the inputs,
+    /// such as `numberOfSymmetricBaseSystems(m)`). Shared by the model scope
+    /// and every specialization cloned from it.
+    functions: Option<Arc<EvalContext>>,
     /// Statically-known array extents per flat name, in dimension order.
     ///
     /// This is the shape proof's `shapes` restated as the `Integer` extents MLS
@@ -166,6 +171,7 @@ impl ShapeEnvironment {
             enumeration_type_declarations: Arc::default(),
             record_array_fields: None,
             values: EvalContext::with_capacity(capacity, 0, 0),
+            functions: None,
             dimension_extents: HashMap::with_capacity(capacity),
             specialized: false,
             attribute_scope: false,
@@ -290,6 +296,7 @@ impl ShapeEnvironment {
     fn shape_aware_values(&self) -> ShapeAwareValues<'_> {
         ShapeAwareValues {
             values: &self.values,
+            functions: self.functions.as_deref(),
             dimension_extents: &self.dimension_extents,
         }
     }
@@ -488,6 +495,7 @@ pub(in crate::construction) fn proven_conditional_branch(
 /// bounds through the value context directly and keep `size` symbolic.
 struct ShapeAwareValues<'a> {
     values: &'a EvalContext,
+    functions: Option<&'a EvalContext>,
     dimension_extents: &'a HashMap<VarName, Vec<i64>>,
 }
 
@@ -501,7 +509,9 @@ impl EvalEnvironment for ShapeAwareValues<'_> {
     }
 
     fn get_function(&self, name: &str) -> Option<&rumoca_core::Function> {
-        self.values.get_function(name)
+        self.values
+            .get_function(name)
+            .or_else(|| self.functions?.get_function(name))
     }
 
     fn get_array_dimensions(&self, name: &str) -> Option<&[i64]> {
@@ -616,6 +626,7 @@ impl FunctionShapeAnalysis {
     ) -> Result<Self, ToDaeError> {
         let record_array_fields = Arc::new(analysis::analyze_record_array_field_plans(flat)?);
         let mut model_values = concrete_model_shapes(flat, constants)?;
+        model_values.functions = Some(Arc::new(function_table(constants)));
         model_values.evaluable = evaluable.map(|evaluable| Arc::new(evaluable.clone()));
         model_values.record_array_fields = Some(record_array_fields);
         let constructor_instances = flat
@@ -1859,6 +1870,13 @@ fn reject_function_partial_application(
 /// INST-007). Reading it here is what makes `Real y[m]` provable for a model
 /// that declares `parameter Integer m = 3`: the extent is a parameter
 /// expression in the sense MLS §12.2 admits, and its value is already known.
+/// The function definitions of `constants`, without its parameter values.
+fn function_table(constants: &EvalContext) -> EvalContext {
+    let mut table = EvalContext::with_capacity(0, 0, constants.functions.len());
+    table.functions.clone_from(&constants.functions);
+    table
+}
+
 fn concrete_model_shapes(
     flat: &flat::Model,
     constants: &EvalContext,
