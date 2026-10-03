@@ -828,8 +828,35 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             }
             Builtin::Atan2 => self.differentiate_atan2_builtin(arguments, order, provenance),
             Builtin::LinearSolve => self.differentiate_linear_solve(arguments, order, provenance),
+            Builtin::Smooth => self.differentiate_smooth(arguments, order, provenance),
             _ => unreachable!("differentiability preflight rejects this builtin"),
         }
+    }
+
+    /// `d^k/dt^k smooth(p, e) = smooth(p - k, d^k e)` (MLS §3.7.5): the
+    /// derivative keeps the differentiability the operand still certifies.
+    fn differentiate_smooth(
+        &mut self,
+        arguments: dae::ExpressionOperands<'source>,
+        order: u8,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        let (smoothness, value) = super::smooth_order::smooth_operands(self.source, arguments)
+            .expect("differentiability preflight proved a literal smooth order");
+        let Derivative::Expression(derivative) =
+            self.differentiate_order(value, order, provenance)?
+        else {
+            return Ok(Derivative::Zero);
+        };
+        let remaining = super::smooth_order::remaining_order(smoothness, order);
+        let remaining = self
+            .target
+            .at(provenance)
+            .literal(dae::DaeLiteral::Integer(i64::from(remaining)))?;
+        self.target
+            .at(provenance)
+            .builtin(dae::PureBuiltin::Smooth, vec![remaining, derivative])
+            .map(Derivative::Expression)
     }
 
     fn differentiate_atan2_builtin(

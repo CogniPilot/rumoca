@@ -55,6 +55,7 @@ mod parameter_conditionals;
 mod reconstruction;
 mod runtime_quotients;
 mod semantic_owners;
+mod smooth_order;
 mod sortability;
 mod source;
 mod temporal;

@@ -245,6 +245,7 @@ mod settled_initialization_cone;
 mod simulation_work_counts;
 mod singular_active_mode;
 mod singular_algebraic_seed;
+mod smooth_index_reduction;
 mod solve_model_round_trip;
 mod state_demotion_through_alias;
 mod state_jacobian_sparsity;
