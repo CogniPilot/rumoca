@@ -788,3 +788,67 @@ fn strm_012_flow_weighted_actual_stream_owns_no_event() {
         "the flow-weighted actualStream is continuous and owns no event"
     );
 }
+
+// =============================================================================
+// STRM-013: One-direction flow
+// A connector whose flow can only enter its own component never supplies its
+// connection set; with no supplying peer, inStream(c.h_outflow) = c.h_outflow
+// =============================================================================
+
+#[test]
+fn strm_013_receive_only_connector_drops_out_of_in_stream() {
+    let result = expect_success(
+        r#"
+        model M
+            connector C
+                Real p;
+                flow Real m_flow;
+                stream Real h;
+            end C;
+            model Tank
+                C port(m_flow(min = 0));
+            equation
+                port.h = 100;
+                port.p = 1;
+            end Tank;
+            model Source
+                C port;
+            equation
+                port.m_flow = -2;
+                port.h = 300;
+            end Source;
+            model Pipe
+                C a;
+                C b;
+            equation
+                a.m_flow + b.m_flow = 0;
+                a.p = b.p;
+                a.h = inStream(b.h) + 10;
+                b.h = inStream(a.h) - 10;
+            end Pipe;
+            Source source;
+            Pipe pipe;
+            Tank tank;
+        equation
+            connect(source.port, pipe.a);
+            connect(pipe.b, tank.port);
+        end M;
+    "#,
+        "M",
+    );
+    let simulated = rumoca_sim::simulate_dae(
+        &result.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 1.0,
+            ..rumoca_sim::SimOptions::default()
+        },
+    )
+    .expect("M simulates");
+    let index = simulated
+        .names
+        .iter()
+        .position(|name| name == "pipe.a.h")
+        .expect("pipe.a.h is recorded");
+    // `tank.port` never supplies the set, so inStream(pipe.b.h) is pipe.b.h.
+    assert_eq!(simulated.data[index].last().copied(), Some(300.0));
+}

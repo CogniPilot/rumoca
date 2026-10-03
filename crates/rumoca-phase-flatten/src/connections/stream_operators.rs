@@ -133,12 +133,17 @@ pub(super) fn build_stream_connection_endpoints(
                 }
             })
             .collect::<Vec<_>>();
+        let supplies = flows
+            .iter()
+            .zip(&roles)
+            .map(|(flow, role)| can_supply_the_set(model, &flow.name, *role))
+            .collect::<Vec<_>>();
         for (index, stream) in stream_set.variables.iter().enumerate() {
             let peers = stream_set
                 .variables
                 .iter()
                 .enumerate()
-                .filter(|(peer_index, _)| *peer_index != index)
+                .filter(|(peer_index, _)| *peer_index != index && supplies[*peer_index])
                 .map(|(peer_index, peer)| StreamPeer {
                     stream: peer.clone(),
                     flow: flows[peer_index].name.clone(),
@@ -313,6 +318,48 @@ fn stream_variable<'a>(model: &'a flat::Model, stream: &VarName) -> Option<&'a f
             super::strip_embedded_array_indices(stream.as_str())
                 .and_then(|base| model.variables.get(&VarName::new(base)))
         })
+}
+
+/// Whether a connector's flow can carry fluid into its connection set, the
+/// only direction in which its stream value enters the mixing sums (MLS 3.7
+/// §15.2). An inside connector supplies the set when its flow can be
+/// negative (out of its component), an outside connector when its flow can be
+/// positive. A declared `min >= 0` (inside) or `max <= 0` (outside) proves the
+/// flow never takes that direction, so the connector's term vanishes from
+/// every peer's mix; a set whose peers all vanish leaves `inStream` of a member
+/// equal to the member's own value, as for an unconnected connector.
+fn can_supply_the_set(model: &flat::Model, flow: &VarName, role: ConnectorRole) -> bool {
+    let Some(variable) = model.variables.get(flow) else {
+        return true;
+    };
+    match role {
+        ConnectorRole::Inside => {
+            !literal_value(variable.min.as_ref()).is_some_and(|min| min >= 0.0)
+        }
+        ConnectorRole::Outside => {
+            !literal_value(variable.max.as_ref()).is_some_and(|max| max <= 0.0)
+        }
+    }
+}
+
+/// The value of a numeric literal attribute, signed.
+fn literal_value(expression: Option<&Expression>) -> Option<f64> {
+    match expression? {
+        Expression::Literal {
+            value: Literal::Real(value),
+            ..
+        } => Some(*value),
+        Expression::Literal {
+            value: Literal::Integer(value),
+            ..
+        } => Some(*value as f64),
+        Expression::Unary {
+            op: OpUnary::Minus,
+            rhs,
+            ..
+        } => literal_value(Some(rhs)).map(|value| -value),
+        _ => None,
+    }
 }
 
 fn numeric_nominal(nominal: Option<&Expression>) -> f64 {

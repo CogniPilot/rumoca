@@ -237,6 +237,7 @@ mod state_jacobian_sparsity;
 mod state_select_enclosing_constant_test;
 mod steady_adjoint_test;
 mod steady_state_sensitivity_test;
+mod stream_one_direction_flow;
 mod structured_event_roots;
 mod structured_family_corner_lowering;
 mod terminate_when_regression;

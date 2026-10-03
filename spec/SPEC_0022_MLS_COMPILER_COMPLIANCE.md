@@ -33,13 +33,13 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.12 OPREC contracts | 757–772 | Operator record rules (11 contracts) |
 | §4.13 SIM contracts | 773–787 | Simulation rules (10 contracts) |
 | §4.14 CLK contracts | 788–812 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 813–829 | Stream connector rules (12 contracts) |
-| §4.16 SM contracts | 830–926 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 927–948 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 949–964 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 965–990 | Category counts and totals |
-| §6. Compiler Phases | 991–1040 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1041–1068 | MLS chapter → contract category mapping |
+| §4.15 STRM contracts | 813–830 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 831–927 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 928–949 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 950–965 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 966–991 | Category counts and totals |
+| §6. Compiler Phases | 992–1041 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1042–1069 | MLS chapter → contract category mapping |
 
 ---
 
@@ -826,6 +826,7 @@ Defines state-to-state transitions with priority and timing control.
 | STRM-010 | actualStream argument | §15.3 | "Only argument of actualStream needs to be a reference to a stream variable" |
 | STRM-011 | Flow/stream same level | §15.1 | "Flow variable must exist at same level as stream variable in connector hierarchy" |
 | STRM-012 | actualStream flow product | §15.3 | "The product of a flow variable and actualStream of a stream variable of the same connector is continuous, so a tool may treat it as smooth(0, ...)" (rumoca: the product owns no event; a standalone actualStream keeps its flow-reversal event) |
+| STRM-013 | One-direction flow | §15.2 | A connector whose flow can only enter its own component (`m_flow.min >= 0` on an inside connector, `max <= 0` on an outside connector) never supplies its connection set, so its term vanishes from every peer's `inStream` mix; with no supplying peer left, `inStream(c.h_outflow)` is `c.h_outflow`, as for an unconnected connector. Rumoca reads literal `min`/`max` attributes of the flow variable. Tested in `suite_core/stream_one_direction_flow.rs` |
 
 ### 4.16 State Machine Contracts (SM)
 
@@ -980,11 +981,11 @@ areas.
 | Operator Records | OPREC | 11 |
 | Simulation | SIM | 10 |
 | Clocks/Synchronous | CLK | 20 |
-| Stream Connectors | STRM | 12 |
+| Stream Connectors | STRM | 13 |
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **456** |
+| **Total** | | **457** |
 
 ---
 
@@ -1073,5 +1074,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 456 |
+| Total Contracts | 457 |
 | MLS Chapters Referenced | 21 |

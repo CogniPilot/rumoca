@@ -2081,6 +2081,13 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'STRM-013'
+case_id = 'strm_013_receive_only_connector_drops_out_of_in_stream'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'TYPE-005'
 case_id = 'type_005_class_component_mismatch'
 test_file = 'tests/type_contracts.rs'

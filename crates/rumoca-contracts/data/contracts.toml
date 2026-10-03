@@ -3714,6 +3714,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'STRM-013'
+category = 'Stream'
+name = 'One-direction flow'
+mls_ref = '§15.2'
+requirement = 'A connector whose flow can only enter its own component never supplies its connection set, so its term vanishes from every peer inStream mix; with no supplying peer left, inStream(c.h_outflow) is c.h_outflow'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'TYPE-001'
 category = 'Type'
 name = 'Subtype redeclaration'
