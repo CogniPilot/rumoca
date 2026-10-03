@@ -607,7 +607,9 @@ fn shaped_builtin_result(
     at: DaeProvenance,
 ) -> Result<ValueType, DaeConstructionError> {
     let (scalar, extents) = match builtin {
-        PureBuiltin::Zeros | PureBuiltin::Ones => (ScalarType::Real, arguments),
+        // MLS 3.7 §10.3.3: `zeros` and `ones` are Integer arrays; a Real
+        // context converts them like any Integer expression.
+        PureBuiltin::Zeros | PureBuiltin::Ones => (ScalarType::Integer, arguments),
         PureBuiltin::Fill if arguments.len() >= 2 && first.is_scalar() => {
             (first.scalar_type(), &arguments[1..])
         }

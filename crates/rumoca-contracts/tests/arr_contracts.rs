@@ -1717,3 +1717,64 @@ fn arr_044_zero_sized_der_equation_has_no_scalars() {
         "P.Test",
     );
 }
+
+// =============================================================================
+// ARR-045: zeros/ones are Integer arrays (MLS §10.3.3)
+// =============================================================================
+
+#[test]
+fn arr_045_zeros_and_ones_are_integer_arrays() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model ZerosOnes
+            function count
+                input Real t;
+                output Real y;
+            protected
+                Integer z[3] = zeros(3);
+                Integer o[2] = ones(2);
+                Real r[2] = ones(2);
+            algorithm
+                y := t * sum(r) + sum(o) + sum(z);
+            end count;
+            Real x = count(time);
+        end ZerosOnes;
+    "#,
+        "ZerosOnes",
+        1.0,
+    );
+    assert!((trace.final_value("x") - 4.0).abs() < 1e-12);
+}
+
+// =============================================================================
+// ARR-046: size of an array expression (MLS §10.3.1)
+// =============================================================================
+
+#[test]
+fn arr_046_size_of_a_call_result() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model SizeOfCall
+            function coefficients
+                input Integer k;
+                output Real y[k + 1];
+            algorithm
+                y := fill(1.0, k + 1);
+                assert(sum(y) > 0, "empty coefficients");
+            end coefficients;
+            function degreeOffset
+                input Real t;
+                output Real d;
+            protected
+                Integer n = size(coefficients(2), 1) - 1;
+            algorithm
+                d := t + n;
+            end degreeOffset;
+            Real x = degreeOffset(time);
+        end SizeOfCall;
+    "#,
+        "SizeOfCall",
+        1.0,
+    );
+    assert!((trace.final_value("x") - 3.0).abs() < 1e-12);
+}

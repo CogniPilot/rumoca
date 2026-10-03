@@ -750,7 +750,8 @@ fn zeros_is_a_provenance_bearing_checked_array_operation() {
 
     let assert_zeros = |view: DaeView<'_>| {
         let expression = view.expression(view.expression_id(1).unwrap()).unwrap();
-        assert_eq!(expression.value_type().scalar_type(), ScalarType::Real);
+        // MLS 3.7 §10.3.3: `zeros` is an Integer array.
+        assert_eq!(expression.value_type().scalar_type(), ScalarType::Integer);
         assert_eq!(expression.value_type().dimensions(), &[2]);
         assert_eq!(view.source_text(expression.provenance()), Some("zeros(2)"));
         assert!(matches!(

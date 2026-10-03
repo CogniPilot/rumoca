@@ -763,12 +763,14 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             return self.lower_at(operand, &projection);
         }
         if builtin == dae::PureBuiltin::Zeros || builtin == dae::PureBuiltin::Ones {
+            let element = i64::from(builtin == dae::PureBuiltin::Ones);
+            // MLS 3.7 §10.3.3: an Integer array unless a Real context converts it.
+            let expression = match scalar_type {
+                gast::ScalarType::Integer => gast::Expression::Integer(element),
+                _ => gast::Expression::Real(element as f64),
+            };
             return Ok(TypedExpression {
-                expression: gast::Expression::Real(if builtin == dae::PureBuiltin::Ones {
-                    1.0
-                } else {
-                    0.0
-                }),
+                expression,
                 scalar_type,
             });
         }

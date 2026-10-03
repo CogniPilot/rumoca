@@ -109,6 +109,8 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "ARR-042",
     "ARR-043",
     "ARR-044",
+    "ARR-045",
+    "ARR-046",
     "CLK-001",
     "CLK-002",
     "CLK-003",
@@ -494,11 +496,11 @@ mod tests {
     #[test]
     fn test_registry_has_all_contracts() {
         let registry = create_registry();
-        // SPEC_0022 defines 460 contracts
+        // SPEC_0022 defines 462 contracts
         assert_eq!(
             registry.len(),
-            460,
-            "Expected 460 contracts, got {}",
+            462,
+            "Expected 462 contracts, got {}",
             registry.len()
         );
     }
@@ -534,7 +536,7 @@ mod tests {
         );
         assert_eq!(registry.by_category(ContractCategory::Function).count(), 42);
         assert_eq!(registry.by_category(ContractCategory::Type).count(), 36);
-        assert_eq!(registry.by_category(ContractCategory::Array).count(), 44);
+        assert_eq!(registry.by_category(ContractCategory::Array).count(), 46);
         assert_eq!(registry.by_category(ContractCategory::Package).count(), 13);
         assert_eq!(
             registry

@@ -2634,6 +2634,20 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'ARR-045'
+case_id = 'arr_045_zeros_and_ones_are_integer_arrays'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-046'
+case_id = 'arr_046_size_of_a_call_result'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'ALG-011'
 case_id = 'alg_011_non_boolean_when_condition_rejected'
 test_file = 'tests/alg_contracts.rs'

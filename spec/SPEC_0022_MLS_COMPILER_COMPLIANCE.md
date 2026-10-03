@@ -28,18 +28,18 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.7 CONN contracts | 570–604 | Connection rules (30 contracts) |
 | §4.8 FUNC contracts | 605–651 | Function rules (42 contracts) |
 | §4.9 TYPE contracts | 652–692 | Type/interface rules (36 contracts) |
-| §4.10 ARR contracts | 693–741 | Array rules (44 contracts) |
-| §4.11 PKG contracts | 742–759 | Package/import rules (13 contracts) |
-| §4.12 OPREC contracts | 760–775 | Operator record rules (11 contracts) |
-| §4.13 SIM contracts | 776–790 | Simulation rules (10 contracts) |
-| §4.14 CLK contracts | 791–815 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 816–833 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 834–930 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 931–952 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 953–968 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 969–994 | Category counts and totals |
-| §6. Compiler Phases | 995–1044 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1045–1072 | MLS chapter → contract category mapping |
+| §4.10 ARR contracts | 693–743 | Array rules (46 contracts) |
+| §4.11 PKG contracts | 744–761 | Package/import rules (13 contracts) |
+| §4.12 OPREC contracts | 762–777 | Operator record rules (11 contracts) |
+| §4.13 SIM contracts | 778–792 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 793–817 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 818–835 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 836–932 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 933–954 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 955–970 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 971–996 | Category counts and totals |
+| §6. Compiler Phases | 997–1046 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1047–1074 | MLS chapter → contract category mapping |
 
 ---
 
@@ -738,6 +738,8 @@ Defines state-to-state transitions with priority and timing control.
 | ARR-042 | outer product shape | §10.3.5 | "outerProduct(v1, v2) requires two vectors and returns a matrix with extents size(v1, 1) and size(v2, 1)" |
 | ARR-043 | Record array equality element-wise | §10.6.1 | "Equality a=b ... of scalars, vectors, matrices, and arrays is defined element-wise". Each element pair of an equation between arrays of records is one whole-record equality, so a slice `s[1:n] = m[1:n].r`, a whole array `s = m.r` (Flat spells the member of a component array as the array of its element records), and a for-equation over elements state the same field equations. Rumoca: DAE record-equation analysis resolves each operand to its element record occurrences, proving the indexed declaration, the element subscript, and every projected field declaration, and owns the leaf equalities of every pair; a structured family whose rows are all such equalities is not a separate owner. A discrete-valued equation `{a1, ..., an} = e` over unsubscripted scalar discrete-valued variables (the component-array slice `split.set = fill(inPort.set, nBranches)` of `Modelica.StateGraph.Parallel`) is its element equations `ai = e[i]`, each defining its own variable. Likewise a for-equation over the fields of a component array (`inPort[i].occupied = ...` in `Modelica.StateGraph.Step`) is its materialized element-field assignments, each defining its own field. Tested in `suite_core/record_array_equation.rs` and `suite_core/discrete_array_element_equations.rs` |
 | ARR-044 | der and pre element-wise shape | §3.7.4, §3.7.5 | "der(expr) ... If expr is an array, the operator is applied to all elements of the array" (§3.7.4; likewise `pre(y)`, §3.7.5), so the result has the operand shape and an equation between zero-sized operands has no scalar equations. Tested in `suite_core/record_array_equation.rs` |
+| ARR-045 | zeros/ones are Integer arrays | §10.3.3 | "zeros(n1, n2, n3, ...) Returns the n1 x n2 x n3 x ... Integer array with all elements equal to zero"; `ones` likewise with one. Rumoca: the DAE types `zeros` and `ones` as Integer arrays, so `Integer jpvt[n] = zeros(n)` (the pivot vector of `Matrices.LAPACK.dgelsy_vec`) is well typed and a Real context converts them as any Integer expression. Tested in `arr_contracts.rs` |
+| ARR-046 | size of an array expression | §10.3.1 | "size(A, i) Returns the size of dimension i of array expression A". Rumoca: with a translation-time dimension index, `size(e, i)` of any array expression is the Integer extent the checked type of `e` fixes, so `e` (a function call result, for example) is not evaluated for it. Tested in `suite_core/size_of_call_results.rs` |
 
 ### 4.11 Package/Import Contracts (PKG)
 
@@ -981,7 +983,7 @@ areas.
 | Connections | CONN | 30 |
 | Functions | FUNC | 42 |
 | Types/Interfaces | TYPE | 36 |
-| Arrays | ARR | 44 |
+| Arrays | ARR | 46 |
 | Packages | PKG | 13 |
 | Operator Records | OPREC | 11 |
 | Simulation | SIM | 10 |
@@ -990,7 +992,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **460** |
+| **Total** | | **462** |
 
 ---
 
@@ -1079,5 +1081,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 460 |
+| Total Contracts | 462 |
 | MLS Chapters Referenced | 21 |

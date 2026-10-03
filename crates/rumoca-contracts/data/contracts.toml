@@ -713,6 +713,24 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'ARR-045'
+category = 'Array'
+name = 'zeros/ones are Integer arrays'
+mls_ref = '§10.3.3'
+requirement = 'zeros(n1, ...) and ones(n1, ...) return Integer arrays, which a Real context converts'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-046'
+category = 'Array'
+name = 'size of an array expression'
+mls_ref = '§10.3.1'
+requirement = 'size(A, i) returns the size of dimension i of the array expression A, which its type fixes, so A is not evaluated for it'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'CLK-001'
 category = 'Clock'
 name = 'Clock not in function'

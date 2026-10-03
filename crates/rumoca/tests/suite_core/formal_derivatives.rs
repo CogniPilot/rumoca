@@ -58,14 +58,18 @@ fn formal_rotation_equations_preserve_tensors_and_initialization() {
                     evaluator.initial_value(derivative.id()).unwrap(),
                     vec![0.0; derivative.scalar_count()]
                 );
-                assert_eq!(
-                    system
-                        .view
-                        .expression(derivative.start().unwrap())
-                        .unwrap()
-                        .value_type(),
-                    derivative.value_type()
-                );
+                // The zero start of an array coordinate is `zeros(...)`, an Integer
+                // array (MLS 3.7 §10.3.3) the Real coordinate converts.
+                let start = system
+                    .view
+                    .expression(derivative.start().unwrap())
+                    .unwrap()
+                    .value_type();
+                assert_eq!(start.dimensions(), derivative.value_type().dimensions());
+                assert!(matches!(
+                    start.scalar_type(),
+                    dae::ScalarType::Real | dae::ScalarType::Integer
+                ));
             }
         }
     });

@@ -293,20 +293,22 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             return Ok(LoweredValue::empty(value_type));
         }
         if matches!(builtin, dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones) {
-            let value = if builtin == dae::PureBuiltin::Zeros {
-                0.0
-            } else {
-                1.0
-            };
-            let value = self
-                .builder
-                .constant(solve::SolveValue::real(arithmetic_profile(), value), at)?;
-            let dimensions = self
+            let generated = self
                 .view
                 .value_type(value_type)
-                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
-                .dimensions()
-                .to_vec();
+                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+            let element = i64::from(builtin == dae::PureBuiltin::Ones);
+            // The element has the scalar type of the generated array.
+            let value = match generated.scalar_type() {
+                dae::ScalarType::Real => {
+                    solve::SolveValue::real(arithmetic_profile(), element as f64)
+                }
+                _ => solve::SolveValue::integer(arithmetic_profile(), element).map_err(|_| {
+                    solve::SolveProgramConstructionError::ProfileMismatch { provenance: at }
+                })?,
+            };
+            let dimensions = generated.dimensions().to_vec();
+            let value = self.builder.constant(value, at)?;
             let register = self.builder.fill(value, dimensions, at)?;
             return Ok(LoweredValue::scalar(value_type, register));
         }
