@@ -346,6 +346,21 @@
       "retired_by": "event_instant_alignment"
     },
     {
+      "model_name": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks",
+      "kind": "comparator_limitation",
+      "reason": "The 11 non-high channels are all aliases of tank1's temperature and enthalpy (74 of 85 channels high, tank2 and every flow and level channel high). Tank1 only drains through its bottom port into the pipe, so its exact temperature is the constant 323.15 K; OMC's whole reference spread on these channels (6.37e-6 K) is its own integration residue, since the same OMC model at tolerance 1e-10 differs from its 1e-6 trace by exactly that 6.37e-6 K. Normalizing against that spread makes pointwise comparison non-identifying: Rumoca's 1e-6 drift of 2.4e-4 K is 7.4e-7 of the level, inside the experiment's relative tolerance, and at rtol = atol = 1e-10 Rumoca agrees with the 1e-10 OMC trace to 4.7e-9 K on these channels while both remain near-flat (drifts 6.9e-9 and 2.2e-9 K), so the channel stays degenerate at every tolerance.",
+      "evidence": {
+        "facts": [
+          "74/85 channels high; the 11 non-high channels are tank1.medium.T, tank1.medium.T_degC, tank1.medium.state.T, tank1.medium.h, tank1.medium.u, tank1.heatTransfer.Ts[1], tank1.heatTransfer.states[1].T, tank1.heatTransfer.heatPorts[1].T, pipe.flowModel.states[1].T, pipe.port_b.h_outflow and tank1.ports[1].h_outflow",
+          "exact tank1 temperature is constant 323.15 K; OMC 1e-6 vs OMC 1e-10 on tank1.medium.T: max abs 6.371e-6 K, equal to the reference spread",
+          "Rumoca vs OMC at rtol = atol = 1e-10 on tank1.medium.T: max abs 4.7e-9 K; tank2 mixing temperature within 1.2e-6 K of the exact 75 degC energy balance",
+          "a tolerance-times-nominal floor (1e-6 x 300 K) would still score the 1.69e-4 K mean error at 0.56, so no unit-free floor identifies the channel"
+        ],
+        "artifact": "msl:Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks"
+      },
+      "retired_by": "near_zero_channel_scaling"
+    },
+    {
       "model_name": "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonPullInStroke",
       "kind": "model_issue",
       "reason": "Only the two stopper_xMin.lossPower channels are non-high (477 of 479 channels high). Both traces reach the stopper at the same instants and dissipate the same impact energy; the channels differ in the damped bounce tail of the stiff elastic stopper, whose loss power is not converged at the annotation tolerance: Rumoca at rtol=atol=1e-9 differs from its own 1e-6 trace by more than either differs from OMC. Pointwise comparison of this unconverged event-local observable is non-identifying, while every position, velocity, flux, current and force channel is high.",

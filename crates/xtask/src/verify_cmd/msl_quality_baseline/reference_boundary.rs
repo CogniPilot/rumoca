@@ -12,6 +12,25 @@ pub(super) struct ReferenceBoundaryMigration {
 }
 
 fn reviewed_migration() -> ReferenceBoundaryMigration {
+    let mut migration = v10_migration();
+    migration.previous = Some(Box::new(migration.clone()));
+    migration.metric.from_quality_gate_version = 10;
+    migration.metric.to_quality_gate_version = 11;
+    migration.metric.change = "typed-trace-exceptions-v4".to_string();
+    migration.metric.strict_high_before = 231;
+    migration.metric.strict_high_after = 231;
+    migration.metric.policy_excluded_after = 38;
+    migration.metric.excluded_strict_high_before = 0;
+    migration.metric.excluded_non_high_before = 0;
+    migration.metric.exclusions_sha256 =
+        "d7069c55495f78ed4f67e1833762a924dcbd719d14a36faf1f1300cda701a4e4".to_string();
+    migration.evidence_git_commit = "8183e58220d930d1d2b5737a381b267881133d8a".to_string();
+    migration.evidence_run = "two-tanks-near-zero-channel-full".to_string();
+    migration.policy_excluded_before = 37;
+    migration
+}
+
+fn v10_migration() -> ReferenceBoundaryMigration {
     let mut migration = v9_migration();
     migration.previous = Some(Box::new(migration.clone()));
     migration.metric.from_quality_gate_version = 9;
@@ -132,7 +151,8 @@ pub(super) fn validate_reference_boundary_migration(
 ) -> Result<()> {
     let expected = match baseline.quality_gate_version {
         MSL_QUALITY_GATE_VERSION => Some(reviewed_migration()),
-        PREVIOUS_REFERENCE_BOUNDARY_VERSION => Some(v9_migration()),
+        PREVIOUS_REFERENCE_BOUNDARY_VERSION => Some(v10_migration()),
+        SUPERSEDED_REFERENCE_BOUNDARY_VERSION => Some(v9_migration()),
         PROMOTED_REFERENCE_BOUNDARY_VERSION => Some(v8_migration()),
         _ => None,
     };
@@ -197,7 +217,7 @@ mod tests {
     #[test]
     fn reference_boundary_migration_preserves_all_existing_ratchets() {
         let checked = checked_baseline();
-        for version in [4, 8, 9] {
+        for version in [4, 8, 9, 10] {
             preserves_ratchets_from(&checked, version);
         }
     }
@@ -208,6 +228,7 @@ mod tests {
         promoted.reference_boundary_migration = match version {
             8 => Some(v8_migration()),
             9 => Some(v9_migration()),
+            10 => Some(v10_migration()),
             _ => None,
         };
         assert_eq!(
@@ -257,6 +278,7 @@ mod tests {
         assert!(schema_target_reaches_current(7, &baseline));
         assert!(schema_target_reaches_current(8, &baseline));
         assert!(schema_target_reaches_current(9, &baseline));
+        assert!(schema_target_reaches_current(10, &baseline));
         assert!(!schema_target_reaches_current(3, &baseline));
         let migration = baseline.reference_boundary_migration.as_mut().unwrap();
         migration
@@ -264,7 +286,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .metric
-            .to_quality_gate_version = 10;
+            .to_quality_gate_version = 11;
         assert!(!schema_target_reaches_current(4, &baseline));
         assert!(validate_reference_boundary_migration(&baseline).is_err());
     }
