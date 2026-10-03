@@ -1053,14 +1053,14 @@ mod tests {
         let root = workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"));
         let exceptions = load_trace_exclusions_file(&root.join(TRACE_EXCLUSIONS_FILE_REL))
             .expect("tracked exceptions must parse");
-        assert_eq!(exceptions.len(), 49);
+        assert_eq!(exceptions.len(), 50);
         let count = |kind| {
             exceptions
                 .values()
                 .filter(|exception| exception.kind == kind)
                 .count()
         };
-        assert_eq!(count(TraceExceptionKind::ReferenceFailure), 24);
+        assert_eq!(count(TraceExceptionKind::ReferenceFailure), 25);
         assert_eq!(count(TraceExceptionKind::ModelIssue), 6);
         assert_eq!(count(TraceExceptionKind::ComparatorLimitation), 19);
         for (model, exception) in &exceptions {
