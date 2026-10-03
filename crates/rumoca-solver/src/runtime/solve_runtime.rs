@@ -1386,6 +1386,24 @@ impl SolveRuntime {
             .map_err(Into::into)
     }
 
+    /// Refresh every delayed value from its source while the initial event
+    /// settles, before the history is committed; `true` when one moved
+    /// beyond `tol`, the same change test every other settle step uses.
+    fn refresh_initial_delay_identity(
+        &self,
+        time: f64,
+        solver_y: &[f64],
+        params: &mut [f64],
+        tol: f64,
+    ) -> Result<bool, RuntimeSolveError> {
+        if !self.has_delay_channels() {
+            return Ok(false);
+        }
+        let before = params.to_vec();
+        self.refresh_delay_values(time, solver_y, params)?;
+        Ok(crate::runtime_values_changed(&before, params, tol))
+    }
+
     pub fn commit_delay_history(
         &self,
         time: f64,

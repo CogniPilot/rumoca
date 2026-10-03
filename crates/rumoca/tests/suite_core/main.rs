@@ -64,6 +64,7 @@ mod constant_values;
 mod constraint_fold_charts;
 mod coupled_refresh_schedule;
 mod dead_derivative_arms;
+mod delay_initial_values;
 mod derivative_alias_initial_acceleration;
 mod derivative_kinks;
 mod derivative_reads_in_derivative_rows;

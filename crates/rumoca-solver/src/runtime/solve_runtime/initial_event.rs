@@ -184,6 +184,14 @@ impl SolveRuntime {
             &seeded_event_pre_p
         };
         let initial_event = initial_runtime_event_stop(&self.model.problem, t_start, dynamic_event);
+        // MLS §3.7.2: `delay(u, d) = u(time.start)` up to `time.start + d`, so
+        // through the initial event iteration a delay follows its source as
+        // the iteration settles it, and a discrete row reading the delay reads
+        // that settled value.
+        let mut project_algebraics = |y: &mut [f64], p: &mut [f64], t: f64| {
+            let projected = project_algebraics(y, p, t)?;
+            Ok(self.refresh_initial_delay_identity(t, y, p, tol)? | projected)
+        };
         // Modelica assertions and termination equations are active during
         // initialization even when no clock, relation, or scheduled event
         // happens at `t_start`. The event inventory controls which discrete
