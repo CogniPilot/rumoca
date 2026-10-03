@@ -60,6 +60,13 @@ package Lib
     final parameter Real A[:, :] = readRealMatrix(file, "Matrix_A", dim[1], dim[2]);
     Real n = 10*size(A, 1) + size(A, 2) + Data.offset;
   end ReadNested;
+  model ReadThroughComprehension
+    final parameter String files[2] =
+      {loadResource("modelica://Lib/Resources/m.mat") for i in 1:2};
+    final parameter Integer dim[2] = readMatrixSize(files[2], "Matrix_A");
+    final parameter Real A[:, :] = readRealMatrix(files[2], "Matrix_A", dim[1], dim[2]);
+    Real n = 10*size(A, 1) + size(A, 2);
+  end ReadThroughComprehension;
   model MissingVariable
     parameter String file = loadResource("modelica://Lib/Resources/m.mat");
     final parameter Integer dim[2] = readMatrixSize(file, "Matrix_B");
@@ -158,6 +165,30 @@ fn a_nested_package_uri_names_the_subdirectory_of_its_name() {
         },
     )
     .expect("ReadNested simulates");
+    let column = result
+        .names
+        .iter()
+        .position(|name| name == "n")
+        .expect("n is recorded");
+    assert_eq!(result.data[column].last().copied(), Some(32.0));
+}
+
+#[test]
+fn a_reader_inside_an_array_comprehension_runs_at_translation() {
+    let package = library("comprehension");
+    let compiled = Compiler::new()
+        .model("Lib.ReadThroughComprehension")
+        .compile_file(&package.to_string_lossy())
+        .unwrap_or_else(|error| panic!("ReadThroughComprehension compiles: {error:?}"));
+    let result = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            dt: Some(0.5),
+            ..SimOptions::default()
+        },
+    )
+    .expect("ReadThroughComprehension simulates");
     let column = result
         .names
         .iter()

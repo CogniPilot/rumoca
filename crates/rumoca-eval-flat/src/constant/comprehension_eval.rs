@@ -14,6 +14,7 @@ use super::errors::EvalError;
 use super::expr_eval::eval_expr_with_span;
 use super::value::Value;
 use super::{DeferredParameterSource, EvalEnvironment, Expression, Function};
+use crate::translation_reads::ResourceRoots;
 
 /// One comprehension iterator bound to its current value over an outer scope.
 struct BinderScope<'scope> {
@@ -53,6 +54,10 @@ impl EvalEnvironment for BinderScope<'_> {
             return None;
         }
         self.outer.deferred_parameter(name)
+    }
+
+    fn translation_resources(&self) -> Option<&ResourceRoots> {
+        self.outer.translation_resources()
     }
 }
 
