@@ -199,6 +199,32 @@ impl DelayRuntime {
         Ok(min_positive_delay(&rows.delay_times))
     }
 
+    /// Extend every channel's accepted history to an event-entry coordinate.
+    ///
+    /// Event Mode is entered at the accepted point, which the host may have
+    /// adopted from the last completed step at a roundoff-coincident
+    /// coordinate. The accepted source values are the event's left limit, so
+    /// they are held to `time` here. The settled values committed at the same
+    /// coordinate then form the exact left/right pair that records a source
+    /// jump as a transported discontinuity, rather than a continuous ramp
+    /// between two distinct accepted samples.
+    pub(crate) fn hold_accepted_history_to(&self, time: f64) {
+        let mut state = self.state.borrow_mut();
+        if !state.history_committed {
+            return;
+        }
+        for channel in &mut state.channels {
+            if let Some(last) = active_points(channel).last().copied()
+                && last.time < time
+            {
+                channel.points.push(DelayPoint {
+                    time,
+                    value: last.value,
+                });
+            }
+        }
+    }
+
     pub(crate) fn commit(
         &self,
         time: f64,
@@ -1034,6 +1060,57 @@ mod tests {
             .evaluate_event_roots(1.2, &[], &params, RowEvalContext::default(), &mut roots)
             .expect("transported continuous jump root should evaluate");
         assert!(roots[0].abs() <= 1.0e-12);
+    }
+
+    #[test]
+    fn event_entry_holds_the_left_limit_at_an_adopted_event_coordinate() {
+        let delay = scalar_row(vec![
+            solve::LinearOp::Const { dst: 0, value: 0.2 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]);
+        let runtime = DelayRuntime::new(&solve::SolveDelayPartition {
+            source_rhs: scalar_row(vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            delay_time_rhs: delay.clone(),
+            delay_max_rhs: delay,
+            value_parameter_indices: vec![1],
+            source_is_discrete: vec![false],
+        })
+        .expect("valid continuous delay partition should prepare");
+        let mut params = vec![0.0, 0.0];
+        runtime
+            .initialize(0.0, &[], &mut params, RowEvalContext::default())
+            .expect("history should initialize");
+        // Holding before the history is committed leaves initialization alone.
+        runtime.hold_accepted_history_to(0.5);
+        runtime
+            .commit(0.0, &[], &params, RowEvalContext::default())
+            .expect("initial history should commit");
+        // The last completed step ends a roundoff short of the event at 1.
+        let last_step = 1.0 - 2.0e-14;
+        runtime
+            .commit(last_step, &[], &params, RowEvalContext::default())
+            .expect("last accepted step should commit");
+        runtime.hold_accepted_history_to(1.0);
+        params[0] = 1.0;
+        runtime
+            .commit(1.0, &[], &params, RowEvalContext::default())
+            .expect("event right-limit jump should commit");
+
+        let mut roots = [0.0];
+        runtime
+            .evaluate_event_roots(1.1, &[], &params, RowEvalContext::default(), &mut roots)
+            .expect("transported jump root should evaluate");
+        let before = roots[0];
+        runtime
+            .evaluate_event_roots(1.3, &[], &params, RowEvalContext::default(), &mut roots)
+            .expect("transported jump root should evaluate");
+        assert!(
+            before * roots[0] < 0.0,
+            "the jump at the adopted event coordinate is a discontinuity root at 1.2"
+        );
     }
 
     #[test]

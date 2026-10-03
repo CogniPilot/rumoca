@@ -1342,6 +1342,12 @@ impl SolveRuntime {
         self.delay_runtime.reset();
     }
 
+    /// Record the accepted delay sources as the left limit of an event at
+    /// `time`, the accepted coordinate Event Mode is entered at.
+    pub fn hold_delay_history_at_event_entry(&self, time: f64) {
+        self.delay_runtime.hold_accepted_history_to(time);
+    }
+
     pub(crate) fn snapshot(&self) -> SolveRuntimeSnapshot {
         SolveRuntimeSnapshot {
             evaluator: self.runtime_state.snapshot(),

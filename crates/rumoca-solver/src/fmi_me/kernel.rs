@@ -370,6 +370,7 @@ impl SolveMeKernel {
         // the retired Rumoca-only `AtStateEvent` completed-step variant.
         self.clear_runtime_caches();
         self.suspend_seed();
+        self.runtime.hold_delay_history_at_event_entry(self.time);
         self.last_event_entry = Some(entry);
         self.pending_event_entry = Some(entry);
         self.commit_lifecycle_transition(MeLifecycleCommand::EnterEventMode)
