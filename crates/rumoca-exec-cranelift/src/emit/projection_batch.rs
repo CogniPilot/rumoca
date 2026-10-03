@@ -199,12 +199,11 @@ impl CraneliftEmitter {
         let params = builder.block_params(entry).to_vec();
         let mut loaded_y = HashMap::new();
         let mut loaded_p = HashMap::new();
-        let mut retained: Vec<Vec<Option<RetainedResult>>> = application
-            .source()
-            .programs()
-            .iter()
-            .map(|row| vec![None; row.len()])
-            .collect();
+        // Retained results only for the programs this application issues: the
+        // shared source block holds every program of the compiled Jacobian, and
+        // sizing a slot table for all of them per application is quadratic in
+        // the block.
+        let mut retained: HashMap<usize, Vec<Option<RetainedResult>>> = HashMap::new();
         for color in application.colors() {
             set_seeds(&mut builder, params[3], color.seed_indices(), 1.0)?;
             for program in color.outputs().programs() {
@@ -217,7 +216,9 @@ impl CraneliftEmitter {
                     (&mut loaded_y, &mut loaded_p),
                     ProgramReuse {
                         issued: application.invariant_operations(program.program()),
-                        retained: &mut retained[program.program()],
+                        retained: retained
+                            .entry(program.program())
+                            .or_insert_with(|| vec![None; row.len()]),
                     },
                 )?;
             }
