@@ -210,6 +210,7 @@ mod replaceable_function_redeclare;
 mod replaceable_package_members;
 mod requested_states;
 mod root_time_event_coincidence;
+mod sample_tick_pulses;
 mod sampled_integral_consistency;
 mod sampled_timer_accuracy;
 mod selected_package_vectorization;

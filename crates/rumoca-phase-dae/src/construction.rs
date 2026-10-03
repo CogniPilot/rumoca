@@ -74,7 +74,10 @@ use analysis::{
 };
 use clock_operator_hosts::clock_operator_hosts;
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
-use conditions::{combine_conditions, condition_owner_clock, lower_condition, negate_condition};
+use conditions::{
+    chain_owner_clock, combine_conditions, condition_owner_clock, lower_condition,
+    negate_condition, unowned_tick_activation,
+};
 use discrete_values::{DiscreteValueOwnerHandle, DiscreteValueStaging};
 use enumeration_conversion::{
     enumeration_conversion, enumeration_range_ordinals, enumeration_range_type,

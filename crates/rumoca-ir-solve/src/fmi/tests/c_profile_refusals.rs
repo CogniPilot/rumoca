@@ -141,6 +141,17 @@ fn event_edge_actions_are_refused() {
 }
 
 #[test]
+fn sample_tick_pulse_buffers_are_refused() {
+    assert_refused(
+        "the C profile cannot release sample() tick pulses after an event",
+        |model| {
+            static_partition(model);
+            one_discrete_row(model, DiscreteRowRole::PulseConditionMemory);
+        },
+    );
+}
+
+#[test]
 fn clocked_previous_history_is_refused() {
     assert_refused(
         "the C profile cannot execute clocked previous() history",

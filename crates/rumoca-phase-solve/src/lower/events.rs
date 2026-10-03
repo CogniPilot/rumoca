@@ -1,6 +1,3 @@
-// SPEC_0021 file-size exception: event lowering still combines root/time-event
-// projection with discrete owner assembly. split plan: move root and scheduled
-// event construction into focused sibling modules beside clock_partition.
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,17 +13,22 @@ use super::{
 use crate::LowerError;
 
 mod clock_partition;
+mod condition_memory;
 mod integrator_history;
 mod messages;
 mod observation_refresh;
+mod pre_mode;
 pub(super) mod structured;
 
 use clock_partition::{
     PendingClockedProducer, PendingClockedStep, SameTickExchange, SameTickExchangeMember,
     guarded_group_same_tick_reads, issue_clock_partition_order,
 };
+pub(in crate::lower) use condition_memory::condition_memory;
+use condition_memory::{condition_clock_owner, lower_condition_memory};
 use messages::{MessageActionContext, push_message_action};
 use observation_refresh::derive_observation_refresh;
+use pre_mode::{condition_pre_mode, expression_pre_mode, merge_pre_mode};
 
 use integrator_history::{
     HistoryDependencySlot, apply_integrator_history_effects, collect_linear_op_dependencies,
@@ -1628,179 +1630,6 @@ fn plan_guarded_targets<'dae>(view: dae::DaeView<'dae>, targets: &mut [GuardedTa
     }
 }
 
-fn lower_condition_memory<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    clocks: &LoweredClocks<'dae>,
-    rows: &mut DiscreteRows<'dae>,
-) -> Result<(), LowerError> {
-    for (condition, condition_view) in view.conditions() {
-        if condition_clock_owner(view, condition).is_some() {
-            continue;
-        }
-        // An `Always` activation is not a `when`: MLS §8.5 gives an internal
-        // buffer to an *event generating expression*, and a section that runs
-        // because the section runs generates no event. With no buffer its slot
-        // stays zero and `edge(c) = c and not pre(c)` reads the level, which is
-        // what an unguarded algorithm section and a section-level `assert`
-        // mean. The test is the node, not the shape of an expression: a source
-        // `when true then` is a real `when` and keeps its buffer, so §8.3.5.1
-        // starts that buffer true and it never has an edge to run on.
-        if matches!(condition_view.operation(), dae::ConditionOperation::Always) {
-            continue;
-        }
-        let span = condition_view.provenance().span();
-        let memory = condition_memory(layout, condition, span)?;
-        let target = solve::scalar_slot_p(memory);
-        // A condition built from clocked relations is only meaningful on its clock's
-        // ticks, and its operands only resolve while that schedule is active.
-        let clock = condition_operand_clock(view, clocks, condition, span)?;
-        let program = match clock {
-            Some((clock, _)) => ScalarCompiler::new(view, layout, None)
-                .clocked_condition_program(clock, condition)?,
-            None => ScalarCompiler::new(view, layout, None).condition_program(condition)?,
-        };
-        let row = rows.targets.len();
-        rows.push(
-            program,
-            span,
-            target,
-            solve::DiscreteRowRole::ConditionMemory,
-            solve::DiscreteEventPreMode::FollowCurrent,
-            clock.and_then(|(_, solve)| solve),
-        );
-        if let Some((_, Some(clock_owner))) = clock {
-            // A clocked activation buffer targets no DAE variable; it joins
-            // the issued order purely as a consumer so it observes this tick's
-            // settled operand values.
-            rows.record_clocked_producer(
-                PendingClockedStep::ScalarRows {
-                    start_row: row,
-                    count: 1,
-                },
-                clock_owner,
-                Vec::new(),
-                Vec::new(),
-                vec![condition],
-                span,
-            );
-        }
-    }
-    Ok(())
-}
-
-/// The clock whose partition owns every relation reachable from `condition`.
-///
-/// Returns `None` for a continuous-time condition. Two different owning clocks would
-/// make the condition unschedulable, so that is rejected rather than resolved by
-/// picking one.
-fn condition_operand_clock<'dae>(
-    view: dae::DaeView<'dae>,
-    clocks: &LoweredClocks<'dae>,
-    condition: dae::ConditionId<'dae>,
-    span: Span,
-) -> Result<Option<(dae::ClockId<'dae>, Option<solve::PeriodicClockId>)>, LowerError> {
-    let mut owner: Option<(dae::ClockId<'dae>, Option<solve::PeriodicClockId>)> = None;
-    let mut conflict = false;
-    let mut visit = |found: (dae::ClockId<'dae>, Option<solve::PeriodicClockId>)| match owner {
-        Some((clock, _)) if clock != found.0 => conflict = true,
-        Some(_) => {}
-        None => owner = Some(found),
-    };
-    let mut pending = vec![condition];
-    while let Some(current) = pending.pop() {
-        let node = view
-            .condition(current)
-            .expect("checked condition identity resolves");
-        match node.operation() {
-            dae::ConditionOperation::Relation(relation) => {
-                let expression = view
-                    .relation(relation)
-                    .expect("checked condition relation resolves")
-                    .expression();
-                if let Some(found) = expression_clock_owner(view, clocks, expression) {
-                    visit(found);
-                }
-            }
-            dae::ConditionOperation::Discrete(expression) => {
-                if let Some(found) = expression_clock_owner(view, clocks, expression) {
-                    visit(found);
-                }
-            }
-            dae::ConditionOperation::Not(operand) => pending.push(operand),
-            dae::ConditionOperation::And(lhs, rhs)
-            | dae::ConditionOperation::Or(lhs, rhs)
-            | dae::ConditionOperation::AnyRise(lhs, rhs) => {
-                pending.push(lhs);
-                pending.push(rhs);
-            }
-            dae::ConditionOperation::Initial
-            | dae::ConditionOperation::Always
-            | dae::ConditionOperation::Clock(_) => {}
-        }
-    }
-    if conflict {
-        return Err(LowerError::non_computable(
-            "condition mixes relations from different clock partitions",
-            span,
-        ));
-    }
-    Ok(owner)
-}
-
-fn condition_clock_owner<'dae>(
-    view: dae::DaeView<'dae>,
-    condition: dae::ConditionId<'dae>,
-) -> Option<dae::ClockId<'dae>> {
-    let condition = view
-        .condition(condition)
-        .expect("checked condition identity resolves");
-    match condition.operation() {
-        dae::ConditionOperation::Initial => None,
-        dae::ConditionOperation::Clock(clock) => Some(clock),
-        dae::ConditionOperation::And(lhs, rhs) => merge_condition_clocks(
-            condition_clock_owner(view, lhs),
-            condition_clock_owner(view, rhs),
-            false,
-        ),
-        dae::ConditionOperation::Or(lhs, rhs) | dae::ConditionOperation::AnyRise(lhs, rhs) => {
-            merge_condition_clocks(
-                condition_clock_owner(view, lhs),
-                condition_clock_owner(view, rhs),
-                true,
-            )
-        }
-        dae::ConditionOperation::Always
-        | dae::ConditionOperation::Relation(_)
-        | dae::ConditionOperation::Discrete(_)
-        | dae::ConditionOperation::Not(_) => None,
-    }
-}
-
-fn merge_condition_clocks<'dae>(
-    lhs: Option<dae::ClockId<'dae>>,
-    rhs: Option<dae::ClockId<'dae>>,
-    disjunction: bool,
-) -> Option<dae::ClockId<'dae>> {
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) if lhs == rhs => Some(lhs),
-        (Some(clock), None) | (None, Some(clock)) if !disjunction => Some(clock),
-        _ => None,
-    }
-}
-
-pub(in crate::lower) fn condition_memory(
-    layout: &LoweredLayout<'_>,
-    condition: dae::ConditionId<'_>,
-    span: Span,
-) -> Result<usize, LowerError> {
-    layout
-        .condition_memory
-        .get(condition.index() as usize)
-        .copied()
-        .ok_or_else(|| LowerError::contract("condition has no Solve memory slot", span))
-}
-
 struct LoweredRoots {
     programs: solve::ScalarProgramBlock,
     zero_domains: Vec<solve::RootZeroDomain>,
@@ -1975,90 +1804,6 @@ fn lower_time_events<'dae>(
         }
     }
     Ok((scheduled, dynamic.into_scalar_block()?))
-}
-
-fn expression_pre_mode<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-    sampled: bool,
-) -> solve::DiscreteEventPreMode {
-    if sampled {
-        return solve::DiscreteEventPreMode::EventEntry;
-    }
-    let mut mode = solve::DiscreteEventPreMode::FollowCurrent;
-    dae::for_each_expression(view, expression, |_, expression| {
-        let found = match expression.operation() {
-            dae::ExpressionOperation::Coordinate(
-                dae::CoordinateView::PreDiscreteReal(_) | dae::CoordinateView::PreDiscreteValue(_),
-            ) => solve::DiscreteEventPreMode::Fixed,
-            dae::ExpressionOperation::Coordinate(
-                dae::CoordinateView::PreState(_)
-                | dae::CoordinateView::PreAlgebraic(_)
-                | dae::CoordinateView::Previous(_),
-            ) => solve::DiscreteEventPreMode::EventEntry,
-            _ => solve::DiscreteEventPreMode::FollowCurrent,
-        };
-        mode = merge_pre_mode(mode, found);
-    });
-    mode
-}
-
-fn condition_pre_mode<'dae>(
-    view: dae::DaeView<'dae>,
-    root: dae::ConditionId<'dae>,
-) -> solve::DiscreteEventPreMode {
-    let mut pending = vec![root];
-    let mut visited = vec![false; view.condition_count()];
-    let mut mode = solve::DiscreteEventPreMode::FollowCurrent;
-    while let Some(condition) = pending.pop() {
-        let index = condition.index() as usize;
-        if visited[index] {
-            continue;
-        }
-        visited[index] = true;
-        let condition = view
-            .condition(condition)
-            .expect("checked condition identity resolves");
-        match condition.operation() {
-            dae::ConditionOperation::Initial => {}
-            dae::ConditionOperation::Relation(relation) => {
-                let expression = view
-                    .relation(relation)
-                    .expect("checked relation identity resolves")
-                    .expression();
-                mode = merge_pre_mode(mode, expression_pre_mode(view, expression, false));
-            }
-            dae::ConditionOperation::Discrete(expression) => {
-                mode = merge_pre_mode(mode, expression_pre_mode(view, expression, false));
-            }
-            dae::ConditionOperation::Clock(_) | dae::ConditionOperation::Always => {}
-            dae::ConditionOperation::Not(operand) => pending.push(operand),
-            dae::ConditionOperation::And(lhs, rhs)
-            | dae::ConditionOperation::Or(lhs, rhs)
-            | dae::ConditionOperation::AnyRise(lhs, rhs) => {
-                pending.push(rhs);
-                pending.push(lhs);
-            }
-        }
-    }
-    mode
-}
-
-fn merge_pre_mode(
-    lhs: solve::DiscreteEventPreMode,
-    rhs: solve::DiscreteEventPreMode,
-) -> solve::DiscreteEventPreMode {
-    match (lhs, rhs) {
-        (solve::DiscreteEventPreMode::EventEntry, _)
-        | (_, solve::DiscreteEventPreMode::EventEntry) => solve::DiscreteEventPreMode::EventEntry,
-        (solve::DiscreteEventPreMode::Fixed, _) | (_, solve::DiscreteEventPreMode::Fixed) => {
-            solve::DiscreteEventPreMode::Fixed
-        }
-        (
-            solve::DiscreteEventPreMode::FollowCurrent,
-            solve::DiscreteEventPreMode::FollowCurrent,
-        ) => solve::DiscreteEventPreMode::FollowCurrent,
-    }
 }
 
 #[cfg(test)]

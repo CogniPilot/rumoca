@@ -283,6 +283,15 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                 statement: None,
             });
         }
+        let owner_clock = chain_owner_clock(guards.iter().map(|guard| guard.owner_clock));
+        for guard in &mut guards {
+            if guard.owner_clock.is_some() && owner_clock.is_none() {
+                let tick = unowned_tick_activation(self.construction, guard.trigger, chain.span())?;
+                guard.trigger = tick;
+                guard.condition = tick;
+            }
+            guard.owner_clock = owner_clock;
+        }
         Ok(guards)
     }
 

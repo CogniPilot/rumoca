@@ -296,8 +296,13 @@ fn preclaim_algorithm_clock_targets<'dae>(
     for statement in statements {
         match statement {
             rumoca_core::Statement::When { blocks, .. } => {
+                let clock = chain_owner_clock(
+                    blocks
+                        .iter()
+                        .map(|block| condition_owner_clock(environment.functions, &block.cond))
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
                 for block in blocks {
-                    let clock = condition_owner_clock(environment.functions, &block.cond)?;
                     preclaim_algorithm_clock_targets(
                         construction,
                         environment,
@@ -1052,15 +1057,24 @@ fn lower_algorithm_when<'dae>(
     blocks: &[rumoca_core::StatementBlock],
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
+    let owner_clock = chain_owner_clock(
+        blocks
+            .iter()
+            .map(|block| condition_owner_clock(environment.functions, &block.cond))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
     let mut guarded_blocks = Vec::with_capacity(blocks.len());
     for block in blocks {
-        let (condition, owner_clock) = lower_condition(
+        let (mut condition, block_clock) = lower_condition(
             construction,
             environment.coordinates,
             environment.functions,
             environment.sample_lattices,
             &block.cond,
         )?;
+        if block_clock.is_some() && owner_clock.is_none() {
+            condition = unowned_tick_activation(construction, condition, span)?;
+        }
         // MLS §8.3.5 activates each branch of a `when`/`elsewhen` chain on its
         // own rising edge; the textual order of the branches resolves the
         // simultaneous ones. See `lower_chain_guards` for the equation form —

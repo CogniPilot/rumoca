@@ -934,10 +934,14 @@ pub(crate) fn seed_condition_memory_for_initialization_core(
     // `initial()` is true only at the initial event, so the buffered value
     // it enters that event with is the value it has everywhere else.
     super::set_initial_event_flag(model, &mut seed_p, false);
+    // A `sample(start, interval)` tick is likewise true only at its own event
+    // (MLS §3.7.5), and a tick at the start instant is the first event after
+    // initialization, so every clock activation lane seeds cleared.
+    crate::runtime::solve_ops::write_observation_clock_activation_params(model, &mut seed_p);
     let mut seeded = Vec::new();
     let mut writes = Vec::new();
     for row_idx in 0..model.problem.discrete.rhs.len() {
-        if model.problem.discrete.row_roles[row_idx] != solve::DiscreteRowRole::ConditionMemory {
+        if !model.problem.discrete.row_roles[row_idx].is_condition_memory() {
             continue;
         }
         // A clocked buffer is only defined on its own ticks (MLS §16.5).
@@ -1029,11 +1033,13 @@ impl SolveRuntime {
         }
         let mut seed_p = crate::event_eval_params_for_pre_mode(&self.model, p, y, p, t, tol);
         super::set_initial_event_flag(&self.model, &mut seed_p, false);
+        crate::runtime::solve_ops::write_observation_clock_activation_params(
+            &self.model,
+            &mut seed_p,
+        );
         let mut writes = Vec::new();
         for row in self.structured_discrete_rows.rows().iter().copied() {
-            if row.role != solve::DiscreteRowRole::ConditionMemory
-                || !self.structured_discrete_row_active_at(row, t)?
-            {
+            if !row.role.is_condition_memory() || !self.structured_discrete_row_active_at(row, t)? {
                 continue;
             }
             let value = self
@@ -1128,6 +1134,63 @@ impl SolveRuntime {
             changed |= solve_eval::apply_scalar_slot_value_exact(target, value, y, p)?;
         }
         Ok(changed)
+    }
+
+    /// Leave every pulse condition buffer at the value the next instant reads
+    /// as its left limit.
+    ///
+    /// MLS §3.7.5 makes a `sample(start, interval)` tick true only at its own
+    /// instant. Inside the tick's event iteration the buffer follows the
+    /// current value, so an activation rises once and does not rise again at
+    /// the same instant; once the event has converged the tick is over, so
+    /// the buffer becomes the condition with every clock activation lane
+    /// cleared. Without this a buffer that saw a tick stays true and the next
+    /// tick of the same schedule finds no rising edge.
+    pub(super) fn release_condition_pulses(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+    ) -> Result<(), RuntimeSolveError> {
+        let discrete = &self.model.problem.discrete;
+        if !discrete
+            .row_roles
+            .contains(&solve::DiscreteRowRole::PulseConditionMemory)
+        {
+            return Ok(());
+        }
+        let mut cleared = copy_runtime_values(p, "pulse condition release parameters")?;
+        crate::runtime::solve_ops::write_observation_clock_activation_params(
+            &self.model,
+            &mut cleared,
+        );
+        let mut writes = Vec::new();
+        for (row_idx, role) in discrete.row_roles.iter().enumerate() {
+            if *role != solve::DiscreteRowRole::PulseConditionMemory {
+                continue;
+            }
+            let (program, output) =
+                self.discrete_rhs
+                    .row_output_position(row_idx)
+                    .ok_or_else(|| {
+                        RuntimeSolveError::solve_ir(format!(
+                            "pulse condition-memory output {row_idx} has no producing program"
+                        ))
+                    })?;
+            let value = self.discrete_rhs.eval_row_output_unchecked_with_context(
+                program,
+                output,
+                y,
+                &cleared,
+                t,
+                self.row_eval_context(),
+            )?;
+            writes.push((discrete.update_targets[row_idx], value));
+        }
+        for (target, value) in writes {
+            solve_eval::apply_scalar_slot_value_exact(target, value, y, p)?;
+        }
+        Ok(())
     }
 
     pub(super) fn settle_discrete_rows_for_pre_snapshot(

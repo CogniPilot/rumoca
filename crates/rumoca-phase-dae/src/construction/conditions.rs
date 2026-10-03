@@ -420,6 +420,41 @@ fn combine_element_activations<'dae>(
     Ok(combined)
 }
 
+/// The periodic owner of the targets a `when`/`elsewhen` chain assigns.
+///
+/// MLS §8.3.5.1 writes the chain as one if-expression per assigned variable
+/// whose arms are the edges of every branch condition, so a target changes on
+/// the activation of any branch. It belongs to a periodic owner only when every
+/// branch is activated by that same owner; a chain that also reacts to
+/// `initial()` or to a relation is an ordinary event chain, exactly as the
+/// vector condition `{initial(), sample(t0, dt)}` is.
+pub(super) fn chain_owner_clock<'dae>(
+    clocks: impl IntoIterator<Item = Option<dae::ClockId<'dae>>>,
+) -> Option<dae::ClockId<'dae>> {
+    let mut clocks = clocks.into_iter();
+    let first = clocks.next()??;
+    clocks.all(|clock| clock == Some(first)).then_some(first)
+}
+
+/// The ticks of a periodic `sample(t0, dt)` condition as an ordinary event
+/// activation that owns no partition.
+///
+/// MLS §3.7.5 defines `sample(start, interval)` as a Boolean event operator,
+/// not a clocked partition. The checked DAE derives partition ownership from a
+/// bare periodic condition, so a branch of a [`chain_owner_clock`]-less chain
+/// joins its ticks with the never-active condition `not always`: the result is
+/// true at exactly the same instants, and the disjunction carries no owner,
+/// as the vector form `{initial(), sample(t0, dt)}` already does.
+pub(super) fn unowned_tick_activation<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    tick: dae::ConditionId<'dae>,
+    span: Span,
+) -> Result<dae::ConditionId<'dae>, dae::DaeConstructionError> {
+    let always = always_condition(construction, span)?;
+    let never = negate_condition(construction, always, span)?;
+    combine_conditions(construction, tick, never, true, span)
+}
+
 fn merge_condition_clock<'dae>(
     lhs: Option<dae::ClockId<'dae>>,
     rhs: Option<dae::ClockId<'dae>>,

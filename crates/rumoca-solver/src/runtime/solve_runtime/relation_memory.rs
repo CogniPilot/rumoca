@@ -268,7 +268,7 @@ impl SolveRuntime {
             };
             changed |= self.advance_condition_memory(&snapshot, y, p, t)?;
             if !changed && event_iteration_plan_settled(&self.model, y, p)? {
-                return self.eval_event_actions(y, p, event_pre_p, t, row_filter);
+                return self.converge_event(y, p, event_pre_p, t, row_filter);
             }
             if !on_relation_surface(&mut history, window, y, p, tol) {
                 continue;
@@ -288,7 +288,7 @@ impl SolveRuntime {
             if resumed {
                 history.clear();
             } else {
-                return self.eval_event_actions(y, p, event_pre_p, t, row_filter);
+                return self.converge_event(y, p, event_pre_p, t, row_filter);
             }
         }
         Err(RuntimeSolveError::solve_ir(format!(
@@ -890,6 +890,21 @@ impl SolveRuntime {
         )?;
         validate_finite_runtime_output("root condition output", &values)?;
         Ok(values)
+    }
+
+    /// Close a converged event: evaluate its actions, then release the clock
+    /// pulses its condition buffers saw (see `release_condition_pulses`).
+    fn converge_event(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        event_pre_p: &[f64],
+        t: f64,
+        row_filter: EventUpdateRowFilter,
+    ) -> Result<EventActionOutcome, RuntimeSolveError> {
+        let outcome = self.eval_event_actions(y, p, event_pre_p, t, row_filter)?;
+        self.release_condition_pulses(y, p, t)?;
+        Ok(outcome)
     }
 
     pub fn eval_event_actions(

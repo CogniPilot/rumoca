@@ -309,7 +309,22 @@ pub fn event_eval_params_for_pre_mode(
 /// The compiler reserves exactly one hidden lane per periodic clock and the
 /// Solve shape contract proves the two dense arrays agree. This function only
 /// projects the schedule at `t`; it does not create another timing owner.
+///
+/// A tick at the start instant is the first event after initialization (MLS
+/// §3.7.5 `sample` is a time event, and `when` clauses other than `initial()`
+/// are inactive during initialization, §8.6), so while the `initial()` flag is
+/// set every lane reads cleared.
 pub fn write_clock_activation_params(model: &solve::SolveModel, p: &mut [f64], t: f64) {
+    let initializing = model
+        .problem
+        .solve_layout
+        .initial_event_parameter_index
+        .and_then(|index| p.get(index))
+        .is_some_and(|flag| *flag != 0.0);
+    if initializing {
+        write_observation_clock_activation_params(model, p);
+        return;
+    }
     for (schedule, &index) in model
         .problem
         .clocks

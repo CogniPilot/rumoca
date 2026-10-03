@@ -1219,6 +1219,24 @@ pub enum DiscreteRowRole {
     EventAction,
     /// Runtime memory for detecting a condition edge.
     ConditionMemory,
+    /// Condition memory whose condition reads a periodic clock activation
+    /// lane (`clocks.activation_parameter_indices`).
+    ///
+    /// MLS §3.7.5 makes `sample(start, interval)` true only at its tick
+    /// instants, so the left limit a later instant reads is the condition with
+    /// every activation lane cleared. A runtime re-evaluates these rows with
+    /// the lanes at zero once an event has converged, and seeds them that way
+    /// at initialization; inside the tick's own event iteration they follow
+    /// the current value like any other buffer.
+    PulseConditionMemory,
+}
+
+impl DiscreteRowRole {
+    /// Whether this row is the edge buffer of a condition, of either kind.
+    #[must_use]
+    pub const fn is_condition_memory(self) -> bool {
+        matches!(self, Self::ConditionMemory | Self::PulseConditionMemory)
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

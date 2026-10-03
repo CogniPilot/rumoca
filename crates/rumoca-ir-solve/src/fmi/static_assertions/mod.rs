@@ -58,6 +58,12 @@ pub(super) fn validate(model: &SolveModel) -> Result<DiscreteOrder, &'static str
     if discrete.row_roles.contains(&DiscreteRowRole::EventAction) {
         return Err("the C profile cannot execute event-edge discrete actions");
     }
+    if discrete
+        .row_roles
+        .contains(&DiscreteRowRole::PulseConditionMemory)
+    {
+        return Err("the C profile cannot release sample() tick pulses after an event");
+    }
     let pre = &problem.solve_layout.pre_param_bindings;
     if pre.iter().any(|binding| binding.clock_schedule.is_some()) {
         return Err("the C profile cannot execute clocked previous() history");

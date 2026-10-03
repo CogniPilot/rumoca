@@ -516,7 +516,7 @@ Defines state-to-state transitions with priority and timing control.
 | EQN-010 | For-loop variable readonly | §8.3.2 | "Loop-variable shall not be assigned to" |
 | EQN-011 | If-equation scalar Boolean | §8.3.3 | "Expression of if-clause must be a scalar Boolean expression" |
 | EQN-012 | If-equation variable sets | §8.3.3 | "All branches shall have same set of variables in non-Real equations" |
-| EQN-013 | When branch variables | §8.3.5 | "Different branches of when/elsewhen must have same set of left-hand side component references" |
+| EQN-013 | When branch variables | §8.3.5 | "Different branches of when/elsewhen must have same set of left-hand side component references". §8.3.5.1 writes a `when`/`elsewhen` chain as one if-expression per assigned variable over the edges of every branch, so the chain belongs to a periodic clock partition only when every branch is activated by that same clock; a chain that also reacts to `initial()` or a relation is an ordinary event chain, and its `sample(start, interval)` branches are activations that own no partition (MLS §3.7.5: a Boolean event operator). Tested in `suite_core/sample_tick_pulses.rs` |
 | EQN-014 | When LHS evaluable indices | §8.3.5 | "Any left hand side indices must be evaluable expressions" |
 | EQN-015 | reinit in when only | §8.3.5 | "reinit can only be used in the body of a when-equation" |
 | EQN-016 | reinit state variable | §8.3.5 | "reinit x: x must be selected as a state" |
@@ -532,7 +532,7 @@ Defines state-to-state transitions with priority and timing control.
 | EQN-026 | Connect evaluable conditions | §8.3.3 | "Indices/conditions of for/if containing connect must be evaluable, not depend on cardinality/rooted" |
 | EQN-027 | If-equation LHS component | §8.3.4 | "Non-Real equations in non-evaluable if-equation shall have component-references as LHS" |
 | EQN-028 | If-equation nested evaluable | §8.3.4 | "Any for- and if-equations in if-equation branches shall have evaluable controlling conditions" |
-| EQN-029 | When expr type | §8.3.5 | "Expression shall be discrete-time Boolean scalar or vector expression" |
+| EQN-029 | When expr type | §8.3.5 | "Expression shall be discrete-time Boolean scalar or vector expression". A condition that reads a `sample(start, interval)` tick is true only at its tick instants (§3.7.5), so its edge buffer is a Solve `PulseConditionMemory` row: it follows the current value inside the tick's event iteration and, once the event has converged, takes the condition with every tick cleared, which is the left limit the next instant reads; a tick at the start instant is the first event after initialization (§8.6), so `{initial(), sample(0, T)}` activates twice at the start instant. The FMI C profile refuses pulse buffers. Tested in `suite_core/sample_tick_pulses.rs` |
 | EQN-030 | When conditional scope | §8.3.5.2 | "When-equations can only occur in if/for-equations if controlling expressions are evaluable" |
 | EQN-031 | reinit type compatible | §8.3.6 | "Expr needs to be type-compatible with x" |
 | EQN-032 | reinit implies stateSelect | §8.3.6 | "Reinit on x implies stateSelect = StateSelect.always on x" |
