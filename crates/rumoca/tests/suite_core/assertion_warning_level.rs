@@ -167,3 +167,49 @@ end Packaged;
         );
     }
 }
+
+/// A warning-level assertion in a clocked partition is checked on that
+/// clock's ticks and reported once, at the first tick that violates it.
+#[test]
+fn a_clocked_warning_assertion_reports_at_its_first_violating_tick() {
+    let source = r#"
+model ClockedWarning
+  Clock c = Clock(1, 10);
+  Real x(start = 0);
+equation
+  when c then
+    x = previous(x) + 1;
+    assert(x < 3, "x reached 3", level = AssertionLevel.warning);
+  end when;
+end ClockedWarning;
+"#;
+    let compiled = Compiler::new()
+        .model("ClockedWarning")
+        .compile_str(source, "ClockedWarning.mo")
+        .unwrap_or_else(|error| panic!("ClockedWarning compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.5,
+            ..SimOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("warnings never abort: {error}"));
+    let reports = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.code,
+                diagnostic.time,
+                diagnostic.message.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    // Ticks at 0, 0.1, 0.2, ... give x = 1, 2, 3, ...; x < 3 first fails at 0.2.
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    let (code, time, message) = reports[0];
+    assert_eq!(code, "WX001");
+    assert_eq!(message, "x reached 3");
+    assert!((time - 0.2).abs() < 1e-9, "reported at {time}");
+}

@@ -65,3 +65,34 @@ fn a_field_without_default_or_assignment_is_returned_uninitialized() {
     assert_eq!(failure.phase, Some(FailedPhase::ToDae));
     assert_eq!(failure.error_code.as_deref(), Some("ED022"));
 }
+
+#[test]
+fn a_default_that_reads_a_constant_initializes_its_unwritten_field() {
+    let source = PARTIAL_DEFAULTS
+        .replace(
+            "package Defaults\n",
+            "package Defaults\n  constant Real scale = 5;\n",
+        )
+        .replace(
+            "    Real c0 = 1;\n",
+            "    Real c0 = 1;\n    Real c1 = scale;\n",
+        )
+        .replace("r.d + r.k + r.c0;", "r.d + r.k + r.c0 + r.c1;");
+    let compiled = Compiler::new()
+        .model("Defaults.Top")
+        .compile_str(&source, "Defaults.mo")
+        .unwrap_or_else(|error| panic!("Defaults.Top compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("Defaults.Top simulates: {error}"));
+    let index = result.names.iter().position(|n| n == "y").expect("y");
+    for (row, &time) in result.times.iter().enumerate() {
+        let expected = 4.0 * time + 6.0;
+        assert!((result.data[index][row] - expected).abs() < 1e-12);
+    }
+}

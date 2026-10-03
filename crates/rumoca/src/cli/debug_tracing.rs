@@ -104,3 +104,27 @@ pub(super) fn expand_trace_filter(spec: &str) -> String {
         .collect::<Vec<_>>()
         .join(",")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diagnostics(trace: Option<&str>) -> DiagnosticsArgs {
+        DiagnosticsArgs {
+            verbose: false,
+            trace: trace.map(str::to_string),
+            trace_profile: false,
+        }
+    }
+
+    #[test]
+    fn the_viewer_subsystem_is_requested_by_name_with_or_without_a_level() {
+        assert!(trace_requests_viewer(&diagnostics(Some("viewer"))));
+        assert!(trace_requests_viewer(&diagnostics(Some(
+            "dae:debug, viewer:trace"
+        ))));
+        assert!(!trace_requests_viewer(&diagnostics(Some("dae,viewers"))));
+        assert!(!trace_requests_viewer(&diagnostics(Some(""))));
+        assert!(!trace_requests_viewer(&diagnostics(None)));
+    }
+}

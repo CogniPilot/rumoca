@@ -12,6 +12,7 @@ struct ColoredRows {
     missing_row: Option<usize>,
     failing_row: Option<usize>,
     reverse_row: Option<usize>,
+    vanishing_row: Option<usize>,
 }
 
 impl ColoredRows {
@@ -43,6 +44,7 @@ impl ColoredRows {
             missing_row: None,
             failing_row: None,
             reverse_row: None,
+            vanishing_row: None,
         }
     }
 
@@ -109,6 +111,9 @@ impl ImplicitProjectionModel for ColoredRows {
         self.selected_calls.borrow_mut().push(row);
         if self.failing_row == Some(row) {
             return Err(RuntimeSolveError::solve_ir("selected row failed"));
+        }
+        if self.vanishing_row == Some(row) {
+            return Ok(Some(0.0));
         }
         Ok((self.missing_row != Some(row)).then(|| Self::jvp(row, seed)))
     }
@@ -225,6 +230,34 @@ fn seed_projection_rejects_mismatched_structure_and_restores_seed() {
         "{error}"
     );
     assert_eq!(seed, original, "failed projection restores unknown seeds");
+}
+
+#[test]
+fn singular_seed_projection_without_a_named_mode_reports_the_singular_matrix() {
+    let mut model = ColoredRows::new();
+    model.vanishing_row = Some(3);
+    let mut seed = [0.0, 8.0, 9.0, 0.0, 0.0, 0.0];
+    let error = project_algebraic_seed_with_plan(
+        &model,
+        &model.plan,
+        &[0.0; 5],
+        AlgebraicProjectionArgs {
+            parameters: &[11.0],
+            time: 0.0,
+            state_count: 0,
+            tolerance: 1.0e-12,
+        },
+        &mut seed,
+    )
+    .expect_err("a vanishing row leaves the block singular");
+    assert!(
+        matches!(
+            error,
+            RuntimeSolveError::DirectionalDerivativeUnavailable { ref reason }
+                if reason.contains("singular")
+        ),
+        "{error}"
+    );
 }
 
 #[test]

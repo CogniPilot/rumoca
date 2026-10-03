@@ -238,3 +238,46 @@ fn a_continuous_integer_field_read_inside_a_function_is_refused() {
         Some("ED023")
     );
 }
+
+#[test]
+fn a_continuous_variable_read_through_its_binding_is_continuous_time() {
+    // `v` is continuous through its binding, which reads `w`, whose binding
+    // reads `time`; `f` hides the relation in a function, so `n` would change
+    // without an event.
+    let source = r#"
+model BoundRead
+  function f
+    input Real u;
+    output Integer n;
+  algorithm
+    n := if u > 0.5 then 1 else 0;
+  end f;
+  Real w = time;
+  Real v = 2*w;
+  Integer n = f(v);
+  Real y = n;
+end BoundRead;
+"#;
+    assert_eq!(rejection(source, "BoundRead").as_deref(), Some("ED023"));
+}
+
+#[test]
+fn an_algorithm_read_makes_a_continuous_time_discrete_definition_observed() {
+    // `n` is defined from a relation hidden in a function, so it is only
+    // admitted while nothing reads it; the algorithm reads it.
+    let source = r#"
+model AlgorithmRead
+  function f
+    input Real u;
+    output Integer n;
+  algorithm
+    n := if u > 0.5 then 1 else 0;
+  end f;
+  Integer n = f(time);
+  Real z;
+algorithm
+  z := 2*n;
+end AlgorithmRead;
+"#;
+    assert_eq!(rejection(source, "AlgorithmRead").as_deref(), Some("ED023"));
+}
