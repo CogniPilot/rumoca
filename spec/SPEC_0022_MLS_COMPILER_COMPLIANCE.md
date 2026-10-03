@@ -483,7 +483,7 @@ Defines state-to-state transitions with priority and timing control.
 | EXPR-023 | String significantDigits | §3.7.1 | "Specifying significantDigits is error when first argument of String is Integer" |
 | EXPR-024 | div/mod/rem types | §3.7.2 | "Result and arguments shall have type Real or Integer" |
 | EXPR-025 | ceil/floor argument | §3.7.2 | "Result and argument shall have type Real" |
-| EXPR-026 | integer conversion | §3.7.2 | "Argument shall have type Real; result is the largest Integer not greater than the argument" |
+| EXPR-026 | integer conversion | §3.7.2 | "Argument shall have type Real; result is the largest Integer not greater than the argument". Rumoca spells `integer(x)` and the enumeration conversion `Integer(e)` (§4.9.5, the ordinal of `e`) with one builtin; only a Real argument is an event-generating step, so `Integer(e)` of an enumeration owns no root. Tested in `suite_core/enumeration_ordinal_conversion.rs` |
 | EXPR-027 | delay expr type | §3.7.2 | "Expression shall be subtype of Real, Integer, Boolean, or enumeration" |
 | EXPR-028 | delay time type | §3.7.2 | "Time arguments shall be subtypes of Real" |
 | EXPR-029 | delay delayTime param | §3.7.2 | "When delayMax not provided, delayTime > 0 shall be parameter expression" |

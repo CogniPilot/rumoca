@@ -75,6 +75,7 @@ mod discrete_time_definitions;
 mod element_connection_sets;
 mod enumeration_compact_range_test;
 mod enumeration_literal_assertions;
+mod enumeration_ordinal_conversion;
 mod evaluable_parameters;
 mod evaluate_assert_fold;
 mod event_clocks;

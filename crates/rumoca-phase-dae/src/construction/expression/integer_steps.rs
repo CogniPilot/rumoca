@@ -5,7 +5,9 @@
 //! analysis proved to own an event (outside `noEvent`/`smooth`, at model
 //! scope) owns a root on `sin(pi*x) >= 0`, whose sign changes exactly where
 //! `x` crosses an integer: the indicator the dynamic quotients own. Function
-//! bodies are event-free and own nothing.
+//! bodies are event-free and own nothing. `Integer(e)` of an enumeration value is
+//! the ordinal conversion of MLS §4.9.5, not a step of a Real argument, so it
+//! owns nothing either.
 
 use super::*;
 
@@ -30,6 +32,11 @@ pub(super) fn own_integer_step<'dae>(
         Some(ExpressionEventPlan::IntegerStep)
     );
     if !planned || symbols.function_body.is_some() {
+        return Ok(());
+    }
+    let argument_type =
+        construction.expressions(|expressions| expressions.value_type(*argument, provenance))?;
+    if argument_type.scalar_type() == dae::ScalarType::Enumeration {
         return Ok(());
     }
     let at =
