@@ -103,6 +103,7 @@ mod forwarding_function_constraint;
 mod function_assertion_message_projection;
 mod function_assertion_scopes;
 mod function_branch_assertions;
+mod function_comprehension_definedness;
 mod function_conditional_sequence_test;
 mod function_equation_shape;
 mod function_fold_projection;

@@ -710,6 +710,73 @@ impl FallibleExpressionVisitor for DefinedValueReadChecker<'_> {
         }
         Ok(())
     }
+
+    /// Check a comprehension body once per point of its iteration domain.
+    ///
+    /// MLS §10.4.2 binds each iterator to every value of its range in turn, so
+    /// `{u[i] * V[i, j + 1] for i in 1:size(u, 1)}` reads exactly the elements
+    /// those points name. When every range settles, each point is checked with
+    /// its iterators as static integers, which names the read indices; a range
+    /// that does not settle keeps the conservative whole-body check.
+    fn visit_array_comprehension(
+        &mut self,
+        expr: &Expression,
+        indices: &[rumoca_core::ComprehensionIndex],
+        filter: Option<&Expression>,
+    ) -> Result<(), Self::Error> {
+        for index in indices {
+            self.visit_expression(&index.range)?;
+        }
+        let Some(points) = comprehension_points(indices, self.context) else {
+            self.visit_expression(expr)?;
+            return filter.map_or(Ok(()), |filter| self.visit_expression(filter));
+        };
+        for point in points {
+            let mut integers = self.context.static_integers.clone();
+            integers.extend(point);
+            let mut checker = DefinedValueReadChecker {
+                definitions: self.definitions,
+                context: FunctionValidationContext {
+                    static_integers: &integers,
+                    ..self.context
+                },
+                span: self.span,
+            };
+            if let Some(filter) = filter {
+                checker.visit_expression(filter)?;
+            }
+            checker.visit_expression(expr)?;
+        }
+        Ok(())
+    }
+}
+
+/// Enumerate every iterator binding of a comprehension whose ranges all
+/// settle to static integers, binding the iterators in declaration order.
+fn comprehension_points(
+    indices: &[rumoca_core::ComprehensionIndex],
+    context: FunctionValidationContext<'_>,
+) -> Option<Vec<Vec<(VarName, i64)>>> {
+    let mut points: Vec<Vec<(VarName, i64)>> = vec![Vec::new()];
+    for index in indices {
+        let name = VarName::new(&index.name);
+        let mut extended = Vec::new();
+        for prefix in &points {
+            let mut integers = context.static_integers.clone();
+            integers.extend(prefix.iter().cloned());
+            let point_context = FunctionValidationContext {
+                static_integers: &integers,
+                ..context
+            };
+            for value in static_subscript_indices(&index.range, point_context)? {
+                let mut point = prefix.clone();
+                point.push((name.clone(), value));
+                extended.push(point);
+            }
+        }
+        points = extended;
+    }
+    Some(points)
 }
 
 fn indexed_reference<'expression>(
