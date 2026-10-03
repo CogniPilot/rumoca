@@ -11,6 +11,8 @@ pub(super) use materialized_sources::MaterializedSources;
 use rumoca_eval_dae::FunctionCallContext;
 use rumoca_ir_dae as dae;
 pub(in crate::dae_transform) use state_rows::derive_state_blocks;
+#[cfg(test)]
+pub(in crate::dae_transform) use state_rows::relevance_report;
 use std::sync::Arc;
 
 pub(super) fn derive_maps<'dae>(

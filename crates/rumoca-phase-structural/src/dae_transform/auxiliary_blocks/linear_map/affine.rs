@@ -25,6 +25,9 @@ pub(super) struct AffineMap<'dae, 'facts, 'sources> {
     extent: u32,
     active: BTreeSet<SourceValue>,
     cache: BTreeMap<SourceValue, Option<AffineValue>>,
+    /// Every variable a recording map compared its target against; see
+    /// [`AffineMap::recording`].
+    tested: Option<Vec<u32>>,
 }
 
 impl<'dae, 'facts, 'sources> AffineMap<'dae, 'facts, 'sources> {
@@ -41,7 +44,35 @@ impl<'dae, 'facts, 'sources> AffineMap<'dae, 'facts, 'sources> {
             extent,
             active: BTreeSet::new(),
             cache: BTreeMap::new(),
+            tested: None,
         }
+    }
+
+    /// A map in a target no coordinate names, recording every variable its walk
+    /// compares the target against: a coordinate it reaches, the exact state
+    /// anchor of one, and the state anchors of every operand it tests for
+    /// independence. The walk depends on its target only through those
+    /// comparisons, so for every variable it never compared, the map in that
+    /// variable takes exactly this walk and yields the same rows.
+    pub(super) fn recording(sources: &'sources mut MaterializedSources<'dae, 'facts>) -> Self {
+        let mut map = Self::new(sources, u32::MAX, 1);
+        map.tested = Some(Vec::new());
+        map
+    }
+
+    /// The sorted, deduplicated variables a recording map compared against.
+    pub(super) fn into_tested(self) -> Vec<u32> {
+        let mut tested = self.tested.unwrap_or_default();
+        tested.sort_unstable();
+        tested.dedup();
+        tested
+    }
+
+    fn targets(&mut self, variable: u32) -> bool {
+        if let Some(tested) = &mut self.tested {
+            tested.push(variable);
+        }
+        variable == self.variable
     }
 
     pub(super) fn expression(
@@ -205,11 +236,13 @@ impl<'dae, 'facts, 'sources> AffineMap<'dae, 'facts, 'sources> {
             dae::CoordinateView::Algebraic(variable) => Some(variable.index()),
             _ => None,
         };
-        let sign = (variable == Some(self.variable))
+        let (view, facts) = (self.view, self.facts);
+        let sign = variable
+            .is_some_and(|variable| self.targets(variable))
             .then_some(EqualitySign::Same)
             .or_else(|| {
-                exact_state_anchor(self.view, &self.facts.equalities, expression)
-                    .filter(|(state, _)| state.index() == self.variable)
+                exact_state_anchor(view, &facts.equalities, expression)
+                    .filter(|(state, _)| self.targets(state.index()))
                     .map(|(_, sign)| sign)
             });
         if let Some(sign) = sign {
@@ -241,6 +274,9 @@ impl<'dae, 'facts, 'sources> AffineMap<'dae, 'facts, 'sources> {
         context: &FunctionCallContext<'dae>,
     ) -> Option<TensorExpression> {
         let anchors = self.sources.state_anchors(expression, context)?;
+        if let Some(tested) = &mut self.tested {
+            tested.extend_from_slice(&anchors);
+        }
         (!anchors.contains(&self.variable)).then(|| {
             if self
                 .facts

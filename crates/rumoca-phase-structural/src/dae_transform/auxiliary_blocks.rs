@@ -14,6 +14,8 @@ use rumoca_ir_dae as dae;
 use super::constraints::DifferentiationFacts;
 
 pub(super) use linear_map::derive_state_blocks;
+#[cfg(test)]
+pub(super) use linear_map::relevance_report;
 pub(super) use reconstruction::{
     AuxiliaryExpression, AuxiliaryFunctions, create_functions, create_source_functions,
 };

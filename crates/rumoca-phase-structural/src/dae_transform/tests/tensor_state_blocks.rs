@@ -114,3 +114,24 @@ fn state_block_model(missing: bool, nonlinear: bool) -> dae::Dae {
     })
     .unwrap()
 }
+
+#[test]
+fn state_block_rows_walk_only_the_residuals_that_name_the_state() {
+    for (missing, nonlinear) in [(false, false), (true, false), (false, true)] {
+        state_block_model(missing, nonlinear).inspect(|view| {
+            let facts = constraints::DifferentiationFacts::collect(view);
+            let report = auxiliary_blocks::relevance_report(view, &facts);
+            for &(_, _, covered, same) in &report {
+                assert!(covered, "every residual that yields a row is kept");
+                assert!(same, "the kept residuals derive the same block");
+            }
+            let theta = view
+                .variables()
+                .find(|(_, variable)| variable.name().to_string() == "theta")
+                .map(|(id, _)| id.index() as usize)
+                .unwrap();
+            let (kept, total, ..) = report[theta];
+            assert!(kept < total, "a residual that never names theta is skipped");
+        });
+    }
+}
