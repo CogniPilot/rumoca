@@ -3,7 +3,9 @@ use std::sync::Arc;
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
-use crate::boolean_eval::{try_eval_integer_for_comparison, try_eval_structural_boolean};
+use crate::boolean_eval::{
+    try_eval_evaluable_boolean, try_eval_integer_for_comparison, try_eval_structural_boolean,
+};
 use crate::errors::FlattenError;
 use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 
@@ -196,6 +198,21 @@ fn qualify_assert_condition(
     prefix: &ast::QualifiedName,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
+    // A condition that holds for every value of its time-varying operands once
+    // its `Evaluate = true` and `final` parameters are fixed (`m_flow >
+    // -m_flow_small or allowFlowReversal` under `allowFlowReversal = true`) is
+    // the literal `true` (MLS 3.7 §18.6): it owns no relation and so no event.
+    // An ordinary parameter stays tunable: the fold reads none.
+    if try_eval_evaluable_boolean(ctx, condition, prefix) == Some(true) {
+        return qualify_expression_imports_with_def_map_ctx(
+            &ast_boolean_literal(true, condition.span()),
+            prefix,
+            &ctx.current_imports,
+            def_map,
+            ctx,
+            None,
+        );
+    }
     if !contains_structural_assert_intrinsic(condition) {
         return qualify_expression_imports_with_def_map_ctx(
             condition,
