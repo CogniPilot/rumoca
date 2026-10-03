@@ -472,6 +472,36 @@
       }
     },
     {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Steinmetz",
+      "kind": "reference_failure",
+      "reason": "Two deviating channels are the ComplexMath.arg channels of the orientation-0 stator and rotor-cage converters, which OMC folds to 0 (atan2(0, x) is pi for a negative real part). The third is idealCloser.v. Before the closer switches at t = 0.1 s the motor side is fed only through the open switch's 1e-5 S leakage, so the motor terminal potential is an ill-conditioned observable of about 3e-4 V; after closing the channel is Ron*i with a p95-p05 range of only 0.026 V, so the open-interval integration residue dominates the normalized error. The default OMC reference does not resolve that residue: against OMC at 1e-10 the default OMC trace itself deviates on idealCloser.v, and Rumoca at 1e-10 agrees with OMC at 1e-10 on idealCloser.v. This is a reference limitation, not strict-high credit.",
+      "evidence": {
+        "facts": [
+          "772/0/3 channels (high/minor/deviating); deviating: aimc.stator and aimc.rotorCage electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m, idealCloser.v (bounded L1 0.60)",
+          "OMC generated code assigns both arg_V_m channels the literal 0.0; the OMC traces of their V_m.re are negative at 5101 and 3754 of 10006 samples",
+          "same comparator, default OMC trace against OMC at tolerance 1e-10: idealCloser.v deviates (bounded L1 0.33)",
+          "on t in [0, 0.1] the mean |idealCloser.n.v| is 2.8e-4 V in OMC at 1e-10; the mean deviation from it is 0.13 V for default OMC, 0.33 V for default Rumoca and 1.3e-3 V for Rumoca at 1e-10",
+          "Rumoca at 1e-10 against OMC at 1e-10: 773/0/2, only the two arg_V_m channels deviate"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Steinmetz"
+      }
+    },
+    {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_YD",
+      "kind": "reference_failure",
+      "reason": "Two deviating channels are the ComplexMath.arg channels of the orientation-0 stator and rotor-cage converters, which OMC folds to 0 (atan2(0, x) is pi for a negative real part). Fourteen are the stator zero-sequence voltage and the star-point potentials that equal it, and six are the closer voltages before it switches, when the motor is fed only through the open switches' 1e-5 S leakage. The default OMC reference does not resolve these observables: its zero-sequence voltage makes a 2.1 V excursion that OMC at 1e-10 does not reproduce, and against OMC at 1e-10 the default OMC trace itself deviates on exactly these twenty channels. Rumoca at 1e-10 agrees with OMC at 1e-10 on all of them within the minor band. This is a reference limitation, not strict-high credit.",
+      "evidence": {
+        "facts": [
+          "903/0/22 channels (high/minor/deviating): 2 arg_V_m, aimc.stator.zeroInductor.v0 and v[1..3], switchYD.star and switchYD.idealOpener node potentials (14 zero-sequence channels in all), idealCloser.v[1..3] and idealCloser.idealClosingSwitch[1..3].v",
+          "OMC generated code assigns both arg_V_m channels the literal 0.0; the OMC traces of their V_m.re are negative at 12399 and 12854 of 25006 samples",
+          "maximum |aimc.stator.zeroInductor.v0|: default OMC 2.1 V (t in [0.1, 0.17]), OMC at 1e-10 5.7e-5 V, default Rumoca 7.6e-9 V",
+          "same comparator, default OMC trace against OMC at tolerance 1e-10: 21 deviating channels, the 20 non-angle channels above plus der(aimc.stator.zeroInductor.i0)",
+          "Rumoca at 1e-10 against OMC at 1e-10: 909/14/2, only the two arg_V_m channels deviate"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_YD"
+      }
+    },
+    {
       "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_withLosses",
       "kind": "reference_failure",
       "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 stator and rotor-cage converters (V_m.im structurally zero, V_m.re alternating with the phase current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these two angles.",
@@ -540,6 +570,20 @@
           "Rumoca's angle equals atan2(im, re) of its own trace at every sample, up to the sign of a zero imaginary part, so it has magnitude pi where re < 0"
         ],
         "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Rectifier"
+      }
+    },
+    {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Braking",
+      "kind": "reference_failure",
+      "reason": "One deviating channel is the ComplexMath.arg channel of the orientation-0 stator converter, which OMC folds to 0 (atan2(0, x) is pi for a negative real part). The other five are the stator zero-sequence voltage and its aliases. The star point is grounded through R = 1e6 Ohm, so the zero-sequence voltage amplifies the integration error of a near-zero zero-sequence current by about 3e6, as in the Electrical.Machines SMPM_Braking row. Against OMC at 1e-10 the default OMC trace itself deviates on exactly these five channels; Rumoca at 1e-10 is within the minor band of OMC at 1e-10, but OMC at 1e-12 and Rumoca at 1e-10 still differ there, so no converged reference exists. This is a conditioned-observable reference limitation, not strict-high credit.",
+      "evidence": {
+        "facts": [
+          "745/0/6 channels (high/minor/deviating): smpm.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m, smpm.stator.zeroInductor.v0 and v[1..3], voltageQuasiRMSSensor.ToSpacePhasor1.zero",
+          "OMC generated code assigns the arg_V_m channel the literal 0.0; the OMC trace of its V_m.re is negative at 4744 of 8300 samples",
+          "same comparator, default OMC trace against OMC at tolerance 1e-10: the five zero-sequence channels and der(smpm.stator.zeroInductor.i0) deviate (bounded L1 0.94)",
+          "OMC at 1e-12 against OMC at 1e-10: those channels minor (0.12); Rumoca at 1e-10 against OMC at 1e-10: 745/5/1, only arg_V_m deviates; Rumoca at 1e-10 against OMC at 1e-12: zero-sequence channels 0.45"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Braking"
       }
     },
     {
