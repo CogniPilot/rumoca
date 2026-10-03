@@ -2,6 +2,8 @@
 
 mod evaluation;
 mod exchange;
+#[cfg(test)]
+mod loop_closure_tests;
 mod preferences;
 
 use std::collections::HashMap;
@@ -12,10 +14,11 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{
     AliasQuotientReport, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
-    FormalStateCoordinate, PreparedDae, ReducedSelectionChart, StateSelection, StructuralError,
-    construct_formal_derivatives, demote_inert_states, fold_constant_values,
-    fold_evaluable_parameters, formal_alias_quotient_report, inline_annotated_calls,
-    inline_formal_calls, prepare_for_solve, quotient_aliases, quotient_formal_aliases,
+    FormalStateCandidate, FormalStateCoordinate, PreparedDae, ReducedSelectionChart,
+    StateSelection, StructuralError, construct_formal_derivatives, demote_inert_states,
+    fold_constant_values, fold_evaluable_parameters, formal_alias_quotient_report,
+    holds_redundant_loop_closure, inline_annotated_calls, inline_formal_calls, prepare_for_solve,
+    quotient_aliases, quotient_formal_aliases,
 };
 
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
@@ -202,6 +205,9 @@ fn prepare_source<'source>(
     model: &'source dae::Dae,
     overrides: &HashMap<String, f64>,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
+    if let Some(reduced) = reduce_loop_closure(model, overrides)? {
+        return Ok(reduced);
+    }
     match prepare_for_solve(model) {
         Ok(prepared) => reduce_or_retain(model, prepared, overrides),
         // The ordinary reducer cannot desingularize every constrained system: a
@@ -260,14 +266,7 @@ fn reduce_or_retain<'source>(
     // Construct the reduced candidate first so an infeasible request (an
     // over-constrained `StateSelect.always`, a singular stage Jacobian) still
     // surfaces its exact typed failure rather than being masked by retention.
-    let mut alternate_selections = AlternateSelections::default();
-    let mut basis = Vec::new();
-    let candidate = formal.construct_state_candidate_with_charts(|formal| {
-        let (selection, alternates, primary) = select(formal, overrides)?;
-        alternate_selections = alternates;
-        basis = basis_names(formal.source, &primary);
-        Ok(selection)
-    })?;
+    let reduced = ReducedCandidate::construct(&formal, overrides)?;
     // Retain the source basis when every manifold constraint is a conserved
     // first integral, reduce when any constraint is a redundant loop closure.
     // A selection that integrates an undifferentiated `StateSelect.prefer`
@@ -276,20 +275,90 @@ fn reduce_or_retain<'source>(
     if !prepared.manifold_requires_reduction()
         && !prepared
             .as_dae()
-            .inspect(|view| integrates_preferred_value(model, &basis, view))
+            .inspect(|view| integrates_preferred_value(model, &reduced.basis, view))
     {
         return Ok(PreparedSelection::retained(prepared));
     }
-    let alternates = prepare_alternate_charts(&formal, &alternate_selections)?;
-    let (primary, formal_aliases) = quotient_formal_candidate(candidate.into_prepared()?)?;
-    Ok(PreparedSelection {
-        primary,
-        alternates,
-        exchanges: alternate_selections.exchanges,
-        formal_aliases,
-        basis: Some(basis),
-        withheld_preferences: None,
-    })
+    reduced.finish(&formal)
+}
+
+/// SPEC_0053 §1: decide reduction from the source when it holds a redundant
+/// loop closure ([`holds_redundant_loop_closure`]). Such a closure survives
+/// every direct demotion into the reducer's manifold and classifies redundant,
+/// so [`reduce_or_retain`] would reduce to exactly this formal selection; it is
+/// built here without running the per-state reducer. `None` leaves the
+/// decision to the reducer: no such closure, an inert state that needs
+/// demotion first, no formal construction, or a formal dimension that does not
+/// reduce the source states.
+fn reduce_loop_closure(
+    model: &dae::Dae,
+    overrides: &HashMap<String, f64>,
+) -> Result<Option<PreparedSelection<'static>>, StructuralError> {
+    if !holds_redundant_loop_closure(model) || demote_inert_states(model)?.is_some() {
+        return Ok(None);
+    }
+    let Ok(formal) = construct_formal_derivatives(model) else {
+        return Ok(None);
+    };
+    let states = model.inspect(|view| {
+        view.variables()
+            .filter(|(_, v)| v.role() == dae::VariableRole::State)
+            .map(|(_, v)| v.scalar_count())
+            .sum::<usize>()
+    });
+    if formal.inspect(|formal| formal.formal_dimension()) >= states {
+        return Ok(None);
+    }
+    ReducedCandidate::construct(&formal, overrides)?
+        .finish(&formal)
+        .map(Some)
+}
+
+/// The primary reduced candidate of a formal system, the alternate Independent
+/// sets its selection issued, and its basis named by source scalars.
+struct ReducedCandidate<'formal, 'source> {
+    candidate: FormalStateCandidate<'formal, 'source>,
+    alternates: AlternateSelections,
+    basis: Vec<String>,
+}
+
+impl<'formal, 'source> ReducedCandidate<'formal, 'source> {
+    fn construct(
+        formal: &'formal FormalDerivativeSystem<'source>,
+        overrides: &HashMap<String, f64>,
+    ) -> Result<Self, StructuralError> {
+        let mut alternates = AlternateSelections::default();
+        let mut basis = Vec::new();
+        let candidate = formal.construct_state_candidate_with_charts(|formal| {
+            let (selection, issued, primary) = select(formal, overrides)?;
+            alternates = issued;
+            basis = basis_names(formal.source, &primary);
+            Ok(selection)
+        })?;
+        Ok(Self {
+            candidate,
+            alternates,
+            basis,
+        })
+    }
+
+    /// The prepared reduced selection: alternate charts prepared, the
+    /// candidate's formal calls inlined and its formal aliases quotiented.
+    fn finish(
+        self,
+        formal: &FormalDerivativeSystem<'_>,
+    ) -> Result<PreparedSelection<'static>, StructuralError> {
+        let alternates = prepare_alternate_charts(formal, &self.alternates)?;
+        let (primary, formal_aliases) = quotient_formal_candidate(self.candidate.into_prepared()?)?;
+        Ok(PreparedSelection {
+            primary,
+            alternates,
+            exchanges: self.alternates.exchanges,
+            formal_aliases,
+            basis: Some(self.basis),
+            withheld_preferences: None,
+        })
+    }
 }
 
 /// Whether Solve lowering replaces the constrained state manifold `prepared`
@@ -356,29 +425,22 @@ fn recover_singular_via_formal(
     let Ok(formal) = construct_formal_derivatives(model) else {
         return Ok(None);
     };
-    let mut alternate_selections = AlternateSelections::default();
-    let mut basis = Vec::new();
-    let Ok(candidate) = formal.construct_state_candidate_with_charts(|formal| {
-        let (selection, alternates, primary) = select(formal, overrides)?;
-        alternate_selections = alternates;
-        basis = basis_names(formal.source, &primary);
-        Ok(selection)
-    }) else {
+    let Ok(reduced) = ReducedCandidate::construct(&formal, overrides) else {
         return Ok(None);
     };
-    let Ok(alternates) = prepare_alternate_charts(&formal, &alternate_selections) else {
+    let Ok(alternates) = prepare_alternate_charts(&formal, &reduced.alternates) else {
         return Ok(None);
     };
-    let Ok(candidate) = candidate.into_prepared() else {
+    let Ok(candidate) = reduced.candidate.into_prepared() else {
         return Ok(None);
     };
     let (primary, formal_aliases) = quotient_formal_candidate(candidate)?;
     Ok(Some(PreparedSelection {
         primary,
         alternates,
-        exchanges: alternate_selections.exchanges,
+        exchanges: reduced.alternates.exchanges,
         formal_aliases,
-        basis: Some(basis),
+        basis: Some(reduced.basis),
         withheld_preferences: None,
     }))
 }

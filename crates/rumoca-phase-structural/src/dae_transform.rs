@@ -25,9 +25,11 @@ mod auxiliary_blocks;
 mod builtin_profiles;
 mod candidate_choice;
 mod holonomic_attempt;
+mod loop_closures;
 #[cfg(test)]
 use holonomic_attempt::refused_holonomic_outcome;
 use holonomic_attempt::{HolonomicAttempt, attempt_holonomic_candidate};
+pub use loop_closures::holds_redundant_loop_closure;
 mod component_constraint;
 mod component_projection;
 mod constant_values;
