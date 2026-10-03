@@ -26,20 +26,20 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.5 EQN contracts | 503–547 | Equation rules (40 contracts) |
 | §4.6 ALG contracts | 548–569 | Algorithm rules (18 contracts) |
 | §4.7 CONN contracts | 570–604 | Connection rules (30 contracts) |
-| §4.8 FUNC contracts | 605–649 | Function rules (40 contracts) |
-| §4.9 TYPE contracts | 650–690 | Type/interface rules (36 contracts) |
-| §4.10 ARR contracts | 691–739 | Array rules (44 contracts) |
-| §4.11 PKG contracts | 740–756 | Package/import rules (12 contracts) |
-| §4.12 OPREC contracts | 757–772 | Operator record rules (11 contracts) |
-| §4.13 SIM contracts | 773–787 | Simulation rules (10 contracts) |
-| §4.14 CLK contracts | 788–812 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 813–830 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 831–929 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 930–951 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 952–967 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 968–993 | Category counts and totals |
-| §6. Compiler Phases | 994–1043 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1044–1071 | MLS chapter → contract category mapping |
+| §4.8 FUNC contracts | 605–651 | Function rules (42 contracts) |
+| §4.9 TYPE contracts | 652–692 | Type/interface rules (36 contracts) |
+| §4.10 ARR contracts | 693–741 | Array rules (44 contracts) |
+| §4.11 PKG contracts | 742–759 | Package/import rules (13 contracts) |
+| §4.12 OPREC contracts | 760–775 | Operator record rules (11 contracts) |
+| §4.13 SIM contracts | 776–790 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 791–815 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 816–833 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 834–930 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 931–952 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 953–968 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 969–994 | Category counts and totals |
+| §6. Compiler Phases | 995–1044 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1045–1072 | MLS chapter → contract category mapping |
 
 ---
 
@@ -979,10 +979,10 @@ areas.
 | Equations | EQN | 40 |
 | Algorithms | ALG | 18 |
 | Connections | CONN | 30 |
-| Functions | FUNC | 40 |
+| Functions | FUNC | 42 |
 | Types/Interfaces | TYPE | 36 |
 | Arrays | ARR | 44 |
-| Packages | PKG | 12 |
+| Packages | PKG | 13 |
 | Operator Records | OPREC | 11 |
 | Simulation | SIM | 10 |
 | Clocks/Synchronous | CLK | 20 |
@@ -990,7 +990,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **457** |
+| **Total** | | **460** |
 
 ---
 
@@ -1079,5 +1079,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 457 |
+| Total Contracts | 460 |
 | MLS Chapters Referenced | 21 |

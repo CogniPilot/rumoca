@@ -438,3 +438,46 @@ fn pkg_004_unknown_top_level_package_rejected() {
         "ER002",
     );
 }
+
+// =============================================================================
+// PKG-013: Record constant members through packages (MLS §7.1, §7.3, §12.6)
+// =============================================================================
+
+#[test]
+fn pkg_013_record_constant_member_through_package() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        package Members
+            record DataRecord
+                Real R_s;
+                Real cp;
+            end DataRecord;
+            package Data
+                constant DataRecord H2O(R_s = 461.5, cp = 2000.0);
+            end Data;
+            partial package Base
+                constant DataRecord data;
+                function cv
+                    input Real T;
+                    output Real y;
+                algorithm
+                    y := data.cp * T / 300 - data.R_s;
+                end cv;
+            end Base;
+            package Med
+                extends Base(data = Data.H2O);
+            end Med;
+            model M
+                package Medium = Med;
+                Real T = 300 + time;
+                Real exposed = Medium.data.R_s * T;
+                Real called = Medium.cv(T);
+            end M;
+        end Members;
+    "#,
+        "Members.M",
+        1.0,
+    );
+    assert!((trace.final_value("exposed") - 461.5 * 301.0).abs() < 1e-6);
+    assert!((trace.final_value("called") - (2000.0 * 301.0 / 300.0 - 461.5)).abs() < 1e-9);
+}

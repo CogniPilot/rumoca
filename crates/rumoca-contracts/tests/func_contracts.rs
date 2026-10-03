@@ -1593,3 +1593,78 @@ fn func_026_vectorized_call_through_selected_replaceable_package_accepted() {
 fn func_026_vectorized_call_of_unselected_callee_rejected() {
     expect_failure_in_phase_with_code(FUNC_026_SOURCE, "V.Unselected", FailedPhase::ToDae, "ED008");
 }
+
+// =============================================================================
+// FUNC-041: Element definedness through comprehensions (MLS §12.4.4, §10.4.2)
+// =============================================================================
+
+#[test]
+fn func_041_comprehension_reads_of_defined_columns_accepted() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model ColumnFill
+            function vandermondeSum
+                input Real u[:];
+                input Integer n;
+                output Real s;
+            protected
+                Real V[size(u, 1), n + 1];
+            algorithm
+                V[:, n + 1] := ones(size(u, 1));
+                for j in n:-1:1 loop
+                    V[:, j] := {u[i] * V[i, j + 1] for i in 1:size(u, 1)};
+                end for;
+                s := sum(V);
+            end vandermondeSum;
+            Real x = time + 2;
+            Real y = vandermondeSum({x, 2 * x}, 2);
+        end ColumnFill;
+    "#,
+        "ColumnFill",
+        1.0,
+    );
+    // Rows [u^2, u, 1] for u = 3 and u = 6.
+    assert!((trace.final_value("y") - 56.0).abs() < 1e-9);
+}
+
+// =============================================================================
+// FUNC-042: Text in pure-call interfaces (MLS §4.9.4, §12.4)
+// =============================================================================
+
+#[test]
+fn func_042_record_with_text_field_passed_to_calls() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        package NamedData
+            record DataRecord
+                String name;
+                Real R_s;
+                Real a[2];
+            end DataRecord;
+            constant DataRecord H2O(name = "H2O", R_s = 461.5, a = {1, 2});
+            function cp_T
+                input DataRecord d;
+                input Real T;
+                output Real cp;
+            algorithm
+                cp := d.R_s * (d.a[1] + d.a[2] * T);
+            end cp_T;
+            function cp
+                input Real T;
+                output Real y;
+            algorithm
+                y := cp_T(H2O, T);
+            end cp;
+            model M
+                Real T = 1 + time;
+                Real nested = cp(T);
+                Real direct = cp_T(H2O, T);
+            end M;
+        end NamedData;
+    "#,
+        "NamedData.M",
+        1.0,
+    );
+    assert!((trace.final_value("nested") - 461.5 * 5.0).abs() < 1e-9);
+    assert!((trace.final_value("direct") - 461.5 * 5.0).abs() < 1e-9);
+}

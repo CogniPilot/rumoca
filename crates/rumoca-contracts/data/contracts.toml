@@ -2589,6 +2589,24 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'FUNC-041'
+category = 'Function'
+name = 'Element definedness through comprehensions'
+mls_ref = '§12.4.4, §10.4.2'
+requirement = 'An element-written function local is readable inside a comprehension exactly when every element the iterator values name is defined'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-042'
+category = 'Function'
+name = 'Text in pure-call interfaces'
+mls_ref = '§4.9.4, §12.4'
+requirement = 'A String value carries no numeric value; a call passing a record with a String field evaluates its numeric fields, and numeric use of text is rejected'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'INST-001'
 category = 'Instantiation'
 name = 'Modification context'
@@ -3431,6 +3449,15 @@ category = 'Package'
 name = 'Import not modifiable'
 mls_ref = '§13.2.2'
 requirement = 'Import-clauses are not named elements and cannot be modified or redeclared'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-013'
+category = 'Package'
+name = 'Record constant members through packages'
+mls_ref = '§7.1, §7.3, §12.6'
+requirement = 'A member of a record constant exposed by a selected package takes the field value of the constant binding'
 status = 'Implemented'
 tier = 1
 

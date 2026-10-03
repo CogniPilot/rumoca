@@ -1759,6 +1759,13 @@ kind = 'Parse'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'PKG-013'
+case_id = 'pkg_013_record_constant_member_through_package'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'PKG-002'
 case_id = 'pkg_wildcard_import'
 test_file = 'tests/pkg_contracts.rs'
@@ -3700,6 +3707,20 @@ outcome = 'Accept'
 [[cases]]
 contract_id = 'FUNC-040'
 case_id = 'func_040_function_name_and_partial_application_arguments'
+test_file = 'tests/func_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-041'
+case_id = 'func_041_comprehension_reads_of_defined_columns_accepted'
+test_file = 'tests/func_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-042'
+case_id = 'func_042_record_with_text_field_passed_to_calls'
 test_file = 'tests/func_contracts.rs'
 kind = 'Sim'
 outcome = 'Accept'
