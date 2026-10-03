@@ -122,3 +122,29 @@ Pointwise comparison of an angle is not identifying at a zero phasor or across
 the branch cut, so each carries a `comparator_limitation` row in
 `crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json`.
 Official reference traces and tolerances are unchanged.
+
+## Angles of zero and negative real phasors in Electrical.QuasiStatic
+
+The same two cases account for every non-high channel of two
+Electrical.QuasiStatic examples:
+
+- In `Polyphase.Examples.BalancingStar` the load balances the source: the phase
+  currents 10 A at 120 deg and 10/sqrt(3) A at -90 deg and -30 deg sum to an
+  exactly zero neutral current. Both traces carry only floating-point residue
+  (at most 4e-15 A) on `currentSensor0.i`, whose real and imaginary channels
+  agree; `atan2` of that residue gives -2.678 rad in Rumoca and -2.761 rad in
+  OMC.
+- In `SinglePhase.Examples.Rectifier` the quasi-static current is exactly zero
+  until the load ramp starts at `t = 0.1`, so its angle channels follow the
+  signs of the zeros (-pi against 0, and 0 against -pi for the source current,
+  with `voltageQS.pf = cos(arg_v - arg_i)` 1 against -1). After `t = 0.1` the
+  load is resistive and `voltageQS.arg_i` lies on the branch cut, pi against
+  -pi.
+
+| Model | Channels (high / minor / deviating) | Differences |
+|---|---|---|
+| `Electrical.QuasiStatic.Polyphase.Examples.BalancingStar` | 1213 / 0 / 1 | angle of the zero neutral current throughout |
+| `Electrical.QuasiStatic.SinglePhase.Examples.Rectifier` | 231 / 0 / 5 | 4 angles and 1 power factor for `t <= 0.1`; 1 angle pi against -pi after |
+
+Each carries a `comparator_limitation` row retired by
+`angle_branch_aware_comparison`.
