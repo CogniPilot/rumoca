@@ -1084,7 +1084,11 @@ pub(super) fn assertion_call<'statement>(
 }
 
 /// `guard implies condition`, which is what a guarded check asserts.
-fn guard_condition(guard: Option<&Expression>, condition: Expression, span: Span) -> Expression {
+pub(super) fn guard_condition(
+    guard: Option<&Expression>,
+    condition: Expression,
+    span: Span,
+) -> Expression {
     match guard {
         None => condition,
         Some(guard) => Expression::Binary {
@@ -1096,7 +1100,7 @@ fn guard_condition(guard: Option<&Expression>, condition: Expression, span: Span
     }
 }
 
-fn conjunction(terms: Vec<Expression>, span: Span) -> Option<Expression> {
+pub(super) fn conjunction(terms: Vec<Expression>, span: Span) -> Option<Expression> {
     terms.into_iter().reduce(|lhs, rhs| Expression::Binary {
         op: OpBinary::And,
         lhs: Box::new(lhs),
@@ -1105,7 +1109,7 @@ fn conjunction(terms: Vec<Expression>, span: Span) -> Option<Expression> {
     })
 }
 
-fn negate(condition: &Expression, span: Span) -> Expression {
+pub(super) fn negate(condition: &Expression, span: Span) -> Expression {
     Expression::Unary {
         op: OpUnary::Not,
         rhs: Box::new(condition.clone()),

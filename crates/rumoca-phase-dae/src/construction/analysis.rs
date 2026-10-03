@@ -9,6 +9,7 @@ mod event_conditions;
 mod expression_events;
 mod expression_semi_linear;
 mod expression_validation;
+mod fixed_loops;
 mod folded_guards;
 pub use folded_guards::StructuralSelection;
 mod function_array_assemblies;
@@ -29,6 +30,7 @@ mod initial_algorithms;
 mod initial_parameter_equations;
 mod loop_compaction;
 mod model_algorithm_calls;
+mod model_algorithm_loops;
 mod model_algorithm_statements;
 mod model_algorithms;
 mod model_expression_owners;
@@ -87,6 +89,7 @@ use expression_validation::{
     validate_specialized_subscripts, validate_subscripts_scoped, validate_when_expression,
     when_body_context,
 };
+use fixed_loops::{IndexBinding, fixed_range, range_values};
 use function_array_assemblies::coalesce_function_array_assemblies;
 pub(super) use function_bodies::function_assertion;
 pub(super) use function_bodies::validate_function_certificate;
@@ -124,12 +127,13 @@ use history_operators::analyze_history_operators;
 pub(super) use initial_algorithms::InitialDiscreteValue;
 use initial_algorithms::{
     InitialAlgorithmAnalysis, analyze_initial_algorithms, assertion_call,
-    claim_initial_discrete_equations, claimed_initial_families,
-    reject_unsupported_initial_algorithm_statements,
+    claim_initial_discrete_equations, claimed_initial_families, conjunction, guard_condition,
+    negate, reject_unsupported_initial_algorithm_statements,
 };
 use loop_compaction::compact_function_loops;
 use model_algorithm_calls::analyze_event_function_calls;
 pub(super) use model_algorithm_calls::{ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan};
+pub(super) use model_algorithm_loops::unroll_carrying_algorithm_loops;
 pub(super) use model_algorithm_statements::collect_algorithm_writes;
 use model_algorithm_statements::validate_model_algorithm;
 use model_algorithms::analyze_model_algorithm;

@@ -50,6 +50,9 @@ pub(super) fn analyze_model_algorithm(
     if let Some(assertions) = assertion_only_algorithm(flat, algorithm) {
         return Ok(ModelAlgorithmPlan::Assertions { assertions });
     }
+    if let Some(sections) = split_algorithm_checks(flat, algorithm) {
+        return analyze_algorithm_sections(flat, sections, roles, shapes);
+    }
     if contains_event_control(&algorithm.statements) {
         let targets = model_algorithm_targets(flat, algorithm);
         if targets.iter().any(|target| {
@@ -65,14 +68,7 @@ pub(super) fn analyze_model_algorithm(
                     algorithm.span,
                 ));
             };
-            let sections = sections
-                .into_iter()
-                .map(|section| {
-                    analyze_model_algorithm(flat, &section, roles, shapes)
-                        .map(|plan| (section, plan))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            return Ok(ModelAlgorithmPlan::Sections { sections });
+            return analyze_algorithm_sections(flat, sections, roles, shapes);
         }
         let mut tensor_loops = HashMap::new();
         analyze_event_tensor_loops(flat, &algorithm.statements, model_values, &mut tensor_loops)?;
@@ -128,29 +124,142 @@ pub(super) fn analyze_model_algorithm(
     })
 }
 
-/// The assert equations of an algorithm whose statements are all `assert`
-/// (empty statements aside), or `None` for any other algorithm.
+fn analyze_algorithm_sections(
+    flat: &flat::Model,
+    sections: Vec<flat::Algorithm>,
+    roles: &HashMap<VarName, PlannedRole>,
+    shapes: &FunctionShapeAnalysis,
+) -> Result<ModelAlgorithmPlan, ToDaeError> {
+    let sections = sections
+        .into_iter()
+        .map(|section| {
+            analyze_model_algorithm(flat, &section, roles, shapes).map(|plan| (section, plan))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ModelAlgorithmPlan::Sections { sections })
+}
+
+/// The assert equations of an algorithm whose statements only check (see
+/// [`statement_checks`]), or `None` for any other algorithm.
 fn assertion_only_algorithm(
     flat: &flat::Model,
     algorithm: &flat::Algorithm,
 ) -> Option<Vec<flat::AssertEquation>> {
+    let origin = flat::EquationOrigin::Algorithm {
+        component: algorithm.origin.clone(),
+    };
     let mut assertions = Vec::new();
     for statement in &algorithm.statements {
-        if matches!(statement, rumoca_core::Statement::Empty { .. }) {
-            continue;
+        if !statement_checks(flat, statement, None, &origin, &mut assertions) {
+            return None;
         }
-        let assertion = assertion_call(flat, statement)?;
+    }
+    (!assertions.is_empty()).then_some(assertions)
+}
+
+/// Collect the assertions of a statement that writes nothing: an `assert`, an
+/// empty statement, or an `if` whose branches hold only such statements.
+/// Returns `false` for any other statement.
+///
+/// A check inside branch `k` of an `if` chain runs when every earlier
+/// condition is false and `c_k` holds (MLS §11.2.6), so it asserts
+/// `guard implies condition` for that branch guard, the form initial
+/// algorithms give a guarded check too.
+fn statement_checks(
+    flat: &flat::Model,
+    statement: &rumoca_core::Statement,
+    guard: Option<&Expression>,
+    origin: &flat::EquationOrigin,
+    assertions: &mut Vec<flat::AssertEquation>,
+) -> bool {
+    if let Some(assertion) = assertion_call(flat, statement) {
         assertions.push(flat::AssertEquation::new(
-            assertion.condition.clone(),
+            guard_condition(guard, assertion.condition.clone(), assertion.span),
             assertion.message.clone(),
             assertion.level.cloned(),
             assertion.span,
-            flat::EquationOrigin::Algorithm {
-                component: algorithm.origin.clone(),
-            },
+            origin.clone(),
         ));
+        return true;
     }
-    (!assertions.is_empty()).then_some(assertions)
+    match statement {
+        rumoca_core::Statement::Empty { .. } => true,
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            span,
+        } => {
+            let mut unreached = Vec::with_capacity(cond_blocks.len());
+            let branch_checks =
+                |statements: &[rumoca_core::Statement],
+                 reached: Vec<Expression>,
+                 assertions: &mut Vec<flat::AssertEquation>| {
+                    let branch_guard =
+                        conjunction(guard.cloned().into_iter().chain(reached).collect(), *span);
+                    statements.iter().all(|statement| {
+                        statement_checks(flat, statement, branch_guard.as_ref(), origin, assertions)
+                    })
+                };
+            for block in cond_blocks {
+                let reached = unreached
+                    .iter()
+                    .cloned()
+                    .chain([block.cond.clone()])
+                    .collect();
+                if !branch_checks(&block.stmts, reached, assertions) {
+                    return false;
+                }
+                unreached.push(negate(&block.cond, *span));
+            }
+            else_block
+                .as_deref()
+                .is_none_or(|fallback| branch_checks(fallback, unreached, assertions))
+        }
+        _ => false,
+    }
+}
+
+/// Split the top-level checks of an algorithm from the statements that
+/// assign, when the algorithm has both and no check reads a value the
+/// algorithm writes.
+///
+/// Such a check reads the same values wherever it stands in the section, so
+/// it is its own assertion section, and the assignments form the section that
+/// defines the algorithm's targets.
+fn split_algorithm_checks(
+    flat: &flat::Model,
+    algorithm: &flat::Algorithm,
+) -> Option<Vec<flat::Algorithm>> {
+    let origin = flat::EquationOrigin::Algorithm {
+        component: algorithm.origin.clone(),
+    };
+    let targets = model_algorithm_targets(flat, algorithm)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let mut checks = Vec::new();
+    let mut assigning = Vec::new();
+    for statement in &algorithm.statements {
+        let mut assertions = Vec::new();
+        if matches!(statement, rumoca_core::Statement::Empty { .. })
+            || !statement_checks(flat, statement, None, &origin, &mut assertions)
+        {
+            assigning.push(statement.clone());
+            continue;
+        }
+        let mut reads = Vec::new();
+        collect_statement_reads(statement, &mut reads);
+        if reads.iter().any(|read| targets.contains(read)) {
+            return None;
+        }
+        checks.push(statement.clone());
+    }
+    if checks.is_empty() || assigning.is_empty() {
+        return None;
+    }
+    Some(vec![
+        flat::Algorithm::new(checks, algorithm.span, algorithm.origin.clone()),
+        flat::Algorithm::new(assigning, algorithm.span, algorithm.origin.clone()),
+    ])
 }
 
 fn analyze_event_tensor_loops(

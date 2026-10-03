@@ -32,6 +32,7 @@ mod additive_torque;
 mod affine_coefficient_aggregates;
 mod affine_switching_circuit;
 mod algebraic_observation_accuracy;
+mod algorithm_carried_loops;
 mod algorithm_parameter_range;
 mod algorithm_relation_events;
 mod algorithm_when_statements;
