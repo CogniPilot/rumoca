@@ -51,7 +51,7 @@ pub(crate) fn resolve_operator_overloads(
         scope: &scope,
         error: None,
     };
-    rewrite_model(flat, &mut resolver);
+    rewrite_model(flat, &scope, &mut resolver);
     if let Some(error) = resolver.error.take() {
         return Err(error);
     }
@@ -77,7 +77,7 @@ pub(crate) fn resolve_operator_overloads(
     Ok(())
 }
 
-fn rewrite_model(flat: &mut flat::Model, resolver: &mut Resolver<'_, '_, '_>) {
+fn rewrite_model(flat: &mut flat::Model, model: &ModelScope, resolver: &mut Resolver<'_, '_, '_>) {
     for variable in flat.variables.values_mut() {
         if let Some(binding) = variable.binding.as_mut() {
             *binding = resolver.rewrite_expression(binding);
@@ -87,14 +87,14 @@ fn rewrite_model(flat: &mut flat::Model, resolver: &mut Resolver<'_, '_, '_>) {
         .equations
         .iter_mut()
         .enumerate()
-        .filter_map(|(index, equation)| resolver.rewrite_equation(equation).then_some(index))
+        .filter_map(|(index, equation)| resolver.rewrite_equation(model, equation).then_some(index))
         .collect();
     drop_restated_families(&mut flat.structured_equations, &restated);
     let restated: Vec<usize> = flat
         .initial_equations
         .iter_mut()
         .enumerate()
-        .filter_map(|(index, equation)| resolver.rewrite_equation(equation).then_some(index))
+        .filter_map(|(index, equation)| resolver.rewrite_equation(model, equation).then_some(index))
         .collect();
     drop_restated_families(&mut flat.initial_structured_equations, &restated);
     for algorithm in flat
@@ -133,10 +133,6 @@ fn numeric_variable_type(flat: &flat::Model, variable: &flat::Variable) -> Optio
 /// The operand types of the names one expression scope reads.
 trait Scope {
     fn name_type(&self, catalog: &mut OperatorCatalog<'_>, name: &str) -> OperandType;
-    /// The field names and definitions of record class `def_id`.
-    fn record_fields(&self, def_id: DefId) -> Option<Vec<(String, DefId)>>;
-    /// The declared record class of record variable `name`.
-    fn record_def(&self, name: &str) -> Option<DefId>;
     /// The declared record class and the element coordinates of a
     /// one-dimensional record array `name` whose elements Flat declares.
     fn record_array(&self, _name: &str) -> Option<(DefId, &[rumoca_core::ComponentReference])> {
@@ -200,6 +196,18 @@ impl ModelScope {
     }
 }
 
+impl ModelScope {
+    /// The field names and definitions of record class `def_id`.
+    fn record_fields(&self, def_id: DefId) -> Option<Vec<(String, DefId)>> {
+        self.record_types.get(&def_id).cloned()
+    }
+
+    /// The declared record class of the scalar record variable `name`.
+    fn record_def(&self, name: &str) -> Option<DefId> {
+        self.records.get(name).copied()
+    }
+}
+
 impl Scope for ModelScope {
     fn declares(&self, name: &str) -> bool {
         self.variables.contains_key(name)
@@ -231,14 +239,6 @@ impl Scope for ModelScope {
     ) -> Option<(OperandType, usize)> {
         let (scalar, rank) = self.variables.get(name)?;
         Some(((*scalar)?, *rank))
-    }
-
-    fn record_fields(&self, def_id: DefId) -> Option<Vec<(String, DefId)>> {
-        self.record_types.get(&def_id).cloned()
-    }
-
-    fn record_def(&self, name: &str) -> Option<DefId> {
-        self.records.get(name).copied()
     }
 
     fn record_array(&self, name: &str) -> Option<(DefId, &[rumoca_core::ComponentReference])> {
@@ -305,10 +305,6 @@ impl Scope for FunctionScope {
         *scalar
     }
 
-    fn record_fields(&self, _def_id: DefId) -> Option<Vec<(String, DefId)>> {
-        None
-    }
-
     fn numeric_variable(
         &self,
         catalog: &OperatorCatalog<'_>,
@@ -319,12 +315,6 @@ impl Scope for FunctionScope {
             .and_then(|def| catalog.classes.get(def))
             .is_some_and(|class| class.class_type == rumoca_core::ClassType::Record);
         (!record && matches!(scalar, OperandType::Numeric { .. })).then_some((*scalar, *rank))
-    }
-
-    fn record_def(&self, name: &str) -> Option<DefId> {
-        self.params
-            .get(name)
-            .and_then(|(def, _, rank)| (*rank == 0).then_some(*def)?)
     }
 }
 
@@ -338,7 +328,7 @@ impl Resolver<'_, '_, '_> {
     /// Rewrite one equation; a record-valued equation no record owner reads
     /// directly is stated field by field.
     /// Returns whether the equation was restated field by field.
-    fn rewrite_equation(&mut self, equation: &mut flat::Equation) -> bool {
+    fn rewrite_equation(&mut self, model: &ModelScope, equation: &mut flat::Equation) -> bool {
         let Expression::Binary {
             op: OpBinary::Sub,
             lhs,
@@ -355,7 +345,7 @@ impl Resolver<'_, '_, '_> {
         let (left, right) = (self.operand_type(&lhs), self.operand_type(&rhs));
         let pairs = match (left, right) {
             (OperandType::Record(owner), _) | (_, OperandType::Record(owner))
-                if !self.owned_record_equation(&lhs, &rhs) =>
+                if !self.owned_record_equation(model, &lhs, &rhs) =>
             {
                 Some((owner, vec![(lhs.clone(), rhs.clone())]))
             }
@@ -365,7 +355,7 @@ impl Resolver<'_, '_, '_> {
             _ => None,
         };
         let Some((fields, pairs)) =
-            pairs.and_then(|(owner, pairs)| Some((self.owner_fields(owner)?, pairs)))
+            pairs.and_then(|(owner, pairs)| Some((self.owner_fields(model, owner)?, pairs)))
         else {
             equation.residual = subtract(lhs, rhs, span);
             return false;
@@ -391,8 +381,8 @@ impl Resolver<'_, '_, '_> {
         true
     }
 
-    fn owner_fields(&self, owner: DefId) -> Option<Vec<(String, DefId)>> {
-        if let Some(fields) = self.scope.record_fields(owner) {
+    fn owner_fields(&self, model: &ModelScope, owner: DefId) -> Option<Vec<(String, DefId)>> {
+        if let Some(fields) = model.record_fields(owner) {
             return Some(fields);
         }
         let class = self.catalog.classes.get(owner)?;
@@ -801,7 +791,12 @@ impl Resolver<'_, '_, '_> {
     /// A record coordinate equal to a record call or another record
     /// coordinate of the same declared record class, which the DAE record
     /// owner reads directly.
-    fn owned_record_equation(&mut self, lhs: &Expression, rhs: &Expression) -> bool {
+    fn owned_record_equation(
+        &mut self,
+        model: &ModelScope,
+        lhs: &Expression,
+        rhs: &Expression,
+    ) -> bool {
         let owned_shape = matches!(
             (lhs, rhs),
             (
@@ -810,16 +805,16 @@ impl Resolver<'_, '_, '_> {
             ) if subscripts.is_empty()
         );
         owned_shape
-            && match (self.record_def(lhs), self.record_def(rhs)) {
+            && match (self.record_def(model, lhs), self.record_def(model, rhs)) {
                 (Some(left), Some(right)) => left == right,
                 _ => false,
             }
     }
 
     /// The declared record class of a record-valued expression.
-    fn record_def(&mut self, expression: &Expression) -> Option<DefId> {
+    fn record_def(&mut self, model: &ModelScope, expression: &Expression) -> Option<DefId> {
         match expression {
-            Expression::VarRef { name, .. } => self.scope.record_def(name.as_str()).or_else(|| {
+            Expression::VarRef { name, .. } => model.record_def(name.as_str()).or_else(|| {
                 let def = name.component_ref()?.target_def_id();
                 self.catalog.declared_record(def)
             }),

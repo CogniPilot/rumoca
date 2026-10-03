@@ -117,10 +117,17 @@ package Ops
     C total;
     C empty[0];
     C none = sum(empty);
+    C opposite[2] = -w;
   equation
     s = v + w;
     total = sum(v);
   end Vectors;
+  constant C unit = C(0, 1);
+  model Constant
+    C a;
+  equation
+    a = unit;
+  end Constant;
   model Dot
     C v[2] = {C(1, 2), C(time, 1)};
     C w[2] = {C(3, 4), C(5, 6)};
@@ -269,6 +276,15 @@ fn vector_operators_apply_elementwise_and_an_empty_sum_is_zero() {
     assert_complex(&result, "s[2]", 6.0, 7.0);
     assert_complex(&result, "total", 2.0, 3.0);
     assert_complex(&result, "none", 0.0, 0.0);
+    assert_complex(&result, "opposite[2]", -5.0, -6.0);
+}
+
+#[test]
+fn a_record_equation_reads_a_package_constant_record() {
+    // `unit` is a package constant record Flat has not injected yet, so its
+    // declared record class comes from the declaration itself.
+    let result = simulate("Ops.Constant");
+    assert_complex(&result, "a", 0.0, 1.0);
 }
 
 #[test]
