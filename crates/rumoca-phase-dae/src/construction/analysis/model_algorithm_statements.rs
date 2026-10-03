@@ -1,7 +1,9 @@
 use super::*;
+use crate::construction::terminal_print::terminal_print_message;
 
 pub(super) fn validate_model_algorithm(
     algorithm: &flat::Algorithm,
+    flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     model_values: &ShapeEnvironment,
@@ -11,6 +13,7 @@ pub(super) fn validate_model_algorithm(
     require_span(algorithm.span, "model algorithm")?;
     validate_algorithm_statements(
         &algorithm.statements,
+        flat,
         roles,
         states,
         model_values,
@@ -341,6 +344,7 @@ fn reject_reads_of_written(
 #[allow(clippy::too_many_lines)]
 fn validate_algorithm_statements(
     statements: &[rumoca_core::Statement],
+    flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     model_values: &ShapeEnvironment,
@@ -404,6 +408,7 @@ fn validate_algorithm_statements(
                     )?;
                     validate_algorithm_statements(
                         &block.stmts,
+                        flat,
                         roles,
                         states,
                         model_values,
@@ -414,6 +419,7 @@ fn validate_algorithm_statements(
                 if let Some(statements) = else_block {
                     validate_algorithm_statements(
                         statements,
+                        flat,
                         roles,
                         states,
                         model_values,
@@ -447,6 +453,7 @@ fn validate_algorithm_statements(
                 }
                 validate_algorithm_statements(
                     equations,
+                    flat,
                     &loop_roles,
                     states,
                     model_values,
@@ -473,6 +480,7 @@ fn validate_algorithm_statements(
                     )?;
                     validate_algorithm_statements(
                         &block.stmts,
+                        flat,
                         roles,
                         states,
                         model_values,
@@ -496,7 +504,9 @@ fn validate_algorithm_statements(
                         *span,
                     ));
                 }
-                if outputs.is_empty() || outputs.iter().all(Option::is_none) {
+                if (outputs.is_empty() || outputs.iter().all(Option::is_none))
+                    && terminal_print_message(flat, comp, args).is_none()
+                {
                     return Err(ToDaeError::unsupported_algorithm(
                         "model",
                         "function-call assignment must retain at least one output",

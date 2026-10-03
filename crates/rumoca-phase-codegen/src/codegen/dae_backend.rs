@@ -982,6 +982,10 @@ fn project_event_action(operation: dae::EventActionOperation<'_>) -> Value {
             "kind": "terminate",
             "message": message.index(),
         }),
+        dae::EventActionOperation::Print { message } => json!({
+            "kind": "print",
+            "message": message.index(),
+        }),
         dae::EventActionOperation::Reinitialize { state, value } => json!({
             "kind": "reinitialize",
             "state": state.index(),

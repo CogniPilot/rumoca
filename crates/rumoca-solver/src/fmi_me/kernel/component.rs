@@ -1166,6 +1166,7 @@ impl SolveMeKernel {
     /// `fmi3EnterInitializationMode`, unannotated; the trait method attaches
     /// [`MeStage::Initialization`].
     pub(super) fn enter_initialization_mode_inner(&mut self) -> Result<(), MeError> {
+        self.runtime.reset_diagnostics();
         self.runtime.initialize_delay_history(
             self.time,
             &self.runtime.model.initial_y,

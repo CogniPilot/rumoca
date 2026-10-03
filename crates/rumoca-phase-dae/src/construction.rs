@@ -27,6 +27,7 @@ mod native_tables;
 mod ordinary_equations;
 mod record_equation;
 mod structured_body;
+mod terminal_print;
 #[cfg(test)]
 mod tests;
 mod variable_construction;

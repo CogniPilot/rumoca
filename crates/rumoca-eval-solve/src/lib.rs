@@ -1189,9 +1189,10 @@ pub fn event_action_request_from_values(
                     message: eval_event_action_message(action, y, p, t, context)?,
                 });
             }
-            // A violated warning never aborts or terminates the run; its
-            // report is owned by the runtime diagnostics (MLS §8.3.7).
-            SolveEventActionKind::Warning => {}
+            // A violated warning or a model message never aborts or
+            // terminates the run; its report is owned by the runtime
+            // diagnostics (MLS §8.3.7, §12.9).
+            SolveEventActionKind::Warning | SolveEventActionKind::Print => {}
         }
     }
     Ok(EventActionRequest::Continue)

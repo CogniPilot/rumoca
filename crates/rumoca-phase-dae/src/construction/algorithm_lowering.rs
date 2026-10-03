@@ -606,6 +606,10 @@ fn lower_algorithm_call_statement<'dae>(
     context: AlgorithmStatementContext<'_, '_, 'dae>,
     call: AlgorithmFunctionCall<'_>,
 ) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
+    if call.plan.terminal_print {
+        lower_algorithm_print(construction, owner, context, &call)?;
+        return Ok(Vec::new());
+    }
     lower_algorithm_function_call(
         construction,
         discrete_values,
@@ -1150,5 +1154,47 @@ fn lower_algorithm_when<'dae>(
             &block.stmts,
         )?;
     }
+    Ok(())
+}
+
+/// Lower one terminal print (MLS 3.7 §12.9) to the event action that reports
+/// its message each time its `when` activation is active. An impure call is
+/// legal only inside a `when` statement of a model algorithm (MLS §12.3).
+fn lower_algorithm_print<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    owner: AlgorithmOwner<'dae>,
+    context: AlgorithmStatementContext<'_, '_, 'dae>,
+    call: &AlgorithmFunctionCall<'_>,
+) -> Result<(), dae::DaeConstructionError> {
+    let activation = owner.activation();
+    if activation.always {
+        return Err(dae::DaeConstructionError::IllegalImpureCallContext {
+            name: call.component.var_name().clone(),
+            span: call.span,
+        });
+    }
+    let Some(message) = call.arguments.first() else {
+        return Err(dae::DaeConstructionError::InvalidArity {
+            expected: 1,
+            found: 0,
+            span: call.span,
+        });
+    };
+    let message = lower_expression(
+        construction,
+        context.coordinates,
+        context.functions,
+        message,
+        None,
+    )?;
+    let provenance = dae::DaeProvenance::source(call.span)?;
+    construction.events(|events| {
+        events.print(
+            activation.trigger,
+            activation.condition,
+            message,
+            provenance,
+        )
+    })?;
     Ok(())
 }

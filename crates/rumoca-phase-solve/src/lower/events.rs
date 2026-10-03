@@ -1316,6 +1316,21 @@ fn lower_event_actions<'dae>(
                     action_conditions,
                 )?;
             }
+            dae::EventActionOperation::Print { message } => {
+                push_message_action(
+                    MessageActionContext {
+                        view,
+                        layout,
+                        clocks,
+                    },
+                    action,
+                    message,
+                    solve::SolveEventActionKind::Print,
+                    None,
+                    actions,
+                    action_conditions,
+                )?;
+            }
             dae::EventActionOperation::Reinitialize { state, value } => {
                 updates.push(EventUpdate {
                     trigger: action.trigger(),

@@ -1115,6 +1115,7 @@ fn analyze_model_algorithms(
         .map(|algorithm| {
             validate_model_algorithm(
                 algorithm,
+                flat,
                 expression_roles,
                 states,
                 function_shapes.model_values(),

@@ -44,6 +44,7 @@ fn collect_event_action_pre<'dae>(
             // A warning has no GALEC representation (MLS §8.3.7).
             dae::EventActionOperation::Warning { .. } => None,
             dae::EventActionOperation::Terminate { message } => Some(message),
+            dae::EventActionOperation::Print { message } => Some(message),
         };
         if let Some(value) = value {
             collect_pre(view, value, seen, ids)?;

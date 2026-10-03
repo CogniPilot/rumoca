@@ -242,6 +242,10 @@ pub struct SimDiagnostic {
 /// SPEC_0008 `WX001`: a warning-level assertion (MLS §8.3.7) was violated.
 pub const WARNING_ASSERTION_CODE: &str = "WX001";
 
+/// SPEC_0008 `WX002`: the model printed a message to the terminal (MLS 3.7
+/// §12.9, `Modelica.Utilities.Streams.print`).
+pub const MODEL_MESSAGE_CODE: &str = "WX002";
+
 #[derive(Debug, Clone)]
 pub struct SimResult {
     pub times: Vec<f64>,

@@ -1629,6 +1629,12 @@ fn reconstruct_events<'dae>(
                 mapped(&ids.expressions, message, "expression", action.provenance)?,
                 action.provenance,
             ),
+            EventActionKindWire::Print { message } => events.print(
+                trigger,
+                guard,
+                mapped(&ids.expressions, message, "expression", action.provenance)?,
+                action.provenance,
+            ),
             EventActionKindWire::Reinitialize { state, value } => {
                 let state = mapped(&ids.variables, state, "variable", action.provenance)?;
                 events.reinitialize(

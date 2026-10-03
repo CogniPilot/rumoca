@@ -1150,6 +1150,11 @@ pub enum SolveEventActionKind {
     /// reported and never aborts the run, creates an event, or influences
     /// step control. It owns no root program.
     Warning,
+    /// A model message (MLS 3.7 §12.9 `ModelicaInternal_print` to the
+    /// terminal): each settled event at which the action condition is true
+    /// reports the message once. It never aborts the run, creates an event,
+    /// or influences step control, and owns no root program.
+    Print,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

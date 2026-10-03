@@ -2,9 +2,13 @@
 //! event-algorithm function calls.
 
 use super::*;
+use crate::construction::terminal_print::terminal_print_message;
 
 pub(in crate::construction) struct ModelEventFunctionCallPlan {
     pub(in crate::construction) outputs: Vec<Option<ModelEventFunctionOutputPlan>>,
+    /// The call is a terminal print (MLS 3.7 §12.9), owned by one event
+    /// action that reports its message; it has no outputs.
+    pub(in crate::construction) terminal_print: bool,
 }
 
 #[derive(Clone)]
@@ -81,7 +85,16 @@ fn analyze_event_function_call_statements(
                 outputs,
                 span,
             } => {
-                let plan = analyze_event_function_call(context, comp, args, outputs, *span)?;
+                let plan = if outputs.iter().all(Option::is_none)
+                    && terminal_print_message(context.flat, comp, args).is_some()
+                {
+                    ModelEventFunctionCallPlan {
+                        outputs: Vec::new(),
+                        terminal_print: true,
+                    }
+                } else {
+                    analyze_event_function_call(context, comp, args, outputs, *span)?
+                };
                 insert_call_plan(plans, *span, plan)?;
             }
             rumoca_core::Statement::If {
@@ -184,6 +197,7 @@ fn analyze_event_function_call(
     }
     Ok(ModelEventFunctionCallPlan {
         outputs: output_plans,
+        terminal_print: false,
     })
 }
 

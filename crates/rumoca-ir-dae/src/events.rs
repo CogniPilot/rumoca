@@ -29,6 +29,7 @@ pub(crate) enum EventActionKind {
     Assert { message: u32 },
     Warning { message: u32, condition: u32 },
     Terminate { message: u32 },
+    Print { message: u32 },
     Reinitialize { state: u32, value: u32 },
 }
 
@@ -108,6 +109,12 @@ pub enum EventActionOperation<'dae> {
         condition: ExprId<'dae>,
     },
     Terminate {
+        message: ExprId<'dae>,
+    },
+    /// One MLS 3.7 §12.9 `ModelicaInternal_print` call to the terminal: the
+    /// String `message` is reported, followed by a line end, each time the
+    /// action is active at a settled event.
+    Print {
         message: ExprId<'dae>,
     },
     Reinitialize {
@@ -269,6 +276,26 @@ impl<'dae> Events<'_, 'dae> {
             message,
             provenance,
             EventActionKind::Terminate {
+                message: message.index(),
+            },
+        )
+    }
+
+    /// Report `message` on the terminal each time `guard` is active on
+    /// `trigger` (MLS 3.7 §12.9, `Modelica.Utilities.Streams.print`).
+    pub fn print(
+        &mut self,
+        trigger: ConditionId<'dae>,
+        guard: ConditionId<'dae>,
+        message: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<EventActionId<'dae>, DaeConstructionError> {
+        self.message_action(
+            trigger,
+            guard,
+            message,
+            provenance,
+            EventActionKind::Print {
                 message: message.index(),
             },
         )

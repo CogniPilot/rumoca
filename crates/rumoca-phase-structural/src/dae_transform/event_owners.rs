@@ -223,6 +223,12 @@ fn rebuild_event_action<'target>(
             expressions[message.index() as usize],
             action.provenance(),
         ),
+        dae::EventActionOperation::Print { message } => events.print(
+            trigger,
+            guard,
+            expressions[message.index() as usize],
+            action.provenance(),
+        ),
         dae::EventActionOperation::Reinitialize { state, value } => {
             let TargetVariable::State(state) = variables[state.index() as usize].identity else {
                 return Err(dae::DaeConstructionError::IncompleteDefinition {

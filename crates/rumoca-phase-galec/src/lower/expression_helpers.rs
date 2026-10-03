@@ -284,6 +284,7 @@ pub(super) const fn event_name(operation: dae::EventActionOperation<'_>) -> &'st
         dae::EventActionOperation::Assert { .. } => "assert",
         dae::EventActionOperation::Warning { .. } => "warning",
         dae::EventActionOperation::Terminate { .. } => "terminate",
+        dae::EventActionOperation::Print { .. } => "print",
         dae::EventActionOperation::Reinitialize { .. } => "reinitialize",
     }
 }

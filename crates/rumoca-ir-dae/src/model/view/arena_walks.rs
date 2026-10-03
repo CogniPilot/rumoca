@@ -140,6 +140,9 @@ fn event_action_view(entry: &EventActionEntry) -> EventActionView<'_> {
         EventActionKind::Terminate { message } => EventActionOperation::Terminate {
             message: ExprId::from_raw(message),
         },
+        EventActionKind::Print { message } => EventActionOperation::Print {
+            message: ExprId::from_raw(message),
+        },
         EventActionKind::Reinitialize { state, value } => EventActionOperation::Reinitialize {
             state: StateId::from_raw(state),
             value: ExprId::from_raw(value),

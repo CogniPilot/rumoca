@@ -266,6 +266,7 @@ mod steady_state_sensitivity_test;
 mod stream_one_direction_flow;
 mod structured_event_roots;
 mod structured_family_corner_lowering;
+mod terminal_print;
 mod terminate_when_regression;
 mod text_record_fields;
 mod tiered_models;

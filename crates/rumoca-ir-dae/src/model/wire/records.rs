@@ -431,6 +431,7 @@ pub(super) enum EventActionKindWire {
     Assert { message: u32 },
     Warning { message: u32, condition: u32 },
     Terminate { message: u32 },
+    Print { message: u32 },
     Reinitialize { state: u32, value: u32 },
 }
 

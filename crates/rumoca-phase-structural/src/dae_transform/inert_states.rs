@@ -125,7 +125,8 @@ fn derivatives_read_outside_continuous_owners(view: dae::DaeView<'_>) -> BTreeSe
     {
         match action.operation() {
             dae::EventActionOperation::Assert { message }
-            | dae::EventActionOperation::Terminate { message } => roots.push(message),
+            | dae::EventActionOperation::Terminate { message }
+            | dae::EventActionOperation::Print { message } => roots.push(message),
             dae::EventActionOperation::Warning { message, condition } => {
                 roots.extend([message, condition]);
             }

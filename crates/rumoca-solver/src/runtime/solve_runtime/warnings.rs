@@ -9,9 +9,13 @@
 //! accepted coordinate, at each settled event and at each recorded output
 //! point. Each warning site reports once, at the first time it is observed
 //! violated; later violations of the same site are not repeated.
+//!
+//! A model message (`Modelica.Utilities.Streams.print` to the terminal,
+//! SPEC_0008 `WX002`) is reported through the same log at every settled
+//! event that activates it.
 
 use super::*;
-use crate::{SimDiagnostic, WARNING_ASSERTION_CODE};
+use crate::{MODEL_MESSAGE_CODE, SimDiagnostic, WARNING_ASSERTION_CODE};
 
 /// The warning sites reported so far and their diagnostics, in order.
 #[derive(Clone, Default)]
@@ -44,6 +48,36 @@ impl SolveRuntime {
             log.reported.insert(row);
             log.diagnostics.push(SimDiagnostic {
                 code: WARNING_ASSERTION_CODE,
+                time: t,
+                message,
+                span: action.span,
+                origin: action.origin.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Report the message of every model-message action whose condition is
+    /// true among `values`, at one settled event. Unlike a warning, a
+    /// message is reported at every activation (MLS 3.7 §12.9: each call of
+    /// `ModelicaInternal_print` writes a line).
+    pub(super) fn report_model_messages(
+        &self,
+        values: &[f64],
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<(), RuntimeSolveError> {
+        let actions = &self.model.problem.events.actions;
+        let mut log = self.warning_log.borrow_mut();
+        for (action, value) in actions.iter().zip(values) {
+            if action.kind != solve::SolveEventActionKind::Print || *value <= 0.5 {
+                continue;
+            }
+            let message =
+                solve_eval::eval_event_action_message(action, y, p, t, self.row_eval_context())?;
+            log.diagnostics.push(SimDiagnostic {
+                code: MODEL_MESSAGE_CODE,
                 time: t,
                 message,
                 span: action.span,
@@ -91,6 +125,13 @@ impl SolveRuntime {
             &mut values,
         )?;
         self.report_violated_warnings(&values, y, &action_p, t)
+    }
+
+    /// Forget the diagnostics of an earlier run of this runtime. A run starts
+    /// when its component enters initialization, and a component built only
+    /// to probe the integrator choice runs the same initialization first.
+    pub fn reset_diagnostics(&self) {
+        *self.warning_log.borrow_mut() = WarningLog::default();
     }
 
     /// The diagnostics reported so far, in order of first occurrence.
