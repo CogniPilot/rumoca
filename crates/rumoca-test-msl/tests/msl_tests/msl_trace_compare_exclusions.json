@@ -401,6 +401,34 @@
       }
     },
     {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Initialize",
+      "kind": "reference_failure",
+      "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 phasors (V_m.im structurally zero, the real part changing sign with the winding current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these angles.",
+      "evidence": {
+        "facts": [
+          "746/6/2 channels (high/minor/deviating)",
+          "deviating: aimc.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m, aimc.rotorCage.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m",
+          "OMC generated code assigns each deviating channel the literal 0.0; the OMC traces of the matching real parts are negative at 7517, 9623 of 15004 samples",
+          "Rumoca's angle equals atan2(im, re) of its own trace at every sample, up to the sign of a zero imaginary part, so it has magnitude pi where re < 0"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Initialize"
+      }
+    },
+    {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Inverter",
+      "kind": "reference_failure",
+      "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 phasors (V_m.im structurally zero, the real part changing sign with the winding current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these angles.",
+      "evidence": {
+        "facts": [
+          "755/0/2 channels (high/minor/deviating)",
+          "deviating: aimc.rotorCage.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m, aimc.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m",
+          "OMC generated code assigns each deviating channel the literal 0.0; the OMC traces of the matching real parts are negative at 8147, 6793 of 15006 samples",
+          "Rumoca's angle equals atan2(im, re) of its own trace at every sample, up to the sign of a zero imaginary part, so it has magnitude pi where re < 0"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Inverter"
+      }
+    },
+    {
       "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_withLosses",
       "kind": "reference_failure",
       "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 stator and rotor-cage converters (V_m.im structurally zero, V_m.re alternating with the phase current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these two angles.",
@@ -429,6 +457,76 @@
       }
     },
     {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_DOL",
+      "kind": "reference_failure",
+      "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 phasors (V_m.im and Phi.im structurally zero, the real part changing sign with the winding current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these angles.",
+      "evidence": {
+        "facts": [
+          "960/0/6 channels (high/minor/deviating)",
+          "deviating: smee.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m, smee.rotorCage.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m, smee.excitation.arg_V_m, smee.excitation.stray.arg_V_m, smee.excitation.stray.arg_Phi, smee.excitation.electroMagneticConverter.arg_V_m",
+          "OMC generated code assigns each deviating channel the literal 0.0; the OMC traces of the matching real parts are negative at 14966, 12029, 2652, 2652, 2652, 2652 of 30008 samples",
+          "Rumoca's angle equals atan2(im, re) of its own trace at every sample, up to the sign of a zero imaginary part, so it has magnitude pi where re < 0"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_DOL"
+      }
+    },
+    {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Rectifier",
+      "kind": "reference_failure",
+      "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 phasors (V_m.im structurally zero, the real part changing sign with the winding current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these angles.",
+      "evidence": {
+        "facts": [
+          "866/0/2 channels (high/minor/deviating)",
+          "deviating: smee.rotorCage.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m, smee.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m",
+          "OMC generated code assigns each deviating channel the literal 0.0; the OMC traces of the matching real parts are negative at 7373, 6744 of 13450 samples",
+          "Rumoca's angle equals atan2(im, re) of its own trace at every sample, up to the sign of a zero imaginary part, so it has magnitude pi where re < 0"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Rectifier"
+      }
+    },
+    {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Inverter",
+      "kind": "reference_failure",
+      "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 phasors (V_m.im structurally zero, the real part changing sign with the winding current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these angles.",
+      "evidence": {
+        "facts": [
+          "1272/0/2 channels (high/minor/deviating)",
+          "deviating: smpmM.rotorCage.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m, smpmM.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m",
+          "OMC generated code assigns each deviating channel the literal 0.0; the OMC traces of the matching real parts are negative at 8614, 6873 of 15006 samples",
+          "Rumoca's angle equals atan2(im, re) of its own trace at every sample, up to the sign of a zero imaginary part, so it has magnitude pi where re < 0"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Inverter"
+      }
+    },
+    {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_VoltageSource",
+      "kind": "reference_failure",
+      "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 phasors (V_m.im structurally zero, the real part changing sign with the winding current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these angles.",
+      "evidence": {
+        "facts": [
+          "837/0/1 channels (high/minor/deviating)",
+          "deviating: smpm.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m",
+          "OMC generated code assigns each deviating channel the literal 0.0; the OMC traces of the matching real parts are negative at 10497 of 20002 samples",
+          "Rumoca's angle equals atan2(im, re) of its own trace at every sample, up to the sign of a zero imaginary part, so it has magnitude pi where re < 0"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_VoltageSource"
+      }
+    },
+    {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMR_Inverter",
+      "kind": "reference_failure",
+      "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 phasors (V_m.im structurally zero, the real part changing sign with the winding current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these angles.",
+      "evidence": {
+        "facts": [
+          "1218/0/2 channels (high/minor/deviating)",
+          "deviating: smrM.rotorCage.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m, smrM.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m",
+          "OMC generated code assigns each deviating channel the literal 0.0; the OMC traces of the matching real parts are negative at 9137, 6787 of 15006 samples",
+          "Rumoca's angle equals atan2(im, re) of its own trace at every sample, up to the sign of a zero imaginary part, so it has magnitude pi where re < 0"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMR_Inverter"
+      }
+    },
+    {
       "model_name": "Modelica.Magnetic.FundamentalWave.Examples.Components.EddyCurrentLosses",
       "kind": "reference_failure",
       "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channel of the phase-1 converter (orientation 0, V_m.im structurally zero, V_m.re alternating with the current) is the constant 0, while atan2 is pi for a negative real part. The only non-high channels are these two angles; 678 of 680 are high.",
@@ -440,6 +538,20 @@
         ],
         "commit": "6313cdbe3",
         "artifact": "docs/dev-guide/src/tooling/electrical-coverage.md"
+      }
+    },
+    {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.Components.PolyphaseInductance",
+      "kind": "reference_failure",
+      "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 phasors (Phi.im and V_m.im structurally zero, the real part changing sign with the winding current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these angles.",
+      "evidence": {
+        "facts": [
+          "574/0/5 channels (high/minor/deviating)",
+          "deviating: reluctance_s[1].arg_Phi, reluctance_s[1].arg_V_m, converter_s[1].arg_V_m, converter_m.singlePhaseElectroMagneticConverter[1].arg_V_m, converter_s[1].arg_Phi",
+          "OMC generated code assigns each deviating channel the literal 0.0; the OMC traces of the matching real parts are negative at 5000, 5000, 5000, 5000, 5001 of 10002 samples",
+          "Rumoca's angle equals atan2(im, re) of its own trace at every sample, up to the sign of a zero imaginary part, so it has magnitude pi where re < 0"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.Components.PolyphaseInductance"
       }
     },
     {
