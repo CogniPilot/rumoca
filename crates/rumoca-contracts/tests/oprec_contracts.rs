@@ -638,6 +638,49 @@ fn oprec_011_zero_inner_dimension_product_rejected() {
     );
 }
 
+// =============================================================================
+// OPREC-012: Operator resolution (MLS §14.2-14.5)
+// An operator on an operator-record operand is a call of the matching
+// operator function; a Real operand converts through 'constructor'.
+// =============================================================================
+
+#[test]
+fn oprec_012_operators_resolve_to_operator_functions() {
+    expect_success(
+        r#"
+        package P
+            operator record OR
+                Real re;
+                encapsulated operator 'constructor'
+                    function fromReal
+                        import P.OR;
+                        input Real re;
+                        output OR result(re = re);
+                    algorithm
+                    end fromReal;
+                end 'constructor';
+                encapsulated operator function '+'
+                    import P.OR;
+                    input OR a;
+                    input OR b;
+                    output OR c;
+                algorithm
+                    c := OR(a.re + b.re);
+                end '+';
+            end OR;
+            model M
+                OR a = OR(1);
+                OR b;
+                OR c = a + 2;
+            equation
+                a + b = OR(0);
+            end M;
+        end P;
+    "#,
+        "P.M",
+    );
+}
+
 #[test]
 fn oprec_011_unused_zero_sized_array_is_legal() {
     expect_success(

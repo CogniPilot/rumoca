@@ -994,10 +994,7 @@ pub(crate) fn finalize_flat_model(
         flatten_graph,
     )?;
 
-    seed_flat_functions_from_context(ctx, flat);
-    functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
-    rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index)?;
-    functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
+    collect_flat_functions(ctx, flat, overlay, tree, class_index, model_name)?;
     mark_record_constructor_calls(flat, tree);
     // Attach callable identity before the rewrite fixed point so rewritten
     // calls retain the exact collected target.
@@ -1089,6 +1086,33 @@ pub(crate) fn finalize_flat_model(
         ))
     })?;
 
+    Ok(())
+}
+
+/// Collect the functions the model calls, resolving MLS §14 operator-record
+/// operators first. Operator functions called from collected bodies may
+/// themselves apply overloaded operators, so resolution and collection
+/// alternate until collection adds no function.
+fn collect_flat_functions(
+    ctx: &Context,
+    flat: &mut flat::Model,
+    overlay: &ast::InstanceOverlay,
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    model_name: &str,
+) -> Result<(), FlattenError> {
+    crate::operator_records::resolve_operator_overloads(flat, class_index)?;
+    seed_flat_functions_from_context(ctx, flat);
+    functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
+    rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index)?;
+    for _ in 0..8 {
+        let collected = flat.functions.len();
+        crate::operator_records::resolve_operator_overloads(flat, class_index)?;
+        functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
+        if flat.functions.len() == collected {
+            break;
+        }
+    }
     Ok(())
 }
 

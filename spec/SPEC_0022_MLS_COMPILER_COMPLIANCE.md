@@ -30,16 +30,16 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.9 TYPE contracts | 652–692 | Type/interface rules (36 contracts) |
 | §4.10 ARR contracts | 693–743 | Array rules (46 contracts) |
 | §4.11 PKG contracts | 744–761 | Package/import rules (13 contracts) |
-| §4.12 OPREC contracts | 762–777 | Operator record rules (11 contracts) |
-| §4.13 SIM contracts | 778–792 | Simulation rules (10 contracts) |
-| §4.14 CLK contracts | 793–817 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 818–835 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 836–932 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 933–954 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 955–970 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 971–996 | Category counts and totals |
-| §6. Compiler Phases | 997–1046 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1047–1074 | MLS chapter → contract category mapping |
+| §4.12 OPREC contracts | 762–778 | Operator record rules (12 contracts) |
+| §4.13 SIM contracts | 779–793 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 794–818 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 819–836 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 837–935 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 936–957 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 958–973 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 974–999 | Category counts and totals |
+| §6. Compiler Phases | 1000–1049 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1050–1077 | MLS chapter → contract category mapping |
 
 ---
 
@@ -774,6 +774,7 @@ Defines state-to-state transitions with priority and timing control.
 | OPREC-009 | Constructor mutual exclusion | §14.3 | "For pair of operator record classes C and D, at most one of C.'constructor'(d) and D.'constructor'(c) shall be legal" |
 | OPREC-010 | String operator output | §14.4 | "operator A.'String' shall only contain functions declaring one output of String type" |
 | OPREC-011 | Zero inner dimension | §14.5 | "If inner dimension is zero for matrix*vector/matrix, uses '0' operator; error if '0' not defined"
+| OPREC-012 | Operator resolution | §14.2–14.5 | An operator on an operator-record operand denotes a call of the matching operator function (MLS §14.5). Rumoca: flatten replaces each operator on an operator-record operand (`+`, binary and unary `-`, `*`, `/`, `^`, relations, `and`, `or`) by a call of the record's operator function whose first inputs accept the operands (a record input the same operator record, a Real input any numeric operand, an Integer input only an Integer; further inputs defaulted), searching both operands' records; two matches are an error (OPREC-007). With no match, a numeric operand is converted by the unique matching `'constructor'` function of the other record and matching repeats; a record vector operand no function accepts applies element by element; `sum` of an empty record vector is the record's `'0'` element. A record equation whose sides no record owner reads directly (`a + b = Complex(0, 0)`) is one scalar equation per field. A record-typed function output or input declared with field modifiers (`output Complex result(re = re, im = im)`) has the constructor call as its value. Tested in `suite_core/operator_record_overloads.rs` |
 
 ### 4.13 Simulation Contracts (SIM)
 
@@ -985,14 +986,14 @@ areas.
 | Types/Interfaces | TYPE | 36 |
 | Arrays | ARR | 46 |
 | Packages | PKG | 13 |
-| Operator Records | OPREC | 11 |
+| Operator Records | OPREC | 12 |
 | Simulation | SIM | 10 |
 | Clocks/Synchronous | CLK | 20 |
 | Stream Connectors | STRM | 13 |
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **462** |
+| **Total** | | **463** |
 
 ---
 
@@ -1081,5 +1082,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 462 |
+| Total Contracts | 463 |
 | MLS Chapters Referenced | 21 |

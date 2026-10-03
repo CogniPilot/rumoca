@@ -639,9 +639,106 @@ fn finish_function_param(
         }
     }
 
+    if param.default.is_none()
+        && let Some(default) = record_modification_default(
+            class_index,
+            component,
+            type_identity,
+            expressions,
+            imports,
+            locals,
+            param.span,
+        )?
+    {
+        param = param.with_default(default);
+    }
+
     apply_component_description(&mut param, component);
 
     Ok(param)
+}
+
+/// The value a record declaration's field modifications give it, as a call
+/// of the record's constructor (MLS 3.7 §12.6): `output Complex result(re =
+/// re, im = im)` is `result = Complex(re = re, im = im)`. The
+/// `Complex.'constructor'.fromReal` operator function is defined only by
+/// such a modifier.
+fn record_modification_default(
+    class_index: &ast::ClassDefIndex<'_>,
+    component: &ast::Component,
+    type_identity: ComponentTypeIdentity<'_>,
+    expressions: FunctionExpressionContext<'_>,
+    imports: &qualify::ImportMap,
+    locals: &HashSet<String>,
+    span: rumoca_core::Span,
+) -> Result<Option<rumoca_core::Expression>, FlattenError> {
+    let (Some(record_def), Some(record)) = (type_identity.def_id, type_identity.class_def) else {
+        return Ok(None);
+    };
+    if record.class_type != rumoca_core::ClassType::Record
+        || component.modifications.is_empty()
+        || !component.shape_expr.is_empty()
+        || !component
+            .modifications
+            .keys()
+            .all(|field| record.components.contains_key(field))
+    {
+        return Ok(None);
+    }
+    let mut args = Vec::with_capacity(component.modifications.len());
+    for (field, value) in &component.modifications {
+        let qualified = qualify_function_expr(value, imports, locals);
+        let value = ast_lower::expression_from_ast_with_intrinsics(
+            &qualified,
+            expressions.predefined_intrinsics,
+        )?;
+        args.push(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::generated(format!(
+                "{}{field}",
+                rumoca_core::NAMED_FUNCTION_ARG_PREFIX
+            )),
+            args: vec![value],
+            is_constructor: true,
+            span,
+        });
+    }
+    let Some(name) = class_path_reference(class_index, record_def, span) else {
+        return Ok(None);
+    };
+    Ok(Some(rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor: true,
+        span,
+    }))
+}
+
+/// A reference to class `def_id` by its qualified path, resolved part by part
+/// so function collection treats it like a source-written class reference.
+/// `None` when a class on the path has no name in the index.
+pub(crate) fn class_path_reference(
+    class_index: &ast::ClassDefIndex<'_>,
+    def_id: rumoca_core::DefId,
+    span: rumoca_core::Span,
+) -> Option<rumoca_core::Reference> {
+    let parts = class_index
+        .def_ancestry(def_id)
+        .into_iter()
+        .map(|def| {
+            Some(rumoca_core::ComponentRefPart {
+                ident: class_index.local_name(def)?.to_string(),
+                span,
+                subs: Vec::new(),
+                def_id: def,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let name = class_index.qualified_name(def_id)?.to_string();
+    let component_ref = rumoca_core::ComponentReference::construct(false, span, parts).ok()?;
+    Some(rumoca_core::Reference::with_component_reference(
+        name,
+        component_ref,
+    ))
 }
 
 fn function_shape_dim(subscript: &rumoca_core::Subscript) -> i64 {

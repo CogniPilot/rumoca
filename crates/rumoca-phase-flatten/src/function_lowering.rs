@@ -344,6 +344,9 @@ fn rewrite_record_param_size_refs_in_function(
         if let Some(default) = &mut param.default {
             *default = rewriter.rewrite_expression(default);
         }
+        // A declared extent may read a sibling record parameter's size, as in
+        // `input Complex c2[size(c1, 1)]` of `Complex.'*'.scalarProduct`.
+        param.shape_expr = rewriter.rewrite_subscripts(&param.shape_expr);
     }
     for stmt in &mut func.body {
         *stmt = rewriter.rewrite_statement(stmt);
@@ -1455,6 +1458,41 @@ fn expand_record_arg(
     out: &mut Vec<rumoca_core::Expression>,
 ) -> Result<(), FlattenError> {
     if expand_record_constructor_arg(function_name, arg, fields, out)? {
+        return Ok(());
+    }
+
+    // An array of records passes, per field, the array of that field of each
+    // element: `{C(1, 2), v[2]}` is `{1, v[2].re}` and `{2, v[2].im}`.
+    if let rumoca_core::Expression::Array {
+        elements,
+        kind: rumoca_core::ArrayConstructor::Array,
+        span,
+    } = arg
+        && !elements.is_empty()
+    {
+        let mut per_element = Vec::with_capacity(elements.len());
+        for element in elements {
+            let mut element_fields = Vec::with_capacity(fields.len());
+            expand_record_arg(
+                function_name,
+                element,
+                fields,
+                local_record_params,
+                aggregate_record_values,
+                &mut element_fields,
+            )?;
+            per_element.push(element_fields);
+        }
+        for index in 0..fields.len() {
+            out.push(rumoca_core::Expression::Array {
+                elements: per_element
+                    .iter()
+                    .map(|element_fields| element_fields[index].clone())
+                    .collect(),
+                kind: rumoca_core::ArrayConstructor::Array,
+                span: *span,
+            });
+        }
         return Ok(());
     }
 

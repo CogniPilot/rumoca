@@ -3957,6 +3957,13 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'OPREC-012'
+case_id = 'oprec_012_operators_resolve_to_operator_functions'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'ANN-017'
 case_id = 'ann_017_evaluate_and_final_parameters_are_marked_evaluable'
 test_file = 'tests/ann_contracts.rs'

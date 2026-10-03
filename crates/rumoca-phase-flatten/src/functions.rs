@@ -58,6 +58,7 @@ use function_context::{
 };
 use function_derivatives::*;
 pub(crate) use function_metadata::FunctionTypeCatalog;
+pub(crate) use function_metadata::class_path_reference;
 pub(crate) use function_metadata::lower_record_function_params;
 use function_metadata::*;
 use function_output_validation::validate_function_outputs_assigned;

@@ -382,6 +382,7 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "OPREC-009",
     "OPREC-010",
     "OPREC-011",
+    "OPREC-012",
     "PKG-001",
     "PKG-002",
     "PKG-003",
@@ -496,11 +497,11 @@ mod tests {
     #[test]
     fn test_registry_has_all_contracts() {
         let registry = create_registry();
-        // SPEC_0022 defines 462 contracts
+        // SPEC_0022 defines 463 contracts
         assert_eq!(
             registry.len(),
-            462,
-            "Expected 462 contracts, got {}",
+            463,
+            "Expected 463 contracts, got {}",
             registry.len()
         );
     }
@@ -542,7 +543,7 @@ mod tests {
             registry
                 .by_category(ContractCategory::OperatorRecord)
                 .count(),
-            11
+            12
         );
         assert_eq!(
             registry.by_category(ContractCategory::Simulation).count(),

@@ -20,10 +20,18 @@ pub(super) fn materialize_function_shape_constants(
         .chain(function.locals.iter())
         .filter_map(|parameter| parameter.def_id)
         .collect();
+    let generated_locals = function
+        .inputs
+        .iter()
+        .chain(function.outputs.iter())
+        .chain(function.locals.iter())
+        .map(|parameter| parameter.name.clone())
+        .collect();
     let mut materializer = FunctionShapeConstantMaterializer {
         ctx,
         exposures,
         local_def_ids,
+        generated_locals,
         expansion_stack: Vec::new(),
     };
 
@@ -65,6 +73,9 @@ struct FunctionShapeConstantMaterializer<'a> {
     /// constant they give their own value takes that value.
     exposures: &'a [String],
     local_def_ids: FxHashSet<DefId>,
+    /// Names of this function's declarations, which a generated reference
+    /// (one record-parameter lowering produced) may name.
+    generated_locals: FxHashSet<String>,
     expansion_stack: Vec<DefId>,
 }
 
@@ -154,6 +165,18 @@ impl FallibleExpressionRewriter for FunctionShapeConstantMaterializer<'_> {
         subscripts: &[Subscript],
         span: Span,
     ) -> Result<Expression, Self::Error> {
+        // Record-parameter lowering names the scalar field parameters it
+        // generates (`c1_re` of `input Complex c1[:]`) and rewrites a sibling
+        // extent such as `c2[size(c1, 1)]` to read one of them; that
+        // generated reference is exactly one of this function's own
+        // declarations.
+        if name.is_generated() && self.generated_locals.contains(name.as_str()) {
+            return Ok(Expression::VarRef {
+                name: name.clone(),
+                subscripts: self.rewrite_subscripts(subscripts)?,
+                span,
+            });
+        }
         let target = name
             .target_def_id()
             .ok_or_else(|| FlattenError::UnresolvedFlatReference {

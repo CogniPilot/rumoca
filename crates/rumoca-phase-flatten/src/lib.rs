@@ -45,6 +45,7 @@ mod function_lowering;
 mod function_precollect;
 mod functions;
 mod name_simplify;
+mod operator_records;
 mod outer_refs;
 mod param_variability;
 mod path_utils;

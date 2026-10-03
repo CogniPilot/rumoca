@@ -3363,6 +3363,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'OPREC-012'
+category = 'OperatorRecord'
+name = 'Operator resolution'
+mls_ref = '§14.2-14.5'
+requirement = 'An operator on an operator-record operand denotes a call of the matching operator function'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'PKG-001'
 category = 'Package'
 name = 'Unique import names'

@@ -191,6 +191,7 @@ mod nested_record_function_redeclaration;
 mod neural_ode_tensor_solve_ir;
 mod no_derivative_state_selection;
 mod omc_differential_semantics;
+mod operator_record_overloads;
 mod orientation_rate_reduction;
 mod overdetermined_connection_loop;
 mod overdetermined_rooted_consistency;
