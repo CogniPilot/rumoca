@@ -170,29 +170,13 @@ impl<'dae> ExternalFunctionBody<'dae> {
 }
 
 /// A proven SPEC_0040 DAE-C30 binding of an external interface to its catalog
-/// row: the function parameter read by each catalog input and the function
-/// result written by each catalog output, both in catalog interface order.
+/// row: the argument expression each catalog input reads and the function
+/// result each catalog output writes, both in catalog interface order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativeBodyBinding {
-    body: NativeBody,
-    parameters: Box<[u32]>,
-    results: Box<[u32]>,
-}
-
-impl NativeBodyBinding {
-    pub const fn body(&self) -> NativeBody {
-        self.body
-    }
-
-    /// The function parameter ordinal each catalog input reads.
-    pub fn parameters(&self) -> &[u32] {
-        &self.parameters
-    }
-
-    /// The function result position each catalog output writes.
-    pub fn results(&self) -> &[u32] {
-        &self.results
-    }
+pub(crate) struct NativeBodyBinding {
+    pub(crate) body: NativeBody,
+    pub(crate) inputs: Box<[u32]>,
+    pub(crate) results: Box<[u32]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -540,23 +524,13 @@ fn proven_native_body(
         return None;
     }
     let entry = storage.functions.get(function.index() as usize)?;
-    let mut parameters = Vec::new();
+    let mut inputs = Vec::new();
     let mut results = Vec::new();
     for (argument, expected) in arguments.iter().zip(interface) {
         let value_type = match (argument, expected.role) {
             (ExternalArgumentEntry::Input(expression), NativeArgumentRole::Input) => {
-                let ExprNode::Coordinate(Coordinate::FunctionParameter {
-                    function: owner,
-                    ordinal,
-                }) = storage.expressions.nodes.get(*expression as usize)?
-                else {
-                    return None;
-                };
-                if *owner != function.index() {
-                    return None;
-                }
-                parameters.push(*ordinal);
-                entry.parameter_values.get(*ordinal as usize)?.value_type
+                inputs.push(*expression);
+                *storage.expressions.value_types.get(*expression as usize)?
             }
             (ExternalArgumentEntry::Output(value), NativeArgumentRole::Output) => {
                 let position = entry
@@ -575,7 +549,7 @@ fn proven_native_body(
     }
     Some(NativeBodyBinding {
         body,
-        parameters: parameters.into_boxed_slice(),
+        inputs: inputs.into_boxed_slice(),
         results: results.into_boxed_slice(),
     })
 }

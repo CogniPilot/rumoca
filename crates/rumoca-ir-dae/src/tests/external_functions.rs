@@ -444,30 +444,46 @@ fn native_fixture(purity: FunctionPurity, symbol: &str, extent: u32) -> Dae {
     .expect("a checked external interface defines its reserved function")
 }
 
-fn native_binding(dae: &Dae) -> Option<NativeBodyBinding> {
+type NativeBinding = (rumoca_core::native_body::NativeBody, Vec<bool>, Vec<u32>);
+
+/// The bound row, whether each input reads a function parameter, and the
+/// result each output writes.
+fn native_binding(dae: &Dae) -> Option<NativeBinding> {
     dae.inspect(|view| {
-        view.function(view.function_id(0).unwrap())
+        let binding = view
+            .function(view.function_id(0).unwrap())
             .unwrap()
             .external()
             .unwrap()
-            .native_body()
-            .cloned()
+            .native_body()?;
+        let inputs = binding
+            .inputs()
+            .map(|input| {
+                matches!(
+                    view.expression(input).unwrap().operation(),
+                    ExpressionOperation::Coordinate(CoordinateView::FunctionParameter(_))
+                )
+            })
+            .collect();
+        Some((binding.body(), inputs, binding.results().to_vec()))
     })
 }
 
 /// SPEC_0040 DAE-C30: the proven binding maps each catalog input to the
-/// parameter it reads and each catalog output to the result it writes, and
+/// argument it reads and each catalog output to the result it writes, and
 /// wire replay derives it again rather than reading it.
 #[test]
 fn a_cataloged_interface_is_bound_to_its_native_body() {
     let dae = native_fixture(FunctionPurity::Pure, "ModelicaRandom_xorshift64star", 2);
     let binding = native_binding(&dae).expect("the interface matches its catalog row");
     assert_eq!(
-        binding.body(),
-        rumoca_core::native_body::NativeBody::Xorshift64Star
+        binding,
+        (
+            rumoca_core::native_body::NativeBody::Xorshift64Star,
+            vec![true],
+            vec![1, 0]
+        )
     );
-    assert_eq!(binding.parameters(), [0]);
-    assert_eq!(binding.results(), [1, 0]);
     let encoded = serde_json::to_string(&dae).unwrap();
     assert!(
         !encoded.contains("native"),

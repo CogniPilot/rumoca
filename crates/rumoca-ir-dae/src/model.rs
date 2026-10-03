@@ -171,9 +171,8 @@ pub(crate) use domains::insert_domain;
 use external_functions::build_external_body;
 pub use external_functions::{
     ExternalArgument, ExternalFunctionBody, ExternalLanguage, ExternalLinkage, FunctionPurity,
-    NativeBodyBinding,
 };
-pub(crate) use external_functions::{ExternalArgumentEntry, ExternalBodyEntry};
+pub(crate) use external_functions::{ExternalArgumentEntry, ExternalBodyEntry, NativeBodyBinding};
 use function_checks::*;
 use function_derivatives::FunctionDerivativeEntry;
 pub use function_derivatives::FunctionDerivativeView;
@@ -190,8 +189,8 @@ pub use view::{
     ExpressionOperation, ExpressionView, ExternalArgumentView, ExternalFunctionView,
     FunctionConditionalView, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView,
     FunctionParameterView, FunctionStatementView, FunctionStatements, FunctionValueView,
-    FunctionView, InitializationOwnerView, RangeBoundView, RangeView, RecordFieldLayout,
-    ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
+    FunctionView, InitializationOwnerView, NativeBodyView, RangeBoundView, RangeView,
+    RecordFieldLayout, ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
     StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
     ValueTypeOperands, VariableIdentity, VariableView, broadcast_scalar_values,
 };

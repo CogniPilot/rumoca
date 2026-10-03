@@ -177,7 +177,7 @@ pub use model::{
     FunctionDerivativeView, FunctionFoldView, FunctionLoop, FunctionParameterView, FunctionPurity,
     FunctionReservation, FunctionScopeRelation, FunctionScopeView, FunctionSignature,
     FunctionStatementView, FunctionStatements, FunctionValueRole, FunctionValueView, FunctionView,
-    Functions, InitializationOwnerView, InputVariability, NativeBodyBinding, QuotientReplayToken,
+    Functions, InitializationOwnerView, InputVariability, NativeBodyView, QuotientReplayToken,
     RangeBoundView, RangeView, RecordFieldLayout, ResidualEquationView, RuntimeQuotientOwnerKind,
     RuntimeQuotientOwnerView, StringConversionFormatView, StructuredFamilyView, SubscriptView,
     SubscriptsView, ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality,

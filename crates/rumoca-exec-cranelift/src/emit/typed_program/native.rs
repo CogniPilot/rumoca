@@ -4,7 +4,9 @@
 //! value every other evaluator computes.
 
 use super::*;
-use rumoca_core::native_body::{NativeArgument, NativeBody, NativeElement, NativeScalar};
+use rumoca_core::native_body::{
+    NativeArgument, NativeBody, NativeBodyError, NativeElement, NativeScalar,
+};
 
 const NATIVE_HOST_SYMBOL: &str = "rumoca_host_native";
 
@@ -83,8 +85,10 @@ pub(in crate::emit) unsafe extern "C" fn rumoca_host_native(
         })
         .collect::<Vec<_>>();
     let inputs = inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    let Ok(outputs) = body.evaluate(&inputs) else {
-        return status::NATIVE_BODY_FAILURE;
+    let outputs = match body.evaluate(&inputs) {
+        Ok(outputs) => outputs,
+        Err(NativeBodyError::Failure { .. }) => return status::NATIVE_BODY_FOREIGN_ERROR,
+        Err(NativeBodyError::OperandMismatch { .. }) => return status::NATIVE_BODY_FAILURE,
     };
     for (cell, element) in outputs.into_iter().flatten().enumerate() {
         let bits = match element {

@@ -99,3 +99,78 @@ fn host_entry_refuses_an_unknown_body_code() {
     assert_eq!(status, status::NATIVE_BODY_FAILURE);
     assert_eq!(native_body_code(NativeBody::Xorshift1024Star), 2);
 }
+
+/// An owner drawing from the threaded `ModelicaRandom` cell.
+fn draw_table() -> solve::SolvePureCallTable {
+    let arithmetic = solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::FULL,
+    );
+    let integer = solve::SolveScalarType::integer(arithmetic);
+    let cell = solve::SolveValueType::tensor(integer, vec![34]).unwrap();
+    let id = solve::SolveValueType::scalar(integer);
+    let real = solve::SolveValueType::scalar(solve::SolveScalarType::real(arithmetic));
+    let at = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("native_draw.mo"),
+        1,
+        2,
+    );
+    solve::SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(903).unwrap()),
+            vec![id, cell.clone()],
+            vec![
+                solve::SolvePureCallOutput::result(real),
+                solve::SolvePureCallOutput::result(cell),
+            ],
+            at,
+            |builder, inputs, outputs| {
+                let id = builder.load(inputs[0], at)?;
+                let cell = builder.load(inputs[1], at)?;
+                let values =
+                    builder.native(NativeBody::Xorshift1024StarImpureDraw, &[id, cell], at)?;
+                builder.store(outputs[0], values[0], at)?;
+                builder.store(outputs[1], values[1], at)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+/// The foreign body's error is a typed failure in both the compiled host call
+/// and the typed evaluator, never a value.
+#[test]
+fn a_foreign_error_fails_the_call_in_every_evaluator() {
+    let table = draw_table();
+    let compiled = CompiledPureCallTable::compile(&table).unwrap();
+    let site = table.owners()[0].call_site();
+    let mut inputs = vec![7_u64];
+    inputs.extend([0_u64; 34]);
+    let mut outputs = [0_u64; 35];
+    let error = compiled
+        .call_cells(
+            rumoca_eval_solve::PureCallInvocation::Primal(&site),
+            &inputs,
+            &mut outputs,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("foreign body"), "{error}");
+
+    let owner = &table.owners()[0];
+    let arguments = [
+        TypedValue::construct(
+            owner.inputs()[0].clone(),
+            vec![solve::SolveValueKind::Integer(7)],
+        )
+        .unwrap(),
+        TypedValue::construct(
+            owner.inputs()[1].clone(),
+            vec![solve::SolveValueKind::Integer(0); 34],
+        )
+        .unwrap(),
+    ];
+    let error = eval_pure_call(&table, owner.id(), &arguments).unwrap_err();
+    assert!(error.to_string().contains("not initialized"), "{error}");
+    assert!(error.source_span().is_some());
+}

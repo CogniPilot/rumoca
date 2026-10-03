@@ -9,6 +9,8 @@ const LINEAR_SOLVE_FAILURE: i64 = 2;
 const INTEGER_QUOTIENT_FAILURE: i64 = 3;
 /// A native body host call received a tape outside its catalog interface.
 pub(super) const NATIVE_BODY_FAILURE: u8 = 4;
+/// A native body reported its foreign error for these operands.
+pub(super) const NATIVE_BODY_FOREIGN_ERROR: u8 = 5;
 
 pub(super) fn check(status: u8) -> Result<(), CompileError> {
     match status {
@@ -24,6 +26,9 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
         )),
         NATIVE_BODY_FAILURE => Err(CompileError::Backend(
             "native body host call received operands outside its interface".into(),
+        )),
+        NATIVE_BODY_FOREIGN_ERROR => Err(CompileError::Input(
+            "a native foreign body reported an error for its operands".into(),
         )),
         _ => Err(CompileError::Backend(format!(
             "unknown native kernel status {status}"

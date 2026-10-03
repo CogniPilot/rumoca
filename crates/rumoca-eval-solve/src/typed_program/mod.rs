@@ -125,6 +125,11 @@ pub enum TypedProgramEvalError {
         reason: String,
         provenance: Span,
     },
+    /// A SPEC_0040 DAE-C30 native body reported its foreign error.
+    NativeBody {
+        reason: String,
+        provenance: Span,
+    },
 }
 
 impl TypedProgramEvalError {
@@ -136,7 +141,8 @@ impl TypedProgramEvalError {
             | Self::InvalidCheckedProgram { provenance, .. }
             | Self::IntegerArithmetic { provenance, .. }
             | Self::InvalidIntegerConversion { provenance }
-            | Self::LinearSolve { provenance, .. } => Some(*provenance),
+            | Self::LinearSolve { provenance, .. }
+            | Self::NativeBody { provenance, .. } => Some(*provenance),
         }
     }
 }
@@ -147,6 +153,7 @@ impl std::fmt::Display for TypedProgramEvalError {
             Self::LinearSolve { reason, .. } => {
                 write!(formatter, "tensor linear solve failed: {reason}")
             }
+            Self::NativeBody { reason, .. } => write!(formatter, "native body failed: {reason}"),
             Self::UnknownOwner { owner } => {
                 write!(formatter, "unknown pure-call owner {}", owner.index())
             }

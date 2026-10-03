@@ -138,8 +138,6 @@ fn entry_points_identify_their_rows_exactly() {
             NativeBody::from_c_entry_point(body.entry_point()),
             Some(body)
         );
-        assert_eq!(body.inputs().count(), 1);
-        assert_eq!(body.outputs().count(), 2);
     }
     assert_eq!(
         NativeBody::from_c_entry_point("ModelicaRandom_xorshift64"),
@@ -153,9 +151,111 @@ fn operands_outside_the_interface_are_refused() {
     let body = NativeBody::Xorshift128Plus;
     let short = integers(&[1, 2]);
     let real = [NativeScalar::Real(1.0); 4];
-    let error = NativeOperandMismatch { body };
+    let error = NativeBodyError::OperandMismatch { body };
     assert_eq!(body.evaluate(&[&short]), Err(error));
     assert_eq!(body.evaluate(&[&real]), Err(error));
     assert_eq!(body.evaluate(&[]), Err(error));
     assert!(error.to_string().contains("ModelicaRandom_xorshift128plus"));
+}
+
+fn cell_draw(id: i64, cell: &[i64]) -> Result<(f64, Vec<i64>), NativeBodyError> {
+    let id = [NativeScalar::Integer(id)];
+    let cell = integers(cell);
+    let outputs = NativeBody::Xorshift1024StarImpureDraw.evaluate(&[&id, &cell])?;
+    let [NativeScalar::Real(result)] = outputs[0].as_slice() else {
+        panic!("one Real result");
+    };
+    let cell = outputs[1]
+        .iter()
+        .map(|value| match value {
+            NativeScalar::Integer(value) => *value,
+            NativeScalar::Real(_) => panic!("Integer cell"),
+        })
+        .collect();
+    Ok((*result, cell))
+}
+
+/// `initializeImpureRandom(30020)` stores the xorshift1024* state seeded with
+/// localSeed 715827883 and its id; each impure draw then advances that state.
+/// The first draws match OpenModelica's run of the MSL 4.1 C sources.
+#[test]
+fn threaded_impure_draws_reproduce_the_msl_c_sources() {
+    let state = integers(&initial_state(715_827_883, 30_020, 33));
+    let size = [NativeScalar::Integer(33)];
+    let id = [NativeScalar::Integer(715_827_883)];
+    let empty = integers(&ForeignStateCell::Xorshift1024Star.initial_value());
+    let set = NativeBody::Xorshift1024StarSetState
+        .evaluate(&[&state, &size, &id, &empty])
+        .unwrap();
+    let mut cell = set[0]
+        .iter()
+        .map(|value| match value {
+            NativeScalar::Integer(value) => *value,
+            NativeScalar::Real(_) => panic!("Integer cell"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cell[33], 715_827_883);
+    let mut draws = Vec::new();
+    for _ in 0..3 {
+        let (result, next) = cell_draw(715_827_883, &cell).unwrap();
+        draws.push(result);
+        cell = next;
+    }
+    assert_eq!(
+        format!("{:.15e}", draws[0]),
+        format!("{:.15e}", 0.7397046101410745)
+    );
+    assert_eq!(
+        format!("{:.15e}", draws[2]),
+        format!("{:.15e}", 0.6555718770098982)
+    );
+    assert_eq!(cell[33], 715_827_883);
+}
+
+/// The foreign body's `ModelicaError` cases are typed failures.
+#[test]
+fn foreign_state_rows_report_their_foreign_errors() {
+    let empty = ForeignStateCell::Xorshift1024Star.initial_value();
+    let error = cell_draw(7, &empty).unwrap_err();
+    assert!(matches!(error, NativeBodyError::Failure { .. }));
+    assert!(error.to_string().contains("not initialized"));
+    let state = integers(&[0; 33]);
+    for size in [34, -1] {
+        let error = NativeBody::Xorshift1024StarSetState
+            .evaluate(&[
+                &state,
+                &[NativeScalar::Integer(size)],
+                &[NativeScalar::Integer(1)],
+                &integers(&empty),
+            ])
+            .unwrap_err();
+        assert!(error.to_string().contains("too large"), "{size}");
+    }
+}
+
+#[test]
+fn foreign_state_rows_thread_their_declared_interface() {
+    for body in NativeBody::ALL {
+        let Some(access) = body.foreign_state() else {
+            assert_eq!(body.interface().len(), 3);
+            continue;
+        };
+        let cell = Some(access.cell.extent());
+        let threaded = body.interface();
+        let declared_outputs = usize::from(access.declared_return.is_some());
+        assert_eq!(threaded.len(), access.declared.len() + declared_outputs + 2);
+        assert_eq!(&threaded[..access.declared.len()], access.declared);
+        let [cell_in, cell_out] = &threaded[threaded.len() - 2..] else {
+            unreachable!()
+        };
+        assert_eq!(
+            (cell_in.role, cell_in.extent),
+            (NativeArgumentRole::Input, cell)
+        );
+        assert_eq!(
+            (cell_out.role, cell_out.extent),
+            (NativeArgumentRole::Output, cell)
+        );
+        assert!(!access.cell.name().is_empty());
+    }
 }

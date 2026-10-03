@@ -2,7 +2,7 @@
 //! compiler-defined foreign body (SPEC_0040 DAE-C30).
 
 use super::*;
-use rumoca_core::native_body::{NativeBody, NativeScalar};
+use rumoca_core::native_body::{NativeBody, NativeBodyError, NativeScalar};
 
 impl EvalFrame<'_, '_> {
     pub(super) fn eval_native(
@@ -29,9 +29,15 @@ impl EvalFrame<'_, '_> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let inputs = inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
-        let outputs = body
-            .evaluate(&inputs)
-            .map_err(|_| invalid_error("native body operands", provenance))?;
+        let outputs = body.evaluate(&inputs).map_err(|error| match error {
+            NativeBodyError::Failure { .. } => TypedProgramEvalError::NativeBody {
+                reason: error.to_string(),
+                provenance,
+            },
+            NativeBodyError::OperandMismatch { .. } => {
+                invalid_error("native body operands", provenance)
+            }
+        })?;
         if outputs.len() != destinations.len() {
             return Err(invalid_error("native body results", provenance));
         }

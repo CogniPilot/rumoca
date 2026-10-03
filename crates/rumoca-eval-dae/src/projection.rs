@@ -669,8 +669,8 @@ impl<'dae> Projection<'_, 'dae> {
             }
             return Ok(());
         }
-        if let Some(binding) = self.native_body(function) {
-            return self.native_body_arguments(binding, &arguments, span);
+        if self.has_native_body(function) {
+            return self.native_body_arguments(&arguments);
         }
         let dependency = FunctionResultDependency {
             function: function.index(),
@@ -681,30 +681,24 @@ impl<'dae> Projection<'_, 'dae> {
         self.project_function_result(dependency, function, arguments, span)
     }
 
-    /// A SPEC_0040 DAE-C30 native body reads every scalar of every parameter
-    /// its catalog inputs bind.
+    /// A SPEC_0040 DAE-C30 native body reads its inputs, which are closed
+    /// over the call's arguments; every scalar of every argument is read.
     fn native_body_arguments(
         &mut self,
-        binding: &dae::NativeBodyBinding,
         arguments: &[dae::ExprId<'dae>],
-        span: Span,
     ) -> Result<(), ProjectionError> {
-        for parameter in binding.parameters() {
-            let argument = arguments
-                .get(*parameter as usize)
-                .copied()
-                .ok_or(ProjectionError::FunctionRecursion { span })?;
-            (0..self.scalar_count(argument))
-                .try_for_each(|scalar| self.expression(argument, scalar))?;
+        for argument in arguments {
+            (0..self.scalar_count(*argument))
+                .try_for_each(|scalar| self.expression(*argument, scalar))?;
         }
         Ok(())
     }
 
-    fn native_body(&self, function: dae::FunctionId<'dae>) -> Option<&'dae dae::NativeBodyBinding> {
+    fn has_native_body(&self, function: dae::FunctionId<'dae>) -> bool {
         self.view
             .function(function)
             .and_then(|definition| definition.external())
-            .and_then(|external| external.native_body())
+            .is_some_and(|external| external.native_body().is_some())
     }
 
     fn is_native_table_call(&self, function: dae::FunctionId<'dae>) -> bool {

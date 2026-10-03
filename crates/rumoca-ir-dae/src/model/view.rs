@@ -888,8 +888,11 @@ impl<'dae> ExternalFunctionView<'dae> {
 
     /// The SPEC_0040 DAE-C30 compiler-defined body construction proved this
     /// interface matches, if any.
-    pub fn native_body(self) -> Option<&'dae NativeBodyBinding> {
-        self.entry.native.as_ref()
+    pub fn native_body(self) -> Option<NativeBodyView<'dae>> {
+        self.entry
+            .native
+            .as_ref()
+            .map(|binding| NativeBodyView { binding })
     }
 
     /// Output bound by the MLS §12.9 `output = symbol(...)` return form.
@@ -913,6 +916,30 @@ impl<'dae> ExternalFunctionView<'dae> {
                     FunctionValueId::from_raw(function.index(), *value),
                 ),
             })
+    }
+}
+
+/// Read-only view of one proven SPEC_0040 DAE-C30 native body binding.
+#[derive(Clone, Copy)]
+pub struct NativeBodyView<'dae> {
+    binding: &'dae NativeBodyBinding,
+}
+
+impl<'dae> NativeBodyView<'dae> {
+    pub const fn body(self) -> rumoca_core::native_body::NativeBody {
+        self.binding.body
+    }
+
+    /// The argument expression each catalog input reads, in interface order;
+    /// each is closed over the function's own parameters.
+    pub fn inputs(self) -> impl ExactSizeIterator<Item = ExprId<'dae>> {
+        self.binding.inputs.iter().map(|raw| ExprId::from_raw(*raw))
+    }
+
+    /// The function result position each catalog output writes, in interface
+    /// order.
+    pub fn results(self) -> &'dae [u32] {
+        &self.binding.results
     }
 }
 

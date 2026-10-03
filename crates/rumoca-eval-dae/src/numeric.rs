@@ -453,10 +453,18 @@ where
         // body executes, and any other external body fails with the call's
         // exact provenance instead of substituting a plausible value.
         if let Some(external) = definition.external() {
-            return match external.native_body() {
-                Some(binding) => native_function_call(binding, &arguments, output, span),
-                None => Err(external_function_failure(definition.name(), external, span)),
+            let Some(binding) = external.native_body() else {
+                return Err(external_function_failure(definition.name(), external, span));
             };
+            self.function_arguments.push((function, arguments));
+            self.scoped_expression_values.push(FxHashMap::default());
+            let inputs = binding
+                .inputs()
+                .map(|input| self.expression(input))
+                .collect::<Result<Vec<_>, _>>();
+            self.scoped_expression_values.pop();
+            self.function_arguments.pop();
+            return native_function_call(binding, &inputs?, output, span);
         }
         let result = definition
             .result_values()
@@ -1811,37 +1819,33 @@ fn failure(
 /// Evaluate one result of a SPEC_0040 DAE-C30 native body through its one
 /// definitional evaluator. Integer arguments are exact in binary64.
 fn native_function_call(
-    binding: &dae::NativeBodyBinding,
-    arguments: &[Vec<f64>],
+    binding: dae::NativeBodyView<'_>,
+    inputs: &[Vec<f64>],
     output: u32,
     span: Span,
 ) -> Result<Vec<f64>, NumericEvaluationError> {
-    use rumoca_core::native_body::{NativeElement, NativeScalar};
+    use rumoca_core::native_body::{NativeBodyError, NativeElement, NativeScalar};
     let body = binding.body();
-    let inputs = binding
-        .parameters()
+    let inputs = inputs
         .iter()
         .zip(body.inputs())
-        .map(|(parameter, input)| {
-            let values = arguments
-                .get(*parameter as usize)
-                .ok_or_else(|| function_ordinal_error(span))?;
-            Ok(values
+        .map(|(values, input)| {
+            values
                 .iter()
                 .map(|value| match input.element {
                     NativeElement::Integer => NativeScalar::Integer(*value as i64),
                     NativeElement::Real => NativeScalar::Real(*value),
                 })
-                .collect::<Vec<_>>())
+                .collect::<Vec<_>>()
         })
-        .collect::<Result<Vec<_>, NumericEvaluationError>>()?;
+        .collect::<Vec<_>>();
     let inputs = inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
     let outputs = body.evaluate(&inputs).map_err(|error| {
-        failure(
-            NumericEvaluationErrorKind::InvalidValue,
-            error.to_string(),
-            span,
-        )
+        let kind = match error {
+            NativeBodyError::Failure { .. } => NumericEvaluationErrorKind::AssertionFailed,
+            NativeBodyError::OperandMismatch { .. } => NumericEvaluationErrorKind::InvalidValue,
+        };
+        failure(kind, error.to_string(), span)
     })?;
     let position = binding
         .results()
@@ -1850,9 +1854,10 @@ fn native_function_call(
         .ok_or_else(|| function_result_error(span))?;
     Ok(outputs[position]
         .iter()
+        .copied()
         .map(|value| match value {
-            NativeScalar::Integer(value) => *value as f64,
-            NativeScalar::Real(value) => *value,
+            NativeScalar::Integer(value) => value as f64,
+            NativeScalar::Real(value) => value,
         })
         .collect())
 }

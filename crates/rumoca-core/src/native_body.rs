@@ -8,6 +8,14 @@
 //! interface, Solve issues the row as one typed operation, and every evaluator
 //! and backend computes the row's value through [`NativeBody::evaluate`], so
 //! there is one meaning per row (SPEC_0040 DAE-C30).
+//!
+//! A row whose foreign body reads or writes hidden library state names that
+//! state as a [`ForeignStateCell`]. Flattening threads the cell through every
+//! call as an explicit value (SPEC_0040 FLAT-C05), so the row's interface is
+//! the declared one followed by the cell's input and output, and its body is
+//! as pure as any other row.
+
+mod xorshift;
 
 /// One cataloged foreign entry point with a compiler-defined body.
 #[derive(
@@ -21,6 +29,12 @@ pub enum NativeBody {
     Xorshift128Plus,
     /// `ModelicaRandom_xorshift1024star(stateIn, stateOut, result)`.
     Xorshift1024Star,
+    /// `ModelicaRandom_setInternalState_xorshift1024star(state, nState, id)`
+    /// threaded through the [`ForeignStateCell::Xorshift1024Star`] cell.
+    Xorshift1024StarSetState,
+    /// `y = ModelicaRandom_impureRandom_xorshift1024star(id)` threaded
+    /// through the [`ForeignStateCell::Xorshift1024Star`] cell.
+    Xorshift1024StarImpureDraw,
 }
 
 /// Whether the foreign body reads or writes an external argument position.
@@ -55,25 +69,78 @@ pub enum NativeScalar {
     Real(f64),
 }
 
-/// The operands a native body evaluation received do not match its
-/// interface: the checked operation that issued it was not constructed from
-/// the row's signature.
+/// Why a native body evaluation produced no result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeOperandMismatch {
-    pub body: NativeBody,
+pub enum NativeBodyError {
+    /// The operands do not match the row's interface: the checked operation
+    /// that issued the evaluation was not constructed from the row.
+    OperandMismatch { body: NativeBody },
+    /// The foreign body reports an error for these operands, as the foreign
+    /// code does through `ModelicaError`.
+    Failure {
+        body: NativeBody,
+        message: &'static str,
+    },
 }
 
-impl std::fmt::Display for NativeOperandMismatch {
+impl std::fmt::Display for NativeBodyError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "native body `{}` received operands outside its interface",
-            self.body.entry_point()
-        )
+        match self {
+            Self::OperandMismatch { body } => write!(
+                formatter,
+                "native body `{}` received operands outside its interface",
+                body.entry_point()
+            ),
+            Self::Failure { body, message } => {
+                write!(formatter, "`{}`: {message}", body.entry_point())
+            }
+        }
     }
 }
 
-impl std::error::Error for NativeOperandMismatch {}
+impl std::error::Error for NativeBodyError {}
+
+/// Hidden state a foreign library keeps between calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ForeignStateCell {
+    /// The `ModelicaRandom.c` impure generator: 16 xorshift1024* words as 32
+    /// C `int`s, the word index, and the initialization check `id`.
+    Xorshift1024Star,
+}
+
+impl ForeignStateCell {
+    /// The Integer vector extent that holds the cell.
+    pub const fn extent(self) -> u32 {
+        match self {
+            Self::Xorshift1024Star => 34,
+        }
+    }
+
+    /// The value the library's static storage holds before any call.
+    pub fn initial_value(self) -> Vec<i64> {
+        match self {
+            Self::Xorshift1024Star => vec![0; self.extent() as usize],
+        }
+    }
+
+    /// An identifier fragment naming the cell.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Xorshift1024Star => "ModelicaRandom_xorshift1024star_state",
+        }
+    }
+}
+
+/// How a row's foreign body reaches hidden state, and the interface its
+/// declaration has before flattening threads the cell through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForeignStateAccess {
+    pub cell: ForeignStateCell,
+    /// The declared external arguments, in order.
+    pub declared: &'static [NativeArgument],
+    /// The element type of the `output = symbol(...)` return form, if any.
+    pub declared_return: Option<NativeElement>,
+}
 
 const fn argument(
     role: NativeArgumentRole,
@@ -87,32 +154,57 @@ const fn argument(
     }
 }
 
+const fn input(element: NativeElement, extent: Option<u32>) -> NativeArgument {
+    argument(NativeArgumentRole::Input, element, extent)
+}
+
+const fn output(element: NativeElement, extent: Option<u32>) -> NativeArgument {
+    argument(NativeArgumentRole::Output, element, extent)
+}
+
+const INTEGER: NativeElement = NativeElement::Integer;
+const REAL: NativeElement = NativeElement::Real;
+const CELL: Option<u32> = Some(ForeignStateCell::Xorshift1024Star.extent());
+
 const fn xorshift_interface(extent: u32) -> [NativeArgument; 3] {
     [
-        argument(
-            NativeArgumentRole::Input,
-            NativeElement::Integer,
-            Some(extent),
-        ),
-        argument(
-            NativeArgumentRole::Output,
-            NativeElement::Integer,
-            Some(extent),
-        ),
-        argument(NativeArgumentRole::Output, NativeElement::Real, None),
+        input(INTEGER, Some(extent)),
+        output(INTEGER, Some(extent)),
+        output(REAL, None),
     ]
 }
 
 const XORSHIFT64STAR_INTERFACE: [NativeArgument; 3] = xorshift_interface(2);
 const XORSHIFT128PLUS_INTERFACE: [NativeArgument; 3] = xorshift_interface(4);
 const XORSHIFT1024STAR_INTERFACE: [NativeArgument; 3] = xorshift_interface(33);
+const SET_STATE_DECLARED: [NativeArgument; 3] = [
+    input(INTEGER, Some(33)),
+    input(INTEGER, None),
+    input(INTEGER, None),
+];
+const SET_STATE_INTERFACE: [NativeArgument; 5] = [
+    input(INTEGER, Some(33)),
+    input(INTEGER, None),
+    input(INTEGER, None),
+    input(INTEGER, CELL),
+    output(INTEGER, CELL),
+];
+const IMPURE_DRAW_DECLARED: [NativeArgument; 1] = [input(INTEGER, None)];
+const IMPURE_DRAW_INTERFACE: [NativeArgument; 4] = [
+    input(INTEGER, None),
+    output(REAL, None),
+    input(INTEGER, CELL),
+    output(INTEGER, CELL),
+];
 
 impl NativeBody {
     /// Every row of the catalog.
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 5] = [
         Self::Xorshift64Star,
         Self::Xorshift128Plus,
         Self::Xorshift1024Star,
+        Self::Xorshift1024StarSetState,
+        Self::Xorshift1024StarImpureDraw,
     ];
 
     /// The row a C entry point names, if the catalog defines it.
@@ -128,15 +220,40 @@ impl NativeBody {
             Self::Xorshift64Star => "ModelicaRandom_xorshift64star",
             Self::Xorshift128Plus => "ModelicaRandom_xorshift128plus",
             Self::Xorshift1024Star => "ModelicaRandom_xorshift1024star",
+            Self::Xorshift1024StarSetState => "ModelicaRandom_setInternalState_xorshift1024star",
+            Self::Xorshift1024StarImpureDraw => "ModelicaRandom_impureRandom_xorshift1024star",
         }
     }
 
-    /// The ordered external argument interface a declaration must have.
+    /// The ordered external argument interface a checked declaration has.
+    ///
+    /// For a row with hidden state this is the threaded interface: the
+    /// declared arguments, the return-form output as an output argument, then
+    /// the cell's input and output.
     pub const fn interface(self) -> &'static [NativeArgument] {
         match self {
             Self::Xorshift64Star => &XORSHIFT64STAR_INTERFACE,
             Self::Xorshift128Plus => &XORSHIFT128PLUS_INTERFACE,
             Self::Xorshift1024Star => &XORSHIFT1024STAR_INTERFACE,
+            Self::Xorshift1024StarSetState => &SET_STATE_INTERFACE,
+            Self::Xorshift1024StarImpureDraw => &IMPURE_DRAW_INTERFACE,
+        }
+    }
+
+    /// The hidden state this row's foreign body reaches, if any.
+    pub const fn foreign_state(self) -> Option<ForeignStateAccess> {
+        match self {
+            Self::Xorshift64Star | Self::Xorshift128Plus | Self::Xorshift1024Star => None,
+            Self::Xorshift1024StarSetState => Some(ForeignStateAccess {
+                cell: ForeignStateCell::Xorshift1024Star,
+                declared: &SET_STATE_DECLARED,
+                declared_return: None,
+            }),
+            Self::Xorshift1024StarImpureDraw => Some(ForeignStateAccess {
+                cell: ForeignStateCell::Xorshift1024Star,
+                declared: &IMPURE_DRAW_DECLARED,
+                declared_return: Some(REAL),
+            }),
         }
     }
 
@@ -161,97 +278,75 @@ impl NativeBody {
     pub fn evaluate(
         self,
         inputs: &[&[NativeScalar]],
-    ) -> Result<Vec<Vec<NativeScalar>>, NativeOperandMismatch> {
-        let mismatch = NativeOperandMismatch { body: self };
-        let [state] = inputs else {
-            return Err(mismatch);
-        };
-        let extent = self
-            .inputs()
-            .next()
-            .and_then(|input| input.extent)
-            .ok_or(mismatch)? as usize;
-        if state.len() != extent {
+    ) -> Result<Vec<Vec<NativeScalar>>, NativeBodyError> {
+        let mismatch = NativeBodyError::OperandMismatch { body: self };
+        let expected = self.inputs().collect::<Vec<_>>();
+        if inputs.len() != expected.len() {
             return Err(mismatch);
         }
-        let mut words = Vec::with_capacity(extent);
-        for value in state.iter() {
-            let NativeScalar::Integer(value) = value else {
+        let mut integers = Vec::with_capacity(inputs.len());
+        for (values, argument) in inputs.iter().zip(&expected) {
+            let extent = argument.extent.map_or(1, |extent| extent as usize);
+            if values.len() != extent || argument.element != INTEGER {
                 return Err(mismatch);
-            };
-            words.push(c_int(*value));
+            }
+            let words = values
+                .iter()
+                .map(|value| match value {
+                    NativeScalar::Integer(value) => Ok(c_int(*value)),
+                    NativeScalar::Real(_) => Err(mismatch),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            integers.push(words);
         }
-        let result = match self {
-            Self::Xorshift64Star => xorshift64star(&mut words),
-            Self::Xorshift128Plus => xorshift128plus(&mut words),
-            Self::Xorshift1024Star => xorshift1024star(&mut words),
+        let failure = |message| NativeBodyError::Failure {
+            body: self,
+            message,
         };
-        let state_out = words
-            .into_iter()
-            .map(|word| NativeScalar::Integer(i64::from(word)))
-            .collect();
-        Ok(vec![state_out, vec![NativeScalar::Real(result)]])
+        Ok(match (self, integers.as_mut_slice()) {
+            (Self::Xorshift64Star, [state]) => generated(xorshift::xorshift64star, state),
+            (Self::Xorshift128Plus, [state]) => generated(xorshift::xorshift128plus, state),
+            (Self::Xorshift1024Star, [state]) => generated(xorshift::xorshift1024star, state),
+            (Self::Xorshift1024StarSetState, [state, size, id, _]) => {
+                // `nState` is a C `size_t`, so a negative `int` is too large.
+                if size[0] as u32 > 33 {
+                    return Err(failure("External state vector is too large. Should be 33."));
+                }
+                let mut cell = state.clone();
+                cell.push(id[0]);
+                vec![integer_values(&cell)]
+            }
+            (Self::Xorshift1024StarImpureDraw, [id, cell]) => {
+                if id[0] != cell[33] {
+                    return Err(failure(
+                        "Function impureRandom not initialized with function initializeImpureRandom",
+                    ));
+                }
+                let result = xorshift::xorshift1024star(&mut cell[..33]);
+                vec![vec![NativeScalar::Real(result)], integer_values(cell)]
+            }
+            _ => return Err(mismatch),
+        })
     }
+}
+
+/// A generator row's outputs: the advanced state, then the draw.
+fn generated(generator: fn(&mut [i32]) -> f64, state: &mut [i32]) -> Vec<Vec<NativeScalar>> {
+    let result = generator(state);
+    vec![integer_values(state), vec![NativeScalar::Real(result)]]
+}
+
+fn integer_values(words: &[i32]) -> Vec<NativeScalar> {
+    words
+        .iter()
+        .map(|word| NativeScalar::Integer(i64::from(*word)))
+        .collect()
 }
 
 /// MLS §12.9.1.1 passes an Integer to a foreign body as a C `int`; a wider
 /// value is narrowed modulo 2^32 as the C conversion does.
 fn c_int(value: i64) -> i32 {
     value as i32
-}
-
-/// The 64-bit word whose low and high halves are two consecutive C `int`
-/// state elements (the MSL union of `int32_t[2]` and `uint64_t`).
-fn word(state: &[i32], index: usize) -> u64 {
-    u64::from(state[2 * index] as u32) | (u64::from(state[2 * index + 1] as u32) << 32)
-}
-
-fn store_word(state: &mut [i32], index: usize, value: u64) {
-    state[2 * index] = value as u32 as i32;
-    state[2 * index + 1] = (value >> 32) as u32 as i32;
-}
-
-/// `ModelicaRandom_RAND`: the word read as a signed 64-bit integer, scaled by
-/// 2^-64 and shifted by 0.5, in binary64.
-fn unit_interval(value: u64) -> f64 {
-    // The C source spells 2^-64 as 5.42101086242752217004e-20, which rounds
-    // to exactly this binary64 value.
-    const INVERSE_2_POW_64: f64 = 1.0 / 18_446_744_073_709_551_616.0;
-    (value as i64) as f64 * INVERSE_2_POW_64 + 0.5
-}
-
-fn xorshift64star(state: &mut [i32]) -> f64 {
-    let mut x = word(state, 0);
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    x = x.wrapping_mul(2_685_821_657_736_338_717);
-    store_word(state, 0, x);
-    unit_interval(x)
-}
-
-fn xorshift128plus(state: &mut [i32]) -> f64 {
-    let mut s1 = word(state, 0);
-    let s0 = word(state, 1);
-    store_word(state, 0, s0);
-    s1 ^= s1 << 23;
-    let next = (s1 ^ s0 ^ (s1 >> 17) ^ (s0 >> 26)).wrapping_add(s0);
-    store_word(state, 1, next);
-    unit_interval(next)
-}
-
-fn xorshift1024star(state: &mut [i32]) -> f64 {
-    let p = (state[32] & 15) as usize;
-    let mut s0 = word(state, p);
-    let p = (p + 1) & 15;
-    let mut s1 = word(state, p);
-    s1 ^= s1 << 31;
-    s1 ^= s1 >> 11;
-    s0 ^= s0 >> 30;
-    let next = s0 ^ s1;
-    store_word(state, p, next);
-    state[32] = p as i32;
-    unit_interval(next.wrapping_mul(1_181_783_497_276_652_981))
 }
 
 #[cfg(test)]

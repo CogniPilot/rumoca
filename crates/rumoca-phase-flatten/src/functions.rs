@@ -16,6 +16,7 @@ mod call_collection;
 mod callable_scope_identity;
 mod constructor_signature;
 mod deferred_members;
+mod foreign_state;
 mod function_arguments;
 mod function_context;
 mod function_derivatives;
@@ -50,6 +51,7 @@ use constructor_signature::{
     convert_constructor_signature, inherit_operator_constructor_defaults,
     normalize_function_local_references,
 };
+pub(crate) use foreign_state::thread_foreign_state;
 pub(crate) use function_arguments::specialize_function_arguments;
 use function_context::{
     collect_exposed_package_constant_aliases, collect_function_context,

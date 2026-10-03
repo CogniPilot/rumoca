@@ -501,12 +501,33 @@ pub enum FlattenError {
         #[label("function with more than one algorithm section")]
         span: Span,
     },
+
+    /// A stateful foreign entry point is reached where the order of its
+    /// library-state accesses is unspecified (SPEC_0040 FLAT-C05).
+    #[error("unordered foreign library state: {description}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF036),
+        help(
+            "MLS 3.7 §12.3 allows an impure function only where its calls are ordered; library state is threaded only through one algorithm section and one parameter binding"
+        )
+    )]
+    UnorderedForeignState {
+        description: String,
+        #[label("unordered library-state access")]
+        span: Span,
+    },
 }
 
 impl FlattenError {
     error_constructor!(
         invalid_derivative_annotation,
         InvalidDerivativeAnnotation { reason: String }
+    );
+    error_constructor!(
+        unordered_foreign_state,
+        UnorderedForeignState {
+            description: String
+        }
     );
     /// Create a StructuralAssertionFailed error.
     pub fn structural_assertion_failed(message: impl Into<String>, span: Span) -> Self {
@@ -834,6 +855,7 @@ impl PhaseError for FlattenError {
             | Self::NonUniformParameterFixed { span, .. }
             | Self::ConflictingExposedConstant { span, .. }
             | Self::MultipleFunctionBodies { span, .. }
+            | Self::UnorderedForeignState { span, .. }
             | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
             | Self::CyclicConstantBinding { span, .. }
             | Self::InvalidConnectionGraph { span, .. }
