@@ -522,12 +522,6 @@ impl SolvePureCallTable {
         }
     }
 
-    /// The execution profile whose recursion limits every group applies.
-    #[must_use]
-    pub const fn recursion(&self) -> SolveRecursionProfile {
-        self.recursion
-    }
-
     /// Every SOLVE-C62 recursive owner group, in owner order.
     #[must_use]
     pub const fn recursive_groups(&self) -> &[SolveRecursiveGroup] {
@@ -879,10 +873,6 @@ struct OwnerWire {
     provenance: Span,
 }
 
-fn wire_mismatch<E: serde::de::Error>() -> E {
-    E::custom(SolveProgramConstructionError::WireMismatch)
-}
-
 /// Rebuild one serialized recursive group through its construction.
 /// The serialized group must equal the one its construction derives.
 fn replay_group(
@@ -1013,7 +1003,9 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
             });
         }
         if pending_groups.next().is_some() {
-            return Err(wire_mismatch());
+            return Err(serde::de::Error::custom(
+                SolveProgramConstructionError::WireMismatch,
+            ));
         }
         Ok(Self {
             arithmetic: wire.arithmetic,

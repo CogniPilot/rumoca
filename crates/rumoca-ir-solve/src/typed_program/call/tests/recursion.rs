@@ -101,6 +101,50 @@ fn wire_with_a_forged_group_bound_is_refused() {
 }
 
 #[test]
+fn wire_with_a_group_outside_its_owners_is_refused() {
+    let table = mutual_table();
+    for (start, end) in [(7, 9), (2, 3)] {
+        let mut json: serde_json::Value = serde_json::to_value(&table).unwrap();
+        json["groups"][0]["start"] = serde_json::json!(start);
+        json["groups"][0]["end"] = serde_json::json!(end);
+        assert!(serde_json::from_value::<SolvePureCallTable>(json).is_err());
+    }
+}
+
+#[test]
+fn construction_errors_name_the_recursive_group_rule() {
+    for (error, text) in [
+        (
+            SolveProgramConstructionError::InvalidRecursiveGroup {
+                provenance: span(1),
+            },
+            "one recursive call cycle",
+        ),
+        (
+            SolveProgramConstructionError::RecursionFrameBound {
+                provenance: span(1),
+            },
+            "profile stack budget",
+        ),
+        (
+            SolveProgramConstructionError::RecursiveAssertion {
+                provenance: span(1),
+            },
+            "call-scoped assertions",
+        ),
+        (
+            SolveProgramConstructionError::RecursiveCall {
+                provenance: span(1),
+            },
+            "recursive owner group",
+        ),
+    ] {
+        assert_eq!(error.source_span(), Some(span(1)));
+        assert!(error.to_string().contains(text), "{error}");
+    }
+}
+
+#[test]
 fn members_without_a_call_cycle_are_not_a_recursive_group() {
     let error = SolvePureCallTable::construct(profile(), |table| {
         table.add_recursive_group(
