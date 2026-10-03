@@ -423,8 +423,9 @@ fn lower_expression_node<'dae>(
         Expression::VarRef {
             name, subscripts, ..
         } => lower_variable_reference(construction, symbols, binders, name, subscripts, provenance),
-        Expression::BuiltinCall { .. } => {
-            lower_builtin_node(construction, symbols, binders, expression, provenance)
+        Expression::BuiltinCall { function, args, .. } => {
+            let call = (expression, *function, args.as_slice());
+            lower_builtin_node(construction, symbols, binders, call, provenance)
         }
         Expression::Literal { value, .. } => construction
             .expressions(|expressions| expressions.at(provenance).literal(lower_literal(value))),
@@ -1855,18 +1856,9 @@ fn lower_builtin_node<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
     binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    expression: &Expression,
+    (expression, function, arguments): (&Expression, BuiltinFunction, &[Expression]),
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let Expression::BuiltinCall {
-        function,
-        args: arguments,
-        ..
-    } = expression
-    else {
-        unreachable!("a builtin node lowers only a builtin call");
-    };
-    let function = *function;
     let proven = (function == BuiltinFunction::Size
         && arguments.len() == 2
         && symbols.function_body.is_some())
