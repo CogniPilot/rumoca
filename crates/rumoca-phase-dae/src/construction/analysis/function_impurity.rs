@@ -4,7 +4,7 @@
 //! is the authority that owns executable semantics, and it resolves callees by
 //! exact Flat identity rather than by name. This pass re-proves the rule where
 //! it can name the callee exactly: a continuous equation, a non-initial
-//! algorithm, or a pure function body may not reach an impure function.
+//! algorithm, or a function body declared `pure` may not reach an impure function.
 use super::*;
 
 /// Reject every impure call that reaches a context MLS §12.3 forbids.
@@ -42,10 +42,15 @@ pub(super) fn validate_impure_call_contexts(flat: &flat::Model) -> Result<(), To
         }
     }
     for function in flat.functions.values() {
-        if !function.pure {
+        // MLS 3.7 §12.3: "For a function without explicit purity, it is
+        // deprecated to call any function declared impure, except when wrapped
+        // in pure(…)." Only a body whose declaration wrote `pure` is a context
+        // the call restriction forbids; the undeclared form is treated as
+        // impure for transformations instead.
+        if !function.pure || !function.purity_declared {
             continue;
         }
-        let context = "a pure function body";
+        let context = "a function body declared `pure`";
         for statement in &function.body {
             reject_impure_calls_in_statement(statement, flat, context)?;
         }
