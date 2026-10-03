@@ -231,6 +231,7 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
         assertion_slots: context.assertion_slots.clone(),
         next_direct_assertion: 0,
         direct_assertion_count: context.direct_assertion_count,
+        totality: HashMap::new(),
     })
 }
 

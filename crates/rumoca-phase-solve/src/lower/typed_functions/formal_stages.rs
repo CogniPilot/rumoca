@@ -382,6 +382,7 @@ impl<'formal> PureCallRegistry<'formal> {
                         assertion_slots: assertion_slots.clone(),
                         next_direct_assertion: 0,
                         direct_assertion_count: 0,
+                        totality: HashMap::new(),
                     };
                     for (&body, &output) in bodies.iter().zip(outputs) {
                         let value = lowerer.residual_body(body, domain.as_ref(), at)?;

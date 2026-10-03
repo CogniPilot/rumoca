@@ -921,7 +921,9 @@ fn fold_reverse_demand_lowers_one_correlated_assignment_group() {
     let [owner] = table.owners() else {
         panic!("one exact fold owner expected")
     };
-    assert_eq!(conditional_count(owner.body()), 2);
+    // The correlated assignment group is one region; the total expression
+    // conditional `if condition then 2 else 3` is a selection (SOLVE-C61).
+    assert_eq!(conditional_count(owner.body()), 1);
     let enabled = rumoca_eval_solve::TypedValue::construct(
         solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
         vec![solve::SolveValueKind::Boolean(true)],

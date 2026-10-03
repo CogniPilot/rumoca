@@ -12,6 +12,7 @@ pub(in crate::lower) mod model_events;
 mod regions;
 mod registration;
 mod tensor;
+mod total_conditionals;
 
 use assertions::{assertion_conditions, assertion_is_map_independent, nested_calls};
 use model_coordinates::ModelCoordinateKey;
@@ -543,6 +544,9 @@ struct ExpressionLowerer<'builder, 'program, 'dae> {
     assertion_slots: std::sync::Arc<[AssertionSlot]>,
     next_direct_assertion: usize,
     direct_assertion_count: usize,
+    /// Whether each expression evaluates without failure or effect (see
+    /// `total_conditionals`).
+    totality: HashMap<dae::ExprId<'dae>, bool>,
 }
 
 impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
@@ -767,6 +771,9 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
         if operands.len() < 3 || operands.len().is_multiple_of(2) {
             return Err(solve::SolveProgramConstructionError::InvalidRegion { provenance });
+        }
+        if let Some(value) = self.total_conditional(value_type, operands, provenance)? {
+            return Ok(value);
         }
         let condition = self.expression(operands[0])?.only_register(provenance)?;
         let pending = self.pending_predicates(operands[1..].iter().copied());

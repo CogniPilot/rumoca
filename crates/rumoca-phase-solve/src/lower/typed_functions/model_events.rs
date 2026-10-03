@@ -217,6 +217,7 @@ impl<'dae> PureCallRegistry<'dae> {
                     assertion_slots: assertion_slots.clone(),
                     next_direct_assertion: 0,
                     direct_assertion_count: 0,
+                    totality: HashMap::new(),
                 };
                 let mut values = vec![None; definitions.len()];
                 for clock in &transaction.clock_owners {

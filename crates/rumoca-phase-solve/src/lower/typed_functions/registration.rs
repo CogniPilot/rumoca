@@ -161,6 +161,7 @@ fn register_call_body<'dae>(
                 assertion_slots: assertion_slots.clone(),
                 next_direct_assertion: 0,
                 direct_assertion_count: assertions.len(),
+                totality: HashMap::new(),
             };
             lowerer.statements(function.statements())?;
             for ((definition, value_type), range) in function
