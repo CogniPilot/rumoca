@@ -387,6 +387,48 @@
       }
     },
     {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_DOL",
+      "kind": "reference_failure",
+      "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 stator and rotor-cage converters (V_m.im structurally zero, V_m.re alternating with the phase current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these two angles.",
+      "evidence": {
+        "facts": [
+          "1217/6/2 channels (high/minor/deviating)",
+          "deviating: aimcM.stator and aimcM.rotorCage electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m",
+          "OMC generated code assigns both channels the literal 0.0; the OMC traces of their V_m.re are negative at 7445 and 7180 of 15004 samples",
+          "Rumoca arg_V_m equals atan2(V_m.im, V_m.re) at every sample, of magnitude pi where V_m.re < 0"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_DOL"
+      }
+    },
+    {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_withLosses",
+      "kind": "reference_failure",
+      "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 stator and rotor-cage converters (V_m.im structurally zero, V_m.re alternating with the phase current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these two angles.",
+      "evidence": {
+        "facts": [
+          "798/5/2 channels (high/minor/deviating)",
+          "deviating: aimc.stator and aimc.rotorCage electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m",
+          "OMC generated code assigns both channels the literal 0.0; the OMC traces of their V_m.re are negative at 25005 and 50003 of 50004 samples",
+          "Rumoca arg_V_m equals atan2(V_m.im, V_m.re) at every sample, of magnitude pi where V_m.re < 0"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_withLosses"
+      }
+    },
+    {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMS_Start",
+      "kind": "reference_failure",
+      "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 stator and rotor converters (V_m.im structurally zero, V_m.re alternating with the phase current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these two angles.",
+      "evidence": {
+        "facts": [
+          "1584/20/2 channels (high/minor/deviating)",
+          "deviating: aimsM.stator and aimsM.rotor electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m",
+          "OMC generated code assigns both channels the literal 0.0; the OMC traces of their V_m.re are negative at 7422 and 7910 of 15006 samples",
+          "Rumoca arg_V_m equals atan2(V_m.im, V_m.re) at every sample, of magnitude pi where V_m.re < 0"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMS_Start"
+      }
+    },
+    {
       "model_name": "Modelica.Magnetic.FundamentalWave.Examples.Components.EddyCurrentLosses",
       "kind": "reference_failure",
       "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channel of the phase-1 converter (orientation 0, V_m.im structurally zero, V_m.re alternating with the current) is the constant 0, while atan2 is pi for a negative real part. The only non-high channels are these two angles; 678 of 680 are high.",
