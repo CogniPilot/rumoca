@@ -82,11 +82,23 @@ pub(super) fn resolve_function_extends_target_def_id(
         if !class_def.algorithms.is_empty() || class_def.external.is_some() {
             return (current != exposure).then_some(current);
         }
-        let mut candidates = class_def.extends.iter().filter_map(|ext| {
-            let target = ext.base_def_id?;
-            (class_index.get(target)?.class_type == rumoca_core::ClassType::Function)
-                .then_some(target)
-        });
+        let bases = function_bases(class_index, class_def);
+        // MLS §12.2 gives a function at most one algorithm section or external
+        // interface, and §7.1 merges the interface a function inherits from
+        // several bases. A bodyless base contributes only that interface, so
+        // the implementation is the one base whose chain declares a body.
+        let implementing = bases
+            .iter()
+            .copied()
+            .filter(|base| {
+                function_chain_declares_body(class_index, *base, &mut FxHashSet::default())
+            })
+            .collect::<Vec<_>>();
+        let mut candidates = if implementing.is_empty() {
+            bases.into_iter()
+        } else {
+            implementing.into_iter()
+        };
         let Some(candidate) = candidates.next() else {
             // A partial function that declares its own inputs and outputs and
             // only inherits an icon or interface class is a definition, not
@@ -209,4 +221,42 @@ pub(super) fn function_alias_requires_exact_selection(class_def: &rumoca_ir_ast:
         && class_def.algorithms.is_empty()
         && class_def.external.is_none()
         && !class_def.extends.is_empty()
+}
+
+/// The distinct function classes `class_def` extends, in declaration order.
+fn function_bases(
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    class_def: &rumoca_ir_ast::ClassDef,
+) -> Vec<rumoca_core::DefId> {
+    let mut bases = Vec::new();
+    for target in class_def.extends.iter().filter_map(|ext| ext.base_def_id) {
+        let is_function = class_index
+            .get(target)
+            .is_some_and(|base| base.class_type == rumoca_core::ClassType::Function);
+        if is_function && !bases.contains(&target) {
+            bases.push(target);
+        }
+    }
+    bases
+}
+
+/// Whether the function `function` or a function it extends declares an
+/// algorithm section or an external interface.
+fn function_chain_declares_body(
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    function: rumoca_core::DefId,
+    visited: &mut FxHashSet<rumoca_core::DefId>,
+) -> bool {
+    if !visited.insert(function) {
+        return false;
+    }
+    let Some(class_def) = class_index.get(function) else {
+        return false;
+    };
+    if !class_def.algorithms.is_empty() || class_def.external.is_some() {
+        return true;
+    }
+    function_bases(class_index, class_def)
+        .into_iter()
+        .any(|base| function_chain_declares_body(class_index, base, visited))
 }

@@ -108,6 +108,7 @@ mod function_equation_shape;
 mod function_fold_projection;
 mod function_inner_index_slice_compaction;
 mod function_input_shadow_state_test;
+mod function_interface_and_body_bases;
 mod function_loop_carried_record;
 mod function_loop_carried_scalar;
 mod function_loop_offset_slices;
