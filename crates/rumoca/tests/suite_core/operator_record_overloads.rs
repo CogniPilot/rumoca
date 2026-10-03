@@ -190,6 +190,10 @@ package Ops
   algorithm
     p := sum(real({v[k]*v[k] for k in 1:size(v, 1)}));
   end vectorPower;
+  model Filled
+    parameter C k[2] = fill(C(1, 2), 2);
+    Real y = k[2].im*time;
+  end Filled;
   model Powers
     C c[2] = {C(1 + time, 1), C(2, time)};
     Real scalar = scalarPower(c);
@@ -329,4 +333,12 @@ fn operator_functions_are_collected_through_any_chain_depth() {
     let result = simulate_source(&operator_chain(12), "Chain.M");
     let value = final_value(&result, "s.x");
     assert!((value - 3.0).abs() < 1e-9, "s.x = {value}");
+}
+
+#[test]
+fn an_element_of_a_filled_record_array_is_the_filled_record() {
+    // `k[2]` of `fill(C(1, 2), 2)` is `C(1, 2)` (MLS §10.3.3).
+    let result = simulate("Ops.Filled");
+    let value = final_value(&result, "y");
+    assert!((value - 2.0).abs() < 1e-12, "y = {value}");
 }

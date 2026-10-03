@@ -563,6 +563,9 @@ impl ExpressionRewriter for CollapseIndexRewriter<'_> {
             {
                 return collapsed;
             }
+            if let Some(element) = fill_element(&base, &subscripts, *span) {
+                return element;
+            }
             return rumoca_core::Expression::Index {
                 base: Box::new(base),
                 subscripts,
@@ -574,6 +577,60 @@ impl ExpressionRewriter for CollapseIndexRewriter<'_> {
 }
 
 impl StatementRewriter for CollapseIndexRewriter<'_> {}
+
+/// An element selected from `fill(s, n1, ..., nk)` by scalar subscripts
+/// `[i1, ..., ij]`: every element of a filled array is `s` (MLS §10.3.3), so
+/// the selection is `s` itself when `j = k` and `fill(s, n(j+1), ..., nk)`
+/// otherwise. The selection is exact, so the element of a record array
+/// declared `Complex k[n] = fill(Complex(1, 0), n)` is the constructor call.
+fn fill_element(
+    base: &rumoca_core::Expression,
+    subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+) -> Option<rumoca_core::Expression> {
+    let rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args,
+        ..
+    } = base
+    else {
+        return None;
+    };
+    let (value, dimensions) = args.split_first()?;
+    let literal = |expression: &rumoca_core::Expression| match expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => Some(*value),
+        _ => None,
+    };
+    let index = |subscript: &rumoca_core::Subscript| match subscript {
+        rumoca_core::Subscript::Index { value, .. } => Some(*value),
+        rumoca_core::Subscript::Expr { expr, .. } => literal(expr),
+        rumoca_core::Subscript::Colon { .. } => None,
+    };
+    if subscripts.is_empty() || subscripts.len() > dimensions.len() {
+        return None;
+    }
+    // An index outside a literal extent is left for the subscript check.
+    for (subscript, extent) in subscripts.iter().zip(dimensions) {
+        let index = index(subscript)?;
+        if index < 1 || literal(extent).is_some_and(|extent| index > extent) {
+            return None;
+        }
+    }
+    let remaining = &dimensions[subscripts.len()..];
+    if remaining.is_empty() {
+        return Some(value.clone());
+    }
+    Some(rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args: std::iter::once(value.clone())
+            .chain(remaining.iter().cloned())
+            .collect(),
+        span,
+    })
+}
 
 /// Collapse `<base>[i...]` onto a known flat variable, for whichever shape the
 /// already-rewritten base has.
