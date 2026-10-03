@@ -234,6 +234,7 @@ mod record_array_dimension_chain;
 mod record_array_equation;
 mod record_array_member_slice_test;
 mod record_connector_equation_test;
+mod record_constant_members;
 mod record_equation_discrete_fields;
 mod record_function_binding;
 mod record_output_dependencies;

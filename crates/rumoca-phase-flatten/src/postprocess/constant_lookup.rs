@@ -544,3 +544,84 @@ fn exposing_package_key(
     };
     Some((package, format!("{package_name}.{}", leaf.ident)))
 }
+
+/// The value of a member of a record constant read through the package that
+/// exposes the record (`Medium.data.R_s`), with the key it is folded under.
+///
+/// MLS §7.1 and §7.3 make `data` an element of the package the `Medium` slot
+/// selects, and MLS §12.6 gives every member of a record constant the value of
+/// the matching field of its binding. The innermost package slot of the
+/// reference names the exposing package; the component after it is the record
+/// constant, and the remaining components select its fields, either from the
+/// field values extracted with the record or by projecting the record's
+/// constructor binding. A reference with subscripts selects array elements and
+/// is left to the indexed lookups.
+pub(super) fn record_member_constant_value<'a>(
+    name: &rumoca_core::Reference,
+    ctx: &'a Context,
+) -> Option<(String, &'a rumoca_core::Expression)> {
+    let parts = name.component_ref()?.parts();
+    if parts.len() < 3 || parts.iter().any(|part| !part.subs.is_empty()) {
+        return None;
+    }
+    let (package_index, package_name) = parts[..parts.len() - 2]
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, slot)| {
+            ctx.selected_package(slot.def_id, name.instance_id())
+                .map(|(_, package_name)| (index, package_name))
+        })?;
+    let record_key = format!("{package_name}.{}", parts[package_index + 1].ident);
+    let fields = &parts[package_index + 2..];
+    let member_key = fields.iter().fold(record_key.clone(), |key, field| {
+        format!("{key}.{}", field.ident)
+    });
+    if let Some(value) = resolve_constant_value_expr(&member_key, ctx) {
+        return Some((member_key, value));
+    }
+    let record = resolve_constant_value_expr(&record_key, ctx)?;
+    project_record_constant(record, fields, ctx).map(|value| (member_key, value))
+}
+
+/// Select the member `fields` names from the value of a record constant
+/// (MLS §12.6): each field is the matching named argument of the record
+/// constructor binding, and a binding that names another constant
+/// (`data = SingleGasesData.H2O`) is followed to that constant's value.
+pub(super) fn project_record_constant<'a>(
+    record: &'a rumoca_core::Expression,
+    fields: &[rumoca_core::ComponentRefPart],
+    ctx: &'a Context,
+) -> Option<&'a rumoca_core::Expression> {
+    let mut value = record;
+    for field in fields {
+        let mut aliases = 0usize;
+        while let rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } = value
+        {
+            aliases += 1;
+            if !subscripts.is_empty() || aliases > MAX_RECORD_ALIAS_DEPTH {
+                return None;
+            }
+            value = name
+                .target_def_id()
+                .and_then(|declaration| ctx.constant_values_by_def_id.get(&declaration))
+                .or_else(|| resolve_constant_value_expr(name.as_str(), ctx))?;
+        }
+        let rumoca_core::Expression::FunctionCall {
+            args,
+            is_constructor: true,
+            ..
+        } = value
+        else {
+            return None;
+        };
+        value = named_constructor_arg(args, &field.ident)?;
+    }
+    Some(value)
+}
+
+/// Bound on the alias chain followed from one record constant to another; a
+/// longer chain is a cycle the binding analysis reports elsewhere.
+const MAX_RECORD_ALIAS_DEPTH: usize = 16;

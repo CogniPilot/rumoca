@@ -754,6 +754,7 @@ Defines state-to-state transitions with priority and timing control.
 | PKG-010 | Within designates enclosing | §13.4.3 | "The within-clause shall designate the class of the enclosing entity" |
 | PKG-011 | Import fully qualified | §13.2.2 | "An imported package or definition should always be referred to by its fully qualified name" |
 | PKG-012 | Import not modifiable | §13.2.2 | "Import-clauses are not named elements and cannot be modified or redeclared"
+| PKG-013 | Record constant members through packages | §7.1, §7.3, §12.6 | `Medium.data.R_s` reads field `R_s` of the record constant `data` the package selected by `Medium` exposes; the field declaration has no value of its own, the record constant's binding gives it one. Rumoca folds the member from the extracted field value or by projecting the constructor binding, following a binding that names another record constant (`extends Base(data = Data.H2O)`), both at model level and inside functions of the exposing package. Tested in `suite_core/record_constant_members.rs` |
 
 ### 4.12 Operator Record Contracts (OPREC)
 

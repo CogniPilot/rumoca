@@ -13,10 +13,10 @@ use super::constant_expansion::{
 };
 use super::constant_lookup::{
     constant_expr_preserves_array_shape, generated_constant_candidate_exists,
-    named_constructor_arg, reference_key_has_array_shape, resolve_constant_field_access,
-    resolve_constant_value_expr, resolve_constant_value_expr_for_ref,
-    resolve_indexed_constant_field_access, resolve_inline_indexed_constant,
-    resolve_projected_constant_path, resolve_source_constant,
+    named_constructor_arg, project_record_constant, record_member_constant_value,
+    reference_key_has_array_shape, resolve_constant_field_access, resolve_constant_value_expr,
+    resolve_constant_value_expr_for_ref, resolve_indexed_constant_field_access,
+    resolve_inline_indexed_constant, resolve_projected_constant_path, resolve_source_constant,
     resolve_varref_through_constant_aliases, scalar_parameter_literal,
 };
 use super::*;
@@ -408,7 +408,7 @@ fn substitute_source_scalar_var_ref(
         return substitute_resolved_generated_constant(&key, value, span, env).map(Some);
     }
     let Some((identity, value)) = resolve_exposed_source_constant(name, span, env)? else {
-        return Ok(None);
+        return record_member_source_constant(name, span, env);
     };
     Ok(Some(substitute_resolved_source_constant(
         name.as_str(),
@@ -760,4 +760,50 @@ pub(super) fn substitute_exposed_constants_expr(
             exposures,
         },
     )
+}
+
+/// Fold a member of a record constant (`data.R_s`, `Medium.data.R_s`).
+///
+/// The reference's target is the record field declaration, which has no value
+/// of its own; MLS §12.6 gives the member the value of the matching field of
+/// the record constant's binding. The record is found through the package slot
+/// that exposes it, or as the innermost referenced component that is a
+/// constant: through the function's exposing packages first (MLS §7.3), then
+/// by its declaration.
+fn record_member_source_constant(
+    name: &rumoca_core::Reference,
+    span: rumoca_core::Span,
+    env: ConstantSubstitutionEnv<'_>,
+) -> Result<Option<rumoca_core::Expression>, FlattenError> {
+    if let Some((key, value)) = record_member_constant_value(name, env.ctx) {
+        return substitute_resolved_generated_constant(&key, value, span, env).map(Some);
+    }
+    let Some(parts) = name
+        .component_ref()
+        .map(rumoca_core::ComponentReference::parts)
+    else {
+        return Ok(None);
+    };
+    if parts.iter().any(|part| !part.subs.is_empty()) {
+        return Ok(None);
+    }
+    for root in (0..parts.len().saturating_sub(1)).rev() {
+        let declaration = parts[root].def_id;
+        let exposed = super::function_exposures::exposed_constant_value(
+            env.ctx,
+            env.exposures,
+            declaration,
+            name.as_str(),
+            span,
+        )?;
+        let Some(record) = exposed.or_else(|| env.ctx.constant_values_by_def_id.get(&declaration))
+        else {
+            continue;
+        };
+        let Some(value) = project_record_constant(record, &parts[root + 1..], env.ctx) else {
+            return Ok(None);
+        };
+        return substitute_resolved_generated_constant(name.as_str(), value, span, env).map(Some);
+    }
+    Ok(None)
 }
