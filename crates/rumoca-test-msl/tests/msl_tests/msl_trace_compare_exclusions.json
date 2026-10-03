@@ -471,6 +471,21 @@
       }
     },
     {
+      "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Generator",
+      "kind": "reference_failure",
+      "reason": "Two deviating channels are the ComplexMath.arg channels of the orientation-0 stator and rotor-cage converters, which OMC folds to 0 (atan2(0, x) is pi for a negative real part). The others are near-constant rotor-cage magnitudes: the damper-cage loss power with its six aliases, the rotor RMS current, and the rotor-cage |V_m|. After start-up the loss power is the 0.2926069 W constant of the converged reference, and the default OMC reference carries an integration error of a mean 5.6e-4 W on it, comparable to the 9.7e-4 W p95-p05 range the comparator normalizes by. With OMC at 1e-10 as the converged reference, Rumoca at 1e-10 agrees within 1.6e-7 W. The default reference is not accurate enough to identify these observables pointwise; this is not strict-high credit.",
+      "evidence": {
+        "facts": [
+          "1316/1/14 channels (high/minor/deviating)",
+          "OMC generated code assigns smeeM.stator and smeeM.rotorCage electroMagneticConverter.singlePhaseElectroMagneticConverter[1].arg_V_m the literal 0.0",
+          "remaining deviations: smeeM.rotorCage.lossPower and its aliases, smeeM.irRMS, smeeM.rotorCage.iRMS, and the rotor-cage abs_V_m channels, each with a p95-p05 range below 0.2 percent of its magnitude",
+          "against OMC at 1e-10 on t in [1, 30]: default OMC loss power mean difference 5.6e-4 W, default Rumoca 1.2e-3 W, Rumoca at 1e-10 maximum 1.6e-7 W",
+          "rotorCage.i[1] against OMC at 1e-10: Rumoca at 1e-10 maximum difference 3.5e-6 A"
+        ],
+        "artifact": "msl:Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Generator"
+      }
+    },
+    {
       "model_name": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Rectifier",
       "kind": "reference_failure",
       "reason": "OMC folds atan2(0, x) to 0 whatever the sign of x, so its ComplexMath.arg channels of the orientation-0 phasors (V_m.im structurally zero, the real part changing sign with the winding current) are the constant 0, while atan2 is pi for a negative real part. The only deviating channels are these angles.",
