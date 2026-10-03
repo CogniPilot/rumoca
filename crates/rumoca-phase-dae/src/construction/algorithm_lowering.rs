@@ -341,7 +341,7 @@ fn lower_algorithm_statements<'dae>(
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
     statements: &[rumoca_core::Statement],
 ) -> Result<(), dae::DaeConstructionError> {
-    for statement in statements {
+    for (index, statement) in statements.iter().enumerate() {
         lower_algorithm_statement(
             construction,
             discrete_values,
@@ -350,8 +350,32 @@ fn lower_algorithm_statements<'dae>(
             values,
             statement,
         )?;
+        if let rumoca_core::Statement::When { blocks, .. } = statement {
+            release_when_written_values(values, blocks, &statements[index + 1..]);
+        }
     }
     Ok(())
+}
+
+/// After a `when` statement, a value its body writes and no later statement
+/// writes again is the value after the algorithm (MLS §11.1.2), so a later
+/// read takes the variable's current value instead of the pre-seeded one.
+/// MLS §11.2.7 places `when` statements only at the top level of a section,
+/// so the statements after it in this sequence are every later write.
+fn release_when_written_values(
+    values: &mut HashMap<VarName, dae::ExprId<'_>>,
+    blocks: &[rumoca_core::StatementBlock],
+    later: &[rumoca_core::Statement],
+) {
+    let mut written = HashSet::new();
+    for block in blocks {
+        collect_algorithm_writes(&block.stmts, &mut written);
+    }
+    let mut later_writes = HashSet::new();
+    collect_algorithm_writes(later, &mut later_writes);
+    for target in written.difference(&later_writes) {
+        values.remove(target);
+    }
 }
 
 fn lower_algorithm_statement<'dae>(

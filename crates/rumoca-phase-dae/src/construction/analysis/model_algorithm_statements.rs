@@ -188,6 +188,11 @@ fn reject_sequential_if(
 /// value the `when` body itself writes again, lacks a checked owner for the
 /// condition. A value only the `when` body writes is read the way the
 /// equation form of the same `when` reads it, through event iteration.
+///
+/// A statement after the `when` reads a value its body writes the same way:
+/// when no later statement writes it, the value after the `when` is the
+/// value after the algorithm, which is the variable's current value. A value
+/// a later statement writes again has no such owner where it is read.
 fn reject_sequential_when(
     blocks: &[rumoca_core::StatementBlock],
     written: &mut HashSet<VarName>,
@@ -221,7 +226,9 @@ fn reject_sequential_when(
                 later_writes,
             },
         )?;
-        unsupported.extend(branch.difference(&incoming).cloned());
+        let mut block_writes = HashSet::new();
+        collect_algorithm_writes(&block.stmts, &mut block_writes);
+        unsupported.extend(block_writes.intersection(later_writes).cloned());
         exits.push(branch);
         unsupported_exits.push(unsupported);
     }
@@ -230,7 +237,10 @@ fn reject_sequential_when(
 }
 
 /// Every variable a statement sequence may write, at any nesting depth.
-fn collect_algorithm_writes(statements: &[rumoca_core::Statement], writes: &mut HashSet<VarName>) {
+pub(in crate::construction) fn collect_algorithm_writes(
+    statements: &[rumoca_core::Statement],
+    writes: &mut HashSet<VarName>,
+) {
     for statement in statements {
         match statement {
             rumoca_core::Statement::Assignment { comp, .. } => {
