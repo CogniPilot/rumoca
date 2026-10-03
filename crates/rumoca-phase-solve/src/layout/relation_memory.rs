@@ -2,7 +2,7 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use crate::LowerError;
-use crate::lower::clock_ownership::expression_clock_owner;
+use crate::lower::clock_ownership::relation_clock_owner;
 
 /// Current relation truth, independent of condition-edge history and B.1c targets.
 pub(crate) struct BufferedRelations<'dae> {
@@ -26,7 +26,7 @@ impl<'dae> BufferedRelations<'dae> {
                 .relation(root.relation())
                 .expect("checked root relation");
             let expression = relation.expression();
-            if expression_clock_owner(view, expression, |variable| {
+            if relation_clock_owner(view, expression, |variable| {
                 variable_clocks[variable.index() as usize]
             })
             .is_some()

@@ -1821,7 +1821,11 @@ fn lower_roots<'dae>(
         let relation = view
             .relation(root.relation())
             .expect("checked root relation resolves");
-        if expression_clock_owner(view, clocks, relation.expression()).is_some() {
+        if super::clock_ownership::relation_clock_owner(view, relation.expression(), |variable| {
+            clocks.variable_clock(variable)
+        })
+        .is_some()
+        {
             continue;
         }
         let span = root.provenance().span();
@@ -1927,10 +1931,7 @@ fn expression_clock_owner<'dae>(
     expression: dae::ExprId<'dae>,
 ) -> Option<(dae::ClockId<'dae>, Option<solve::PeriodicClockId>)> {
     let owner = super::clock_ownership::expression_clock_owner(view, expression, |variable| {
-        clocks
-            .variable_owner(variable)
-            .map(|(clock, _)| clock)
-            .or_else(|| clocks.variable_trigger(variable).map(|(clock, _)| clock))
+        clocks.variable_clock(variable)
     })?;
     // An MLS §16.3 event clock owns a partition but has no periodic schedule.
     Some((owner, clocks.clock(owner).ok()))

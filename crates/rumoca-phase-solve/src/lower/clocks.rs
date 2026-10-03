@@ -70,6 +70,16 @@ impl<'dae> LoweredClocks<'dae> {
             .flatten()
     }
 
+    /// The clock, periodic or event, that owns `variable`, if any.
+    pub(super) fn variable_clock(
+        &self,
+        variable: dae::VariableId<'dae>,
+    ) -> Option<dae::ClockId<'dae>> {
+        self.variable_owner(variable)
+            .map(|(clock, _)| clock)
+            .or_else(|| self.variable_trigger(variable).map(|(clock, _)| clock))
+    }
+
     pub(super) fn variable_is_sampled(&self, variable: dae::VariableId<'dae>) -> bool {
         self.sampled_variables
             .get(variable.index() as usize)

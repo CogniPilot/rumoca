@@ -133,6 +133,7 @@ mod function_valued_arguments;
 mod function_while_counter_floor;
 mod function_while_loops;
 mod gear_loop_regression;
+mod held_sample_relations;
 mod homotopy_branch_selection;
 mod implicit_derivative_aliases;
 mod index_reduction_auxiliary;
