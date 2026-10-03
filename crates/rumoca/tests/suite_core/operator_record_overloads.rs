@@ -126,13 +126,87 @@ package Ops
     C w[2] = {C(3, 4), C(5, 6)};
     C dot = v*w;
   end Dot;
+  connector Pin
+    C v;
+    flow C i;
+  end Pin;
+  connector Plug
+    parameter Integer m = 2;
+    Pin pin[m];
+  end Plug;
+  partial model TwoPlug
+    parameter Integer m = 2;
+    Plug plug_p(m = m);
+    Plug plug_n(m = m);
+    C v[m];
+    C i[m];
+  equation
+    v = plug_p.pin.v - plug_n.pin.v;
+    i = plug_p.pin.i;
+    plug_p.pin.i + plug_n.pin.i = fill(C(0), m);
+  end TwoPlug;
+  model Load
+    extends TwoPlug;
+    parameter Real R = 2;
+  equation
+    v = {R*i[k] for k in 1:m};
+  end Load;
+  model Source
+    extends TwoPlug;
+    parameter Real V[m] = {1, 2};
+    parameter Real phi[m] = {0, 1};
+  equation
+    v = {V[k]*C(cos(phi[k]), sin(phi[k])) for k in 1:m};
+  end Source;
+  model Reference
+    Plug plug(m = 2);
+  equation
+    plug.pin.v = fill(C(0), 2);
+  end Reference;
+  model Polyphase
+    Source source;
+    Load load;
+    Reference reference;
+  equation
+    connect(source.plug_p, load.plug_p);
+    connect(load.plug_n, source.plug_n);
+    connect(source.plug_n, reference.plug);
+  end Polyphase;
+  function real
+    input C c;
+    output Real r;
+  algorithm
+    r := c.re;
+  end real;
+  function scalarPower
+    input C v[:];
+    output Real p;
+  algorithm
+    p := sum({real(v[k]*v[k]) for k in 1:size(v, 1)});
+  end scalarPower;
+  function vectorPower
+    input C v[:];
+    output Real p;
+  algorithm
+    p := sum(real({v[k]*v[k] for k in 1:size(v, 1)}));
+  end vectorPower;
+  model Powers
+    C c[2] = {C(1 + time, 1), C(2, time)};
+    Real scalar = scalarPower(c);
+    Real vector = vectorPower(c);
+    Real inline = sum({real(c[k]*c[k]) for k in 1:2});
+  end Powers;
 end Ops;
 "#;
 
 fn simulate(model: &str) -> SimResult {
+    simulate_source(MODELS, model)
+}
+
+fn simulate_source(source: &str, model: &str) -> SimResult {
     let compiled = Compiler::new()
         .model(model)
-        .compile_str(MODELS, "Ops.mo")
+        .compile_str(source, "Ops.mo")
         .expect("the model compiles");
     simulate_dae_with_diagnostics(
         &compiled.dae,
@@ -200,4 +274,59 @@ fn a_vector_operand_function_sizes_one_input_by_another() {
     // (1 + 2j)(3 + 4j) + (1 + 1j)(5 + 6j) = (-5 + 10j) + (-1 + 11j).
     let result = simulate("Ops.Dot");
     assert_complex(&result, "dot", -6.0, 21.0);
+}
+
+#[test]
+fn record_vectors_read_through_component_arrays_and_fill_one_value() {
+    // `plug_p.pin.v` of `Pin pin[m]` is the vector of the elements' `v`, and
+    // `fill(C(0), m)` pairs `C(0)` with every element. The source drives
+    // `V[k]*e^(j*phi[k])` across a load of resistance 2, so
+    // `load.i[2] = 2*e^(j)/2`.
+    let result = simulate("Ops.Polyphase");
+    assert_complex(&result, "load.i[1]", 0.5, 0.0);
+    assert_complex(&result, "load.i[2]", 1.0_f64.cos(), 1.0_f64.sin());
+    assert_complex(&result, "source.i[2]", -1.0_f64.cos(), -1.0_f64.sin());
+}
+
+#[test]
+fn comprehensions_over_record_vectors_call_operators_per_element() {
+    // At t = 1: c = {2 + j, 2 + j}, so each square has real part 3.
+    let result = simulate("Ops.Powers");
+    for name in ["scalar", "vector", "inline"] {
+        let value = final_value(&result, name);
+        assert!((value - 6.0).abs() < 1e-9, "{name} = {value}");
+    }
+}
+
+/// A chain of operator records whose `'+'` applies the next record's `'+'`,
+/// `depth` records deep: each link is collected only after the previous
+/// link's operator is resolved.
+fn operator_chain(depth: usize) -> String {
+    let mut source = String::from("package Chain\n");
+    for k in 1..=depth {
+        let body = if k < depth {
+            let next = k + 1;
+            format!(
+                "      import Chain.R{next};\n      input R{k} a;\n      input R{k} b;\n      output R{k} c;\n    protected\n      R{next} t;\n    algorithm\n      t := R{next}(a.x) + R{next}(b.x);\n      c := R{k}(t.x);\n"
+            )
+        } else {
+            format!(
+                "      input R{k} a;\n      input R{k} b;\n      output R{k} c;\n    algorithm\n      c := R{k}(a.x + b.x);\n"
+            )
+        };
+        source.push_str(&format!(
+            "  operator record R{k}\n    Real x;\n    encapsulated operator function '+'\n      import Chain.R{k};\n{body}    end '+';\n  end R{k};\n"
+        ));
+    }
+    source.push_str(
+        "  model M\n    R1 a = R1(time);\n    R1 b = R1(2);\n    R1 s = a + b;\n  end M;\nend Chain;\n",
+    );
+    source
+}
+
+#[test]
+fn operator_functions_are_collected_through_any_chain_depth() {
+    let result = simulate_source(&operator_chain(12), "Chain.M");
+    let value = final_value(&result, "s.x");
+    assert!((value - 3.0).abs() < 1e-9, "s.x = {value}");
 }

@@ -862,6 +862,7 @@ impl FunctionShapeAnalysis {
         let mut resolve = |name: &rumoca_core::Reference,
                            arguments: &[Expression],
                            is_constructor: bool,
+                           values: &ShapeEnvironment,
                            span: Span| {
             if is_constructor {
                 return self.constructor_expression_shape(name, span);
@@ -1020,6 +1021,28 @@ impl ShapeAnalyzer<'_> {
         {
             return self.discover_conditional_calls(branches, else_branch, *span, values);
         }
+        // MLS §10.4.1: the comprehension body and filter are evaluated in the
+        // scope its indices open, so their calls are shaped with each index
+        // bound as a scalar; the index ranges are read outside that scope.
+        if let Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } = expression
+        {
+            for index in indices {
+                self.discover_calls(&index.range, values)?;
+            }
+            let mut scoped = values.clone();
+            for index in indices {
+                scoped.insert(VarName::new(&index.name), Vec::new());
+            }
+            if let Some(filter) = filter {
+                self.discover_calls(filter, &scoped)?;
+            }
+            return self.discover_calls(expr, &scoped);
+        }
         for child in expression_children(expression) {
             self.discover_calls(child, values)?;
         }
@@ -1106,6 +1129,7 @@ impl ShapeAnalyzer<'_> {
         let mut resolve = |name: &rumoca_core::Reference,
                            arguments: &[Expression],
                            is_constructor: bool,
+                           values: &ShapeEnvironment,
                            span: Span| {
             if is_constructor {
                 return self.discover_constructor(name, arguments, span, values);

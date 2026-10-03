@@ -1105,15 +1105,16 @@ fn collect_flat_functions(
     seed_flat_functions_from_context(ctx, flat);
     functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
     rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index)?;
-    for _ in 0..8 {
+    // Collection only adds functions declared in the class tree, so the
+    // alternation reaches a fixed point.
+    loop {
         let collected = flat.functions.len();
         crate::operator_records::resolve_operator_overloads(flat, class_index)?;
         functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
         if flat.functions.len() == collected {
-            break;
+            return Ok(());
         }
     }
-    Ok(())
 }
 
 fn finalize_flat_connections(

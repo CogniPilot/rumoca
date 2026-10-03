@@ -138,13 +138,40 @@ impl<'tree> OperatorCatalog<'tree> {
         })
     }
 
-    /// The type of the declaration `def_id` names, such as a package constant
-    /// (`Modelica.ComplexMath.j`) not yet injected into the flat model.
-    pub(super) fn declared_type(&mut self, def_id: DefId) -> OperandType {
-        let Some(component) = self.declaration(def_id) else {
-            return OperandType::Other;
-        };
-        self.component_type(component)
+    /// The type of the value `reference` denotes, from its declarations: a
+    /// package constant not yet injected into the flat model
+    /// (`Modelica.ComplexMath.j`), or a field read through an array of
+    /// components. Every dimension a part declares and the reference does not
+    /// subscript is a dimension of the value (MLS §10.1), so `plug.pin.v` of
+    /// `Pin pin[m]` is a vector of `v`'s type.
+    pub(super) fn reference_type(
+        &mut self,
+        reference: &rumoca_core::ComponentReference,
+    ) -> OperandType {
+        let mut rank = 0usize;
+        let mut element = OperandType::Other;
+        for part in reference.parts() {
+            // A part that names a class (a package prefix) has no dimensions.
+            let Some(component) = self.declaration(part.def_id) else {
+                continue;
+            };
+            let declared = component.shape_expr.len().max(component.shape.len());
+            if part
+                .subs
+                .iter()
+                .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+                || part.subs.len() > declared
+            {
+                return OperandType::Other;
+            }
+            rank += declared - part.subs.len();
+            element = self.element_type(component);
+        }
+        match (element, rank) {
+            (OperandType::Record(owner), 1) => OperandType::RecordVector(owner),
+            (element, 0) => element,
+            _ => OperandType::Other,
+        }
     }
 
     /// The declared record class of the declaration `def_id` names.
@@ -175,17 +202,51 @@ impl<'tree> OperatorCatalog<'tree> {
 
     pub(super) fn component_type(&mut self, component: &ast::Component) -> OperandType {
         let rank = component.shape_expr.len().max(component.shape.len());
-        if let Some(owner) = component.type_def_id.and_then(|def| self.owner(def)) {
-            return match rank {
-                0 => OperandType::Record(owner),
-                1 => OperandType::RecordVector(owner),
-                _ => OperandType::Other,
+        match (self.element_type(component), rank) {
+            (OperandType::Record(owner), 1) => OperandType::RecordVector(owner),
+            (element, 0) => element,
+            _ => OperandType::Other,
+        }
+    }
+
+    /// The scalar type of one element of `component`, ignoring its dimensions.
+    fn element_type(&mut self, component: &ast::Component) -> OperandType {
+        let Some(def_id) = component.type_def_id else {
+            return numeric_type_name(declared_type_leaf(&component.type_name));
+        };
+        if let Some(owner) = self.owner(def_id) {
+            return OperandType::Record(owner);
+        }
+        self.type_class_root(def_id, &component.type_name)
+    }
+
+    /// The predefined root of a `type` class (`SI.Voltage` is `Real`): Real
+    /// and Integer roots are numeric; an enumeration, a non-`type` class, or
+    /// a Boolean or String root is not.
+    ///
+    /// A predefined type has no class definition, so it is known by the name
+    /// that declares it.
+    fn type_class_root(&self, def_id: DefId, name: &ast::Name) -> OperandType {
+        let mut current = def_id;
+        let mut current_name = name;
+        let mut visited = rustc_hash::FxHashSet::default();
+        while visited.insert(current) {
+            let Some(class) = self.classes.get(current) else {
+                return numeric_type_name(declared_type_leaf(current_name));
             };
+            if class.class_type != ClassType::Type || !class.enum_literals.is_empty() {
+                return OperandType::Other;
+            }
+            let [extend] = class.extends.as_slice() else {
+                return OperandType::Other;
+            };
+            current_name = &extend.base_name;
+            match extend.base_def_id {
+                Some(base) => current = base,
+                None => return numeric_type_name(declared_type_leaf(current_name)),
+            }
         }
-        if rank != 0 {
-            return OperandType::Other;
-        }
-        numeric_type_name(declared_type_leaf(&component.type_name))
+        OperandType::Other
     }
 }
 
@@ -193,14 +254,14 @@ fn declares_operators(class: &ast::ClassDef) -> bool {
     class.classes.keys().any(|name| name.starts_with('\''))
 }
 
-/// `Real`, `Integer`, and the `type` aliases of `Real` the MSL declares
-/// (`SI.Voltage`) are numeric; `Boolean` and `String` are not. `leaf` is the
-/// last identifier of the declared type name.
+/// The operand type of a predefined type named by `leaf`, the last identifier
+/// of a declared type name that resolves to no class: `Real` and `Integer`
+/// are numeric, every other predefined type is not.
 pub(super) fn numeric_type_name(leaf: &str) -> OperandType {
     match leaf {
         "Integer" => OperandType::Numeric { integer: true },
-        "Boolean" | "String" => OperandType::Other,
-        _ => OperandType::Numeric { integer: false },
+        "Real" => OperandType::Numeric { integer: false },
+        _ => OperandType::Other,
     }
 }
 

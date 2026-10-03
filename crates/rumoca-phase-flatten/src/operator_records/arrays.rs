@@ -13,8 +13,10 @@ use rumoca_ir_flat as flat;
 
 use super::{OperandType, Resolver};
 
-/// The one-dimensional record arrays whose elements (`v[1]`, `v[2]`, ...)
-/// Flat declares, keyed by the array name.
+/// The one-dimensional record vectors whose elements Flat declares, keyed by
+/// the vector's name: a record array `v` of elements `v[1]`, `v[2]`, ..., and
+/// a record field read through one array of components, `plug.pin.v` of
+/// elements `plug.pin[1].v`, `plug.pin[2].v`, ... (MLS §10.1).
 pub(super) fn record_arrays(
     flat: &flat::Model,
 ) -> rustc_hash::FxHashMap<String, (DefId, Vec<rumoca_core::ComponentReference>)> {
@@ -22,19 +24,12 @@ pub(super) fn record_arrays(
         String,
         (DefId, BTreeMap<i64, rumoca_core::ComponentReference>),
     > = rustc_hash::FxHashMap::default();
-    for (name, record) in &flat.record_instances {
-        let Some((base, index)) = name
-            .as_str()
-            .strip_suffix(']')
-            .and_then(|head| head.rsplit_once('['))
-        else {
-            continue;
-        };
-        let Ok(index) = index.parse::<i64>() else {
+    for record in flat.record_instances.values() {
+        let Some((base, index)) = vector_element(&record.component_ref) else {
             continue;
         };
         let entry = arrays
-            .entry(base.to_string())
+            .entry(base)
             .or_insert_with(|| (record.type_def_id, BTreeMap::new()));
         entry.1.insert(index, record.component_ref.clone());
     }
@@ -48,6 +43,44 @@ pub(super) fn record_arrays(
         })
         .map(|(name, (def, elements))| (name, (def, elements.into_values().collect())))
         .collect()
+}
+
+/// The repeated element `c` of a vector `fill(c, n)`.
+fn vector_fill_value(expression: &Expression) -> Option<&Expression> {
+    match expression {
+        Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args,
+            ..
+        } => match args.as_slice() {
+            [value, _length] => Some(value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The vector name and index of a record element whose reference carries
+/// exactly one subscript, a literal index on one of its parts: `plug.pin[2].v`
+/// is element 2 of `plug.pin.v`.
+fn vector_element(reference: &rumoca_core::ComponentReference) -> Option<(String, i64)> {
+    let mut subscripted = reference
+        .parts()
+        .iter()
+        .filter(|part| !part.subs.is_empty());
+    let part = subscripted.next()?;
+    if subscripted.next().is_some() {
+        return None;
+    }
+    let [rumoca_core::Subscript::Index { value, .. }] = part.subs.as_slice() else {
+        return None;
+    };
+    // Every other part is unsubscripted, so the vector's name is the parts'
+    // identifiers alone.
+    let base = rumoca_core::ComponentPath::from_parts(
+        reference.parts().iter().map(|part| part.ident.clone()),
+    );
+    Some((base.to_flat_string(), *value))
 }
 
 impl Resolver<'_, '_, '_> {
@@ -145,16 +178,40 @@ impl Resolver<'_, '_, '_> {
     }
 
     /// The element pairs of an equation between two record vectors of equal
-    /// length, such as `s = v + w` once `v + w` is an element array.
+    /// length, such as `s = v + w` once `v + w` is an element array. A side
+    /// `fill(c, n)` pairs `c` with every element of the other side, whose
+    /// length `n` equals by the equation's size rule (MLS §8.3.1, §10.3.3).
     pub(super) fn vector_equation_pairs(
         &self,
         lhs: &Expression,
         rhs: &Expression,
         span: Span,
     ) -> Option<Vec<(Expression, Expression)>> {
-        let lhs = self.record_elements(lhs, span)?;
-        let rhs = self.record_elements(rhs, span)?;
-        (lhs.len() == rhs.len()).then(|| lhs.into_iter().zip(rhs).collect())
+        match (
+            self.record_elements(lhs, span),
+            self.record_elements(rhs, span),
+        ) {
+            (Some(lhs), Some(rhs)) => {
+                (lhs.len() == rhs.len()).then(|| lhs.into_iter().zip(rhs).collect())
+            }
+            (Some(lhs), None) => {
+                let value = vector_fill_value(rhs)?;
+                Some(
+                    lhs.into_iter()
+                        .map(|element| (element, value.clone()))
+                        .collect(),
+                )
+            }
+            (None, Some(rhs)) => {
+                let value = vector_fill_value(lhs)?;
+                Some(
+                    rhs.into_iter()
+                        .map(|element| (value.clone(), element))
+                        .collect(),
+                )
+            }
+            (None, None) => None,
+        }
     }
 
     /// Negate a record vector element by element.

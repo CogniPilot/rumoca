@@ -113,6 +113,23 @@ fn rewrite_model(flat: &mut flat::Model, resolver: &mut Resolver<'_, '_, '_>) {
     }
 }
 
+/// The scalar operand type of a Real or Integer Flat variable, from the
+/// canonical root of its effective type (`SI.Voltage` is Real).
+fn numeric_variable_type(flat: &flat::Model, variable: &flat::Variable) -> Option<OperandType> {
+    let canonical = flat
+        .effective_types
+        .get(&variable.type_id)
+        .map_or(variable.type_id, rumoca_core::EffectiveType::canonical_type);
+    let types = &flat.predefined_types;
+    if canonical == types.integer {
+        Some(OperandType::Numeric { integer: true })
+    } else if canonical == types.real {
+        Some(OperandType::Numeric { integer: false })
+    } else {
+        None
+    }
+}
+
 /// The operand types of the names one expression scope reads.
 trait Scope {
     fn name_type(&self, catalog: &mut OperatorCatalog<'_>, name: &str) -> OperandType;
@@ -127,18 +144,26 @@ trait Scope {
     }
     /// Whether the scope declares `name`; a `for` index is not declared by it.
     fn declares(&self, name: &str) -> bool;
+    /// The scalar type and rank of a Real or Integer variable `name` of any
+    /// rank, so an element `phi[k]` of a numeric array is a numeric operand.
+    fn numeric_variable(
+        &self,
+        catalog: &OperatorCatalog<'_>,
+        name: &str,
+    ) -> Option<(OperandType, usize)>;
 }
 
 struct ModelScope {
     records: rustc_hash::FxHashMap<String, DefId>,
     record_arrays: rustc_hash::FxHashMap<String, (DefId, Vec<rumoca_core::ComponentReference>)>,
-    numeric: rustc_hash::FxHashMap<String, bool>,
+    /// Every declared variable's numeric scalar type (`None` when it is not
+    /// Real or Integer) and rank.
+    variables: rustc_hash::FxHashMap<String, (Option<OperandType>, usize)>,
     record_types: rustc_hash::FxHashMap<DefId, Vec<(String, DefId)>>,
 }
 
 impl ModelScope {
     fn from_model(flat: &flat::Model) -> Self {
-        let integer = flat.predefined_types.integer;
         Self {
             record_arrays: record_arrays(flat),
             records: flat
@@ -147,11 +172,15 @@ impl ModelScope {
                 .filter(|(_, record)| record.dims.is_empty())
                 .map(|(name, record)| (name.as_str().to_string(), record.type_def_id))
                 .collect(),
-            numeric: flat
+            variables: flat
                 .variables
                 .iter()
-                .filter(|(_, variable)| variable.dims.is_empty())
-                .map(|(name, variable)| (name.as_str().to_string(), variable.type_id == integer))
+                .map(|(name, variable)| {
+                    (
+                        name.as_str().to_string(),
+                        (numeric_variable_type(flat, variable), variable.dims.len()),
+                    )
+                })
                 .collect(),
             record_types: flat
                 .record_types
@@ -173,7 +202,7 @@ impl ModelScope {
 
 impl Scope for ModelScope {
     fn declares(&self, name: &str) -> bool {
-        self.numeric.contains_key(name)
+        self.variables.contains_key(name)
             || self.records.contains_key(name)
             || self.record_arrays.contains_key(name)
     }
@@ -189,10 +218,19 @@ impl Scope for ModelScope {
         {
             return OperandType::RecordVector(owner);
         }
-        match self.numeric.get(name) {
-            Some(integer) => OperandType::Numeric { integer: *integer },
-            None => OperandType::Other,
+        match self.variables.get(name) {
+            Some((Some(scalar), 0)) => *scalar,
+            _ => OperandType::Other,
         }
+    }
+
+    fn numeric_variable(
+        &self,
+        _catalog: &OperatorCatalog<'_>,
+        name: &str,
+    ) -> Option<(OperandType, usize)> {
+        let (scalar, rank) = self.variables.get(name)?;
+        Some(((*scalar)?, *rank))
     }
 
     fn record_fields(&self, def_id: DefId) -> Option<Vec<(String, DefId)>> {
@@ -269,6 +307,18 @@ impl Scope for FunctionScope {
 
     fn record_fields(&self, _def_id: DefId) -> Option<Vec<(String, DefId)>> {
         None
+    }
+
+    fn numeric_variable(
+        &self,
+        catalog: &OperatorCatalog<'_>,
+        name: &str,
+    ) -> Option<(OperandType, usize)> {
+        let (type_def_id, scalar, rank) = self.params.get(name)?;
+        let record = type_def_id
+            .and_then(|def| catalog.classes.get(def))
+            .is_some_and(|class| class.class_type == rumoca_core::ClassType::Record);
+        (!record && matches!(scalar, OperandType::Numeric { .. })).then_some((*scalar, *rank))
     }
 
     fn record_def(&self, name: &str) -> Option<DefId> {
@@ -355,20 +405,49 @@ impl Resolver<'_, '_, '_> {
         )
     }
 
-    /// `c1[i]` of a record vector `c1` with one scalar subscript, such as a
-    /// loop index, is one element: a scalar of that record.
-    fn indexed_element_type(
+    /// The type of `name` read with `subscripts`: a declared element
+    /// (`v[1]` of a record vector Flat declares element by element), else an
+    /// element selected by scalar subscripts (`c1[i]` of a record vector,
+    /// `phi[k]` of a numeric array), else the declared type of the name.
+    fn reference_type(
         &mut self,
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
     ) -> OperandType {
-        let [subscript] = subscripts else {
+        if let Some(element) = literal_element_name(name.as_str(), subscripts) {
+            let known = self.scope.name_type(self.catalog, &element);
+            if known != OperandType::Other {
+                return known;
+            }
+        }
+        if subscripts.is_empty() {
+            return self.name_type(name, name.as_str());
+        }
+        if !subscripts
+            .iter()
+            .all(|subscript| self.scalar_subscript(subscript))
+        {
             return OperandType::Other;
-        };
-        let scalar = match subscript {
+        }
+        if let Some((scalar, rank)) = self.scope.numeric_variable(self.catalog, name.as_str()) {
+            return if rank == subscripts.len() {
+                scalar
+            } else {
+                OperandType::Other
+            };
+        }
+        match self.name_type(name, name.as_str()) {
+            OperandType::RecordVector(owner) if subscripts.len() == 1 => OperandType::Record(owner),
+            _ => OperandType::Other,
+        }
+    }
+
+    /// Whether `subscript` selects one index: a literal, a loop index (which
+    /// the scope does not declare), or an Integer-valued expression.
+    fn scalar_subscript(&mut self, subscript: &rumoca_core::Subscript) -> bool {
+        match subscript {
             rumoca_core::Subscript::Index { .. } => true,
             rumoca_core::Subscript::Expr { expr, .. } => match expr.as_ref() {
-                // A `for` index is declared by its loop, not by the scope.
                 Expression::VarRef {
                     name: index,
                     subscripts,
@@ -377,10 +456,6 @@ impl Resolver<'_, '_, '_> {
                 other => matches!(self.operand_type(other), OperandType::Numeric { .. }),
             },
             rumoca_core::Subscript::Colon { .. } => false,
-        };
-        match self.name_type(name, name.as_str()) {
-            OperandType::RecordVector(owner) if scalar => OperandType::Record(owner),
-            _ => OperandType::Other,
         }
     }
 
@@ -388,10 +463,7 @@ impl Resolver<'_, '_, '_> {
         match expression {
             Expression::VarRef {
                 name, subscripts, ..
-            } => match literal_element_name(name.as_str(), subscripts) {
-                Some(element) => self.name_type(name, &element),
-                None => self.indexed_element_type(name, subscripts),
-            },
+            } => self.reference_type(name, subscripts),
             Expression::Index {
                 base, subscripts, ..
             } => match base.as_ref() {
@@ -399,12 +471,7 @@ impl Resolver<'_, '_, '_> {
                     name,
                     subscripts: base_subscripts,
                     ..
-                } if base_subscripts.is_empty() => {
-                    match literal_element_name(name.as_str(), subscripts) {
-                        Some(element) => self.name_type(name, &element),
-                        None => self.indexed_element_type(name, subscripts),
-                    }
-                }
+                } if base_subscripts.is_empty() => self.reference_type(name, subscripts),
                 _ => OperandType::Other,
             },
             Expression::Literal {
@@ -458,7 +525,7 @@ impl Resolver<'_, '_, '_> {
             OperandType::Other => reference
                 .component_ref()
                 .map_or(OperandType::Other, |component| {
-                    self.catalog.declared_type(component.target_def_id())
+                    self.catalog.reference_type(component)
                 }),
             known => known,
         }
@@ -483,15 +550,7 @@ impl Resolver<'_, '_, '_> {
             .find(|component| matches!(component.causality, rumoca_core::Causality::Output(_)));
         match output {
             Some(component) if component.shape_expr.is_empty() && component.shape.is_empty() => {
-                match component
-                    .type_def_id
-                    .and_then(|def| self.catalog.owner(def))
-                {
-                    Some(owner) => OperandType::Record(owner),
-                    None => catalog::numeric_type_name(catalog::declared_type_leaf(
-                        &component.type_name,
-                    )),
-                }
+                self.catalog.component_type(component)
             }
             _ => OperandType::Other,
         }

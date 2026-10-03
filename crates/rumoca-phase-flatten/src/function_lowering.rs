@@ -1496,6 +1496,37 @@ fn expand_record_arg(
         return Ok(());
     }
 
+    // A record array comprehension passes, per field, the comprehension of
+    // that field of its element (MLS §10.4.1): `{c[k]*d for k in 1:n}` is
+    // `{(c[k]*d).re for k in 1:n}` and `{(c[k]*d).im for k in 1:n}`, so each
+    // field reads the iterator inside the comprehension that binds it.
+    if let rumoca_core::Expression::ArrayComprehension {
+        expr,
+        indices,
+        filter,
+        span,
+    } = arg
+    {
+        let mut element_fields = Vec::with_capacity(fields.len());
+        expand_record_arg(
+            function_name,
+            expr,
+            fields,
+            local_record_params,
+            aggregate_record_values,
+            &mut element_fields,
+        )?;
+        out.extend(element_fields.into_iter().map(|field_expr| {
+            rumoca_core::Expression::ArrayComprehension {
+                expr: Box::new(field_expr),
+                indices: indices.clone(),
+                filter: filter.clone(),
+                span: *span,
+            }
+        }));
+        return Ok(());
+    }
+
     if expand_record_var_ref(
         arg,
         fields,
