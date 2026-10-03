@@ -22,6 +22,7 @@ mod initial_parameter_values;
 mod model_algorithm;
 mod model_events;
 mod multi_output_equations;
+mod native_lapack;
 mod native_tables;
 mod ordinary_equations;
 mod record_equation;
@@ -60,7 +61,7 @@ use analysis::{
     FunctionRecordFieldAssembly, FunctionRecordFieldAssemblyPlan, FunctionStatementPlan,
     FunctionValueSeed, HistoryOperatorPlans, ModelAlgorithmPlan, ModelEventFunctionCallPlan,
     ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan, MultiOutputEquationPlan,
-    PartialJoinPlan, PlannedRole, RecordArrayFieldPlan, RecordArrayFieldPlans,
+    NativeLapackPlan, PartialJoinPlan, PlannedRole, RecordArrayFieldPlan, RecordArrayFieldPlans,
     RecordEquationFieldPlan, RecordEquationFieldValue, RecordEquationPlan, RuntimeVariableRole,
     SemiLinearRules, StructuredSource, WhenBranchKey, analyze, assigned_function_targets,
     branch_never_completes, collect_algorithm_writes, discrete_value_assignment,
@@ -123,6 +124,7 @@ use model_algorithm::{
 };
 use model_events::{WhenChainsRequest, always_condition, lower_when_assignment, lower_when_chains};
 use multi_output_equations::{MultiOutputDiscreteOwners, lower_multi_output_equation};
+use native_lapack::lower_native_lapack;
 use ordinary_equations::{OrdinaryEquationRow, lower_ordinary_equation};
 use record_equation::lower_record_equation;
 use structured_body::{lower_structured_body, normalize_conditional_residual};

@@ -405,19 +405,8 @@ fn define_function<'dae>(
         &mut body,
         mutable_values,
     )?;
-    if let FunctionPlan::NativeLinearSolve {
-        matrix,
-        solution,
-        info,
-    } = plan
-    {
-        lower_native_linear_solve(
-            construction,
-            &coordinates,
-            &mut body,
-            (matrix, solution, info),
-            provenance,
-        )?;
+    if let FunctionPlan::NativeLapack(native) = plan {
+        lower_native_lapack(construction, &coordinates, &mut body, native, provenance)?;
         construction.functions(|owner| owner.define(body, provenance))?;
         return Ok(());
     }
@@ -553,7 +542,7 @@ fn record_staging_fields(plan: &FunctionPlan) -> Vec<(VarName, VarName)> {
         FunctionPlan::IntegerReduction { initial, .. } => {
             collect_record_staging_fields(initial, &mut fields)
         }
-        FunctionPlan::External(_) | FunctionPlan::NativeLinearSolve { .. } => {}
+        FunctionPlan::External(_) | FunctionPlan::NativeLapack(_) => {}
     }
     fields.sort();
     fields.dedup();
@@ -597,8 +586,8 @@ fn lower_function_plan<'dae>(
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match plan {
         FunctionPlan::External(_) => unreachable!("external bodies define through their interface"),
-        FunctionPlan::NativeLinearSolve { .. } => {
-            unreachable!("a native linear solve defines its body directly")
+        FunctionPlan::NativeLapack(_) => {
+            unreachable!("a native LAPACK driver defines its body directly")
         }
         FunctionPlan::Statements {
             source,
@@ -668,261 +657,6 @@ fn lower_function_plan<'dae>(
             result,
             reduction,
         ),
-    }
-}
-
-/// Define the body of a LAPACK `dgesv` call with one right-hand side (see
-/// `analysis::function_native_lapack`). `info` is the dgesv status: the
-/// first step `k` at which elimination with partial pivoting meets an
-/// exactly zero pivot column, or 0. When `info = 0` the solution output,
-/// initialized to the right-hand side by its declaration equation, becomes
-/// the linear solve of the matrix argument; otherwise it keeps the
-/// right-hand side, as dgesv leaves `B` unchanged, and the caller decides
-/// what a singular matrix means.
-fn lower_native_linear_solve<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    body: &mut dae::FunctionBody<'dae>,
-    (matrix, solution, info): (&VarName, &VarName, &VarName),
-    provenance: dae::DaeProvenance,
-) -> Result<(), dae::DaeConstructionError> {
-    let read = |construction: &mut dae::DaeConstruction<'dae>,
-                body: &dae::FunctionBody<'dae>,
-                name: &VarName| {
-        match coordinates[name] {
-            Coordinate::FunctionValue(value) => {
-                construction.functions(|functions| functions.read(body, value, provenance))
-            }
-            Coordinate::FunctionParameter(parameter) => construction.expressions(|expressions| {
-                expressions.at(provenance).function_parameter(parameter)
-            }),
-            _ => unreachable!("analysis proves the linear-solve operands are function values"),
-        }
-    };
-    let matrix = read(construction, body, matrix)?;
-    let rhs = read(construction, body, solution)?;
-    let status = construction.expressions(|expressions| {
-        let mut builder = PivotBuilder {
-            expressions,
-            provenance,
-        };
-        let status = builder.zero_pivot_step(matrix)?;
-        let solvable = builder.is_integer(status, 0)?;
-        let identity = builder.identity(builder.extent(matrix)?)?;
-        let regular = builder.conditional(solvable, matrix, identity)?;
-        let solved = builder
-            .expressions
-            .at(provenance)
-            .builtin(dae::PureBuiltin::LinearSolve, [regular, rhs])?;
-        Ok::<_, dae::DaeConstructionError>((status, solved))
-    });
-    let (status, solved) = status?;
-    let solution = function_value_coordinate(coordinates, solution);
-    construction.functions(|functions| functions.assign(body, solution, solved, provenance))?;
-    let info = function_value_coordinate(coordinates, info);
-    construction.functions(|functions| functions.assign(body, info, status, provenance))
-}
-
-/// Straight-line elimination with partial pivoting over a matrix of
-/// translation-time extent `n`, kept as `n` row vectors: step `k` takes the
-/// first row of largest magnitude in column `k` (LAPACK `idamax`), swaps it
-/// into row `k`, and eliminates column `k` below it. A zero largest
-/// magnitude is a zero pivot: the step eliminates nothing (its multipliers
-/// are zero) and the first such step is the dgesv `info`.
-struct PivotBuilder<'scope, 'storage, 'dae> {
-    expressions: &'scope mut dae::Expressions<'storage, 'dae>,
-    provenance: dae::DaeProvenance,
-}
-
-impl<'dae> PivotBuilder<'_, '_, 'dae> {
-    fn extent(&self, matrix: dae::ExprId<'dae>) -> Result<usize, dae::DaeConstructionError> {
-        let ty = self.expressions.value_type(matrix, self.provenance)?;
-        Ok(ty.dimensions()[0] as usize)
-    }
-
-    fn literal(
-        &mut self,
-        value: dae::DaeLiteral,
-    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-        self.expressions.at(self.provenance).literal(value)
-    }
-
-    fn integer(&mut self, value: usize) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-        self.literal(dae::DaeLiteral::Integer(value as i64))
-    }
-
-    fn is_integer(
-        &mut self,
-        lhs: dae::ExprId<'dae>,
-        value: i64,
-    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-        let rhs = self.literal(dae::DaeLiteral::Integer(value))?;
-        self.op(dae::BinaryOperator::Equal, lhs, rhs)
-    }
-
-    fn op(
-        &mut self,
-        operator: dae::BinaryOperator,
-        lhs: dae::ExprId<'dae>,
-        rhs: dae::ExprId<'dae>,
-    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-        self.expressions
-            .at(self.provenance)
-            .binary(operator, lhs, rhs)
-    }
-
-    fn conditional(
-        &mut self,
-        condition: dae::ExprId<'dae>,
-        then: dae::ExprId<'dae>,
-        otherwise: dae::ExprId<'dae>,
-    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-        self.expressions
-            .at(self.provenance)
-            .conditional([(condition, then)], otherwise)
-    }
-
-    /// `base[index]` for a translation-time 1-based `index`, with the
-    /// remaining axes whole.
-    fn at_index(
-        &mut self,
-        base: dae::ExprId<'dae>,
-        index: usize,
-    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-        let expression = self.integer(index)?;
-        let provenance = self.provenance;
-        let rank = self
-            .expressions
-            .value_type(base, provenance)?
-            .dimensions()
-            .len();
-        let subscripts = std::iter::once(dae::Subscript::Value {
-            expression,
-            provenance,
-        })
-        .chain((1..rank).map(|_| dae::Subscript::Whole { provenance }));
-        self.expressions.at(provenance).index(base, subscripts)
-    }
-
-    fn identity(&mut self, n: usize) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-        let rows = (1..=n)
-            .map(|row| {
-                let elements = (1..=n)
-                    .map(|column| {
-                        self.literal(dae::DaeLiteral::Real(f64::from(u8::from(row == column))))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.expressions.at(self.provenance).array(elements)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.expressions.at(self.provenance).array(rows)
-    }
-
-    /// The first elimination step whose pivot column is exactly zero, or 0.
-    fn zero_pivot_step(
-        &mut self,
-        matrix: dae::ExprId<'dae>,
-    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-        let n = self.extent(matrix)?;
-        let mut rows = (1..=n)
-            .map(|row| self.at_index(matrix, row))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut status = self.integer(0)?;
-        let zero = self.literal(dae::DaeLiteral::Real(0.0))?;
-        for step in 0..n {
-            let (magnitudes, largest) = self.column_magnitudes(&rows[step..], step + 1)?;
-            let is_zero = self.op(dae::BinaryOperator::Equal, largest, zero)?;
-            let unset = self.is_integer(status, 0)?;
-            let first_zero = self.op(dae::BinaryOperator::And, unset, is_zero)?;
-            let step_number = self.integer(step + 1)?;
-            status = self.conditional(first_zero, step_number, status)?;
-            if step + 1 < n {
-                let taken = self.first_largest(&magnitudes, largest)?;
-                self.eliminate(&mut rows[step..], step + 1, &taken, is_zero)?;
-            }
-        }
-        Ok(status)
-    }
-
-    /// The magnitudes of column `column` over `rows` and their largest.
-    fn column_magnitudes(
-        &mut self,
-        rows: &[dae::ExprId<'dae>],
-        column: usize,
-    ) -> Result<(Vec<dae::ExprId<'dae>>, dae::ExprId<'dae>), dae::DaeConstructionError> {
-        let magnitudes = rows
-            .iter()
-            .map(|row| {
-                let element = self.at_index(*row, column)?;
-                self.expressions
-                    .at(self.provenance)
-                    .builtin(dae::PureBuiltin::Abs, [element])
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut largest = magnitudes[0];
-        for magnitude in &magnitudes[1..] {
-            largest = self
-                .expressions
-                .at(self.provenance)
-                .builtin(dae::PureBuiltin::Max, [largest, *magnitude])?;
-        }
-        Ok((magnitudes, largest))
-    }
-
-    /// Whether each row is the first of largest magnitude (LAPACK `idamax`).
-    fn first_largest(
-        &mut self,
-        magnitudes: &[dae::ExprId<'dae>],
-        largest: dae::ExprId<'dae>,
-    ) -> Result<Vec<dae::ExprId<'dae>>, dae::DaeConstructionError> {
-        let mut taken = Vec::with_capacity(magnitudes.len());
-        let mut earlier: Option<dae::ExprId<'dae>> = None;
-        for magnitude in magnitudes {
-            let select = self.op(dae::BinaryOperator::Equal, *magnitude, largest)?;
-            let (first, seen) = match earlier {
-                None => (select, select),
-                Some(earlier) => {
-                    let not_earlier = self
-                        .expressions
-                        .at(self.provenance)
-                        .unary(dae::UnaryOperator::Not, earlier)?;
-                    let first = self.op(dae::BinaryOperator::And, select, not_earlier)?;
-                    (first, self.op(dae::BinaryOperator::Or, earlier, select)?)
-                }
-            };
-            earlier = Some(seen);
-            taken.push(first);
-        }
-        Ok(taken)
-    }
-
-    /// Swap the taken row into `rows[0]` and eliminate column `column` from
-    /// the rows below it. A zero pivot column eliminates nothing: its
-    /// leading entries are zero, so dividing them by 1 gives zero multipliers.
-    fn eliminate(
-        &mut self,
-        rows: &mut [dae::ExprId<'dae>],
-        column: usize,
-        taken: &[dae::ExprId<'dae>],
-        is_zero: dae::ExprId<'dae>,
-    ) -> Result<(), dae::DaeConstructionError> {
-        let pivot_row = self.expressions.at(self.provenance).conditional(
-            taken[1..].iter().copied().zip(rows[1..].iter().copied()),
-            rows[0],
-        )?;
-        let pivot = self.at_index(pivot_row, column)?;
-        let one = self.literal(dae::DaeLiteral::Real(1.0))?;
-        let denominator = self.conditional(is_zero, one, pivot)?;
-        for offset in 1..rows.len() {
-            // The old pivot row moves to the taken row's place.
-            let swapped = self.conditional(taken[offset], rows[0], rows[offset])?;
-            let leading = self.at_index(swapped, column)?;
-            let factor = self.op(dae::BinaryOperator::Divide, leading, denominator)?;
-            let scaled = self.op(dae::BinaryOperator::Multiply, factor, pivot_row)?;
-            rows[offset] = self.op(dae::BinaryOperator::Subtract, swapped, scaled)?;
-        }
-        rows[0] = pivot_row;
-        Ok(())
     }
 }
 

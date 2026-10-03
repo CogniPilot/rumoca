@@ -183,6 +183,7 @@ mod model_value_forms;
 mod modifier_value_context;
 mod msl_table_regression;
 mod nanosecond_bdf_steps;
+mod native_least_squares;
 mod native_linear_solve;
 mod negative_zero_kink;
 mod nested_class_shadowing_test;
