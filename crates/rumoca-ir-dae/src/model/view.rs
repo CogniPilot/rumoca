@@ -886,6 +886,12 @@ impl<'dae> ExternalFunctionView<'dae> {
         fn argument_count -> usize = |view| view.entry.arguments.len();
     }
 
+    /// The SPEC_0040 DAE-C30 compiler-defined body construction proved this
+    /// interface matches, if any.
+    pub fn native_body(self) -> Option<&'dae NativeBodyBinding> {
+        self.entry.native.as_ref()
+    }
+
     /// Output bound by the MLS §12.9 `output = symbol(...)` return form.
     pub fn result(self) -> Option<FunctionValueId<'dae>> {
         self.entry

@@ -59,6 +59,7 @@ mod expression_rewriter;
 mod expression_visitor;
 mod ir_primitives;
 mod modelica_builtins;
+pub mod native_body;
 mod source_map;
 mod statement_rewriter;
 mod structured_domain;

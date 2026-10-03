@@ -186,6 +186,7 @@ mod model_value_forms;
 mod modifier_value_context;
 mod msl_table_regression;
 mod nanosecond_bdf_steps;
+mod native_foreign_bodies;
 mod native_least_squares;
 mod native_linear_solve;
 mod negative_zero_kink;

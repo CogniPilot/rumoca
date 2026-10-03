@@ -203,6 +203,12 @@ fn operation_interactions(
         SolveOperation::LinearSolve { matrix, rhs, .. } => {
             read(matrix).nonlinear().product(&read(rhs))
         }
+        SolveOperation::Native { operands, .. } => operands
+            .iter()
+            .fold(InputInteractions::default(), |result, operand| {
+                result.join(&read(operand))
+            })
+            .nonlinear(),
         SolveOperation::Transpose { operand, .. }
         | SolveOperation::ProjectElement {
             aggregate: operand, ..

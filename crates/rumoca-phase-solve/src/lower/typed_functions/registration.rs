@@ -66,10 +66,16 @@ fn register_call_body<'dae>(
     let function = view
         .function(function)
         .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-    if function.is_external() {
-        return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
-            provenance: call_node.provenance().span(),
-        });
+    if let Some(external) = function.external() {
+        let provenance = call_node.provenance().span();
+        // SPEC_0040 DAE-C30: only a proven native body gives a foreign body
+        // an executable meaning; every other external interface is refused.
+        let binding = external
+            .native_body()
+            .ok_or(solve::SolveProgramConstructionError::InvalidCallInterface { provenance })?;
+        return native::register_native_call(
+            table, view, function, binding, identity, arithmetic, provenance,
+        );
     }
     let assertions = assertion_conditions(view, function)?;
     let conditional_groups = conditional_definition_groups(function.statements())?;

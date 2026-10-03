@@ -130,6 +130,7 @@ fn program_supports_directional(
                 ..
             } => false,
             SolveOperation::Call { owner, .. } => available.get(owner.index() as usize).is_some(),
+            SolveOperation::Native { .. } => true,
             SolveOperation::Conditional {
                 if_true, if_false, ..
             } => {
@@ -708,6 +709,11 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 arguments,
                 destinations,
             } => self.derive_call(*owner, arguments, destinations, provenance),
+            SolveOperation::Native {
+                body,
+                operands,
+                destinations,
+            } => self.derive_native(*body, operands, destinations, provenance),
         }
     }
 
@@ -1822,6 +1828,30 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         let arguments = self.expanded_registers(arguments, provenance)?;
         let values = self.builder.call(owner, &arguments, provenance)?;
         self.bind_expanded(destinations, &values, provenance)
+    }
+
+    /// A native body reads only Integer operands, so none carries a tangent
+    /// and every Real result has the zero tangent.
+    fn derive_native(
+        &mut self,
+        body: NativeBody,
+        operands: &[SolveRegisterId],
+        destinations: &[SolveRegisterId],
+        provenance: Span,
+    ) -> Result<(), SolveProgramConstructionError> {
+        let operands = operands
+            .iter()
+            .map(|operand| self.get(*operand, provenance).map(|value| value.primal))
+            .collect::<Result<Vec<_>, _>>()?;
+        let values = self.builder.native(body, &operands, provenance)?;
+        for (destination, primal) in destinations.iter().zip(values) {
+            let value_type = self.primal.register_types()[destination.index()].clone();
+            let tangent = is_real(&value_type)
+                .then(|| self.zero(&value_type, provenance))
+                .transpose()?;
+            self.bind(*destination, Directional { primal, tangent }, provenance)?;
+        }
+        Ok(())
     }
 }
 

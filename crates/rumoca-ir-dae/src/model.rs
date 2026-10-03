@@ -171,6 +171,7 @@ pub(crate) use domains::insert_domain;
 use external_functions::build_external_body;
 pub use external_functions::{
     ExternalArgument, ExternalFunctionBody, ExternalLanguage, ExternalLinkage, FunctionPurity,
+    NativeBodyBinding,
 };
 pub(crate) use external_functions::{ExternalArgumentEntry, ExternalBodyEntry};
 use function_checks::*;

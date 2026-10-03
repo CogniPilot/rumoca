@@ -7,6 +7,8 @@ use cranelift_frontend::FunctionBuilder;
 const INDEX_OUT_OF_BOUNDS: i64 = 1;
 const LINEAR_SOLVE_FAILURE: i64 = 2;
 const INTEGER_QUOTIENT_FAILURE: i64 = 3;
+/// A native body host call received a tape outside its catalog interface.
+pub(super) const NATIVE_BODY_FAILURE: u8 = 4;
 
 pub(super) fn check(status: u8) -> Result<(), CompileError> {
     match status {
@@ -19,6 +21,9 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
         )),
         3 => Err(CompileError::Input(
             "native Integer quotient has a zero divisor or no representable result".into(),
+        )),
+        NATIVE_BODY_FAILURE => Err(CompileError::Backend(
+            "native body host call received operands outside its interface".into(),
         )),
         _ => Err(CompileError::Backend(format!(
             "unknown native kernel status {status}"

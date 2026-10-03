@@ -195,6 +195,11 @@ enum SolveOperationWire {
         matrix: SolveRegisterId,
         rhs: SolveRegisterId,
     },
+    Native {
+        body: NativeBody,
+        operands: Box<[SolveRegisterId]>,
+        destinations: Box<[SolveRegisterId]>,
+    },
 }
 
 #[derive(Clone, Deserialize)]
@@ -729,6 +734,19 @@ fn replay_operation<'program>(
                 .map(|argument| register_at(registers, *argument))
                 .collect::<Result<Vec<_>, _>>()?;
             let actual = builder.call(*owner, &arguments, at)?;
+            require_destinations(&actual, destinations, registers, wire)?;
+            return Ok(actual);
+        }
+        SolveOperationWire::Native {
+            body,
+            operands,
+            destinations,
+        } => {
+            let operands = operands
+                .iter()
+                .map(|operand| register_at(registers, *operand))
+                .collect::<Result<Vec<_>, _>>()?;
+            let actual = builder.native(*body, &operands, at)?;
             require_destinations(&actual, destinations, registers, wire)?;
             return Ok(actual);
         }

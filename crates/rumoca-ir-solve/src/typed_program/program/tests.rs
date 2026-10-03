@@ -3,6 +3,7 @@ use crate::{SolveRealFormat, SolveTypeConstructionError, SolveValueKind};
 use rumoca_core::{SourceId, StructuredIndexBinder, StructuredIndexDomain};
 
 mod linear_solve;
+mod native;
 
 fn span(start: usize) -> Span {
     Span::from_offsets(

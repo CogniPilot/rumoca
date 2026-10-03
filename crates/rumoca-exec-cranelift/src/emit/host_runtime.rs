@@ -28,6 +28,10 @@ pub(super) fn host_jit_builder() -> Result<JITBuilder, CompileError> {
 }
 
 pub(super) fn register_math_symbols(builder: &mut JITBuilder) {
+    builder.symbol(
+        "rumoca_host_native",
+        super::typed_program::rumoca_host_native as *const u8,
+    );
     builder.symbol("rumoca_host_sin", rumoca_host_sin as *const u8);
     builder.symbol("rumoca_host_cos", rumoca_host_cos as *const u8);
     builder.symbol("rumoca_host_tan", rumoca_host_tan as *const u8);

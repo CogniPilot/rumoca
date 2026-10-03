@@ -126,6 +126,7 @@ declared end state that construction does not admit yet.
 | `UpdateSlice` | Current | `(aggregate, value, origin)` zero-based | none | `NotApplicable` | Functional slice update |
 | `UpdateView` | Current | `(aggregate, value, axes)` | none | `NotApplicable` | Functional update through a checked view |
 | `Call` | Current | `owner: SolvePureCallOwnerId`, `arguments: [reg]`, `destinations: [reg]`. Aggregate arguments and results each retain ONE typed register; destinations are ordered VALUE results followed by ASSERTION OUTPUTS (predicates and converted message values) exactly as declared by the owner interface | callee body is a separate `TypedProgram` | call | Invokes one compiler-issued pure-call owner atomically; never merges with another invocation (SEV-048) |
+| `Native` | Current | `body: NativeBody`, `operands: [reg]`, `destinations: [reg]`, a TUPLE typed exactly by the body's catalog signature (SPEC_0040 DAE-C30). Each body is its own capability key, `Native.<body>` | none | `NotApplicable`: pure and total | Applies the body's one definitional evaluator in `rumoca-core::native_body`, which every evaluator and backend executes. Its operands are Integer, so it carries no tangent |
 
 **Aspirational.** SEV-001's `InvokeOp`/`EffectOp`/`Terminator` factoring is the
 proposed end state. Today `Call` is the single pure-call owner above — there is
@@ -138,7 +139,9 @@ REJECTS at the declared target boundary (SEV-155, discharged); what remains
 missing is the admitting path. Those factors are uncataloged and the grammar is
 NOT closed; SPEC_0047 §1 carries the gap rows, and SEV-156 makes the
 consequence explicit — every external function REJECTS today, since there is no
-grammar for it to be checked against.
+grammar for it to be checked against. A `Native` operation is not such an invoke: it executes a compiler-defined
+meaning of a cataloged entry point (SPEC_0040 DAE-C30), never foreign code, and
+has no effect footprint.
 
 The Proposed leaves that slice must add, sketched so the reject arm has a
 successor:

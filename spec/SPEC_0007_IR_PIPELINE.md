@@ -188,7 +188,7 @@ Only private current-version wire records derive `Deserialize`. Decoding
 constructs checked children and then the checked root; derived counts and
 indexes are recomputed rather than accepted as wire inputs.
 
-**Contract:** rows `DAE-C01`–`DAE-C21` in
+**Contract:** rows `DAE-C01`–`DAE-C30` in
 [SPEC_0040 §1](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#1-dae-stage-contract-catalog-spec_0007-stage-3).
 
 Non-Real `fixed=false` initialization definitions have checked owners distinct

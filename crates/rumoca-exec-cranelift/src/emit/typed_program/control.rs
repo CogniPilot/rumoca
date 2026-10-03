@@ -225,6 +225,18 @@ impl ProgramLowerer<'_, '_> {
         })
     }
 
+    /// Copy registers, in order, into one fresh contiguous tape.
+    pub(super) fn packed_tape(
+        &mut self,
+        registers: &[solve::SolveRegisterId],
+        context: &str,
+    ) -> Result<Value, CompileError> {
+        let cells = self.register_cell_count(registers, context)?;
+        let tape = create_tape(self.builder, self.pointer_type, cells)?;
+        self.pack_registers(registers, tape)?;
+        Ok(tape)
+    }
+
     fn pack_registers(
         &mut self,
         registers: &[solve::SolveRegisterId],

@@ -3,6 +3,7 @@ pub use construction_error::SolveProgramConstructionError;
 
 mod directional;
 mod linear_solve;
+mod native;
 mod tensor;
 
 pub use tensor::promoted_concatenate_dimensions;
@@ -10,6 +11,7 @@ pub(in crate::typed_program) mod wire;
 
 use std::marker::PhantomData;
 
+use rumoca_core::native_body::NativeBody;
 use rumoca_core::{Span, StructuredIndexDomain};
 use serde::{Deserialize, Serialize};
 
@@ -387,6 +389,14 @@ pub enum SolveOperation {
         matrix: SolveRegisterId,
         rhs: SolveRegisterId,
     },
+    /// One SPEC_0040 DAE-C30 compiler-defined foreign body, typed by its
+    /// catalog interface: operands are its inputs and destinations its
+    /// outputs, each in interface order.
+    Native {
+        body: NativeBody,
+        operands: Box<[SolveRegisterId]>,
+        destinations: Box<[SolveRegisterId]>,
+    },
 }
 
 impl SolveOperation {
@@ -485,7 +495,11 @@ impl SolveOperation {
                 visit(*value);
                 visit_view_axis_registers(axes, &mut visit);
             }
-            Self::Call { arguments, .. } => arguments.iter().copied().for_each(&mut visit),
+            Self::Call { arguments, .. }
+            | Self::Native {
+                operands: arguments,
+                ..
+            } => arguments.iter().copied().for_each(&mut visit),
         }
     }
 
@@ -523,7 +537,8 @@ impl SolveOperation {
             | Self::UpdateView { destination, .. } => visit(*destination),
             Self::Conditional { destinations, .. }
             | Self::Fold { destinations, .. }
-            | Self::Call { destinations, .. } => {
+            | Self::Call { destinations, .. }
+            | Self::Native { destinations, .. } => {
                 destinations.iter().copied().for_each(&mut visit);
             }
         }

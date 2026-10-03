@@ -386,3 +386,106 @@ fn external_construction_rejects_a_model_coordinate_argument() {
         DaeConstructionError::InvalidFunctionCoordinate { .. }
     ));
 }
+
+const NATIVE_SOURCE: &str = "pure function random input Integer stateIn[2]; output Real result; \
+     output Integer stateOut[2]; external \"C\" ModelicaRandom_xorshift64star(stateIn, stateOut, \
+     result); end random;";
+
+/// A `ModelicaRandom_xorshift64star` declaration with the given purity, entry
+/// point, and state extent, in the MSL argument order.
+fn native_fixture(purity: FunctionPurity, symbol: &str, extent: u32) -> Dae {
+    let source = TestSource::new(NATIVE_SOURCE);
+    let function_at = source.source("pure function random", 0);
+    let input_at = source.source("input Integer stateIn[2]", 0);
+    let result_at = source.source("output Real result", 0);
+    let state_at = source.source("output Integer stateOut[2]", 0);
+    let external_at = source.source("external \"C\"", 0);
+    let argument_at = source.source("stateIn, stateOut", 0);
+    Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
+        let state = dae.types(|types| {
+            types.derived(ValueType::array(ScalarType::Integer, [extent]), function_at)
+        })?;
+        dae.function(
+            FunctionSignature::new(VarName::new("random"), [state], [real, state], function_at),
+            |dae, reservation| {
+                let parameter = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("stateIn"), 0, input_at)
+                })?;
+                let result = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("result"), 0, result_at)
+                })?;
+                let state_out = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("stateOut"), 1, state_at)
+                })?;
+                let argument = dae.expressions(|expressions| {
+                    expressions
+                        .at(argument_at)
+                        .coordinate(CoordinateInput::FunctionParameter(parameter))
+                })?;
+                let body = ExternalFunctionBody::new(
+                    purity,
+                    ExternalLanguage::C,
+                    VarName::new(symbol),
+                    [
+                        ExternalArgument::Input(argument),
+                        ExternalArgument::Output(state_out),
+                        ExternalArgument::Output(result),
+                    ],
+                    None,
+                    ExternalLinkage::default(),
+                );
+                dae.functions(|functions| functions.define_external(reservation, body, external_at))
+            },
+        )
+        .map(|_| ())
+    })
+    .expect("a checked external interface defines its reserved function")
+}
+
+fn native_binding(dae: &Dae) -> Option<NativeBodyBinding> {
+    dae.inspect(|view| {
+        view.function(view.function_id(0).unwrap())
+            .unwrap()
+            .external()
+            .unwrap()
+            .native_body()
+            .cloned()
+    })
+}
+
+/// SPEC_0040 DAE-C30: the proven binding maps each catalog input to the
+/// parameter it reads and each catalog output to the result it writes, and
+/// wire replay derives it again rather than reading it.
+#[test]
+fn a_cataloged_interface_is_bound_to_its_native_body() {
+    let dae = native_fixture(FunctionPurity::Pure, "ModelicaRandom_xorshift64star", 2);
+    let binding = native_binding(&dae).expect("the interface matches its catalog row");
+    assert_eq!(
+        binding.body(),
+        rumoca_core::native_body::NativeBody::Xorshift64Star
+    );
+    assert_eq!(binding.parameters(), [0]);
+    assert_eq!(binding.results(), [1, 0]);
+    let encoded = serde_json::to_string(&dae).unwrap();
+    assert!(
+        !encoded.contains("native"),
+        "the binding is never a wire input"
+    );
+    let replayed: Dae = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(native_binding(&replayed), Some(binding));
+}
+
+#[test]
+fn an_interface_outside_its_catalog_row_has_no_native_body() {
+    for (purity, symbol, extent) in [
+        (FunctionPurity::Impure, "ModelicaRandom_xorshift64star", 2),
+        (FunctionPurity::Pure, "ModelicaRandom_xorshift64star", 4),
+        (FunctionPurity::Pure, "ModelicaRandom_xorshift128plus", 2),
+        (FunctionPurity::Pure, "my_xorshift64star", 2),
+    ] {
+        let dae = native_fixture(purity, symbol, extent);
+        assert_eq!(native_binding(&dae), None, "{purity:?} {symbol} {extent}");
+    }
+}

@@ -1,4 +1,5 @@
 mod linear_solve;
+mod native;
 mod number;
 mod tensor;
 #[cfg(test)]
@@ -689,6 +690,11 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                 arguments,
                 destinations,
             } => self.eval_call(*owner, arguments, destinations, provenance),
+            SolveOperation::Native {
+                body,
+                operands,
+                destinations,
+            } => self.eval_native(*body, operands, destinations, provenance),
         }
     }
 

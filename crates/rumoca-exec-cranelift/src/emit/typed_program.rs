@@ -9,6 +9,8 @@ mod input_results;
 #[cfg(test)]
 mod input_reuse_tests;
 mod linear_solve;
+mod native;
+pub(super) use native::rumoca_host_native;
 #[cfg(test)]
 mod local_store_tests;
 mod storage;
@@ -887,6 +889,11 @@ impl ProgramLowerer<'_, '_> {
                 matrix,
                 rhs,
             } => self.lower_linear_solve(*destination, *matrix, *rhs),
+            solve::SolveOperation::Native {
+                body,
+                operands,
+                destinations,
+            } => self.lower_native(*body, operands, destinations),
             solve::SolveOperation::Scale {
                 destination,
                 aggregate,
@@ -1160,25 +1167,7 @@ impl ProgramLowerer<'_, '_> {
             .copied()
             .flatten()
             .ok_or_else(|| CompileError::Backend("nested typed call owner is missing".into()))?;
-        let argument_cells = arguments.iter().try_fold(0u32, |count, argument| {
-            checked_cells(
-                count,
-                self.register(*argument)?.value_type.scalar_count(),
-                "nested typed input",
-            )
-        })?;
-        let input = create_tape(self.builder, self.pointer_type, argument_cells)?;
-        let mut cell = 0u32;
-        for argument in arguments {
-            let source = self.register(*argument)?.clone();
-            let destination = ValueLocation {
-                base: StorageBase::Tape,
-                cell,
-                value_type: source.value_type.clone(),
-            };
-            self.copy_between_bases(&source, &destination, self.base(&source), input)?;
-            cell = checked_cells(cell, source.value_type.scalar_count(), "nested typed input")?;
-        }
+        let input = self.packed_tape(arguments, "nested typed input")?;
         let local = declare_far_call_in_func(self.module, function, self.builder.func);
         let call = self.builder.ins().call(local, &[input, output]);
         let status = self.builder.inst_results(call)[0];

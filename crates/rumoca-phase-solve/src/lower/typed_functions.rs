@@ -9,6 +9,7 @@ mod indexed_values;
 mod model_calls;
 mod model_coordinates;
 pub(in crate::lower) mod model_events;
+mod native;
 mod regions;
 mod registration;
 mod tensor;

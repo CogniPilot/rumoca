@@ -6,6 +6,7 @@
 //! operation that turns those facts into an aggregate-owned function body, so
 //! `Dae` never stores an external interface it did not check.
 use super::*;
+use rumoca_core::native_body::{NativeArgument, NativeArgumentRole, NativeBody, NativeElement};
 
 /// MLS §12.3 declared purity of a function.
 ///
@@ -168,6 +169,32 @@ impl<'dae> ExternalFunctionBody<'dae> {
     }
 }
 
+/// A proven SPEC_0040 DAE-C30 binding of an external interface to its catalog
+/// row: the function parameter read by each catalog input and the function
+/// result written by each catalog output, both in catalog interface order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeBodyBinding {
+    body: NativeBody,
+    parameters: Box<[u32]>,
+    results: Box<[u32]>,
+}
+
+impl NativeBodyBinding {
+    pub const fn body(&self) -> NativeBody {
+        self.body
+    }
+
+    /// The function parameter ordinal each catalog input reads.
+    pub fn parameters(&self) -> &[u32] {
+        &self.parameters
+    }
+
+    /// The function result position each catalog output writes.
+    pub fn results(&self) -> &[u32] {
+        &self.results
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExternalBodyEntry {
     pub(crate) purity: FunctionPurity,
@@ -176,6 +203,9 @@ pub(crate) struct ExternalBodyEntry {
     pub(crate) arguments: Vec<ExternalArgumentEntry>,
     pub(crate) result: Option<u32>,
     pub(crate) linkage: ExternalLinkage,
+    /// The SPEC_0040 DAE-C30 compiler-defined body this interface is proven
+    /// to match, derived by construction and never read from the wire.
+    pub(crate) native: Option<NativeBodyBinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +275,12 @@ pub(super) fn build_external_body<'dae>(
         });
     }
     validate_external_dependencies(storage, function, construction, &entries, provenance)?;
+    let native = proven_native_body(
+        storage,
+        function,
+        (purity, language, &symbol, result),
+        &entries,
+    );
     Ok(ExternalBodyEntry {
         purity,
         language,
@@ -252,6 +288,7 @@ pub(super) fn build_external_body<'dae>(
         arguments: entries,
         result,
         linkage,
+        native,
     })
 }
 
@@ -480,4 +517,73 @@ fn validate_external_dependencies(
         });
     }
     Ok(())
+}
+
+/// The SPEC_0040 DAE-C30 catalog row a checked external interface matches.
+///
+/// A row is named by its exact C entry point and owns the declaration only
+/// when the body is declared pure, has no `output = symbol(...)` return form,
+/// and has exactly the row's ordered argument roles, element types, and
+/// extents. Any other interface keeps its ordinary external meaning.
+fn proven_native_body(
+    storage: &Storage,
+    function: FunctionId<'_>,
+    (purity, language, symbol, result): (FunctionPurity, ExternalLanguage, &VarName, Option<u32>),
+    arguments: &[ExternalArgumentEntry],
+) -> Option<NativeBodyBinding> {
+    if !purity.is_pure() || language != ExternalLanguage::C || result.is_some() {
+        return None;
+    }
+    let body = NativeBody::from_c_entry_point(symbol.as_str())?;
+    let interface = body.interface();
+    if arguments.len() != interface.len() {
+        return None;
+    }
+    let entry = storage.functions.get(function.index() as usize)?;
+    let mut parameters = Vec::new();
+    let mut results = Vec::new();
+    for (argument, expected) in arguments.iter().zip(interface) {
+        let value_type = match (argument, expected.role) {
+            (ExternalArgumentEntry::Input(expression), NativeArgumentRole::Input) => {
+                let ExprNode::Coordinate(Coordinate::FunctionParameter {
+                    function: owner,
+                    ordinal,
+                }) = storage.expressions.nodes.get(*expression as usize)?
+                else {
+                    return None;
+                };
+                if *owner != function.index() {
+                    return None;
+                }
+                parameters.push(*ordinal);
+                entry.parameter_values.get(*ordinal as usize)?.value_type
+            }
+            (ExternalArgumentEntry::Output(value), NativeArgumentRole::Output) => {
+                let position = entry
+                    .output_values
+                    .iter()
+                    .position(|output| output == value)?;
+                results.push(u32::try_from(position).ok()?);
+                entry.values.get(*value as usize)?.value_type
+            }
+            _ => return None,
+        };
+        let value_type = storage.value_types.get(value_type as usize)?;
+        if !native_argument_type_matches(value_type, *expected) {
+            return None;
+        }
+    }
+    Some(NativeBodyBinding {
+        body,
+        parameters: parameters.into_boxed_slice(),
+        results: results.into_boxed_slice(),
+    })
+}
+
+fn native_argument_type_matches(value_type: &ValueType, expected: NativeArgument) -> bool {
+    let element = match expected.element {
+        NativeElement::Integer => ScalarType::Integer,
+        NativeElement::Real => ScalarType::Real,
+    };
+    value_type.scalar_type() == element && value_type.dimensions() == expected.extent.as_slice()
 }
