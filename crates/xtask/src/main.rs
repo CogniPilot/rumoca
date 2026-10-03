@@ -76,7 +76,7 @@ enum Commands {
     Repo(RepoArgs),
     /// Read-only views of the hosted CI (through the `gh` CLI)
     Ci(ci_cmd::CiArgs),
-    /// Regenerate or check THIRD_PARTY_LICENSES.md with cargo-about
+    /// Regenerate or check infra/licenses/THIRD_PARTY_NOTICES.md with cargo-about
     Licenses(licenses_cmd::LicensesArgs),
 }
 

@@ -86,9 +86,9 @@ paragraph ending `it was minted for.`:
 
 ## Attribution follow-ups
 
-- `.github/workflows/ci.yml`: ship `THIRD_PARTY_LICENSES.md` and `NOTICE` in
-  the release asset set, alongside the `rumoca` and `rumoca-lsp` binaries, and
-  add a job step running `cargo xtask licenses --check` so a new dependency
+- `.github/workflows/ci.yml`: ship `infra/licenses/THIRD_PARTY_NOTICES.md` in the
+  release asset set, alongside the `rumoca` and `rumoca-lsp` binaries (done in
+  the `Organize artifacts` step), and add a job step running `cargo xtask licenses --check` so a new dependency
   cannot land without regenerating the attribution file.
 - `flake.nix`: add `cargo-about` to the dev shell so `cargo xtask licenses`
   runs without `nix run`.

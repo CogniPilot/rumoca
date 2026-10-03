@@ -1,5 +1,5 @@
-//! `cargo xtask licenses`: regenerate or check `THIRD_PARTY_LICENSES.md`, the
-//! attribution notice that ships with the published binaries.
+//! `cargo xtask licenses`: regenerate or check `infra/licenses/THIRD_PARTY_NOTICES.md`,
+//! the attribution notice that ships with the published binaries.
 //!
 //! The binaries are statically linked, so they carry the code of every crate
 //! the file lists, and every one of those licenses conditions redistribution
@@ -14,7 +14,7 @@ use std::process::Command;
 
 const CONFIG: &str = "infra/licenses/about.toml";
 const TEMPLATE: &str = "infra/licenses/about.hbs";
-const OUTPUT: &str = "THIRD_PARTY_LICENSES.md";
+const OUTPUT: &str = "infra/licenses/THIRD_PARTY_NOTICES.md";
 
 #[derive(Debug, Args, PartialEq, Eq)]
 pub(crate) struct LicensesArgs {
@@ -110,6 +110,9 @@ pub(crate) fn run(
         }
         println!("{OUTPUT} is current.");
         return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).context(format!("create {}", parent.display()))?;
     }
     fs::write(&path, fresh).context(format!("write {}", path.display()))?;
     println!("wrote {}", path.display());

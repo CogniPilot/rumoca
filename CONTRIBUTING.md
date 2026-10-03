@@ -17,9 +17,9 @@ right to submit the work under the project's license.
 
 Do not add third-party code, generated output, or specification text to this
 repository without recording its license. Vendored trees keep their upstream
-license file in place and are listed in [NOTICE](NOTICE); a new runtime
-dependency shows up in
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) on the next run of
+license file in place and are listed in
+[infra/licenses/THIRD_PARTY_NOTICES.md](infra/licenses/THIRD_PARTY_NOTICES.md); a new
+runtime dependency shows up there on the next run of
 `cargo xtask licenses`, and its license must be in the accepted list in
 `infra/licenses/about.toml`. Adding a license to that list is a compliance
 decision, not a build fix. `cargo xtask licenses --check` fails when the

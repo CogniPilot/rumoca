@@ -2435,6 +2435,10 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
 
+          # The published binaries are statically linked; the attribution their
+          # dependencies require ships next to them.
+          cp infra/licenses/THIRD_PARTY_NOTICES.md release-assets/THIRD_PARTY_NOTICES.md
+
           echo "=== Downloaded structure ==="
           find artifacts -type f | sed -n '1,50p'
 

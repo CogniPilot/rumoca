@@ -1,6 +1,6 @@
 # cargo-about configuration for the release-binary third-party attribution.
 #
-# The generated file is THIRD_PARTY_LICENSES.md at the repository root. It
+# The generated file is infra/licenses/THIRD_PARTY_NOTICES.md. It
 # accompanies the prebuilt `rumoca` and `rumoca-lsp` binaries published to
 # GitHub Releases: those are statically linked, so they embed the code of every
 # crate below, and every license below conditions redistribution on the notice
@@ -42,7 +42,7 @@ ignore-dev-dependencies = true
 # permissive alternative that is selected here. MPL-2.0 (option-ext, reached
 # through dirs -> dirs-sys) is file-level copyleft and is accepted knowingly:
 # MPL section 3.2 obliges us to tell recipients how to obtain that crate's
-# source, which THIRD_PARTY_LICENSES.md does. Adding a license to this list is
+# source, which THIRD_PARTY_NOTICES.md does. Adding a license to this list is
 # a deliberate compliance decision, not a build fix.
 accepted = [
     "Apache-2.0",
