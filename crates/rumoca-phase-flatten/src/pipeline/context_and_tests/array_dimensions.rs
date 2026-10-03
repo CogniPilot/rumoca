@@ -81,15 +81,7 @@ impl Context {
 
         let inferred = infer_array_dimensions_full_with_functions(
             binding,
-            &ParamEvalContext::new(
-                &self.parameter_values,
-                &self.real_parameter_values,
-                &self.boolean_parameter_values,
-                &self.enum_parameter_values,
-                &self.array_dimensions,
-                &self.functions,
-                Some(name),
-            ),
+            &self.param_eval_context(Some(name)),
         );
         let inferred_dims = match inferred {
             Some(dims) => dims,

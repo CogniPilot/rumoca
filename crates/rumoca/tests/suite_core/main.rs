@@ -282,4 +282,5 @@ mod when_written_reads;
 
 mod structural_binding_functions;
 mod structural_parameters;
+mod structural_string_and_array_values;
 mod zero_coefficient_incidence;

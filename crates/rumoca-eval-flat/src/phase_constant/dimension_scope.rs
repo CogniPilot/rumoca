@@ -37,7 +37,7 @@ impl<'a, 'b> DimensionScope<'a, 'b> {
         is_lexical_index(reference, &self.indices)
     }
 
-    fn value(&self, expr: &Expression) -> Option<Value> {
+    pub(super) fn value_of(&self, expr: &Expression) -> Option<Value> {
         if !self.indices.is_empty() {
             let mut reads = IndexReads {
                 indices: self.indices.clone(),
@@ -55,19 +55,15 @@ impl<'a, 'b> DimensionScope<'a, 'b> {
     }
 
     pub(super) fn integer(&self, expr: &Expression) -> Option<i64> {
-        self.value(expr)?.as_integer()
-    }
-
-    pub(super) fn real(&self, expr: &Expression) -> Option<f64> {
-        self.value(expr)?.to_real()
+        self.value_of(expr)?.as_integer()
     }
 
     pub(super) fn boolean(&self, expr: &Expression) -> Option<bool> {
-        self.value(expr)?.as_bool()
+        self.value_of(expr)?.as_bool()
     }
 
     pub(super) fn has_scalar_value(&self, expr: &Expression) -> bool {
-        self.value(expr)
+        self.value_of(expr)
             .is_some_and(|value| !matches!(value, Value::Array(_)))
     }
 }

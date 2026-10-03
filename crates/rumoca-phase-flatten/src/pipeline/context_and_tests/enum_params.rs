@@ -20,6 +20,7 @@ impl Context {
                 binding,
                 may_be_record_alias: false,
                 binding_from_modification: false,
+                aggregate: false,
             })
             .collect::<Vec<_>>();
         self.eval_enum_param_bindings(&params)

@@ -2,7 +2,7 @@
 //! a flat model: binding collection, record-alias supplementation, and the
 //! multi-pass fixpoint that drives the per-kind evaluation passes.
 
-use super::param_binding::ParamBinding;
+use super::param_binding::{ParamBinding, is_string_variable};
 use super::*;
 
 fn insert_record_alias(
@@ -24,6 +24,7 @@ impl Context {
             real_parameter_values: rustc_hash::FxHashMap::default(),
             boolean_parameter_values: rustc_hash::FxHashMap::default(),
             enum_parameter_values: rustc_hash::FxHashMap::default(),
+            aggregate_parameter_values: rustc_hash::FxHashMap::default(),
             constant_values: rustc_hash::FxHashMap::default(),
             constant_values_by_def_id: rustc_hash::FxHashMap::default(),
             constant_values_by_scope: rustc_hash::FxHashMap::default(),
@@ -209,6 +210,7 @@ impl Context {
                     binding,
                     may_be_record_alias,
                     binding_from_modification: var.binding_from_modification,
+                    aggregate: !var.dims.is_empty() || is_string_variable(flat, var),
                 })
             })
             .collect()
@@ -250,6 +252,7 @@ impl Context {
                     binding,
                     may_be_record_alias: !var.is_primitive,
                     binding_from_modification: var.binding_from_modification,
+                    aggregate: false,
                 })
             })
             .collect()
@@ -264,6 +267,7 @@ impl Context {
         const MAX_PASSES: usize = 10;
         for _pass in 0..MAX_PASSES {
             let enum_progress = self.eval_enum_param_bindings(params);
+            let aggregate_progress = self.eval_aggregate_param_bindings(params);
             let real_progress = self.eval_real_params(params);
             let int_progress = self.eval_integer_param_bindings(params);
             let bool_progress = self.eval_boolean_params(params);
@@ -271,6 +275,7 @@ impl Context {
             let varref_dim_progress = self.propagate_varref_dimensions(var_bindings);
             let alias_progress = self.propagate_through_aliases(params);
             if !enum_progress
+                && !aggregate_progress
                 && !real_progress
                 && !int_progress
                 && !bool_progress

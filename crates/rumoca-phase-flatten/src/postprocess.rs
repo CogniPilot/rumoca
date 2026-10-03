@@ -34,7 +34,7 @@ pub(super) use field_access::{
 };
 pub(crate) use index_collapse::{collapse_index_refs_to_known_varrefs, field_access_flat_path};
 pub(crate) use indexed_dimension_recovery::recover_indexed_lhs_dimensions;
-pub(crate) use invariant_bindings::fold_invariant_scalar_bindings;
+pub(crate) use invariant_bindings::fold_invariant_bindings;
 
 use constant_substituter::{
     substitute_known_constants_expr_with_options, substitute_known_constants_statement,

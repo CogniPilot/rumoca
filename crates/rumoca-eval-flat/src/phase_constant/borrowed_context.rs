@@ -61,8 +61,10 @@ impl<'a> BorrowedContext<'a> {
             Value::Bool(*value)
         } else if let Some(value) = self.parameters.known_reals.get(name) {
             Value::Real(*value)
+        } else if let Some(value) = self.parameters.known_ints.get(name) {
+            Value::Integer(*value)
         } else {
-            Value::Integer(*self.parameters.known_ints.get(name)?)
+            return self.parameters.known_values.get(name).map(Cow::Borrowed);
         };
         Some(Cow::Owned(value))
     }

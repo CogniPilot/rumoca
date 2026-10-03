@@ -45,6 +45,9 @@ pub struct ParamEvalContext<'a> {
     pub known_bools: &'a FxHashMap<String, bool>,
     pub known_enums: &'a FxHashMap<String, String>,
     pub array_dims: &'a FxHashMap<String, Vec<i64>>,
+    /// Evaluated String and array parameter values, read whole by the
+    /// interpreter and indexed by it (MLS §10.1, §12.4).
+    pub known_values: &'a FxHashMap<String, Value>,
     /// Functions available for evaluation.
     pub functions: &'a FxHashMap<String, rumoca_core::Function>,
     /// The fully qualified name of the variable whose binding we're evaluating.
@@ -68,10 +71,26 @@ impl<'a> ParamEvalContext<'a> {
             known_bools,
             known_enums,
             array_dims,
+            known_values: no_known_values(),
             functions,
             var_context,
         }
     }
+
+    /// The same context reading `known_values` for String and array values.
+    pub fn with_known_values(self, known_values: &'a FxHashMap<String, Value>) -> Self {
+        Self {
+            known_values,
+            ..self
+        }
+    }
+}
+
+/// The empty String and array value inventory.
+pub fn no_known_values() -> &'static FxHashMap<String, Value> {
+    static EMPTY: std::sync::LazyLock<FxHashMap<String, Value>> =
+        std::sync::LazyLock::new(FxHashMap::default);
+    &EMPTY
 }
 
 /// Reusable evaluator for one stable parameter inventory.
@@ -115,6 +134,17 @@ impl<'a> ParamEvaluator<'a> {
     ) -> Option<i64> {
         self.eval_value(expr, var_context)
             .and_then(|value| value.as_integer())
+    }
+
+    /// The String or array value of `expr`; scalars have their own typed
+    /// inventories.
+    pub fn eval_aggregate(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        var_context: Option<&str>,
+    ) -> Option<Value> {
+        self.eval_value(expr, var_context)
+            .filter(|value| matches!(value, Value::String(_) | Value::Array(_)))
     }
 
     pub fn eval_boolean(
@@ -191,6 +221,7 @@ pub fn infer_array_dimensions_full_with_conds(
         known_bools,
         known_enums,
         array_dims,
+        known_values: no_known_values(),
         functions: &functions,
         var_context: None,
     };
@@ -308,24 +339,21 @@ fn infer_user_function_call_dimensions(
             });
     }
 
-    let mut local_ints = ctx.known_ints.clone();
-    let mut local_reals = ctx.known_reals.clone();
-    let mut local_bools = ctx.known_bools.clone();
-    bind_function_dimension_args(
-        func,
-        args,
-        ctx,
-        &mut local_ints,
-        &mut local_reals,
-        &mut local_bools,
-    )?;
+    let mut locals = DimensionArgs {
+        ints: ctx.known_ints.clone(),
+        reals: ctx.known_reals.clone(),
+        bools: ctx.known_bools.clone(),
+        values: FxHashMap::default(),
+    };
+    bind_function_dimension_args(func, args, ctx, &mut locals)?;
 
     let local_ctx = ParamEvalContext {
-        known_ints: &local_ints,
-        known_reals: &local_reals,
-        known_bools: &local_bools,
+        known_ints: &locals.ints,
+        known_reals: &locals.reals,
+        known_bools: &locals.bools,
         known_enums: ctx.known_enums,
         array_dims: ctx.array_dims,
+        known_values: &locals.values,
         functions: ctx.functions,
         var_context: None,
     };
@@ -533,13 +561,54 @@ fn infer_if_dimensions_with_context(
     infer_dimensions_scoped(else_branch, ctx)
 }
 
+/// The values a function call binds to its inputs while its result shape is
+/// evaluated (MLS §12.4.1).
+struct DimensionArgs {
+    ints: FxHashMap<String, i64>,
+    reals: FxHashMap<String, f64>,
+    bools: FxHashMap<String, bool>,
+    values: FxHashMap<String, Value>,
+}
+
+impl DimensionArgs {
+    fn binds(&self, name: &str) -> bool {
+        self.ints.contains_key(name)
+            || self.reals.contains_key(name)
+            || self.bools.contains_key(name)
+            || self.values.contains_key(name)
+    }
+
+    /// Bind `name` to the value of `expr`, typed by the value it evaluates to.
+    fn bind(
+        &mut self,
+        name: &str,
+        expr: &rumoca_core::Expression,
+        ctx: &DimensionScope<'_, '_>,
+    ) -> Option<()> {
+        match ctx.value_of(expr)? {
+            Value::Integer(value) => {
+                self.ints.insert(name.to_string(), value);
+            }
+            Value::Real(value) => {
+                self.reals.insert(name.to_string(), value);
+            }
+            Value::Bool(value) => {
+                self.bools.insert(name.to_string(), value);
+            }
+            value @ (Value::String(_) | Value::Array(_)) => {
+                self.values.insert(name.to_string(), value);
+            }
+            Value::Enum(..) | Value::Record(_) => return None,
+        }
+        Some(())
+    }
+}
+
 fn bind_function_dimension_args(
     func: &rumoca_core::Function,
     args: &[rumoca_core::Expression],
     ctx: &DimensionScope<'_, '_>,
-    local_ints: &mut FxHashMap<String, i64>,
-    local_reals: &mut FxHashMap<String, f64>,
-    local_bools: &mut FxHashMap<String, bool>,
+    locals: &mut DimensionArgs,
 ) -> Option<()> {
     let mut positional = 0usize;
     for arg in args {
@@ -550,57 +619,17 @@ fn bind_function_dimension_args(
             positional += 1;
             (param.name.as_str(), arg)
         };
-        bind_dimension_arg_value(
-            param_name,
-            value_expr,
-            ctx,
-            local_ints,
-            local_reals,
-            local_bools,
-        )?;
+        locals.bind(param_name, value_expr, ctx)?;
     }
 
     for param in &func.inputs {
-        if local_ints.contains_key(&param.name)
-            || local_reals.contains_key(&param.name)
-            || local_bools.contains_key(&param.name)
-        {
+        if locals.binds(&param.name) {
             continue;
         }
         let default = param.default.as_ref()?;
-        bind_dimension_arg_value(
-            &param.name,
-            default,
-            ctx,
-            local_ints,
-            local_reals,
-            local_bools,
-        )?;
+        locals.bind(&param.name, default, ctx)?;
     }
     Some(())
-}
-
-fn bind_dimension_arg_value(
-    name: &str,
-    expr: &rumoca_core::Expression,
-    ctx: &DimensionScope<'_, '_>,
-    local_ints: &mut FxHashMap<String, i64>,
-    local_reals: &mut FxHashMap<String, f64>,
-    local_bools: &mut FxHashMap<String, bool>,
-) -> Option<()> {
-    if let Some(value) = ctx.integer(expr) {
-        local_ints.insert(name.to_string(), value);
-        return Some(());
-    }
-    if let Some(value) = ctx.real(expr) {
-        local_reals.insert(name.to_string(), value);
-        return Some(());
-    }
-    if let Some(value) = ctx.boolean(expr) {
-        local_bools.insert(name.to_string(), value);
-        return Some(());
-    }
-    None
 }
 
 fn eval_param_shape_subscript(
@@ -760,6 +789,7 @@ pub fn try_eval_flat_expr_enum(
         known_bools,
         known_enums,
         array_dims: &FxHashMap::default(),
+        known_values: no_known_values(),
         functions: &FxHashMap::default(),
         var_context: None,
     };

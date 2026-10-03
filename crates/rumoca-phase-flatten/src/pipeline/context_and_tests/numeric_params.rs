@@ -48,6 +48,7 @@ impl Context {
                 binding,
                 may_be_record_alias: false,
                 binding_from_modification: false,
+                aggregate: false,
             })
             .collect::<Vec<_>>();
         self.eval_integer_param_bindings(&params)
@@ -62,6 +63,7 @@ impl Context {
                 binding,
                 may_be_record_alias: false,
                 binding_from_modification: true,
+                aggregate: false,
             })
             .collect::<Vec<_>>();
         self.eval_integer_param_bindings(&params)
@@ -90,15 +92,7 @@ impl Context {
         // owns the same constant evaluator used by the former fallback, plus
         // scoped lookup and enumeration identity, so a second full context
         // would only duplicate every parameter and function.
-        let mut param_evaluator = ParamEvaluator::new(&ParamEvalContext {
-            known_ints: &self.parameter_values,
-            known_reals: &self.real_parameter_values,
-            known_bools: &self.boolean_parameter_values,
-            known_enums: &self.enum_parameter_values,
-            array_dims: &self.array_dimensions,
-            functions: &self.functions,
-            var_context: None,
-        });
+        let mut param_evaluator = ParamEvaluator::new(&self.param_eval_context(None));
 
         let new_vals: Vec<(String, i64)> = params
             .iter()
@@ -155,17 +149,59 @@ impl Context {
         rumoca_core::EvalLookup::lookup_integer(self, target, source_scope.as_str())
     }
 
+    /// The parameter inventory the shared interpreter reads, resolving
+    /// unqualified modification bindings relative to `var_context`.
+    pub(crate) fn param_eval_context<'a>(
+        &'a self,
+        var_context: Option<&'a str>,
+    ) -> ParamEvalContext<'a> {
+        ParamEvalContext::new(
+            &self.parameter_values,
+            &self.real_parameter_values,
+            &self.boolean_parameter_values,
+            &self.enum_parameter_values,
+            &self.array_dimensions,
+            &self.functions,
+            var_context,
+        )
+        .with_known_values(&self.aggregate_parameter_values)
+    }
+
+    /// Evaluate String and array parameter bindings in one pass (MLS §10.1).
+    ///
+    /// A dimension reads such a parameter whole (`size(table, 1)`) or by
+    /// element (`x[dims[2]]`), and a function result shape reads the String
+    /// and array arguments its call binds, so their values join the scalar
+    /// inventories. A value, once evaluated, is final for the pass sequence.
+    pub(super) fn eval_aggregate_param_bindings(&mut self, params: &[ParamBinding<'_>]) -> bool {
+        let mut param_evaluator = ParamEvaluator::new(&self.param_eval_context(None));
+        let new_vals: Vec<(String, rumoca_eval_flat::constant::Value)> = params
+            .iter()
+            .filter(|param| {
+                param.aggregate && !self.aggregate_parameter_values.contains_key(param.name)
+            })
+            .filter_map(
+                |ParamBinding {
+                     name,
+                     binding,
+                     binding_from_modification,
+                     ..
+                 }| {
+                    modification_first(*binding_from_modification, name, |scope| {
+                        param_evaluator.eval_aggregate(binding, scope)
+                    })
+                    .map(|value| ((*name).to_string(), value))
+                },
+            )
+            .collect();
+        let progress = !new_vals.is_empty();
+        self.aggregate_parameter_values.extend(new_vals);
+        progress
+    }
+
     /// Try to evaluate boolean parameters in one pass.
     pub(super) fn eval_boolean_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
-        let mut param_evaluator = ParamEvaluator::new(&ParamEvalContext {
-            known_ints: &self.parameter_values,
-            known_reals: &self.real_parameter_values,
-            known_bools: &self.boolean_parameter_values,
-            known_enums: &self.enum_parameter_values,
-            array_dims: &self.array_dimensions,
-            functions: &self.functions,
-            var_context: None,
-        });
+        let mut param_evaluator = ParamEvaluator::new(&self.param_eval_context(None));
         let new_vals: Vec<(String, bool)> = params
             .iter()
             .filter_map(
@@ -195,15 +231,7 @@ impl Context {
 
     /// Try to evaluate real parameters in one pass.
     pub(super) fn eval_real_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
-        let mut param_evaluator = ParamEvaluator::new(&ParamEvalContext {
-            known_ints: &self.parameter_values,
-            known_reals: &self.real_parameter_values,
-            known_bools: &self.boolean_parameter_values,
-            known_enums: &self.enum_parameter_values,
-            array_dims: &self.array_dimensions,
-            functions: &self.functions,
-            var_context: None,
-        });
+        let mut param_evaluator = ParamEvaluator::new(&self.param_eval_context(None));
         let new_vals: Vec<(String, f64)> = params
             .iter()
             .filter_map(
@@ -252,15 +280,7 @@ impl Context {
         else {
             return None;
         };
-        let int_ctx = ParamEvalContext {
-            known_ints: &self.parameter_values,
-            known_reals: &self.real_parameter_values,
-            known_bools: &self.boolean_parameter_values,
-            known_enums: &self.enum_parameter_values,
-            array_dims: &self.array_dimensions,
-            functions: &self.functions,
-            var_context: Some(name),
-        };
+        let int_ctx = self.param_eval_context(Some(name));
         eval_user_func_real(func_name, args, &int_ctx)
     }
 

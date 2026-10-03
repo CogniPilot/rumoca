@@ -27,6 +27,10 @@ pub(crate) struct Context {
     pub boolean_parameter_values: rustc_hash::FxHashMap<String, bool>,
     /// Enumeration parameter values (name -> qualified enum literal string).
     pub enum_parameter_values: rustc_hash::FxHashMap<String, String>,
+    /// String and array parameter values (MLS §10.1): a dimension or a
+    /// function result shape reads them whole or by element.
+    pub(crate) aggregate_parameter_values:
+        rustc_hash::FxHashMap<String, rumoca_eval_flat::constant::Value>,
     /// General constant expression values (scalars/arrays) extracted from
     /// class/package constants and redeclare/extends modifications.
     pub constant_values: rustc_hash::FxHashMap<String, rumoca_core::Expression>,
