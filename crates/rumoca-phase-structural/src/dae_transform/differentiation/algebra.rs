@@ -244,3 +244,30 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .map(Derivative::Expression)
     }
 }
+
+impl<'source, 'target> ExpressionRebuilder<'source, '_, '_, 'target> {
+    /// `fill(s, n1, ..., nk)` is linear in its value `s`; its extents are
+    /// checked structural integers, so `d/dt fill(s, n...) = fill(ds, n...)`.
+    pub(super) fn differentiate_fill(
+        &mut self,
+        arguments: dae::ExpressionOperands<'source>,
+        order: u8,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        let mut operands = arguments.iter();
+        let value = operands.next().expect("a checked fill has a value operand");
+        let Derivative::Expression(derivative) =
+            self.differentiate_order(value, order, provenance)?
+        else {
+            return Ok(Derivative::Zero);
+        };
+        let mut rebuilt = vec![derivative];
+        for extent in operands {
+            rebuilt.push(self.materialize_exact_value(extent, provenance)?);
+        }
+        self.target
+            .at(provenance)
+            .builtin(dae::PureBuiltin::Fill, rebuilt)
+            .map(Derivative::Expression)
+    }
+}

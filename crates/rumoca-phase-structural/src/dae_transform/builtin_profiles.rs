@@ -1,11 +1,13 @@
 use rumoca_ir_dae as dae;
 
 /// These checked builtins are linear in every value operand and retain their
-/// index map when applied to a derivative of the same shape.
+/// index map when applied to a derivative of the same shape; `sum` reduces
+/// its one operand, so its derivative is the sum of the operand's derivative.
 pub(super) fn is_linear_tensor_map(builtin: dae::PureBuiltin) -> bool {
     matches!(
         builtin,
         dae::PureBuiltin::Vector
+            | dae::PureBuiltin::Sum
             | dae::PureBuiltin::Transpose
             | dae::PureBuiltin::Diagonal
             | dae::PureBuiltin::Skew
@@ -23,6 +25,7 @@ pub(super) fn is_materializable_builtin(builtin: dae::PureBuiltin) -> bool {
             builtin,
             dae::PureBuiltin::Zeros
                 | dae::PureBuiltin::Ones
+                | dae::PureBuiltin::Fill
                 | dae::PureBuiltin::Identity
                 | dae::PureBuiltin::Cross
                 | dae::PureBuiltin::OuterProduct

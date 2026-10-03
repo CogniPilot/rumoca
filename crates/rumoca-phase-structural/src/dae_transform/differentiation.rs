@@ -817,6 +817,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             // Their operands are checked structural extents, not values in the
             // continuous system, so these constructors are time invariant.
             Builtin::Zeros | Builtin::Ones | Builtin::Identity => Ok(Derivative::Zero),
+            Builtin::Fill => self.differentiate_fill(arguments, order, provenance),
             Builtin::Cross | Builtin::OuterProduct => {
                 self.differentiate_bilinear_builtin(builtin, arguments, order, provenance)
             }
