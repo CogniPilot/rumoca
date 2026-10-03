@@ -131,6 +131,7 @@ impl Model {
 
     fn jacobian(&self, k: f64, t: f64) -> Result<DMatrix<f64>, RuntimeSolveError> {
         manifold_block_jacobian(self, &[0.0; 5], &[k], t, &self.plan.blocks[0], 0)
+            .map(|jacobian| jacobian.as_dense().into_owned())
     }
 }
 

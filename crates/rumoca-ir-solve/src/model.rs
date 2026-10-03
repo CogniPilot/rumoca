@@ -473,6 +473,9 @@ pub struct JacobianStructure {
     /// The pattern's rows per column, formed once for every colored
     /// Jacobian evaluation that reads them.
     column_rows: Vec<Vec<usize>>,
+    /// The compact storage order of the pattern, shared by every matrix
+    /// stored in it; formed on first use.
+    compact: std::sync::OnceLock<std::sync::Arc<CompactPatternLayout>>,
 }
 
 impl JacobianStructure {
@@ -483,6 +486,7 @@ impl JacobianStructure {
             pattern,
             coloring,
             column_rows,
+            compact: std::sync::OnceLock::new(),
             output_evaluations: Box::default(),
             residual_output_evaluation: None,
             jacobian_application: None,
@@ -522,6 +526,12 @@ impl JacobianStructure {
 
     pub const fn jacobian_application(&self) -> Option<&ProjectionJacobianApplication> {
         self.jacobian_application.as_ref()
+    }
+
+    /// The compact storage order of this structure's pattern.
+    pub fn compact_layout(&self) -> &std::sync::Arc<CompactPatternLayout> {
+        self.compact
+            .get_or_init(|| std::sync::Arc::new(CompactPatternLayout::of(&self.pattern)))
     }
 }
 

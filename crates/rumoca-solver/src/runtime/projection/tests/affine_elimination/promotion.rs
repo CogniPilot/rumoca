@@ -32,7 +32,7 @@ fn torn_delta(
     let residual = -(matrix * expected());
     let delta = scaled_newton_delta_with_tearing(
         ScaledNewtonSystem {
-            jacobian: matrix,
+            jacobian: &BlockJacobian::dense(matrix.clone()),
             residual: residual.as_slice(),
             row_scales: &row_scales(),
             variable_scales: &variable_scales(),
@@ -51,7 +51,7 @@ fn full_delta(model: &CyclicAffine, matrix: &DMatrix<f64>) -> DVector<f64> {
         .unwrap();
     let residual = -(matrix * expected());
     scaled_newton_delta(ScaledNewtonSystem {
-        jacobian: matrix,
+        jacobian: &BlockJacobian::dense(matrix.clone()),
         residual: residual.as_slice(),
         row_scales: &row_scales(),
         variable_scales: &variable_scales(),
@@ -169,7 +169,7 @@ fn a_singular_nonfinite_or_rectangular_system_still_declines() {
     let residual = vec![0.0; DIMENSION];
     let delta = scaled_newton_delta_with_tearing(
         ScaledNewtonSystem {
-            jacobian: &rectangular,
+            jacobian: &BlockJacobian::dense(rectangular.clone()),
             residual: &residual,
             row_scales: &[1.0; DIMENSION],
             variable_scales: &[1.0; DIMENSION - 1],

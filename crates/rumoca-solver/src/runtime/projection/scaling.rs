@@ -17,8 +17,8 @@ use rumoca_eval_solve::tensor_policy::{LinearSolveKernel, select_linear_solve_ke
 use rumoca_ir_solve as solve;
 
 use super::{
-    AlgebraicProjectionModel, ImplicitProjectionModel, RuntimeSolveError, SparseNewtonCache,
-    algebraic_block_jacobian, initial_block_jacobian, y_index_for_slot,
+    AlgebraicProjectionModel, BlockJacobian, ImplicitProjectionModel, RuntimeSolveError,
+    SparseNewtonCache, algebraic_block_jacobian, initial_block_jacobian, y_index_for_slot,
 };
 
 pub(super) fn scaled_residual_converged(residual: &[f64], scales: &[f64], tol: f64) -> bool {
@@ -104,7 +104,7 @@ pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
     model: &M,
     y: &[f64],
     block: &solve::AlgebraicProjectionBlock,
-    jacobian: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
     structure: Option<&solve::StructuralPattern>,
 ) -> (Vec<f64>, Vec<f64>) {
     let variable_scales = block
@@ -130,7 +130,7 @@ fn initial_block_scales<M: AlgebraicProjectionModel + ?Sized>(
     model: &M,
     y: &[f64],
     block: &solve::AlgebraicProjectionBlock,
-    jacobian: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
     structure: Option<&solve::StructuralPattern>,
 ) -> (Vec<f64>, Vec<f64>) {
     let variable_scales = block
@@ -166,7 +166,7 @@ pub(super) fn initial_block_fallback_scales<M: AlgebraicProjectionModel + ?Sized
 }
 
 pub(super) fn jacobian_row_scales(
-    jacobian: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
     variable_scales: &[f64],
     fallback_scales: &[f64],
     structure: Option<&solve::StructuralPattern>,
@@ -198,7 +198,7 @@ pub(super) fn jacobian_row_scales(
 }
 
 fn sparse_jacobian_row_scales(
-    jacobian: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
     variable_scales: &[f64],
     fallback_scales: &[f64],
     pattern: &solve::StructuralPattern,
@@ -290,7 +290,7 @@ pub(super) fn initial_residual_scales<M: AlgebraicProjectionModel>(
 /// Jacobian was formed with is not a Newton step for this block.
 #[derive(Clone, Copy)]
 pub(crate) struct ScaledNewtonSystem<'a> {
-    pub(crate) jacobian: &'a DMatrix<f64>,
+    pub(crate) jacobian: &'a BlockJacobian,
     pub(crate) residual: &'a [f64],
     pub(crate) row_scales: &'a [f64],
     pub(crate) variable_scales: &'a [f64],
@@ -414,7 +414,7 @@ fn solve_square_newton_system(matrix: &DMatrix<f64>, rhs: &DVector<f64>) -> Opti
 }
 
 pub(super) fn scaled_jacobian(
-    jacobian: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
     row_scales: &[f64],
     variable_scales: &[f64],
 ) -> DMatrix<f64> {
@@ -436,7 +436,7 @@ fn unscale_newton_delta(scaled_delta: &DVector<f64>, variable_scales: &[f64]) ->
 }
 
 fn sparse_scaled_newton_delta(
-    matrix: &DMatrix<f64>,
+    matrix: &BlockJacobian,
     rhs: &DVector<f64>,
     row_scales: &[f64],
     variable_scales: &[f64],
@@ -517,7 +517,7 @@ fn sparse_triplets(
 /// Whether each row's scale at `variable_scales` comes from a nonzero finite
 /// contribution rather than its fallback.
 pub(super) fn jacobian_row_derived(
-    jacobian: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
     variable_scales: &[f64],
     structure: Option<&solve::StructuralPattern>,
 ) -> Vec<bool> {
@@ -527,7 +527,7 @@ pub(super) fn jacobian_row_derived(
 }
 
 pub(super) fn jacobian_row_magnitudes(
-    jacobian: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
     structure: Option<&solve::StructuralPattern>,
 ) -> Vec<f64> {
     let pattern = structure.filter(|pattern| {
@@ -554,7 +554,7 @@ pub(super) fn jacobian_row_magnitudes(
 
 /// One row's scale exactly as [`jacobian_row_scales`] forms it.
 fn jacobian_row_scale(
-    jacobian: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
     row: usize,
     variable_scales: &[f64],
     fallback: f64,
@@ -582,7 +582,7 @@ fn jacobian_row_scale(
 /// A fixed block Jacobian with the row scales it had at the arithmetic
 /// origin, where every block unknown is zero.
 pub(super) struct OriginRowScales<'a> {
-    pub(super) jacobian: &'a DMatrix<f64>,
+    pub(super) jacobian: &'a BlockJacobian,
     pub(super) structure: Option<&'a solve::StructuralPattern>,
     /// [`algebraic_block_scales`] at the origin.
     pub(super) scales: &'a [f64],

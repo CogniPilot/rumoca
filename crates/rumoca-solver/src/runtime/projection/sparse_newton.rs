@@ -11,7 +11,7 @@ use faer::{
         linalg::lu::{LuRef, NumericLu, SymbolicLu, factorize_symbolic_lu},
     },
 };
-use nalgebra::{DMatrix, DVector};
+use nalgebra::DVector;
 use rumoca_ir_solve::StructuralPattern;
 
 use super::scaling::valid_variable_scale;
@@ -23,15 +23,15 @@ pub(crate) struct SparseNewtonCache {
     dense: dense::DenseNewtonFactor,
     /// The block Jacobian of the last affine solve, zero outside the block's
     /// structural pattern, kept so the next solve refills only its pattern.
-    affine_jacobian: Option<DMatrix<f64>>,
+    affine_jacobian: Option<super::BlockJacobian>,
 }
 
 impl SparseNewtonCache {
-    pub(crate) fn take_affine_jacobian(&mut self) -> Option<DMatrix<f64>> {
+    pub(crate) fn take_affine_jacobian(&mut self) -> Option<super::BlockJacobian> {
         self.affine_jacobian.take()
     }
 
-    pub(crate) fn retain_affine_jacobian(&mut self, jacobian: DMatrix<f64>) {
+    pub(crate) fn retain_affine_jacobian(&mut self, jacobian: super::BlockJacobian) {
         self.affine_jacobian = Some(jacobian);
     }
 
@@ -39,7 +39,7 @@ impl SparseNewtonCache {
     /// its Jacobian and scales are bitwise unchanged.
     pub(super) fn solve_dense_scaled(
         &mut self,
-        source: &DMatrix<f64>,
+        source: &super::BlockJacobian,
         rhs: &DVector<f64>,
         scales: (&[f64], &[f64]),
         tolerance: f64,
@@ -56,7 +56,7 @@ impl SparseNewtonCache {
 
     pub(super) fn solve_torn_scaled(
         &mut self,
-        source: &DMatrix<f64>,
+        source: &super::BlockJacobian,
         rhs: &DVector<f64>,
         row_scales: &[f64],
         variable_scales: &[f64],
@@ -75,7 +75,7 @@ impl SparseNewtonCache {
 
     pub(super) fn solve_scaled(
         &mut self,
-        source: &DMatrix<f64>,
+        source: &super::BlockJacobian,
         rhs: &DVector<f64>,
         row_scales: &[f64],
         variable_scales: &[f64],
@@ -152,7 +152,7 @@ impl PreparedSparseSystem {
 
     fn solve_scaled(
         &mut self,
-        source: &DMatrix<f64>,
+        source: &super::BlockJacobian,
         rhs: &DVector<f64>,
         row_scales: &[f64],
         variable_scales: &[f64],

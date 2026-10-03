@@ -1,4 +1,5 @@
 mod affine;
+mod block_jacobian;
 mod branch_continuity;
 mod homotopy;
 mod initial;
@@ -22,6 +23,7 @@ use rumoca_ir_solve as solve;
 
 use super::fallbacks::ProjectionFallback;
 use super::solve_ops::RuntimeSolveError;
+pub(crate) use block_jacobian::BlockJacobian;
 use initial_diagnostics::initial_projection_error;
 pub(crate) use scaling::scaled_newton_delta_with_tearing;
 use scaling::{
@@ -951,7 +953,9 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
             model.projection_site(block_index),
             ProjectionFallback::JacobianDeclined,
         );
-        if !residual_converged && nudge_singular_zero_seed(y, block, &jacobian, &variable_scales) {
+        if !residual_converged
+            && nudge_singular_zero_seed(y, block, &jacobian.as_dense(), &variable_scales)
+        {
             return Ok(ProjectionBlockUpdate {
                 changed: true,
                 settled: false,
@@ -991,7 +995,7 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
     // regular iterate instead of reporting a false non-convergence.
     if !update.changed
         && !residual_converged
-        && nudge_singular_zero_seed(y, block, &jacobian, &variable_scales)
+        && nudge_singular_zero_seed(y, block, &jacobian.as_dense(), &variable_scales)
     {
         return Ok(ProjectionBlockUpdate {
             changed: true,

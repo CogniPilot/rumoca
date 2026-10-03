@@ -11,6 +11,7 @@ mod certificate;
 #[cfg(test)]
 mod certificate_tests;
 mod chart_delta;
+mod compact_pattern;
 #[cfg(test)]
 mod compute_block_tests;
 mod continuous_wire;
@@ -46,6 +47,7 @@ pub use certificate::{
     derive_runtime_assignment_roles,
 };
 pub use chart_delta::{ChartDeltaError, ChartPlanDelta};
+pub use compact_pattern::CompactPatternLayout;
 pub use feature_query::{
     SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events,
     solve_has_initialization, solve_has_runtime_events,

@@ -1,4 +1,5 @@
 use faer::{Col, prelude::Solve};
+use nalgebra::DMatrix;
 use rumoca_core::{SourceId, Span};
 use rumoca_ir_solve::{PatternDerivation, PatternProvenance};
 
@@ -95,7 +96,13 @@ fn retained_sparse_storage_matches_fresh_factors_with_changing_coefficients_and_
         let row_scales = vec![if iteration % 7 == 0 { 2.0 } else { 1.0 }; 24];
         let variable_scales = vec![if iteration % 9 == 0 { 0.25 } else { 1.0 }; 24];
         let actual = cache
-            .solve_scaled(&matrix, &rhs, &row_scales, &variable_scales, &pattern)
+            .solve_scaled(
+                &super::super::BlockJacobian::dense(matrix.clone()),
+                &rhs,
+                &row_scales,
+                &variable_scales,
+                &pattern,
+            )
             .unwrap();
         let expected = fresh_solution(&matrix, &rhs, &row_scales, &variable_scales, &pattern);
         assert_same_bits(&actual, &expected);
@@ -114,7 +121,13 @@ fn singular_refactor_never_reuses_successful_factors_and_recovers() {
     let expected = fresh_solution(&matrix, &rhs, &scales, &scales, &pattern);
     assert_same_bits(
         &cache
-            .solve_scaled(&matrix, &rhs, &scales, &scales, &pattern)
+            .solve_scaled(
+                &super::super::BlockJacobian::dense(matrix.clone()),
+                &rhs,
+                &scales,
+                &scales,
+                &pattern,
+            )
             .unwrap(),
         &expected,
     );
@@ -122,20 +135,38 @@ fn singular_refactor_never_reuses_successful_factors_and_recovers() {
     for _ in 0..2 {
         assert!(
             cache
-                .solve_scaled(&zero, &rhs, &scales, &scales, &pattern)
+                .solve_scaled(
+                    &super::super::BlockJacobian::dense(zero.clone()),
+                    &rhs,
+                    &scales,
+                    &scales,
+                    &pattern
+                )
                 .is_none()
         );
     }
     let mut rejected_clone = cache.clone();
     assert!(
         rejected_clone
-            .solve_scaled(&zero, &rhs, &scales, &scales, &pattern)
+            .solve_scaled(
+                &super::super::BlockJacobian::dense(zero.clone()),
+                &rhs,
+                &scales,
+                &scales,
+                &pattern
+            )
             .is_none()
     );
     for recovered in [&mut cache, &mut rejected_clone] {
         assert_same_bits(
             &recovered
-                .solve_scaled(&matrix, &rhs, &scales, &scales, &pattern)
+                .solve_scaled(
+                    &super::super::BlockJacobian::dense(matrix.clone()),
+                    &rhs,
+                    &scales,
+                    &scales,
+                    &pattern,
+                )
                 .unwrap(),
             &expected,
         );
@@ -151,7 +182,13 @@ fn changed_pattern_and_dimension_reconstruct_the_sparse_owner() {
         let rhs = DVector::from_fn(dimension, |row, _| row as f64 - 2.75);
         let scales = vec![1.0; dimension];
         let actual = cache
-            .solve_scaled(&matrix, &rhs, &scales, &scales, &pattern)
+            .solve_scaled(
+                &super::super::BlockJacobian::dense(matrix.clone()),
+                &rhs,
+                &scales,
+                &scales,
+                &pattern,
+            )
             .unwrap();
         let expected = fresh_solution(&matrix, &rhs, &scales, &scales, &pattern);
         assert_same_bits(&actual, &expected);
@@ -171,18 +208,36 @@ fn nonfinite_rhs_or_matrix_does_not_poison_later_finite_solves() {
         bad_rhs[4] = invalid;
         assert!(
             cache
-                .solve_scaled(&matrix, &bad_rhs, &scales, &scales, &pattern)
+                .solve_scaled(
+                    &super::super::BlockJacobian::dense(matrix.clone()),
+                    &bad_rhs,
+                    &scales,
+                    &scales,
+                    &pattern
+                )
                 .is_none()
         );
         assert_same_bits(
             &cache
-                .solve_scaled(&matrix, &rhs, &scales, &scales, &pattern)
+                .solve_scaled(
+                    &super::super::BlockJacobian::dense(matrix.clone()),
+                    &rhs,
+                    &scales,
+                    &scales,
+                    &pattern,
+                )
                 .unwrap(),
             &expected,
         );
         let mut bad_matrix = matrix.clone();
         bad_matrix[(4, 4)] = invalid;
-        let actual = cache.solve_scaled(&bad_matrix, &rhs, &scales, &scales, &pattern);
+        let actual = cache.solve_scaled(
+            &super::super::BlockJacobian::dense(bad_matrix.clone()),
+            &rhs,
+            &scales,
+            &scales,
+            &pattern,
+        );
         let fresh = try_fresh_solution(&bad_matrix, &rhs, &scales, &scales, &pattern);
         assert_eq!(actual.is_some(), fresh.is_some());
         if let (Some(actual), Some(fresh)) = (actual, fresh) {
@@ -190,7 +245,13 @@ fn nonfinite_rhs_or_matrix_does_not_poison_later_finite_solves() {
         }
         assert_same_bits(
             &cache
-                .solve_scaled(&matrix, &rhs, &scales, &scales, &pattern)
+                .solve_scaled(
+                    &super::super::BlockJacobian::dense(matrix.clone()),
+                    &rhs,
+                    &scales,
+                    &scales,
+                    &pattern,
+                )
                 .unwrap(),
             &expected,
         );
@@ -206,7 +267,13 @@ fn cloned_successful_cache_owns_independent_numeric_storage() {
     let scales = vec![1.0; 24];
     let mut cache = SparseNewtonCache::default();
     let expected = cache
-        .solve_scaled(&original, &rhs, &scales, &scales, &pattern)
+        .solve_scaled(
+            &super::super::BlockJacobian::dense(original.clone()),
+            &rhs,
+            &scales,
+            &scales,
+            &pattern,
+        )
         .unwrap();
     let mut cloned = cache.clone();
     assert_ne!(
@@ -214,7 +281,13 @@ fn cloned_successful_cache_owns_independent_numeric_storage() {
         cloned.system.as_ref().unwrap().workspace.storage.as_ptr(),
     );
     let actual = cloned
-        .solve_scaled(&changed, &rhs, &scales, &scales, &pattern)
+        .solve_scaled(
+            &super::super::BlockJacobian::dense(changed.clone()),
+            &rhs,
+            &scales,
+            &scales,
+            &pattern,
+        )
         .unwrap();
     assert_same_bits(
         &actual,
@@ -222,7 +295,13 @@ fn cloned_successful_cache_owns_independent_numeric_storage() {
     );
     assert_same_bits(
         &cache
-            .solve_scaled(&original, &rhs, &scales, &scales, &pattern)
+            .solve_scaled(
+                &super::super::BlockJacobian::dense(original.clone()),
+                &rhs,
+                &scales,
+                &scales,
+                &pattern,
+            )
             .unwrap(),
         &expected,
     );
@@ -255,8 +334,9 @@ fn dense_delta(
     scales: (&[f64], &[f64]),
     cache: Option<&mut SparseNewtonCache>,
 ) -> Option<DVector<f64>> {
+    let jacobian = super::super::BlockJacobian::dense(jacobian.clone());
     let system = crate::runtime::projection::ScaledNewtonSystem {
-        jacobian,
+        jacobian: &jacobian,
         residual,
         row_scales: scales.0,
         variable_scales: scales.1,

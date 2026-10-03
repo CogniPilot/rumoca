@@ -26,7 +26,12 @@ fn sparse_row_scaling_preserves_finite_maxima_and_zero_or_nonfinite_fallbacks() 
     let variables = [1e12, 7.0, 11.0, 0.0];
     let fallback = [4.0, 5.0, 6.0, 7.0];
     for structure in [None, Some(&pattern)] {
-        let result = jacobian_row_scales(&matrix, &variables, &fallback, structure);
+        let result = jacobian_row_scales(
+            &BlockJacobian::dense(matrix.clone()),
+            &variables,
+            &fallback,
+            structure,
+        );
         assert!((result[0] - 2000.0).abs() < 1e-12);
         assert_eq!(&result[1..], &[5.0, 6.0, 7.0]);
     }
@@ -150,8 +155,13 @@ fn projection_scale_expands_to_the_current_coordinate_magnitude() {
     };
     let jacobian = DMatrix::from_element(1, 1, 1.0e-5);
 
-    let (row_scales, variable_scales) =
-        algebraic_block_scales(&model, &[5.0e6], &block, &jacobian, None);
+    let (row_scales, variable_scales) = algebraic_block_scales(
+        &model,
+        &[5.0e6],
+        &block,
+        &BlockJacobian::dense(jacobian.clone()),
+        None,
+    );
 
     assert_eq!(variable_scales, vec![5.0e6]);
     assert!((row_scales[0] - 50.0).abs() <= 1.0e-12);
@@ -160,6 +170,7 @@ fn projection_scale_expands_to_the_current_coordinate_magnitude() {
 #[test]
 fn scaled_newton_system_normalizes_mixed_magnitude_columns() {
     let jacobian = DMatrix::from_diagonal(&DVector::from_vec(vec![1.0e-12, 1.0e12]));
+    let jacobian = BlockJacobian::dense(jacobian);
     let delta = scaled_newton_delta(ScaledNewtonSystem {
         jacobian: &jacobian,
         residual: &[-1.0, -1.0],

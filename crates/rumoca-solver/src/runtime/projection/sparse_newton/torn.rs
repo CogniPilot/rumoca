@@ -12,7 +12,7 @@ pub(super) struct TornNewtonCache {
 impl TornNewtonCache {
     pub(super) fn solve_scaled(
         &mut self,
-        source: &DMatrix<f64>,
+        source: &super::super::BlockJacobian,
         rhs: &DVector<f64>,
         row_scales: &[f64],
         variable_scales: &[f64],
@@ -154,7 +154,7 @@ impl TornSystem {
     /// checked on unconditioned coefficients: conditioning may underflow a
     /// nonzero future dependency to zero. Returns whether the promoted set
     /// differs from the one the current factor was built with.
-    fn preflight_guards(&mut self, source: &DMatrix<f64>) -> bool {
+    fn preflight_guards(&mut self, source: &super::super::BlockJacobian) -> bool {
         self.next_guarded.fill(false);
         for (&(row, column), &(holder, solver)) in self
             .layout
@@ -171,7 +171,7 @@ impl TornSystem {
         changed
     }
 
-    fn update(&mut self, source: &DMatrix<f64>, rows: &[f64], columns: &[f64]) {
+    fn update(&mut self, source: &super::super::BlockJacobian, rows: &[f64], columns: &[f64]) {
         let mut changed = matches!(self.factor, Factor::Unfactored);
         changed |= self.preflight_guards(source);
         let fresh = !self.conditioned;
@@ -202,7 +202,7 @@ impl TornSystem {
     /// whether any conditioned value changed.
     fn condition_row(
         &mut self,
-        source: &DMatrix<f64>,
+        source: &super::super::BlockJacobian,
         (row, row_scale, row_scaled): (usize, f64, bool),
         columns: &[f64],
     ) -> bool {

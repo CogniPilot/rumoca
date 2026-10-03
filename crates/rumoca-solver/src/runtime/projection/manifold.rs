@@ -14,6 +14,8 @@
 mod selected_tests;
 
 use nalgebra::DMatrix;
+
+use super::BlockJacobian;
 #[cfg(test)]
 use rumoca_eval_solve::dense_basis::DenseStageMatrix;
 use rumoca_ir_solve as solve;
@@ -344,7 +346,7 @@ fn project_state_manifold_inner<M: ManifoldProjectionModel>(
 struct ManifoldBlockEvaluation {
     full_residual: Vec<f64>,
     residual: Vec<f64>,
-    jacobian: DMatrix<f64>,
+    jacobian: BlockJacobian,
     row_scales: Vec<f64>,
     variable_scales: Vec<f64>,
 }
@@ -386,11 +388,11 @@ fn manifold_block_jacobian<M: ManifoldProjectionModel>(
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
     block_index: usize,
-) -> Result<DMatrix<f64>, RuntimeSolveError> {
+) -> Result<BlockJacobian, RuntimeSolveError> {
     if let Some(structure) = model.manifold_projection_block_structure(block_index)
         && let Some(jacobian) = selected_manifold_jacobian(model, y, p, t, block, structure)?
     {
-        return Ok(jacobian);
+        return Ok(BlockJacobian::dense(jacobian));
     }
     let mut jacobian = DMatrix::zeros(block.rows.len(), block.y_indices.len());
     let mut seed = vec![0.0; y.len()];
@@ -404,7 +406,7 @@ fn manifold_block_jacobian<M: ManifoldProjectionModel>(
         seed[state] = 0.0;
         jvp.fill(0.0);
     }
-    Ok(jacobian)
+    Ok(BlockJacobian::dense(jacobian))
 }
 
 fn selected_manifold_jacobian<M: ManifoldProjectionModel>(
@@ -562,7 +564,7 @@ fn project_manifold_block<M: ManifoldProjectionModel>(
 fn manifold_block_scales<M: ManifoldProjectionModel>(
     model: &M,
     block: &solve::AlgebraicProjectionBlock,
-    jacobian: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
     structure: Option<&solve::StructuralPattern>,
 ) -> (Vec<f64>, Vec<f64>) {
     let variable_scales = block

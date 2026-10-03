@@ -4,7 +4,7 @@
 use nalgebra::DMatrix;
 use rumoca_ir_solve as solve;
 
-use super::super::{ImplicitProjectionModel, RuntimeSolveError};
+use super::super::{BlockJacobian, ImplicitProjectionModel, RuntimeSolveError};
 use super::{
     CertificateScales, OriginRowScales, algebraic_block_scales, fallback_targets,
     jacobian_row_derived, jacobian_row_magnitudes, model_variable_scale,
@@ -117,6 +117,7 @@ fn origin_bounded_certificate_decides_as_the_full_row_scales() {
             let sign = if random.unit() < 0.5 { -1.0 } else { 1.0 };
             sign * magnitude(&mut random) * random.unit()
         });
+        let jacobian = BlockJacobian::dense(jacobian);
         let mut origin_y = (0..=n)
             .map(|_| (random.unit() - 0.5) * magnitude(&mut random).min(1e12))
             .collect::<Vec<_>>();
@@ -183,6 +184,7 @@ fn an_underflowed_origin_contribution_does_not_bound_the_row_scale() {
         nominals: vec![0.5, 1.0],
     };
     let jacobian = DMatrix::from_element(1, 1, 5e-324);
+    let jacobian = BlockJacobian::dense(jacobian);
     let (origin_y, y) = (vec![0.0, 0.0], vec![100.0, 0.0]);
     let (origin_scales, origin_variable_scales) =
         algebraic_block_scales(&model, &origin_y, &block, &jacobian, None);

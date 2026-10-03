@@ -32,6 +32,9 @@ pub struct ProjectionJacobianApplication {
     primal_source: Option<ScalarProgramBlock>,
     colors: Box<[ProjectionJacobianColor]>,
     invariant_operations: Arc<[Box<[bool]>]>,
+    /// The compact storage order of the block pattern every placement
+    /// addresses.
+    compact: Arc<crate::CompactPatternLayout>,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +93,7 @@ impl ProjectionJacobianApplication {
             primal_source: None,
             colors,
             invariant_operations: Arc::clone(&source.invariant_operations),
+            compact: Arc::clone(structure.compact_layout()),
         })
     }
 
@@ -145,6 +149,11 @@ impl ProjectionJacobianApplication {
     }
     pub const fn output_len(&self) -> usize {
         self.output_len
+    }
+    /// The compact storage order of the block pattern: every placement's
+    /// column-major target names one of its slots.
+    pub fn compact_layout(&self) -> &Arc<crate::CompactPatternLayout> {
+        &self.compact
     }
     pub const fn source(&self) -> &ScalarProgramBlock {
         &self.source

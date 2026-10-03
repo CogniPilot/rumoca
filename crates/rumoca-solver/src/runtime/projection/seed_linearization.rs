@@ -16,7 +16,7 @@ use rumoca_eval_solve::tensor_policy::{LinearSolveKernel, select_linear_solve_ke
 
 pub(crate) struct SeedBlockLinearization {
     solver: SeedSolver,
-    jacobian: DMatrix<f64>,
+    jacobian: BlockJacobian,
 }
 
 enum SeedSolver {
@@ -92,7 +92,7 @@ impl SeedBlockLinearization {
                     site,
                 }))
             }
-            _ => SeedSolver::Dense(jacobian.clone().lu()),
+            _ => SeedSolver::Dense(jacobian.as_dense().into_owned().lu()),
         };
         Ok(Self { solver, jacobian })
     }
@@ -139,7 +139,9 @@ impl SeedBlockLinearization {
         };
         structured.or_else(|| {
             note_block_fallback(*site, ProjectionFallback::SeedDense);
-            dense.get_or_init(|| self.jacobian.clone().lu()).solve(rhs)
+            dense
+                .get_or_init(|| self.jacobian.as_dense().into_owned().lu())
+                .solve(rhs)
         })
     }
 
@@ -168,7 +170,7 @@ impl SeedBlockLinearization {
             variables = ?variables,
             matrix_rows = self.jacobian.nrows(),
             matrix_columns = self.jacobian.ncols(),
-            matrix_column_major = ?self.jacobian.as_slice(),
+            matrix_column_major = ?self.jacobian.as_dense().as_slice(),
             rhs = ?rhs.as_slice(),
             point_y = ?y,
             parameters = ?args.parameters,
@@ -247,7 +249,7 @@ fn refine_direction<M: ImplicitProjectionModel>(
         block.y_indices.len(),
         block.y_indices.iter().map(|&index| seed[index]),
     );
-    let residual = &linearization.jacobian * values + base;
+    let residual = linearization.jacobian.mul_vector(&values) + base;
     if residual.iter().all(|&value| value == 0.0) {
         return Ok(());
     }

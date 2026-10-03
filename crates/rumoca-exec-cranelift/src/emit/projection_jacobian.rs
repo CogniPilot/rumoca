@@ -69,7 +69,7 @@ impl CompiledProjectionJacobian {
         let scratch = RefCell::new(ProjectionScratch {
             seed: vec![0.0; seed_len],
             program_output: vec![0.0; output_count],
-            matrix: vec![0.0; application.output_len()],
+            matrix: vec![0.0; application.compact_layout().len()],
         });
         Ok(Self {
             jit,
@@ -81,6 +81,8 @@ impl CompiledProjectionJacobian {
         })
     }
 
+    /// Write the block Jacobian at `(y, p, t)` into `out` in the application's
+    /// compact pattern layout, one value per pattern entry.
     pub fn call(
         &self,
         y: &[f64],
@@ -89,7 +91,7 @@ impl CompiledProjectionJacobian {
         external_tables: &[ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        if out.len() != self.application.output_len() || y.len() < self.required_y_len {
+        if out.len() != self.application.compact_layout().len() || y.len() < self.required_y_len {
             return Err(CompileError::Input(
                 "projection Jacobian extent mismatch".into(),
             ));
@@ -170,8 +172,12 @@ impl CompiledProjectionJacobian {
                 context,
                 output,
             )?;
-            for &(offset, target) in program.placements() {
-                matrix[target] = output[offset];
+            let placements = super::projection_batch::compact_placements(
+                &self.application,
+                program.placements(),
+            )?;
+            for (offset, slot) in placements {
+                matrix[slot] = output[offset];
             }
         }
         Ok(())

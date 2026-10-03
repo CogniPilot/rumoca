@@ -464,7 +464,7 @@ fn solve_coupled_initial_block<M: AlgebraicProjectionModel>(
     context: InitialBlockDeltaCtx<'_, M>,
     y: &mut [f64],
     residual: &[f64],
-    jacobian: DMatrix<f64>,
+    jacobian: BlockJacobian,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     let delta = scaled_newton_delta(ScaledNewtonSystem {
         jacobian: &jacobian,
@@ -506,7 +506,7 @@ pub(super) fn trace_initial_projection_block<M: AlgebraicProjectionModel>(
     rows: &[usize],
     y_indices: &[usize],
     residual: &[f64],
-    jacobian: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
     tolerance: f64,
 ) {
     if !tracing::enabled!(target: "rumoca_solver::projection", tracing::Level::DEBUG) {
@@ -530,7 +530,7 @@ pub(super) fn trace_initial_projection_block<M: AlgebraicProjectionModel>(
                 .unwrap_or("<none>")
         })
         .collect::<Vec<_>>();
-    let decomposition = jacobian.clone().svd(true, true);
+    let decomposition = jacobian.as_dense().into_owned().svd(true, true);
     let singular_values = &decomposition.singular_values;
     let largest = singular_values.iter().copied().fold(0.0_f64, f64::max);
     let rank_threshold = tolerance.max(f64::EPSILON * largest * rows.len() as f64);
@@ -762,7 +762,7 @@ fn relax_initial_block_from_row_targets<M: AlgebraicProjectionModel>(
     ctx: InitialBlockDeltaCtx<'_, M>,
     y: &mut [f64],
     residual: &[f64],
-    jacobian: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
 ) -> Result<bool, RuntimeSolveError> {
     let snapshot = y.to_vec();
     let mut updated_rows = Vec::new();
@@ -896,16 +896,18 @@ pub(super) fn algebraic_block_jacobian(
     rows: &[usize],
     y_indices: &[usize],
     structure: Option<&solve::JacobianStructure>,
-) -> Result<DMatrix<f64>, RuntimeSolveError> {
-    let jacobian = DMatrix::<f64>::zeros(rows.len(), y_indices.len());
+) -> Result<BlockJacobian, RuntimeSolveError> {
+    let jacobian = match structure {
+        Some(structure) => BlockJacobian::compact(structure.compact_layout()),
+        None => BlockJacobian::zeros(rows.len(), y_indices.len()),
+    };
     algebraic_block_jacobian_in(model, y, p, t, (rows, y_indices), structure, jacobian)
 }
 
 /// [`algebraic_block_jacobian`] filled into `jacobian`, which must be block-shaped
-/// and zero wherever a fresh zero matrix would be read: everywhere without a
-/// structure, and at every entry with one, since every structured writer
-/// writes only pattern entries. A reused matrix that is zero outside the
-/// pattern therefore needs only its pattern entries cleared.
+/// and zero at every entry it stores. A structured block's matrix is stored
+/// in its pattern's compact layout, the storage a compiled projection
+/// Jacobian writes; every structured writer writes only pattern entries.
 pub(super) fn algebraic_block_jacobian_in(
     model: &dyn ImplicitProjectionModel,
     y: &[f64],
@@ -913,8 +915,8 @@ pub(super) fn algebraic_block_jacobian_in(
     t: f64,
     (rows, y_indices): (&[usize], &[usize]),
     structure: Option<&solve::JacobianStructure>,
-    mut jacobian: DMatrix<f64>,
-) -> Result<DMatrix<f64>, RuntimeSolveError> {
+    mut jacobian: BlockJacobian,
+) -> Result<BlockJacobian, RuntimeSolveError> {
     if let Some(structure) = structure {
         validate_projection_structure(
             structure.pattern(),
@@ -925,13 +927,14 @@ pub(super) fn algebraic_block_jacobian_in(
     }
     debug_assert_eq!(jacobian.shape(), (rows.len(), y_indices.len()));
     if let Some(structure) = structure
+        && jacobian.is_stored_in(structure.compact_layout())
         && model.eval_prepared_implicit_jacobian(
             structure,
             (rows, y_indices),
             y,
             p,
             t,
-            jacobian.as_mut_slice(),
+            jacobian.storage_mut(),
         )?
     {
         return Ok(jacobian);
@@ -1033,7 +1036,7 @@ struct AlgebraicBlockPoint<'a> {
 }
 
 fn fill_colored_algebraic_rows(
-    jacobian: &mut DMatrix<f64>,
+    jacobian: &mut BlockJacobian,
     block: AlgebraicBlockPoint<'_>,
     selected_rows: &[bool],
     structure: &solve::JacobianStructure,
@@ -1102,7 +1105,7 @@ fn with_zero_seed<R>(len: usize, set: &[usize], body: impl FnOnce(&mut [f64]) ->
 }
 
 fn fill_colored_groups(
-    jacobian: &mut DMatrix<f64>,
+    jacobian: &mut BlockJacobian,
     block: AlgebraicBlockPoint<'_>,
     selected_rows: &[bool],
     structure: &solve::JacobianStructure,
@@ -1168,7 +1171,7 @@ fn fill_colored_groups(
 }
 
 fn fill_prepared_algebraic_color(
-    jacobian: &mut DMatrix<f64>,
+    jacobian: &mut BlockJacobian,
     block: AlgebraicBlockPoint<'_>,
     selected_rows: &[bool],
     selection: Option<&solve::ProjectionJacobianOutputs>,
@@ -1239,7 +1242,7 @@ struct ReverseProjectionRowInput<'a> {
     model: &'a dyn ImplicitProjectionModel,
 }
 
-fn fill_reverse_projection_row(jacobian: &mut DMatrix<f64>, input: ReverseProjectionRowInput<'_>) {
+fn fill_reverse_projection_row(jacobian: &mut BlockJacobian, input: ReverseProjectionRowInput<'_>) {
     let ReverseProjectionRowInput {
         row,
         residual_idx,
@@ -1276,7 +1279,7 @@ fn projection_entry_depends(
 }
 
 pub(super) fn fill_jacobian_column_from_jvp(
-    jacobian: &mut DMatrix<f64>,
+    jacobian: &mut BlockJacobian,
     column: usize,
     rows: &[usize],
     jvp: &[f64],
@@ -1299,7 +1302,7 @@ pub(super) fn initial_block_jacobian(
     t: f64,
     rows: &[usize],
     y_indices: &[usize],
-) -> Result<DMatrix<f64>, RuntimeSolveError> {
+) -> Result<BlockJacobian, RuntimeSolveError> {
     let mut jacobian = DMatrix::<f64>::zeros(rows.len(), y_indices.len());
     let mut seed = vec![0.0; y.len()];
     let mut jvp = vec![0.0; model.initial_residual_len()];
@@ -1318,7 +1321,7 @@ pub(super) fn initial_block_jacobian(
         }
         seed[y_idx] = 0.0;
     }
-    Ok(jacobian)
+    Ok(BlockJacobian::dense(jacobian))
 }
 
 pub(super) fn residual_at(

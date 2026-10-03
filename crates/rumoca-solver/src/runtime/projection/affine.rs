@@ -104,11 +104,9 @@ fn settle_affine_block<M: ImplicitProjectionModel>(
     Ok(settled)
 }
 
-/// The block Jacobian at `candidate`, refilled into the matrix the previous
-/// solve of this block retained when it has a structural pattern. Every
-/// structured writer writes only pattern entries, so the retained matrix is
-/// zero outside the pattern and clearing its pattern entries makes it the
-/// fresh zero matrix the fill expects, without clearing the whole block.
+/// The block Jacobian at `candidate`, refilled into the compact matrix the
+/// previous solve of this block retained when it has a structural pattern,
+/// so a projection allocates nothing proportional to the block.
 fn affine_block_jacobian<M: ImplicitProjectionModel>(
     model: &M,
     candidate: &[f64],
@@ -116,8 +114,7 @@ fn affine_block_jacobian<M: ImplicitProjectionModel>(
     block: &solve::AlgebraicProjectionBlock,
     block_index: usize,
     structure: Option<&solve::JacobianStructure>,
-) -> Result<DMatrix<f64>, RuntimeSolveError> {
-    let shape = (block.rows.len(), block.y_indices.len());
+) -> Result<BlockJacobian, RuntimeSolveError> {
     let retained = match structure {
         Some(_) => match model.affine_jacobian_cache(block_index) {
             Some(cache) => cache.borrow_mut().take_affine_jacobian(),
@@ -126,12 +123,14 @@ fn affine_block_jacobian<M: ImplicitProjectionModel>(
         None => None,
     };
     let storage = match (retained, structure) {
-        (Some(mut retained), Some(structure)) => {
-            debug_assert_eq!(retained.shape(), shape);
-            clear_pattern_entries(&mut retained, structure.pattern());
+        (Some(mut retained), Some(structure))
+            if retained.is_stored_in(structure.compact_layout()) =>
+        {
+            retained.clear();
             retained
         }
-        _ => DMatrix::zeros(shape.0, shape.1),
+        (_, Some(structure)) => BlockJacobian::compact(structure.compact_layout()),
+        (_, None) => BlockJacobian::zeros(block.rows.len(), block.y_indices.len()),
     };
     algebraic_block_jacobian_in(
         model,
@@ -150,7 +149,7 @@ struct AffineBlockSystem<'a, M> {
     time: f64,
     block: &'a solve::AlgebraicProjectionBlock,
     block_index: usize,
-    jacobian: DMatrix<f64>,
+    jacobian: BlockJacobian,
     /// [`jacobian_row_magnitudes`] of `jacobian`.
     row_magnitudes: Vec<f64>,
     /// [`jacobian_row_derived`] at the origin variable scales.
@@ -292,15 +291,5 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             y[index] = value;
         }
         Some(changed)
-    }
-}
-
-/// Zero exactly the pattern entries of a retained block Jacobian.
-///
-/// One non-generic copy serves every projection model, so the row visitor is
-/// compiled once.
-fn clear_pattern_entries(matrix: &mut DMatrix<f64>, pattern: &solve::StructuralPattern) {
-    for row in 0..matrix.nrows() {
-        pattern.visit_row_columns(row, &mut |column| matrix[(row, column)] = 0.0);
     }
 }

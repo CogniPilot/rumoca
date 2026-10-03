@@ -118,19 +118,22 @@ fn prepared_projection_matches_selected_jvp_at_fresh_points_and_keeps_code_alive
                     .unwrap();
             }
         }
+        // The compact layout stores the pattern entries row by row: (0, 0),
+        // (1, 0), and (1, 1), the column-major entries 0, 1, and 3.
+        let expected = [expected[0], expected[1], expected[3]];
         let before = compiled.jit.program_call_count();
-        let mut out = [99.0; 4];
+        let mut out = [99.0; 3];
         prepared.call(&y, &[p], t, &[], &mut out).unwrap();
         assert_eq!(out.map(f64::to_bits), expected.map(f64::to_bits));
         assert_eq!(compiled.jit.program_call_count() - before, 3);
     }
     drop(compiled);
     drop(source);
-    let mut out = [99.0; 4];
+    let mut out = [99.0; 3];
     prepared
         .call(&[3.0, 4.0], &[2.0], 0.5, &[], &mut out)
         .unwrap();
-    assert_eq!(out, [0.5, 2.0, 0.0, 3.0]);
+    assert_eq!(out, [0.5, 2.0, 3.0]);
 }
 
 #[test]
@@ -175,7 +178,8 @@ fn prepared_projection_preserves_output_on_failure_and_clears_seeds_before_reuse
     prepared
         .call(&[3.0, 4.0], &[2.0], 1.0, &tables, &mut out)
         .unwrap();
-    assert_eq!(out, [2.0, 12.0, 3.0, 12.0]);
+    // Row by row: (0, 0), (0, 1), (1, 0), (1, 1).
+    assert_eq!(out, [2.0, 3.0, 12.0, 12.0]);
 }
 
 fn domain_primal() -> ScalarProgramBlock {
@@ -258,8 +262,8 @@ fn prepared_projection_compiles_a_source_bound_selected_seed_kernel() {
     let prepared = compiled.prepare_projection(&specialized).unwrap();
     drop(compiled);
     for (y, p, t) in [([3.0, 4.0], 2.0, 0.5), ([-1.0, 9.0], 8.0, 2.0)] {
-        let mut expected = [0.0; 4];
-        let mut actual = [0.0; 4];
+        let mut expected = [0.0; 3];
+        let mut actual = [0.0; 3];
         general.call(&y, &[p], t, &[], &mut expected).unwrap();
         prepared.call(&y, &[p], t, &[], &mut actual).unwrap();
         assert_eq!(actual.map(f64::to_bits), expected.map(f64::to_bits));

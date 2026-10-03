@@ -68,6 +68,7 @@ impl ColoredRows {
             &block.y_indices,
             Some(&self.structure),
         )
+        .map(|jacobian| jacobian.as_dense().into_owned())
     }
 }
 
@@ -293,4 +294,27 @@ fn seed_projection_uses_coloring_and_preserves_known_directions() {
         10,
         "three RHS rows, four colored entries, and three certification rows"
     );
+}
+
+#[test]
+fn a_structured_block_jacobian_stores_only_its_pattern_entries() {
+    let model = ColoredRows::new();
+    let block = &model.plan.blocks[0];
+    let mut jacobian = initial::algebraic_block_jacobian(
+        &model,
+        &[0.0; 5],
+        &[11.0],
+        0.0,
+        &block.rows,
+        &block.y_indices,
+        Some(&model.structure),
+    )
+    .unwrap();
+    assert!(jacobian.is_stored_in(model.structure.compact_layout()));
+    assert_eq!(
+        jacobian.storage_mut().len(),
+        model.structure.compact_layout().len(),
+        "one stored value per pattern entry, none for the rest of the block"
+    );
+    assert_eq!(jacobian.as_dense().into_owned(), expected_jacobian());
 }

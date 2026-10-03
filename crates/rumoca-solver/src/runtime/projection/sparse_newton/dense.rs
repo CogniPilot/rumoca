@@ -28,7 +28,7 @@ impl DenseNewtonFactor {
     /// rank-deficient least-squares solve exactly as a fresh factorization.
     pub(super) fn solve(
         &mut self,
-        source: &DMatrix<f64>,
+        source: &super::super::BlockJacobian,
         rhs: &DVector<f64>,
         scales: (&[f64], &[f64]),
         tolerance: f64,
@@ -42,7 +42,8 @@ impl DenseNewtonFactor {
                 .then(|| scaled_jacobian(source, row_scales, variable_scales))
                 .and_then(|scaled| scaled.svd(true, true).solve(rhs, tolerance).ok());
         }
-        let factor = self.prepare(source, row_scales, variable_scales)?;
+        let dense = source.as_dense();
+        let factor = self.prepare(&dense, source, (row_scales, variable_scales))?;
         let direct = factor.lu.solve(rhs);
         if allow_rank_deficient_fallback {
             direct.or_else(|| {
@@ -60,15 +61,15 @@ impl DenseNewtonFactor {
 
     fn prepare(
         &mut self,
-        source: &DMatrix<f64>,
-        row_scales: &[f64],
-        variable_scales: &[f64],
+        dense: &DMatrix<f64>,
+        source: &super::super::BlockJacobian,
+        (row_scales, variable_scales): (&[f64], &[f64]),
     ) -> Option<&Factor> {
         let unchanged = self.factor.is_some()
-            && self.key.len() == 2 + source.len() + row_scales.len() + variable_scales.len()
+            && self.key.len() == 2 + dense.len() + row_scales.len() + variable_scales.len()
             && self.key[0] == source.nrows() as u64
             && self.key[1] == source.ncols() as u64
-            && source
+            && dense
                 .iter()
                 .chain(row_scales)
                 .chain(variable_scales)
@@ -81,7 +82,7 @@ impl DenseNewtonFactor {
         self.key.push(source.nrows() as u64);
         self.key.push(source.ncols() as u64);
         self.key.extend(
-            source
+            dense
                 .iter()
                 .chain(row_scales)
                 .chain(variable_scales)

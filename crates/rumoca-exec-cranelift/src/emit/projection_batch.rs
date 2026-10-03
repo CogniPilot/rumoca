@@ -241,11 +241,12 @@ impl CraneliftEmitter {
             set_seeds(&mut builder, params[3], color.seed_indices(), 1.0)?;
             for program in color.outputs().programs() {
                 let row = &application.source().programs()[program.program()];
+                let placements = compact_placements(application, program.placements())?;
                 self.lower_projection_program(
                     &mut builder,
                     &params,
                     row,
-                    program.placements(),
+                    &placements,
                     (&mut loaded_y, &mut loaded_p),
                     ProgramReuse {
                         issued: application.invariant_operations(program.program()),
@@ -400,4 +401,26 @@ impl RetainedResult {
         }
         Ok(())
     }
+}
+
+/// Re-address column-major placements to the slots of the application's
+/// compact pattern layout, the storage the native entry writes.
+pub(super) fn compact_placements(
+    application: &ProjectionJacobianApplication,
+    placements: &[(usize, usize)],
+) -> Result<Vec<(usize, usize)>, CompileError> {
+    let layout = application.compact_layout();
+    placements
+        .iter()
+        .map(|&(offset, target)| {
+            layout
+                .dense_slot(target)
+                .map(|slot| (offset, slot))
+                .ok_or_else(|| {
+                    CompileError::Input(
+                        "projection placement lies outside its block pattern".into(),
+                    )
+                })
+        })
+        .collect()
 }
