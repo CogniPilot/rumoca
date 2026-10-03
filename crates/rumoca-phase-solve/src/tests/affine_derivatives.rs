@@ -579,20 +579,15 @@ fn affine_state_equation_preserves_its_runtime_parameter_coefficient() {
     );
 }
 
+/// A fixed zero coefficient leaves `der(x)` read by no equation, so `x` is
+/// not a state (SPEC_0040 STRUCT-T04): the residual `0*der(x) - x` determines
+/// `x` as an algebraic, and no derivative isolator is issued.
 #[test]
-fn zero_affine_derivative_coefficient_fails_before_runtime() {
+fn zero_affine_derivative_coefficient_declares_the_state_algebraic() {
     let source = TestSource::new("parameter Real p=0; Real x; p*der(x)-x=0;");
-    let state_span = source.at(20, 26).span();
     let model = scaled_state_model(source, 0.0);
 
-    let error = lower_solve_problem(&model).unwrap_err();
-    assert!(
-        matches!(
-            &error,
-            LowerError::Structural { reason, span }
-                if reason == "structurally singular system: 0 matched out of 1 equations and 1 unknowns"
-                    && *span == Some(state_span)
-        ),
-        "a fixed zero coefficient cannot match the derivative: {error:?}"
-    );
+    let solve = lower_solve_problem(&model).expect("the zero-coefficient system lowers");
+    assert_eq!(solve.solve_layout.state_scalar_count(), 0);
+    assert_eq!(solve.solve_layout.algebraic_scalar_count(), 1);
 }

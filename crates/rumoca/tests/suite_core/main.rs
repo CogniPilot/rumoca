@@ -150,6 +150,7 @@ mod index_reduction_contact;
 mod index_reduction_derivative_chain;
 mod index_reduction_event_guards;
 mod index_reduction_geometry;
+mod index_reduction_inert_states;
 mod index_reduction_manifold;
 mod index_reduction_parameter_branch;
 mod indexed_function_constraint;

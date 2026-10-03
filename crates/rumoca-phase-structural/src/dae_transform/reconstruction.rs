@@ -13,6 +13,8 @@ mod alias_quotient;
 pub(super) use alias_quotient::rebuild_alias_quotient;
 mod constant_values;
 pub(super) use constant_values::rebuild_literal_expressions;
+mod inert_states;
+pub(super) use inert_states::rebuild_inert_states;
 mod evaluable_parameters;
 pub(super) use evaluable_parameters::rebuild_folded_parameters;
 mod inline_calls;
@@ -384,6 +386,8 @@ struct RebuildRequest<'a> {
     folded_parameters: &'a [Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
     inline_calls: &'a [bool],
     literal_expressions: &'a [Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
+    /// STRUCT-T04: states declared algebraic whose derivative reads rebuild as zero.
+    inert_states: &'a [u32],
     source_functions_only: bool,
 }
 
@@ -405,9 +409,13 @@ impl RebuildRequest<'_> {
             self.candidate
                 .map(|candidate| candidate.state)
                 .into_iter()
+                .chain(self.inert_states.iter().copied())
                 .collect()
         };
         let mut variables = reserve_variables(source, target, types, &demoted, self.promoted)?;
+        for &state in self.inert_states {
+            variables[state as usize].inert_derivative = true;
+        }
         super::derivative_aliases::reserve_aliases(
             source,
             target,

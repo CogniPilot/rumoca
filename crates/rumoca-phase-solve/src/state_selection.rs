@@ -13,9 +13,9 @@ use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{
     AliasQuotientReport, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
     FormalStateCoordinate, PreparedDae, ReducedSelectionChart, StateSelection, StructuralError,
-    construct_formal_derivatives, fold_constant_values, fold_evaluable_parameters,
-    formal_alias_quotient_report, inline_annotated_calls, inline_formal_calls, prepare_for_solve,
-    quotient_aliases, quotient_formal_aliases,
+    construct_formal_derivatives, demote_inert_states, fold_constant_values,
+    fold_evaluable_parameters, formal_alias_quotient_report, inline_annotated_calls,
+    inline_formal_calls, prepare_for_solve, quotient_aliases, quotient_formal_aliases,
 };
 
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
@@ -211,8 +211,13 @@ fn prepare_source<'source>(
         // independent basis for exactly those coordinates, so route a singular
         // system through it before surfacing the reducer's failure. Nothing that
         // the reducer already accepts changes: this branch is reached only when
-        // it fails.
+        // it fails. A state derivative no equation reads (STRUCT-T04) is never
+        // matched, so such a system is always singular here; it is prepared
+        // again with those states declared algebraic before the formal path.
         Err(error) if matches!(error, StructuralError::Singular { .. }) => {
+            if let Some(demoted) = demote_inert_states(model)? {
+                return prepare_quotient(demoted, overrides);
+            }
             recover_singular_via_formal(model, overrides)?.ok_or(error)
         }
         Err(error) => Err(error),

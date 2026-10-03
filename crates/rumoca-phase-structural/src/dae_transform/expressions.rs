@@ -906,14 +906,20 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         self.target.at(provenance).coordinate(coordinate)
     }
 
-    /// Read a STRUCT-T09 derivative alias, a STRUCT-T10(a) folded parameter
-    /// as its value, or an eliminated STRUCT-T02 alias member through its
-    /// class representative, keeping the source occurrence's provenance.
+    /// Read a STRUCT-T04 inert derivative as zero, a STRUCT-T09 derivative
+    /// alias, a STRUCT-T10(a) folded parameter as its value, or an eliminated
+    /// STRUCT-T02 alias member through its class representative, keeping the
+    /// source occurrence's provenance.
     fn rebuild_coordinate_alias(
         &mut self,
         coordinate: dae::CoordinateView<'source>,
         provenance: dae::DaeProvenance,
     ) -> Option<Result<dae::ExprId<'target>, dae::DaeConstructionError>> {
+        if let dae::CoordinateView::Derivative(state) = coordinate
+            && self.variables[state.index() as usize].inert_derivative
+        {
+            return Some(self.zero_for_demoted_state(state.index(), provenance));
+        }
         if let dae::CoordinateView::Derivative(state) = coordinate
             && let Some(alias) = self.variables[state.index() as usize].derivative_alias
         {
