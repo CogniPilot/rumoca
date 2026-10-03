@@ -168,3 +168,31 @@ fn an_unproven_interface_keeps_its_foreign_body() {
         assert!(!executed, "a foreign body never executes:\n{source}");
     }
 }
+
+/// A parameter binding evaluates the native body at initialization with the
+/// same definitional evaluator the event algorithm uses.
+#[test]
+fn a_parameter_binding_evaluates_the_native_body() {
+    let source = generator_source("pure", 2).replace(
+        "  discrete Real r(",
+        "  parameter Real p = xorshift({1, 1});\n  Real q = p;\n  discrete Real r(",
+    );
+    let compiled = Compiler::new()
+        .model("Draw")
+        .compile_str(&source, "Draw.mo")
+        .unwrap_or_else(|error| panic!("Draw compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.05,
+            ..SimOptions::default()
+        },
+    )
+    .expect("Draw simulates");
+    let column = |name: &str| {
+        let index = result.names.iter().position(|candidate| candidate == name);
+        &result.data[index.unwrap_or_else(|| panic!("{name} is recorded"))]
+    };
+    let drawn = *column("r").last().unwrap();
+    assert_eq!(column("q")[0].to_bits(), drawn.to_bits());
+}

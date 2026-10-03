@@ -669,6 +669,9 @@ impl<'dae> Projection<'_, 'dae> {
             }
             return Ok(());
         }
+        if let Some(binding) = self.native_body(function) {
+            return self.native_body_arguments(binding, &arguments, span);
+        }
         let dependency = FunctionResultDependency {
             function: function.index(),
             output,
@@ -676,6 +679,32 @@ impl<'dae> Projection<'_, 'dae> {
             scalar: scalar_index,
         };
         self.project_function_result(dependency, function, arguments, span)
+    }
+
+    /// A SPEC_0040 DAE-C30 native body reads every scalar of every parameter
+    /// its catalog inputs bind.
+    fn native_body_arguments(
+        &mut self,
+        binding: &dae::NativeBodyBinding,
+        arguments: &[dae::ExprId<'dae>],
+        span: Span,
+    ) -> Result<(), ProjectionError> {
+        for parameter in binding.parameters() {
+            let argument = arguments
+                .get(*parameter as usize)
+                .copied()
+                .ok_or(ProjectionError::FunctionRecursion { span })?;
+            (0..self.scalar_count(argument))
+                .try_for_each(|scalar| self.expression(argument, scalar))?;
+        }
+        Ok(())
+    }
+
+    fn native_body(&self, function: dae::FunctionId<'dae>) -> Option<&'dae dae::NativeBodyBinding> {
+        self.view
+            .function(function)
+            .and_then(|definition| definition.external())
+            .and_then(|external| external.native_body())
     }
 
     fn is_native_table_call(&self, function: dae::FunctionId<'dae>) -> bool {
