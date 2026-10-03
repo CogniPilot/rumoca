@@ -13,7 +13,7 @@
 
 use super::{
     MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeIntegrationError,
-    MeIntegratorBackend, MeStepCandidate, accepted_interval_contains,
+    MeIntegratorBackend, MeStepCandidate, accepted_interval_contains, accepted_step_roundoff,
 };
 
 /// The declared local order of an empty continuous extension.
@@ -87,10 +87,18 @@ impl MeIntegratorBackend for TimeOnlyIntegrator {
         // endpoint. A soft observation is not a bound, but an exact plugin
         // lands on it so the host reads a settled coordinate rather than an
         // interpolated one.
+        // The plugin lands on the observation only when the checked step
+        // keeps it there: beyond roundoff of the current coordinate, so the
+        // step makes progress, and beyond roundoff of the bound, which the host
+        // would otherwise normalize the endpoint onto. Any other observation
+        // lies inside the accepted interval and is sampled from it.
         let mut accepted_time = request.latest_accepted_time();
+        let current = request.current().time();
+        let beyond_roundoff =
+            |from: f64, to: f64| to - from > accepted_step_roundoff(current, to - current);
         if let Some(observation) = request.observation_time()
-            && observation > request.current().time()
-            && observation < accepted_time
+            && beyond_roundoff(current, observation)
+            && beyond_roundoff(observation, accepted_time)
         {
             accepted_time = observation;
         }
@@ -175,6 +183,49 @@ mod tests {
             .expect("checked request");
         let candidate = plugin.advance(&request).expect("one accepted step");
         assert!((candidate.accepted_time() - 0.25).abs() <= f64::EPSILON);
+    }
+
+    #[test]
+    fn an_observation_within_roundoff_of_the_bound_lands_on_the_bound() {
+        // A maximum-duration bound that drifted a few ulps past an output
+        // coordinate: the host normalizes an endpoint there onto the bound, so
+        // the plugin settles on the bound and the next request starts from it.
+        let now = 0.4990000000000004;
+        let mut plugin = TimeOnlyIntegrator::new();
+        plugin
+            .initialize(&empty(now), detached_handle())
+            .expect("initialize");
+        let request = MeAdvanceRequest::new(empty(now), None, 1.0, Some(0.5), Some(0.001))
+            .expect("checked request");
+        let bound = request.latest_accepted_time();
+        assert!(bound > 0.5);
+        let candidate = plugin.advance(&request).expect("one accepted step");
+        let step = super::super::MeStepProposal::bind(request, candidate, 0)
+            .expect("the endpoint is a legal accepted step");
+        assert_eq!(step.accepted().time().to_bits(), bound.to_bits());
+        let next =
+            MeAdvanceRequest::new(empty(bound), None, 1.0, None, None).expect("checked request");
+        assert!(plugin.advance(&next).is_ok());
+    }
+
+    #[test]
+    fn an_observation_within_roundoff_of_the_current_coordinate_is_sampled() {
+        // The coordinate drifted a few ulps short of an output coordinate: a
+        // step onto the observation would make no progress beyond roundoff,
+        // so the plugin lands on the bound and the observation is sampled.
+        let now = 1.4199999999999684;
+        let mut plugin = TimeOnlyIntegrator::new();
+        plugin
+            .initialize(&empty(now), detached_handle())
+            .expect("initialize");
+        let request = MeAdvanceRequest::new(empty(now), None, 2.0, Some(1.42), Some(0.01))
+            .expect("checked request");
+        let bound = request.latest_accepted_time();
+        let candidate = plugin.advance(&request).expect("one accepted step");
+        let step = super::super::MeStepProposal::bind(request, candidate, 0)
+            .expect("the endpoint makes progress");
+        assert_eq!(step.accepted().time().to_bits(), bound.to_bits());
+        assert!(plugin.sample(1.42, &mut []).is_ok());
     }
 
     #[test]
