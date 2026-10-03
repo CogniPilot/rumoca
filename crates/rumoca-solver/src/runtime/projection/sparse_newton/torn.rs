@@ -58,6 +58,18 @@ struct TornSystem {
     capacity: usize,
     offsets: Box<[usize]>,
     values: Box<[f64]>,
+    /// The unscaled source entry each of `values` was conditioned from, and
+    /// the row and variable scales it was conditioned with, so an update
+    /// recomputes only the entries whose inputs changed: an entry is a pure
+    /// function of its source value and its two scales.
+    sources: Box<[f64]>,
+    row_scales: Box<[f64]>,
+    variable_scales: Box<[f64]>,
+    /// Per variable, whether its scale differs from the one held.
+    rescaled: Box<[bool]>,
+    /// Whether `values` holds a conditioning of held inputs at all; until the
+    /// first update every entry is recomputed.
+    conditioned: bool,
     recovery: Box<[f64]>,
     /// For every block coordinate, the recovery columns its row can hold
     /// nonzero, ascending: a tear's own column, and for a causal target the
@@ -116,6 +128,11 @@ impl TornSystem {
             layout: layout.clone(),
             capacity,
             values: vec![0.0; offsets[n]].into_boxed_slice(),
+            sources: vec![0.0; offsets[n]].into_boxed_slice(),
+            row_scales: vec![0.0; n].into_boxed_slice(),
+            variable_scales: vec![0.0; n].into_boxed_slice(),
+            rescaled: vec![true; n].into_boxed_slice(),
+            conditioned: false,
             offsets: offsets.into_boxed_slice(),
             recovery: vec![0.0; n.checked_mul(capacity)?].into_boxed_slice(),
             support: vec![Vec::new(); n],
@@ -157,14 +174,20 @@ impl TornSystem {
     fn update(&mut self, source: &DMatrix<f64>, rows: &[f64], columns: &[f64]) {
         let mut changed = matches!(self.factor, Factor::Unfactored);
         changed |= self.preflight_guards(source);
+        let fresh = !self.conditioned;
+        self.conditioned = true;
+        for ((&scale, held), rescaled) in columns
+            .iter()
+            .zip(self.variable_scales.iter_mut())
+            .zip(self.rescaled.iter_mut())
+        {
+            *rescaled = fresh || scale.to_bits() != held.to_bits();
+            *held = scale;
+        }
         for (row, &row_scale) in rows.iter().enumerate() {
-            let values = &mut self.values[self.offsets[row]..self.offsets[row + 1]];
-            for (value, &column) in values.iter_mut().zip(self.layout.row_columns(row)) {
-                let next = source[(row, column)] * valid_variable_scale(columns[column])
-                    / valid_variable_scale(row_scale);
-                changed |= value.to_bits() != next.to_bits();
-                *value = next;
-            }
+            let row_scaled = fresh || row_scale.to_bits() != self.row_scales[row].to_bits();
+            self.row_scales[row] = row_scale;
+            changed |= self.condition_row(source, (row, row_scale, row_scaled), columns);
         }
         if changed {
             // Revoke the previous factor before changing its recovery relation.
@@ -173,6 +196,33 @@ impl TornSystem {
                 self.factor = Factor::Ready(factor);
             }
         }
+    }
+
+    /// Recondition the entries of `row` whose source value or scales changed;
+    /// whether any conditioned value changed.
+    fn condition_row(
+        &mut self,
+        source: &DMatrix<f64>,
+        (row, row_scale, row_scaled): (usize, f64, bool),
+        columns: &[f64],
+    ) -> bool {
+        let mut changed = false;
+        let entries = self.offsets[row]..self.offsets[row + 1];
+        for ((value, held), &column) in self.values[entries.clone()]
+            .iter_mut()
+            .zip(&mut self.sources[entries])
+            .zip(self.layout.row_columns(row))
+        {
+            let raw = source[(row, column)];
+            if row_scaled || self.rescaled[column] || raw.to_bits() != held.to_bits() {
+                *held = raw;
+                let next =
+                    raw * valid_variable_scale(columns[column]) / valid_variable_scale(row_scale);
+                changed |= value.to_bits() != next.to_bits();
+                *value = next;
+            }
+        }
+        changed
     }
 
     fn row_values(&self, row: usize) -> &[f64] {

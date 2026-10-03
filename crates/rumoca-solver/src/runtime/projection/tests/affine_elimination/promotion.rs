@@ -274,3 +274,29 @@ fn a_reduction_without_promotion_keeps_its_bits() {
 
 const UNPROMOTED_CYCLE_PIN: u64 = 10_087_628_548_452_685_031;
 const UNPROMOTED_SCALED_CYCLE_PIN: u64 = 12_940_558_722_059_867_671;
+
+/// Conditioning only the entries whose source value or scales changed gives
+/// the bits a fresh cache gives, across a sequence of one-entry changes and a
+/// repeated matrix.
+#[test]
+fn incremental_conditioning_matches_a_fresh_cache() {
+    let (model, _) = cycle_with_diagonal(&[]);
+    let steps: [&[(usize, f64)]; 5] = [
+        &[(4, 3.5)],
+        &[(4, 3.5), (9, -0.75)],
+        &[(4, 3.5), (9, -0.75)],
+        &[(9, -0.75), (7, 0.0)],
+        &[],
+    ];
+    for pivots in steps {
+        let (fresh_model, matrix) = cycle_with_diagonal(pivots);
+        let reused = torn_delta(&model, &matrix);
+        let fresh = torn_delta(&fresh_model, &matrix);
+        assert_eq!(reused.1, fresh.1);
+        assert_eq!(
+            reused.0.as_ref().map(fingerprint),
+            fresh.0.as_ref().map(fingerprint),
+            "pivots {pivots:?}"
+        );
+    }
+}
