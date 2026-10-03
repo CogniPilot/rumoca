@@ -961,35 +961,69 @@ fn static_subscript_indices(
     expression: &Expression,
     context: FunctionValidationContext<'_>,
 ) -> Option<Vec<i64>> {
-    if let Expression::Range {
-        start, step, end, ..
-    } = expression
-    {
-        let lower = settled_subscript_integer(start, context)?;
-        let upper = settled_subscript_integer(end, context)?;
-        let stride = match step {
-            Some(step) => settled_subscript_integer(step, context)?,
-            None => 1,
-        };
-        if stride <= 0 {
-            return None;
+    indices_under(expression, context.static_integers, context)
+}
+
+/// The exact one-based indices a vector subscript selects under `integers`.
+///
+/// A range `a:s:b` selects its elements (MLS §10.4.1). A one-iterator
+/// comprehension `{e for k in r}` without a filter selects `e` at each value
+/// of `r` in order (MLS §10.4.2.2); slice normalization writes `x[a:b]` with
+/// non-settled bounds in exactly that form, so the indices are named once the
+/// enclosing loop point settles `a`.
+fn indices_under(
+    expression: &Expression,
+    integers: &HashMap<VarName, i64>,
+    context: FunctionValidationContext<'_>,
+) -> Option<Vec<i64>> {
+    match expression {
+        Expression::Range {
+            start, step, end, ..
+        } => {
+            let lower = settled_subscript_integer(start, integers, context)?;
+            let upper = settled_subscript_integer(end, integers, context)?;
+            let stride = match step {
+                Some(step) => settled_subscript_integer(step, integers, context)?,
+                None => 1,
+            };
+            if stride <= 0 {
+                return None;
+            }
+            let mut indices = Vec::new();
+            let mut index = lower;
+            while index <= upper {
+                indices.push(index);
+                index = index.checked_add(stride)?;
+            }
+            Some(indices)
         }
-        let mut indices = Vec::new();
-        let mut index = lower;
-        while index <= upper {
-            indices.push(index);
-            index = index.checked_add(stride)?;
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter: None,
+            ..
+        } => {
+            let [index] = indices.as_slice() else {
+                return None;
+            };
+            let mut scoped = integers.clone();
+            let mut selected = Vec::new();
+            for value in indices_under(&index.range, integers, context)? {
+                scoped.insert(VarName::new(&index.name), value);
+                selected.push(settled_subscript_integer(expr, &scoped, context)?);
+            }
+            Some(selected)
         }
-        return Some(indices);
+        _ => settled_subscript_integer(expression, integers, context).map(|index| vec![index]),
     }
-    settled_subscript_integer(expression, context).map(|index| vec![index])
 }
 
 fn settled_subscript_integer(
     expression: &Expression,
+    integers: &HashMap<VarName, i64>,
     context: FunctionValidationContext<'_>,
 ) -> Option<i64> {
-    static_shape_integer_expression(expression, context.static_integers, context.shapes)
+    static_shape_integer_expression(expression, integers, context.shapes)
         .ok()
         .flatten()
 }

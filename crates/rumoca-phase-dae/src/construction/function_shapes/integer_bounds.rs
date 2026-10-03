@@ -1,4 +1,13 @@
-//! Conservative Integer interval proofs for compact function domains.
+//! Conservative Integer interval proofs for compact function domains, and
+//! exact range extents whose bounds share an unproven Integer term.
+//!
+//! MLS §10.4.1 defines the elements of `a:b` and `a:s:b` from the bounds, so
+//! the number of elements depends only on the step and on `b - a`. A slice
+//! such as `state[i - 2:i - 1]` inside `for i in 3:2:n loop` has a loop
+//! variable in both bounds: neither bound is a translation-time value, yet
+//! their difference is the exact Integer `1` for every value of `i`, which is
+//! what MLS §12.2 needs from a function-local extent. [`exact_range_distance`]
+//! proves that difference by cancelling the shared terms of two affine forms.
 
 use super::*;
 
@@ -151,4 +160,174 @@ fn integer_assignment_target(component: &rumoca_core::ComponentReference) -> Opt
         return None;
     };
     part.subs.is_empty().then(|| component.to_var_name())
+}
+
+/// `constant + sum(coefficient * term)` over Integer scalars whose values
+/// this scope does not prove. Terms are kept in first-seen order and compared
+/// by their exact Flat name, never hashed.
+struct AffineInteger {
+    constant: i64,
+    terms: Vec<(VarName, i64)>,
+}
+
+impl AffineInteger {
+    fn constant(value: i64) -> Self {
+        Self {
+            constant: value,
+            terms: Vec::new(),
+        }
+    }
+
+    fn term(name: VarName) -> Self {
+        Self {
+            constant: 0,
+            terms: vec![(name, 1)],
+        }
+    }
+
+    fn scaled(mut self, factor: i64) -> Option<Self> {
+        self.constant = self.constant.checked_mul(factor)?;
+        for (_, coefficient) in &mut self.terms {
+            *coefficient = coefficient.checked_mul(factor)?;
+        }
+        Some(self)
+    }
+
+    fn plus(mut self, other: Self) -> Option<Self> {
+        self.constant = self.constant.checked_add(other.constant)?;
+        for (name, coefficient) in other.terms {
+            match self
+                .terms
+                .iter_mut()
+                .find(|(existing, _)| *existing == name)
+            {
+                Some((_, existing)) => *existing = existing.checked_add(coefficient)?,
+                None => self.terms.push((name, coefficient)),
+            }
+        }
+        Some(self)
+    }
+
+    /// The value when every term cancels.
+    fn exact(&self) -> Option<i64> {
+        self.terms
+            .iter()
+            .all(|(_, coefficient)| *coefficient == 0)
+            .then_some(self.constant)
+    }
+}
+
+/// The affine form of an Integer expression: proven values fold to constants
+/// and an unproven unsubscripted Integer reference becomes a term.
+fn affine_integer(expression: &Expression, values: &ShapeEnvironment) -> Option<AffineInteger> {
+    if let Ok(value) = evaluate_shape_integer(expression, values) {
+        return Some(AffineInteger::constant(value));
+    }
+    match expression {
+        Expression::Literal {
+            value: Literal::Integer(value),
+            ..
+        } => Some(AffineInteger::constant(*value)),
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => Some(AffineInteger::term(name.var_name().clone())),
+        Expression::Unary {
+            op: OpUnary::Plus,
+            rhs,
+            ..
+        } => affine_integer(rhs, values),
+        Expression::Unary {
+            op: OpUnary::Minus,
+            rhs,
+            ..
+        } => affine_integer(rhs, values)?.scaled(-1),
+        Expression::Binary { op, lhs, rhs, .. } => match op {
+            OpBinary::Add | OpBinary::AddElem => {
+                affine_integer(lhs, values)?.plus(affine_integer(rhs, values)?)
+            }
+            OpBinary::Sub | OpBinary::SubElem => {
+                affine_integer(lhs, values)?.plus(affine_integer(rhs, values)?.scaled(-1)?)
+            }
+            OpBinary::Mul | OpBinary::MulElem => {
+                let lhs = affine_integer(lhs, values)?;
+                let rhs = affine_integer(rhs, values)?;
+                match (lhs.exact(), rhs.exact()) {
+                    (Some(factor), _) => rhs.scaled(factor),
+                    (None, Some(factor)) => lhs.scaled(factor),
+                    (None, None) => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The exact `end - start` of a range whose bounds differ by a proven
+/// Integer, or `None` when the unproven terms do not cancel.
+pub(super) fn exact_range_distance(
+    start: &Expression,
+    end: &Expression,
+    values: &ShapeEnvironment,
+) -> Option<i64> {
+    let start = affine_integer(start, values)?;
+    let end = affine_integer(end, values)?;
+    end.plus(start.scaled(-1)?)?.exact()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reference(name: &str) -> Expression {
+        Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: Vec::new(),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn integer(value: i64) -> Expression {
+        Expression::Literal {
+            value: Literal::Integer(value),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn shared_unproven_terms_cancel_to_an_exact_distance() {
+        let values = ShapeEnvironment::default();
+        let start = binary(OpBinary::Sub, reference("i"), integer(2));
+        let end = binary(OpBinary::Sub, reference("i"), integer(1));
+        assert_eq!(exact_range_distance(&start, &end, &values), Some(1));
+        let scaled_start = binary(OpBinary::Mul, integer(2), reference("i"));
+        let scaled_end = binary(
+            OpBinary::Add,
+            binary(OpBinary::Mul, reference("i"), integer(2)),
+            integer(3),
+        );
+        assert_eq!(
+            exact_range_distance(&scaled_start, &scaled_end, &values),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn distinct_unproven_terms_leave_the_distance_unproven() {
+        let values = ShapeEnvironment::default();
+        let start = reference("i");
+        let end = binary(OpBinary::Add, reference("j"), integer(1));
+        assert_eq!(exact_range_distance(&start, &end, &values), None);
+        let product = binary(OpBinary::Mul, reference("i"), reference("i"));
+        assert_eq!(exact_range_distance(&start, &product, &values), None);
+    }
 }

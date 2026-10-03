@@ -423,8 +423,8 @@ fn lower_expression_node<'dae>(
         Expression::VarRef {
             name, subscripts, ..
         } => lower_variable_reference(construction, symbols, binders, name, subscripts, provenance),
-        Expression::BuiltinCall { function, args, .. } => {
-            lower_builtin_expression(construction, symbols, binders, *function, args, provenance)
+        Expression::BuiltinCall { .. } => {
+            lower_builtin_node(construction, symbols, binders, expression, provenance)
         }
         Expression::Literal { value, .. } => construction
             .expressions(|expressions| expressions.at(provenance).literal(lower_literal(value))),
@@ -1843,5 +1843,48 @@ pub(super) fn expression_children(expression: &Expression) -> Vec<&Expression> {
         }
         Expression::FieldAccess { base, .. } => vec![base],
         Expression::Literal { .. } | Expression::Empty { .. } => Vec::new(),
+    }
+}
+
+/// MLS §10.3.1: `size(A, i)` is the extent of `A`, never its value. A
+/// function body proves that extent from the declaration (MLS §12.2), so the
+/// query folds to that Integer and reads nothing, which lets an output state
+/// its own extent before the algorithm defines it, as in
+/// `state := f(size(state, 1))`.
+fn lower_builtin_node<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    expression: &Expression,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let Expression::BuiltinCall {
+        function,
+        args: arguments,
+        ..
+    } = expression
+    else {
+        unreachable!("a builtin node lowers only a builtin call");
+    };
+    let function = *function;
+    let proven = (function == BuiltinFunction::Size
+        && arguments.len() == 2
+        && symbols.function_body.is_some())
+    .then(|| symbols.shapes.proven_extent(expression))
+    .flatten();
+    match proven {
+        Some(extent) => construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .literal(dae::DaeLiteral::Integer(extent))
+        }),
+        None => lower_builtin_expression(
+            construction,
+            symbols,
+            binders,
+            function,
+            arguments,
+            provenance,
+        ),
     }
 }
