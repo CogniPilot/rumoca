@@ -210,7 +210,9 @@ static {{ prefix }}Status rmc_event_projection(ModelInstance* m, bool* changed) 
 
 /* discrete_rows.rs apply_discrete_rows_for_pre_snapshot: every row reads the
    pass's snapshot, a row writing an overridden relation memory keeps the
-   located side, and a change is a change of bits. */
+   located side, and a change is a change of bits. A settle pass writes the
+   discrete equations; `memories_only` writes only the condition memories,
+   which advance between passes (advance_condition_memory). */
 static {{ prefix }}Status rmc_discrete_owners(ModelInstance* m, bool* changed, bool memories_only) {
     (void)m; (void)changed; (void)memories_only;
 {%- set nguard = ev.guarded_targets|length %}
@@ -252,7 +254,7 @@ static {{ prefix }}Status rmc_discrete_owners(ModelInstance* m, bool* changed, b
         for (size_t d = 0; d < {{ ndisc }}; ++d) if ((long)targets[d] == memory) values[d] = m->rmc_override_value[k];
     }
     for (size_t d = 0; d < {{ ndisc }}; ++d) {
-        if (memories_only && !memory_row[d]) continue;
+        if (memories_only != memory_row[d]) continue;
         *changed |= memcmp(&m->p[targets[d]], &values[d], sizeof(double)) != 0;
         m->p[targets[d]] = values[d];
     }
@@ -515,6 +517,9 @@ static {{ prefix }}Status rmc_event_iterate(ModelInstance* m, bool canonicalize)
     for (size_t pass = 0; pass < {{ schedule.fixed_point_cap }} && !settled; ++pass) {
         bool changed = pass > 0 && rmc_advance_lanes(m);
         if (rmc_event_pass(m, &changed) != {{ prefix }}OK) { rmc_surface_close(&surface); return {{ prefix }}Error; }
+        /* relation_memory.rs: condition memories advance on the settled pass,
+           before the next pass advances the pre lanes. */
+        if (rmc_discrete_owners(m, &changed, true) != {{ prefix }}OK) { rmc_surface_close(&surface); return {{ prefix }}Error; }
         settled = !changed && rmc_lanes_settled(m);
         if (settled || !rmc_on_surface(m, &surface)) continue;
         bool found = false;

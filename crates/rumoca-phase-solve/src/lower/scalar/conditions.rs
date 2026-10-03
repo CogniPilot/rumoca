@@ -341,6 +341,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let mut compiler = self.guarded_region_compiler(clock, path);
         for target in targets {
             let branch = compiler.dynamic_guarded_branches(target)[ordinal];
+            compiler.sampled_source = target.sampled;
             compiler.store_guarded_assignment_value(branch.2, target.width, target.span)?;
         }
         Ok(compiler.ops)

@@ -235,6 +235,10 @@ impl SolveRuntime {
             let mut changed = if event_iteration == 0 {
                 false
             } else {
+                // MLS §8.6: `initial()` holds for the initialization pass
+                // only; every later pass at this instant is the event
+                // iteration that must follow it.
+                self.set_initial_event_flag(p, false);
                 advance_event_iteration_pre_params(
                     &self.model,
                     iter_pre_y.as_slice(),
@@ -255,6 +259,14 @@ impl SolveRuntime {
                 root_relation_overrides,
                 &mut project_algebraics,
             )?;
+            // Each activation buffer takes its condition on this pass's settled
+            // values under this pass's `pre`, before the `pre` lanes advance.
+            let snapshot = DiscretePreSnapshot {
+                row_filter,
+                root_relation_overrides,
+                event_iteration,
+            };
+            changed |= self.advance_condition_memory(&snapshot, y, p, t)?;
             if !changed && event_iteration_plan_settled(&self.model, y, p)? {
                 return self.eval_event_actions(y, p, event_pre_p, t, row_filter);
             }

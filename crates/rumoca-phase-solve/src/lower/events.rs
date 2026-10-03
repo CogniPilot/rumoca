@@ -1369,6 +1369,11 @@ pub(in crate::lower) struct GuardedTarget<'dae> {
     /// The MLS §16.3 event clock whose tick guards the target: the program is
     /// compiled under it, though it has no periodic schedule.
     pub(in crate::lower) event_clock: Option<dae::ClockId<'dae>>,
+    /// The target is a sampled value of its event clock (MLS §16.5.1
+    /// `sample(u, c)`), so its value reads every continuous-time operand at
+    /// its left limit, the event-entry value, however often the tick's pass
+    /// settles.
+    pub(in crate::lower) sampled: bool,
     pub(in crate::lower) dynamic_branch_count: usize,
     pub(in crate::lower) fallback_branch: Option<usize>,
 }
@@ -1396,8 +1401,9 @@ fn guarded_targets_of<'dae>(
         let expression = view
             .expression(update.value)
             .expect("checked event update expression resolves");
+        let sampled = update.event_clock.is_some() && clocks.variable_is_sampled(update.variable);
         let pre_mode = merge_pre_mode(
-            expression_pre_mode(view, update.value, false),
+            expression_pre_mode(view, update.value, sampled),
             merge_pre_mode(
                 condition_pre_mode(view, update.trigger),
                 condition_pre_mode(view, update.guard),
@@ -1425,6 +1431,7 @@ fn guarded_targets_of<'dae>(
                 pre_mode,
                 span: update.span,
                 event_clock: update.event_clock,
+                sampled,
             },
             branch,
             clock,
@@ -1521,6 +1528,7 @@ fn record_guarded_target<'dae>(
         pre_mode,
         span,
         event_clock,
+        sampled,
     } = target;
     let Some(group) = targets
         .iter_mut()
@@ -1535,6 +1543,7 @@ fn record_guarded_target<'dae>(
             pre_mode,
             clock,
             event_clock,
+            sampled,
             dynamic_branch_count: 0,
             fallback_branch: None,
         });
@@ -1552,7 +1561,7 @@ fn record_guarded_target<'dae>(
             span,
         ));
     }
-    if group.clock != clock || group.event_clock != event_clock {
+    if group.clock != clock || group.event_clock != event_clock || group.sampled != sampled {
         return Err(LowerError::non_computable(
             "one event target has incompatible clock activation owners",
             span,
@@ -1571,6 +1580,7 @@ struct GuardedTargetMetadata<'dae> {
     pre_mode: solve::DiscreteEventPreMode,
     span: Span,
     event_clock: Option<dae::ClockId<'dae>>,
+    sampled: bool,
 }
 
 fn same_guarded_control<'dae>(lhs: &GuardedTarget<'dae>, rhs: &GuardedTarget<'dae>) -> bool {

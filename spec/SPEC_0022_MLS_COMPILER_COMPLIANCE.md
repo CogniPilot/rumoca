@@ -34,12 +34,12 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.13 SIM contracts | 773–787 | Simulation rules (10 contracts) |
 | §4.14 CLK contracts | 788–812 | Clock/synchronous rules (20 contracts) |
 | §4.15 STRM contracts | 813–830 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 831–927 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 928–949 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 950–965 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 966–991 | Category counts and totals |
-| §6. Compiler Phases | 992–1041 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1042–1069 | MLS chapter → contract category mapping |
+| §4.16 SM contracts | 831–929 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 930–951 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 952–967 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 968–993 | Category counts and totals |
+| §6. Compiler Phases | 994–1043 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1044–1071 | MLS chapter → contract category mapping |
 
 ---
 
@@ -526,7 +526,7 @@ Defines state-to-state transitions with priority and timing control.
 | EQN-020 | When single-assign | §8.3.5 | "Two when-equations shall not define the same variable" |
 | EQN-021 | Constants by declaration | §8.6 | "Constants shall be determined by declaration equations" |
 | EQN-022 | Constant fixed | §8.6 | "fixed = false is not allowed for constants" |
-| EQN-023 | When initial activation | §8.6 | "When-clause equations active during initialization only if enabled with initial()" |
+| EQN-023 | When initial activation | §8.6 | "When-clause equations active during initialization only if enabled with initial()". Rumoca: `initial()` is true for the initialization pass only; the event iteration that §8.6 says must follow at the start time ("pre(vi) := vi must be set and an event iteration at the initial time must follow") runs with `initial()` false, so `when {initial(), change(x) and not initial()}` also fires on a `change` the advanced `pre` values cause there (`Modelica.Electrical.Digital.Delay.InertialDelaySensitive`). Tested in `suite_core/when_activation_settled_reads.rs` |
 | EQN-024 | No statements in equations | §8.3 | "No statements allowed in equation sections, including := operator" |
 | EQN-025 | Equation type compatible | §8.3.1 | "Types of left-hand-side and right-hand-side must be compatible" |
 | EQN-026 | Connect evaluable conditions | §8.3.3 | "Indices/conditions of for/if containing connect must be evaluable, not depend on cardinality/rooted" |
@@ -774,7 +774,7 @@ Defines state-to-state transitions with priority and timing control.
 
 | ID | Contract | MLS | Requirement |
 |----|----------|-----|-------------|
-| SIM-001 | Event iteration | §8.6/App B | "Iterate solving equations until z == pre(z) and m == pre(m)". Known difference from OpenModelica, not yet resolved: coupled `Modelica.Blocks.Sources.RadioButtonSource` instances whose `reset` inputs read each other settle to different outputs when two of them fire at the same instant; the equivalent equation form shows the same difference, so it belongs to event iteration rather than to algorithm `when` lowering (DAE-C25). |
+| SIM-001 | Event iteration | §8.6/App B | "Iterate solving equations until z == pre(z) and m == pre(m)". The activation buffer of an unclocked `when c` (§8.3.5.1: `b = c`, `edge(b) = b and not pre(b)`) is a `pre` lane: it holds while one pass settles and advances from the settled pass before the next one, and a changed buffer continues the iteration, so a body active at an event reads the values settled at that event and runs once. Tested in `suite_core/when_activation_settled_reads.rs`. Known difference from OpenModelica, not yet resolved: coupled `Modelica.Blocks.Sources.RadioButtonSource` instances whose `reset` inputs read each other settle to different outputs when two of them fire at the same instant; the equivalent equation form shows the same difference, so it belongs to event iteration rather than to algorithm `when` lowering (DAE-C25). |
 | SIM-002 | Initialization fixed | §8.6 | "Continuous Real with fixed=true adds equation vc = startExpression" |
 | SIM-003 | Parameter fixed default | §8.6 | "For parameters: fixed defaults to true" |
 | SIM-004 | Variable fixed default | §8.6 | "For other variables: fixed defaults to false" |
@@ -886,7 +886,9 @@ areas.
   iterations or events does not tick it again. Its partition's rows are guarded
   updates on the tick, ordered over the whole partition so a row observes the
   tick's values of the rows it reads while `sample(u)` reads `u` at its left
-  limit (§16.5.1), before the tick's own `hold` updates;
+  limit (§16.5.1), before the tick's own `hold` updates; the left limit is the
+  event-entry value, so every pass of the event iteration that settles the
+  tick reads the same sample;
   `previous` reads the value of the previous tick, and `interval()` (§16.10)
   is `startInterval` at the first tick and the time since the previous tick
   afterwards. `shiftSample(u, k)` of an event clock (§16.5.2, resolution 1) is

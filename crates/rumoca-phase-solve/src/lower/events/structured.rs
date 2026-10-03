@@ -33,7 +33,7 @@ pub(super) fn lower_discrete_value_owners<'dae>(
                 ));
             }
             (_, Some(tick)) => {
-                lower_triggered_discrete_value_owner(view, layout, rows, owner, tick)?;
+                lower_triggered_discrete_value_owner(view, layout, clocks, rows, owner, tick)?;
             }
             (dae::DiscreteBranchActivation::Always, None) => {
                 lower_unconditional_discrete_value_owner(view, layout, clocks, rows, owner)?;
@@ -712,6 +712,7 @@ fn lower_conditional_discrete_value_owner<'dae>(
                     pre_mode: branch.pre_mode,
                     span: branch.span,
                     event_clock: None,
+                    sampled: false,
                 },
                 branch.assignment,
                 branch.clock,
@@ -733,6 +734,7 @@ fn lower_conditional_discrete_value_owner<'dae>(
 fn lower_triggered_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
+    clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
     (event_clock, tick): (dae::ClockId<'dae>, dae::ConditionId<'dae>),
@@ -758,8 +760,9 @@ fn lower_triggered_discrete_value_owner<'dae>(
     for (target, (value, provenance)) in owner.targets().iter().zip(branch.values().iter()) {
         let variable = dae::VariableId::from(target);
         let span = provenance.span();
+        let sampled = clocks.variable_is_sampled(variable);
         let pre_mode = merge_pre_mode(
-            expression_pre_mode(view, value, false),
+            expression_pre_mode(view, value, sampled),
             condition_pre_mode(view, tick),
         );
         record_guarded_target(
@@ -774,6 +777,7 @@ fn lower_triggered_discrete_value_owner<'dae>(
                 pre_mode,
                 span,
                 event_clock: Some(event_clock),
+                sampled,
             },
             (tick, tick, value, condition_memory(layout, tick, span)?),
             None,
