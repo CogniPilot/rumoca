@@ -102,6 +102,14 @@ impl BlockJacobian {
         }
     }
 
+    /// The compact layout and its values, when stored compactly.
+    pub(crate) fn compact_storage(&self) -> Option<(&Arc<CompactPatternLayout>, &[f64])> {
+        match &self.storage {
+            Storage::Dense(_) => None,
+            Storage::Compact { layout, values } => Some((layout, values)),
+        }
+    }
+
     /// `self * vector`.
     pub(crate) fn mul_vector(&self, vector: &DVector<f64>) -> DVector<f64> {
         match &self.storage {

@@ -67,6 +67,12 @@ struct TornSystem {
     variable_scales: Box<[f64]>,
     /// Per variable, whether its scale differs from the one held.
     rescaled: Box<[bool]>,
+    /// The compact layout of the block pattern, whose slots are this system's
+    /// entries in order: both list each row's pattern columns ascending.
+    compact: rumoca_ir_solve::CompactPatternLayout,
+    /// The last source layout found equal to `compact`, so a source stored in
+    /// it is read by slot without comparing layouts again.
+    matched: Option<std::sync::Arc<rumoca_ir_solve::CompactPatternLayout>>,
     /// Whether `values` holds a conditioning of held inputs at all; until the
     /// first update every entry is recomputed.
     conditioned: bool,
@@ -132,6 +138,8 @@ impl TornSystem {
             row_scales: vec![0.0; n].into_boxed_slice(),
             variable_scales: vec![0.0; n].into_boxed_slice(),
             rescaled: vec![true; n].into_boxed_slice(),
+            compact: rumoca_ir_solve::CompactPatternLayout::of(layout.pattern()),
+            matched: None,
             conditioned: false,
             offsets: offsets.into_boxed_slice(),
             recovery: vec![0.0; n.checked_mul(capacity)?].into_boxed_slice(),
@@ -184,10 +192,15 @@ impl TornSystem {
             *rescaled = fresh || scale.to_bits() != held.to_bits();
             *held = scale;
         }
+        let compact = source
+            .compact_storage()
+            .filter(|(layout, _)| self.matches(layout))
+            .map(|(_, values)| values);
         for (row, &row_scale) in rows.iter().enumerate() {
             let row_scaled = fresh || row_scale.to_bits() != self.row_scales[row].to_bits();
             self.row_scales[row] = row_scale;
-            changed |= self.condition_row(source, (row, row_scale, row_scaled), columns);
+            let read = SourceRow { source, compact };
+            changed |= self.condition_row(read, (row, row_scale, row_scaled), columns);
         }
         if changed {
             // Revoke the previous factor before changing its recovery relation.
@@ -202,18 +215,19 @@ impl TornSystem {
     /// whether any conditioned value changed.
     fn condition_row(
         &mut self,
-        source: &super::super::BlockJacobian,
+        read: SourceRow<'_>,
         (row, row_scale, row_scaled): (usize, f64, bool),
         columns: &[f64],
     ) -> bool {
         let mut changed = false;
         let entries = self.offsets[row]..self.offsets[row + 1];
-        for ((value, held), &column) in self.values[entries.clone()]
+        for (((value, held), &column), slot) in self.values[entries.clone()]
             .iter_mut()
-            .zip(&mut self.sources[entries])
+            .zip(&mut self.sources[entries.clone()])
             .zip(self.layout.row_columns(row))
+            .zip(entries)
         {
-            let raw = source[(row, column)];
+            let raw = read.value(row, column, slot);
             if row_scaled || self.rescaled[column] || raw.to_bits() != held.to_bits() {
                 *held = raw;
                 let next =
@@ -472,5 +486,40 @@ impl TornSystem {
             .iter()
             .all(|value| value.is_finite())
             .then(|| self.work.clone())
+    }
+}
+
+/// Where a torn update reads source entries: by slot from compact storage in
+/// the system's own layout, else by coordinate.
+#[derive(Clone, Copy)]
+struct SourceRow<'a> {
+    source: &'a super::super::BlockJacobian,
+    compact: Option<&'a [f64]>,
+}
+
+impl SourceRow<'_> {
+    fn value(self, row: usize, column: usize, slot: usize) -> f64 {
+        match self.compact {
+            Some(values) => values[slot],
+            None => self.source[(row, column)],
+        }
+    }
+}
+
+impl TornSystem {
+    /// Whether `layout` is this system's compact layout.
+    fn matches(&mut self, layout: &std::sync::Arc<rumoca_ir_solve::CompactPatternLayout>) -> bool {
+        if self
+            .matched
+            .as_ref()
+            .is_some_and(|matched| std::sync::Arc::ptr_eq(matched, layout))
+        {
+            return true;
+        }
+        let equal = **layout == self.compact;
+        if equal {
+            self.matched = Some(std::sync::Arc::clone(layout));
+        }
+        equal
     }
 }

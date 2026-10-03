@@ -26,13 +26,22 @@ fn torn_delta(
     model: &CyclicAffine,
     matrix: &DMatrix<f64>,
 ) -> (Option<DVector<f64>>, Option<usize>) {
+    torn_delta_from(model, matrix, &BlockJacobian::dense(matrix.clone()))
+}
+
+/// [`torn_delta`] with `jacobian` holding `matrix` in a storage of its own.
+fn torn_delta_from(
+    model: &CyclicAffine,
+    matrix: &DMatrix<f64>,
+    jacobian: &BlockJacobian,
+) -> (Option<DVector<f64>>, Option<usize>) {
     let layout = model.structures.algebraic_projection()[0]
         .affine_elimination()
         .unwrap();
     let residual = -(matrix * expected());
     let delta = scaled_newton_delta_with_tearing(
         ScaledNewtonSystem {
-            jacobian: &BlockJacobian::dense(matrix.clone()),
+            jacobian,
             residual: residual.as_slice(),
             row_scales: &row_scales(),
             variable_scales: &variable_scales(),
@@ -296,6 +305,32 @@ fn incremental_conditioning_matches_a_fresh_cache() {
         assert_eq!(
             reused.0.as_ref().map(fingerprint),
             fresh.0.as_ref().map(fingerprint),
+            "pivots {pivots:?}"
+        );
+    }
+}
+
+/// A source stored in the block pattern's compact layout is read by slot and
+/// gives the bits a dense source gives.
+#[test]
+fn compact_and_dense_sources_condition_the_same_bits() {
+    let steps: [&[(usize, f64)]; 3] = [&[], &[(7, 0.0)], &[(4, 3.5), (9, -0.75)]];
+    let (compact_model, _) = cycle_with_diagonal(&[]);
+    for pivots in steps {
+        let (dense_model, matrix) = cycle_with_diagonal(pivots);
+        let structure = &compact_model.structures.algebraic_projection()[0];
+        let mut compact = BlockJacobian::compact(structure.compact_layout());
+        for row in 0..DIMENSION {
+            structure.pattern().visit_row_columns(row, &mut |column| {
+                compact[(row, column)] = matrix[(row, column)]
+            });
+        }
+        let dense = torn_delta(&dense_model, &matrix);
+        let read = torn_delta_from(&compact_model, &matrix, &compact);
+        assert_eq!(read.1, dense.1);
+        assert_eq!(
+            read.0.as_ref().map(fingerprint),
+            dense.0.as_ref().map(fingerprint),
             "pivots {pivots:?}"
         );
     }
