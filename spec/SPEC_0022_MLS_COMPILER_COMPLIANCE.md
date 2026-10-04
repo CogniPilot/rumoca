@@ -23,23 +23,23 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.2 DECL contracts | 352–393 | Declaration rules (37 contracts) |
 | §4.3 INST contracts | 394–457 | Instantiation rules (59 contracts) |
 | §4.4 EXPR contracts | 458–503 | Expression/operator rules (41 contracts) |
-| §4.5 EQN contracts | 504–548 | Equation rules (40 contracts) |
-| §4.6 ALG contracts | 549–570 | Algorithm rules (18 contracts) |
-| §4.7 CONN contracts | 571–605 | Connection rules (30 contracts) |
-| §4.8 FUNC contracts | 606–653 | Function rules (43 contracts) |
-| §4.9 TYPE contracts | 654–694 | Type/interface rules (36 contracts) |
-| §4.10 ARR contracts | 695–745 | Array rules (46 contracts) |
-| §4.11 PKG contracts | 746–763 | Package/import rules (13 contracts) |
-| §4.12 OPREC contracts | 764–780 | Operator record rules (12 contracts) |
-| §4.13 SIM contracts | 781–795 | Simulation rules (10 contracts) |
-| §4.14 CLK contracts | 796–820 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 821–838 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 839–937 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 938–959 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 960–975 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 976–1001 | Category counts and totals |
-| §6. Compiler Phases | 1002–1051 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1052–1079 | MLS chapter → contract category mapping |
+| §4.5 EQN contracts | 504–549 | Equation rules (41 contracts) |
+| §4.6 ALG contracts | 550–571 | Algorithm rules (18 contracts) |
+| §4.7 CONN contracts | 572–606 | Connection rules (30 contracts) |
+| §4.8 FUNC contracts | 607–654 | Function rules (43 contracts) |
+| §4.9 TYPE contracts | 655–695 | Type/interface rules (36 contracts) |
+| §4.10 ARR contracts | 696–746 | Array rules (46 contracts) |
+| §4.11 PKG contracts | 747–764 | Package/import rules (13 contracts) |
+| §4.12 OPREC contracts | 765–781 | Operator record rules (12 contracts) |
+| §4.13 SIM contracts | 782–796 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 797–821 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 822–839 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 840–938 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 939–960 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 961–976 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 977–1002 | Category counts and totals |
+| §6. Compiler Phases | 1003–1052 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1053–1080 | MLS chapter → contract category mapping |
 
 ---
 

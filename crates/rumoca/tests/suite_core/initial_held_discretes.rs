@@ -45,3 +45,44 @@ fn an_initial_row_reading_a_relation_defined_discrete_reaches_the_fixed_point() 
     assert!((value("x") - 2.0).abs() < 1e-9, "x = {}", value("x"));
     assert!((value("y") - 3.0).abs() < 1e-9, "y = {}", value("y"));
 }
+
+const DISCRETE_OFFSET: &str = "
+model HeldDiscreteOffset
+  Real x(start = 0, fixed = false);
+  Real q;
+  discrete Real d(start = 0, fixed = true);
+equation
+  der(x) = 0;
+  x + q = 5;
+  when time > 0.5 then
+    d = 1;
+  end when;
+initial equation
+  x = d + 2;
+end HeldDiscreteOffset;";
+
+/// `x + q = 5; x = d + 2;` with `d(start = 0, fixed = true)` is solvable at
+/// x = 2, q = 3, which is what OpenModelica returns.
+#[test]
+fn an_initial_row_reading_a_fixed_discrete_is_solved_with_it() {
+    let dae = Compiler::new()
+        .model("HeldDiscreteOffset")
+        .compile_str(DISCRETE_OFFSET, "initial_held_discretes.mo")
+        .unwrap()
+        .dae;
+    let result = simulate_dae_with_diagnostics(
+        &dae,
+        &SimOptions {
+            t_end: 0.25,
+            dt: Some(0.25),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let value = |name: &str| {
+        let index = result.names.iter().position(|n| n == name).unwrap();
+        result.data[index][0]
+    };
+    assert!((value("x") - 2.0).abs() < 1e-9, "x = {}", value("x"));
+    assert!((value("q") - 3.0).abs() < 1e-9, "q = {}", value("q"));
+}
