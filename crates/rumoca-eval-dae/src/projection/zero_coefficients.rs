@@ -9,10 +9,13 @@ use super::*;
 /// dependency structure from one proof.
 #[derive(Default)]
 pub struct ZeroCoefficients<'dae> {
-    values: HashMap<(dae::ExprId<'dae>, usize), bool>,
+    values: HashMap<(dae::ExprId<'dae>, usize, Reach), bool>,
     /// The literal each declaration's own continuous owner binds it to, by
     /// declaration ordinal, computed on first use.
     bindings: Option<Vec<Option<dae::ExprId<'dae>>>>,
+    /// The expression each declaration's own continuous owner equates it to,
+    /// by declaration ordinal, computed on first use.
+    owners: Option<Vec<Option<dae::ExprId<'dae>>>>,
 }
 
 impl<'dae> ZeroCoefficients<'dae> {
@@ -42,7 +45,13 @@ impl<'dae> ZeroCoefficients<'dae> {
         let node = view.expression(factor).unwrap();
         node.value_type().scalar_type() == dae::ScalarType::Real
             && removable_factor(view, factor)
-            && self.prove(view, coefficient, scalar, &mut Vec::new())
+            && self.prove(
+                view,
+                coefficient,
+                scalar,
+                Reach::Coefficient,
+                &mut Vec::new(),
+            )
     }
 
     fn prove(
@@ -50,18 +59,19 @@ impl<'dae> ZeroCoefficients<'dae> {
         view: dae::DaeView<'dae>,
         expression: dae::ExprId<'dae>,
         scalar: usize,
+        reach: Reach,
         active: &mut Vec<dae::ExprId<'dae>>,
     ) -> bool {
-        if let Some(&zero) = self.values.get(&(expression, scalar)) {
+        if let Some(&zero) = self.values.get(&(expression, scalar, reach)) {
             return zero;
         }
         if active.contains(&expression) {
             return false;
         }
         active.push(expression);
-        let zero = self.prove_operation(view, expression, scalar, active);
+        let zero = self.prove_operation(view, expression, scalar, reach, active);
         active.pop();
-        self.values.insert((expression, scalar), zero);
+        self.values.insert((expression, scalar, reach), zero);
         zero
     }
 
@@ -70,6 +80,7 @@ impl<'dae> ZeroCoefficients<'dae> {
         view: dae::DaeView<'dae>,
         expression: dae::ExprId<'dae>,
         scalar: usize,
+        reach: Reach,
         active: &mut Vec<dae::ExprId<'dae>>,
     ) -> bool {
         let node = view.expression(expression).unwrap();
@@ -83,20 +94,52 @@ impl<'dae> ZeroCoefficients<'dae> {
                 // parameter arrays, EF033), so this reduction is exact.
                 !variable.is_tunable()
                     && variable.fixed_uniform() != Some(false)
-                    && variable
-                        .binding()
-                        .is_some_and(|binding| self.prove(view, binding, scalar, active))
+                    && variable.binding().is_some_and(|binding| {
+                        self.prove(view, binding, scalar, Reach::Coefficient, active)
+                    })
             }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(variable)) => self
-                .literal_binding(view, dae::VariableId::from(variable).index() as usize)
-                .is_some_and(|value| self.prove(view, value, scalar, active)),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(variable)) => {
+                let variable = dae::VariableId::from(variable).index() as usize;
+                self.literal_binding(view, variable)
+                    .is_some_and(|value| self.prove(view, value, scalar, reach, active))
+                    || self.owner_binding(view, variable).is_some_and(|value| {
+                        self.prove(view, value, scalar, Reach::OwnerValue, active)
+                    })
+            }
+            dae::ExpressionOperation::Binary { operator, lhs, rhs }
+                if reach == Reach::OwnerValue && scalar_operands(view, node, lhs, rhs) =>
+            {
+                match operator {
+                    dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply => {
+                        self.prove(view, lhs, 0, reach, active)
+                            || self.prove(view, rhs, 0, reach, active)
+                    }
+                    dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide => {
+                        self.prove(view, lhs, 0, reach, active)
+                    }
+                    dae::BinaryOperator::Add
+                    | dae::BinaryOperator::Subtract
+                    | dae::BinaryOperator::ElementwiseAdd
+                    | dae::BinaryOperator::ElementwiseSubtract => {
+                        self.prove(view, lhs, 0, reach, active)
+                            && self.prove(view, rhs, 0, reach, active)
+                    }
+                    _ => false,
+                }
+            }
+            dae::ExpressionOperation::Builtin {
+                builtin: builtin @ (dae::PureBuiltin::Smooth | dae::PureBuiltin::NoEvent),
+                arguments,
+            } => arguments
+                .get(usize::from(builtin == dae::PureBuiltin::Smooth))
+                .is_some_and(|value| self.prove(view, value, scalar, reach, active)),
             dae::ExpressionOperation::Unary {
                 operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
                 operand,
-            } => self.prove(view, operand, scalar, active),
+            } => self.prove(view, operand, scalar, reach, active),
             dae::ExpressionOperation::Array(elements) => {
                 let (element, scalar) = scalar_selection::array_scalar(view, elements, scalar);
-                self.prove(view, element, scalar, active)
+                self.prove(view, element, scalar, reach, active)
             }
             dae::ExpressionOperation::Index { base, subscripts } => literal_index_scalar(
                 view,
@@ -105,7 +148,7 @@ impl<'dae> ZeroCoefficients<'dae> {
                 node.value_type().dimensions(),
                 scalar,
             )
-            .is_some_and(|scalar| self.prove(view, base, scalar, active)),
+            .is_some_and(|scalar| self.prove(view, base, scalar, reach, active)),
             dae::ExpressionOperation::Builtin {
                 builtin: dae::PureBuiltin::Transpose,
                 arguments,
@@ -114,7 +157,7 @@ impl<'dae> ZeroCoefficients<'dae> {
                     return false;
                 };
                 transposed_scalar(view, matrix, scalar)
-                    .is_some_and(|scalar| self.prove(view, matrix, scalar, active))
+                    .is_some_and(|scalar| self.prove(view, matrix, scalar, reach, active))
             }
             dae::ExpressionOperation::Builtin {
                 builtin: builtin @ (dae::PureBuiltin::PromotedCat1 | dae::PureBuiltin::PromotedCat2),
@@ -127,7 +170,7 @@ impl<'dae> ZeroCoefficients<'dae> {
                     node.value_type().dimensions(),
                     scalar,
                 );
-                self.prove(view, element, scalar, active)
+                self.prove(view, element, scalar, reach, active)
             }
             _ => false,
         }
@@ -147,6 +190,52 @@ impl<'dae> ZeroCoefficients<'dae> {
         });
         bindings.get(variable).copied().flatten()
     }
+
+    /// The expression a declaration's own continuous owner equates it to.
+    fn owner_binding(
+        &mut self,
+        view: dae::DaeView<'dae>,
+        variable: usize,
+    ) -> Option<dae::ExprId<'dae>> {
+        let owners = self.owners.get_or_insert_with(|| {
+            literal_bindings::owner_bindings(view)
+                .into_iter()
+                .map(|binding| binding.map(|binding| binding.value))
+                .collect()
+        });
+        owners.get(variable).copied().flatten()
+    }
+}
+
+/// Where a zero proof is used, which decides what it may look through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Reach {
+    /// The coefficient of a product term an executed row omits together with
+    /// the coefficient itself: only structure whose omission removes no
+    /// evaluation effect.
+    Coefficient,
+    /// The expression an algebraic declaration's own owner equates it to. The
+    /// owner row still evaluates that expression in full, and a non-finite
+    /// value fails there, so the declaration is zero wherever it has a value:
+    /// a scalar product with a zero factor, a quotient with a zero numerator,
+    /// and a sum or difference of zero terms (MLS 3.7 §3.3 leaves the other
+    /// operand free to be skipped; here it is evaluated anyway).
+    OwnerValue,
+}
+
+/// Whether a binary node and both operands are scalars, so scalar zero of the
+/// node reads scalar zero of each operand.
+fn scalar_operands<'dae>(
+    view: dae::DaeView<'dae>,
+    node: dae::ExpressionView<'dae>,
+    lhs: dae::ExprId<'dae>,
+    rhs: dae::ExprId<'dae>,
+) -> bool {
+    let scalar = |expression: dae::ExprId<'dae>| {
+        view.expression(expression)
+            .is_some_and(|operand| operand.value_type().dimensions().is_empty())
+    };
+    node.value_type().dimensions().is_empty() && scalar(lhs) && scalar(rhs)
 }
 
 /// A factor whose omission removes no evaluation effect: literals, coordinate

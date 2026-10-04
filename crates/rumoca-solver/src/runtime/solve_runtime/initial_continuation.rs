@@ -1233,10 +1233,14 @@ mod tests {
             value_stages: vec![exact_stage(&[0, 1])],
             ..Default::default()
         };
-        let coverage =
-            InitialContinuationCoverage::certify(&model, &implicit, &scalar_block(vec![]), &refresh)
-                .expect("an exactly assigned homotopy row certifies")
-                .expect("a continuation parameter yields coverage");
+        let coverage = InitialContinuationCoverage::certify(
+            &model,
+            &implicit,
+            &scalar_block(vec![]),
+            &refresh,
+        )
+        .expect("an exactly assigned homotopy row certifies")
+        .expect("a continuation parameter yields coverage");
 
         assert_eq!(coverage.sweep_parameter_index(), None);
         assert!(!coverage.drives_algebraic_refresh());
@@ -1268,10 +1272,14 @@ mod tests {
             ],
             ..Default::default()
         };
-        let coverage =
-            InitialContinuationCoverage::certify(&model, &implicit, &scalar_block(vec![]), &refresh)
-                .expect("a homotopy chain into an iterative block certifies")
-                .expect("a continuation parameter yields coverage");
+        let coverage = InitialContinuationCoverage::certify(
+            &model,
+            &implicit,
+            &scalar_block(vec![]),
+            &refresh,
+        )
+        .expect("a homotopy chain into an iterative block certifies")
+        .expect("a continuation parameter yields coverage");
 
         assert_eq!(coverage.sweep_parameter_index(), Some(1));
         assert!(coverage.drives_algebraic_refresh());

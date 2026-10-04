@@ -19,6 +19,23 @@ pub struct LiteralBinding<'dae> {
 /// The unique literal binding of each declaration, by declaration ordinal. A
 /// declaration two owners bind is left unbound.
 pub fn literal_bindings(view: dae::DaeView<'_>) -> Vec<Option<LiteralBinding<'_>>> {
+    declaration_bindings(view, is_literal_structure)
+}
+
+/// The unique expression each declaration's own continuous owner equates it
+/// to, by declaration ordinal: the owner states `v - e = 0` (or `e - v`) for
+/// the whole declaration `v` and an expression `e` of its shape, so `v = e`
+/// at every instant. A declaration two owners bind is left unbound.
+pub(crate) fn owner_bindings(view: dae::DaeView<'_>) -> Vec<Option<LiteralBinding<'_>>> {
+    declaration_bindings(view, |_, _| true)
+}
+
+type AdmitsValue<'dae> = fn(dae::DaeView<'dae>, dae::ExprId<'dae>) -> bool;
+
+fn declaration_bindings<'dae>(
+    view: dae::DaeView<'dae>,
+    admits: AdmitsValue<'dae>,
+) -> Vec<Option<LiteralBinding<'dae>>> {
     let mut bindings = vec![None; view.variable_count()];
     let mut repeated = vec![false; view.variable_count()];
     for owner in view.continuous_owners() {
@@ -36,7 +53,7 @@ pub fn literal_bindings(view: dae::DaeView<'_>) -> Vec<Option<LiteralBinding<'_>
                 }
             }
         };
-        let Some((variable, binding)) = binding_of(view, root) else {
+        let Some((variable, binding)) = binding_of(view, root, admits) else {
             continue;
         };
         if bindings[variable].is_some() {
@@ -55,6 +72,7 @@ pub fn literal_bindings(view: dae::DaeView<'_>) -> Vec<Option<LiteralBinding<'_>
 fn binding_of<'dae>(
     view: dae::DaeView<'dae>,
     root: dae::ExprId<'dae>,
+    admits: AdmitsValue<'dae>,
 ) -> Option<(usize, LiteralBinding<'dae>)> {
     let mut residual = root;
     while let dae::ExpressionOperation::Unary {
@@ -72,13 +90,14 @@ fn binding_of<'dae>(
     else {
         return None;
     };
-    whole_declaration(view, lhs, rhs).or_else(|| whole_declaration(view, rhs, lhs))
+    whole_declaration(view, lhs, rhs, admits).or_else(|| whole_declaration(view, rhs, lhs, admits))
 }
 
 fn whole_declaration<'dae>(
     view: dae::DaeView<'dae>,
     access: dae::ExprId<'dae>,
     value: dae::ExprId<'dae>,
+    admits: AdmitsValue<'dae>,
 ) -> Option<(usize, LiteralBinding<'dae>)> {
     let node = view.expression(access)?;
     let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(variable)) =
@@ -91,7 +110,7 @@ fn whole_declaration<'dae>(
         && node.binder_domain().is_none()
         && node.value_type().scalar_type() == dae::ScalarType::Real
         && literal.value_type().dimensions() == node.value_type().dimensions()
-        && is_literal_structure(view, value))
+        && admits(view, value))
     .then(|| {
         (
             dae::VariableId::from(variable).index() as usize,

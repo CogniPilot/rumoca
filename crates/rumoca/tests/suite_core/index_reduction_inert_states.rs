@@ -83,6 +83,27 @@ fn derivative_scaled_by_a_zero_factor_is_not_a_state() {
     check(&SOURCE.replace("scaled(k, der(im))", "k*der(im)"));
 }
 
+/// The coefficient is an algebraic whose own equation makes it zero wherever
+/// it has a value: a product with the zero factor `k`, a quotient with such a
+/// numerator, and their sum, around calls that stay calls (the shape of the
+/// junction capacitances of an MSL `NPN` whose transit times and zero-bias
+/// capacitances are zero). The equation still evaluates the calls.
+#[test]
+fn derivative_scaled_by_an_algebraic_zero_through_calls_is_not_a_state() {
+    let source = SOURCE
+        .replace(
+            "  end scaled;\n",
+            "  end scaled;\n  function growth\n    input Real a;\n    output Real y;\n  algorithm\n    y := exp(a);\n  end growth;\n",
+        )
+        .replace("  Real im;\n", "  Real im;\n  Real c;\n")
+        .replace(
+            "equation\n  v = sin",
+            "equation\n  c = smooth(1, k*i/(2 + i*i)*growth(i) + k*growth(i));\n  v = sin",
+        )
+        .replace("scaled(k, der(im))", "c*der(im)");
+    check(&source);
+}
+
 /// An initial equation reads `der(im)`, which no zero-coefficient proof
 /// covers there, so the state is kept and the system stays singular rather
 /// than reading that derivative as zero.
