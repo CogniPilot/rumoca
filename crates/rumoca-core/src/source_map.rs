@@ -1,5 +1,6 @@
 //! Stable source identity, content ownership, and checked source-map replay.
 
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize, Serializer};
 use std::collections::HashMap;
 use std::fmt;
@@ -55,7 +56,7 @@ struct SourceMapStorage {
     /// Reverse lookup from file name to SourceId.
     name_to_id: HashMap<String, SourceId>,
     /// Reverse lookup from SourceId to `files` index.
-    id_to_index: HashMap<SourceId, usize>,
+    id_to_index: FxHashMap<SourceId, usize>,
 }
 
 #[derive(Serialize)]
@@ -71,7 +72,7 @@ struct SourceMapWire {
 
 struct SourceIndexes {
     name_to_id: HashMap<String, SourceId>,
-    id_to_index: HashMap<SourceId, usize>,
+    id_to_index: FxHashMap<SourceId, usize>,
 }
 
 impl<'de> Deserialize<'de> for SourceMap {
@@ -120,7 +121,7 @@ impl fmt::Debug for SourceMap {
 
 fn checked_source_indexes(files: &[(SourceId, String, Arc<str>)]) -> Result<SourceIndexes, String> {
     let mut name_to_id = HashMap::with_capacity(files.len());
-    let mut id_to_index = HashMap::with_capacity(files.len());
+    let mut id_to_index = FxHashMap::with_capacity_and_hasher(files.len(), Default::default());
     for (index, (id, name, _)) in files.iter().enumerate() {
         let derived = source_id_for_name(name);
         if derived != *id {

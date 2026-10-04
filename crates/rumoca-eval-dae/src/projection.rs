@@ -7,7 +7,7 @@ mod zero_coefficients;
 pub use literal_bindings::{LiteralBinding, literal_bindings};
 pub use zero_coefficients::ZeroCoefficients;
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use rumoca_core::{Span, flatten_coordinates, row_major_coordinates};
 use rumoca_ir_dae as dae;
@@ -149,12 +149,12 @@ pub fn for_each_scalar_coordinate_cached<'dae>(
             Some((domain, point)) => vec![(domain, point.to_vec())],
             None => Vec::new(),
         },
-        integer_stack: HashSet::new(),
+        integer_stack: HashSet::default(),
         function_frames: Vec::new(),
-        function_call_active: HashSet::new(),
-        function_fold_active: HashSet::new(),
+        function_call_active: HashSet::default(),
+        function_fold_active: HashSet::default(),
         function_summary_captures: Vec::new(),
-        model_visited: HashSet::new(),
+        model_visited: HashSet::default(),
         frame_memos: Vec::new(),
         cache,
         visit: &mut visit,
@@ -873,7 +873,7 @@ impl<'dae> Projection<'_, 'dae> {
             function: function.index(),
             dependencies: Vec::new(),
             needed_integers: Vec::new(),
-            visited: HashSet::new(),
+            visited: HashSet::default(),
         });
         self.push_frame(FunctionFrame::Summary {
             function,

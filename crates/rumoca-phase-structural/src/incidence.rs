@@ -3,7 +3,8 @@
 pub(crate) mod projection;
 pub mod rows;
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::HashSet;
 
 use rumoca_eval_dae::{ScalarCoordinateProjectionCache, for_each_scalar_coordinate_cached};
 use rumoca_ir_dae as dae;
@@ -268,7 +269,7 @@ struct UnknownCatalog<'dae> {
 }
 
 fn build_unknowns<'dae>(view: dae::DaeView<'dae>) -> Result<UnknownCatalog<'dae>, StructuralError> {
-    let mut map = HashMap::new();
+    let mut map = HashMap::default();
     let mut unknowns = Vec::new();
     let mut spans = Vec::new();
     for (_, variable) in view.variables() {

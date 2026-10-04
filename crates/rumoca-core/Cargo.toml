@@ -9,6 +9,7 @@ homepage.workspace = true
 
 [dependencies]
 indexmap = { workspace = true }
+rustc-hash = { workspace = true }
 miette = { workspace = true }
 serde = { workspace = true }
 
