@@ -5,7 +5,7 @@
 //!
 //! # Overview
 //!
-//! The MLS defines 438 contracts across 18 categories. This framework:
+//! The MLS defines 465 contracts across 18 categories. This framework:
 //! - Registers all contracts with metadata
 //! - Provides test infrastructure and macros
 //! - Tracks compliance status

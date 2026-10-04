@@ -59,17 +59,15 @@ fn formal_rotation_equations_preserve_tensors_and_initialization() {
                     vec![0.0; derivative.scalar_count()]
                 );
                 // The zero start of an array coordinate is `zeros(...)`, an Integer
-                // array (MLS 3.7 §10.3.3) the Real coordinate converts.
+                // array (MLS 3.7 §10.3.3) the Real coordinate converts; a scalar
+                // coordinate starts at the Real literal zero.
                 let start = system
                     .view
                     .expression(derivative.start().unwrap())
                     .unwrap()
                     .value_type();
                 assert_eq!(start.dimensions(), derivative.value_type().dimensions());
-                assert!(matches!(
-                    start.scalar_type(),
-                    dae::ScalarType::Real | dae::ScalarType::Integer
-                ));
+                assert_eq!(start.scalar_type(), zero_start_type(start.dimensions()));
             }
         }
     });
@@ -240,4 +238,15 @@ fn algebraic_reads<'dae>(
         true
     });
     reads
+}
+
+/// The scalar type of a formal derivative's zero start: `zeros(...)` of an
+/// array coordinate is an Integer array (MLS 3.7 §10.3.3), and a scalar
+/// coordinate starts at the Real literal zero.
+fn zero_start_type(dimensions: &[u32]) -> dae::ScalarType {
+    if dimensions.is_empty() {
+        dae::ScalarType::Real
+    } else {
+        dae::ScalarType::Integer
+    }
 }
