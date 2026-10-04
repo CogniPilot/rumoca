@@ -1708,6 +1708,19 @@ fn a_cataloged_reader_runs_only_in_a_translation_environment() {
         values: EvalContext::new(),
         resources: crate::translation_reads::ResourceRoots::new(),
     };
+    // Apart from its resource roots, the translation environment reads the
+    // inventories of its evaluation context.
+    let context: &dyn EvalEnvironment = &translation.values;
+    let environment: &dyn EvalEnvironment = &translation;
+    assert_eq!(environment.get_value("x"), context.get_value("x"));
+    assert_eq!(environment.get_enum("x"), context.get_enum("x"));
+    assert!(environment.get_function("f").is_none() && context.get_function("f").is_none());
+    assert_eq!(
+        environment.get_array_dimensions("x"),
+        context.get_array_dimensions("x")
+    );
+    assert!(environment.deferred_parameter("x").is_none());
+    assert!(context.translation_resources().is_none());
     let value = eval_function(
         &func,
         name(),
