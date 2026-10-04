@@ -89,22 +89,30 @@ fn catalog_rows_are_identified_by_language_and_entry_point() {
 
 #[test]
 fn full_path_name_resolves_existing_and_missing_names() {
+    use super::resources::path_name_text;
     let dir = scratch("full-path");
     let roots = ResourceRoots::new();
     let existing = dir.join("present.txt");
     std::fs::write(&existing, "x").expect("file");
+    // Canonicalization yields a verbatim `\\?\D:\...` path on Windows; the
+    // result is its Modelica path name.
     let canonical = std::fs::canonicalize(&existing).expect("canonical path");
     let name = existing.to_string_lossy().into_owned();
+    let expected = path_name_text(&canonical);
+    assert!(
+        !expected.contains('\\') && !expected.starts_with("//?/"),
+        "{expected}"
+    );
     assert_eq!(
         TranslationRead::FullPathName.evaluate(&[string(&name)], &roots),
-        Ok(vec![string(&canonical.to_string_lossy())])
+        Ok(vec![string(&expected)])
     );
     let cwd = std::env::current_dir().expect("current directory");
     assert_eq!(
         TranslationRead::FullPathName.evaluate(&[string("missing/name/")], &roots),
         Ok(vec![string(&format!(
             "{}/",
-            cwd.join("missing/name").to_string_lossy()
+            path_name_text(&cwd.join("missing/name"))
         ))])
     );
 }

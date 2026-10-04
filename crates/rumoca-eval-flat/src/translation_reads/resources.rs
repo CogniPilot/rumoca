@@ -98,6 +98,12 @@ pub(super) fn strip_verbatim_prefix(path: String) -> String {
     }
 }
 
+/// The Modelica path name of a host path: `/` separators and no Windows
+/// verbatim prefix.
+pub(super) fn path_name_text(path: &Path) -> String {
+    strip_verbatim_prefix(path.to_string_lossy().replace('\\', "/"))
+}
+
 /// `ModelicaInternal_fullPathName`: the canonical absolute path of an
 /// existing file or directory, otherwise the name joined to the current
 /// directory unless it is absolute. A trailing separator of the name is kept.
@@ -111,7 +117,7 @@ pub(super) fn full_path_name(path: &Path, name: &str) -> String {
                 .unwrap_or_else(|_| path.to_path_buf())
         }
     });
-    let mut full = strip_verbatim_prefix(full.to_string_lossy().replace('\\', "/"));
+    let mut full = path_name_text(&full);
     if name.ends_with('/') && !full.ends_with('/') {
         full.push('/');
     }
