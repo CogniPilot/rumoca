@@ -394,7 +394,13 @@ algebraic plan; a block Jacobian over chosen initialization rows projects only
 the algebraic blocks those rows read, a cone issued once per initialization
 row from the structural patterns when the runtime is built, so a block outside that set that is singular at the point, such as an
 undetermined enthalpy at a startless zero mass, never refuses it, while a
-singular block inside the set still refuses the derivative), the coupled event Newton from the discrete event
+singular block inside the set still refuses the derivative; the values those
+rows read come from the same cone, reconstructed on the evaluation-local view,
+so a block outside it that is undefined at the seed, such as `h` of `H = m*h`
+at that zero mass before the block projecting `m` has run, never fails their
+evaluation, and the complete residual is read only after every projection
+block has had one pass; the generated C reconstructs the complete view for
+every block and refuses such a seed), the coupled event Newton from the discrete event
 rows' JVPs (scalar rows, runtime assignments, guarded programs, and
 structured maps, lowered as discrete Solve artifacts), and the `--inspect
 jacobian` probe from the state JVP. No path differences a residual. The

@@ -58,3 +58,59 @@ fn a_tank_without_a_mass_start_initializes_from_its_level_and_temperature() {
         );
     }
 }
+
+/// `Modelica.Thermal.FluidHeatFlow.Components.OpenTank`, written flat: the
+/// states `m` and `H` have no start, and the fixed level and temperature are
+/// algebraics read through the settled view. At the seed `m = H = 0` the
+/// enthalpy `h = H/m` is undefined; it lies outside the read cone of the level
+/// row, which projects `m` first, so its evaluation reconstructs only the level
+/// block and never divides by the zero mass.
+const OPEN_TANK: &str = r"
+model OpenTankLevelInit
+  parameter Real rho = 995.6;
+  parameter Real area = 1.0;
+  parameter Real cp = 4177.0;
+  Real m;
+  Real H;
+  Real h;
+  Real level(start = 0.5, fixed = true);
+  Real T(start = 313.15, fixed = true);
+equation
+  m = rho*area*level;
+  der(m) = 0;
+  H = m*h;
+  der(H) = 0;
+  T = h/cp;
+end OpenTankLevelInit;
+";
+
+#[test]
+fn a_block_outside_the_level_rows_cone_is_not_reconstructed_at_the_seed() {
+    let compiled = Compiler::new()
+        .model("OpenTankLevelInit")
+        .compile_str(OPEN_TANK, "OpenTankLevelInit.mo")
+        .expect("the fixture compiles");
+    let options = SimOptions {
+        t_end: 0.1,
+        ..Default::default()
+    };
+    let result = match simulate_dae_with_diagnostics(&compiled.dae, &options) {
+        Ok(result) => result,
+        Err(error) => panic!("the open tank initializes and simulates: {error}"),
+    };
+    for (name, expected) in [
+        ("level", 0.5),
+        ("T", 313.15),
+        ("m", 497.8),
+        ("H", 497.8 * 4177.0 * 313.15),
+    ] {
+        let Some(index) = result.names.iter().position(|column| column == name) else {
+            panic!("the open tank records {name}");
+        };
+        let initial = result.data[index][0];
+        assert!(
+            (initial - expected).abs() <= 1e-9 * expected,
+            "{name} starts at {initial}, expected {expected}"
+        );
+    }
+}

@@ -205,6 +205,7 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         y: &[f64],
         p: &[f64],
         t: f64,
+        rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         // An initialization row observes the simultaneous continuous system at
@@ -215,7 +216,10 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         // the values the continuous equations actually determine.
         let settled = self
             .refreshes_algebraic_reads
-            .then(|| self.settled_initial_coordinates(y, p, t))
+            .then(|| {
+                let blocks = rows.and_then(|rows| self.runtime.settled_blocks_read_by(rows));
+                self.settled_initial_coordinates(y, p, t, blocks.as_deref())
+            })
             .transpose()?;
         let (residual_y, residual_p) = match &settled {
             Some((settled_y, settled_p)) => (settled_y.as_slice(), settled_p.as_slice()),
@@ -368,14 +372,25 @@ impl InitialProjectionModel<'_> {
     /// parameter vector before refreshing algebraics; otherwise an outer
     /// `fixed=false` parameter can move while a nested bound parameter remains
     /// at its declaration seed, making the residual spuriously insensitive.
+    ///
+    /// With `blocks` (positions in the algebraic refresh's simultaneous plan,
+    /// the construction-issued read cone of the rows being evaluated, see
+    /// [`SolveRuntime::settled_blocks_read_by`]), only those blocks are
+    /// reconstructed. The cone is closed over the blocks it reads, so the rows
+    /// see exactly the values the complete view gives them, while a block
+    /// outside it that is undefined at the point (an enthalpy `h` of
+    /// `H = m*h` at a startless zero mass `m`, before the block that projects
+    /// `m` has run) never fails their evaluation.
     fn settled_initial_coordinates(
         &self,
         y: &[f64],
         p: &[f64],
         t: f64,
+        blocks: Option<&[usize]>,
     ) -> Result<(Vec<f64>, Vec<f64>), RuntimeSolveError> {
         let mut settled_y = y.to_vec();
         let mut settled_p = p.to_vec();
+        let subset = blocks.map(|blocks| self.runtime.refresh_block_subset(blocks));
         for pass in 0..self.max_iters {
             let changed = self.runtime.apply_initialization_updates(
                 &mut settled_y,
@@ -384,13 +399,22 @@ impl InitialProjectionModel<'_> {
                 self.tol,
                 self.max_iters,
             )?;
-            self.runtime.refresh_algebraic_and_output_slots(
-                t,
-                &mut settled_y,
-                &settled_p,
-                self.tol,
-                self.max_iters,
-            )?;
+            match &subset {
+                Some((plan, indices)) => self.runtime.refresh_algebraic_block_subset(
+                    (plan, indices),
+                    t,
+                    &mut settled_y,
+                    &settled_p,
+                    (self.tol, self.max_iters),
+                )?,
+                None => self.runtime.refresh_algebraic_and_output_slots(
+                    t,
+                    &mut settled_y,
+                    &settled_p,
+                    self.tol,
+                    self.max_iters,
+                )?,
+            }
             if pass > 0 && !changed {
                 return Ok((settled_y, settled_p));
             }
@@ -431,12 +455,13 @@ impl InitialProjectionModel<'_> {
                 v.len()
             )));
         }
-        let (settled_y, settled_p) = self.settled_initial_coordinates(y, p, t)?;
+        let blocks = rows.and_then(|rows| self.runtime.settled_blocks_read_by(rows));
+        let (settled_y, settled_p) =
+            self.settled_initial_coordinates(y, p, t, blocks.as_deref())?;
         let settle = AlgebraicSettle {
             tol: self.tol,
             max_iters: self.max_iters,
         };
-        let blocks = rows.and_then(|rows| self.runtime.settled_blocks_read_by(rows));
         let seed = self.runtime.settled_initial_tangent(
             (&settled_y, &settled_p, t),
             v,
@@ -539,6 +564,64 @@ impl SolveRuntime {
         Some(blocks)
     }
 
+    /// The blocks at `blocks` (positions in the algebraic refresh's
+    /// simultaneous plan) as a plan of their own, in plan order, with each
+    /// block's index among the continuous structural projection blocks.
+    fn refresh_block_subset(
+        &self,
+        blocks: &[usize],
+    ) -> (solve::AlgebraicProjectionPlan, Vec<usize>) {
+        let refresh = &self.algebraic_refresh;
+        let plan = solve::AlgebraicProjectionPlan {
+            blocks: blocks
+                .iter()
+                .map(|&block| refresh.simultaneous_plan.blocks[block].clone())
+                .collect(),
+        };
+        let indices = blocks
+            .iter()
+            .map(|&block| refresh.simultaneous_block_indices[block])
+            .collect();
+        (plan, indices)
+    }
+
+    /// Reconstruct the coordinates of a subset of the algebraic refresh
+    /// ([`Self::refresh_block_subset`]) in `solver_y`, by projecting its blocks
+    /// in plan order; coordinates outside the subset keep their values.
+    fn refresh_algebraic_block_subset(
+        &self,
+        (plan, block_indices): (&solve::AlgebraicProjectionPlan, &[usize]),
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+        (tol, max_iters): (f64, usize),
+    ) -> Result<(), RuntimeSolveError> {
+        let projection_model = RefreshProjectionModel {
+            runtime: self,
+            seed_linearizations: None,
+            #[cfg(test)]
+            plan,
+            block_indices,
+            plan_validated: false,
+            jacobian_v: ProjectionJacobian::SolverY {
+                block: &self.implicit_projection_jacobian_v,
+                scalar: &self.implicit_projection_scalar_jacobian_v,
+            },
+        };
+        crate::runtime::projection::project_algebraics_with_plan(
+            &projection_model,
+            plan,
+            solver_y,
+            crate::runtime::projection::AlgebraicProjectionArgs {
+                parameters: params,
+                time: t,
+                state_count: self.state_count,
+                tolerance: tol,
+            },
+            max_iters,
+        )
+    }
+
     /// The tangent along `v` (over `[solver-y | parameter]`) of the settled
     /// initialization view at its settled point `(y, p)`.
     ///
@@ -580,19 +663,7 @@ impl SolveRuntime {
             settle,
         };
         let refresh = &self.algebraic_refresh;
-        let subset = blocks.map(|blocks| {
-            let plan = solve::AlgebraicProjectionPlan {
-                blocks: blocks
-                    .iter()
-                    .map(|&block| refresh.simultaneous_plan.blocks[block].clone())
-                    .collect(),
-            };
-            let indices: Vec<usize> = blocks
-                .iter()
-                .map(|&block| refresh.simultaneous_block_indices[block])
-                .collect();
-            (plan, indices)
-        });
+        let subset = blocks.map(|blocks| self.refresh_block_subset(blocks));
         let plan = match &subset {
             Some((plan, indices)) => (plan, indices.as_slice()),
             None => (

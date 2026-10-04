@@ -417,11 +417,16 @@ pub(crate) enum KernelAnswer {
 }
 
 pub(crate) trait AlgebraicProjectionModel: ImplicitProjectionModel {
+    /// The initialization residual at `(y, p, t)`. With `rows`, only those
+    /// entries are exact and the others unspecified: a model evaluating its
+    /// rows on a settled view reconstructs only the algebraic blocks those
+    /// rows read.
     fn eval_initial_residual(
         &self,
         y: &[f64],
         p: &[f64],
         t: f64,
+        rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError>;
 
@@ -1624,10 +1629,11 @@ impl<M: AlgebraicProjectionModel> AlgebraicProjectionModel
         values: &[f64],
         _p: &[f64],
         t: f64,
+        rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let (y, p) = self.split_values(values)?;
-        self.model.eval_initial_residual(y, p, t, out)
+        self.model.eval_initial_residual(y, p, t, rows, out)
     }
 
     fn initial_residual_len(&self) -> usize {

@@ -288,6 +288,7 @@ impl AlgebraicProjectionModel for TinyConstantDivisorInitialModel {
         y: &[f64],
         p: &[f64],
         t: f64,
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_residual(y, p, t, out)

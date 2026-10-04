@@ -261,18 +261,8 @@ pub(super) fn initial_residual_scales<M: AlgebraicProjectionModel>(
                 .map_or(1.0, |index| model_variable_scale(model, index, y[index]))
         })
         .collect::<Vec<_>>();
-    let mut full_residual = vec![0.0; residual_len];
-    model.eval_initial_residual(y, p, t, &mut full_residual)?;
     for (block_index, block) in plan.blocks.iter().enumerate() {
-        let jacobian = initial_block_jacobian(
-            model,
-            y,
-            p,
-            t,
-            &block.rows,
-            &block.y_indices,
-            &full_residual,
-        )?;
+        let jacobian = initial_block_jacobian(model, y, p, t, &block.rows, &block.y_indices)?;
         let structure = model
             .initial_projection_block_structure(block_index)
             .map(solve::JacobianStructure::pattern);

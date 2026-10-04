@@ -260,6 +260,7 @@ mod tests {
             y: &[f64],
             p: &[f64],
             _t: f64,
+            _rows: Option<&[usize]>,
             out: &mut [f64],
         ) -> Result<(), RuntimeSolveError> {
             let lambda = self.accept_lambda(p)?;

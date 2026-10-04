@@ -5,6 +5,7 @@ mod colored_rows;
 mod column_gradient;
 mod manifold;
 mod order_robustness;
+mod row_scoped_initial_residual;
 mod saturation;
 mod scaled_systems;
 mod sensitivity_roundoff;
@@ -702,6 +703,7 @@ impl AlgebraicProjectionModel for BlockProjectionModel {
         y: &[f64],
         p: &[f64],
         t: f64,
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_residual(y, p, t, out)
@@ -779,6 +781,7 @@ impl AlgebraicProjectionModel for InitialCausalAssignmentModel {
         y: &[f64],
         p: &[f64],
         t: f64,
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.initial_residual_calls
@@ -877,6 +880,7 @@ impl AlgebraicProjectionModel for RectInitialProjectionModel {
         y: &[f64],
         p: &[f64],
         t: f64,
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_residual(y, p, t, out)
@@ -950,6 +954,7 @@ impl AlgebraicProjectionModel for TargetedInitialProjectionModel {
         y: &[f64],
         p: &[f64],
         t: f64,
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_residual(y, p, t, out)
@@ -1032,6 +1037,7 @@ impl AlgebraicProjectionModel for CoupledTargetedInitialProjectionModel {
         y: &[f64],
         p: &[f64],
         t: f64,
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_residual(y, p, t, out)
@@ -1419,8 +1425,8 @@ fn initial_singleton_assignment_is_certified_by_complete_residual() {
     assert_eq!(y, vec![5.0]);
     assert_eq!(
         model.initial_residual_calls.get(),
-        2,
-        "the plan is certified against the complete initial residual"
+        1,
+        "the projected plan is certified once against the complete initial residual"
     );
     assert_eq!(model.initial_residual_row_calls.get(), 2);
 }
@@ -1619,6 +1625,7 @@ impl AlgebraicProjectionModel for ScaledResidualProjectionModel {
         y: &[f64],
         p: &[f64],
         t: f64,
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.eval_residual(y, p, t, out)
@@ -1783,6 +1790,7 @@ impl AlgebraicProjectionModel for ParameterInitialProjectionModel {
         _y: &[f64],
         p: &[f64],
         _t: f64,
+        _rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         out[0] = p[0] * p[0] - 4.0;
