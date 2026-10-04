@@ -1,10 +1,14 @@
 //! Operator-record operators on vectors (MLS 3.7 §14.5 with §10.6).
 //!
 //! When no operator function accepts a vector operand directly (as
-//! `Complex.'*'.scalarProduct` accepts two), the operator applies element by
-//! element: `v + w` is `{v[1] + w[1], ...}`, and a scalar factor multiplies or
-//! divides every element. `sum` of a record vector is the chained `'+'` of its
-//! elements, and of an empty vector the record's `'0'` element.
+//! `Complex.'*'.scalarProduct` accepts two), `+`, `-`, and the element-wise
+//! operators apply element by element: `v + w` is `{v[1] + w[1], ...}`, and a
+//! scalar factor multiplies or divides every element. `v * w` of two vectors
+//! is their scalar product (§14.4, §10.6.4): the chained `'+'` of the element
+//! products, or the record's `'0'` element for empty vectors. Any other
+//! operator between two record vectors is left unresolved. `sum` of a record
+//! vector is the chained `'+'` of its elements, and of an empty vector the
+//! record's `'0'` element.
 
 use std::collections::BTreeMap;
 
@@ -146,11 +150,29 @@ impl Resolver<'_, '_, '_> {
             other => other.clone(),
         };
         let pairs = match (left, right) {
-            (OperandType::RecordVector(_), OperandType::RecordVector(_)) => {
+            (OperandType::RecordVector(owner), OperandType::RecordVector(_))
+                if matches!(op, OpBinary::Mul) =>
+            {
+                return self.record_scalar_product(owner, lhs, rhs, span);
+            }
+            (OperandType::RecordVector(_), OperandType::RecordVector(_))
+                if matches!(
+                    op,
+                    OpBinary::Add
+                        | OpBinary::Sub
+                        | OpBinary::AddElem
+                        | OpBinary::SubElem
+                        | OpBinary::MulElem
+                        | OpBinary::DivElem
+                ) =>
+            {
                 let lhs = self.record_elements(lhs, span)?;
                 let rhs = self.record_elements(rhs, span)?;
                 (lhs.len() == rhs.len()).then(|| lhs.into_iter().zip(rhs).collect::<Vec<_>>())?
             }
+            // No other operator between two record vectors is element-wise
+            // (MLS 3.7 §10.6).
+            (OperandType::RecordVector(_), OperandType::RecordVector(_)) => return None,
             (OperandType::RecordVector(_), _)
                 if matches!(scalar_op, OpBinary::Mul | OpBinary::Div) =>
             {
@@ -175,6 +197,45 @@ impl Resolver<'_, '_, '_> {
             kind: rumoca_core::ArrayConstructor::Array,
             span,
         })
+    }
+
+    /// `v * w` of two record vectors of equal length, MLS 3.7 §14.4 with
+    /// §10.6.4: the chained `'+'` of the element products `v[i] * w[i]`, or
+    /// the record's `'0'` element when both are empty.
+    fn record_scalar_product(
+        &mut self,
+        owner: DefId,
+        lhs: &Expression,
+        rhs: &Expression,
+        span: Span,
+    ) -> Option<Expression> {
+        let lhs = self.record_elements(lhs, span)?;
+        let rhs = self.record_elements(rhs, span)?;
+        if lhs.len() != rhs.len() {
+            return None;
+        }
+        let mut products = lhs
+            .into_iter()
+            .zip(rhs)
+            .map(|(lhs, rhs)| self.resolve_binary(&OpBinary::Mul, lhs, rhs, span))
+            .collect::<Vec<_>>()
+            .into_iter();
+        let Some(first) = products.next() else {
+            return self.record_zero(owner, span);
+        };
+        Some(products.fold(first, |total, product| {
+            self.resolve_binary(&OpBinary::Add, total, product, span)
+        }))
+    }
+
+    /// The record's `'0'` element, a call of its argument-free `'0'` operator.
+    fn record_zero(&mut self, owner: DefId, span: Span) -> Option<Expression> {
+        let zero = self
+            .catalog
+            .functions(owner, "'0'")
+            .into_iter()
+            .find(|function| function.required == 0)?;
+        Some(self.call(zero.def_id, Vec::new(), span))
     }
 
     /// The element pairs of an equation between two record vectors of equal
@@ -240,12 +301,7 @@ impl Resolver<'_, '_, '_> {
         };
         let mut elements = self.record_elements(argument, span)?.into_iter();
         let Some(first) = elements.next() else {
-            let zero = self
-                .catalog
-                .functions(owner, "'0'")
-                .into_iter()
-                .find(|function| function.required == 0)?;
-            return Some(self.call(zero.def_id, Vec::new(), span));
+            return self.record_zero(owner, span);
         };
         Some(elements.fold(first, |total, element| {
             self.resolve_binary(&OpBinary::Add, total, element, span)

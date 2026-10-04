@@ -358,3 +358,44 @@ fn an_element_of_a_filled_record_array_is_the_filled_record() {
     let value = final_value(&result, "y");
     assert!((value - 2.0).abs() < 1e-12, "y = {value}");
 }
+
+/// `MODELS` without `'*'.scalarProduct`, so no operator function accepts two
+/// vectors and the operators on record vectors are built by MLS 3.7 §14.4.
+fn without_scalar_product() -> String {
+    let start = MODELS
+        .find("      function scalarProduct")
+        .expect("the fixture declares scalarProduct");
+    let end = MODELS[start..]
+        .find("      end scalarProduct;\n")
+        .map(|offset| start + offset + "      end scalarProduct;\n".len())
+        .expect("scalarProduct ends");
+    format!("{}{}", &MODELS[..start], &MODELS[end..])
+}
+
+/// With no operator function for two vectors, `v * w` is the scalar product
+/// (MLS 3.7 §14.4 with §10.6.4): the chained `'+'` of the element products,
+/// and `'0'` for empty vectors, never an element-wise product.
+#[test]
+fn a_vector_product_without_an_operator_function_is_the_scalar_product() {
+    let source = without_scalar_product().replace(
+        "    C dot = v*w;\n  end Dot;",
+        "    C dot = v*w;\n    C e1[0];\n    C e2[0];\n    C dotEmpty = e1*e2;\n  end Dot;",
+    );
+    let result = simulate_source(&source, "Ops.Dot");
+    assert_complex(&result, "dot", -6.0, 21.0);
+    assert_complex(&result, "dotEmpty", 0.0, 0.0);
+}
+
+/// No operator between two record vectors other than `+`, `-`, the
+/// element-wise operators, and the scalar product is element-wise.
+#[test]
+fn a_vector_quotient_without_an_operator_function_is_refused() {
+    let source = without_scalar_product().replace("    C dot = v*w;\n", "    C dot[2] = v/w;\n");
+    assert!(
+        Compiler::new()
+            .model("Ops.Dot")
+            .compile_str(&source, "Ops.mo")
+            .is_err(),
+        "v / w of two record vectors has no meaning"
+    );
+}
