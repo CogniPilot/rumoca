@@ -1,6 +1,6 @@
 //! Reuse proved expressions within one reconstruction and exact substitution.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use rumoca_ir_dae as dae;
 
