@@ -186,3 +186,18 @@ fn operands_outside_the_interface_are_mismatches() {
     .to_string();
     assert!(message.contains("ModelicaInternal_fullPathName"));
 }
+
+#[test]
+fn verbatim_windows_prefixes_map_back_to_user_path_forms() {
+    use super::resources::strip_verbatim_prefix;
+    assert_eq!(
+        strip_verbatim_prefix("//?/D:/dir/file".into()),
+        "D:/dir/file"
+    );
+    assert_eq!(
+        strip_verbatim_prefix("//?/UNC/host/share/x".into()),
+        "//host/share/x"
+    );
+    assert_eq!(strip_verbatim_prefix("/usr/lib".into()), "/usr/lib");
+    assert_eq!(strip_verbatim_prefix("D:/dir".into()), "D:/dir");
+}

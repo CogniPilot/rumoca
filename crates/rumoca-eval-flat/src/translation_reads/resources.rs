@@ -85,6 +85,19 @@ fn percent_decoded(text: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// Windows canonicalization returns verbatim paths (`\\?\D:\x`, `\\?\UNC\host\x`),
+/// which are not Modelica path names; map them back to the drive and UNC forms
+/// a user would write. Input uses `/` separators.
+pub(super) fn strip_verbatim_prefix(path: String) -> String {
+    if let Some(unc) = path.strip_prefix("//?/UNC/") {
+        format!("//{unc}")
+    } else if let Some(rest) = path.strip_prefix("//?/") {
+        rest.to_string()
+    } else {
+        path
+    }
+}
+
 /// `ModelicaInternal_fullPathName`: the canonical absolute path of an
 /// existing file or directory, otherwise the name joined to the current
 /// directory unless it is absolute. A trailing separator of the name is kept.
@@ -98,7 +111,7 @@ pub(super) fn full_path_name(path: &Path, name: &str) -> String {
                 .unwrap_or_else(|_| path.to_path_buf())
         }
     });
-    let mut full = full.to_string_lossy().replace('\\', "/");
+    let mut full = strip_verbatim_prefix(full.to_string_lossy().replace('\\', "/"));
     if name.ends_with('/') && !full.ends_with('/') {
         full.push('/');
     }

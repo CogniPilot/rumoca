@@ -1730,5 +1730,14 @@ fn a_cataloged_reader_runs_only_in_a_translation_environment() {
         test_span(),
     )
     .expect("the reader runs at translation");
-    assert_eq!(value, Value::String("/".to_string()));
+    // The root resolves to `/` on Unix and to the current drive root (`D:/`) on
+    // Windows, never to a verbatim `//?/` path.
+    let Value::String(root) = value else {
+        panic!("fullPathName yields a string");
+    };
+    if cfg!(windows) {
+        assert!(root.len() == 3 && root.ends_with(":/"), "{root}");
+    } else {
+        assert_eq!(root, "/");
+    }
 }
