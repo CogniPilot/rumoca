@@ -14,6 +14,7 @@ mod galec_call_boundary;
 mod galec_emission_policy;
 mod galec_enumeration_status;
 mod galec_equivalence;
+mod galec_integer_sign;
 mod galec_store_order;
 
 #[cfg(feature = "fmu-packaging")]

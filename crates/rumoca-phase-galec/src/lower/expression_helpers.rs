@@ -697,6 +697,9 @@ pub(super) fn lower_builtin_arguments(
             arguments: vec![rounded],
         }));
     }
+    if let Some(name) = integer_typed_real_builtin(builtin, &arguments) {
+        return integer_of_real_builtin(name, arguments, span);
+    }
     let name = match builtin {
         dae::PureBuiltin::Abs => "absolute",
         dae::PureBuiltin::Sign => "sign",
@@ -775,6 +778,49 @@ pub(super) fn lower_builtin_arguments(
     }))
 }
 
+/// The GALEC Real builtin of an MLS operator typed Integer: MLS 3.7 §3.7.1
+/// types `sign(v)` Integer for either operand type, and `abs(i)` Integer
+/// for an Integer operand, while GALEC `sign` and `absolute` are Real-only
+/// (SPEC_0042 T8).
+fn integer_typed_real_builtin(
+    builtin: dae::PureBuiltin,
+    arguments: &[TypedExpression],
+) -> Option<&'static str> {
+    match builtin {
+        dae::PureBuiltin::Sign => Some("sign"),
+        dae::PureBuiltin::Abs if all_integer(arguments) => Some("absolute"),
+        _ => None,
+    }
+}
+
+/// `integer(name(real(x)))`: the Real builtin over the operand coerced to
+/// Real, converted back. The Real result is an exact integer value, so the
+/// conversion is exact.
+fn integer_of_real_builtin(
+    name: &'static str,
+    arguments: Vec<TypedExpression>,
+    span: Span,
+) -> Result<gast::Expression, GalecTargetError> {
+    let [argument]: [TypedExpression; 1] = arguments.try_into().map_err(|arguments: Vec<_>| {
+        unsupported(
+            "builtin:sign",
+            format!(
+                "checked `{name}` has {} arguments instead of one",
+                arguments.len()
+            ),
+            span,
+        )
+    })?;
+    let real = gast::Expression::Call(gast::FunctionCall {
+        function: with_span(gast::Name::ident(name), span),
+        arguments: vec![coerce(argument, gast::ScalarType::Real, span)?],
+    });
+    Ok(gast::Expression::Call(gast::FunctionCall {
+        function: with_span(gast::Name::ident("integer"), span),
+        arguments: vec![real],
+    }))
+}
+
 pub(super) fn coerce(
     value: TypedExpression,
     expected: gast::ScalarType,
@@ -834,6 +880,64 @@ mod tests {
             .expect("integer min/max lowers to the integer builtin");
             assert_eq!(called_name(&lowered), expected);
         }
+    }
+
+    fn call_arguments(expression: &gast::Expression) -> &[gast::Expression] {
+        match expression {
+            gast::Expression::Call(call) => &call.arguments,
+            other => panic!("builtin lowering produced {other:?} instead of a call"),
+        }
+    }
+
+    /// `sign(v)` is Integer for either operand type, and `abs(i)` is Integer
+    /// for an Integer operand, while GALEC `sign` and `absolute` are
+    /// Real-only: the Real result is converted, the operand coerced.
+    #[test]
+    fn integer_typed_sign_and_abs_convert_the_real_builtin() {
+        let span = Span::DUMMY;
+        for (builtin, operand, inner, coerced) in [
+            (
+                dae::PureBuiltin::Sign,
+                gast::ScalarType::Real,
+                "sign",
+                false,
+            ),
+            (
+                dae::PureBuiltin::Sign,
+                gast::ScalarType::Integer,
+                "sign",
+                true,
+            ),
+            (
+                dae::PureBuiltin::Abs,
+                gast::ScalarType::Integer,
+                "absolute",
+                true,
+            ),
+        ] {
+            let lowered = lower_builtin_arguments(builtin, vec![typed(operand)], span)
+                .expect("sign and abs lower");
+            assert_eq!(called_name(&lowered), "integer", "{builtin:?} {operand:?}");
+            let [real] = call_arguments(&lowered) else {
+                panic!("integer takes one argument");
+            };
+            assert_eq!(called_name(real), inner, "{builtin:?} {operand:?}");
+            let [argument] = call_arguments(real) else {
+                panic!("{inner} takes one argument");
+            };
+            assert_eq!(
+                matches!(argument, gast::Expression::Call(_)),
+                coerced,
+                "{builtin:?} {operand:?}: {argument:?}"
+            );
+        }
+        let real_abs = lower_builtin_arguments(
+            dae::PureBuiltin::Abs,
+            vec![typed(gast::ScalarType::Real)],
+            span,
+        )
+        .expect("real abs lowers");
+        assert_eq!(called_name(&real_abs), "absolute");
     }
 
     #[test]
