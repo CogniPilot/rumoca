@@ -143,6 +143,19 @@ fn level4_text_and_complex_matrices_are_refused() {
     );
 }
 
+/// Extents whose byte size overflows are a malformed header, never an
+/// arithmetic overflow.
+#[test]
+fn level4_overflowing_extents_are_malformed() {
+    let mut bytes = level4(NAME, 0, false, false);
+    bytes[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    bytes[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(read_matrix(&bytes, NAME), Err(MatError::Malformed));
+    let mut bytes = level4(NAME, 0, false, false);
+    bytes[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(read_matrix(&bytes, NAME), Err(MatError::Malformed));
+}
+
 #[test]
 fn level5_integer_typed_data_converts_to_real() {
     let file = level5(&[

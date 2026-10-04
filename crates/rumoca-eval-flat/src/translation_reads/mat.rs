@@ -307,8 +307,13 @@ fn read_level4(mut bytes: &[u8], name: &str) -> Result<MatMatrix, MatError> {
     while !bytes.is_empty() {
         let header = level4_header(bytes)?;
         let name_start = LEVEL4_HEADER_LEN;
+        // Every extent is read from the file, so each offset is checked
+        // arithmetic: a header whose sizes overflow is malformed.
+        let data_start = name_start
+            .checked_add(header.name_len)
+            .ok_or(MatError::Malformed)?;
         let stored_name = bytes
-            .get(name_start..name_start + header.name_len)
+            .get(name_start..data_start)
             .ok_or(MatError::Malformed)?;
         let stored_name = stored_name.split(|byte| *byte == 0).next().unwrap_or(&[]);
         let width = [8, 4, 4, 2, 2, 1][header.precision as usize];
@@ -316,11 +321,14 @@ fn read_level4(mut bytes: &[u8], name: &str) -> Result<MatMatrix, MatError> {
             .rows
             .checked_mul(header.cols)
             .ok_or(MatError::Malformed)?;
-        let data_start = name_start + header.name_len;
-        let data_len = count * width * if header.complex { 2 } else { 1 };
-        let data = bytes
-            .get(data_start..data_start + data_len)
+        let real_len = count.checked_mul(width).ok_or(MatError::Malformed)?;
+        let data_len = real_len
+            .checked_mul(if header.complex { 2 } else { 1 })
             .ok_or(MatError::Malformed)?;
+        let data_end = data_start
+            .checked_add(data_len)
+            .ok_or(MatError::Malformed)?;
+        let data = bytes.get(data_start..data_end).ok_or(MatError::Malformed)?;
         if stored_name == name.as_bytes() {
             if header.text_or_sparse {
                 return Err(MatError::NotNumeric);
@@ -329,7 +337,7 @@ fn read_level4(mut bytes: &[u8], name: &str) -> Result<MatMatrix, MatError> {
                 return Err(MatError::Complex);
             }
             let endian = header.endian;
-            let column_major = data[..count * width]
+            let column_major = data[..real_len]
                 .chunks_exact(width)
                 .map(|chunk| match header.precision {
                     0 => f64::from_le_bytes(endian.array(chunk)),
@@ -346,7 +354,7 @@ fn read_level4(mut bytes: &[u8], name: &str) -> Result<MatMatrix, MatError> {
                 column_major,
             });
         }
-        bytes = &bytes[data_start + data_len..];
+        bytes = &bytes[data_end..];
     }
     Err(MatError::NotFound)
 }
