@@ -44,6 +44,57 @@ export function stickAxes(dx, dy, radius) {
   return { x: x === 0 ? 0 : x, y: y === 0 ? 0 : y };
 }
 
+// Touch sticks are shaped like an RC transmitter so a small thumb travel does not
+// command a large deflection: a rescaled deadzone removes jitter around center
+// and a cubic expo softens the response near center while keeping full range.
+export const TOUCH_DEADZONE = 0.12;
+export const TOUCH_EXPO = 0.7;
+
+const TOUCH_AXIS_SOURCES = {
+  LeftStickX: 0,
+  LeftStickY: 1,
+  RightStickX: 2,
+  RightStickY: 3,
+};
+
+// Deadzone with rescale (the output still reaches +-1) followed by an expo
+// blend `expo * v^3 + (1 - expo) * v`. `expo = 0` keeps the response linear.
+export function shapeStickAxis(value, deadzone = TOUCH_DEADZONE, expo = TOUCH_EXPO) {
+  const v = finite(value);
+  const zone = Math.min(Math.max(finite(deadzone), 0), 0.99);
+  const blend = Math.min(Math.max(finite(expo), 0), 1);
+  const magnitude = Math.abs(v);
+  if (magnitude <= zone) {
+    return 0;
+  }
+  const rescaled = Math.sign(v) * Math.min(1, (magnitude - zone) / (1 - zone));
+  return blend * rescaled ** 3 + (1 - blend) * rescaled;
+}
+
+// Per-axis shaping derived from what the scenario binds each stick axis to.
+// Integrator sources already apply their own `deadband` and a rate, so they get
+// no extra deadzone. A throttle-like axis (`throttle`, gas) stays linear so
+// stick position maps directly to the command; every other set-style axis gets
+// the deadzone and expo. Unbound axes keep only the deadzone.
+export function touchAxisShapes(config) {
+  const shapes = Array.from({ length: 4 }, () => ({ deadzone: TOUCH_DEADZONE, expo: 0 }));
+  const gamepad = config?.input?.gamepad || {};
+  for (const [name, spec] of Object.entries(gamepad.axes || {})) {
+    const index = TOUCH_AXIS_SOURCES[String(spec?.source || name).trim()];
+    if (index !== undefined) {
+      const linear = /throttle|gas/i.test(String(spec?.write || name));
+      shapes[index] = { deadzone: TOUCH_DEADZONE, expo: linear ? 0 : TOUCH_EXPO };
+    }
+  }
+  for (const [name, spec] of Object.entries(gamepad.integrators || {})) {
+    const index = TOUCH_AXIS_SOURCES[String(spec?.source || name).trim()];
+    if (index !== undefined) {
+      shapes[index] = { deadzone: 0, expo: 0 };
+    }
+  }
+  return shapes;
+}
+
 export function createVirtualGamepad() {
   const axes = [0, 0, 0, 0];
   const held = new Array(BUTTON_COUNT).fill(false);
@@ -239,14 +290,20 @@ function suppressDefault(event) {
   event.stopPropagation();
 }
 
-function bindStick(element, knob, side, gamepad) {
+function bindStick(element, knob, side, gamepad, shapes) {
+  const [shapeX, shapeY] = side === 'right' ? [shapes[2], shapes[3]] : [shapes[0], shapes[1]];
   let pointerId = null;
   let center = { x: 0, y: 0 };
   let radius = 1;
 
   const update = (event) => {
     const axes = stickAxes(event.clientX - center.x, event.clientY - center.y, radius);
-    gamepad.setStick(side, axes.x, axes.y);
+    // The knob follows the thumb; the gamepad sees the shaped command.
+    gamepad.setStick(
+      side,
+      shapeStickAxis(axes.x, shapeX.deadzone, shapeX.expo),
+      shapeStickAxis(axes.y, shapeY.deadzone, shapeY.expo),
+    );
     knob.style.transform = `translate(${axes.x * radius}px, ${axes.y * radius}px)`;
   };
   const release = () => {
@@ -348,10 +405,11 @@ export function mountTouchControls({ container, config, gamepad }) {
   const overlay = ownerDocument.createElement('div');
   overlay.className = 'rumoca-touch-controls';
   const bindings = [];
+  const shapes = touchAxisShapes(config);
 
   for (const side of ['left', 'right']) {
     const { stick, knob } = createStick(ownerDocument, side, `${side} thumb stick`);
-    const binding = bindStick(stick, knob, side, gamepad);
+    const binding = bindStick(stick, knob, side, gamepad, shapes);
     listen(stick, binding.handlers, 'addEventListener');
     bindings.push({ element: stick, ...binding });
     overlay.appendChild(stick);
