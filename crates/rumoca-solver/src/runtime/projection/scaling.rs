@@ -171,52 +171,12 @@ pub(super) fn jacobian_row_scales(
     fallback_scales: &[f64],
     structure: Option<&solve::StructuralPattern>,
 ) -> Vec<f64> {
-    if let Some(pattern) = structure.filter(|pattern| {
-        pattern.rows() as usize == jacobian.nrows()
-            && pattern.columns() as usize == jacobian.ncols()
-    }) {
-        return sparse_jacobian_row_scales(jacobian, variable_scales, fallback_scales, pattern);
-    }
     (0..jacobian.nrows())
         .map(|row| {
-            let derivative_scale = (0..jacobian.ncols()).fold(0.0_f64, |scale, column| {
-                let contribution =
-                    jacobian[(row, column)].abs() * valid_variable_scale(variable_scales[column]);
-                if contribution.is_finite() {
-                    scale.max(contribution)
-                } else {
-                    scale
-                }
-            });
-            if derivative_scale > 0.0 {
-                derivative_scale
-            } else {
-                fallback_scales.get(row).copied().unwrap_or(1.0)
-            }
+            let fallback = fallback_scales.get(row).copied().unwrap_or(1.0);
+            jacobian_row_scale(jacobian, row, variable_scales, fallback, structure)
         })
         .collect()
-}
-
-fn sparse_jacobian_row_scales(
-    jacobian: &BlockJacobian,
-    variable_scales: &[f64],
-    fallback_scales: &[f64],
-    pattern: &solve::StructuralPattern,
-) -> Vec<f64> {
-    let mut scales = vec![0.0_f64; jacobian.nrows()];
-    for (row, scale) in scales.iter_mut().enumerate() {
-        pattern.visit_row_columns(row, &mut |column| {
-            let contribution =
-                jacobian[(row, column)].abs() * valid_variable_scale(variable_scales[column]);
-            if contribution.is_finite() {
-                *scale = scale.max(contribution);
-            }
-        });
-        if *scale == 0.0 {
-            *scale = fallback_scales.get(row).copied().unwrap_or(1.0);
-        }
-    }
-    scales
 }
 
 pub(super) fn algebraic_plan_row_scales<M: ImplicitProjectionModel>(
@@ -530,29 +490,34 @@ pub(super) fn jacobian_row_magnitudes(
     jacobian: &BlockJacobian,
     structure: Option<&solve::StructuralPattern>,
 ) -> Vec<f64> {
-    let pattern = structure.filter(|pattern| {
-        pattern.rows() as usize == jacobian.nrows()
-            && pattern.columns() as usize == jacobian.ncols()
-    });
+    let pattern = matching_pattern(jacobian, structure);
     (0..jacobian.nrows())
         .map(|row| {
             let mut magnitude = 0.0_f64;
-            let mut visit = |column: usize| {
-                let value = jacobian[(row, column)].abs();
+            jacobian.visit_row(row, pattern, &mut |_, value| {
+                let value = value.abs();
                 if value.is_finite() {
                     magnitude = magnitude.max(value);
                 }
-            };
-            match pattern {
-                Some(pattern) => pattern.visit_row_columns(row, &mut visit),
-                None => (0..jacobian.ncols()).for_each(visit),
-            }
+            });
             magnitude
         })
         .collect()
 }
 
-/// One row's scale exactly as [`jacobian_row_scales`] forms it.
+/// `structure` when it is shaped like `jacobian`.
+fn matching_pattern<'a>(
+    jacobian: &BlockJacobian,
+    structure: Option<&'a solve::StructuralPattern>,
+) -> Option<&'a solve::StructuralPattern> {
+    structure.filter(|pattern| {
+        pattern.rows() as usize == jacobian.nrows()
+            && pattern.columns() as usize == jacobian.ncols()
+    })
+}
+
+/// One row's scale: its largest finite contribution `|J[row, column]| *
+/// scale(column)`, or `fallback` when none is positive.
 fn jacobian_row_scale(
     jacobian: &BlockJacobian,
     row: usize,
@@ -560,22 +525,17 @@ fn jacobian_row_scale(
     fallback: f64,
     structure: Option<&solve::StructuralPattern>,
 ) -> f64 {
-    let pattern = structure.filter(|pattern| {
-        pattern.rows() as usize == jacobian.nrows()
-            && pattern.columns() as usize == jacobian.ncols()
-    });
     let mut scale = 0.0_f64;
-    let mut visit = |column: usize| {
-        let contribution =
-            jacobian[(row, column)].abs() * valid_variable_scale(variable_scales[column]);
-        if contribution.is_finite() {
-            scale = scale.max(contribution);
-        }
-    };
-    match pattern {
-        Some(pattern) => pattern.visit_row_columns(row, &mut visit),
-        None => (0..jacobian.ncols()).for_each(visit),
-    }
+    jacobian.visit_row(
+        row,
+        matching_pattern(jacobian, structure),
+        &mut |column, value| {
+            let contribution = value.abs() * valid_variable_scale(variable_scales[column]);
+            if contribution.is_finite() {
+                scale = scale.max(contribution);
+            }
+        },
+    );
     if scale > 0.0 { scale } else { fallback }
 }
 

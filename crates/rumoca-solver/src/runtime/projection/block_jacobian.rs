@@ -102,6 +102,54 @@ impl BlockJacobian {
         }
     }
 
+    /// Visit every stored entry of `row` that can be nonzero, as `(column,
+    /// value)`: the compact entries of compact storage, else the columns of
+    /// `structure` (every column without one). An entry not visited is zero.
+    pub(crate) fn visit_row(
+        &self,
+        row: usize,
+        structure: Option<&rumoca_ir_solve::StructuralPattern>,
+        visit: &mut dyn FnMut(usize, f64),
+    ) {
+        match &self.storage {
+            Storage::Compact { layout, values } => {
+                let (slots, columns) = layout.row(row);
+                for (&column, &value) in columns.iter().zip(&values[slots]) {
+                    visit(column, value);
+                }
+            }
+            Storage::Dense(matrix) => match structure {
+                Some(pattern) => {
+                    pattern
+                        .visit_row_columns(row, &mut |column| visit(column, matrix[(row, column)]));
+                }
+                None => (0..matrix.ncols()).for_each(|column| visit(column, matrix[(row, column)])),
+            },
+        }
+    }
+
+    /// Set every entry of `row` in `structure` to `value(column)`. A compact
+    /// matrix stores exactly its pattern's entries, so it writes its own row.
+    pub(crate) fn set_row(
+        &mut self,
+        row: usize,
+        structure: &rumoca_ir_solve::StructuralPattern,
+        value: &mut dyn FnMut(usize) -> f64,
+    ) {
+        match &mut self.storage {
+            Storage::Compact { layout, values } => {
+                let (slots, columns) = layout.row(row);
+                for (slot, &column) in slots.zip(columns) {
+                    values[slot] = value(column);
+                }
+            }
+            Storage::Dense(matrix) => {
+                structure
+                    .visit_row_columns(row, &mut |column| matrix[(row, column)] = value(column));
+            }
+        }
+    }
+
     /// The compact layout and its values, when stored compactly.
     pub(crate) fn compact_storage(&self) -> Option<(&Arc<CompactPatternLayout>, &[f64])> {
         match &self.storage {

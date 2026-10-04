@@ -1259,9 +1259,7 @@ fn fill_reverse_projection_row(jacobian: &mut BlockJacobian, input: ReverseProje
         }
         return;
     };
-    structure.visit_row_columns(row, &mut |column| {
-        jacobian[(row, column)] = gradient[y_indices[column]];
-    });
+    jacobian.set_row(row, structure, &mut |column| gradient[y_indices[column]]);
 }
 
 fn projection_entry_depends(
