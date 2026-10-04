@@ -260,9 +260,12 @@ case is vacuous over empty state. No solver representation enters the common
 type.
 
 The common root locator stops at the first adjacent sampled pair containing any
-domain change, refines every changed indicator against that same host-issued
-tolerance, chooses the least application coordinate, and derives the complete
-simultaneous set there. It then constructs a private `MeRootApplication` from
+domain change and refines the changed indicators together against that same
+host-issued tolerance: one bisection of the bracket, each midpoint evaluation
+deciding every changed indicator and the bracket moving left once any of them
+has entered its new domain, ends in the least dyadic cell holding a crossing,
+the least application coordinate the indicators' separate bisections would
+reach. It derives the complete simultaneous set there. It then constructs a private `MeRootApplication` from
 the checked left/application points and full vectors. Before destroying the
 retained interval, the host samples and materializes every pending nominal and
 event-left observation and the application state. Only then is the uncompleted

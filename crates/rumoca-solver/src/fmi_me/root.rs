@@ -638,27 +638,19 @@ fn refine_bracket<T: RootScanTarget>(
     upper: &ScanSample,
 ) -> Result<MeRootApplication, MeSessionError> {
     let width = policy.state_count();
-    let mut winner: Option<RefinedBracket> = None;
-    for index in 0..lower.indicators.len() {
-        let before = IndicatorDomain::of(lower.indicators[index]);
-        let after = IndicatorDomain::of(upper.indicators[index]);
-        if before == after {
-            continue;
-        }
-        let refined = refine_indicator(target, policy, lower, upper, index, before)?;
-        let earlier = winner
-            .as_ref()
-            .is_none_or(|best| refined.application_time < best.application_time);
-        if earlier {
-            winner = Some(refined);
-        }
-    }
-    let Some(winner) = winner else {
+    let changed = (0..lower.indicators.len())
+        .filter(|&index| {
+            IndicatorDomain::of(lower.indicators[index])
+                != IndicatorDomain::of(upper.indicators[index])
+        })
+        .collect::<Vec<_>>();
+    if changed.is_empty() {
         return Err(MeSessionError::Contract {
             reason: "the scan reported a domain change no indicator refinement could confirm"
                 .to_owned(),
         });
-    };
+    }
+    let winner = refine_earliest(target, policy, lower, upper, &changed)?;
 
     let mut states = try_filled(width, 0.0, "root refinement sample")?;
     let mut indicators = Vec::new();
@@ -696,18 +688,25 @@ fn refine_bracket<T: RootScanTarget>(
     MeRootApplication::new(left, application, left_indicators, application_indicators)
 }
 
-/// Bisect toward the least coordinate in the newly entered domain.
+/// Bisect toward the least coordinate at which any `changed` indicator has
+/// left its domain at `lower`.
+///
+/// Every changed indicator is bisected on the same dyadic subdivision of the
+/// bracket, so each indicator alone would end in the dyadic cell holding its
+/// own crossing, and the least of those cells is the one holding the earliest
+/// crossing. One evaluation decides every changed indicator at once, so that
+/// cell is found by a single bisection whose midpoint moves left whenever any
+/// changed indicator has already entered its new domain.
 ///
 /// Exhausting the host-owned iteration budget without attaining the checked
 /// location tolerance is the typed `RootApplicationUnavailable` failure
 /// SPEC_0044 §6 requires, not a plausible application.
-fn refine_indicator<T: RootScanTarget>(
+fn refine_earliest<T: RootScanTarget>(
     target: &mut T,
     policy: &MeRootSearchPolicy,
     lower: &ScanSample,
     upper: &ScanSample,
-    index: usize,
-    entry_domain: IndicatorDomain,
+    changed: &[usize],
 ) -> Result<RefinedBracket, MeSessionError> {
     let width = policy.state_count();
     let mut low = lower.time;
@@ -736,21 +735,19 @@ fn refine_indicator<T: RootScanTarget>(
         target.sample_states(middle, &mut states)?;
         target.indicators_at(middle, &states, &mut indicators)?;
         require_indicator_width(lower.indicators.len(), &indicators)?;
-        let Some(value) = indicators.get(index).copied() else {
-            return Err(MeSessionError::Contract {
-                reason: format!("event indicator {index} is missing from the refined vector"),
-            });
-        };
-        if IndicatorDomain::of(value) == entry_domain {
-            low = middle;
-        } else {
+        let entered = changed.iter().any(|&index| {
+            IndicatorDomain::of(indicators[index]) != IndicatorDomain::of(lower.indicators[index])
+        });
+        if entered {
             high = middle;
+        } else {
+            low = middle;
         }
     }
     Err(MeSessionError::RootApplicationUnavailable {
         time: high,
         reason: format!(
-            "indicator {index} was not localized to {} within {} \
+            "indicators {changed:?} were not localized to {} within {} \
              refinements; the bracket is still [{low}, {high}]",
             policy.location_tolerance(),
             policy.refinement_iteration_cap
@@ -777,14 +774,23 @@ mod tests {
         MeContinuousPoint::new(time, vec![state], 1).expect("fixture point is checked")
     }
 
-    /// `x(t) = t - 0.25`, one indicator equal to the state.
+    /// `x(t) = t - 0.25`, one indicator `x - offset` per offset (by default
+    /// the state itself).
     struct LinearCrossing {
         indicator_calls: usize,
+        offsets: Vec<f64>,
     }
 
     impl LinearCrossing {
         fn new() -> Self {
-            Self { indicator_calls: 0 }
+            Self::with_offsets(vec![0.0])
+        }
+
+        fn with_offsets(offsets: Vec<f64>) -> Self {
+            Self {
+                indicator_calls: 0,
+                offsets,
+            }
         }
     }
 
@@ -802,7 +808,7 @@ mod tests {
         ) -> Result<(), MeSessionError> {
             self.indicator_calls += 1;
             indicators.clear();
-            indicators.push(states[0]);
+            indicators.extend(self.offsets.iter().map(|offset| states[0] - offset));
             Ok(())
         }
 
@@ -856,6 +862,37 @@ mod tests {
 
         assert!((application.application().time() - 0.25).abs() <= 1.0e-8);
         assert!(target.indicator_calls > 1);
+    }
+
+    #[test]
+    fn simultaneous_changes_share_one_bisection_of_the_earliest_crossing() {
+        let mut alone = LinearCrossing::new();
+        let single = scan(&mut alone, &point(0.0, -0.25), &point(1.0, 0.75), &[-0.25])
+            .expect("the scan succeeds")
+            .expect("a crossing exists inside the interval");
+        // Six indicators cross inside the same scan bracket [0.2, 0.3], the
+        // first one exactly where the single indicator does.
+        let offsets = vec![0.0, 0.01, 0.02, 0.03, 0.04, 0.045];
+        let retained = offsets
+            .iter()
+            .map(|offset| -0.25 - offset)
+            .collect::<Vec<_>>();
+        let mut many = LinearCrossing::with_offsets(offsets);
+        let joint = scan(&mut many, &point(0.0, -0.25), &point(1.0, 0.75), &retained)
+            .expect("the scan succeeds")
+            .expect("a crossing exists inside the interval");
+        assert_eq!(
+            joint.application().time().to_bits(),
+            single.application().time().to_bits()
+        );
+        assert_eq!(
+            joint.left().time().to_bits(),
+            single.left().time().to_bits()
+        );
+        assert_eq!(
+            many.indicator_calls, alone.indicator_calls,
+            "every simultaneous change is decided by the same evaluations"
+        );
     }
 
     #[test]
