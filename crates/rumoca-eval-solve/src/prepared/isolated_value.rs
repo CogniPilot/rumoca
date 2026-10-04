@@ -21,17 +21,17 @@ pub(super) fn eval_isolated_parts<E>(
     divisor: IsolatedDivisor,
     mut read: impl FnMut(Reg) -> Result<f64, E>,
 ) -> Result<f64, E> {
-    let mut sum: Option<f64> = None;
-    for term in terms {
+    // The sum starts from its first term, so a `-0` offset keeps its sign; an
+    // empty offset sum is `+0`, the constant the materialized isolator emits.
+    let mut sum = 0.0;
+    for (index, term) in terms.enumerate() {
         let value = match term {
             IsolatedTerm::Register(register) => read(register)?,
             IsolatedTerm::Negated(register) => -read(register)?,
             IsolatedTerm::Scaled(register, scale) => scale * read(register)?,
         };
-        sum = Some(sum.map_or(value, |sum| sum + value));
+        sum = if index == 0 { value } else { sum + value };
     }
-    // An empty sum is +0, the constant the materialized isolator emits.
-    let sum = sum.unwrap_or(0.0);
     Ok(match divisor {
         IsolatedDivisor::Negate => -sum,
         IsolatedDivisor::Keep => sum,
