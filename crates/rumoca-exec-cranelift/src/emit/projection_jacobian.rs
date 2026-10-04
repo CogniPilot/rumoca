@@ -103,8 +103,9 @@ impl CompiledProjectionJacobian {
         let mut registers = self.jit.regs_scratch.try_borrow_mut().map_err(|_| {
             CompileError::Input("Jacobian register workspace is already in use".into())
         })?;
-        scratch.seed.fill(0.0);
-        with_active_external_tables(external_tables, || {
+        // The seed is all zero between calls: every color sets and clears its
+        // own seed entries, and a failed call clears the whole seed below.
+        let called = with_active_external_tables(external_tables, || {
             let expected = if self.validate {
                 self.evaluate(&mut scratch, &mut registers, y, p, t, external_tables)?;
                 Some(scratch.matrix.clone())
@@ -118,7 +119,11 @@ impl CompiledProjectionJacobian {
                 validate_matrix(matrix, &expected)?;
             }
             Ok::<_, CompileError>(())
-        })?;
+        });
+        if let Err(error) = called {
+            scratch.seed.fill(0.0);
+            return Err(error);
+        }
         out.copy_from_slice(&scratch.matrix);
         Ok(())
     }
