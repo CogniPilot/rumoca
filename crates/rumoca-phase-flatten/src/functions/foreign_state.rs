@@ -23,7 +23,7 @@ use rumoca_core::{
     ComponentRefPart, ComponentReference, DefId, Expression, FallibleExpressionRewriter,
     FallibleStatementRewriter, Literal, Reference, Span, Statement, VarName,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One cell with the declaration that owns it.
 #[derive(Clone, Copy)]
@@ -73,7 +73,7 @@ pub(crate) fn thread_foreign_state(flat: &mut flat::Model) -> Result<(), Flatten
     let owners = cells
         .values()
         .map(|cell| (cell.cell, *cell))
-        .collect::<HashMap<_, _>>();
+        .collect::<BTreeMap<_, _>>();
     let mut created = Vec::new();
     for (name, plan) in &threaded {
         created.push(thread_function(
@@ -308,7 +308,7 @@ fn thread_function(
     function: &rumoca_core::Function,
     plan: &Threaded,
     threaded: &IndexMap<VarName, Threaded>,
-    owners: &HashMap<ForeignStateCell, Cell>,
+    owners: &BTreeMap<ForeignStateCell, Cell>,
 ) -> Result<rumoca_core::Function, FlattenError> {
     let mut specialized = function.clone();
     specialized.name = plan.name.clone();
@@ -349,6 +349,9 @@ fn thread_function(
             .map(|cell| (*cell, owners[cell]))
             .collect(),
         touched: BTreeSet::new(),
+        context: ReachingContext::FunctionBody {
+            declared_pure: function.pure && function.purity_declared,
+        },
     };
     specialized.body = threader.rewrite_statements(&function.body)?;
     Ok(specialized)
@@ -362,9 +365,50 @@ struct Threader<'a> {
     cells: Vec<(ForeignStateCell, Cell)>,
     /// The cells a rewritten statement passed along.
     touched: BTreeSet<ForeignStateCell>,
+    /// Where the statements being rewritten execute.
+    context: ReachingContext,
+}
+
+/// The statement context of a reaching call. Every reaching function reaches
+/// stateful foreign code, so MLS 3.7 §12.3 treats it as impure (applied
+/// recursively, FUNC-032) whatever its written prefix. The specializations
+/// are pure, so the FUNC-022 call-context proof for these calls is made here,
+/// before threading hides it from the DAE's proof.
+#[derive(Clone, Copy)]
+enum ReachingContext {
+    /// A model algorithm section: a call is admitted only in a `when`
+    /// statement, which executes once per event; elsewhere the section runs
+    /// an unspecified number of times.
+    ModelAlgorithm { in_when: bool },
+    /// The body of a reaching function, which may not be declared `pure`.
+    FunctionBody { declared_pure: bool },
 }
 
 impl Threader<'_> {
+    /// Refuse a reaching call where MLS 3.7 §12.3 forbids an impure call or
+    /// where its state accesses run an unspecified number of times.
+    fn admit_call(&self, callee: &Reference, span: Span) -> Result<(), FlattenError> {
+        let refused = match self.context {
+            ReachingContext::ModelAlgorithm { in_when } => (!in_when).then_some(
+                "an algorithm statement outside a `when` statement, which runs an unspecified \
+                 number of times",
+            ),
+            ReachingContext::FunctionBody { declared_pure } => {
+                declared_pure.then_some("a function body declared `pure`")
+            }
+        };
+        match refused {
+            Some(context) => Err(FlattenError::unordered_foreign_state(
+                format!(
+                    "`{callee}` reaches library state, so MLS 3.7 §12.3 treats it as impure, and \
+                     it is called from {context}"
+                ),
+                span,
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// One threaded call statement assigning `receivers` (declared outputs,
     /// in order) and every cell the callee reaches.
     fn threaded_call(
@@ -374,6 +418,7 @@ impl Threader<'_> {
         mut receivers: Vec<Option<ComponentReference>>,
         span: Span,
     ) -> Result<Statement, FlattenError> {
+        self.admit_call(callee, span)?;
         let plan = &self.threaded[callee.var_name()];
         let mut args = args
             .iter()
@@ -442,6 +487,15 @@ impl FallibleStatementRewriter for Threader<'_> {
             } if self.threaded.contains_key(comp.var_name()) => {
                 self.threaded_call(comp, args, outputs.clone(), *span)
             }
+            Statement::When { .. } => {
+                let outer = self.context;
+                if let ReachingContext::ModelAlgorithm { .. } = outer {
+                    self.context = ReachingContext::ModelAlgorithm { in_when: true };
+                }
+                let rewritten = self.walk_statement(statement);
+                self.context = outer;
+                rewritten
+            }
             _ => self.walk_statement(statement),
         }
     }
@@ -452,18 +506,19 @@ impl FallibleStatementRewriter for Threader<'_> {
 fn thread_model(
     flat: &mut flat::Model,
     threaded: &IndexMap<VarName, Threaded>,
-    owners: &HashMap<ForeignStateCell, Cell>,
+    owners: &BTreeMap<ForeignStateCell, Cell>,
 ) -> Result<(), FlattenError> {
     let all_cells = owners
         .iter()
         .map(|(cell, owner)| (*cell, *owner))
         .collect::<Vec<_>>();
-    let mut drawn: HashMap<ForeignStateCell, Span> = HashMap::new();
+    let mut drawn: BTreeMap<ForeignStateCell, Span> = BTreeMap::new();
     for algorithm in &mut flat.algorithms {
         let mut threader = Threader {
             threaded,
             cells: all_cells.clone(),
             touched: BTreeSet::new(),
+            context: ReachingContext::ModelAlgorithm { in_when: false },
         };
         algorithm.statements = threader.rewrite_statements(&algorithm.statements)?;
         for cell in threader.touched {
@@ -499,9 +554,9 @@ fn thread_model(
 fn thread_parameter_bindings(
     flat: &mut flat::Model,
     threaded: &IndexMap<VarName, Threaded>,
-    owners: &HashMap<ForeignStateCell, Cell>,
-) -> Result<HashMap<ForeignStateCell, (Reference, Vec<Expression>)>, FlattenError> {
-    let mut initializers = HashMap::new();
+    owners: &BTreeMap<ForeignStateCell, Cell>,
+) -> Result<BTreeMap<ForeignStateCell, (Reference, Vec<Expression>)>, FlattenError> {
+    let mut initializers = BTreeMap::new();
     for variable in flat.variables.values_mut() {
         let Some(Expression::FunctionCall {
             name,

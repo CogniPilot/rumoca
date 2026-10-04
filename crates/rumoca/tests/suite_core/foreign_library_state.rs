@@ -238,3 +238,53 @@ fn unordered_library_state_accesses_are_refused() {
     let error = refusal(&twice, "TwoInitializers");
     assert!(error.contains("two parameter bindings"), "{error}");
 }
+
+/// A reaching function is treated as impure whatever its written prefix
+/// (MLS 3.7 §12.3, applied recursively), and its specialization is pure, so
+/// the call-context proof is made before threading: a draw outside a `when`
+/// statement, directly or through a wrapper without explicit purity, and a
+/// draw from a body declared `pure` are refused.
+#[test]
+fn impure_call_contexts_are_proven_before_threading() {
+    let wrappers = "  function wrapped\n    input Integer id;\n    output Real y;\n  algorithm\n    y := impureRandom(id);\n  end wrapped;\n  pure function declaredPure\n    input Integer id;\n    output Real y;\n  algorithm\n    y := impureRandom(id);\n  end declaredPure;";
+    let declarations = format!(
+        "{wrappers}\n  parameter Integer id = initialize(5);\n  discrete Real r(start = 0, fixed = true);"
+    );
+    let cases = [
+        (
+            "Direct",
+            "algorithm\n  r := impureRandom(id);",
+            "outside a `when` statement",
+        ),
+        (
+            "InIf",
+            "algorithm\n  if time > 0.5 then\n    r := impureRandom(id);\n  end if;",
+            "outside a `when` statement",
+        ),
+        (
+            "Wrapped",
+            "algorithm\n  r := wrapped(id);",
+            "outside a `when` statement",
+        ),
+        (
+            "DeclaredPure",
+            "algorithm\n  when sample(0, 0.1) then\n    r := declaredPure(id);\n  end when;",
+            "declared `pure`",
+        ),
+    ];
+    for (name, body, expected) in cases {
+        let error = refusal(&model(name, &declarations, body), name);
+        assert!(error.contains("EF036"), "{name}: {error}");
+        assert!(error.contains(expected), "{name}: {error}");
+    }
+    let admitted = model(
+        "WrappedInWhen",
+        &declarations,
+        "algorithm\n  when sample(0, 0.1) then\n    r := wrapped(id);\n  end when;",
+    );
+    let result = simulate(&admitted, "WrappedInWhen", 0.05).expect("a wrapped draw in a when");
+    assert_eq!(
+        after(&result, "r", 0.0).to_bits(),
+        expected_draws(1)[0].to_bits()
+    );
+}
