@@ -23,7 +23,7 @@ fn reviewed_migration() -> ReferenceBoundaryMigration {
     migration.metric.excluded_strict_high_before = 0;
     migration.metric.excluded_non_high_before = 6;
     migration.metric.exclusions_sha256 =
-        "531112e2787706cc6dea5eaa23198c6bc3c0974c14078dc32a075c748a853c57".to_string();
+        "9ce746f26c70521566bb2bb3716b39b89a89fffcbed9ba08513d560504eafad6".to_string();
     migration.evidence_git_commit = "27ee7d3c3c4ff37785d2df91272576dbd39145a4".to_string();
     migration.evidence_run = "package-coverage-integration-v13-full".to_string();
     migration.policy_excluded_before = 51;
