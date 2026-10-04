@@ -145,6 +145,12 @@ pub(super) struct InitializationUnknownSpace<'a, 'dae> {
     /// The declared `nominal` of each `fixed = false` parameter scalar the
     /// projection solves, keyed by P-slot index (MLS §4.8.1).
     parameter_nominals: HashMap<usize, f64>,
+    /// Discrete coordinates (by variable index) whose MLS §8.6 initial value
+    /// is a definition reading only `time`, inputs, given states, parameters
+    /// the projection does not solve, and other such coordinates. The runtime
+    /// applies those definitions before every projection pass, so the
+    /// projection reads them, and their `pre` storage, as known values.
+    settled_discretes: BTreeSet<u32>,
 }
 
 /// Everything the initialization unknown space is assembled from.
@@ -167,13 +173,67 @@ pub(super) fn initialization_unknown_space<'a, 'dae>(
         derivatives,
         given_state_indices,
     } = inputs;
-    Ok(InitializationUnknownSpace {
+    let mut space = InitializationUnknownSpace {
         view,
         ownership,
         derivatives,
         states: state_initial_slots(view, layout)?,
         given_state_indices: given_state_indices.iter().copied().collect(),
         parameter_nominals: parameter_nominals(view, ownership)?,
+        settled_discretes: BTreeSet::new(),
+    };
+    settle_discretes(&mut space);
+    Ok(space)
+}
+
+/// Collect the discrete coordinates whose initial definitions the runtime
+/// settles before the projection runs.
+///
+/// A definition qualifies when its complete read cone, expanded exactly as an
+/// initialization row's is, reaches no projection unknown, no algebraic, and no
+/// discrete coordinate outside the set. The set grows to a fixed point, so a
+/// definition reading another settled coordinate joins it. The settle loop
+/// applies every update row before each projection pass, so such a value is
+/// final when the projection reads it: a known coefficient of the projection,
+/// like an input, rather than a coordinate the projection would have to own.
+fn settle_discretes(space: &mut InitializationUnknownSpace<'_, '_>) {
+    let definitions = space.view.initial_discrete_values().collect::<Vec<_>>();
+    let mut cache = rumoca_eval_dae::ScalarCoordinateProjectionCache::default();
+    loop {
+        let settled = definitions
+            .iter()
+            .filter(|definition| {
+                !space
+                    .settled_discretes
+                    .contains(&definition.target().index())
+                    && reads_only_settled_values(space, definition.value(), &mut cache)
+            })
+            .map(|definition| definition.target().index())
+            .collect::<Vec<_>>();
+        if settled.is_empty() {
+            return;
+        }
+        space.settled_discretes.extend(settled);
+    }
+}
+
+/// Whether every scalar of `value` reads only values known before the
+/// projection: no projection unknown, no algebraic, no unsettled discrete.
+fn reads_only_settled_values<'dae>(
+    space: &InitializationUnknownSpace<'_, 'dae>,
+    value: dae::ExprId<'dae>,
+    cache: &mut rumoca_eval_dae::ScalarCoordinateProjectionCache<'dae>,
+) -> bool {
+    (0..scalar_count(space.view, value)).all(|scalar| {
+        let source = InitialRowIncidence::Residual(ScalarRowSource {
+            expression: value,
+            scalar,
+            domain_point: None,
+        });
+        matches!(
+            row_unknowns(space, &source, cache),
+            RowIncidence::Owned { unknowns, algebraic_reads: false } if unknowns.is_empty()
+        )
     })
 }
 
@@ -644,6 +704,15 @@ impl<'dae> InitialIncidence<'dae> {
             dae::CoordinateView::Algebraic(variable) => {
                 self.visit_algebraic(space, variable, scalar);
             }
+            // A discrete whose initial definition settles before the projection
+            // is a known value of it, and so is its `pre` storage, which the
+            // same definition writes.
+            dae::CoordinateView::DiscreteReal(variable)
+            | dae::CoordinateView::PreDiscreteReal(variable)
+                if space.settled_discretes.contains(&variable.index()) => {}
+            dae::CoordinateView::DiscreteValue(variable)
+            | dae::CoordinateView::PreDiscreteValue(variable)
+                if space.settled_discretes.contains(&variable.index()) => {}
             dae::CoordinateView::DiscreteReal(_)
             | dae::CoordinateView::DiscreteValue(_)
             | dae::CoordinateView::PreDiscreteReal(_)

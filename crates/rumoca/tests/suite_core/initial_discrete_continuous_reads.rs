@@ -52,6 +52,25 @@ equation
 initial equation
   pre(b) = x > 0;
 end ReadsItsOwnValue;
+
+model SettledDiscreteReads
+  parameter Real period = 0.5;
+  discrete Integer count;
+  discrete Real yMin;
+  Real u;
+  Real x;
+initial equation
+  count = integer((time + 1.2) / period);
+  x = u;
+  yMin = u;
+equation
+  u = 1 + count + time;
+  der(x) = u - x;
+  when time > 0.75 then
+    count = pre(count) + 1;
+    yMin = min(pre(yMin), u);
+  end when;
+end SettledDiscreteReads;
 "#;
 
 fn simulate(model: &str, t_end: f64) -> rumoca_sim::SimResult {
@@ -122,4 +141,17 @@ fn initial_pre_definition_that_reads_its_own_value_is_rejected() {
         message.contains("not proven independent of discrete values"),
         "{message}"
     );
+}
+
+/// `count` is defined from `time` and a parameter, so it is settled before the
+/// projection: the state row `x = u` and the discrete Real definition
+/// `yMin = u` read it through `u` as a known value.
+#[test]
+fn initial_rows_read_a_discrete_settled_before_the_projection() {
+    let result = simulate("SettledDiscreteReads", 1.0);
+    assert_eq!(value_at(&result, "count", 0.0), 2.0);
+    assert_eq!(value_at(&result, "x", 0.0), 3.0);
+    assert_eq!(value_at(&result, "yMin", 0.0), 3.0);
+    assert_eq!(value_at(&result, "count", 1.0), 3.0);
+    assert_eq!(value_at(&result, "yMin", 1.0), 3.0);
 }
