@@ -217,6 +217,10 @@ impl SolveRuntime {
         write_clock_activation_params(&self.model, p, t);
         let window = self.event_schedule().relation_surface_window();
         let initial_event = self.initial_event_flag(p);
+        // At the initialization event, pass 0 is the initialization instant
+        // and its actions act on its values; the event iteration that
+        // follows acts on the edges since that instant.
+        let mut action_pre_p = std::borrow::Cow::Borrowed(event_pre_p);
         let mut history = std::collections::VecDeque::with_capacity(window + 1);
         for event_iteration in 0..self.event_schedule().fixed_point_cap() {
             // Appendix B fixes `pre` for one complete equation pass, then
@@ -269,7 +273,14 @@ impl SolveRuntime {
             };
             changed |= self.advance_condition_memory(&snapshot, y, p, t)?;
             if !changed && event_iteration_plan_settled(&self.model, y, p)? {
-                return self.converge_event(y, p, event_pre_p, t, row_filter, initial_event);
+                return self.converge_event(y, p, &action_pre_p, t, row_filter);
+            }
+            if initial_event
+                && event_iteration == 0
+                && let Some(outcome) =
+                    self.close_initialization_instant(y, p, t, row_filter, &mut action_pre_p)?
+            {
+                return Ok(outcome);
             }
             if !on_relation_surface(&mut history, window, y, p, tol) {
                 continue;
@@ -289,7 +300,7 @@ impl SolveRuntime {
             if resumed {
                 history.clear();
             } else {
-                return self.converge_event(y, p, event_pre_p, t, row_filter, initial_event);
+                return self.converge_event(y, p, &action_pre_p, t, row_filter);
             }
         }
         Err(RuntimeSolveError::solve_ir(format!(
@@ -893,29 +904,40 @@ impl SolveRuntime {
         Ok(values)
     }
 
-    /// Close a converged event: evaluate its actions, then release the clock
-    /// pulses its condition buffers saw (see `release_condition_pulses`).
-    ///
-    /// The actions belong to the event instant, so at the initialization
-    /// event they read `initial()` true (MLS §8.6) even when a later pass of
-    /// the iteration cleared it: a `when initial()` assertion or print acts
-    /// once, on the settled values.
+    /// MLS §8.6: `initial()` holds for the initialization pass only, so the
+    /// actions of the initialization instant are evaluated on its settled
+    /// values once, on the edges since event entry, and the event iteration
+    /// that follows acts on the edges since this pass. Returns the outcome
+    /// when an action ends the event.
+    fn close_initialization_instant(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        row_filter: EventUpdateRowFilter,
+        action_pre_p: &mut std::borrow::Cow<'_, [f64]>,
+    ) -> Result<Option<EventActionOutcome>, RuntimeSolveError> {
+        let outcome = self.eval_event_actions(y, p, action_pre_p, t, row_filter)?;
+        if outcome != EventActionOutcome::Continue {
+            return Ok(Some(outcome));
+        }
+        *action_pre_p =
+            std::borrow::Cow::Owned(copy_runtime_values(p, "initialization action edges")?);
+        Ok(None)
+    }
+
+    /// Close a converged event: evaluate its actions on the edges since
+    /// `action_pre_p`, then release the clock pulses its condition buffers saw
+    /// (see `release_condition_pulses`).
     fn converge_event(
         &self,
         y: &mut [f64],
         p: &mut [f64],
-        event_pre_p: &[f64],
+        action_pre_p: &[f64],
         t: f64,
         row_filter: EventUpdateRowFilter,
-        initial_event: bool,
     ) -> Result<EventActionOutcome, RuntimeSolveError> {
-        let outcome = if initial_event && !self.initial_event_flag(p) {
-            let mut action_p = copy_runtime_values(p, "initial event action parameters")?;
-            self.set_initial_event_flag(&mut action_p, true);
-            self.eval_event_actions(y, &action_p, event_pre_p, t, row_filter)?
-        } else {
-            self.eval_event_actions(y, p, event_pre_p, t, row_filter)?
-        };
+        let outcome = self.eval_event_actions(y, p, action_pre_p, t, row_filter)?;
         self.release_condition_pulses(y, p, t)?;
         Ok(outcome)
     }
@@ -930,7 +952,19 @@ impl SolveRuntime {
     ) -> Result<EventActionOutcome, RuntimeSolveError> {
         let events = &self.model.problem.events;
         let mut action_p = event_action_params(events, p, event_pre_p)?;
-        write_clock_activation_params(&self.model, &mut action_p, t);
+        // A clock ticks in the passes that run its rows: a pass settling only
+        // unowned rows (the initialization instant before a phase-zero tick,
+        // a coincident root's right limit) or a held right limit reads every
+        // clock lane, owner and `when` leaf alike, as not ticking.
+        let clocks_tick = row_filter.accepts(crate::EventPreMode::EventEntry, true);
+        if clocks_tick {
+            write_clock_activation_params(&self.model, &mut action_p, t);
+        } else {
+            crate::runtime::solve_ops::write_observation_clock_activation_params(
+                &self.model,
+                &mut action_p,
+            );
+        }
         let mut values = vec![0.0; events.actions.len()];
         let mut active_rows = self.event_action_active_row_indices.borrow_mut();
         active_rows.clear();
@@ -939,7 +973,9 @@ impl SolveRuntime {
                 continue;
             }
             let active = match action.clock_owner {
-                Some(owner) => self.periodic_clock_active(owner, t, "event action")?,
+                Some(owner) => {
+                    clocks_tick && self.periodic_clock_active(owner, t, "event action")?
+                }
                 None => true,
             };
             if active {

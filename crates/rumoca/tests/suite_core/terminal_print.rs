@@ -127,3 +127,63 @@ end Messages;
         "refused as an impure call context: {error}"
     );
 }
+
+fn reports(model: &str) -> Vec<(f64, String)> {
+    simulate(model)
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "WX002")
+        .map(|diagnostic| (diagnostic.time, diagnostic.message.clone()))
+        .collect()
+}
+
+fn activation_reports(body: &str) -> Vec<(f64, String)> {
+    reports(&format!(
+        "model Messages\n  Real x(start = 1, fixed = true);\nequation\n  der(x) = -x;\nalgorithm\n{body}\nend Messages;\n"
+    ))
+}
+
+fn at(entries: &[(f64, &str)]) -> Vec<(f64, String)> {
+    entries
+        .iter()
+        .map(|(time, message)| (*time, (*message).to_string()))
+        .collect()
+}
+
+/// MLS 3.7 §8.6: `initial()` holds for the initialization instant only, and
+/// the event iteration after it acts on the edges since that instant. A
+/// phase-zero tick acts once, after initialization, and a vector activation
+/// with `initial()` acts at both (as OpenModelica reports these models).
+#[test]
+fn initialization_event_actions_act_once_per_instant() {
+    let tick = "  when sample(0, 0.5) then\n    Streams.print(\"tick\");\n  end when;";
+    assert_eq!(
+        activation_reports(tick),
+        at(&[(0.0, "tick"), (0.5, "tick"), (1.0, "tick")]),
+        "a phase-zero tick prints once at the start"
+    );
+    let initial_only = "  when sample(0, 0.5) then\n    if initial() then\n      Streams.print(\"init\");\n    end if;\n  end when;";
+    assert_eq!(
+        activation_reports(initial_only),
+        at(&[]),
+        "the phase-zero tick acts after initialization"
+    );
+    let both = "  when {initial(), sample(0, 0.5)} then\n    Streams.print(\"both\");\n  end when;";
+    assert_eq!(
+        activation_reports(both),
+        at(&[(0.0, "both"), (0.0, "both"), (0.5, "both"), (1.0, "both")]),
+        "initialization and the phase-zero tick are two activations"
+    );
+}
+
+/// A condition `not initial()` makes false at the initialization instant and
+/// true right after it rises in the event iteration at the start.
+#[test]
+fn a_not_initial_guard_acts_after_initialization() {
+    let post = "  when time >= 0 and not initial() then\n    Streams.print(\"post\");\n  end when;\n  when initial() then\n    Streams.print(\"init\");\n  end when;";
+    assert_eq!(
+        activation_reports(post),
+        at(&[(0.0, "init"), (0.0, "post")]),
+        "one report at initialization, one after it"
+    );
+}
