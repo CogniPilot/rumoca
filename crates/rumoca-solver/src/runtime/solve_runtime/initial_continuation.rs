@@ -51,10 +51,20 @@
 //!   case there is no continuation and no coverage object.
 //! * λ is allocated and read by at least one lowered row of the model. Rows
 //!   split into two groups:
-//!   * **Steered** — `continuous.implicit_rhs` rows that target an algebraic
-//!     slot, and `initialization.residual()` rows the initialization projection
-//!     plan solves. The continuation drives these; this module proves a plan
-//!     names each of them.
+//!   * **Steered**: the iteratively solved blocks λ reaches: an algebraic
+//!     refresh projection block, or an initialization projection block, whose
+//!     rows read λ, read a value λ determines, or start from a seed row that
+//!     does. A value λ determines is the target of an exact assignment that
+//!     reads λ or such a value, or an unknown of a steered block. The
+//!     continuation drives these; this module proves a plan names each
+//!     λ-reading algebraic row.
+//!   * **Exactly assigned**: a λ-reading `continuous.implicit_rhs` row the
+//!     refresh executes as an exact assignment. Its value is a function of
+//!     already settled values at every λ, so continuing it selects no root.
+//!     When no iterative block consumes it, it is evaluated at λ = 1 like the
+//!     unsteered rows below. MLS 3.7 §3.7.4.2 locates the homotopy iteration
+//!     in "the smallest iteration loop" from the first BLT block with homotopy
+//!     to the last nonlinear block, and there is no such loop here.
 //!   * **Unsteered** — every other row family the lowering can put a λ read in:
 //!     `continuous.derivative_rhs` (`der(y) = homotopy(...)`),
 //!     `discrete.rhs` (`when c then z = homotopy(...); end when;`),
@@ -95,14 +105,17 @@ use rumoca_ir_solve as solve;
 pub(crate) struct InitialContinuationCoverage {
     /// Hidden `P` slot the driver advances from `0` to `1`.
     lambda_index: usize,
-    /// λ-reading `continuous.implicit_rhs` equations, each proven to be named by
-    /// the algebraic refresh plan. Non-empty means the sweep has to re-run that
-    /// refresh at every continuation value.
+    /// `continuous.implicit_rhs` equations of the iteratively solved refresh
+    /// blocks λ reaches. Non-empty means the sweep has to re-run that refresh
+    /// at every continuation value.
     steered_implicit_equations: BTreeSet<usize>,
-    /// λ-reading `initialization.residual()` equations the initialization
-    /// projection plan solves. Non-empty means the plan itself carries part of
-    /// the sweep.
+    /// `initialization.residual()` equations the initialization projection
+    /// plan solves that read λ or a value λ determines. Non-empty means the
+    /// plan itself carries part of the sweep.
     steered_initialization_equations: BTreeSet<usize>,
+    /// Whether a steered initialization row reads a refresh value λ
+    /// determines, so the sweep must re-run the refresh that produces it.
+    initialization_reads_refresh: bool,
 }
 
 impl InitialContinuationCoverage {
@@ -167,15 +180,23 @@ impl InitialContinuationCoverage {
             });
         }
 
-        let steered_initialization_equations = certify_initialization_rows(model, &initial_reads);
         let refresh_equations = algebraic_refresh_equations(algebraic_refresh);
-        let steered_implicit_equations =
+        let lambda_algebraic_rows =
             certify_implicit_rows(model, implicit_block, &implicit_reads, &refresh_equations)?;
+        let flow = LambdaFlow::derive(
+            implicit_block,
+            algebraic_refresh,
+            &implicit_reads,
+            lambda_algebraic_rows,
+        )?;
+        let (steered_initialization_equations, initialization_reads_refresh) =
+            certify_initialization_rows(model, initial_block, &initial_reads, &flow.determined)?;
 
         Ok(Some(Self {
             lambda_index,
-            steered_implicit_equations,
+            steered_implicit_equations: flow.steered,
             steered_initialization_equations,
+            initialization_reads_refresh,
         }))
     }
 
@@ -199,28 +220,243 @@ impl InitialContinuationCoverage {
     /// during initialization, in which case the initialization projection plan
     /// carries the whole sweep on its own.
     pub(crate) fn drives_algebraic_refresh(&self) -> bool {
-        !self.steered_implicit_equations.is_empty()
+        !self.steered_implicit_equations.is_empty() || self.initialization_reads_refresh
     }
 }
 
-/// Select continuation rows directly from the checked initialization owner.
+/// Select continuation rows directly from the checked initialization owner:
+/// the solved rows that read λ or a refresh value λ determines. The flag
+/// reports whether any solved row reads such a refresh value.
 fn certify_initialization_rows(
     model: &solve::SolveModel,
+    initial_block: &solve::ScalarProgramBlock,
     initial_reads: &BTreeMap<usize, usize>,
-) -> BTreeSet<usize> {
-    model
+    determined: &BTreeSet<usize>,
+) -> Result<(BTreeSet<usize>, bool), EvalSolveError> {
+    let positions = if determined.is_empty() {
+        BTreeMap::new()
+    } else {
+        equation_positions(initial_block)?
+    };
+    let mut steered = BTreeSet::new();
+    let mut reads_refresh = false;
+    for row in model
         .problem
         .initialization
         .projection_plan()
         .blocks
         .iter()
         .flat_map(|block| block.rows.iter().copied())
-        .filter(|row| initial_reads.contains_key(row))
-        .collect()
+    {
+        let reads_determined = !determined.is_empty()
+            && reads_any(
+                &equation_y_reads(initial_block, &positions, row),
+                determined,
+            );
+        reads_refresh |= reads_determined;
+        if reads_determined || initial_reads.contains_key(&row) {
+            steered.insert(row);
+        }
+    }
+    Ok((steered, reads_refresh))
+}
+
+/// How λ flows through the algebraic refresh schedule.
+///
+/// An exact assignment is a function of already settled values at every λ, so
+/// it selects no root: it only carries λ to its target. An iteratively solved
+/// block selects a root, so it is steered when a row reads λ or a value λ
+/// determines, or when a seed row that does starts one of its unknowns. A
+/// steered block's unknowns are values λ determines. Only the issued stage
+/// schedule proves a row is executed as an exact assignment; a plan without
+/// one keeps every λ-reading algebraic row steered.
+struct LambdaFlow {
+    /// Equations of the steered iteratively solved refresh blocks.
+    steered: BTreeSet<usize>,
+    /// Solver-Y coordinates whose refreshed value depends on λ.
+    determined: BTreeSet<usize>,
+}
+
+enum FlowNode {
+    Exact {
+        equation: usize,
+        target: usize,
+        reads: solve::OutputYReads,
+    },
+    Seed {
+        equation: usize,
+        target: usize,
+        reads: solve::OutputYReads,
+    },
+    Iterative {
+        rows: Vec<usize>,
+        unknowns: Vec<usize>,
+        reads: Vec<solve::OutputYReads>,
+    },
+}
+
+impl LambdaFlow {
+    fn derive(
+        implicit_block: &solve::ScalarProgramBlock,
+        refresh: &solve::RefreshPlan,
+        implicit_reads: &BTreeMap<usize, usize>,
+        lambda_algebraic_rows: BTreeSet<usize>,
+    ) -> Result<Self, EvalSolveError> {
+        if refresh.value_stages.is_empty() {
+            return Ok(Self {
+                steered: lambda_algebraic_rows,
+                determined: BTreeSet::new(),
+            });
+        }
+        let nodes = flow_nodes(implicit_block, refresh)?;
+        let mut flow = Self {
+            steered: BTreeSet::new(),
+            determined: BTreeSet::new(),
+        };
+        let mut seeded = BTreeSet::new();
+        loop {
+            let before = (flow.steered.len(), flow.determined.len(), seeded.len());
+            for node in &nodes {
+                flow.visit(node, implicit_reads, &mut seeded);
+            }
+            if before == (flow.steered.len(), flow.determined.len(), seeded.len()) {
+                return Ok(flow);
+            }
+        }
+    }
+
+    /// Carry λ through one node; `seeded` collects the unknowns a λ-dependent
+    /// seed starts.
+    fn visit(
+        &mut self,
+        node: &FlowNode,
+        implicit_reads: &BTreeMap<usize, usize>,
+        seeded: &mut BTreeSet<usize>,
+    ) {
+        let reads_lambda = |equation: &usize| implicit_reads.contains_key(equation);
+        match node {
+            FlowNode::Exact {
+                equation,
+                target,
+                reads,
+            } if reads_lambda(equation) || reads_any(reads, &self.determined) => {
+                self.determined.insert(*target);
+            }
+            FlowNode::Seed {
+                equation,
+                target,
+                reads,
+            } if reads_lambda(equation) || reads_any(reads, &self.determined) => {
+                seeded.insert(*target);
+            }
+            FlowNode::Iterative {
+                rows,
+                unknowns,
+                reads,
+            } if rows.iter().any(reads_lambda)
+                || reads.iter().any(|row| reads_any(row, &self.determined))
+                || unknowns.iter().any(|unknown| seeded.contains(unknown)) =>
+            {
+                self.steered.extend(rows.iter().copied());
+                self.determined.extend(unknowns.iter().copied());
+            }
+            FlowNode::Exact { .. } | FlowNode::Seed { .. } | FlowNode::Iterative { .. } => {}
+        }
+    }
+}
+
+/// The refresh schedule as λ-flow nodes, in stage order.
+fn flow_nodes(
+    implicit_block: &solve::ScalarProgramBlock,
+    refresh: &solve::RefreshPlan,
+) -> Result<Vec<FlowNode>, EvalSolveError> {
+    let positions = equation_positions(implicit_block)?;
+    let reads = |equation: usize| equation_y_reads(implicit_block, &positions, equation);
+    let row_nodes = |selection: &solve::RefreshRowSelection, exact: bool| {
+        refresh
+            .selected_rows(selection)
+            .iter()
+            .map(|row| {
+                let (equation, target) = (row.equation_index(), row.target_index());
+                let reads = reads(equation);
+                if exact {
+                    FlowNode::Exact {
+                        equation,
+                        target,
+                        reads,
+                    }
+                } else {
+                    FlowNode::Seed {
+                        equation,
+                        target,
+                        reads,
+                    }
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut nodes = Vec::new();
+    for stage in &refresh.value_stages {
+        match stage {
+            solve::RefreshStage::CausalSeedSweep {
+                static_rows,
+                dynamic_rows,
+                ..
+            } => {
+                nodes.extend(row_nodes(static_rows, false));
+                nodes.extend(row_nodes(dynamic_rows, false));
+            }
+            solve::RefreshStage::ExactAssignments {
+                static_rows,
+                dynamic_rows,
+                ..
+            } => {
+                nodes.extend(row_nodes(static_rows, true));
+                nodes.extend(row_nodes(dynamic_rows, true));
+            }
+            solve::RefreshStage::ProjectionBlock {
+                plan, seed_rows, ..
+            } => {
+                nodes.extend(row_nodes(seed_rows, false));
+                nodes.extend(plan.blocks.iter().map(|block| FlowNode::Iterative {
+                    rows: block.rows.clone(),
+                    unknowns: block.y_indices.clone(),
+                    reads: block.rows.iter().map(|&row| reads(row)).collect(),
+                }));
+            }
+        }
+    }
+    Ok(nodes)
+}
+
+/// The solver-Y coordinates equation `equation` of `block` reads.
+fn equation_y_reads(
+    block: &solve::ScalarProgramBlock,
+    positions: &BTreeMap<usize, (usize, usize)>,
+    equation: usize,
+) -> solve::OutputYReads {
+    positions
+        .get(&equation)
+        .and_then(|&(program_index, output_offset)| {
+            Some(solve::output_y_reads(
+                block.program(program_index)?,
+                output_offset,
+            ))
+        })
+        .unwrap_or(solve::OutputYReads::Absent)
+}
+
+fn reads_any(reads: &solve::OutputYReads, values: &BTreeSet<usize>) -> bool {
+    match reads {
+        solve::OutputYReads::Absent => false,
+        solve::OutputYReads::Bounded(reads) => !reads.is_disjoint(values),
+        solve::OutputYReads::Unbounded => !values.is_empty(),
+    }
 }
 
 /// Reject λ-reading `continuous.implicit_rhs` equations that target an algebraic
-/// slot no refresh plan names, and return the equations the sweep steers.
+/// slot no refresh plan names, and return the λ-reading algebraic equations
+/// initialization solves.
 fn certify_implicit_rows(
     model: &solve::SolveModel,
     implicit_block: &solve::ScalarProgramBlock,
@@ -260,13 +496,31 @@ fn lambda_reading_equations(
     block: &solve::ScalarProgramBlock,
     index: usize,
 ) -> Result<BTreeMap<usize, usize>, EvalSolveError> {
-    let mut reads = BTreeMap::new();
+    let reading_programs = block
+        .programs()
+        .iter()
+        .map(|program| {
+            program
+                .iter()
+                .any(|op| linear_op_reads_parameter(op, index))
+        })
+        .collect::<Vec<_>>();
+    Ok(equation_positions(block)?
+        .into_iter()
+        .filter(|(_, (program_index, _))| reading_programs[*program_index])
+        .map(|(equation, (program_index, _))| (equation, program_index))
+        .collect())
+}
+
+/// Each equation index of `block` mapped to the program that computes it and
+/// the output offset within that program.
+fn equation_positions(
+    block: &solve::ScalarProgramBlock,
+) -> Result<BTreeMap<usize, (usize, usize)>, EvalSolveError> {
+    let mut positions = BTreeMap::new();
     let mut ordinal = 0usize;
     for (program_index, program) in block.programs().iter().enumerate() {
-        let program_reads = program
-            .iter()
-            .any(|op| linear_op_reads_parameter(op, index));
-        for _ in 0..solve::ScalarProgramBlock::program_output_count(program) {
+        for output_offset in 0..solve::ScalarProgramBlock::program_output_count(program) {
             let Some(equation) = block.output_indices().get(ordinal).copied() else {
                 return Err(EvalSolveError::ShapeContract {
                     message: format!(
@@ -277,9 +531,7 @@ fn lambda_reading_equations(
                     span: block.program_span(program_index),
                 });
             };
-            if program_reads {
-                reads.insert(equation, program_index);
-            }
+            positions.insert(equation, (program_index, output_offset));
             ordinal = ordinal
                 .checked_add(1)
                 .ok_or_else(|| EvalSolveError::ShapeContract {
@@ -298,7 +550,7 @@ fn lambda_reading_equations(
             span: block.first_source_span(),
         });
     }
-    Ok(reads)
+    Ok(positions)
 }
 
 fn linear_op_reads_parameter(op: &solve::LinearOp, index: usize) -> bool {
@@ -913,5 +1165,143 @@ mod tests {
                 .contains("continuous.implicit_rhs equation 1"),
             "unexpected message: {error}"
         );
+    }
+
+    /// Exact refresh row `equation` assigning solver-Y `target`.
+    fn exact_row(equation: usize, target: usize) -> solve::AlgebraicRefreshRow {
+        solve::AlgebraicRefreshRow::checked(solve::AlgebraicRefreshRowDraft {
+            owner_id: Default::default(),
+            source: solve::RefreshScalarProgramSource::checked(0, equation).unwrap(),
+            equation_index: equation,
+            output_offset: 0,
+            target_index: target,
+            assignment_target: Some(target),
+            assignment_shape: Some(solve::TargetAssignmentShape::Zero {
+                target_y_index: target,
+                expr_eval_len: 1,
+            }),
+            direct_assignment_certified: false,
+            exact_assignment_certified: true,
+        })
+        .unwrap()
+    }
+
+    /// `y1 - y0`: equation 1 reads the value equation 0 assigns.
+    fn reads_first_program() -> Vec<solve::LinearOp> {
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::LoadY { dst: 1, index: 0 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]
+    }
+
+    /// A Limiter-like chain: equation 0 assigns `y0 = lambda` exactly and
+    /// equation 1 consumes `y0`. Only the stages decide whether equation 1
+    /// selects a root.
+    fn exact_chain_model() -> (solve::SolveModel, solve::ScalarProgramBlock) {
+        let mut model = model_with_lambda(Some(1));
+        model.problem.continuous.implicit_row_targets =
+            vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
+        let implicit = scalar_block(vec![reads_lambda_program(1), reads_first_program()]);
+        (model, implicit)
+    }
+
+    fn exact_stage(rows: &[usize]) -> solve::RefreshStage {
+        solve::RefreshStage::ExactAssignments {
+            static_sequence: Default::default(),
+            dynamic_sequence: Default::default(),
+            static_rows: solve::RefreshRowSelection::checked(2, []).unwrap(),
+            dynamic_rows: solve::RefreshRowSelection::checked(2, rows.iter().copied()).unwrap(),
+        }
+    }
+
+    /// `Modelica.Blocks.Examples.TotalHarmonicDistortion`: the Limiter's
+    /// homotopy row and the Division that reads it are exact assignments, so
+    /// no iterative solve depends on lambda and the sweep must not run (at
+    /// lambda = 0 the Division would evaluate 0/0).
+    #[test]
+    fn exact_assignment_chain_steers_nothing() {
+        let (model, implicit) = exact_chain_model();
+        let refresh = solve::RefreshPlan {
+            rows: vec![exact_row(0, 0), exact_row(1, 1)],
+            value_stages: vec![exact_stage(&[0, 1])],
+            ..Default::default()
+        };
+        let coverage =
+            InitialContinuationCoverage::certify(&model, &implicit, &scalar_block(vec![]), &refresh)
+                .expect("an exactly assigned homotopy row certifies")
+                .expect("a continuation parameter yields coverage");
+
+        assert_eq!(coverage.sweep_parameter_index(), None);
+        assert!(!coverage.drives_algebraic_refresh());
+    }
+
+    /// MLS 3.7 §3.7.4.2's `w = f1(x)` with homotopy feeding the nonlinear
+    /// system `0 = f2(.., w)`: the exact row carries lambda into an iterative
+    /// block, which the sweep must steer.
+    #[test]
+    fn exact_assignment_feeding_an_iterative_block_is_steered() {
+        let (model, implicit) = exact_chain_model();
+        let refresh = solve::RefreshPlan {
+            rows: vec![exact_row(0, 0), exact_row(1, 1)],
+            value_stages: vec![
+                exact_stage(&[0]),
+                solve::RefreshStage::ProjectionBlock {
+                    seed_sequence: Default::default(),
+                    block_index: 0,
+                    plan: solve::AlgebraicProjectionPlan {
+                        blocks: vec![solve::AlgebraicProjectionBlock {
+                            rows: vec![1],
+                            y_indices: vec![1],
+                            tearing: None,
+                            alternate_charts: Vec::new(),
+                        }],
+                    },
+                    seed_rows: solve::RefreshRowSelection::checked(2, []).unwrap(),
+                },
+            ],
+            ..Default::default()
+        };
+        let coverage =
+            InitialContinuationCoverage::certify(&model, &implicit, &scalar_block(vec![]), &refresh)
+                .expect("a homotopy chain into an iterative block certifies")
+                .expect("a continuation parameter yields coverage");
+
+        assert_eq!(coverage.sweep_parameter_index(), Some(1));
+        assert!(coverage.drives_algebraic_refresh());
+    }
+
+    /// An initialization row the projection plan solves and that reads the
+    /// exactly assigned homotopy value is steered, and the sweep re-runs the
+    /// refresh that produces the value.
+    #[test]
+    fn initialization_row_reading_an_exact_homotopy_value_is_steered() {
+        let (mut model, implicit) = exact_chain_model();
+        let initial = scalar_block(vec![plain_program()]);
+        model.problem.initialization =
+            solve::InitializationSolveSystem::construct(solve::InitializationSystemInput {
+                residual: solve::ComputeBlock::from_scalar_program_block(initial.clone()),
+                row_roles: vec![solve::InitializationRowRole::Solved],
+                projection_plan: covered_plan(),
+                ..Default::default()
+            })
+            .unwrap();
+        let refresh = solve::RefreshPlan {
+            rows: vec![exact_row(0, 0), exact_row(1, 1)],
+            value_stages: vec![exact_stage(&[0, 1])],
+            ..Default::default()
+        };
+        let coverage = InitialContinuationCoverage::certify(&model, &implicit, &initial, &refresh)
+            .expect("an initialization row over a homotopy value certifies")
+            .expect("a continuation parameter yields coverage");
+
+        assert_eq!(coverage.sweep_parameter_index(), Some(1));
+        assert!(coverage.drives_algebraic_refresh());
     }
 }

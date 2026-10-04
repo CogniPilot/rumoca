@@ -570,6 +570,19 @@ covered algebraic equations, relation truth, and ordinary Boolean definitions
 together before advancing lambda. Ordinary `pre` values remain fixed during
 that solve. A rejected step restores both numeric and discrete coordinates to
 the last accepted step; exhausting discrete iteration is a typed failure.
+The continuation runs only around the iteratively solved blocks the
+continuation parameter reaches (MLS 3.7 §3.7.4.2: the iteration loop from the
+first BLT block with `homotopy` to the last nonlinear block that depends on
+it). `InitialContinuationCoverage` derives that set once, when the runtime is
+constructed, from the issued refresh stages: an exact assignment has one value
+at every lambda, so it only carries lambda to its target; a projection block
+is steered when a row or seed reads lambda or such a value, and its unknowns
+then carry lambda on; an initialization projection row is steered on the same
+reads. With no steered block, lambda stays at one and every `homotopy` reads
+`actual`, the operator's trivial form, so a `simplified` operand that leaves an
+exactly assigned value undefined (the Limiter's `simplified = u` under a
+division in `Modelica.Blocks.Examples.TotalHarmonicDistortion`) is never
+evaluated.
 
 A scalar discrete coordinate determined by an initial algorithm assignment or
 by an explicit initial equation `m = value` / `pre(m) = value` has one typed
