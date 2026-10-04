@@ -31,9 +31,9 @@ function quadrotorConfig() {
       mode: "auto",
       gamepad: {
         axes: {
-          pitch: { source: "RightStickY", write: "pitch_cmd" },
-          roll: { source: "RightStickX", write: "roll_cmd" },
-          yaw: { source: "LeftStickX", write: "yaw_cmd" },
+          pitch: { invert: true, source: "RightStickX", write: "pitch_cmd" },
+          roll: { source: "RightStickY", write: "roll_cmd" },
+          yaw: { invert: true, source: "LeftStickX", write: "yaw_cmd" },
         },
         buttons: {
           arm: {
@@ -103,11 +103,12 @@ test("touch sticks drive the scenario gamepad axes and integrators", () => {
   pad.engage();
   const up = stickAxes(0, -50, 50);
   pad.setStick("left", up.x, up.y);
-  const right = stickAxes(25, 0, 50);
+  const right = stickAxes(25, -25, 50);
   pad.setStick("right", right.x, right.y);
   input.update(0.5);
   close(input.locals.get("throttle"), 0.35, "throttle after 0.5 s");
-  close(input.locals.get("roll_cmd"), 0.5, "roll from right stick X");
+  close(input.locals.get("roll_cmd"), 0.5, "stick up rolls positive like ArrowUp");
+  close(input.locals.get("pitch_cmd"), -0.5, "stick right pitches negative like ArrowRight");
   assert.equal(input.runtimeFields(1).input_mode, "touch");
 
   // Releasing re-centers the set-style axes; the integrator holds its value.
@@ -116,6 +117,7 @@ test("touch sticks drive the scenario gamepad axes and integrators", () => {
   input.update(0.5);
   close(input.locals.get("throttle"), 0.35, "throttle holds");
   close(input.locals.get("roll_cmd"), 0, "roll re-centers");
+  close(input.locals.get("pitch_cmd"), 0, "pitch re-centers");
 });
 
 test("touch deflection inside the scenario deadband leaves the integrator untouched", () => {
@@ -181,7 +183,7 @@ test("a connected physical gamepad takes precedence over the touch pad", () => {
       delete globalThis.navigator;
     }
   }
-  close(input.locals.get("roll_cmd"), -0.5, "physical roll wins");
+  close(input.locals.get("pitch_cmd"), 0.5, "physical pitch wins over the touch stick");
   assert.equal(input.runtimeFields(0).input_mode, "gamepad");
 });
 
@@ -272,4 +274,32 @@ test("touch axis shaping follows what the scenario binds each stick axis to", ()
   const unbound = touchAxisShapes({});
   assert.equal(unbound.length, 4);
   assert(unbound.every((shape) => shape.expo === 0 && shape.deadzone > 0));
+});
+
+test("the quadrotor stick axes point the same way as its keyboard keys", async () => {
+  const text = await readFile(
+    new URL("../../../examples/interactive/quadrotor/rumoca-scenario.acro.toml", import.meta.url),
+    "utf8",
+  );
+  const section = (name) => {
+    const match = new RegExp(`^\\[${name.replace(/\./g, "\\.")}\\]\\n((?:[^\\[\\n][^\\n]*\\n?)*)`, "m").exec(text);
+    assert(match, `missing [${name}]`);
+    return match[1];
+  };
+  const axis = (name) => {
+    const body = section(`input.gamepad.axes.${name}`);
+    return {
+      source: /^source = "(\w+)"/m.exec(body)?.[1],
+      invert: /^invert = true$/m.test(body),
+    };
+  };
+  const key = (name) => Number(/^value = (-?[\d.]+)/m.exec(section(`input.keyboard.keys.${name}`))[1]);
+  // Stick up reads +1 on RightStickY / LeftStickY after the runtime's sign flip,
+  // and stick right reads +1 on the X axes.
+  assert.deepEqual(axis("roll"), { source: "RightStickY", invert: false });
+  assert(key("ArrowUp") > 0, "ArrowUp drives roll_cmd positive, as the stick does when pushed up");
+  assert.deepEqual(axis("pitch"), { source: "RightStickX", invert: true });
+  assert(key("ArrowRight") < 0, "ArrowRight drives pitch_cmd negative, as the inverted X axis does");
+  assert.deepEqual(axis("yaw"), { source: "LeftStickX", invert: true });
+  assert(key("d") < 0, "d (right) drives yaw_cmd negative, as the inverted X axis does");
 });

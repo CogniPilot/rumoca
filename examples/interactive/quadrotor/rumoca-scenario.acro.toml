@@ -3,15 +3,20 @@ source_roots = ["../../../target/cmm/CMM-a642c381"]
 [input]
 mode = "auto"
 
+# Stick directions follow the keyboard bindings below: up and down drive
+# roll_cmd (ArrowUp is positive), left and right drive pitch_cmd (ArrowLeft is
+# positive), and a (left) yaws positive.
 [input.gamepad.axes.pitch]
-source = "RightStickY"
+invert = true
+source = "RightStickX"
 write = "pitch_cmd"
 
 [input.gamepad.axes.roll]
-source = "RightStickX"
+source = "RightStickY"
 write = "roll_cmd"
 
 [input.gamepad.axes.yaw]
+invert = true
 source = "LeftStickX"
 write = "yaw_cmd"
 
