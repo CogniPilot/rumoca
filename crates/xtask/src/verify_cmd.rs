@@ -1348,6 +1348,9 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
     let mut cargo_setup_steps = Vec::new();
 
     let merge_only = args.merge_shards.is_some();
+    if !merge_only {
+        modelica_dependency_cache::ensure_omc_services_library(root, false)?;
+    }
     let test_target = if merge_only {
         "balance_pipeline::balance_pipeline_merge::test_msl_merge_and_gate"
     } else {

@@ -24,3 +24,18 @@ required_files = [
   "RigidBody/package.mo",
 ]
 write_revision_marker = true
+
+# OpenModelica's tool-specific ModelicaServices for OMC reference generation,
+# the archive OpenModelica's package manager installs as ModelicaServices
+# 4.1.0+maint.om.
+[libraries.omc_services]
+display_name = "OpenModelica ModelicaServices"
+version = "4.1.0+maint.om"
+url = "https://github.com/OpenModelica/OpenModelica-ModelicaStandardLibrary/archive/7a4bf7de77a3986e8eb1e88cbb515d646f78f834.zip"
+sha256 = "e1c9f6da69f089328917e6ec2b147f4dbf4730eec8683addfe727be40f6ba5e6"
+cache_dir = "target/msl/OpenModelica-ModelicaServices-4.1.0+maint.om"
+zip_layout = "auto-strip-common-root"
+required_files = [
+  "ModelicaServices/package.mo",
+]
+write_revision_marker = true

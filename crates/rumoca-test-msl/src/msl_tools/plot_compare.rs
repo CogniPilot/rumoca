@@ -325,7 +325,7 @@ fn generate_omc_trace(paths: &MslPaths, model_name: &str, output_path: &Path) ->
         .with_context(|| format!("failed to create '{}'", work_dir.display()))?;
     let check_file = work_dir.join("plot_compare_omc_check.txt");
     let mos_file = work_dir.join("plot_compare_omc.mos");
-    let script = build_omc_script(paths, model_name, &check_file);
+    let script = build_omc_script(paths, model_name, &check_file)?;
     std::fs::write(&mos_file, script)
         .with_context(|| format!("failed to write '{}'", mos_file.display()))?;
 
@@ -362,8 +362,8 @@ fn generate_omc_trace(paths: &MslPaths, model_name: &str, output_path: &Path) ->
     Ok(())
 }
 
-fn build_omc_script(paths: &MslPaths, model_name: &str, check_file: &Path) -> String {
-    let mut lines = msl_load_lines(paths);
+fn build_omc_script(paths: &MslPaths, model_name: &str, check_file: &Path) -> Result<String> {
+    let mut lines = msl_load_lines(paths)?;
     lines.push("getErrorString();".to_string());
     lines.push(format!(
         "simRes := simulate({model_name}, outputFormat=\"csv\", fileNamePrefix=\"{model_name}\");"
@@ -373,7 +373,7 @@ fn build_omc_script(paths: &MslPaths, model_name: &str, check_file: &Path) -> St
         "writeFile(\"{}\", \"ERROR:\" + err + \"\\n\");",
         check_file.display()
     ));
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 fn resolve_omc_csv_path(work_dir: &Path, model_name: &str, output: &str) -> PathBuf {

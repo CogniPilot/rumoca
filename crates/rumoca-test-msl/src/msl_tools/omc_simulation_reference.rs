@@ -1,11 +1,12 @@
 use super::band_table::{TraceExitKind, TraceExitRecord};
 use super::common::{
     AUTO_WORKERS_DEFAULT, BATCH_SIZE_OMC_SIMULATION_DEFAULT, BATCH_TIMEOUT_SECONDS_DEFAULT,
-    BatchElapsedStats, BatchTimingDetail, MSL_VERSION, MslPaths, OMC_THREADS_DEFAULT,
-    SIM_STOP_TIME_DEFAULT, TRACE_EXCLUSIONS_FILE_REL, choose_effective_batch_size, get_git_commit,
-    get_omc_version, git_worktree_is_dirty, has_fatal_omc_error, load_target_models,
-    load_trace_exclusions_file, msl_load_lines, round3, summarize_batch_timings,
-    summarize_omc_error, typed_exception_reasons, unix_timestamp_seconds, write_pretty_json,
+    BatchElapsedStats, BatchTimingDetail, MSL_VERSION, MslPaths, OMC_SERVICES_DIR,
+    OMC_THREADS_DEFAULT, SIM_STOP_TIME_DEFAULT, TRACE_EXCLUSIONS_FILE_REL,
+    choose_effective_batch_size, get_git_commit, get_omc_version, git_worktree_is_dirty,
+    has_fatal_omc_error, load_target_models, load_trace_exclusions_file, msl_load_lines,
+    omc_services_package, round3, summarize_batch_timings, summarize_omc_error,
+    typed_exception_reasons, unix_timestamp_seconds, write_pretty_json,
 };
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
@@ -612,7 +613,7 @@ fn run_dry_run(paths: &MslPaths, model_names: &[String], args: &Args) -> Result<
     // Emit the exact command stream a persistent session worker would send:
     // the one-time MSL loads followed by a `simulate(...)` per model.
     let sample = model_names.iter().take(10).cloned().collect::<Vec<_>>();
-    let mut lines = msl_load_lines(paths);
+    let mut lines = msl_load_lines(paths)?;
     for model in &sample {
         if args.use_experiment_stop_time {
             lines.push(format!(
@@ -640,9 +641,12 @@ fn run_dry_run(paths: &MslPaths, model_names: &[String], args: &Args) -> Result<
 /// and forces a re-run; otherwise cached per-model results are reused.
 fn omc_reference_cache_key(omc_version: &str, msl_dir: &Path) -> String {
     let mut hasher = blake3::Hasher::new();
-    // References made with generic services or incomplete-success acceptance
-    // cannot be reused under the corrected producer contract.
-    hasher.update(b"omc-tool-services/required-result-file/v1\0");
+    // References made with host-dependent or generic services, or with
+    // incomplete-success acceptance, cannot be reused under the producer
+    // contract: the pinned OpenModelica services and a required result file.
+    hasher.update(b"omc-pinned-tool-services/required-result-file/v2\0");
+    hasher.update(OMC_SERVICES_DIR.as_bytes());
+    hasher.update(b"\0");
     hasher.update(MSL_VERSION.as_bytes());
     hasher.update(b"\0");
     hasher.update(omc_version.as_bytes());
@@ -711,6 +715,7 @@ struct SessionWorkerCtx<'a> {
     next: &'a AtomicUsize,
     tx: &'a mpsc::Sender<SessionModelOutcome>,
     msl_exprs: &'a [String],
+    services_package: &'a Path,
     work_dir: &'a Path,
     stop_time: f64,
     use_experiment: bool,
@@ -763,7 +768,8 @@ fn run_session_pending(
         return Ok(());
     }
 
-    let msl_exprs = msl_load_lines(paths);
+    let msl_exprs = msl_load_lines(paths)?;
+    let services_package = omc_services_package(paths);
     // Mirror the rumoca warm-worker pool: one heavyweight OMC session per real
     // CPU core (not per SMT sibling), reserving headroom cores on large hosts so
     // the machine stays usable, and pin each worker to its core to keep caches
@@ -791,6 +797,7 @@ fn run_session_pending(
         let next = Arc::clone(&next);
         let tx = tx.clone();
         let msl_exprs = msl_exprs.clone();
+        let services_package = services_package.clone();
         let work_dir = paths.sim_work_dir.clone();
         let stop_time = args.stop_time;
         let use_experiment = args.use_experiment_stop_time;
@@ -802,6 +809,7 @@ fn run_session_pending(
                 next: &next,
                 tx: &tx,
                 msl_exprs: &msl_exprs,
+                services_package: &services_package,
                 work_dir: &work_dir,
                 stop_time,
                 use_experiment,
@@ -870,6 +878,7 @@ fn run_one_session_worker(ctx: SessionWorkerCtx<'_>) {
             match OmcSession::spawn(
                 ctx.work_dir,
                 ctx.msl_exprs,
+                ctx.services_package,
                 ctx.omc_threads,
                 ctx.startup_timeout,
                 ctx.load_timeout,

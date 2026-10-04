@@ -11,6 +11,7 @@ use zip::ZipArchive;
 const MANIFEST_FILE: &str = "examples/modelica_dependencies.toml";
 const MSL_KEY: &str = "msl";
 const CMM_KEY: &str = "cmm";
+const OMC_SERVICES_KEY: &str = "omc_services";
 const REVISION_FILE: &str = ".rumoca-source-revision";
 
 #[derive(Debug, Args, Clone)]
@@ -44,7 +45,8 @@ pub(crate) struct ModelicaDepsArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub(crate) enum ModelicaDepsCommand {
-    /// Download and validate cached Modelica dependencies used by examples
+    /// Download and validate cached Modelica dependencies used by examples and
+    /// OMC reference generation
     Ensure(ModelicaDepsEnsureArgs),
     /// Validate cached Modelica dependencies without downloading
     Check,
@@ -108,13 +110,13 @@ pub(crate) fn run_modelica_deps_command(args: ModelicaDepsArgs, root: &Path) -> 
     let manifest = load_manifest(root)?;
     match args.command {
         ModelicaDepsCommand::Ensure(args) => {
-            for key in [MSL_KEY, CMM_KEY] {
+            for key in [MSL_KEY, CMM_KEY, OMC_SERVICES_KEY] {
                 ensure_library(root, required_library(&manifest, key)?, args.force)?;
             }
             println!("Modelica dependency caches are ready.");
         }
         ModelicaDepsCommand::Check => {
-            for key in [MSL_KEY, CMM_KEY] {
+            for key in [MSL_KEY, CMM_KEY, OMC_SERVICES_KEY] {
                 check_library(root, required_library(&manifest, key)?)?;
             }
             println!("Modelica dependency caches are valid.");
@@ -140,6 +142,13 @@ pub(crate) fn ensure_example_libraries(root: &Path, force: bool) -> Result<()> {
 pub(crate) fn ensure_cmm_library(root: &Path, force: bool) -> Result<()> {
     let manifest = load_manifest(root)?;
     ensure_library(root, required_library(&manifest, CMM_KEY)?, force)
+}
+
+/// OpenModelica's tool-specific `ModelicaServices`, which OMC reference
+/// generation loads in place of the generic MSL implementation.
+pub(crate) fn ensure_omc_services_library(root: &Path, force: bool) -> Result<()> {
+    let manifest = load_manifest(root)?;
+    ensure_library(root, required_library(&manifest, OMC_SERVICES_KEY)?, force)
 }
 
 fn load_manifest(root: &Path) -> Result<DependencyManifest> {
@@ -349,6 +358,24 @@ fn zip_output_relative_path(path: &Path, strip_common_root: bool) -> Option<Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_valid_omc_services_cache_is_reused_without_downloading() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = temp.path().join(MANIFEST_FILE);
+        fs::create_dir_all(manifest.parent().expect("examples dir")).expect("examples dir");
+        fs::copy(repo.join(MANIFEST_FILE), &manifest).expect("copy manifest");
+        let parsed = load_manifest(temp.path()).expect("manifest");
+        let spec = required_library(&parsed, OMC_SERVICES_KEY).expect("omc_services library");
+        let dir = library_dir(temp.path(), spec);
+        for file in &spec.required_files {
+            fs::create_dir_all(dir.join(file).parent().expect("parent")).expect("dir");
+            fs::write(dir.join(file), "").expect("package");
+        }
+        fs::write(dir.join(REVISION_FILE), revision_marker(spec)).expect("marker");
+        ensure_omc_services_library(temp.path(), false).expect("cached services are reused");
+    }
 
     fn cmm_spec(root: PathBuf) -> LibrarySpec {
         LibrarySpec {

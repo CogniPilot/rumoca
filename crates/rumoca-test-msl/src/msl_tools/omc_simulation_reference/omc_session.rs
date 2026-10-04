@@ -13,7 +13,7 @@
 //! multi-second MSL parse across every model a worker handles, which is the
 //! same win the rumoca warm worker provides.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -88,10 +88,12 @@ pub(super) struct OmcSession {
 
 impl OmcSession {
     /// Spawn an `omc --interactive=zmq` process, connect to it, and load the MSL
-    /// once. `msl_load_exprs` are evaluated in order (e.g. `loadFile("...")`).
+    /// once. `msl_load_exprs` are evaluated in order (e.g. `loadFile("...")`);
+    /// the session is refused unless its `ModelicaServices` is `services_package`.
     pub(super) fn spawn(
         work_dir: &Path,
         msl_load_exprs: &[String],
+        services_package: &Path,
         omc_threads: usize,
         startup_timeout: Duration,
         load_timeout: Duration,
@@ -158,6 +160,12 @@ impl OmcSession {
                 anyhow!("failed to load MSL into omc session ({expr}): {error}")
             })?;
         }
+        let source = session
+            .eval("getSourceFile(ModelicaServices)", load_timeout)
+            .map_err(|error| {
+                anyhow!("failed to query the omc session ModelicaServices: {error}")
+            })?;
+        require_services_source(&source, services_package)?;
         // Drain any accumulated load-time diagnostics so they do not leak into
         // the first model's error string.
         let _ = session.eval("getErrorString()", load_timeout);
@@ -299,6 +307,27 @@ fn find_port_file(work_dir: &Path, needle: &str) -> Option<PathBuf> {
 
 /// Strip the surrounding quotes OMC puts around string replies and unescape the
 /// common `\n`/`\"` sequences.
+/// Refuse a session whose `ModelicaServices` (the `getSourceFile` reply) is not
+/// the pinned OpenModelica package: other services resolve resources
+/// differently, so its references would not be OMC's.
+fn require_services_source(reply: &str, services_package: &Path) -> Result<()> {
+    let source = unquote_omc_string(reply);
+    let expected = std::fs::canonicalize(services_package).with_context(|| {
+        format!(
+            "pinned ModelicaServices '{}' is not readable",
+            services_package.display()
+        )
+    })?;
+    // OMC reports the file it parsed, normalized its own way; compare files.
+    if std::fs::canonicalize(&source).ok().as_deref() != Some(expected.as_path()) {
+        bail!(
+            "omc session loaded ModelicaServices from '{source}', not the pinned '{}'",
+            expected.display()
+        );
+    }
+    Ok(())
+}
+
 fn unquote_omc_string(text: &str) -> String {
     let trimmed = text.trim();
     let inner = trimmed
@@ -395,6 +424,33 @@ fn extract_record_f64(record: &str, field: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_requires_the_pinned_services_package() {
+        let root = tempfile::tempdir().unwrap();
+        let package = |dir: &str| {
+            let path = root.path().join(dir).join("package.mo");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "").unwrap();
+            path
+        };
+        let pinned = package("services/ModelicaServices");
+        let generic = package("ModelicaServices 4.1.0");
+        // The pinned file named through a `..` detour is the same file.
+        let detour = root
+            .path()
+            .join("ModelicaServices 4.1.0/../services/ModelicaServices/package.mo");
+        require_services_source(&format!("\"{}\"\n", detour.display()), &pinned)
+            .expect("the pinned package");
+        let refused = require_services_source(&format!("\"{}\"", generic.display()), &pinned)
+            .expect_err("the generic MSL services are refused");
+        assert!(
+            refused.to_string().contains("ModelicaServices 4.1.0"),
+            "{refused}"
+        );
+        let missing = require_services_source("\"\"", &pinned).expect_err("no services loaded");
+        assert!(missing.to_string().contains("not the pinned"), "{missing}");
+    }
 
     #[test]
     fn empty_port_file_is_not_a_ready_session() {

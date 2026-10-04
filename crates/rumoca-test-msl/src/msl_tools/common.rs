@@ -195,13 +195,39 @@ fn resolve_msl_packages(paths: &MslPaths) -> Vec<(&'static str, PathBuf)> {
         .collect()
 }
 
-pub fn msl_load_lines(paths: &MslPaths) -> Vec<String> {
-    // OMC supplies its own ModelicaServices. Preloading the generic MSL
-    // implementation replaces URI resolution with fullPathName(uri).
-    resolve_msl_packages(paths)
-        .into_iter()
-        .map(|(_, path)| format!("loadFile(\"{}\");", path.display()))
-        .collect()
+/// Directory, beside the MSL cache, of OpenModelica's tool-specific
+/// `ModelicaServices`: `[libraries.omc_services]` in
+/// `examples/modelica_dependencies.toml`.
+pub const OMC_SERVICES_DIR: &str = "OpenModelica-ModelicaServices-4.1.0+maint.om";
+
+/// The `ModelicaServices` package OMC references load. The generic MSL
+/// implementation resolves a `modelica://` URI as a file name, and OMC falls
+/// back to it when no tool library is installed on the host.
+pub fn omc_services_package(paths: &MslPaths) -> PathBuf {
+    paths
+        .msl_dir
+        .with_file_name(OMC_SERVICES_DIR)
+        .join("ModelicaServices/package.mo")
+}
+
+/// The OMC library loads: the pinned OpenModelica `ModelicaServices` first, so
+/// the MSL `uses` annotation finds it loaded, then the MSL packages.
+pub fn msl_load_lines(paths: &MslPaths) -> Result<Vec<String>> {
+    let services = omc_services_package(paths);
+    if !services.is_file() {
+        bail!(
+            "OpenModelica ModelicaServices not found at {}; run `cargo xtask repo modelica-deps ensure`",
+            services.display()
+        );
+    }
+    Ok(std::iter::once(services)
+        .chain(
+            resolve_msl_packages(paths)
+                .into_iter()
+                .map(|(_, path)| path),
+        )
+        .map(|path| format!("loadFile(\"{}\");", path.display()))
+        .collect())
 }
 
 pub fn get_omc_version() -> String {
@@ -822,10 +848,21 @@ mod tests {
         );
     }
 
+    /// An MSL cache directory with the pinned OpenModelica services beside it.
+    fn msl_cache_with_services(temp: &tempfile::TempDir) -> PathBuf {
+        let msl_dir = temp.path().join("ModelicaStandardLibrary-4.1.0");
+        std::fs::create_dir_all(&msl_dir).expect("create MSL dir");
+        let services = omc_services_package(&test_paths(msl_dir.clone()));
+        std::fs::create_dir_all(services.parent().expect("services dir"))
+            .expect("create services dir");
+        std::fs::write(&services, "").expect("write services package");
+        msl_dir
+    }
+
     #[test]
     fn msl_load_lines_supports_release_zip_layout() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let msl_dir = temp.path();
+        let msl_dir = &msl_cache_with_services(&temp);
         std::fs::write(msl_dir.join("Complex.mo"), "").expect("write Complex.mo");
         std::fs::create_dir_all(msl_dir.join("Modelica 4.1.0")).expect("create Modelica dir");
         std::fs::write(msl_dir.join("Modelica 4.1.0/package.mo"), "")
@@ -840,8 +877,12 @@ mod tests {
             .expect("write ModelicaTest/package.mo");
 
         let paths = test_paths(msl_dir.to_path_buf());
-        let lines = msl_load_lines(&paths);
-        assert_eq!(lines.len(), 3);
+        let lines = msl_load_lines(&paths).expect("pinned services are present");
+        assert_eq!(lines.len(), 4);
+        assert!(
+            lines[0].contains(OMC_SERVICES_DIR),
+            "the pinned OpenModelica services load first: {lines:?}"
+        );
         assert!(
             lines.iter().any(|line| line.contains("Complex.mo")),
             "expected Complex.mo loadFile entry"
@@ -853,8 +894,10 @@ mod tests {
             "expected Modelica release-layout package load"
         );
         assert!(
-            !lines.iter().any(|line| line.contains("ModelicaServices")),
-            "OMC must load its own tool-specific services"
+            !lines
+                .iter()
+                .any(|line| line.contains("ModelicaServices 4.1.0")),
+            "the generic MSL services are never loaded"
         );
         assert!(
             lines
@@ -867,19 +910,50 @@ mod tests {
     #[test]
     fn msl_load_lines_supports_source_tree_modelica_test_layout() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let msl_dir = temp.path();
+        let msl_dir = &msl_cache_with_services(&temp);
         std::fs::create_dir_all(msl_dir.join("ModelicaTest")).expect("create ModelicaTest dir");
         std::fs::write(msl_dir.join("ModelicaTest/package.mo"), "")
             .expect("write ModelicaTest/package.mo");
 
         let paths = test_paths(msl_dir.to_path_buf());
-        let lines = msl_load_lines(&paths);
-        assert_eq!(lines.len(), 1);
+        let lines = msl_load_lines(&paths).expect("pinned services are present");
+        assert_eq!(lines.len(), 2);
         assert!(
             lines
                 .iter()
                 .any(|line| line.contains("ModelicaTest/package.mo")),
             "expected source-tree ModelicaTest package load"
+        );
+    }
+
+    #[test]
+    fn msl_load_lines_refuse_a_cache_without_the_pinned_services() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let msl_dir = temp.path().join("ModelicaStandardLibrary-4.1.0");
+        std::fs::create_dir_all(msl_dir.join("ModelicaServices 4.1.0")).expect("create dir");
+        std::fs::write(msl_dir.join("ModelicaServices 4.1.0/package.mo"), "")
+            .expect("write generic services");
+        let error = msl_load_lines(&test_paths(msl_dir)).expect_err("no generic fallback");
+        assert!(error.to_string().contains(OMC_SERVICES_DIR), "{error}");
+    }
+
+    #[test]
+    fn the_pinned_services_directory_is_the_dependency_manifest_cache() {
+        let manifest = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/modelica_dependencies.toml"),
+        )
+        .expect("dependency manifest");
+        let section = manifest
+            .split("[libraries.omc_services]")
+            .nth(1)
+            .expect("an omc_services library");
+        assert!(
+            section.contains(&format!("cache_dir = \"target/msl/{OMC_SERVICES_DIR}\"")),
+            "{section}"
+        );
+        assert!(
+            section.contains("\"ModelicaServices/package.mo\""),
+            "{section}"
         );
     }
 
