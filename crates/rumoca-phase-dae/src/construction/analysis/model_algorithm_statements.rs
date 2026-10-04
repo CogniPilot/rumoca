@@ -210,7 +210,7 @@ fn reject_sequential_when(
     }
     let unavailable = later_writes
         .iter()
-        .chain(incoming.intersection(&body_writes))
+        .chain(&overlapping_names(&incoming, &body_writes))
         .chain(&incoming_unrepresented)
         .cloned()
         .collect::<HashSet<_>>();
@@ -231,12 +231,42 @@ fn reject_sequential_when(
         )?;
         let mut block_writes = HashSet::new();
         collect_algorithm_writes(&block.stmts, &mut block_writes);
-        unsupported.extend(block_writes.intersection(later_writes).cloned());
+        unsupported.extend(overlapping_names(&block_writes, later_writes));
         exits.push(branch);
         unsupported_exits.push(unsupported);
     }
     merge_sequential_exits(written, unrepresented, exits, unsupported_exits);
     Ok(())
+}
+
+/// Whether two variable names share storage: they are equal, or one names a
+/// field (or element) of the record (or array) the other names, as a whole
+/// record write `r := R(1, 2)` writes `r.a` and `r.b`.
+pub(in crate::construction) fn names_overlap(lhs: &VarName, rhs: &VarName) -> bool {
+    let (lhs, rhs) = (lhs.as_str(), rhs.as_str());
+    lhs == rhs || is_component_of(lhs, rhs) || is_component_of(rhs, lhs)
+}
+
+fn is_component_of(name: &str, whole: &str) -> bool {
+    name.strip_prefix(whole)
+        .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+}
+
+/// The storage two name sets share, as the more specific name of each
+/// overlapping pair.
+fn overlapping_names(lhs: &HashSet<VarName>, rhs: &HashSet<VarName>) -> HashSet<VarName> {
+    let mut shared = HashSet::new();
+    for left in lhs {
+        for right in rhs.iter().filter(|right| names_overlap(left, right)) {
+            let specific = if left.as_str().len() >= right.as_str().len() {
+                left
+            } else {
+                right
+            };
+            shared.insert(specific.clone());
+        }
+    }
+    shared
 }
 
 /// Every variable a statement sequence may write, at any nesting depth.
@@ -325,7 +355,7 @@ fn reject_reads_of_written(
     expression.collect_var_refs(&mut references);
     let Some(target) = references
         .into_iter()
-        .find(|target| written.contains(target))
+        .find(|target| written.iter().any(|name| names_overlap(name, target)))
     else {
         return Ok(());
     };

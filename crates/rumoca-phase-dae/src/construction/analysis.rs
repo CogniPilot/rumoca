@@ -136,8 +136,8 @@ use loop_compaction::compact_function_loops;
 use model_algorithm_calls::analyze_event_function_calls;
 pub(super) use model_algorithm_calls::{ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan};
 pub(super) use model_algorithm_loops::unroll_carrying_algorithm_loops;
-pub(super) use model_algorithm_statements::collect_algorithm_writes;
 use model_algorithm_statements::validate_model_algorithm;
+pub(super) use model_algorithm_statements::{collect_algorithm_writes, names_overlap};
 use model_algorithms::analyze_model_algorithm;
 pub(super) use model_algorithms::{ModelAlgorithmPlan, ModelEventTensorLoopPlan};
 pub(super) use model_algorithms::{

@@ -367,6 +367,11 @@ fn lower_algorithm_statements<'dae>(
 /// read takes the variable's current value instead of the pre-seeded one.
 /// MLS §11.2.7 places `when` statements only at the top level of a section,
 /// so the statements after it in this sequence are every later write.
+///
+/// The seeded values are keyed by leaf variable, so a write releases every
+/// seeded key it shares storage with: a whole record write `r := make(1, 2)`
+/// releases `r.a` and `r.b`, unless a later statement writes that field
+/// (or the whole record) again.
 fn release_when_written_values(
     values: &mut HashMap<VarName, dae::ExprId<'_>>,
     blocks: &[rumoca_core::StatementBlock],
@@ -378,9 +383,10 @@ fn release_when_written_values(
     }
     let mut later_writes = HashSet::new();
     collect_algorithm_writes(later, &mut later_writes);
-    for target in written.difference(&later_writes) {
-        values.remove(target);
-    }
+    values.retain(|key, _| {
+        !written.iter().any(|name| names_overlap(name, key))
+            || later_writes.iter().any(|name| names_overlap(name, key))
+    });
 }
 
 fn lower_algorithm_statement<'dae>(
