@@ -155,3 +155,24 @@ fn a_plan_without_blocks_reads_the_complete_residual_at_the_seed() {
         .expect_err("an empty plan reads the complete residual at the seed");
     assert!(matches!(error, RuntimeSolveError::NonFiniteValue { .. }));
 }
+
+/// The continuous view of the fixture is the same two rows the initialization
+/// reads: the complete residual reconstructs the enthalpy, and the Jacobian
+/// is that of `[m - 2, H/m - 3]`.
+#[test]
+fn the_open_tank_fixture_states_one_continuous_system() {
+    let model = OpenTankRowsModel::new();
+    let mut out = [0.0; 2];
+    model
+        .eval_residual(&[4.0, 8.0], &[], 0.0, &mut out)
+        .unwrap();
+    assert_eq!(out, [2.0, -1.0]);
+    assert_eq!(model.complete_reads.get(), 1);
+    model
+        .eval_jacobian_v(&[4.0, 8.0], &[], 0.0, &[1.0, 1.0], &mut out)
+        .unwrap();
+    assert_eq!(out, [1.0, 0.25 - 0.5]);
+    assert_eq!(model.implicit_target(1), Some(solve::scalar_slot_y(1)));
+    assert_eq!(model.algebraic_projection_plan().blocks.len(), 2);
+    assert_eq!(model.target_name_for_row(0), None);
+}
