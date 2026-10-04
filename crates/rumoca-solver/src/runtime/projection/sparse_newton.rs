@@ -21,18 +21,25 @@ pub(crate) struct SparseNewtonCache {
     system: Option<PreparedSparseSystem>,
     torn: torn::TornNewtonCache,
     dense: dense::DenseNewtonFactor,
-    /// The block Jacobian of the last affine solve, zero outside the block's
-    /// structural pattern, kept so the next solve refills only its pattern.
-    affine_jacobian: Option<super::BlockJacobian>,
+    /// The origin linearization of the last affine solve, its Jacobian zero
+    /// outside the block's structural pattern, kept so the next solve reuses
+    /// it under the same certified parameter snapshot or refills only its
+    /// pattern.
+    affine_linearization: Option<super::affine::AffineLinearization>,
 }
 
 impl SparseNewtonCache {
-    pub(crate) fn take_affine_jacobian(&mut self) -> Option<super::BlockJacobian> {
-        self.affine_jacobian.take()
+    pub(crate) fn take_affine_linearization(
+        &mut self,
+    ) -> Option<super::affine::AffineLinearization> {
+        self.affine_linearization.take()
     }
 
-    pub(crate) fn retain_affine_jacobian(&mut self, jacobian: super::BlockJacobian) {
-        self.affine_jacobian = Some(jacobian);
+    pub(crate) fn retain_affine_linearization(
+        &mut self,
+        linearization: super::affine::AffineLinearization,
+    ) {
+        self.affine_linearization = Some(linearization);
     }
 
     /// Dense scaled Newton solve reusing this block's factorization while

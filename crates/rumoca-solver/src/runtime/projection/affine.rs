@@ -40,51 +40,28 @@ fn settle_affine_block<M: ImplicitProjectionModel>(
         candidate[index] = 0.0;
     }
     let structure = model.algebraic_projection_block_structure(block_index);
-    let jacobian = affine_block_jacobian(model, candidate, (p, t), block, block_index, structure)?;
-    let (row_scales, variable_scales) = algebraic_block_scales(
-        model,
-        candidate,
-        block,
-        &jacobian,
-        structure.map(solve::JacobianStructure::pattern),
-    );
-    let row_magnitudes =
-        jacobian_row_magnitudes(&jacobian, structure.map(solve::JacobianStructure::pattern));
-    let row_derived = jacobian_row_derived(
-        &jacobian,
-        &variable_scales,
-        structure.map(solve::JacobianStructure::pattern),
-    );
-    // The certificate's scales at the origin: every block unknown is zero
-    // there, so its origin scale is its declared scale, and a fallback
-    // coordinate outside the block keeps its value for the whole call, so its
-    // origin scale serves every pass.
-    let mut certificate_scales = CertificateScales {
-        unknowns: Vec::with_capacity(block.y_indices.len()),
-        fallbacks: Vec::with_capacity(block.rows.len()),
+    let retained = match structure {
+        Some(_) => model
+            .affine_jacobian_cache(block_index)
+            .and_then(|cache| cache.borrow_mut().take_affine_linearization()),
+        None => None,
     };
-    for (&index, &scale) in block.y_indices.iter().zip(&variable_scales) {
-        certificate_scales.unknowns.push((index, scale));
-    }
-    for target in fallback_targets(model, block) {
-        let mut fallback = None;
-        if let Some(index) = target {
-            fallback = Some((index, model_variable_scale(model, index, candidate[index])));
-        }
-        certificate_scales.fallbacks.push(fallback);
-    }
+    let point = OriginPoint {
+        candidate,
+        p,
+        t,
+        block,
+        structure,
+    };
+    let linearization = AffineLinearization::at_origin(model, point, retained)?;
     let mut system = AffineBlockSystem {
         model,
         parameters: p,
         time: t,
         block,
         block_index,
-        jacobian,
-        row_magnitudes,
-        row_derived,
-        certificate_scales,
-        row_scales,
-        variable_scales,
+        certificate_scales: linearization.certificate_scales(model, candidate, block),
+        linearization,
         structure,
         tolerance: tol,
         prefer_torn: true,
@@ -99,30 +76,287 @@ fn settle_affine_block<M: ImplicitProjectionModel>(
         settled = system.project(candidate)?;
     }
     if let (Some(_), Some(cache)) = (structure, model.affine_jacobian_cache(block_index)) {
-        cache.borrow_mut().retain_affine_jacobian(system.jacobian);
+        cache
+            .borrow_mut()
+            .retain_affine_linearization(system.linearization);
     }
     Ok(settled)
 }
 
-/// The block Jacobian at `candidate`, refilled into the compact matrix the
-/// previous solve of this block retained when it has a structural pattern,
-/// so a projection allocates nothing proportional to the block.
+/// Everything an affine projection forms at the arithmetic origin before its
+/// first residual: the block Jacobian, its row and variable scales, its row
+/// magnitudes, and which row scales derive from a nonzero contribution.
+///
+/// A row carrying the parameter-static gradient certificate (SPEC_0043) has a
+/// Jacobian row that is a function of its certified parameter snapshot alone,
+/// and so are that row's scale, magnitude, and derived flag, except a scale
+/// that falls back to a coordinate outside the block. A retained
+/// linearization formed row by row from reverse gradients, whose certified
+/// rows' parameter snapshot is bitwise identical, is therefore exactly the
+/// formation at the current point once its uncertified rows are refilled from
+/// their reverse gradients and the outside fallback scales are formed again,
+/// and it is reused instead of formed.
+#[derive(Clone)]
+pub(crate) struct AffineLinearization {
+    jacobian: BlockJacobian,
+    row_scales: Vec<f64>,
+    variable_scales: Vec<f64>,
+    /// [`jacobian_row_magnitudes`] of `jacobian`.
+    row_magnitudes: Vec<f64>,
+    /// [`jacobian_row_derived`] at the origin variable scales.
+    row_derived: Vec<bool>,
+    /// Each row's fallback coordinate: its implicit target in solver Y.
+    fallback_targets: Vec<Option<usize>>,
+    /// What a reuse checks and refreshes, when the Jacobian was formed row by
+    /// row from reverse gradients.
+    reuse: Option<ReuseKey>,
+}
+
+/// The certified rows' parameter snapshot and the rows a reuse refills.
+#[derive(Clone)]
+struct ReuseKey {
+    /// The union of the certified rows' parameter slots.
+    slots: Box<[usize]>,
+    /// Their bit patterns when the linearization was formed.
+    bits: Box<[u64]>,
+    /// Block-local rows without the certificate.
+    uncertified: Box<[usize]>,
+}
+
+impl ReuseKey {
+    /// The block's certified parameter slots and uncertified rows.
+    fn layout<M: ImplicitProjectionModel>(
+        model: &M,
+        block: &solve::AlgebraicProjectionBlock,
+    ) -> (Box<[usize]>, Box<[usize]>) {
+        let mut slots = Vec::new();
+        let mut uncertified = Vec::new();
+        for (local, &row) in block.rows.iter().enumerate() {
+            match model.implicit_row_static_gradient_parameters(row) {
+                Some(parameters) => slots.extend_from_slice(parameters),
+                None => uncertified.push(local),
+            }
+        }
+        slots.sort_unstable();
+        slots.dedup();
+        (slots.into_boxed_slice(), uncertified.into_boxed_slice())
+    }
+
+    fn at((slots, uncertified): (Box<[usize]>, Box<[usize]>), p: &[f64]) -> Option<Self> {
+        let bits = slots
+            .iter()
+            .map(|&slot| p.get(slot).map(|value| value.to_bits()))
+            .collect::<Option<Box<[u64]>>>()?;
+        Some(Self {
+            slots,
+            bits,
+            uncertified,
+        })
+    }
+
+    fn matches(&self, p: &[f64]) -> bool {
+        self.slots
+            .iter()
+            .zip(&self.bits)
+            .all(|(&slot, &bits)| p.get(slot).is_some_and(|value| value.to_bits() == bits))
+    }
+}
+
+/// The block, its structure, and the point a linearization is formed at.
+#[derive(Clone, Copy)]
+struct OriginPoint<'a> {
+    candidate: &'a [f64],
+    p: &'a [f64],
+    t: f64,
+    block: &'a solve::AlgebraicProjectionBlock,
+    structure: Option<&'a solve::JacobianStructure>,
+}
+
+impl AffineLinearization {
+    /// The block's linearization at `point`, the arithmetic origin: `retained`
+    /// refreshed when its certified parameter snapshot still holds, else
+    /// formed afresh in the retained Jacobian's storage.
+    fn at_origin<M: ImplicitProjectionModel>(
+        model: &M,
+        point: OriginPoint<'_>,
+        retained: Option<Self>,
+    ) -> Result<Self, RuntimeSolveError> {
+        let Some(mut retained) = retained else {
+            return Self::form(model, point, None);
+        };
+        if let Some(key) = retained.reuse.take()
+            && key.matches(point.p)
+            && retained.refresh(model, point, &key.uncertified)?
+        {
+            retained.reuse = Some(key);
+            #[cfg(debug_assertions)]
+            retained.assert_formed_again(model, point)?;
+            return Ok(retained);
+        }
+        Self::form(model, point, Some(retained.jacobian))
+    }
+
+    fn form<M: ImplicitProjectionModel>(
+        model: &M,
+        point: OriginPoint<'_>,
+        storage: Option<BlockJacobian>,
+    ) -> Result<Self, RuntimeSolveError> {
+        let OriginPoint {
+            candidate,
+            p,
+            t,
+            block,
+            structure,
+        } = point;
+        let (jacobian, by_rows) =
+            affine_block_jacobian(model, candidate, (p, t), block, structure, storage)?;
+        let pattern = structure.map(solve::JacobianStructure::pattern);
+        let (row_scales, variable_scales) =
+            algebraic_block_scales(model, candidate, block, &jacobian, pattern);
+        let row_magnitudes = jacobian_row_magnitudes(&jacobian, pattern);
+        let row_derived = jacobian_row_derived(&jacobian, &variable_scales, pattern);
+        let reuse = (by_rows && structure.is_some())
+            .then(|| ReuseKey::at(ReuseKey::layout(model, block), p))
+            .flatten();
+        Ok(Self {
+            jacobian,
+            row_scales,
+            variable_scales,
+            row_magnitudes,
+            row_derived,
+            fallback_targets: fallback_targets(model, block),
+            reuse,
+        })
+    }
+
+    /// Refill the `uncertified` rows from their reverse gradients at `point`
+    /// with their scales, magnitudes, and derived flags, and form again every
+    /// fallback row scale that reads a coordinate outside the block. `false`
+    /// when an uncertified row has no reverse gradient here.
+    fn refresh<M: ImplicitProjectionModel>(
+        &mut self,
+        model: &M,
+        point: OriginPoint<'_>,
+        uncertified: &[usize],
+    ) -> Result<bool, RuntimeSolveError> {
+        let Some(structure) = point.structure else {
+            return Ok(false);
+        };
+        let pattern = structure.pattern();
+        if !super::initial::refill_reverse_rows(
+            model,
+            (point.candidate, point.p, point.t),
+            (&point.block.rows, &point.block.y_indices),
+            pattern,
+            uncertified,
+            &mut self.jacobian,
+        )? {
+            return Ok(false);
+        }
+        for &row in uncertified {
+            let fallback = self.fallback_scale(model, point.candidate, row);
+            let (jacobian, scales) = (&self.jacobian, &self.variable_scales);
+            self.row_scales[row] =
+                super::scaling::jacobian_row_scale(jacobian, row, scales, fallback, Some(pattern));
+            self.row_derived[row] =
+                super::scaling::jacobian_row_scale(jacobian, row, scales, 0.0, Some(pattern)) > 0.0;
+            self.row_magnitudes[row] =
+                super::scaling::jacobian_row_magnitude(jacobian, row, Some(pattern));
+        }
+        for row in 0..self.row_scales.len() {
+            if let Some(index) = self.fallback_targets[row]
+                && !self.row_derived[row]
+                && !point.block.y_indices.contains(&index)
+            {
+                self.row_scales[row] = model_variable_scale(model, index, point.candidate[index]);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Row `row`'s fallback scale at `candidate`, as [`algebraic_block_scales`]
+    /// forms it: its target's scale, or the unknown at the same offset.
+    fn fallback_scale<M: ImplicitProjectionModel>(
+        &self,
+        model: &M,
+        candidate: &[f64],
+        row: usize,
+    ) -> f64 {
+        self.fallback_targets[row].map_or_else(
+            || self.variable_scales.get(row).copied().unwrap_or(1.0),
+            |index| model_variable_scale(model, index, candidate[index]),
+        )
+    }
+
+    /// Debug builds form a reused linearization afresh and require the reuse
+    /// to be bitwise the formation it stands for.
+    #[cfg(debug_assertions)]
+    fn assert_formed_again<M: ImplicitProjectionModel>(
+        &self,
+        model: &M,
+        point: OriginPoint<'_>,
+    ) -> Result<(), RuntimeSolveError> {
+        let fresh = Self::form(model, point, None)?;
+        let bits = |values: &[f64]| {
+            values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            bits(fresh.jacobian.as_dense().as_slice()),
+            bits(self.jacobian.as_dense().as_slice()),
+            "a reused affine Jacobian is the one formed at its parameter snapshot"
+        );
+        assert_eq!(bits(&fresh.row_scales), bits(&self.row_scales));
+        assert_eq!(bits(&fresh.variable_scales), bits(&self.variable_scales));
+        assert_eq!(bits(&fresh.row_magnitudes), bits(&self.row_magnitudes));
+        assert_eq!(fresh.row_derived, self.row_derived);
+        Ok(())
+    }
+
+    /// The model scales the refinement's certificate reads at `candidate`.
+    /// Every block unknown is zero there, so its origin scale is its declared
+    /// scale, and a fallback coordinate outside the block keeps its value for
+    /// the whole call, so its origin scale serves every pass.
+    fn certificate_scales<M: ImplicitProjectionModel>(
+        &self,
+        model: &M,
+        candidate: &[f64],
+        block: &solve::AlgebraicProjectionBlock,
+    ) -> CertificateScales {
+        CertificateScales {
+            unknowns: block
+                .y_indices
+                .iter()
+                .copied()
+                .zip(self.variable_scales.iter().copied())
+                .collect(),
+            fallbacks: self
+                .fallback_targets
+                .iter()
+                .map(|target| {
+                    target
+                        .map(|index| (index, model_variable_scale(model, index, candidate[index])))
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The block Jacobian at `candidate`, refilled into `storage`, the compact
+/// matrix the previous solve of this block retained, when it is stored in the
+/// block's structural pattern, so a projection allocates nothing proportional
+/// to the block; and whether every row was filled from its reverse gradient.
 fn affine_block_jacobian<M: ImplicitProjectionModel>(
     model: &M,
     candidate: &[f64],
     (p, t): (&[f64], f64),
     block: &solve::AlgebraicProjectionBlock,
-    block_index: usize,
     structure: Option<&solve::JacobianStructure>,
-) -> Result<BlockJacobian, RuntimeSolveError> {
-    let retained = match structure {
-        Some(_) => match model.affine_jacobian_cache(block_index) {
-            Some(cache) => cache.borrow_mut().take_affine_jacobian(),
-            None => None,
-        },
-        None => None,
-    };
-    let storage = match (retained, structure) {
+    storage: Option<BlockJacobian>,
+) -> Result<(BlockJacobian, bool), RuntimeSolveError> {
+    let storage = match (storage, structure) {
         (Some(mut retained), Some(structure))
             if retained.is_stored_in(structure.compact_layout()) =>
         {
@@ -132,11 +366,9 @@ fn affine_block_jacobian<M: ImplicitProjectionModel>(
         (_, Some(structure)) => BlockJacobian::compact(structure.compact_layout()),
         (_, None) => BlockJacobian::zeros(block.rows.len(), block.y_indices.len()),
     };
-    algebraic_block_jacobian_in(
+    super::initial::algebraic_block_jacobian_by_rows_in(
         model,
-        candidate,
-        p,
-        t,
+        (candidate, p, t),
         (&block.rows, &block.y_indices),
         structure,
         storage,
@@ -149,15 +381,9 @@ struct AffineBlockSystem<'a, M> {
     time: f64,
     block: &'a solve::AlgebraicProjectionBlock,
     block_index: usize,
-    jacobian: BlockJacobian,
-    /// [`jacobian_row_magnitudes`] of `jacobian`.
-    row_magnitudes: Vec<f64>,
-    /// [`jacobian_row_derived`] at the origin variable scales.
-    row_derived: Vec<bool>,
+    linearization: AffineLinearization,
     /// The model scales the refinement's certificate reads.
     certificate_scales: CertificateScales,
-    row_scales: Vec<f64>,
-    variable_scales: Vec<f64>,
     structure: Option<&'a solve::JacobianStructure>,
     tolerance: f64,
     prefer_torn: bool,
@@ -206,10 +432,10 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
         // Conditioning belongs to this fixed matrix. Candidate-dependent
         // scales still certify the fresh source residual in `refine`.
         let system = ScaledNewtonSystem {
-            jacobian: &self.jacobian,
+            jacobian: &self.linearization.jacobian,
             residual,
-            row_scales: &self.row_scales,
-            variable_scales: &self.variable_scales,
+            row_scales: &self.linearization.row_scales,
+            variable_scales: &self.linearization.variable_scales,
             structure: self.structure.map(solve::JacobianStructure::pattern),
             tolerance: self.tolerance,
         };
@@ -244,11 +470,11 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             // Zero was only the arithmetic origin used to extract b. The
             // residual certificate uses this candidate's coordinate scales.
             let origin = OriginRowScales {
-                jacobian: &self.jacobian,
+                jacobian: &self.linearization.jacobian,
                 structure: self.structure.map(solve::JacobianStructure::pattern),
-                scales: &self.row_scales,
-                magnitudes: &self.row_magnitudes,
-                derived: &self.row_derived,
+                scales: &self.linearization.row_scales,
+                magnitudes: &self.linearization.row_magnitudes,
+                derived: &self.linearization.row_derived,
             };
             let converged = origin_bounded_residual_converged(
                 y,

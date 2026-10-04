@@ -805,6 +805,16 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         self.runtime.algebraic_newton_caches.get(index)
     }
 
+    fn implicit_row_static_gradient_parameters(&self, row_idx: usize) -> Option<&[usize]> {
+        let (program_idx, _) = self
+            .runtime
+            .implicit_scalar_rhs
+            .row_output_position(row_idx)?;
+        self.runtime
+            .implicit_scalar_rhs
+            .parameter_static_y_gradient_params(program_idx)
+    }
+
     fn solve_algebraic_newton_delta(
         &self,
         block_index: usize,

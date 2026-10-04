@@ -913,10 +913,23 @@ pub(super) fn algebraic_block_jacobian_in(
     y: &[f64],
     p: &[f64],
     t: f64,
+    coordinates: (&[usize], &[usize]),
+    structure: Option<&solve::JacobianStructure>,
+    jacobian: BlockJacobian,
+) -> Result<BlockJacobian, RuntimeSolveError> {
+    algebraic_block_jacobian_by_rows_in(model, (y, p, t), coordinates, structure, jacobian)
+        .map(|(jacobian, _)| jacobian)
+}
+
+/// [`algebraic_block_jacobian_in`], and whether every row was filled from its
+/// own reverse gradient, the formation [`refill_reverse_rows`] repeats.
+pub(super) fn algebraic_block_jacobian_by_rows_in(
+    model: &dyn ImplicitProjectionModel,
+    (y, p, t): (&[f64], &[f64], f64),
     (rows, y_indices): (&[usize], &[usize]),
     structure: Option<&solve::JacobianStructure>,
     mut jacobian: BlockJacobian,
-) -> Result<BlockJacobian, RuntimeSolveError> {
+) -> Result<(BlockJacobian, bool), RuntimeSolveError> {
     if let Some(structure) = structure {
         validate_projection_structure(
             structure.pattern(),
@@ -937,7 +950,7 @@ pub(super) fn algebraic_block_jacobian_in(
             jacobian.storage_mut(),
         )?
     {
-        return Ok(jacobian);
+        return Ok((jacobian, false));
     }
     let mut reverse_gradient = vec![0.0; y.len()];
     let mut needs_forward_jvp = vec![true; rows.len()];
@@ -960,7 +973,7 @@ pub(super) fn algebraic_block_jacobian_in(
         );
     }
     if needs_forward_jvp.iter().all(|needs_forward| !needs_forward) {
-        return Ok(jacobian);
+        return Ok((jacobian, true));
     }
     if let Some(structure) = structure {
         fill_colored_algebraic_rows(
@@ -976,7 +989,7 @@ pub(super) fn algebraic_block_jacobian_in(
             &needs_forward_jvp,
             structure,
         )?;
-        return Ok(jacobian);
+        return Ok((jacobian, false));
     }
 
     // The tensor JVP certificate uses the canonical `[solver-y | parameter]`
@@ -1016,7 +1029,39 @@ pub(super) fn algebraic_block_jacobian_in(
         }
         seed[y_idx] = 0.0;
     }
-    Ok(jacobian)
+    Ok((jacobian, false))
+}
+
+/// Refill rows `local_rows` of `jacobian` from their reverse gradients at
+/// `(y, p, t)`, exactly as [`algebraic_block_jacobian_by_rows_in`] fills them
+/// when every row has one. `false` when some row has no reverse gradient.
+pub(super) fn refill_reverse_rows(
+    model: &dyn ImplicitProjectionModel,
+    point: (&[f64], &[f64], f64),
+    (rows, y_indices): (&[usize], &[usize]),
+    structure: &solve::StructuralPattern,
+    local_rows: &[usize],
+    jacobian: &mut BlockJacobian,
+) -> Result<bool, RuntimeSolveError> {
+    let mut reverse_gradient = vec![0.0; point.0.len()];
+    for &row in local_rows {
+        let residual_idx = rows[row];
+        if !reverse_row(model, point, residual_idx, y_indices, &mut reverse_gradient)? {
+            return Ok(false);
+        }
+        fill_reverse_projection_row(
+            jacobian,
+            ReverseProjectionRowInput {
+                row,
+                residual_idx,
+                y_indices,
+                gradient: &reverse_gradient,
+                structure: Some(structure),
+                model,
+            },
+        );
+    }
+    Ok(true)
 }
 
 /// One algebraic projection block and the point its Jacobian is formed at.

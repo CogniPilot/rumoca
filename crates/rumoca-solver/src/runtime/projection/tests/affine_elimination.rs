@@ -1,4 +1,5 @@
 mod controls;
+mod linearization;
 mod promotion;
 mod seed;
 

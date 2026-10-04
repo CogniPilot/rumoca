@@ -490,19 +490,29 @@ pub(super) fn jacobian_row_magnitudes(
     jacobian: &BlockJacobian,
     structure: Option<&solve::StructuralPattern>,
 ) -> Vec<f64> {
-    let pattern = matching_pattern(jacobian, structure);
     (0..jacobian.nrows())
-        .map(|row| {
-            let mut magnitude = 0.0_f64;
-            jacobian.visit_row(row, pattern, &mut |_, value| {
-                let value = value.abs();
-                if value.is_finite() {
-                    magnitude = magnitude.max(value);
-                }
-            });
-            magnitude
-        })
+        .map(|row| jacobian_row_magnitude(jacobian, row, structure))
         .collect()
+}
+
+/// One row of [`jacobian_row_magnitudes`].
+pub(super) fn jacobian_row_magnitude(
+    jacobian: &BlockJacobian,
+    row: usize,
+    structure: Option<&solve::StructuralPattern>,
+) -> f64 {
+    let mut magnitude = 0.0_f64;
+    jacobian.visit_row(
+        row,
+        matching_pattern(jacobian, structure),
+        &mut |_, value| {
+            let value = value.abs();
+            if value.is_finite() {
+                magnitude = magnitude.max(value);
+            }
+        },
+    );
+    magnitude
 }
 
 /// `structure` when it is shaped like `jacobian`.
@@ -518,7 +528,7 @@ fn matching_pattern<'a>(
 
 /// One row's scale: its largest finite contribution `|J[row, column]| *
 /// scale(column)`, or `fallback` when none is positive.
-fn jacobian_row_scale(
+pub(super) fn jacobian_row_scale(
     jacobian: &BlockJacobian,
     row: usize,
     variable_scales: &[f64],

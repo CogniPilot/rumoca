@@ -283,6 +283,14 @@ pub(crate) trait ImplicitProjectionModel {
         None
     }
 
+    /// The exact parameter slots that key implicit residual `row_idx`'s
+    /// certified solver-Y gradient (SPEC_0043 parameter-static gradient), or
+    /// `None` when the gradient is not certified invariant under solver-Y and
+    /// time.
+    fn implicit_row_static_gradient_parameters(&self, _row_idx: usize) -> Option<&[usize]> {
+        None
+    }
+
     /// The canonical projection block that fallback counts attribute block
     /// `block_index` of this model's plan to; `None` leaves it uncounted.
     fn projection_site(&self, _block_index: usize) -> Option<usize>
