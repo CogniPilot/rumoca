@@ -687,6 +687,19 @@ fn record_modification_default(
     }
     let mut args = Vec::with_capacity(component.modifications.len());
     for (field, value) in &component.modifications {
+        // A nested modification `re(start = 0)` modifies the field's
+        // attributes, not its value, and `re(start = 0) = e` binds it to `e`
+        // (MLS 3.7 §7.2); only a binding is a constructor argument.
+        let value = match value {
+            ast::Expression::ClassModification { .. } => continue,
+            ast::Expression::Binary {
+                op: rumoca_core::OpBinary::Assign,
+                lhs,
+                rhs,
+                ..
+            } if matches!(**lhs, ast::Expression::ClassModification { .. }) => &**rhs,
+            value => value,
+        };
         let qualified = qualify_function_expr(value, imports, locals);
         let value = ast_lower::expression_from_ast_with_intrinsics(
             &qualified,

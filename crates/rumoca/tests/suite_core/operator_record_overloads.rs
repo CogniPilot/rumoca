@@ -399,3 +399,18 @@ fn a_vector_quotient_without_an_operator_function_is_refused() {
         "v / w of two record vectors has no meaning"
     );
 }
+
+/// A record function output declared with a nested modification takes only
+/// the binding as its constructor argument (MLS 3.7 §7.2): `re(min = -10) =
+/// a` binds `re` to `a`, and an attribute-only `im(start = 0)` binds nothing,
+/// so `im` keeps the record's own binding.
+#[test]
+fn a_nested_field_modification_of_a_record_output_binds_only_its_value() {
+    let source = MODELS.replace(
+        "  model Filled\n",
+        "  record P\n    Real re;\n    Real im = 7;\n  end P;\n  function make\n    input Real a;\n    output P result(re(min = -10) = a, im(start = 0));\n  algorithm\n  end make;\n  model Nested\n    P p = make(2*time);\n  end Nested;\n  model Filled\n",
+    );
+    let result = simulate_source(&source, "Ops.Nested");
+    assert!((final_value(&result, "p.re") - 2.0).abs() < 1e-9);
+    assert!((final_value(&result, "p.im") - 7.0).abs() < 1e-9);
+}
