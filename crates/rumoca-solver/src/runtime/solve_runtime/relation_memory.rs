@@ -216,6 +216,7 @@ impl SolveRuntime {
         // execution filter and cannot stand in for these expression leaves.
         write_clock_activation_params(&self.model, p, t);
         let window = self.event_schedule().relation_surface_window();
+        let initial_event = self.initial_event_flag(p);
         let mut history = std::collections::VecDeque::with_capacity(window + 1);
         for event_iteration in 0..self.event_schedule().fixed_point_cap() {
             // Appendix B fixes `pre` for one complete equation pass, then
@@ -268,7 +269,7 @@ impl SolveRuntime {
             };
             changed |= self.advance_condition_memory(&snapshot, y, p, t)?;
             if !changed && event_iteration_plan_settled(&self.model, y, p)? {
-                return self.converge_event(y, p, event_pre_p, t, row_filter);
+                return self.converge_event(y, p, event_pre_p, t, row_filter, initial_event);
             }
             if !on_relation_surface(&mut history, window, y, p, tol) {
                 continue;
@@ -288,7 +289,7 @@ impl SolveRuntime {
             if resumed {
                 history.clear();
             } else {
-                return self.converge_event(y, p, event_pre_p, t, row_filter);
+                return self.converge_event(y, p, event_pre_p, t, row_filter, initial_event);
             }
         }
         Err(RuntimeSolveError::solve_ir(format!(
@@ -894,6 +895,11 @@ impl SolveRuntime {
 
     /// Close a converged event: evaluate its actions, then release the clock
     /// pulses its condition buffers saw (see `release_condition_pulses`).
+    ///
+    /// The actions belong to the event instant, so at the initialization
+    /// event they read `initial()` true (MLS §8.6) even when a later pass of
+    /// the iteration cleared it: a `when initial()` assertion or print acts
+    /// once, on the settled values.
     fn converge_event(
         &self,
         y: &mut [f64],
@@ -901,8 +907,15 @@ impl SolveRuntime {
         event_pre_p: &[f64],
         t: f64,
         row_filter: EventUpdateRowFilter,
+        initial_event: bool,
     ) -> Result<EventActionOutcome, RuntimeSolveError> {
-        let outcome = self.eval_event_actions(y, p, event_pre_p, t, row_filter)?;
+        let outcome = if initial_event && !self.initial_event_flag(p) {
+            let mut action_p = copy_runtime_values(p, "initial event action parameters")?;
+            self.set_initial_event_flag(&mut action_p, true);
+            self.eval_event_actions(y, &action_p, event_pre_p, t, row_filter)?
+        } else {
+            self.eval_event_actions(y, p, event_pre_p, t, row_filter)?
+        };
         self.release_condition_pulses(y, p, t)?;
         Ok(outcome)
     }

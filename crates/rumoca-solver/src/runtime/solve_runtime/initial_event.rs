@@ -114,6 +114,16 @@ impl SolveRuntime {
         super::set_initial_event_flag(&self.model, p, value);
     }
 
+    /// Whether `p` holds `initial()` true.
+    pub(super) fn initial_event_flag(&self, p: &[f64]) -> bool {
+        self.model
+            .problem
+            .solve_layout
+            .initial_event_parameter_index
+            .and_then(|index| p.get(index))
+            .is_some_and(|value| *value > 0.5)
+    }
+
     pub fn apply_projected_post_initial_event_update<P>(
         &self,
         input: ProjectedPostInitialEventInput<'_>,
