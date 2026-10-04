@@ -905,8 +905,15 @@ impl SolveRuntime {
             if refresh_algebraics_for_updates {
                 self.refresh_algebraic_and_output_slots(t, y, p, tol, max_iters)?;
             }
+            // A relation reads its event memory between events; at the
+            // initialization instant that memory must be the relation evaluated
+            // at the solution itself (MLS 3.7 §8.6, every equation holds at
+            // once), so a change sends the projection round again.
+            let state = y[..self.model.state_scalar_count().min(y.len())].to_vec();
+            let relations_changed =
+                self.update_relation_memory_from_state(t, &state, p, tol, max_iters)?;
             let update_changed = self.apply_initialization_updates(y, p, t, tol, max_iters)?;
-            if !delay_changed && !update_changed {
+            if !delay_changed && !update_changed && !relations_changed {
                 return Ok(());
             }
         }

@@ -86,3 +86,49 @@ fn an_initial_row_reading_a_fixed_discrete_is_solved_with_it() {
     assert!((value("x") - 2.0).abs() < 1e-9, "x = {}", value("x"));
     assert!((value("q") - 3.0).abs() < 1e-9, "q = {}", value("q"));
 }
+
+const RELATION_AT_INIT: &str = "
+model RelationAtInitialization
+  parameter Real period = 1;
+  Real width;
+  discrete Real start(start = -5);
+  Real x;
+  Real y;
+equation
+  width = period/2;
+  y = if time < start + width then 3 else 0;
+  der(x) = -x;
+  when time > 0.7 then
+    start = time;
+  end when;
+initial algorithm
+  start := 0;
+initial equation
+  x = y;
+end RelationAtInitialization;";
+
+/// The initialization row reads a relation through an algebraic, and the
+/// relation reads a discrete the initialization defines: its event memory takes
+/// the value of the relation at the initial solution, so `x(0) = y(0) = 3`.
+#[test]
+fn an_initial_row_reads_relations_at_the_initial_solution() {
+    let dae = Compiler::new()
+        .model("RelationAtInitialization")
+        .compile_str(RELATION_AT_INIT, "initial_held_discretes.mo")
+        .unwrap()
+        .dae;
+    let result = simulate_dae_with_diagnostics(
+        &dae,
+        &SimOptions {
+            t_end: 0.25,
+            dt: Some(0.25),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let value = |name: &str| {
+        let index = result.names.iter().position(|n| n == name).unwrap();
+        result.data[index][0]
+    };
+    assert!((value("x") - 3.0).abs() < 1e-9, "x = {}", value("x"));
+}
