@@ -41,6 +41,44 @@ fn independent_demotions_do_not_rebuild_candidates_that_cannot_sort() {
 }
 
 #[test]
+fn the_holonomic_lane_threads_each_direct_round_incidence_to_the_next() {
+    let model = pinned_blocks(5, vec![]);
+    let (outcome, reusable) = structural_analysis_capturing(&model, None, None);
+    let Err(error) = outcome else {
+        panic!("every pinned block starts singular");
+    };
+    let residue = unmatched_residue(&error).expect("a singular system has a residue");
+    let mut threaded = HolonomicReductionState::new(residue, error.clone());
+    threaded.reusable = reusable;
+    let mut fresh = HolonomicReductionState::new(residue, error);
+    for _ in 0..3 {
+        let Some(step @ DemotionStep::Reduced { .. }) =
+            threaded.direct_step(&model, true, &mut ()).unwrap()
+        else {
+            panic!("an independent block reduces");
+        };
+        threaded.accept_demotion(step);
+        assert!(
+            threaded.reusable.is_some(),
+            "a demotion without a manifold hands its incidence to the next round"
+        );
+        let Some(step @ DemotionStep::Reduced { .. }) =
+            fresh.direct_step(&model, true, &mut ()).unwrap()
+        else {
+            panic!("an independent block reduces");
+        };
+        fresh.accept_demotion(step);
+        fresh.reusable = None;
+        assert_eq!(threaded.residue, fresh.residue);
+        assert_eq!(
+            serde_json::to_vec(threaded.current(&model)).unwrap(),
+            serde_json::to_vec(fresh.current(&model)).unwrap(),
+            "the threaded incidence decides exactly as a rebuilt one"
+        );
+    }
+}
+
+#[test]
 fn later_sorted_tensor_candidate_still_beats_a_reduced_scalar_candidate() {
     let (model, candidates) = mixed_width_constraint();
     let residue = unmatched_residue(&structural_analysis(&model).err().unwrap()).unwrap();

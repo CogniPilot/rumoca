@@ -1353,6 +1353,10 @@ struct HolonomicReductionState {
     direct_round_number: u32,
     differentiated_owners: BTreeSet<HolonomicOwnerKey>,
     blocked: Option<DiscardedInitialValue>,
+    /// The incidence of the current system while its manifold is empty, so a
+    /// direct round reuses untouched rows and screens candidates exactly as
+    /// the outer direct lane does.
+    reusable: Option<crate::incidence::ReusableIncidence>,
 }
 
 impl HolonomicReductionState {
@@ -1366,6 +1370,7 @@ impl HolonomicReductionState {
             direct_round_number: 0,
             differentiated_owners: BTreeSet::new(),
             blocked: None,
+            reusable: None,
         }
     }
 
@@ -1383,10 +1388,31 @@ impl HolonomicReductionState {
         else {
             unreachable!("a sorted step completes the reduction immediately")
         };
+        self.reusable = None;
         self.reduced = Some(dae);
         self.manifold = manifold;
         self.residue = residue;
         self.current_error = error;
+    }
+
+    fn accept_demotion(&mut self, step: DemotionStep) {
+        let DemotionStep::Reduced {
+            dae,
+            manifold,
+            residue,
+            error,
+            reusable,
+        } = step
+        else {
+            unreachable!("a sorted demotion completes the reduction immediately")
+        };
+        self.accept_reduced(HolonomicStep::Reduced {
+            dae,
+            manifold,
+            residue,
+            error,
+        });
+        self.reusable = self.manifold.is_empty().then_some(reusable);
     }
 
     fn discard_stalled(&mut self, observer: &mut impl ReductionObserver) {
@@ -1436,7 +1462,7 @@ impl HolonomicReductionState {
             self.residue,
             &self.manifold,
             allow_held,
-            None,
+            self.reusable.as_ref(),
             observer,
         )?;
         self.blocked = self.blocked.take().or(round.blocked);
@@ -1455,7 +1481,7 @@ impl HolonomicReductionState {
                     manifold,
                     structural,
                 } => return sorted_holonomic_round(dae, manifold, structural).map(Some),
-                step @ DemotionStep::Reduced { .. } => self.accept_reduced(step.into()),
+                step @ DemotionStep::Reduced { .. } => self.accept_demotion(step),
             }
         }
         Ok(None)
@@ -1474,7 +1500,7 @@ impl HolonomicReductionState {
                 structural,
             }) => sorted_holonomic_round(dae, manifold, structural).map(Some),
             Some(step @ DemotionStep::Reduced { .. }) => {
-                self.accept_reduced(step.into());
+                self.accept_demotion(step);
                 Ok(None)
             }
             None => match held {
@@ -1490,28 +1516,6 @@ impl HolonomicReductionState {
                     }))
                 }
             },
-        }
-    }
-}
-
-impl From<DemotionStep> for HolonomicStep {
-    fn from(step: DemotionStep) -> Self {
-        match step {
-            DemotionStep::Reduced {
-                dae,
-                manifold,
-                residue,
-                error,
-                reusable: _,
-            } => Self::Reduced {
-                dae,
-                manifold,
-                residue,
-                error,
-            },
-            DemotionStep::Sorted { .. } => {
-                unreachable!("a sorted demotion completes before conversion")
-            }
         }
     }
 }
@@ -1575,8 +1579,9 @@ fn reduce_holonomic_constraint_with_observer(
     } else {
         None
     };
+    let mut reusable = None;
     if let Some(normalized) = &normalized {
-        outcome = structural_analysis(normalized);
+        (outcome, reusable) = structural_analysis_capturing(normalized, None, None);
     }
     let (residue, current_error) = match outcome {
         Ok(structural) => {
@@ -1600,6 +1605,7 @@ fn reduce_holonomic_constraint_with_observer(
     };
     let mut state = HolonomicReductionState::new(residue, current_error);
     state.reduced = normalized;
+    state.reusable = reusable;
     if state.reduced.is_some()
         && let Some(round) = state.exhaust_direct(model, observer)?
     {
