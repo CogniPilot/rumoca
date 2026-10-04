@@ -23,14 +23,14 @@ pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMig
     migration.metric.from_quality_gate_version = 12;
     migration.metric.to_quality_gate_version = 13;
     migration.metric.change = "typed-trace-exceptions-v6".to_string();
-    migration.metric.strict_high_before = 290;
-    migration.metric.strict_high_after = 290;
+    migration.metric.strict_high_before = 294;
+    migration.metric.strict_high_after = 294;
     migration.metric.policy_excluded_after = 57;
     migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 4;
+    migration.metric.excluded_non_high_before = 6;
     migration.metric.exclusions_sha256 =
         "531112e2787706cc6dea5eaa23198c6bc3c0974c14078dc32a075c748a853c57".to_string();
-    migration.evidence_git_commit = "f9327ba9adebd997b33f93687939612716aa8dd9".to_string();
+    migration.evidence_git_commit = "27ee7d3c3c4ff37785d2df91272576dbd39145a4".to_string();
     migration.evidence_run = "package-coverage-integration-v13-full".to_string();
     migration.policy_excluded_before = 51;
     migration.roster_additions = Vec::new();
