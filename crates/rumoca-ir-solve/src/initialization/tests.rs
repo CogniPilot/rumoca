@@ -18,6 +18,7 @@ fn input() -> InitializationSystemInput {
         ),
         row_roles: vec![InitializationRowRole::Solved],
         projection_plan: InitializationProjectionPlan {
+            iterates_discretes: false,
             blocks: vec![InitializationProjectionBlock {
                 rows: vec![0],
                 unknowns: vec![scalar_slot_y(0)],

@@ -163,6 +163,7 @@ mod initial_discrete_array_definitions;
 mod initial_discrete_continuous_reads;
 mod initial_discrete_relations;
 mod initial_discrete_row_major_family;
+mod initial_held_discretes;
 mod initial_value_alias_transfer;
 mod initialization_ordering;
 mod initialization_parameter_scale;

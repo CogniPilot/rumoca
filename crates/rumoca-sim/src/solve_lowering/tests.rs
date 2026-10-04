@@ -1282,21 +1282,15 @@ fn a_failed_initialization_names_the_coordinate_its_row_was_planned_to_determine
     );
 }
 
-/// A row no block solves is not automatically a surplus check, and calling it one
-/// names the wrong defect. MLS 3.6 §8.6 makes a surplus row legal — a coordinate a
-/// declaration determines may still be read by another initialization equation —
-/// so failing one means two declarations contradict each other. A row over a
-/// coordinate the projection never owned is the opposite: nothing solved that
-/// coordinate. The two must not share a message.
-///
-/// `Modelica.Electrical.Analog.Examples.IdealTriacCircuit` is the MSL model this
-/// separates: its failing row reads a discrete coordinate, and the old message
-/// called it a consistency check.
+/// A row that reads a discrete coordinate is planned with the discrete held at
+/// its current value (MLS 3.7 §8.6 mixed system): `x = d + 2` with
+/// `d(start = 0, fixed = true)` initializes `x = 2`, as OpenModelica does. A row
+/// whose algebraic dependency the continuous matching owns is solved through it.
 #[test]
-fn an_unowned_initialization_row_is_not_reported_as_a_surplus_check() {
+fn initialization_rows_read_held_discretes_and_owned_algebraics() {
     let discrete_read = compile(
         concat!(
-            "model UnownedDiscrete\n",
+            "model HeldDiscrete\n",
             "  Real x(start=0, fixed=false);\n",
             "  discrete Real d(start=0, fixed=true);\n",
             "equation\n",
@@ -1306,22 +1300,13 @@ fn an_unowned_initialization_row_is_not_reported_as_a_surplus_check() {
             "  end when;\n",
             "initial equation\n",
             "  x = d + 2;\n",
-            "end UnownedDiscrete;\n",
+            "end HeldDiscrete;\n",
         ),
-        "UnownedDiscrete",
+        "HeldDiscrete",
     );
-    let error = simulate_dae(&discrete_read, &SimOptions::default())
-        .expect_err("a discrete coordinate is outside the planned unknown space")
-        .to_string();
-    assert!(
-        error.contains("outside the planned initialization unknown space")
-            && error.contains("discrete-time coordinate"),
-        "an unowned discrete read names its kind, got: {error}"
-    );
-    assert!(
-        !error.contains("surplus-check"),
-        "a row nothing solved must not be reported as a surplus check, got: {error}"
-    );
+    let result = simulate_dae(&discrete_read, &SimOptions::default())
+        .expect("the projection holds the discrete and solves x");
+    assert!((column(&result, "x")[0] - 2.0).abs() <= 1.0e-9);
 
     let algebraic_read = compile(
         concat!(

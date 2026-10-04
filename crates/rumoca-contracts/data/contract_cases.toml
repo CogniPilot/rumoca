@@ -4055,6 +4055,13 @@ kind = 'Sim'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'EQN-041'
+case_id = 'eqn_041_initial_row_reads_a_relation_defined_discrete'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'INST-057'
 case_id = 'inst_057_member_tail_follows_each_occurrence'
 test_file = 'tests/inst_lookup_contracts.rs'

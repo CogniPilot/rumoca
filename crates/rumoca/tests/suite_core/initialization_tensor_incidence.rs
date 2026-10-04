@@ -372,8 +372,11 @@ fn an_algebraic_initial_equation_cannot_override_a_fixed_state() {
     }
 }
 
+/// `x = a` reads an algebraic whose definition reads a discrete the projection
+/// holds (MLS 3.7 §8.6 mixed system), so x observes a = 2 * d = 4, never the
+/// zero declaration seed of `a`.
 #[test]
-fn an_unowned_algebraic_dependency_cannot_certify_its_zero_seed() {
+fn an_algebraic_dependency_on_a_held_discrete_initializes_through_its_definition() {
     let source = r#"
 model DiscreteInitialAlgebraic
   Real x(start=0, fixed=false);
@@ -392,7 +395,7 @@ end DiscreteInitialAlgebraic;
         .compile_str(source, "DiscreteInitialAlgebraic.mo")
         .unwrap();
     for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
-        let error = simulate_dae_with_diagnostics(
+        let result = simulate_dae_with_diagnostics(
             &compiled.dae,
             &SimOptions {
                 solver_mode,
@@ -400,10 +403,12 @@ end DiscreteInitialAlgebraic;
                 ..Default::default()
             },
         )
-        .expect_err("unowned x=a must observe a=4, never the zero declaration seed");
+        .unwrap_or_else(|error| panic!("{solver_mode:?}: {error}"));
+        let x = result.names.iter().position(|name| name == "x").unwrap();
         assert!(
-            error.to_string().contains("initial variable projection"),
-            "{error}"
+            (result.data[x][0] - 4.0).abs() < 1.0e-9,
+            "{solver_mode:?}: x(0) = {}",
+            result.data[x][0]
         );
     }
 }

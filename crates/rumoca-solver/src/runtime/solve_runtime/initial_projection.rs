@@ -1016,6 +1016,7 @@ mod tests {
                         row_roles: vec![solve::InitializationRowRole::Solved],
                         residual,
                         projection_plan: solve::InitializationProjectionPlan {
+                            iterates_discretes: false,
                             blocks: vec![solve::InitializationProjectionBlock {
                                 rows: vec![0],
                                 unknowns: vec![solve::scalar_slot_y(0)],
@@ -1095,6 +1096,7 @@ mod tests {
                         row_roles: vec![solve::InitializationRowRole::Solved],
                         residual: initial,
                         projection_plan: solve::InitializationProjectionPlan {
+                            iterates_discretes: false,
                             blocks: vec![solve::InitializationProjectionBlock {
                                 rows: vec![0],
                                 unknowns: vec![solve::scalar_slot_y(0)],
@@ -1243,6 +1245,7 @@ mod tests {
                             solve::InitializationRowRole::SolvedThroughAlgebraicRefresh,
                         ],
                         projection_plan: solve::InitializationProjectionPlan {
+                            iterates_discretes: false,
                             blocks: vec![solve::InitializationProjectionBlock {
                                 rows: vec![0],
                                 unknowns: vec![solve::scalar_slot_p(0)],

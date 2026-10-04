@@ -1,5 +1,5 @@
 {
-  "schema_version": 71,
+  "schema_version": 72,
   "layout": {
     "bindings": {
       "x": {
@@ -393,7 +393,8 @@
       "SurplusCheck"
     ],
     "projection_plan": {
-      "blocks": []
+      "blocks": [],
+      "iterates_discretes": false
     },
     "update_rhs": {
       "programs": [],

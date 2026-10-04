@@ -534,6 +534,7 @@ mod tests {
 
     fn covered_plan() -> solve::InitializationProjectionPlan {
         solve::InitializationProjectionPlan {
+            iterates_discretes: false,
             blocks: vec![solve::InitializationProjectionBlock {
                 rows: vec![0],
                 unknowns: vec![solve::scalar_slot_y(0)],

@@ -101,7 +101,8 @@ pub(super) fn combined_parameter_seed_index(
 /// The initialization system a homotopy continuation sweeps.
 ///
 /// `homotopy_parameter_index` is the hidden λ slot; `None` means the model
-/// carries no `homotopy(...)` and the plan is projected once, as-is.
+/// carries no `homotopy(...)`: the plan is projected once, or alternated with
+/// the discrete assignments when it holds discretes (`iterates_discretes`).
 pub(crate) struct InitialHomotopySystem<'a, M> {
     pub model: &'a M,
     pub t: f64,

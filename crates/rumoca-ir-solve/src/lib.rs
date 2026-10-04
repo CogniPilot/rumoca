@@ -85,7 +85,7 @@ pub use visitor::{
 
 pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 71;
+pub const SOLVE_SCHEMA_VERSION: u16 = 72;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)

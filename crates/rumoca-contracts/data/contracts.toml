@@ -1874,6 +1874,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'EQN-041'
+category = 'Equation'
+name = 'Mixed initialization system'
+mls_ref = '§8.6'
+requirement = 'An initialization row that reads a discrete determined from continuous values is solved with that discrete held, alternating the projection with the discrete assignments until the discrete values stop changing; an iteration that does not settle is refused'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'EXPR-001'
 category = 'Expression'
 name = 'Relational scalar only'

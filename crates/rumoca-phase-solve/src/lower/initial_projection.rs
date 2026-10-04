@@ -61,15 +61,17 @@
 //! evaluation and differentiates that complete map. Stored algebraic seeds
 //! cannot certify initialization, and a missing defining row remains unowned.
 //!
-//! **Discrete reads: the check is honest, and the refusal is an over-refusal.** A
-//! discrete coordinate *is* at its §8.6 value when the residual runs — the runtime
-//! seeds and settles the discrete values before `settle_initialization_system`. So
-//! the row checks a real number; it simply has no way to solve for the state it
-//! also reads. `x + q = 5; x = d + 2;` with `d(start = 0, fixed = true)` is
-//! satisfiable at `x = 2, q = 3`, which is what OpenModelica returns, and rumoca
-//! reports `EX001` instead. That is an over-refusal against OMC, not merely an
-//! unplanned row, and admitting it needs discretes in the unknown space's
-//! *determined* half — task #44's event-machinery territory.
+//! **Discrete reads are held and iterated.** A discrete whose initial definition
+//! reads only values known before the projection is settled first and read as a
+//! known value. Any other discrete a planned row reads is held at its current
+//! value during one projection, and the plan says so
+//! (`InitializationProjectionPlan::iterates_discretes`): the runtime then
+//! re-evaluates the discrete assignments from the projected values and projects
+//! again until the discrete values stop changing. That fixed point satisfies
+//! every continuous, initial, and discrete equation at once, which is the MLS
+//! §8.6 mixed system; an iteration that does not settle is refused. A value
+//! applied once after the projection (a post-projection discrete definition)
+//! still may not read an unsettled discrete, because nothing orders that read.
 //!
 //! **Array coordinates retain their exact scalar identity.** Initial equations,
 //! structured family points, substituted parameter bindings, and matched
@@ -231,8 +233,8 @@ fn reads_only_settled_values<'dae>(
             domain_point: None,
         });
         matches!(
-            row_unknowns(space, &source, cache),
-            RowIncidence::Owned { unknowns, algebraic_reads: false } if unknowns.is_empty()
+            row_unknowns(space, &source, cache, DiscreteReads::Exclude),
+            RowIncidence::Owned { unknowns, algebraic_reads: false, .. } if unknowns.is_empty()
         )
     })
 }
@@ -368,13 +370,16 @@ pub(super) fn plan_initialization_projection<'dae>(
     let mut row_roles = vec![solve::InitializationRowRole::SurplusCheck; rows.len()];
     let mut incidence: Vec<(usize, BTreeSet<InitialUnknown>)> = Vec::new();
     let mut algebraic_rows = BTreeSet::new();
+    let mut iterates_discretes = false;
     let mut projection_cache = rumoca_eval_dae::ScalarCoordinateProjectionCache::default();
     for (row, source) in rows.iter().enumerate() {
-        match row_unknowns(space, source, &mut projection_cache) {
+        match row_unknowns(space, source, &mut projection_cache, DiscreteReads::Hold) {
             RowIncidence::Owned {
                 unknowns,
                 algebraic_reads,
+                held_discretes,
             } => {
+                iterates_discretes |= held_discretes;
                 if algebraic_reads {
                     algebraic_rows.insert(row);
                 }
@@ -419,7 +424,10 @@ pub(super) fn plan_initialization_projection<'dae>(
         };
     }
     Ok(InitialProjection {
-        plan: solve::InitializationProjectionPlan { blocks },
+        plan: solve::InitializationProjectionPlan {
+            blocks,
+            iterates_discretes,
+        },
         row_roles,
     })
 }
@@ -534,6 +542,7 @@ fn row_unknowns<'dae>(
     space: &InitializationUnknownSpace<'_, 'dae>,
     row: &InitialRowIncidence<'dae>,
     projection_cache: &mut rumoca_eval_dae::ScalarCoordinateProjectionCache<'dae>,
+    discrete_reads: DiscreteReads,
 ) -> RowIncidence {
     let pending = match row {
         InitialRowIncidence::Residual(residual) => vec![residual.clone()],
@@ -557,6 +566,8 @@ fn row_unknowns<'dae>(
             _ => BTreeSet::new(),
         },
         excluded: None,
+        discrete_reads,
+        held_discretes: false,
         substituted: BTreeSet::new(),
         expanded: BTreeSet::new(),
         algebraics: BTreeSet::new(),
@@ -595,6 +606,7 @@ fn row_unknowns<'dae>(
         None => RowIncidence::Owned {
             unknowns: incidence.unknowns,
             algebraic_reads: !incidence.algebraics.is_empty(),
+            held_discretes: incidence.held_discretes,
         },
         Some(kind) => RowIncidence::Unowned(if incidence.algebraics.is_empty() {
             kind
@@ -631,7 +643,7 @@ pub(super) fn prove_initial_definition_reads<'dae>(
         scalar,
         domain_point: None,
     });
-    match row_unknowns(space, &source, &mut cache) {
+    match row_unknowns(space, &source, &mut cache, DiscreteReads::Exclude) {
         RowIncidence::Owned { .. } => Ok(()),
         RowIncidence::Unowned(kind) => Err(LowerError::unsupported(
             format!(
@@ -644,6 +656,17 @@ pub(super) fn prove_initial_definition_reads<'dae>(
     }
 }
 
+/// How a walk treats a discrete coordinate the projection does not settle.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiscreteReads {
+    /// A planned projection row holds it at its current value; the runtime
+    /// iterates the projection and the discrete assignments to a fixed point.
+    Hold,
+    /// A value applied once (a settled or post-projection definition) cannot
+    /// read it, because nothing orders that read against the iteration.
+    Exclude,
+}
+
 /// What one initialization row contributes to the plan.
 enum RowIncidence {
     /// The projection coordinates the row reads. May be empty: the row is then a
@@ -651,6 +674,8 @@ enum RowIncidence {
     Owned {
         unknowns: BTreeSet<InitialUnknown>,
         algebraic_reads: bool,
+        /// Whether the row reads an unsettled discrete it holds fixed.
+        held_discretes: bool,
     },
     /// The row reads a coordinate outside the planned unknown space, of this kind.
     Unowned(solve::InitializationCoordinateKind),
@@ -675,6 +700,8 @@ const fn exclusion_rank(kind: solve::InitializationCoordinateKind) -> u8 {
 struct InitialIncidence<'dae> {
     unknowns: BTreeSet<InitialUnknown>,
     excluded: Option<solve::InitializationCoordinateKind>,
+    discrete_reads: DiscreteReads,
+    held_discretes: bool,
     /// Parameter bindings already followed, so a diamond is walked once.
     substituted: BTreeSet<(u32, usize)>,
     /// State derivatives already followed, so a derivative that reads itself
@@ -713,6 +740,17 @@ impl<'dae> InitialIncidence<'dae> {
             dae::CoordinateView::DiscreteValue(variable)
             | dae::CoordinateView::PreDiscreteValue(variable)
                 if space.settled_discretes.contains(&variable.index()) => {}
+            // An unsettled discrete is held at its current value by a planned
+            // row, which the runtime then iterates with the discrete
+            // assignments to a fixed point (MLS §8.6 mixed system).
+            dae::CoordinateView::DiscreteReal(_)
+            | dae::CoordinateView::DiscreteValue(_)
+            | dae::CoordinateView::PreDiscreteReal(_)
+            | dae::CoordinateView::PreDiscreteValue(_)
+                if self.discrete_reads == DiscreteReads::Hold =>
+            {
+                self.held_discretes = true;
+            }
             dae::CoordinateView::DiscreteReal(_)
             | dae::CoordinateView::DiscreteValue(_)
             | dae::CoordinateView::PreDiscreteReal(_)

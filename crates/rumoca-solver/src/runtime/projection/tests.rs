@@ -26,6 +26,7 @@ fn project_initial_y_plan<M: AlgebraicProjectionModel>(
     tol: f64,
 ) -> Result<(), RuntimeSolveError> {
     let plan = solve::InitializationProjectionPlan {
+        iterates_discretes: false,
         blocks: plan
             .blocks
             .iter()
@@ -1816,6 +1817,7 @@ fn project_initial_variables_solves_fixed_false_parameter_unknown() {
         algebraic_plan: solve::AlgebraicProjectionPlan::default(),
     };
     let plan = solve::InitializationProjectionPlan {
+        iterates_discretes: false,
         blocks: vec![solve::InitializationProjectionBlock {
             rows: vec![0],
             unknowns: vec![solve::scalar_slot_p(0)],

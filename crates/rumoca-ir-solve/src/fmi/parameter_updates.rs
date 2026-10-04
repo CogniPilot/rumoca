@@ -225,6 +225,9 @@ pub(super) fn stable_parameters(problem: &SolveProblem) -> Vec<bool> {
 fn validate_projection(problem: &SolveProblem) -> Result<(), &'static str> {
     use crate::{InitializationCoordinateKind, InitializationRowRole};
     let init = &problem.initialization;
+    if init.projection_plan().iterates_discretes {
+        return Err("C initialization cannot alternate the projection with held discretes");
+    }
     let rows = init
         .residual()
         .len()

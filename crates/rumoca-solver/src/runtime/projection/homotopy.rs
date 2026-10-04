@@ -60,7 +60,18 @@ where
         max_iters,
     } = system;
     let Some(lambda_index) = homotopy_parameter_index else {
-        return project_initial_variables_with_plan(model, y, p, t, plan, tol);
+        if !plan.iterates_discretes {
+            return project_initial_variables_with_plan(model, y, p, t, plan, tol);
+        }
+        // A planned row holds a discrete at its current value, so the
+        // projection and the discrete assignments alternate to their fixed
+        // point, exactly as each continuation step below does.
+        return project_with_discrete_iteration(
+            |y, p| project_initial_variables_with_plan(model, y, p, t, plan, tol),
+            &mut continuation_dependents,
+            (y, p),
+            max_iters,
+        );
     };
     let parameter_count = p.len();
     if lambda_index >= parameter_count {
@@ -69,18 +80,13 @@ where
         )));
     }
 
-    let mut solve_at_lambda = |y: &mut [f64], p: &mut [f64]| -> Result<(), RuntimeSolveError> {
-        for _ in 0..max_iters {
-            project_initial_variables_with_plan(model, y, p, t, plan, tol)?;
-            let before_discrete = p.to_vec();
-            continuation_dependents(y, p)?;
-            if *p == before_discrete {
-                return Ok(());
-            }
-        }
-        Err(RuntimeSolveError::solve_ir(
-            "initial homotopy discrete iteration did not converge",
-        ))
+    let mut solve_at_lambda = |y: &mut [f64], p: &mut [f64]| {
+        project_with_discrete_iteration(
+            |y, p| project_initial_variables_with_plan(model, y, p, t, plan, tol),
+            &mut continuation_dependents,
+            (y, p),
+            max_iters,
+        )
     };
 
     let original_y = y.to_vec();
@@ -130,6 +136,31 @@ where
         "initial homotopy continuation exceeded {MAX_CONTINUATION_ATTEMPTS} attempts at \
          lambda={accepted_lambda:.9} step={step:.3e}"
     )))
+}
+
+/// Alternate `project` with the discrete assignments `dependents` until the
+/// parameter vector, which holds every discrete value, stops changing.
+fn project_with_discrete_iteration<P, F>(
+    mut project: P,
+    dependents: &mut F,
+    (y, p): (&mut [f64], &mut [f64]),
+    max_iters: usize,
+) -> Result<(), RuntimeSolveError>
+where
+    P: FnMut(&mut [f64], &mut [f64]) -> Result<(), RuntimeSolveError>,
+    F: FnMut(&mut [f64], &mut [f64]) -> Result<(), RuntimeSolveError>,
+{
+    for _ in 0..max_iters {
+        project(y, p)?;
+        let before_discrete = p.to_vec();
+        dependents(y, p)?;
+        if *p == before_discrete {
+            return Ok(());
+        }
+    }
+    Err(RuntimeSolveError::solve_ir(
+        "initial discrete iteration did not converge",
+    ))
 }
 
 fn continuation_error(lambda: f64, step: f64, source: RuntimeSolveError) -> RuntimeSolveError {
@@ -264,6 +295,7 @@ mod tests {
         let mut y = vec![0.0];
         let mut p = vec![0.0];
         let initial_plan = solve::InitializationProjectionPlan {
+            iterates_discretes: false,
             blocks: vec![solve::InitializationProjectionBlock {
                 rows: vec![0],
                 unknowns: vec![solve::scalar_slot_y(0)],
@@ -302,6 +334,7 @@ mod tests {
     fn continuation_restores_discrete_coordinates_before_retry() {
         let model = StepLimitedModel::new();
         let plan = solve::InitializationProjectionPlan {
+            iterates_discretes: false,
             blocks: vec![solve::InitializationProjectionBlock {
                 rows: vec![0],
                 unknowns: vec![solve::scalar_slot_y(0)],
@@ -348,6 +381,7 @@ mod tests {
     fn continuation_refuses_a_nonconverging_discrete_iteration_atomically() {
         let model = StepLimitedModel::new();
         let plan = solve::InitializationProjectionPlan {
+            iterates_discretes: false,
             blocks: vec![solve::InitializationProjectionBlock {
                 rows: vec![0],
                 unknowns: vec![solve::scalar_slot_y(0)],
@@ -398,5 +432,32 @@ mod tests {
             .linked_kernel(super::super::KernelRequest::EndBlock)
             .expect("the request is answered");
         assert!(matches!(answer, super::super::KernelAnswer::Declined));
+    }
+
+    #[test]
+    fn a_discrete_iteration_that_never_settles_is_refused() {
+        let mut y = [0.0];
+        let mut p = [0.0];
+        let mut toggle = |_: &mut [f64], p: &mut [f64]| {
+            p[0] = 1.0 - p[0];
+            Ok(())
+        };
+        let result = super::project_with_discrete_iteration(
+            |_: &mut [f64], _: &mut [f64]| Ok(()),
+            &mut toggle,
+            (&mut y, &mut p),
+            4,
+        );
+        assert!(result.is_err());
+        let mut settles = |_: &mut [f64], _: &mut [f64]| Ok(());
+        assert!(
+            super::project_with_discrete_iteration(
+                |_: &mut [f64], _: &mut [f64]| Ok(()),
+                &mut settles,
+                (&mut y, &mut p),
+                4,
+            )
+            .is_ok()
+        );
     }
 }

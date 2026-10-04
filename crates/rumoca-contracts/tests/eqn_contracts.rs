@@ -1667,3 +1667,32 @@ fn eqn_040_initial_pre_reads_the_initialized_state() {
     assert_eq!(trace.channel("above")[0], 0.0);
     assert_eq!(trace.final_value("above"), 0.0);
 }
+
+// =============================================================================
+// EQN-041: Mixed initialization system
+// An initialization row reading a discrete determined from continuous values
+// is solved at the fixed point of the projection and the discrete assignments.
+// =============================================================================
+
+#[test]
+fn eqn_041_initial_row_reads_a_relation_defined_discrete() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            Real x;
+            Real y;
+            Boolean high;
+        initial equation
+            x = if high then 2 else 1;
+        equation
+            y = x + 1;
+            high = y > 1.5;
+            der(x) = -0.1;
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    assert_eq!(trace.channel("high")[0], 1.0);
+    assert!((trace.channel("x")[0] - 2.0).abs() < 1e-9);
+}

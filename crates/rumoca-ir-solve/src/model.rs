@@ -386,6 +386,11 @@ fn causal_coefficient_unproven(coefficient: &CausalCoefficient) -> bool {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct InitializationProjectionPlan {
     pub blocks: Vec<InitializationProjectionBlock>,
+    /// Whether a planned row reads a discrete coordinate the projection holds
+    /// at its current value. The runtime then alternates the projection with
+    /// the discrete assignments until the discrete values stop changing, the
+    /// fixed point of the MLS §8.6 mixed initialization system.
+    pub iterates_discretes: bool,
 }
 
 impl InitializationProjectionPlan {

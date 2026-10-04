@@ -1957,6 +1957,7 @@ fn solve_problem_shape_contract_rejects_duplicate_initial_projection_unknown() {
         .initialization
         .into_input();
     input.projection_plan = InitializationProjectionPlan {
+        iterates_discretes: false,
         blocks: vec![InitializationProjectionBlock {
             rows: vec![0, 0],
             unknowns: vec![scalar_slot_y(1), scalar_slot_y(1)],
