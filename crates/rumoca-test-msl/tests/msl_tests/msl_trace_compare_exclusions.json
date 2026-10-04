@@ -793,6 +793,20 @@
           "every state agrees within 1.5e-3 K over 2 s"
         ]
       }
+    },
+    {
+      "model_name": "Modelica.Thermal.FluidHeatFlow.Examples.TestOpenTank",
+      "kind": "model_issue",
+      "reason": "The CombiTimeTable holds the pump volume flow at exactly zero during t in [0, 0.5] s and [1, 1.5] s. At exactly zero flow the semiLinear port enthalpies of the tank-pump-ambient chain are underdetermined (MLS 3.7.4.5): Rule 1 selects the chain head sa, but which end is sa depends on the sign chosen for the flow variable of a connection, so the value is a tool choice. Rumoca holds the tank end (313.15 K, then 303.15 K after refilling) and OMC the ambient end (293.15 K). Every deviating channel is such a zero-flow enthalpy observable, while level, tank temperature, and every flow channel are high; pointwise comparison of the zero-flow observables is non-identifying.",
+      "evidence": {
+        "facts": [
+          "23 high, 0 minor, 10 deviation, 0 severe of 33 channels; deviating: openTank.flowPort.h, openTank.T_port, ambient.flowPort.h, ambient.T_port, volumeFlow.T, volumeFlow.T_a, volumeFlow.T_b, volumeFlow.T_q, volumeFlow.flowPort_a.h, volumeFlow.flowPort_b.h",
+          "V_flow is exactly 0 on t in [0, 0.5] and [1, 1.5] s in both traces",
+          "99.5 percent of each deviating channel's error mass lies inside the zero-flow windows; the remainder is the table-step interpolation at t = 0.5, 0.75, 1.0 shared by the high-band flow channels",
+          "openTank.T at t = 1.5: rumoca 303.1500000, OMC 303.1499999990; level 0.5 vs 0.4999999999999925"
+        ],
+        "artifact": "msl:Modelica.Thermal.FluidHeatFlow.Examples.TestOpenTank"
+      }
     }
   ]
 }

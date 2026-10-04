@@ -1729,11 +1729,11 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
     );
     // The typed-exception boundary types every reviewed row and removes none;
     // the v13 boundary adds the Digital Counter and three FundamentalWave
-    // reference-failure rows and three QuasiStatic comparator-limitation rows
+    // reference-failure rows, three QuasiStatic comparator-limitation rows
     // (Electrical BalancingStar and Rectifier, FluxTubes QuadraticCoreAirgap)
-    // to the v12 file.
+    // and the FluidHeatFlow TestOpenTank model-issue row to the v12 file.
     assert_eq!(
-        reference.policy_excluded_before + 7,
+        reference.policy_excluded_before + 8,
         reference.metric.policy_excluded_after
     );
     assert_eq!(reference.metric.excluded_strict_high_before, 0);
