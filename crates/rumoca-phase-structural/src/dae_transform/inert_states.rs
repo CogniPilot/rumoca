@@ -13,7 +13,8 @@
 //! already contributed.
 //!
 //! A state is kept when no zero-coefficient proof covers some read of its
-//! derivative (an initialization, event, or assertion expression reads it),
+//! derivative (an initialization, event, assertion, or delay-source
+//! expression reads it),
 //! when it carries a stated initial value, which an algebraic declaration has
 //! no equation for, or when it is a `StateSelect.always` request (MLS 3.7
 //! §4.9.7.1).
@@ -73,11 +74,15 @@ fn inert_states(view: dae::DaeView<'_>) -> Result<Vec<u32>, StructuralError> {
         .collect())
 }
 
-/// States some owner other than a continuous equation reads differentiated,
-/// or reinitializes: an initialization equation, a relation (and so every
-/// condition, zero crossing, and assertion guard built on it), a discrete
-/// equation or assignment, a time-event deadline, or an event action.
-/// Expressions no owner reaches are not reads.
+/// States whose derivative an expression the continuous incidence does not
+/// cover reads, or that an event reinitializes: an initialization equation, a
+/// relation (and so every condition, zero crossing, and assertion guard built
+/// on it), a discrete condition, a discrete equation or assignment, an
+/// initialization-instant discrete value, a model-event definition, a
+/// time-event deadline, an event action, or the source or delay time of a
+/// delay of either kind. Incidence reads a delay as its own coordinate, so a
+/// derivative inside a delay source has no incidence column even when a
+/// continuous equation reads the delay.
 fn derivatives_read_outside_continuous_owners(view: dae::DaeView<'_>) -> BTreeSet<u32> {
     let mut states = BTreeSet::new();
     let mut roots = Vec::new();
@@ -111,6 +116,27 @@ fn derivatives_read_outside_continuous_owners(view: dae::DaeView<'_>) -> BTreeSe
     {
         for branch in owner.branches().iter() {
             roots.extend(branch.values().iter().map(|(value, _)| value));
+        }
+    }
+    roots.extend(view.initial_discrete_values().map(|value| value.value()));
+    for (_, transaction) in view.model_event_transactions() {
+        for step in transaction.steps() {
+            roots.extend(step.definitions().map(|definition| definition.value()));
+        }
+    }
+    roots.extend(
+        view.conditions()
+            .filter_map(|(_, condition)| match condition.operation() {
+                dae::ConditionOperation::Discrete(expression) => Some(expression),
+                _ => None,
+            }),
+    );
+    for index in 0..view.delay_count() {
+        let id = view.delay_id(index).expect("dense delay identity resolves");
+        let delay = view.delay(id).expect("checked delay identity resolves");
+        roots.push(delay.source());
+        if let dae::DelayOperation::BoundedDelay { delay_time, .. } = delay.operation() {
+            roots.push(delay_time);
         }
     }
     for event in

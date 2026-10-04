@@ -106,3 +106,34 @@ fn derivative_read_by_an_initial_equation_keeps_the_state() {
     .expect_err("an initial equation reading the derivative keeps the state");
     assert!(error.to_string().contains("singular"), "{error}");
 }
+
+/// A delay source reads `der(im)`. Incidence reads the delay as its own
+/// coordinate, so no column covers that read; the state is kept and the
+/// system stays singular rather than delaying a derivative read as zero.
+#[test]
+fn derivative_read_by_a_delay_source_keeps_the_state() {
+    for delay in [
+        "delay(der(im), 0.1)",
+        "delay(der(im), 0.1 + 0.05*sin(time), 0.2)",
+    ] {
+        let source = SOURCE
+            .replace("  Real im;\n", "  Real im;\n  Real y;\n")
+            .replace(
+                "equation\n  v = sin",
+                &format!("equation\n  y = {delay};\n  v = sin"),
+            );
+        let compiled = Compiler::new()
+            .model("InertState")
+            .compile_str(&source, "inert_state_delay.mo")
+            .unwrap();
+        let error = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 0.1,
+                ..Default::default()
+            },
+        )
+        .expect_err("a delay source reading the derivative keeps the state");
+        assert!(error.to_string().contains("singular"), "{delay}: {error}");
+    }
+}
