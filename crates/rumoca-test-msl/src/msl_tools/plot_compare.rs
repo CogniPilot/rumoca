@@ -1046,3 +1046,46 @@ end NominalScaled;
         assert_eq!(trace_meta.name, "T");
     }
 }
+
+#[cfg(test)]
+mod omc_script_tests {
+    use super::*;
+    use crate::msl_tools::common::omc_services_package;
+
+    fn paths_under(root: &Path) -> MslPaths {
+        let results_dir = root.join("results");
+        MslPaths {
+            repo_root: root.to_path_buf(),
+            msl_dir: root.join("ModelicaStandardLibrary-4.1.0"),
+            flat_dir: results_dir.join("omc_flat"),
+            work_dir: results_dir.join("omc_work"),
+            sim_work_dir: results_dir.join("omc_sim_work"),
+            omc_trace_dir: results_dir.join("sim_traces/omc"),
+            rumoca_trace_dir: results_dir.join("sim_traces/rumoca"),
+            results_dir,
+        }
+    }
+
+    #[test]
+    fn the_omc_script_loads_the_pinned_services_before_simulating() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = paths_under(temp.path());
+        let check = temp.path().join("check.txt");
+        assert!(
+            build_omc_script(&paths, "Lib.Model", &check).is_err(),
+            "no script without the pinned services"
+        );
+        let services = omc_services_package(&paths);
+        std::fs::create_dir_all(services.parent().expect("services dir")).expect("dir");
+        std::fs::write(&services, "").expect("services package");
+        let script = build_omc_script(&paths, "Lib.Model", &check).expect("script");
+        let lines: Vec<&str> = script.lines().collect();
+        assert_eq!(lines[0], format!("loadFile(\"{}\");", services.display()));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("simRes := simulate(Lib.Model"))
+        );
+        assert!(lines.last().expect("check line").contains("check.txt"));
+    }
+}
