@@ -21,7 +21,7 @@ pub(super) fn eval_assignment_shape(
             ..
         } => {
             let coefficient = match coefficient_reg {
-                Some(register) => rumoca_ir_solve::register_coefficient(
+                Some(register) => super::isolated_value::register_coefficient(
                     read_shape_reg(regs, *register, span)?,
                     *coefficient_scale,
                 ),
@@ -45,7 +45,7 @@ pub(super) fn eval_assignment_shape(
             divisor_scale,
             ..
         } => {
-            let coefficient = rumoca_ir_solve::register_coefficient(
+            let coefficient = super::isolated_value::register_coefficient(
                 read_shape_reg(regs, *divisor_reg, span)?,
                 *divisor_scale,
             );
@@ -84,12 +84,14 @@ fn isolated_value(
     regs: &[f64],
     span: Option<rumoca_core::Span>,
 ) -> Result<f64, EvalSolveError> {
-    rumoca_ir_solve::eval_isolated_value(shape, |register| read_shape_reg(regs, register, span))
-        .unwrap_or_else(|| {
-            Err(super::invalid_prepared_row(
-                "only affine, additive, and reciprocal shapes have an isolated value",
-            ))
-        })
+    super::isolated_value::eval_isolated_value(shape, |register| {
+        read_shape_reg(regs, register, span)
+    })
+    .unwrap_or_else(|| {
+        Err(super::invalid_prepared_row(
+            "only affine, additive, and reciprocal shapes have an isolated value",
+        ))
+    })
 }
 
 /// Recognize the first scalar target assignment owned by one residual row.

@@ -12,6 +12,9 @@ mod assignment_shape_tests;
 mod capability_tests;
 mod construction;
 mod dependency;
+mod isolated_value;
+#[cfg(test)]
+mod isolated_value_tests;
 #[cfg(test)]
 mod isolation_chain_tests;
 mod isolation_program;

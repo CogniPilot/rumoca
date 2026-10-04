@@ -4,7 +4,7 @@ mod isolated_value;
 mod tensor_affine;
 
 pub use isolated_value::{
-    IsolatedDivisor, IsolatedTerm, IsolatedValue, eval_isolated_value, register_coefficient,
+    IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue, isolated_parts,
 };
 
 /// Append the selected assignment to an already materialized source prefix at
@@ -99,7 +99,7 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
         }
     }
 
-    /// Emit `value` in the op order [`IsolatedValue::eval`] follows. A
+    /// Emit `value` in the op order of its terms, then its divisor. A
     /// `guarded` value returns its coefficient register for the non-finite
     /// poison guard (a constant one included when it is singular).
     fn isolated(&mut self, value: &IsolatedValue, guarded: bool) -> Option<(u32, Option<u32>)> {

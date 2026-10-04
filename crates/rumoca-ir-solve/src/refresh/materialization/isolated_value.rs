@@ -8,7 +8,8 @@
 //! power-of-two coefficient, whose reciprocal is exact so `-x / c` equals
 //! `x * (-1 / c)` bit for bit. The sum starts from its first term rather than
 //! from `+0`, so an offset that is `-0` stays `-0`; that sign of zero is the
-//! only difference from the plain `-(0 + ...) / c` form.
+//! only difference from the plain `-(0 + ...) / c` form. A register
+//! coefficient `scale * r` is `r` itself when the scale is exactly 1.
 
 use crate::{Reg, TargetAssignmentShape};
 
@@ -46,71 +47,45 @@ pub struct IsolatedValue {
     pub divisor: IsolatedDivisor,
 }
 
+/// The offset terms of an isolated value in sum order, read from the shape
+/// without allocating.
+#[derive(Clone, Debug)]
+pub enum IsolatedTerms<'a> {
+    /// The single offset term of an affine or reciprocal shape.
+    One(Option<IsolatedTerm>),
+    /// The `(register, scale)` offset terms of an additive shape.
+    Scaled(std::slice::Iter<'a, (Reg, f64)>),
+}
+
+impl Iterator for IsolatedTerms<'_> {
+    type Item = IsolatedTerm;
+
+    fn next(&mut self) -> Option<IsolatedTerm> {
+        match self {
+            Self::One(term) => term.take(),
+            Self::Scaled(terms) => terms.next().map(|&(register, scale)| term(register, scale)),
+        }
+    }
+}
+
 impl IsolatedValue {
     /// The form of an `Affine`, `Additive`, or `Reciprocal` shape; `None` for
     /// the others.
     #[must_use]
     pub fn of(shape: &TargetAssignmentShape) -> Option<Self> {
-        let (terms, divisor) = match shape {
-            TargetAssignmentShape::Affine {
-                offset_reg,
-                coefficient_reg,
-                offset_scale,
-                coefficient_scale,
-                ..
-            } => (
-                vec![term(*offset_reg, *offset_scale)],
-                match coefficient_reg {
-                    Some(register) => IsolatedDivisor::DivideRegister {
-                        register: *register,
-                        scale: *coefficient_scale,
-                    },
-                    None => constant_divisor(*coefficient_scale),
-                },
-            ),
-            TargetAssignmentShape::Additive {
-                offset_terms,
-                coefficient,
-                ..
-            } => (
-                offset_terms
-                    .iter()
-                    .map(|&(register, scale)| term(register, scale))
-                    .collect(),
-                constant_divisor(*coefficient),
-            ),
-            TargetAssignmentShape::Reciprocal {
-                numerator_reg,
-                numerator_scale,
-                divisor_reg,
-                divisor_scale,
-                ..
-            } => (
-                vec![term(*numerator_reg, *numerator_scale)],
-                IsolatedDivisor::DivideRegister {
-                    register: *divisor_reg,
-                    scale: *divisor_scale,
-                },
-            ),
-            _ => return None,
-        };
-        Some(fold_single_term(terms, divisor))
-    }
-
-    /// Evaluate the form over register values.
-    pub fn eval<E>(&self, read: impl FnMut(Reg) -> Result<f64, E>) -> Result<f64, E> {
-        eval_parts(self.terms.iter().copied(), self.divisor, read)
+        let (terms, divisor) = isolated_parts(shape)?;
+        Some(fold_single_term(terms.collect(), divisor))
     }
 }
 
-/// Evaluate the isolated value of an `Affine`, `Additive`, or `Reciprocal` shape without
-/// building its form; `None` for the other shapes. Equal bit for bit to
-/// [`IsolatedValue::eval`] on [`IsolatedValue::of`]: the single-term fold is
-/// an exact identity.
-pub fn eval_isolated_value<E>(
+/// The offset terms and divisor of an `Affine`, `Additive`, or `Reciprocal`
+/// shape before the single-term fold of [`IsolatedValue::of`]; `None` for the
+/// other shapes. Both read as the same value bit for bit: the fold is an exact
+/// identity.
+#[must_use]
+pub fn isolated_parts(
     shape: &TargetAssignmentShape,
-    read: impl FnMut(Reg) -> Result<f64, E>,
-) -> Option<Result<f64, E>> {
+) -> Option<(IsolatedTerms<'_>, IsolatedDivisor)> {
     Some(match shape {
         TargetAssignmentShape::Affine {
             offset_reg,
@@ -118,8 +93,8 @@ pub fn eval_isolated_value<E>(
             offset_scale,
             coefficient_scale,
             ..
-        } => eval_parts(
-            std::iter::once(term(*offset_reg, *offset_scale)),
+        } => (
+            IsolatedTerms::One(Some(term(*offset_reg, *offset_scale))),
             match coefficient_reg {
                 Some(register) => IsolatedDivisor::DivideRegister {
                     register: *register,
@@ -127,18 +102,14 @@ pub fn eval_isolated_value<E>(
                 },
                 None => constant_divisor(*coefficient_scale),
             },
-            read,
         ),
         TargetAssignmentShape::Additive {
             offset_terms,
             coefficient,
             ..
-        } => eval_parts(
-            offset_terms
-                .iter()
-                .map(|&(register, scale)| term(register, scale)),
+        } => (
+            IsolatedTerms::Scaled(offset_terms.iter()),
             constant_divisor(*coefficient),
-            read,
         ),
         TargetAssignmentShape::Reciprocal {
             numerator_reg,
@@ -146,48 +117,15 @@ pub fn eval_isolated_value<E>(
             divisor_reg,
             divisor_scale,
             ..
-        } => eval_parts(
-            std::iter::once(term(*numerator_reg, *numerator_scale)),
+        } => (
+            IsolatedTerms::One(Some(term(*numerator_reg, *numerator_scale))),
             IsolatedDivisor::DivideRegister {
                 register: *divisor_reg,
                 scale: *divisor_scale,
             },
-            read,
         ),
         _ => return None,
     })
-}
-
-fn eval_parts<E>(
-    terms: impl Iterator<Item = IsolatedTerm>,
-    divisor: IsolatedDivisor,
-    mut read: impl FnMut(Reg) -> Result<f64, E>,
-) -> Result<f64, E> {
-    let mut sum: Option<f64> = None;
-    for term in terms {
-        let value = match term {
-            IsolatedTerm::Register(register) => read(register)?,
-            IsolatedTerm::Negated(register) => -read(register)?,
-            IsolatedTerm::Scaled(register, scale) => scale * read(register)?,
-        };
-        sum = Some(sum.map_or(value, |sum| sum + value));
-    }
-    let sum = sum.unwrap_or(0.0);
-    Ok(match divisor {
-        IsolatedDivisor::Negate => -sum,
-        IsolatedDivisor::Keep => sum,
-        IsolatedDivisor::Multiply(factor) => sum * factor,
-        IsolatedDivisor::Divide(coefficient) => -sum / coefficient,
-        IsolatedDivisor::DivideRegister { register, scale } => {
-            -sum / register_coefficient(read(register)?, scale)
-        }
-    })
-}
-
-/// The value of a register coefficient under its scale.
-#[must_use]
-pub fn register_coefficient(value: f64, scale: f64) -> f64 {
-    if scale == 1.0 { value } else { scale * value }
 }
 
 fn term(register: Reg, scale: f64) -> IsolatedTerm {

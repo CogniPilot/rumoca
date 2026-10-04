@@ -29,8 +29,8 @@ pub use assignment_shape::{
 pub use dependency::ScalarProgramYDependency;
 use dependency::assignment_y_dependencies_for_shapes;
 pub use materialization::{
-    IsolatedDivisor, IsolatedTerm, IsolatedValue, eval_isolated_value,
-    materialize_target_assignment, register_coefficient,
+    IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue, isolated_parts,
+    materialize_target_assignment,
 };
 pub use shared_schedule::SharedAssignmentSchedule;
 pub use staged_execution::{

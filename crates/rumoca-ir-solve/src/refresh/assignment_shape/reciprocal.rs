@@ -123,14 +123,17 @@ mod tests {
             })
         );
         let shape = shape.unwrap();
-        // rest = 4 solves 4 - 2 / y = 0 at y = 0.5.
-        let registers = [4.0, 2.0];
-        let value = crate::eval_isolated_value(&shape, |register| {
-            Ok::<_, ()>(registers[register as usize])
-        })
-        .unwrap()
-        .unwrap();
-        assert_eq!(value, 0.5);
+        // y = -(-r1) / r0, so rest = 4 solves 4 - 2 / y = 0 at y = 0.5.
+        assert_eq!(
+            crate::IsolatedValue::of(&shape),
+            Some(crate::IsolatedValue {
+                terms: vec![crate::IsolatedTerm::Negated(1)],
+                divisor: crate::IsolatedDivisor::DivideRegister {
+                    register: 0,
+                    scale: 1.0
+                },
+            })
+        );
         assert!(!shape.constant_coefficient());
         assert_eq!(shape.value_registers().collect::<Vec<_>>(), [1, 0]);
     }

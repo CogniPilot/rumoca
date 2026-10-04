@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use super::*;
+use crate::LinearOp;
 use crate::refresh::materialize_target_assignment;
-use crate::{BinaryOp, LinearOp, UnaryOp};
 
 /// Registers 0..4 hold loaded values; materialization appends after them.
 fn prefix() -> Vec<LinearOp> {
@@ -81,168 +81,42 @@ fn each_shape_emits_its_minimal_operation_count() {
     }
 }
 
-fn interpret(operations: &[LinearOp], registers: &mut Vec<f64>) {
-    for operation in operations {
-        let (dst, value) = match *operation {
-            LinearOp::LoadY { dst, .. } => (dst, registers[dst as usize]),
-            LinearOp::Const { dst, value } => (dst, value),
-            LinearOp::Unary {
-                dst,
-                op: UnaryOp::Neg,
-                arg,
-            } => (dst, -registers[arg as usize]),
-            LinearOp::Binary { dst, op, lhs, rhs } => {
-                let (a, b) = (registers[lhs as usize], registers[rhs as usize]);
-                let value = match op {
-                    BinaryOp::Add => a + b,
-                    BinaryOp::Sub => a - b,
-                    BinaryOp::Mul => a * b,
-                    BinaryOp::Div => a / b,
-                    _ => unreachable!("isolators use the four arithmetic operations"),
-                };
-                (dst, value)
-            }
-            ref other => unreachable!("unexpected isolator operation {other:?}"),
-        };
-        if registers.len() <= dst as usize {
-            registers.resize(dst as usize + 1, 0.0);
-        }
-        registers[dst as usize] = value;
-    }
-}
-
-/// Deterministic sample values, signed zeros and exact extremes included.
-fn sample(state: &mut u64) -> f64 {
-    *state = state
-        .wrapping_mul(6_364_136_223_846_793_005)
-        .wrapping_add(1_442_695_040_888_963_407);
-    match *state >> 60 {
-        0 => 0.0,
-        1 => -0.0,
-        2 => 1.0,
-        3 => -1.0,
-        4 => 4.0,
-        5 => -0.5,
-        _ => {
-            f64::from_bits(0x3FF0_0000_0000_0000 | (*state >> 12))
-                * (*state as i64).signum() as f64
-                * 3.7
-        }
-    }
-}
-
-/// The emitted program, the evaluator's form, and its allocation-free
-/// evaluation agree bit for bit; the plain `-(0 + sum) / c` form agrees up
-/// to the sign of zero.
+/// The form folds the sign of a unit divisor into a lone term and keeps the
+/// parts of several terms or another divisor as they are.
 #[test]
-fn materialized_and_evaluated_values_agree_bit_for_bit() {
-    let mut state = 7_u64;
-    for case in 0..4000 {
-        let scales = [sample(&mut state), sample(&mut state), sample(&mut state)];
-        let coefficient = sample(&mut state);
-        let values = [
-            sample(&mut state),
-            sample(&mut state),
-            sample(&mut state),
-            sample(&mut state),
-        ];
-        let count = 1 + case % 3;
-        let terms: Vec<(Reg, f64)> = (0..count)
-            .map(|index| (index as Reg, scales[index]))
-            .collect();
-        let shapes = [
-            additive(&terms, coefficient),
-            affine(scales[0], None, coefficient),
-            affine(scales[0], Some(3), scales[1]),
-            reciprocal(scales[0], scales[1]),
-        ];
-        for shape in shapes {
-            let (operations, result) = materialized(&shape);
-            let mut registers = values.to_vec();
-            interpret(&operations, &mut registers);
-            let emitted = registers[result as usize];
-            let read = |register: Reg| Ok::<f64, ()>(values[register as usize]);
-            let evaluated = eval_isolated_value(&shape, read).unwrap().unwrap();
-            let formed = IsolatedValue::of(&shape).unwrap().eval(read).unwrap();
-            let guarded = match &shape {
-                TargetAssignmentShape::Affine {
-                    coefficient_reg: Some(register),
-                    coefficient_scale,
-                    ..
-                } => !register_coefficient(values[*register as usize], *coefficient_scale)
-                    .is_finite(),
-                TargetAssignmentShape::Affine {
-                    coefficient_scale, ..
-                } => !coefficient_scale.is_finite(),
-                TargetAssignmentShape::Reciprocal {
-                    divisor_reg,
-                    divisor_scale,
-                    ..
-                } => {
-                    !register_coefficient(values[*divisor_reg as usize], *divisor_scale).is_finite()
-                }
-                _ => false,
-            };
-            if guarded {
-                assert!(emitted.is_nan(), "{shape:?}: the guard poisons");
-                continue;
-            }
-            assert_eq!(
-                emitted.to_bits(),
-                evaluated.to_bits(),
-                "{shape:?} {values:?}"
-            );
-            assert_eq!(
-                formed.to_bits(),
-                evaluated.to_bits(),
-                "{shape:?} {values:?}"
-            );
-            let plain = plain_value(&shape, &values);
-            assert!(
-                plain.to_bits() == emitted.to_bits()
-                    || (plain == 0.0 && emitted == 0.0)
-                    || (plain.is_nan() && emitted.is_nan()),
-                "{shape:?} {values:?}: plain {plain} emitted {emitted}"
-            );
+fn the_form_folds_a_unit_divisor_into_a_lone_term() {
+    let lone = additive(&[(1, 2.5)], 1.0);
+    let (terms, divisor) = isolated_parts(&lone).expect("additive parts");
+    assert_eq!(terms.collect::<Vec<_>>(), [IsolatedTerm::Scaled(1, 2.5)]);
+    assert_eq!(divisor, IsolatedDivisor::Negate);
+    assert_eq!(
+        IsolatedValue::of(&lone),
+        Some(IsolatedValue {
+            terms: vec![IsolatedTerm::Scaled(1, -2.5)],
+            divisor: IsolatedDivisor::Keep,
+        })
+    );
+    let pair = additive(&[(1, 1.0), (2, -1.0)], 4.0);
+    assert_eq!(
+        IsolatedValue::of(&pair),
+        Some(IsolatedValue {
+            terms: vec![IsolatedTerm::Register(1), IsolatedTerm::Negated(2)],
+            divisor: IsolatedDivisor::Multiply(-0.25),
+        })
+    );
+    let quotient = reciprocal(-1.0, 3.0);
+    let (terms, divisor) = isolated_parts(&quotient).expect("reciprocal parts");
+    assert_eq!(terms.collect::<Vec<_>>(), [IsolatedTerm::Negated(0)]);
+    assert_eq!(
+        divisor,
+        IsolatedDivisor::DivideRegister {
+            register: 3,
+            scale: 3.0
         }
-    }
-}
-
-/// `-(0 + sum of scale * r) / c`, the form before the exact identities.
-fn plain_value(shape: &TargetAssignmentShape, values: &[f64]) -> f64 {
-    match shape {
-        TargetAssignmentShape::Additive {
-            offset_terms,
-            coefficient,
-            ..
-        } => {
-            let mut offset = 0.0;
-            for &(register, scale) in offset_terms.iter() {
-                offset += scale * values[register as usize];
-            }
-            -offset / coefficient
-        }
-        TargetAssignmentShape::Affine {
-            offset_reg,
-            coefficient_reg,
-            offset_scale,
-            coefficient_scale,
-            ..
-        } => {
-            let coefficient = coefficient_scale
-                * coefficient_reg.map_or(1.0, |register| values[register as usize]);
-            -(offset_scale * values[*offset_reg as usize]) / coefficient
-        }
-        TargetAssignmentShape::Reciprocal {
-            numerator_reg,
-            numerator_scale,
-            divisor_reg,
-            divisor_scale,
-            ..
-        } => {
-            -(numerator_scale * values[*numerator_reg as usize])
-                / (divisor_scale * values[*divisor_reg as usize])
-        }
-        _ => unreachable!("affine, additive, and reciprocal shapes only"),
-    }
+    );
+    let zero = TargetAssignmentShape::Zero {
+        target_y_index: 0,
+        expr_eval_len: 0,
+    };
+    assert!(isolated_parts(&zero).is_none() && IsolatedValue::of(&zero).is_none());
 }
