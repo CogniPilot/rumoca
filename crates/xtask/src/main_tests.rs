@@ -1118,8 +1118,9 @@ fn cov_function(name: &str, line: u64, count: u64) -> serde_json::Value {
     })
 }
 
-/// A generic function's never-run `::<_>` copy is covered by any executed
-/// instantiation at the same start line; an all-zero group is one candidate.
+/// A generic function's never-run `::<_>` copy, or a default trait method's
+/// `<_ as Tr>::m` copy, is covered by any executed instantiation or
+/// implementing type at the same start line; an all-zero group is one candidate.
 #[test]
 fn uncovered_functions_group_generic_copies_and_count_an_all_zero_group_once() {
     let functions = [
@@ -1132,6 +1133,13 @@ fn uncovered_functions_group_generic_copies_and_count_an_all_zero_group_once() {
         cov_function("<alpha::Thing<i32>>::method", 30, 1),
         cov_function("alpha::same_name", 40, 0),
         cov_function("alpha::same_name", 41, 5),
+        cov_function("<_ as alpha::Tr>::defaulted", 50, 0),
+        cov_function("<alpha::Other as alpha::Tr>::defaulted", 50, 0),
+        cov_function("<alpha::Thing as alpha::Tr>::defaulted", 50, 2),
+        cov_function("<_ as alpha::Tr>::unused_default", 60, 0),
+        cov_function("<alpha::Thing as alpha::Tr>::unused_default", 60, 0),
+        cov_function("<_ as alpha::Tr>::elsewhere", 70, 0),
+        cov_function("<alpha::Thing as alpha::Tr>::elsewhere", 71, 4),
         serde_json::json!({"count": 0}),
     ];
     let uncovered = uncovered_functions(&functions)
@@ -1140,8 +1148,14 @@ fn uncovered_functions_group_generic_copies_and_count_an_all_zero_group_once() {
         .collect::<Vec<_>>();
     assert_eq!(
         uncovered,
-        [Some("alpha::never::<_>"), Some("alpha::same_name"), None],
-        "an executed instantiation covers its group; distinct start lines stay distinct"
+        [
+            Some("alpha::never::<_>"),
+            Some("alpha::same_name"),
+            Some("<_ as alpha::Tr>::unused_default"),
+            Some("<_ as alpha::Tr>::elsewhere"),
+            None
+        ],
+        "an executed instantiation or implementing type covers its group; distinct start lines stay distinct"
     );
     assert_eq!(
         crate::coverage_analysis::cov_function_start_line(&serde_json::json!({})),

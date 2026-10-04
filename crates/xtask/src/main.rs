@@ -1292,8 +1292,11 @@ fn zero_count_candidates_by_package(
 /// instrumented once per binary that links it (the lib copy and the crate's
 /// own test harness at least), and a generic function once per instantiation
 /// plus a never-run `::<_>` copy; the copies differ only in hash and generic
-/// arguments. A function counts as uncovered only when EVERY copy sharing its
-/// `cov_function_identity` is zero, and then once.
+/// arguments. A default trait method body is instrumented once per
+/// implementing type plus a never-run `<_ as Tr>::m` copy; those copies share
+/// files and start line and differ only in the self type, so they are one
+/// function whatever the self type. A function counts as uncovered only when
+/// EVERY copy sharing its identity is zero, and then once.
 fn uncovered_functions(functions: &[serde_json::Value]) -> Vec<&serde_json::Value> {
     let executed = |function: &serde_json::Value| {
         function
@@ -1302,16 +1305,28 @@ fn uncovered_functions(functions: &[serde_json::Value]) -> Vec<&serde_json::Valu
             .unwrap_or(0)
             != 0
     };
+    // `<T as Tr>::m` reads `<_ as Tr>::m`; files and start line stay.
+    let identity = |function: &serde_json::Value| {
+        let (name, files, line) = cov_function_identity(function)?;
+        let name = match name
+            .strip_prefix('<')
+            .and_then(|path| path.split_once(" as "))
+        {
+            Some((_, method)) => format!("<_ as {method}"),
+            None => name,
+        };
+        Some((name, files, line))
+    };
     let covered_identities: HashSet<_> = functions
         .iter()
         .filter(|function| executed(function))
-        .filter_map(cov_function_identity)
+        .filter_map(identity)
         .collect();
     let mut counted_zero_identities = HashSet::new();
     functions
         .iter()
         .filter(|function| !executed(function))
-        .filter(|function| match cov_function_identity(function) {
+        .filter(|function| match identity(function) {
             Some(identity) => {
                 !covered_identities.contains(&identity) && counted_zero_identities.insert(identity)
             }
