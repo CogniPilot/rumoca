@@ -685,6 +685,20 @@
       }
     },
     {
+      "model_name": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.QuadraticCoreAirgap",
+      "kind": "comparator_limitation",
+      "reason": "Every non-high channel is the arg_* angle of a phasor that is exactly zero until the source ramp reaches the leg at t = 0.0124: atan2 of a zero phasor returns 0, pi or -pi according to the signs of its zeros (Rumoca (-0, -0) gives -pi, OMC records 0). From then on both traces agree. The angle of a zero phasor is undefined, so pointwise angle comparison is not identifying there.",
+      "evidence": {
+        "facts": [
+          "315/0/4 channels",
+          "leftLeg.arg_B, leftLeg.arg_Phi, rightLeg.arg_Phi and leakage.arg_Phi are -pi or pi against 0 while the phasor is exactly zero, t < 0.0124",
+          "the real and imaginary parts of every phasor, and every non-angle channel, are high"
+        ],
+        "commit": "69948c060"
+      },
+      "retired_by": "angle_branch_aware_comparison"
+    },
+    {
       "model_name": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CuboidSections",
       "kind": "comparator_limitation",
       "reason": "Every non-high channel is an arg_* angle, and every difference is the sign of a zero. At t = 0 the phasors are exactly zero, and atan2 of a zero phasor returns 0, pi or -pi according to the signs of its zeros (Rumoca (-0, -0) gives -pi, OMC records 0). cuboidTop and idle lie on the branch cut, pi in one trace and -pi in the other. Pointwise angle comparison is not identifying there.",

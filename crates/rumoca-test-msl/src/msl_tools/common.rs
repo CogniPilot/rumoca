@@ -1053,7 +1053,7 @@ mod tests {
         let root = workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"));
         let exceptions = load_trace_exclusions_file(&root.join(TRACE_EXCLUSIONS_FILE_REL))
             .expect("tracked exceptions must parse");
-        assert_eq!(exceptions.len(), 57);
+        assert_eq!(exceptions.len(), 58);
         let count = |kind| {
             exceptions
                 .values()
@@ -1062,7 +1062,7 @@ mod tests {
         };
         assert_eq!(count(TraceExceptionKind::ReferenceFailure), 30);
         assert_eq!(count(TraceExceptionKind::ModelIssue), 6);
-        assert_eq!(count(TraceExceptionKind::ComparatorLimitation), 21);
+        assert_eq!(count(TraceExceptionKind::ComparatorLimitation), 22);
         for (model, exception) in &exceptions {
             if let Some(artifact) = &exception.evidence.artifact {
                 assert!(
