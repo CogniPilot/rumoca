@@ -37,6 +37,28 @@ pub(super) fn eval_assignment_shape(
             }
             isolated_value(shape, regs, span)
         }
+        // The literal numerator is nonzero by construction, so the divisor is
+        // the only coefficient that can leave the reciprocal without a solution.
+        TargetAssignmentShape::Reciprocal {
+            target_y_index,
+            divisor_reg,
+            divisor_scale,
+            ..
+        } => {
+            let coefficient = rumoca_ir_solve::register_coefficient(
+                read_shape_reg(regs, *divisor_reg, span)?,
+                *divisor_scale,
+            );
+            if coefficient == 0.0 || !coefficient.is_finite() {
+                return Err(EvalSolveError::SingularTargetAssignment {
+                    row: row_idx,
+                    target_y_index: *target_y_index,
+                    coefficient,
+                    span,
+                });
+            }
+            isolated_value(shape, regs, span)
+        }
         TargetAssignmentShape::Additive {
             target_y_index,
             coefficient,
@@ -55,7 +77,7 @@ pub(super) fn eval_assignment_shape(
     }
 }
 
-/// The isolated value of an affine or additive shape, in the arithmetic of
+/// The isolated value of an affine, additive, or reciprocal shape, in the arithmetic of
 /// its materialized isolator ([`rumoca_ir_solve::IsolatedValue`]).
 fn isolated_value(
     shape: &TargetAssignmentShape,
@@ -65,7 +87,7 @@ fn isolated_value(
     rumoca_ir_solve::eval_isolated_value(shape, |register| read_shape_reg(regs, register, span))
         .unwrap_or_else(|| {
             Err(super::invalid_prepared_row(
-                "only affine and additive shapes have an isolated value",
+                "only affine, additive, and reciprocal shapes have an isolated value",
             ))
         })
 }

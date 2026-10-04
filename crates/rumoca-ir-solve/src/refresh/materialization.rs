@@ -82,6 +82,9 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
             TargetAssignmentShape::Additive { .. } => {
                 self.isolated(&IsolatedValue::of(shape)?, false)
             }
+            TargetAssignmentShape::Reciprocal { .. } => {
+                self.isolated(&IsolatedValue::of(shape)?, true)
+            }
             TargetAssignmentShape::TensorAffine { projection, .. } => {
                 let (offset, coefficient) = self.tensor_affine(projection)?;
                 let value = IsolatedValue {

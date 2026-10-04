@@ -34,6 +34,17 @@ fn affine(offset_scale: f64, coefficient: Option<Reg>, scale: f64) -> TargetAssi
     }
 }
 
+fn reciprocal(numerator_scale: f64, divisor_scale: f64) -> TargetAssignmentShape {
+    TargetAssignmentShape::Reciprocal {
+        target_y_index: 9,
+        numerator_reg: 0,
+        numerator_scale,
+        divisor_reg: 3,
+        divisor_scale,
+        expr_eval_len: 4,
+    }
+}
+
 /// The appended operations and the result register.
 fn materialized(shape: &TargetAssignmentShape) -> (Vec<LinearOp>, u32) {
     let mut operations = prefix();
@@ -43,7 +54,7 @@ fn materialized(shape: &TargetAssignmentShape) -> (Vec<LinearOp>, u32) {
 
 #[test]
 fn each_shape_emits_its_minimal_operation_count() {
-    let cases: [(TargetAssignmentShape, usize); 10] = [
+    let cases: [(TargetAssignmentShape, usize); 11] = [
         // -(0 + (-1)*r) / 1 is r itself.
         (additive(&[(1, -1.0)], 1.0), 0),
         (additive(&[(1, 1.0)], -1.0), 0),
@@ -58,6 +69,8 @@ fn each_shape_emits_its_minimal_operation_count() {
         (affine(1.0, Some(2), 1.0), 4),
         // A singular constant coefficient keeps the guard as well.
         (affine(1.0, None, 0.0), 5),
+        // A reciprocal divides by its register and keeps the guard.
+        (reciprocal(-1.0, 1.0), 5),
     ];
     for (shape, count) in cases {
         let (operations, result) = materialized(&shape);
@@ -141,6 +154,7 @@ fn materialized_and_evaluated_values_agree_bit_for_bit() {
             additive(&terms, coefficient),
             affine(scales[0], None, coefficient),
             affine(scales[0], Some(3), scales[1]),
+            reciprocal(scales[0], scales[1]),
         ];
         for shape in shapes {
             let (operations, result) = materialized(&shape);
@@ -160,6 +174,13 @@ fn materialized_and_evaluated_values_agree_bit_for_bit() {
                 TargetAssignmentShape::Affine {
                     coefficient_scale, ..
                 } => !coefficient_scale.is_finite(),
+                TargetAssignmentShape::Reciprocal {
+                    divisor_reg,
+                    divisor_scale,
+                    ..
+                } => {
+                    !register_coefficient(values[*divisor_reg as usize], *divisor_scale).is_finite()
+                }
                 _ => false,
             };
             if guarded {
@@ -212,6 +233,16 @@ fn plain_value(shape: &TargetAssignmentShape, values: &[f64]) -> f64 {
                 * coefficient_reg.map_or(1.0, |register| values[register as usize]);
             -(offset_scale * values[*offset_reg as usize]) / coefficient
         }
-        _ => unreachable!("affine and additive shapes only"),
+        TargetAssignmentShape::Reciprocal {
+            numerator_reg,
+            numerator_scale,
+            divisor_reg,
+            divisor_scale,
+            ..
+        } => {
+            -(numerator_scale * values[*numerator_reg as usize])
+                / (divisor_scale * values[*divisor_reg as usize])
+        }
+        _ => unreachable!("affine, additive, and reciprocal shapes only"),
     }
 }

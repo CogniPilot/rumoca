@@ -1,5 +1,6 @@
 mod additive;
 mod producers;
+mod reciprocal;
 pub(super) mod tensor_affine;
 
 use super::dependency::{ScalarProgramYDependency, y_load_indices};
@@ -49,6 +50,7 @@ fn canonical_assignment_shape(
                 .find(|shape| shape.target_y_index() == target_y_index)
         })
         .or_else(|| additive::derive(prefix, output, target_y_index, dependencies))
+        .or_else(|| reciprocal::derive(prefix, output, target_y_index, dependencies))
         .or_else(|| {
             Some(TargetAssignmentShape::TensorAffine {
                 target_y_index,

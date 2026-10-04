@@ -807,3 +807,38 @@ fn tensor_difference_keeps_both_compact_y_ranges_as_isolators() {
         );
     }
 }
+
+#[test]
+fn reciprocal_assignment_refuses_a_zero_divisor() {
+    // y0 from `p0 - 2 / y0`.
+    let row = [
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::Const { dst: 1, value: 2.0 },
+        LinearOp::LoadY { dst: 2, index: 0 },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Div,
+            lhs: 1,
+            rhs: 2,
+        },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Sub,
+            lhs: 0,
+            rhs: 3,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ];
+    let shape = target_assignment_shape(&row).unwrap().unwrap();
+    assert!(matches!(
+        shape,
+        rumoca_ir_solve::TargetAssignmentShape::Reciprocal { .. }
+    ));
+    let span = Some(fixture_span());
+    let value = eval_assignment_shape(&shape, 0, &[4.0, 2.0], span).unwrap();
+    assert_eq!(value, 0.5);
+    assert!(matches!(
+        eval_assignment_shape(&shape, 0, &[0.0, 2.0], span),
+        Err(EvalSolveError::SingularTargetAssignment { .. })
+    ));
+}

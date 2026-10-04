@@ -105,6 +105,19 @@ pub enum TargetAssignmentShape {
         coefficient: f64,
         expr_eval_len: usize,
     },
+    /// The residual is `divisor_scale * divisor + numerator_scale * (c / target)`
+    /// with `c` the nonzero finite literal stored in `numerator_reg`, and the
+    /// divisor independent of the target. The isolated value is
+    /// `-(numerator_scale * c) / (divisor_scale * divisor)`: the unique
+    /// solution whenever the divisor is nonzero and finite, and none otherwise.
+    Reciprocal {
+        target_y_index: usize,
+        numerator_reg: Reg,
+        numerator_scale: f64,
+        divisor_reg: Reg,
+        divisor_scale: f64,
+        expr_eval_len: usize,
+    },
     TensorAffine {
         target_y_index: usize,
         projection: crate::refresh::AffineTensorProjection,
@@ -124,6 +137,7 @@ impl TargetAssignmentShape {
                 coefficient_reg, ..
             } => coefficient_reg.is_none(),
             Self::TensorAffine { projection, .. } => projection.constant_coefficient(),
+            Self::Reciprocal { .. } => false,
         }
     }
 
@@ -139,6 +153,11 @@ impl TargetAssignmentShape {
             } => ([Some(*offset_reg), *coefficient_reg], &[]),
             Self::Additive { offset_terms, .. } => ([None, None], offset_terms),
             Self::TensorAffine { .. } => ([None, None], &[]),
+            Self::Reciprocal {
+                numerator_reg,
+                divisor_reg,
+                ..
+            } => ([Some(*numerator_reg), Some(*divisor_reg)], &[]),
         };
         fixed
             .into_iter()
@@ -166,7 +185,8 @@ impl TargetAssignmentShape {
             | Self::Direct { target_y_index, .. }
             | Self::Affine { target_y_index, .. }
             | Self::Additive { target_y_index, .. }
-            | Self::TensorAffine { target_y_index, .. } => *target_y_index,
+            | Self::TensorAffine { target_y_index, .. }
+            | Self::Reciprocal { target_y_index, .. } => *target_y_index,
         }
     }
 
@@ -177,7 +197,8 @@ impl TargetAssignmentShape {
             | Self::Direct { expr_eval_len, .. }
             | Self::Affine { expr_eval_len, .. }
             | Self::Additive { expr_eval_len, .. }
-            | Self::TensorAffine { expr_eval_len, .. } => *expr_eval_len,
+            | Self::TensorAffine { expr_eval_len, .. }
+            | Self::Reciprocal { expr_eval_len, .. } => *expr_eval_len,
         }
     }
 }

@@ -1,4 +1,4 @@
-//! The one arithmetic form of an affine or additive isolated value, read by
+//! The one arithmetic form of an affine, additive, or reciprocal isolated value, read by
 //! the materialized isolator and by the evaluator's per-row isolation alike.
 //!
 //! The isolated value is `-offset / coefficient`, with `offset` the sum of
@@ -47,7 +47,8 @@ pub struct IsolatedValue {
 }
 
 impl IsolatedValue {
-    /// The form of an `Affine` or `Additive` shape; `None` for the others.
+    /// The form of an `Affine`, `Additive`, or `Reciprocal` shape; `None` for
+    /// the others.
     #[must_use]
     pub fn of(shape: &TargetAssignmentShape) -> Option<Self> {
         let (terms, divisor) = match shape {
@@ -78,6 +79,19 @@ impl IsolatedValue {
                     .collect(),
                 constant_divisor(*coefficient),
             ),
+            TargetAssignmentShape::Reciprocal {
+                numerator_reg,
+                numerator_scale,
+                divisor_reg,
+                divisor_scale,
+                ..
+            } => (
+                vec![term(*numerator_reg, *numerator_scale)],
+                IsolatedDivisor::DivideRegister {
+                    register: *divisor_reg,
+                    scale: *divisor_scale,
+                },
+            ),
             _ => return None,
         };
         Some(fold_single_term(terms, divisor))
@@ -89,7 +103,7 @@ impl IsolatedValue {
     }
 }
 
-/// Evaluate the isolated value of an `Affine` or `Additive` shape without
+/// Evaluate the isolated value of an `Affine`, `Additive`, or `Reciprocal` shape without
 /// building its form; `None` for the other shapes. Equal bit for bit to
 /// [`IsolatedValue::eval`] on [`IsolatedValue::of`]: the single-term fold is
 /// an exact identity.
@@ -124,6 +138,20 @@ pub fn eval_isolated_value<E>(
                 .iter()
                 .map(|&(register, scale)| term(register, scale)),
             constant_divisor(*coefficient),
+            read,
+        ),
+        TargetAssignmentShape::Reciprocal {
+            numerator_reg,
+            numerator_scale,
+            divisor_reg,
+            divisor_scale,
+            ..
+        } => eval_parts(
+            std::iter::once(term(*numerator_reg, *numerator_scale)),
+            IsolatedDivisor::DivideRegister {
+                register: *divisor_reg,
+                scale: *divisor_scale,
+            },
             read,
         ),
         _ => return None,

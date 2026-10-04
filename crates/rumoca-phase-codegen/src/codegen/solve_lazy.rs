@@ -526,7 +526,8 @@ fn supported_explicit_assignment_shape(shape: &solve::TargetAssignmentShape) -> 
         solve::TargetAssignmentShape::Additive { coefficient, .. } => {
             coefficient.is_finite() && *coefficient != 0.0
         }
-        solve::TargetAssignmentShape::TensorAffine { .. } => false,
+        solve::TargetAssignmentShape::TensorAffine { .. }
+        | solve::TargetAssignmentShape::Reciprocal { .. } => false,
     }
 }
 
