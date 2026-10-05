@@ -90,6 +90,8 @@ mod final_parameter_modifiers;
 mod fixed_array_element_initialization;
 mod floating_star_index_reduction;
 mod fluid_function_data;
+#[cfg(target_os = "linux")]
+mod fmi_event_c_warnings;
 mod fmi_me_host_divergence;
 mod fmi_projection_descriptors;
 mod fmi_pure_call_families;

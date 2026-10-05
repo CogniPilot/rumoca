@@ -703,9 +703,12 @@ static {{ prefix }}Status rmc_domains_changed(ModelInstance* m, double* z, bool*
    there. `*advanced` is the time covered. */
 static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, double* advanced) {
     double y0[Y_LEN];
-    double z[{{ [fmi.event_indicator_roots|length, 1]|max }}];
-    double z_low[{{ [fmi.event_indicator_roots|length, 1]|max }}];
-    double z_high[{{ [fmi.event_indicator_roots|length, 1]|max }}];
+    /* Every indicator buffer is defined on every path: rmc_domains_changed
+       leaves its output untouched while no domain is armed, and the
+       refinement copies whole buffers. */
+    double z[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
+    double z_low[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
+    double z_high[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
     bool changed = false;
     memcpy(y0, m->y, sizeof(m->y));
     {{ prefix }}Status integrated = {{ integrate }}(m, t, h);
