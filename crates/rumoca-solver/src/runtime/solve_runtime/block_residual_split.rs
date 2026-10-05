@@ -18,6 +18,7 @@ use rustc_hash::FxHashMap;
 use super::{
     CompiledSolveExpression, CompiledSolveJacobianExpression, SolveExecutionBackend, SolveRuntime,
 };
+use crate::RuntimeSolveError;
 
 /// The prepared splits of one projection block, in residual program order.
 pub(crate) struct BlockSplits {
@@ -59,6 +60,9 @@ pub struct BlockResidualSplitCounts {
     pub dependent_evaluations: u64,
     /// Calls whose invariant parts failed and fell back to the unsplit programs.
     pub fallbacks: u64,
+    /// Residual rows evaluated by a batched compiled residual evaluation,
+    /// which calls each compiled entry once for all its rows.
+    pub batched_rows: u64,
 }
 
 thread_local! {
@@ -68,6 +72,7 @@ thread_local! {
             invariant_evaluations: 0,
             dependent_evaluations: 0,
             fallbacks: 0,
+            batched_rows: 0,
         }) };
 }
 
@@ -385,3 +390,167 @@ impl SolveRuntime {
 
 /// The active split slot of a runtime.
 pub(super) type ActiveSplitSlot = Cell<Option<ActiveBlockSplit>>;
+
+/// Residual rows of one batched evaluation that run the same compiled
+/// entry: their `(program, output offset)` coordinates, their positions in
+/// the batch, and the values of the call in progress.
+#[derive(Clone, Default)]
+struct BatchedRows {
+    coordinates: Vec<(usize, usize)>,
+    slots: Vec<usize>,
+    values: Vec<f64>,
+}
+
+impl BatchedRows {
+    fn clear(&mut self) {
+        self.coordinates.clear();
+        self.slots.clear();
+    }
+
+    fn push(&mut self, coordinate: (usize, usize), slot: usize) {
+        self.coordinates.push(coordinate);
+        self.slots.push(slot);
+    }
+
+    fn scatter(&self, out: &mut [f64]) {
+        for (&slot, &value) in self.slots.iter().zip(&self.values) {
+            out[slot] = value;
+        }
+    }
+}
+
+/// The entries the most recent batched residual evaluation assigned its
+/// rows: a pure function of the rows and the active compiled split's block,
+/// which every later evaluation of the same rows under the same split reuses.
+#[derive(Clone, Default)]
+pub(super) struct ResidualRowBatch {
+    rows: Vec<usize>,
+    split: Option<usize>,
+    /// Whether every row has a scalar view; the per-row evaluation serves
+    /// the rows otherwise.
+    batched: bool,
+    dependent: BatchedRows,
+    direct: BatchedRows,
+}
+
+impl ResidualRowBatch {
+    /// Assign `rows` to their entries under `split` (its block and splits)
+    /// unless they are the rows and split already assigned.
+    fn assign(
+        &mut self,
+        runtime: &SolveRuntime,
+        rows: &[usize],
+        split: Option<(usize, &BlockSplits)>,
+    ) {
+        let block = split.map(|(block, _)| block);
+        if self.rows == rows && self.split == block {
+            return;
+        }
+        self.rows.clear();
+        self.rows.extend_from_slice(rows);
+        self.split = block;
+        self.dependent.clear();
+        self.direct.clear();
+        self.batched = rows.iter().enumerate().all(|(slot, &row)| {
+            let Some((program, offset)) = runtime.implicit_scalar_rhs.row_output_position(row)
+            else {
+                return false;
+            };
+            let ordinal = split
+                .filter(|_| runtime.implicit_scalar_rhs.row_output_count(program) == Some(1))
+                .and_then(|(_, splits)| splits.ordinals.get(&program).copied());
+            match ordinal {
+                Some(ordinal) => self.dependent.push((ordinal, 0), slot),
+                None => self.direct.push((program, offset), slot),
+            }
+            true
+        });
+        self.dependent
+            .values
+            .resize(self.dependent.coordinates.len(), 0.0);
+        self.direct
+            .values
+            .resize(self.direct.coordinates.len(), 0.0);
+    }
+}
+
+impl SolveRuntime {
+    /// The compiled residuals of `rows`, in order, into `out`: exactly what
+    /// the per-row evaluation yields, each row through the entry it would
+    /// take there (the active compiled split's dependent program for a
+    /// one-output program the split holds, else the compiled residual
+    /// program), with each entry called once for all its rows. `false`, with
+    /// `out` unspecified, leaves the rows to that per-row evaluation: a row
+    /// without a scalar view, an interpreted active split, or a compiled
+    /// entry that declines.
+    pub(super) fn eval_compiled_residual_rows(
+        &self,
+        rows: &[usize],
+        (y, p, t): (&[f64], &[f64], f64),
+        out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        let Some(compiled) = &self.compiled_implicit_rhs else {
+            return Ok(false);
+        };
+        let split = match self.active_split.get() {
+            None => None,
+            Some(active) if active.compiled => {
+                match self.block_splits.get(active.block).and_then(Option::as_ref) {
+                    Some(splits) if splits.compiled.is_none() => return Ok(false),
+                    splits => splits.map(|splits| (active.block, splits.as_ref())),
+                }
+            }
+            Some(_) => return Ok(false),
+        };
+        let mut batch = self.residual_row_batch.borrow_mut();
+        batch.assign(self, rows, split);
+        if !batch.batched {
+            return Ok(false);
+        }
+        let tables = self.model.external_tables.as_slice();
+        let ResidualRowBatch {
+            dependent, direct, ..
+        } = &mut *batch;
+        if let Some((_, splits)) = split
+            && let Some(programs) = &splits.compiled
+            && !dependent.coordinates.is_empty()
+        {
+            let seed = splits.values.borrow();
+            let inputs = JacobianEvalInputs {
+                y,
+                p,
+                t,
+                seed: &seed,
+            };
+            // The per-row evaluation takes a failed dependent call as a
+            // decline and evaluates the row unsplit; so does a declined batch.
+            let called = programs.dependent.call_program_outputs_at(
+                &dependent.coordinates,
+                inputs,
+                tables,
+                &mut dependent.values,
+            );
+            if !matches!(called, Ok(true)) {
+                return Ok(false);
+            }
+        }
+        if !direct.coordinates.is_empty()
+            && !compiled
+                .call_program_outputs_at(&direct.coordinates, (y, p, t), tables, &mut direct.values)
+                .map_err(RuntimeSolveError::solve_ir)?
+        {
+            return Ok(false);
+        }
+        dependent.scatter(out);
+        direct.scatter(out);
+        let evaluated = dependent.coordinates.len() as u64;
+        count(|counts| {
+            counts.dependent_evaluations += evaluated;
+            counts.batched_rows += rows.len() as u64;
+        });
+        for (&row, &value) in rows.iter().zip(out.iter()) {
+            self.report_nonfinite_implicit_residual_row_inputs(t, y, row, value);
+        }
+        Ok(true)
+    }
+}

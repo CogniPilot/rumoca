@@ -243,3 +243,54 @@ fn selected_native_residual_checks_program_output_and_input_extents() {
             .is_err()
     );
 }
+
+#[test]
+fn selected_native_residual_outputs_at_coordinates_match_one_call_each() {
+    let block = aggregate_and_table();
+    let compiled = compile_selectable_expression_scalar_program_block(&block, None).unwrap();
+    let tables = [ExternalTableData {
+        id: 42,
+        data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 1,
+    }];
+    let (y, p, t) = ([3.0], [2.0], 0.5);
+    let coordinates = [(0, 1), (1, 0), (0, 0)];
+    let mut out = [0.0; 3];
+    assert!(
+        compiled
+            .call_program_outputs_at(&coordinates, (&y, &p, t), &tables, &mut out)
+            .unwrap()
+    );
+    for (&coordinate, &value) in coordinates.iter().zip(&out) {
+        let single = compiled
+            .call_program_output(coordinate, &y, &p, t, &tables)
+            .unwrap()
+            .unwrap();
+        assert_eq!(value.to_bits(), single.to_bits());
+    }
+    let calls = compiled.jit.jit_call_count();
+    let mut untouched = [7.0; 2];
+    for (coordinates, y) in [
+        ([(0, 0), (2, 0)], &[3.0][..]),
+        ([(0, 0), (0, 2)], &[3.0][..]),
+        ([(0, 0), (1, 0)], &[][..]),
+    ] {
+        assert!(
+            compiled
+                .call_program_outputs_at(&coordinates, (y, &p, t), &tables, &mut untouched)
+                .is_err()
+        );
+    }
+    assert_eq!(untouched, [7.0; 2]);
+    assert_eq!(compiled.jit.jit_call_count(), calls);
+    let batched = compile_expression_scalar_program_block(&block).unwrap();
+    assert!(
+        !batched
+            .call_program_outputs_at(&[(0, 0)], (&y, &p, t), &tables, &mut untouched[..1])
+            .unwrap(),
+        "a block without selectable entries declines the whole set"
+    );
+    assert_eq!(untouched, [7.0; 2]);
+}

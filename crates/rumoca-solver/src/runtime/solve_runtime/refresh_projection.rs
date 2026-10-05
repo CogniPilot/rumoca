@@ -531,6 +531,15 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .map_err(Into::into)
     }
 
+    fn eval_implicit_residual_rows(
+        &self,
+        rows: &[usize],
+        point: (&[f64], &[f64], f64),
+        out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        self.runtime.eval_compiled_residual_rows(rows, point, out)
+    }
+
     fn eval_implicit_residual_row(
         &self,
         row_idx: usize,

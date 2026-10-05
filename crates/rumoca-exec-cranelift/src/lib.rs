@@ -229,6 +229,19 @@ impl CompiledJacobianV {
             .call_program_outputs(program, inputs, external_tables, out)
     }
 
+    /// Output `offset` of each program at `coordinates`, in order, into `out`:
+    /// what [`Self::call_program_output`] returns one call at a time.
+    pub fn call_program_outputs_at(
+        &self,
+        coordinates: &[(usize, usize)],
+        inputs: rumoca_eval_solve::JacobianEvalInputs<'_>,
+        external_tables: &[ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), CompileError> {
+        self.jit
+            .call_program_outputs_at(coordinates, inputs, external_tables, out)
+    }
+
     /// Execute one output of one compiled program, using the prepared scalar
     /// view's `(program index, output offset)`. Sparse visible-output indices
     /// do not change this coordinate, and unrelated programs do not execute.
@@ -388,6 +401,20 @@ impl CompiledExpressionRows {
     ) -> Result<bool, CompileError> {
         self.jit
             .call_program_outputs(program, y, p, t, external_tables, out)
+    }
+
+    /// Output `offset` of each program at `coordinates`, in order, into `out`:
+    /// what [`Self::call_program_output`] returns one call at a time. `false`
+    /// declines before any execution exactly when those calls would decline.
+    pub fn call_program_outputs_at(
+        &self,
+        coordinates: &[(usize, usize)],
+        inputs: (&[f64], &[f64], f64),
+        external_tables: &[ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<bool, CompileError> {
+        self.jit
+            .call_program_outputs_at(coordinates, inputs, external_tables, out)
     }
 
     /// Execute a complete source program and select its local output offset.

@@ -474,6 +474,16 @@ values and evaluates the unsplit programs, and a dependent part that fails
 or declines at a pass hands that pass to its unsplit program, so the same
 operation raises the same error at the same pass as without the split.
 
+With compiled execution, a residual pass over a block's rows calls each
+compiled entry once for all the rows it serves: every row takes the entry its
+own evaluation takes (the active split's dependent program for a one-output
+program the split holds, else its compiled residual program), so each value
+is the bits of that row's own call. Which entry serves which row depends only
+on the rows and the active split, so it is formed once and reused by every
+later pass over the same rows under the same split. A pass with a row that has
+no scalar view, under an interpreted split, or whose compiled entry declines
+is evaluated row by row as before.
+
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Within one structural-artifact construction, applications of one immutable source share one operation-invariance proof; source replacement or specialization derives fresh evidence for its exact owner. The existing register-source checker must prove every read uses a seed-invariant register version; seed loads and any operation with non-repeatable effects cannot establish reuse. Every write replaces the destination version's evidence. | Projection-Jacobian construction | Preserves failure behavior without multiplying source-wide proof work by the block count |

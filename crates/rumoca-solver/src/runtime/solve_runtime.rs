@@ -44,7 +44,9 @@ pub use block_residual_split::{
     BlockResidualSplitCounts, block_residual_split_counts, reset_block_residual_split_counts,
 };
 mod chart_sharing;
+mod compiled_expressions;
 use chart_sharing::BlockReuse;
+pub use compiled_expressions::{CompiledSolveExpression, CompiledSolveJacobianExpression};
 mod coupled_event;
 mod discrete_rows;
 mod event_transactions;
@@ -100,97 +102,6 @@ use support::{
     zero_runtime_values,
 };
 use tangent_evaluators::{colored_tangent_evaluators, torn_tangent_evaluators};
-
-/// Backend-neutral callable produced from one checked Solve-IR expression
-/// block. Native execution adapters implement this contract; the runtime
-/// retains the prepared evaluator as the correctness fallback.
-pub trait CompiledSolveExpression {
-    /// Execute all local outputs of one retained source program. A decline
-    /// occurs before execution; admitted execution errors must propagate.
-    fn call_program_outputs(
-        &self,
-        _program: usize,
-        _y: &[f64],
-        _p: &[f64],
-        _t: f64,
-        _external_tables: &[rumoca_core::ExternalTableData],
-        _out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
-        Ok(false)
-    }
-
-    /// Evaluate one source program output at `(program index, output offset)`.
-    /// Other programs must not execute. `None` declines this optional entry
-    /// point; an admitted execution error must propagate to the caller.
-    fn call_program_output(
-        &self,
-        _coordinate: (usize, usize),
-        _y: &[f64],
-        _p: &[f64],
-        _t: f64,
-        _external_tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
-        Ok(None)
-    }
-
-    fn call(
-        &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        external_tables: &[rumoca_core::ExternalTableData],
-        out: &mut [f64],
-    ) -> Result<(), String>;
-}
-
-/// Backend-neutral callable for a checked forward-mode Solve-IR expression.
-pub trait CompiledSolveJacobianExpression {
-    /// Prepare every application at once, one entry per application in
-    /// order; `None` leaves an application to the generic evaluator.
-    fn prepare_projections(
-        &self,
-        applications: &[&solve::ProjectionJacobianApplication],
-    ) -> Result<Vec<Option<Rc<dyn CompiledSolveProjectionJacobian>>>, String> {
-        Ok(vec![None; applications.len()])
-    }
-    /// Execute one already compiled program and return all of its local
-    /// outputs. `false` declines this optional entry point before execution.
-    fn call_program_outputs(
-        &self,
-        _program: usize,
-        _inputs: solve_eval::JacobianEvalInputs<'_>,
-        _external_tables: &[rumoca_core::ExternalTableData],
-        _out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
-        Ok(false)
-    }
-
-    fn call(
-        &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        seed: &[f64],
-        external_tables: &[rumoca_core::ExternalTableData],
-        out: &mut [f64],
-    ) -> Result<(), String>;
-
-    /// Evaluate one output of one already compiled program. `coordinate` is
-    /// `(program index, output offset)`, as issued by the prepared scalar view,
-    /// not a visible-output index. Other programs must not execute. `None`
-    /// declines this optional entry point; an execution error is not a decline.
-    fn call_program_output(
-        &self,
-        _coordinate: (usize, usize),
-        _y: &[f64],
-        _p: &[f64],
-        _t: f64,
-        _seed: &[f64],
-        _external_tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
-        Ok(None)
-    }
-}
 
 /// Complete application of an issued colored Jacobian at fresh coordinates.
 pub trait CompiledSolveProjectionJacobian {
@@ -367,6 +278,8 @@ pub struct SolveRuntime {
     active_split: block_residual_split::ActiveSplitSlot,
     /// Output buffer of a single-row split evaluation.
     split_row_scratch: std::cell::RefCell<Vec<f64>>,
+    /// The entries of the most recent batched residual evaluation.
+    residual_row_batch: std::cell::RefCell<block_residual_split::ResidualRowBatch>,
     refresh_program_rows: FxHashMap<solve::RefreshScalarProgramSource, usize>,
     manifold: manifold_execution::PreparedManifoldProjection,
     initial_residual: PreparedComputeBlock,
@@ -883,6 +796,7 @@ impl SolveRuntime {
             block_splits,
             active_split: std::cell::Cell::new(None),
             split_row_scratch: std::cell::RefCell::new(Vec::new()),
+            residual_row_batch: std::cell::RefCell::default(),
             implicit_projection_scalar_jacobian_v: projection_reuse.prepared(
                 primary.map(|primary| &primary.implicit_projection_scalar_jacobian_v),
                 implicit_projection_scalar_jacobian,

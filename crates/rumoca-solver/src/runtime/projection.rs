@@ -170,6 +170,18 @@ pub(crate) trait ImplicitProjectionModel {
         Ok(None)
     }
 
+    /// The implicit residuals of `rows`, in order, into `out`: exactly the
+    /// values [`Self::eval_implicit_residual_row`] yields row by row. `false`
+    /// leaves the rows to that per-row evaluation.
+    fn eval_implicit_residual_rows(
+        &self,
+        _rows: &[usize],
+        _point: (&[f64], &[f64], f64),
+        _out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        Ok(false)
+    }
+
     /// Evaluate a constructor-issued residual output selection once per source
     /// program. A decline must precede execution and leave `out` unchanged.
     fn eval_implicit_residual_outputs(
@@ -1454,7 +1466,11 @@ fn implicit_selected_residuals<M: ImplicitProjectionModel + ?Sized>(
     rows: &[usize],
     context: &str,
 ) -> Result<Vec<f64>, RuntimeSolveError> {
-    let mut selected = Vec::with_capacity(rows.len());
+    let mut selected = vec![0.0; rows.len()];
+    if model.eval_implicit_residual_rows(rows, (y, p, t), &mut selected)? {
+        return Ok(selected);
+    }
+    selected.clear();
     for row in rows {
         let Some(value) = model.eval_implicit_residual_row(*row, y, p, t)? else {
             let mut residual = vec![0.0; y.len()];

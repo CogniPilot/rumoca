@@ -173,6 +173,10 @@ fn assert_trajectory_exact(
         native.calls > 0 && native.fallbacks == 0,
         "{label} native: {native:?}"
     );
+    assert!(
+        native.batched_rows > 0,
+        "{label} native: compiled residual passes evaluate their rows in one batch: {native:?}"
+    );
     assert_trajectory_exact_under(label, dae, SimExecutionPolicy::Interpreter)
 }
 
@@ -222,6 +226,8 @@ fn fixture_splits_are_exact_and_evaluate_each_invariant_part_once_per_call() {
         let counts = assert_trajectory_exact_under("TangentLoops", &loops, policy);
         assert_eq!(counts.calls, 0, "{counts:?}");
     }
+    // The interpreter keeps the per-row evaluation.
+    assert_eq!(counts.batched_rows, 0, "{counts:?}");
 }
 
 /// `f` converts `1e300*max(u - 0.5, 0)` to an Integer, out of range once its

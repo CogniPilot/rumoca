@@ -118,3 +118,58 @@ impl CompiledResidualRows {
         Ok(())
     }
 }
+
+impl CompiledResidualRows {
+    /// Output `offset` of each program at `coordinates`, in order, into
+    /// `out`: the values [`Self::call_program_output`] returns one call at a
+    /// time, with the external tables installed once for the whole set.
+    /// `false` declines, before any execution, exactly when those calls
+    /// would decline.
+    pub(crate) fn call_program_outputs_at(
+        &self,
+        coordinates: &[(usize, usize)],
+        inputs: (&[f64], &[f64], f64),
+        external_tables: &[ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<bool, CompileError> {
+        let (y, p, t) = inputs;
+        validate_output_len(out, coordinates.len())?;
+        for &(program, offset) in coordinates {
+            let row = self.rows.get(program).ok_or_else(|| {
+                CompileError::Input(format!(
+                    "residual program {program} is outside compiled rows"
+                ))
+            })?;
+            let count = row.plan.output_count();
+            if offset >= count {
+                return Err(CompileError::Input(format!(
+                    "residual program {program} output {offset} is outside {count} outputs"
+                )));
+            }
+        }
+        if !self.selectable {
+            return Ok(false);
+        }
+        for &(program, _) in coordinates {
+            let plan = &self.rows[program].plan;
+            validate_input_requirements(row_input_requirements(plan), y, p, None)?;
+        }
+        let inputs = RowInputs {
+            y,
+            p,
+            t,
+            seed: None,
+            external_tables,
+        };
+        with_active_external_tables(external_tables, || {
+            let mut output = self.output_scratch.borrow_mut();
+            for (&(program, offset), value) in coordinates.iter().zip(out) {
+                let row = &self.rows[program];
+                output.resize(row.plan.output_count(), 0.0);
+                self.call_selected_active(program, row, inputs, &mut output)?;
+                *value = output[offset];
+            }
+            Ok(true)
+        })
+    }
+}
