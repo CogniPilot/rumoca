@@ -243,3 +243,22 @@ fn an_end_retained_twice_has_its_weight_halved() {
     bracket.narrow(0.2, false);
     assert_eq!(bracket.crossing_fraction(-1.0, 1.0), 2.0 / 3.0);
 }
+
+/// The window of a located bracket ends one tolerance after its low end, at
+/// or after its high end, and never past the scan coordinate bounding it.
+#[test]
+fn the_application_window_ends_one_tolerance_after_the_low_end() {
+    for (name, shape, _) in shapes() {
+        let vector = |t: f64| vec![shape(t)];
+        let (bracket, _) = locate(&vector, LOW, LOW + WIDTH, TOLERANCE);
+        let window = bracket.application_window(LOW + WIDTH);
+        assert!(window >= bracket.high(), "{name}");
+        assert_eq!(
+            window.to_bits(),
+            (bracket.low() + TOLERANCE).min(LOW + WIDTH).to_bits(),
+            "{name}"
+        );
+    }
+    let bracket = RootLocationPlan::STANDARD.open_bracket(0.0, 0.5, 1.0);
+    assert_eq!(bracket.application_window(0.75), 0.75);
+}

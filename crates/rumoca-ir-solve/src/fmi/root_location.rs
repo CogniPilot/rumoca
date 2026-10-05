@@ -9,13 +9,18 @@ mod bracket;
 
 pub use bracket::RootBracket;
 
-/// Which crossing an accepted interval applies when several indicators change
-/// domain in it.
+/// Which domain changes an accepted interval applies together when several
+/// indicators change domain in it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum RootTieBreak {
-    /// The crossing located at the least application coordinate; crossings
-    /// located at the same coordinate apply together.
-    LeastApplicationCoordinate,
+    /// The earliest crossing is located, and every domain change within one
+    /// location tolerance after its located left limit applies with it, at the
+    /// end of that window (never past the scan coordinate that bounds the
+    /// bracket). When no changed indicator stands in its new domain at the
+    /// window end (the earliest one left and returned inside the window), the
+    /// located high end is the application coordinate.
+    /// [`RootBracket::application_window`] is the arithmetic.
+    ToleranceWindow,
 }
 
 /// How a bracket around a domain change is narrowed to the location tolerance.
@@ -63,7 +68,7 @@ impl RootLocationPlan {
         minmax_slack: 4,
         refinement_iteration_cap: 128,
         roundoff_epsilons: 100.0,
-        tie_break: RootTieBreak::LeastApplicationCoordinate,
+        tie_break: RootTieBreak::ToleranceWindow,
     };
 
     /// The adjacent-sample bound for an experiment of `experiment_width`.
@@ -164,7 +169,7 @@ mod tests {
             RootRefinementMethod::IllinoisMinmax
         );
         assert_eq!(plan.minmax_slack(), 4);
-        assert_eq!(plan.tie_break(), RootTieBreak::LeastApplicationCoordinate);
+        assert_eq!(plan.tie_break(), RootTieBreak::ToleranceWindow);
     }
 
     /// The cap covers the minmax bound of the widest bracket the standard

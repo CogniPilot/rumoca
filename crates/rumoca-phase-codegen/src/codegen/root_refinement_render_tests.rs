@@ -1,6 +1,6 @@
 //! The generated C refinement of a `RootLocationPlan` narrows a state-event
-//! bracket through the same coordinates as the linked `RootBracket`, bit for
-//! bit, over a set of crossing shapes (SPEC_0044 ME-EVENT-004).
+//! bracket through the same coordinates, and ends at the same tolerance window,
+//! as the linked `RootBracket`, bit for bit, over a set of crossing shapes (SPEC_0044 ME-EVENT-004).
 
 use rumoca_ir_solve::fmi::{RootBracket, RootLocationPlan};
 
@@ -68,6 +68,8 @@ fn linked(shape: usize) -> Vec<u64> {
     }
     trace.push(bracket.low().to_bits());
     trace.push(bracket.high().to_bits());
+    trace.push(bracket.application_window(LOW + WIDTH).to_bits());
+    trace.push(bracket.application_window(bracket.high()).to_bits());
     trace
 }
 
@@ -124,6 +126,8 @@ int main(void) {
         }
         bits(bracket.low);
         bits(bracket.high);
+        bits(rmc_root_window(&bracket, LOW + WIDTH));
+        bits(rmc_root_window(&bracket, bracket.high));
         printf("\n");
     }
     return 0;
