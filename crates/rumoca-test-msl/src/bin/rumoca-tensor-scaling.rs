@@ -49,15 +49,21 @@ struct Args {
 enum Workload {
     WholeArrayFirstOrder,
     CascadedFirstOrder,
+    GridTwoBodyInterior,
 }
 
 impl Workload {
-    const ALL: [Self; 2] = [Self::WholeArrayFirstOrder, Self::CascadedFirstOrder];
+    const ALL: [Self; 3] = [
+        Self::WholeArrayFirstOrder,
+        Self::CascadedFirstOrder,
+        Self::GridTwoBodyInterior,
+    ];
 
     const fn name(self) -> &'static str {
         match self {
             Self::WholeArrayFirstOrder => "whole-array-first-order",
             Self::CascadedFirstOrder => "cascaded-first-order",
+            Self::GridTwoBodyInterior => "grid-two-body-interior",
         }
     }
 
@@ -65,6 +71,7 @@ impl Workload {
         match self {
             Self::WholeArrayFirstOrder => "WholeArrayFirstOrder",
             Self::CascadedFirstOrder => "CascadedFirstOrder",
+            Self::GridTwoBodyInterior => "GridTwoBodyInterior",
         }
     }
 
@@ -72,6 +79,7 @@ impl Workload {
         match self {
             Self::WholeArrayFirstOrder => whole_array_source(size),
             Self::CascadedFirstOrder => cascaded_source(size),
+            Self::GridTwoBodyInterior => grid_source(grid_side(size)),
         }
     }
 }
@@ -152,6 +160,43 @@ fn cascaded_source(size: usize) -> String {
          \x20   der(x[i]) = x[i - 1] - x[i];\n\
          \x20 end for;\n\
          end CascadedFirstOrder;\n"
+    )
+}
+
+/// The side of the square grid whose cell count is closest to `size`.
+fn grid_side(size: usize) -> usize {
+    ((size as f64).sqrt().round() as usize).max(3)
+}
+
+/// A clamped 2-D method-of-lines grid whose interior nest holds two bodies:
+/// eight edge families and two interior families over the whole nest.
+fn grid_source(side: usize) -> String {
+    format!(
+        "model GridTwoBodyInterior\n\
+         \x20 constant Integer N = {side};\n\
+         \x20 Real u[N, N](each start = 1.0);\n\
+         \x20 Real w[N, N](each start = 0.0);\n\
+         equation\n\
+         \x20 for i in 1:N loop\n\
+         \x20   der(u[i, 1]) = 0.0;\n\
+         \x20   der(u[i, N]) = 0.0;\n\
+         \x20   der(w[i, 1]) = 0.0;\n\
+         \x20   der(w[i, N]) = 0.0;\n\
+         \x20 end for;\n\
+         \x20 for j in 2:N - 1 loop\n\
+         \x20   der(u[1, j]) = 0.0;\n\
+         \x20   der(u[N, j]) = 0.0;\n\
+         \x20   der(w[1, j]) = 0.0;\n\
+         \x20   der(w[N, j]) = 0.0;\n\
+         \x20 end for;\n\
+         \x20 for i in 2:N - 1 loop\n\
+         \x20   for j in 2:N - 1 loop\n\
+         \x20     der(u[i, j]) = w[i, j];\n\
+         \x20     der(w[i, j]) = u[i + 1, j] + u[i - 1, j] + u[i, j + 1] + u[i, j - 1]\n\
+         \x20       - 4.0 * u[i, j];\n\
+         \x20   end for;\n\
+         \x20 end for;\n\
+         end GridTwoBodyInterior;\n"
     )
 }
 
@@ -405,6 +450,10 @@ fn assess_structure(workload: Workload, measurements: &[Measurement]) -> Structu
                 );
                 compact_storage &= measurement.equations == 1;
             }
+            Workload::GridTwoBodyInterior => {
+                assess_grid(measurement, &mut failures);
+                compact_storage &= measurement.equations == 0;
+            }
         }
     }
     StructuralAssessment {
@@ -412,6 +461,29 @@ fn assess_structure(workload: Workload, measurements: &[Measurement]) -> Structu
         spec_0032_compact_storage: compact_storage,
         failures,
     }
+}
+
+/// Every derivative row of the grid belongs to one of ten families (eight
+/// edges, two interior bodies over the whole nest), and each family lowers to
+/// one Solve tensor node: the inventory is independent of the grid size.
+fn assess_grid(measurement: &Measurement, failures: &mut Vec<String>) {
+    let size = measurement.size;
+    let side = grid_side(size);
+    require_structure(
+        measurement.structured_families == 10
+            && measurement.compact_domain_points == 2 * side * side,
+        failures,
+        format!(
+            "N={size}: expected ten compact families covering all {} derivative rows",
+            2 * side * side
+        ),
+    );
+    require_structure(
+        measurement.solve_map_nodes + measurement.solve_affine_stencil_nodes
+            >= measurement.structured_families,
+        failures,
+        format!("N={size}: expected one native Solve tensor node per grid family"),
+    );
 }
 
 fn require_structure(condition: bool, failures: &mut Vec<String>, message: String) {
@@ -583,6 +655,25 @@ mod tests {
             solve_affine_stencil_nodes: 1,
             ..Measurement::default()
         }
+    }
+
+    #[test]
+    fn per_row_grid_families_cannot_pass_structural_ratchet() {
+        // An unrolled outer binder leaves one family per interior row, and a
+        // strided interior lowered as scalar rows has no tensor node.
+        let side = grid_side(128);
+        let measurement = Measurement {
+            size: 128,
+            structured_families: 8 + 2 * (side - 2),
+            compact_domain_points: 2 * side * side,
+            solve_map_nodes: 4,
+            ..Measurement::default()
+        };
+
+        let assessment = assess_structure(Workload::GridTwoBodyInterior, &[measurement]);
+
+        assert!(!assessment.integrity_passed);
+        assert_eq!(assessment.failures.len(), 2);
     }
 
     #[test]
