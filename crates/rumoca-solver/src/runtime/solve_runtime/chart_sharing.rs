@@ -317,6 +317,22 @@ impl BlockReuse {
         }
     }
 
+    /// [`Self::jacobian`], with a fresh block compiled by `fresh`.
+    pub(super) fn jacobian_with_fresh(
+        &self,
+        primary: Option<&Rc<dyn CompiledSolveJacobianExpression>>,
+        block: &solve::ScalarProgramBlock,
+        fresh: &mut dyn FnMut() -> Option<Rc<dyn CompiledSolveJacobianExpression>>,
+        compile: &mut dyn FnMut(
+            &solve::ScalarProgramBlock,
+        ) -> Option<Rc<dyn CompiledSolveJacobianExpression>>,
+    ) -> Option<Rc<dyn CompiledSolveJacobianExpression>> {
+        match self {
+            Self::Fresh => fresh(),
+            _ => self.jacobian(primary, block, compile),
+        }
+    }
+
     /// The compiled Jacobian form of `block`, as [`Self::expression`].
     pub(super) fn jacobian(
         &self,

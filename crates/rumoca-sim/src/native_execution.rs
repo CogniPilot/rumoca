@@ -9,6 +9,8 @@ struct CraneliftJacobianExpression(rumoca_exec_cranelift::CompiledJacobianV);
 
 struct CraneliftComputeExpression(rumoca_exec_cranelift::CompiledComputeExpression);
 
+struct CraneliftComputeJacobian(rumoca_exec_cranelift::CompiledComputeJacobian);
+
 struct CraneliftProjectionJacobian(rumoca_exec_cranelift::CompiledProjectionJacobian);
 
 struct CraneliftAssignmentSchedule(rumoca_exec_cranelift::CompiledAssignmentSchedule);
@@ -84,6 +86,22 @@ impl rumoca_solver::CompiledSolveExpression for CraneliftComputeExpression {
     ) -> Result<(), String> {
         self.0
             .call_with_external_tables(y, p, t, external_tables, out)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftComputeJacobian {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        seed: &[f64],
+        external_tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), String> {
+        self.0
+            .call_with_external_tables(y, p, t, seed, external_tables, out)
             .map_err(|error| error.to_string())
     }
 }
@@ -279,6 +297,17 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
             .map_err(|error| error.to_string())
     }
 
+    fn compile_compute_jacobian_expression(
+        &self,
+        block: &rumoca_ir_solve::ComputeBlock,
+    ) -> Result<Option<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>>, String> {
+        rumoca_exec_cranelift::compile_jacobian_compute_block(block, self.pure_calls.as_ref())
+            .map(|compiled| {
+                compiled.map(|compiled| Rc::new(CraneliftComputeJacobian(compiled)) as Rc<_>)
+            })
+            .map_err(|error| error.to_string())
+    }
+
     fn compile_jacobian_expression(
         &self,
         block: &rumoca_ir_solve::ScalarProgramBlock,
@@ -403,24 +432,59 @@ pub(crate) fn backend(
 
 /// How the native backend compiles one compute block for whole-block calls:
 /// compact tensor nodes running as loop kernels, and scalar rows compiled one
-/// by one (SPEC_0032 §4).
+/// by one (SPEC_0032 §4). A block no loop kernel owns compiles every row of
+/// its scalar view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NativeComputeInventory {
     pub kernels: usize,
     pub compiled_rows: usize,
 }
 
-/// The native compilation inventory of `block`, or `None` when the backend
-/// compiles the block's scalar view row by row.
+impl NativeComputeInventory {
+    fn of(
+        compiled: Option<(usize, usize)>,
+        block: &rumoca_ir_solve::ComputeBlock,
+    ) -> Result<Self, String> {
+        let (kernels, compiled_rows) = match compiled {
+            Some(counts) => counts,
+            None => (
+                0,
+                rumoca_eval_solve::to_scalar_program_block(block)
+                    .map_err(|error| error.to_string())?
+                    .programs()
+                    .len(),
+            ),
+        };
+        Ok(Self {
+            kernels,
+            compiled_rows,
+        })
+    }
+}
+
+/// The native compilation inventory of `block`.
 pub fn native_compute_inventory(
     block: &rumoca_ir_solve::ComputeBlock,
-) -> Result<Option<NativeComputeInventory>, String> {
-    rumoca_exec_cranelift::compile_expression_compute_block(block, None)
-        .map(|compiled| {
-            compiled.map(|compiled| NativeComputeInventory {
-                kernels: compiled.kernel_count(),
-                compiled_rows: compiled.compiled_row_count(),
-            })
-        })
-        .map_err(|error| error.to_string())
+) -> Result<NativeComputeInventory, String> {
+    let compiled = rumoca_exec_cranelift::compile_expression_compute_block(block, None)
+        .map_err(|error| error.to_string())?
+        .map(|compiled| (compiled.kernel_count(), compiled.compiled_row_count()));
+    NativeComputeInventory::of(compiled, block)
+}
+
+/// The native compilation inventories of a problem's initialization residual
+/// and of its directional derivative (the tensor JVP the Solve artifacts carry
+/// as the initialization Jacobian).
+pub fn native_initialization_inventory(
+    problem: &rumoca_ir_solve::SolveProblem,
+    artifacts: &rumoca_ir_solve::SolveArtifacts,
+) -> Result<(NativeComputeInventory, NativeComputeInventory), String> {
+    let jacobian = &artifacts.initialization.residual_jacobian_v;
+    let directional = rumoca_exec_cranelift::compile_jacobian_compute_block(jacobian, None)
+        .map_err(|error| error.to_string())?
+        .map(|compiled| (compiled.kernel_count(), compiled.compiled_row_count()));
+    Ok((
+        native_compute_inventory(problem.initialization.residual())?,
+        NativeComputeInventory::of(directional, jacobian)?,
+    ))
 }

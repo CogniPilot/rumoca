@@ -368,7 +368,7 @@ struct StructuredMapProgramInput<'scope, 'dae> {
     span: Span,
 }
 
-type AffineProgramCertificate = (
+pub(in crate::lower) type AffineProgramCertificate = (
     Vec<solve::LinearOp>,
     Vec<solve::AffineStencilLoadStride>,
     Vec<solve::AffineStencilConstStride>,
@@ -447,7 +447,10 @@ pub(in crate::lower) fn unclocked_structured_program<'dae>(
     })
 }
 
-fn derive_affine_program_certificate(
+/// The compact program of a family whose per-point `programs` (in domain
+/// order) are one base program with affine load and constant strides; every
+/// point is checked against the derived strides.
+pub(in crate::lower) fn derive_affine_program_certificate(
     domain: &rumoca_core::StructuredIndexDomain,
     base_point: &[i64],
     points: &[Vec<i64>],

@@ -6,13 +6,15 @@
 //! node's [`AffineKernelPlan`] defines for that point, so the kernel computes
 //! exactly the scalar view's rows without one compiled function per row.
 
+use std::marker::PhantomData;
+
 use super::*;
 use rumoca_eval_solve::AffineKernelPlan;
 
 /// Whether the loop kernel owns a node with this base program: straight-line
 /// scalar arithmetic with exactly one output. Every other program keeps the
 /// per-row path, decided when the block is compiled.
-pub(super) fn tensor_kernel_supported(base_ops: &[LinearOp], kind: RowKind) -> bool {
+fn tensor_kernel_supported(base_ops: &[LinearOp], kind: RowKind) -> bool {
     let mut outputs = 0usize;
     for op in base_ops {
         match op {
@@ -35,7 +37,7 @@ pub(super) fn tensor_kernel_supported(base_ops: &[LinearOp], kind: RowKind) -> b
 
 /// The input lengths a kernel reads: the base program with every strided load
 /// at the largest index the plan proved over the domain.
-pub(super) fn tensor_kernel_input_requirements(
+fn tensor_kernel_input_requirements(
     plan: &AffineKernelPlan,
     base_ops: &[LinearOp],
 ) -> Result<InputRequirements, CompileError> {
@@ -49,21 +51,15 @@ enum PointOp<'a> {
 }
 
 impl CraneliftEmitter {
-    /// Compile `base_ops` over `plan`'s domain as one loop-nest function with
-    /// the residual (or, for `JacobianV`, directional) row ABI; the `out`
-    /// pointer addresses the whole output vector.
-    pub(super) fn compile_tensor_kernel(
+    /// Compile `program` over `plan`'s domain as one loop-nest function with
+    /// the row ABI of `K`; the `out` pointer addresses the whole output vector.
+    fn compile_tensor_kernel<K: KernelKind>(
         &mut self,
         plan: &AffineKernelPlan,
-        base_ops: &[LinearOp],
-        kind: RowKind,
+        program: &KernelProgram<'_, K>,
         name: &str,
     ) -> Result<FuncId, CompileError> {
-        if !tensor_kernel_supported(base_ops, kind) {
-            return Err(CompileError::Backend(
-                "tensor kernel base program is outside the loop-kernel subset".to_string(),
-            ));
-        }
+        let (base_ops, kind) = (program.ops, K::ROW_KIND);
         let pointer_type = self.module.target_config().pointer_type();
         let mut signature = self.module.make_signature();
         signature.returns.push(AbiParam::new(types::I8));
@@ -363,20 +359,135 @@ fn load_f64_at(
     fb.ins().load(types::F64, flags, address, 0)
 }
 
+/// The ABI of a set of loop kernels: whether they compute a block's values or
+/// its directional derivative along a seed vector. The kind is a type, so a
+/// kernel is always called with exactly the inputs its signature declares.
+pub(crate) trait KernelKind {
+    /// The native function of one kernel.
+    type Fn: Copy;
+    /// The seed input: none for values, the seed vector for a derivative.
+    type Seed<'a>: Copy;
+    /// The row ABI the kernels are declared with.
+    const ROW_KIND: RowKind;
+
+    fn finalized(module: &JITModule, func_id: FuncId) -> Result<Self::Fn, CompileError>;
+
+    fn seed_slice(seed: Self::Seed<'_>) -> Option<&[f64]>;
+
+    /// Run `kernel` over its whole domain.
+    ///
+    /// # Safety
+    ///
+    /// `y`, `p`, `seed`, and `out` satisfy the input requirements and output
+    /// length of the kernel set `kernel` belongs to.
+    unsafe fn invoke(
+        kernel: Self::Fn,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        seed: Self::Seed<'_>,
+        out: &mut [f64],
+    ) -> u8;
+}
+
+/// Loop kernels that compute a block's values.
+pub(crate) enum ResidualKernels {}
+
+/// Loop kernels that compute a block's directional derivative.
+pub(crate) enum DirectionalKernels {}
+
+impl KernelKind for ResidualKernels {
+    type Fn = ResidualRowFn;
+    type Seed<'a> = ();
+    const ROW_KIND: RowKind = RowKind::Residual;
+
+    fn finalized(module: &JITModule, func_id: FuncId) -> Result<Self::Fn, CompileError> {
+        finalized_residual_fn(module, func_id)
+    }
+
+    fn seed_slice(_seed: Self::Seed<'_>) -> Option<&[f64]> {
+        None
+    }
+
+    unsafe fn invoke(
+        kernel: Self::Fn,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        _seed: Self::Seed<'_>,
+        out: &mut [f64],
+    ) -> u8 {
+        // SAFETY: the kernel was declared with the residual row ABI; the
+        // caller guarantees the buffers cover every index its plan proved.
+        unsafe { kernel(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr()) }
+    }
+}
+
+impl KernelKind for DirectionalKernels {
+    type Fn = JacobianRowFn;
+    type Seed<'a> = &'a [f64];
+    const ROW_KIND: RowKind = RowKind::JacobianV;
+
+    fn finalized(module: &JITModule, func_id: FuncId) -> Result<Self::Fn, CompileError> {
+        finalized_jacobian_fn(module, func_id)
+    }
+
+    fn seed_slice(seed: Self::Seed<'_>) -> Option<&[f64]> {
+        Some(seed)
+    }
+
+    unsafe fn invoke(
+        kernel: Self::Fn,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        seed: Self::Seed<'_>,
+        out: &mut [f64],
+    ) -> u8 {
+        // SAFETY: the kernel was declared with the directional row ABI; the
+        // caller guarantees the buffers cover every index its plan proved.
+        unsafe { kernel(y.as_ptr(), p.as_ptr(), t, seed.as_ptr(), out.as_mut_ptr()) }
+    }
+}
+
+/// A base program the loop kernel of `K` owns: straight-line scalar
+/// arithmetic with exactly one output ([`tensor_kernel_supported`]), proved
+/// once when the program is admitted.
+pub(crate) struct KernelProgram<'a, K> {
+    ops: &'a [LinearOp],
+    kind: PhantomData<K>,
+}
+
+impl<'a, K: KernelKind> KernelProgram<'a, K> {
+    /// `ops` as a kernel program, or `None` when it keeps the per-row path.
+    pub(crate) fn admit(ops: &'a [LinearOp]) -> Option<Self> {
+        tensor_kernel_supported(ops, K::ROW_KIND).then_some(Self {
+            ops,
+            kind: PhantomData,
+        })
+    }
+}
+
+/// One kernel of a [`CompiledTensorKernels`] set, issued by its compilation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct KernelId(usize);
+
 /// Native loop kernels of the affine tensor nodes of one block, sharing one
 /// executable-memory arena.
-pub(crate) struct CompiledTensorKernels {
-    kernels: Vec<ResidualRowFn>,
+pub(crate) struct CompiledTensorKernels<K: KernelKind> {
+    kernels: Vec<K::Fn>,
     input_requirements: InputRequirements,
     output_len: usize,
     _module: OwnedJitModule,
 }
 
-impl CompiledTensorKernels {
-    /// Compile one residual loop kernel per `(plan, base program)`.
-    pub(crate) fn compile_residual(
-        nodes: &[(&AffineKernelPlan, &[LinearOp])],
-    ) -> Result<Self, CompileError> {
+impl<K: KernelKind> CompiledTensorKernels<K> {
+    /// Compile one loop kernel per `(plan, program)` of `nodes`, issuing the
+    /// id of each node's kernel at its position (`None` where a node has no
+    /// kernel).
+    pub(crate) fn compile(
+        nodes: &[Option<(AffineKernelPlan, KernelProgram<'_, K>)>],
+    ) -> Result<(Self, Vec<Option<KernelId>>), CompileError> {
         let mut emitter = CraneliftEmitter::new(None)?;
         if emitter.module.target_config().pointer_type() != types::I64 {
             return Err(CompileError::Backend(
@@ -386,56 +497,80 @@ impl CompiledTensorKernels {
         let mut func_ids = checked_vec_with_capacity(nodes.len(), "tensor kernels")?;
         let mut input_requirements = InputRequirements::default();
         let mut output_len = 0usize;
-        for (plan, base_ops) in nodes {
+        let mut ids = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let Some((plan, program)) = node else {
+                ids.push(None);
+                continue;
+            };
+            ids.push(Some(KernelId(func_ids.len())));
             let profile_id = NEXT_RESIDUAL_KERNEL_ID.fetch_add(1, Ordering::Relaxed);
             func_ids.push(emitter.compile_tensor_kernel(
                 plan,
-                base_ops,
-                RowKind::Residual,
+                program,
                 &format!("rumoca_tensor_kernel_{profile_id}"),
             )?);
             input_requirements =
-                input_requirements.merge(tensor_kernel_input_requirements(plan, base_ops)?);
+                input_requirements.merge(tensor_kernel_input_requirements(plan, program.ops)?);
             output_len = output_len.max(plan.output_count());
         }
         finalize_jit_module(&mut emitter.module)?;
         let kernels = func_ids
             .into_iter()
-            .map(|func_id| finalized_residual_fn(&emitter.module, func_id))
+            .map(|func_id| K::finalized(&emitter.module, func_id))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self {
-            kernels,
-            input_requirements,
-            output_len,
-            _module: emitter.module,
-        })
+        Ok((
+            Self {
+                kernels,
+                input_requirements,
+                output_len,
+                _module: emitter.module,
+            },
+            ids,
+        ))
     }
 
-    /// Execute kernel `index` over its whole domain, writing its outputs into
-    /// `out` at the plan's output indices.
-    pub(crate) fn call(
-        &self,
-        index: usize,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        out: &mut [f64],
-    ) -> Result<(), CompileError> {
+    /// Check the call's buffers once against every kernel of the set.
+    pub(crate) fn frame<'a>(
+        &'a self,
+        (y, p, t): (&'a [f64], &'a [f64], f64),
+        seed: K::Seed<'a>,
+        out: &'a mut [f64],
+    ) -> Result<KernelFrame<'a, K>, CompileError> {
         validate_output_len(out, self.output_len)?;
-        validate_input_requirements(self.input_requirements, y, p, None)?;
-        let kernel = self
-            .kernels
-            .get(index)
-            .ok_or_else(|| CompileError::Input(format!("tensor kernel {index} is not compiled")))?;
-        // SAFETY: the kernel was declared with the residual row ABI. Its plan
-        // proved every load index below the validated input lengths and every
-        // output index below the validated output length.
-        let status = unsafe { kernel(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr()) };
-        status::check(status)
+        validate_input_requirements(self.input_requirements, y, p, K::seed_slice(seed))?;
+        Ok(KernelFrame {
+            kernels: self,
+            y,
+            p,
+            t,
+            seed,
+            out,
+        })
     }
 }
 
-/// [`tensor_kernel_supported`] for a residual (seedless) kernel.
-pub(crate) fn residual_tensor_kernel_supported(base_ops: &[LinearOp]) -> bool {
-    tensor_kernel_supported(base_ops, RowKind::Residual)
+/// The buffers of one block call, checked against a kernel set's proven
+/// requirements when the frame is built, so its kernels run without
+/// re-checking.
+pub(crate) struct KernelFrame<'a, K: KernelKind> {
+    kernels: &'a CompiledTensorKernels<K>,
+    pub(crate) y: &'a [f64],
+    pub(crate) p: &'a [f64],
+    pub(crate) t: f64,
+    pub(crate) seed: K::Seed<'a>,
+    pub(crate) out: &'a mut [f64],
+}
+
+impl<K: KernelKind> KernelFrame<'_, K> {
+    /// Run `kernel` over its whole domain, writing its outputs into the
+    /// frame's output at the plan's output indices.
+    pub(crate) fn run(&mut self, kernel: KernelId) -> Result<(), CompileError> {
+        let function = self.kernels.kernels[kernel.0];
+        // SAFETY: the frame checked its buffers against the set's input
+        // requirements and output length, which the kernel's plan proved
+        // cover every index it reads and writes.
+        let status = unsafe { K::invoke(function, self.y, self.p, self.t, self.seed, self.out) };
+        status::check(status)
+    }
 }

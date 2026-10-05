@@ -1987,6 +1987,11 @@ impl ScalarRows {
         }
     }
 
+    /// The rows' programs with their spans, in row order.
+    pub(super) fn into_programs(self) -> impl Iterator<Item = (Vec<solve::LinearOp>, Span)> {
+        self.programs.into_iter().zip(self.spans)
+    }
+
     pub(super) fn into_scalar_block(self) -> Result<solve::ScalarProgramBlock, LowerError> {
         solve::ScalarProgramBlock::with_output_indices(
             self.programs,
@@ -1996,7 +2001,7 @@ impl ScalarRows {
         .map_err(Into::into)
     }
 
-    fn into_compute_block(mut self) -> Result<solve::ComputeBlock, LowerError> {
+    pub(super) fn into_compute_block(mut self) -> Result<solve::ComputeBlock, LowerError> {
         compact_identical_program_prefixes(&mut self.programs, &mut self.spans);
         Ok(solve::ComputeBlock::from_scalar_program_block(
             self.into_scalar_block()?,

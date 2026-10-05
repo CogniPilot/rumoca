@@ -320,9 +320,9 @@ fn a_compact_map_compiles_as_one_native_kernel_without_per_row_code() {
     };
     assert_eq!(
         super::native_compute_inventory(&block).unwrap(),
-        Some(super::NativeComputeInventory {
+        super::NativeComputeInventory {
             kernels: 1,
             compiled_rows: 0,
-        })
+        }
     );
 }

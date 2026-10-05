@@ -8,7 +8,10 @@
 mod compute_block;
 mod emit;
 
-pub use compute_block::{CompiledComputeExpression, compile_expression_compute_block};
+pub use compute_block::{
+    CompiledComputeExpression, CompiledComputeJacobian, compile_expression_compute_block,
+    compile_jacobian_compute_block,
+};
 
 use rumoca_core::ExternalTableData;
 use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};

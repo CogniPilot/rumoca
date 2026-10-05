@@ -48,6 +48,22 @@ pub(super) fn compiled_compute_expression(
     }
 }
 
+/// [`compiled_compute_expression`] for a directional (JVP) block, with
+/// `scalar` its scalar view.
+pub(super) fn compiled_compute_jacobian(
+    backend: Option<&Rc<dyn SolveExecutionBackend>>,
+    label: &str,
+    block: &solve::ComputeBlock,
+    scalar: &solve::ScalarProgramBlock,
+) -> Option<Rc<dyn CompiledSolveJacobianExpression>> {
+    let backend = backend?;
+    match backend.compile_compute_jacobian_expression(block) {
+        Ok(Some(compiled)) => Some(compiled),
+        Ok(None) => optional_compiled(label, backend.compile_jacobian_expression(scalar)),
+        Err(error) => optional_compiled(label, Err(error)),
+    }
+}
+
 /// `block` compiled by `backend` as a forward-mode Jacobian, if it compiles.
 pub(super) fn compiled_jacobian(
     backend: Option<&Rc<dyn SolveExecutionBackend>>,

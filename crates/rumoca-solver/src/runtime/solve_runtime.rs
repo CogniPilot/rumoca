@@ -95,11 +95,11 @@ use refresh_execution::static_refresh_parameter_indices;
 use refresh_projection::*;
 use seed_linearization::SeedProjectionCache;
 use support::{
-    build_visible_name_index, compiled_compute_expression, compiled_expression, compiled_jacobian,
-    copy_runtime_values, copy_runtime_values_into, fill_inactive_root_output, optional_compiled,
-    reserve_runtime_index_map_capacity, reserve_runtime_vec_capacity, resize_runtime_values,
-    validate_finite_runtime_output, validate_runtime_output_len, visible_value_index_error,
-    zero_runtime_values,
+    build_visible_name_index, compiled_compute_expression, compiled_compute_jacobian,
+    compiled_expression, compiled_jacobian, copy_runtime_values, copy_runtime_values_into,
+    fill_inactive_root_output, optional_compiled, reserve_runtime_index_map_capacity,
+    reserve_runtime_vec_capacity, resize_runtime_values, validate_finite_runtime_output,
+    validate_runtime_output_len, visible_value_index_error, zero_runtime_values,
 };
 use tangent_evaluators::{colored_tangent_evaluators, torn_tangent_evaluators};
 
@@ -159,6 +159,14 @@ pub trait SolveExecutionBackend {
         &self,
         block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String>;
+
+    /// [`Self::compile_compute_expression`] for a directional (JVP) block.
+    fn compile_compute_jacobian_expression(
+        &self,
+        _block: &solve::ComputeBlock,
+    ) -> Result<Option<Rc<dyn CompiledSolveJacobianExpression>>, String> {
+        Ok(None)
+    }
 
     /// Prepare a whole compute block for whole-block calls with its affine
     /// tensor nodes executed natively over their compact domains (SPEC_0032
@@ -732,9 +740,17 @@ impl SolveRuntime {
             primary.map(|primary| &primary.initial_scalar_residual),
             &initial_scalar_residual,
         )
-        .expression(
+        .expression_with_fresh(
             primary.and_then(|primary| primary.compiled_initial_residual.as_ref()),
             &initial_scalar_residual,
+            &mut || {
+                compiled_compute_expression(
+                    execution_backend.as_ref(),
+                    "initial_residual",
+                    model.problem.initialization.residual(),
+                    &initial_scalar_residual,
+                )
+            },
             &mut |block| compiled_expression(execution_backend.as_ref(), "initial_residual", block),
         );
         let initial_scalar_jacobian =
@@ -746,10 +762,18 @@ impl SolveRuntime {
             .transpose()?;
         let compiled_initial_residual_jacobian_v =
             BlockReuse::of_programs(primary_initial_jacobian.as_ref(), &initial_scalar_jacobian)
-                .jacobian(
+                .jacobian_with_fresh(
                     primary
                         .and_then(|primary| primary.compiled_initial_residual_jacobian_v.as_ref()),
                     &initial_scalar_jacobian,
+                    &mut || {
+                        compiled_compute_jacobian(
+                            execution_backend.as_ref(),
+                            "initial_residual_jacobian_v",
+                            &model.artifacts.initialization.residual_jacobian_v,
+                            &initial_scalar_jacobian,
+                        )
+                    },
                     &mut |block| {
                         compiled_jacobian(
                             execution_backend.as_ref(),
