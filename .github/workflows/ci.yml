@@ -85,6 +85,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Install Node for CI script tests
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Test CI scripts
+        run: node --test .github/scripts/*.test.mjs
+
       # Architectural invariant, checked without compiling anything: `xtask` must
       # carry NO rumoca-* workspace crate. It parses args, moves files, and shells
       # out; compiler-linked work runs on demand through a command in its owning

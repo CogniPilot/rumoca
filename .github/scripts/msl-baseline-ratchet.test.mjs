@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   ensurePromotableSnapshot,
@@ -10,9 +11,40 @@ import {
   ratchetDecision,
 } from './msl-baseline-ratchet.mjs';
 
-function fullSnapshot() {
+const CHECKED_IN_BASELINE_PATH = fileURLToPath(
+  new URL(
+    '../../crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json',
+    import.meta.url,
+  ),
+);
+
+function boundary(from, to, previous = undefined) {
+  const migration = {
+    from_quality_gate_version: from,
+    to_quality_gate_version: to,
+    change: `reviewed-boundary-v${to}`,
+    exclusions_sha256: `digest-v${to}`,
+    evidence_git_commit: `commit-v${to}`,
+  };
+  if (previous !== undefined) {
+    migration.previous = previous;
+  }
+  return migration;
+}
+
+// Reviewed chain 1 -> 2 -> 3 -> 4; a snapshot at version N declares the
+// boundary that ends at N, with every older boundary as `previous`.
+function boundaryChain(version) {
+  let chain;
+  for (let to = 2; to <= version; to += 1) {
+    chain = boundary(to - 1, to, chain);
+  }
+  return chain;
+}
+
+function fullSnapshot(version = 4) {
   return {
-    quality_gate_version: 2,
+    quality_gate_version: version,
     run_scope: 'full',
     omc_version: 'OpenModelica 1.27.0',
     simulatable_attempted: 10,
@@ -33,6 +65,9 @@ function fullSnapshot() {
     partial_models: 1,
     unbalanced_models: 0,
     ic_solver_fail: 2,
+    trace_exceptions_sha256: `digest-v${version}`,
+    reference_boundary_migration: boundaryChain(version),
+    unexcepted_non_high_models: ['Modelica.Open.Defect'],
     runtime_ratio_stats: {
       system_ratio_both_success: { median: 2.0 },
       wall_ratio_both_success: { median: 10.0 },
@@ -61,28 +96,6 @@ function fullSnapshot() {
   };
 }
 
-function exactV2Migration() {
-  return {
-    from_quality_gate_version: 1,
-    to_quality_gate_version: 2,
-    flatten_models_before: 565,
-    flatten_models_after: 555,
-    reattributed_error_code: 'ER002',
-    reattributed_models: [
-      'Modelica.Fluid.Examples.AST_BatchPlant.BatchPlant_StandardWater',
-      'Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank',
-      'Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1',
-      'Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2',
-      'Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1',
-      'Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2',
-      'Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks',
-      'Modelica.Fluid.Examples.Explanatory.MeasuringTemperature',
-      'Modelica.Fluid.Examples.Explanatory.MomentumBalanceFittings',
-      'Modelica.Fluid.Examples.InverseParameterization',
-    ],
-  };
-}
-
 function approvedOmcMigration(from, to) {
   const checkedIn = fullSnapshot();
   checkedIn.omc_version = to;
@@ -94,104 +107,37 @@ function approvedOmcMigration(from, to) {
   return checkedIn;
 }
 
-function exactCheckedDaeContractMigration() {
-  return {
-    from_contract: 'permissive-dae-v1',
-    to_contract: 'checked-dae-v1',
-    evidence_git_commit: '3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b',
-    sim_target_models: 566,
-    stage_counts_before: {
-      parse_models: 566,
-      flatten_models: 555,
-      dae_models: 545,
-      compiled_models: 545,
-      solve_models: 446,
-      balanced_models: 532,
-      unbalanced_models: 0,
-      partial_models: 13,
-      balance_denominator: 532,
-      initial_balanced_models: 532,
-      initial_unbalanced_models: 0,
-      sim_attempted: 496,
-      ic_attempted: 267,
-      ic_ok: 252,
-      ic_solver_fail: 15,
-      sim_ok: 207,
-    },
-    stage_counts_after: {
-      parse_models: 566,
-      flatten_models: 444,
-      dae_models: 228,
-      compiled_models: 228,
-      solve_models: 202,
-      balanced_models: 217,
-      unbalanced_models: 0,
-      partial_models: 11,
-      balance_denominator: 217,
-      initial_balanced_models: 217,
-      initial_unbalanced_models: 0,
-      sim_attempted: 210,
-      ic_attempted: 150,
-      ic_ok: 146,
-      ic_solver_fail: 4,
-      sim_ok: 122,
-    },
-    phase_failure_counts_after: {
-      Flatten: 82,
-      Instantiate: 9,
-      Resolve: 25,
-      ToDae: 216,
-      Typecheck: 6,
-    },
-    error_code_counts_after: {
-      ED001: 24,
-      ED008: 7,
-      ED009: 3,
-      ED010: 14,
-      ED013: 22,
-      ED018: 29,
-      ED019: 111,
-      ED020: 1,
-      ED021: 5,
-      EF004: 24,
-      EF005: 11,
-      EF016: 16,
-      EF020: 1,
-      EF024: 16,
-      EF025: 12,
-      EI007: 2,
-      EI012: 6,
-      EI027: 1,
-      EL005: 60,
-      EMSL_TIMEOUT_MODEL_ATTEMPT: 11,
-      ER066: 23,
-      ER130: 2,
-      ET000: 1,
-      ET004: 4,
-      EX001: 6,
-      EX002: 13,
-    },
-  };
-}
-
-function applyStageCounts(snapshot, counts) {
-  Object.assign(snapshot, counts);
+// Promote `current` over `baseline`, judged by the checked-in baseline of the
+// same commit (the current snapshot's own reviewed schema).
+function decide(current, baseline, checkedIn = fullSnapshot()) {
+  return ratchetDecision(current, baseline, checkedIn);
 }
 
 test('promotable snapshot accepts full non-partial artifacts', () => {
   const snapshot = fullSnapshot();
-  assert.doesNotThrow(() => ensurePromotableSnapshot(snapshot));
-  assert.doesNotThrow(() => ensurePromotableSnapshot({ ...snapshot, partial: false }));
+  assert.doesNotThrow(() => ensurePromotableSnapshot(snapshot, 4));
+  assert.doesNotThrow(() => ensurePromotableSnapshot({ ...snapshot, partial: false }, 4));
 });
 
-test('promotable snapshot rejects partial artifacts', () => {
+test('promotable snapshot rejects partial artifacts and a foreign schema', () => {
   assert.throws(
-    () => ensurePromotableSnapshot({ ...fullSnapshot(), partial: true }),
+    () => ensurePromotableSnapshot({ ...fullSnapshot(), partial: true }, 4),
     /partial snapshots cannot be promoted/,
   );
   assert.throws(
-    () => ensurePromotableSnapshot({ ...fullSnapshot(), run_scope: 'partial' }),
+    () => ensurePromotableSnapshot({ ...fullSnapshot(), run_scope: 'partial' }, 4),
     /only full MSL quality snapshots/,
+  );
+  assert.throws(
+    () => ensurePromotableSnapshot(fullSnapshot(), 5),
+    /differs from the reviewed checked-in baseline/,
+  );
+});
+
+test('ratchet requires the reviewed checked-in baseline', () => {
+  assert.throws(
+    () => ratchetDecision(fullSnapshot(), fullSnapshot(), null),
+    /reviewed checked-in baseline is required/,
   );
 });
 
@@ -204,14 +150,14 @@ test('ratchet promotes non-regressing improvements', () => {
   current.trace_accuracy_stats.bad_channels_total = 8;
   current.trace_accuracy_stats.violation_mass_total = 2.5;
 
-  const decision = ratchetDecision(current, baseline);
+  const decision = decide(current, baseline);
   assert.equal(decision.promote, true);
   assert.match(decision.improvements.join('\n'), /solve models/);
   assert.match(decision.improvements.join('\n'), /high trace agreement/);
 });
 
 test('ratchet skips equivalent snapshots', () => {
-  const decision = ratchetDecision(fullSnapshot(), fullSnapshot());
+  const decision = decide(fullSnapshot(), fullSnapshot());
   assert.equal(decision.promote, false);
   assert.match(decision.reason, /equivalent/);
 });
@@ -222,7 +168,7 @@ test('ratchet skips when any ratchet metric regresses', () => {
   current.sim_ok = 6;
   current.trace_accuracy_stats.bad_channels_total = 11;
 
-  const decision = ratchetDecision(current, baseline);
+  const decision = decide(current, baseline);
   assert.equal(decision.promote, false);
   assert.match(decision.reason, /trace bad channels/);
 });
@@ -232,124 +178,128 @@ test('ratchet rejects changed fixed target context', () => {
   const current = fullSnapshot();
   current.sim_target_models = 11;
 
-  assert.throws(() => ratchetDecision(current, baseline), /sim_target_models changed/);
+  assert.throws(() => decide(current, baseline), /sim_target_models changed/);
 });
 
-test('ratchet accepts an exact versioned metric-attribution migration', () => {
-  const baseline = fullSnapshot();
-  baseline.quality_gate_version = 1;
-  baseline.flatten_models = 565;
-  const current = fullSnapshot();
-  current.flatten_models = 555;
-  current.metric_schema_migration = exactV2Migration();
-
-  const decision = ratchetDecision(current, baseline);
-  assert.equal(decision.promote, true);
-  assert.match(decision.improvements.join('\n'), /quality schema/);
-});
-
-test('ratchet rejects an unproven metric-attribution migration', () => {
-  const baseline = fullSnapshot();
-  baseline.quality_gate_version = 1;
-  baseline.flatten_models = 565;
-  const current = fullSnapshot();
-  current.flatten_models = 555;
-  current.metric_schema_migration = exactV2Migration();
-  current.metric_schema_migration.reattributed_models[9] = 'Modelica.HandLowered.Substitute';
-  assert.throws(() => ratchetDecision(current, baseline), /reviewed correction/);
-});
-
-test('schema migration rejects an unrelated cumulative metric regression', () => {
-  const baseline = fullSnapshot();
-  baseline.quality_gate_version = 1;
-  baseline.flatten_models = 565;
-  const current = fullSnapshot();
-  current.flatten_models = 555;
-  current.compiled_models -= 1;
-  current.metric_schema_migration = exactV2Migration();
-
-  const decision = ratchetDecision(current, baseline);
-  assert.equal(decision.promote, false);
-  assert.match(decision.reason, /compiled models/);
-});
-
-test('schema migration rejects an unrelated headline regression', () => {
-  const baseline = fullSnapshot();
-  baseline.quality_gate_version = 1;
-  baseline.flatten_models = 565;
-  const current = fullSnapshot();
-  current.flatten_models = 555;
-  current.trace_accuracy_stats.agreement_high -= 1;
-  current.metric_schema_migration = exactV2Migration();
-
-  const decision = ratchetDecision(current, baseline);
-  assert.equal(decision.promote, false);
-  assert.match(decision.reason, /high trace agreement/);
-});
-
-test('ratchet accepts only the reviewed checked-DAE contract cutover', () => {
-  const contract = exactCheckedDaeContractMigration();
-  const baseline = fullSnapshot();
-  baseline.quality_gate_version = 1;
-  baseline.omc_version = 'OpenModelica old';
-  baseline.simulatable_attempted = 566;
-  baseline.sim_target_models = 566;
-  applyStageCounts(baseline, {
-    ...contract.stage_counts_before,
-    flatten_models: 565,
-    solve_models: 381,
-    sim_attempted: 413,
-    ic_attempted: 259,
-    ic_ok: 239,
-    ic_solver_fail: 20,
-    sim_ok: 170,
-  });
-
-  const checkedIn = fullSnapshot();
-  checkedIn.git_commit = contract.evidence_git_commit;
-  checkedIn.omc_version = 'OpenModelica new';
-  checkedIn.simulatable_attempted = 566;
-  checkedIn.sim_target_models = 566;
-  applyStageCounts(checkedIn, contract.stage_counts_after);
-  checkedIn.metric_schema_migration = exactV2Migration();
-  checkedIn.compiler_contract_migration = structuredClone(contract);
-  checkedIn.omc_context_migration = {
-    from_omc_version: baseline.omc_version,
-    to_omc_version: checkedIn.omc_version,
-    sim_target_models: 566,
-  };
-
-  const current = structuredClone(checkedIn);
-  const decision = ratchetDecision(current, baseline, checkedIn);
-  assert.equal(decision.promote, true);
-  assert.match(decision.improvements.join('\n'), /compiler contract/);
-
-  current.compiler_contract_migration.stage_counts_after.compiled_models += 1;
+test('ratchet rejects a snapshot under a schema other than the checked-in one', () => {
   assert.throws(
-    () => ratchetDecision(current, baseline, checkedIn),
-    /differs from checked-in review/,
+    () => decide(fullSnapshot(4), fullSnapshot(4), fullSnapshot(3)),
+    /differs from the reviewed checked-in baseline/,
   );
+});
+
+test('ratchet crosses the reviewed reference boundaries down to the promoted schema', () => {
+  for (const version of [1, 2, 3]) {
+    const decision = decide(fullSnapshot(4), fullSnapshot(version));
+    assert.equal(decision.promote, true, `from version ${version}`);
+    const boundaries = decision.improvements.filter((line) => line.startsWith('reference boundary'));
+    assert.deepEqual(
+      boundaries,
+      Array.from(
+        { length: 4 - version },
+        (_, index) =>
+          `reference boundary: ${version + index} -> ${version + index + 1} (reviewed-boundary-v${version + index + 1})`,
+      ),
+    );
+    assert.match(decision.improvements.join('\n'), /trace exceptions: reviewed boundary/);
+  }
+});
+
+test('ratchet still compares every metric across a reference boundary', () => {
+  for (const lower of [
+    (snapshot) => { snapshot.compiled_models -= 1; },
+    (snapshot) => { snapshot.trace_accuracy_stats.agreement_high -= 1; },
+    (snapshot) => { snapshot.runtime_ratio_stats.wall_ratio_both_success.median = 6.0; },
+  ]) {
+    const current = fullSnapshot(4);
+    lower(current);
+    const decision = decide(current, fullSnapshot(2));
+    assert.equal(decision.promote, false);
+    assert.match(decision.reason, /regression/);
+  }
+});
+
+test('ratchet refuses a promoted schema the reviewed chain does not reach', () => {
+  // The quality-schema-13 failure: the current snapshot carries an unrelated
+  // historical migration record, and the promoted asset sits at a version the
+  // chain reaches only through reviewed boundaries.
+  const legacy = fullSnapshot(4);
+  legacy.metric_schema_migration = { from_quality_gate_version: 2, to_quality_gate_version: 3 };
+  assert.equal(decide(legacy, fullSnapshot(3)).promote, true);
+
+  const unreached = fullSnapshot(0);
+  delete unreached.reference_boundary_migration;
+  assert.throws(() => decide(fullSnapshot(4), unreached), /reaches quality schema 0/);
+
+  const newer = fullSnapshot(5);
+  assert.throws(() => decide(fullSnapshot(4), newer), /newer than current/);
+});
+
+test('ratchet refuses a forged or skipped boundary chain', () => {
+  const forgedPromoted = fullSnapshot(2);
+  forgedPromoted.reference_boundary_migration.exclusions_sha256 = 'unreviewed';
+  assert.throws(
+    () => decide(fullSnapshot(4), forgedPromoted),
+    /promoted reference boundary differs from the reviewed chain/,
+  );
+
+  const forgedCurrent = fullSnapshot(4);
+  forgedCurrent.reference_boundary_migration.previous.change = 'unreviewed';
+  assert.throws(
+    () => decide(forgedCurrent, fullSnapshot(2)),
+    /differs from the reviewed checked-in chain/,
+  );
+
+  const skipping = fullSnapshot(4);
+  skipping.reference_boundary_migration.previous = boundary(1, 2, boundary(1, 1));
+  assert.throws(
+    () => decide(skipping, fullSnapshot(2), structuredClone(skipping)),
+    /does not continue the chain at 3/,
+  );
+});
+
+test('a crossed boundary admits its reviewed roster additions only', () => {
+  const checkedIn = fullSnapshot(4);
+  checkedIn.reference_boundary_migration.roster_additions = [
+    { model_name: 'Modelica.Reviewed.Addition' },
+  ];
+  const current = structuredClone(checkedIn);
+  current.unexcepted_non_high_models.push('Modelica.Reviewed.Addition');
+  const baseline = fullSnapshot(3);
+  const decision = decide(current, baseline, checkedIn);
+  assert.equal(decision.promote, true);
+  assert.match(decision.improvements.join('\n'), /reviewed addition Modelica.Reviewed.Addition/);
+
+  current.unexcepted_non_high_models.push('Modelica.Unreviewed');
+  const regressed = decide(current, baseline, checkedIn);
+  assert.equal(regressed.promote, false);
+  assert.match(regressed.reason, /roster gained Modelica.Unreviewed/);
+});
+
+test('a reference boundary cannot also change the OMC context', () => {
+  const current = fullSnapshot(4);
+  current.omc_version = 'OpenModelica new';
+  const baseline = fullSnapshot(3);
+  baseline.omc_version = 'OpenModelica old';
+  const checkedIn = approvedOmcMigration(baseline.omc_version, current.omc_version);
+  assert.throws(() => decide(current, baseline, checkedIn), /cannot change the OMC context/);
 });
 
 test('OMC migration compares independent metrics without cross-context trace rejection', () => {
   const baseline = fullSnapshot();
-  baseline.quality_gate_version = 1;
-  baseline.flatten_models = 565;
   baseline.omc_version = 'OpenModelica old';
   const current = fullSnapshot();
-  current.flatten_models = 555;
   current.omc_version = 'OpenModelica new';
-  current.metric_schema_migration = exactV2Migration();
   current.trace_accuracy_stats.agreement_high = 0;
   current.runtime_ratio_stats.system_ratio_both_success.median = 0.01;
   const checkedIn = approvedOmcMigration(baseline.omc_version, current.omc_version);
 
-  const decision = ratchetDecision(current, baseline, checkedIn);
+  const decision = decide(current, baseline, checkedIn);
   assert.equal(decision.promote, true);
   assert.match(decision.improvements.join('\n'), /OMC context/);
 
   current.compiled_models -= 1;
-  const regressed = ratchetDecision(current, baseline, checkedIn);
+  const regressed = decide(current, baseline, checkedIn);
   assert.equal(regressed.promote, false);
   assert.match(regressed.reason, /compiled models/);
 });
@@ -360,15 +310,11 @@ test('OMC migration rejects missing or mismatched checked-in approval', () => {
   const current = fullSnapshot();
   current.omc_version = 'OpenModelica new';
 
-  assert.throws(
-    () => ratchetDecision(current, baseline),
-    /reviewed checked-in migration/,
-  );
+  const unapproved = fullSnapshot();
+  unapproved.omc_version = current.omc_version;
+  assert.throws(() => decide(current, baseline, unapproved), /reviewed checked-in migration/);
   const reversed = approvedOmcMigration(current.omc_version, baseline.omc_version);
-  assert.throws(
-    () => ratchetDecision(current, baseline, reversed),
-    /does not match current snapshot/,
-  );
+  assert.throws(() => decide(current, baseline, reversed), /does not match current snapshot/);
 });
 
 test('ratchet rejects a runtime speedup drop beyond 35 percent', () => {
@@ -376,71 +322,93 @@ test('ratchet rejects a runtime speedup drop beyond 35 percent', () => {
   const current = fullSnapshot();
   current.sim_ok = 6;
   current.runtime_ratio_stats.system_ratio_both_success.median = 1.29;
-  const decision = ratchetDecision(current, baseline);
+  const decision = decide(current, baseline);
   assert.equal(decision.promote, false);
   assert.match(decision.reason, /runtime system speedup median/);
 });
 
-test('promoteBaselineIfImproved writes only when improved', () => {
+function writeFixtures(baseline, source, checkedIn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msl-ratchet-'));
-  const baselinePath = path.join(dir, 'baseline.json');
-  const sourcePath = path.join(dir, 'source.json');
-  const baseline = fullSnapshot();
+  const paths = {
+    baselinePath: path.join(dir, 'baseline.json'),
+    sourcePath: path.join(dir, 'source.json'),
+    checkedInBaselinePath: path.join(dir, 'checked-in.json'),
+  };
+  fs.writeFileSync(paths.baselinePath, JSON.stringify(baseline, null, 2));
+  fs.writeFileSync(paths.sourcePath, JSON.stringify(source, null, 2));
+  fs.writeFileSync(paths.checkedInBaselinePath, JSON.stringify(checkedIn, null, 2));
+  return paths;
+}
+
+test('promoteBaselineIfImproved writes only when improved', () => {
   const source = fullSnapshot();
   source.sim_ok = 6;
-  fs.writeFileSync(baselinePath, JSON.stringify(baseline, null, 2));
-  fs.writeFileSync(sourcePath, JSON.stringify(source, null, 2));
+  const paths = writeFixtures(fullSnapshot(), source, fullSnapshot());
 
-  const decision = promoteBaselineIfImproved({
-    sourcePath,
-    baselinePath,
-    log: () => {},
-  });
+  const decision = promoteBaselineIfImproved({ ...paths, log: () => {} });
   assert.equal(decision.promote, true);
-  assert.equal(JSON.parse(fs.readFileSync(baselinePath, 'utf8')).sim_ok, 6);
+  assert.equal(JSON.parse(fs.readFileSync(paths.baselinePath, 'utf8')).sim_ok, 6);
+});
+
+test('promotion across a reference boundary writes the new-schema snapshot', () => {
+  const paths = writeFixtures(fullSnapshot(2), fullSnapshot(4), fullSnapshot(4));
+  const decision = promoteBaselineIfImproved({ ...paths, log: () => {} });
+  assert.equal(decision.promote, true);
+  assert.equal(
+    JSON.parse(fs.readFileSync(paths.baselinePath, 'utf8')).quality_gate_version,
+    4,
+  );
 });
 
 test('promotion loads the reviewed checked-in OMC migration', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msl-ratchet-'));
-  const baselinePath = path.join(dir, 'baseline.json');
-  const sourcePath = path.join(dir, 'source.json');
-  const checkedInBaselinePath = path.join(dir, 'checked-in.json');
   const baseline = fullSnapshot();
-  baseline.quality_gate_version = 1;
-  baseline.flatten_models = 565;
   baseline.omc_version = 'OpenModelica old';
   const source = fullSnapshot();
-  source.flatten_models = 555;
   source.omc_version = 'OpenModelica new';
-  source.metric_schema_migration = exactV2Migration();
   const checkedIn = approvedOmcMigration(baseline.omc_version, source.omc_version);
-  fs.writeFileSync(baselinePath, JSON.stringify(baseline, null, 2));
-  fs.writeFileSync(sourcePath, JSON.stringify(source, null, 2));
-  fs.writeFileSync(checkedInBaselinePath, JSON.stringify(checkedIn, null, 2));
+  const paths = writeFixtures(baseline, source, checkedIn);
 
-  const decision = promoteBaselineIfImproved({
-    sourcePath,
-    baselinePath,
-    checkedInBaselinePath,
-    log: () => {},
-  });
+  const decision = promoteBaselineIfImproved({ ...paths, log: () => {} });
   assert.equal(decision.promote, true);
-  assert.equal(JSON.parse(fs.readFileSync(baselinePath, 'utf8')).omc_version, source.omc_version);
+  assert.equal(
+    JSON.parse(fs.readFileSync(paths.baselinePath, 'utf8')).omc_version,
+    source.omc_version,
+  );
 });
 
 test('promoteBaselineIfImproved leaves equivalent baseline unchanged', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msl-ratchet-'));
-  const baselinePath = path.join(dir, 'baseline.json');
-  const sourcePath = path.join(dir, 'source.json');
-  const baselineText = JSON.stringify(fullSnapshot(), null, 2);
-  fs.writeFileSync(baselinePath, baselineText);
-  fs.writeFileSync(sourcePath, baselineText);
+  const paths = writeFixtures(fullSnapshot(), fullSnapshot(), fullSnapshot());
+  const baselineText = fs.readFileSync(paths.baselinePath, 'utf8');
 
-  const decision = promoteBaselineIfImproved({
-    sourcePath,
-    baselinePath,
-    log: () => {},
-  });
+  const decision = promoteBaselineIfImproved({ ...paths, log: () => {} });
   assert.equal(decision.promote, false);
-  assert.equal(fs.readFileSync(baselinePath, 'utf8'), baselineText);
+  assert.equal(fs.readFileSync(paths.baselinePath, 'utf8'), baselineText);
+});
+
+// The tracked baseline is the reviewed schema of this commit: a run equal to it
+// must ratchet over a promoted asset at every version its boundary chain
+// reaches, so a new boundary cannot land while the ratchet refuses it.
+test('the tracked baseline ratchets over every promoted schema its chain reaches', () => {
+  const checkedIn = JSON.parse(fs.readFileSync(CHECKED_IN_BASELINE_PATH, 'utf8'));
+  const current = structuredClone(checkedIn);
+  const schema = checkedIn.quality_gate_version;
+  assert.equal(ratchetDecision(current, structuredClone(checkedIn), checkedIn).promote, false);
+
+  let link = checkedIn.reference_boundary_migration;
+  let reached = 0;
+  while (link && link.previous) {
+    const promoted = structuredClone(checkedIn);
+    promoted.quality_gate_version = link.from_quality_gate_version;
+    promoted.reference_boundary_migration = structuredClone(link.previous);
+    promoted.trace_exceptions_sha256 = link.previous.exclusions_sha256;
+    const decision = ratchetDecision(current, promoted, checkedIn);
+    assert.equal(decision.promote, true, `from version ${promoted.quality_gate_version}`);
+    assert.match(
+      decision.improvements.join('\n'),
+      new RegExp(`reference boundary: ${link.from_quality_gate_version} -> ${link.to_quality_gate_version}`),
+    );
+    reached += 1;
+    link = link.previous;
+  }
+  assert.ok(reached > 0, `quality schema ${schema} declares no crossable boundary`);
 });

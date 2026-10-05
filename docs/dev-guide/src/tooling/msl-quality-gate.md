@@ -67,6 +67,16 @@ permissions.
 
 When a full main CI run improves every ratcheted metric without regressions, the
 MSL Baseline Ratchet workflow publishes the new baseline to that release asset.
+The ratchet (`.github/scripts/msl-baseline-ratchet.mjs`) reads the quality
+schema from the checked-in baseline of the same commit and refuses a snapshot
+under any other schema. A promoted asset at an older schema is crossed only
+through the reviewed reference boundary chain the gate resolves it through: the
+snapshot's `reference_boundary_migration` must equal the checked-in chain, the
+chain must step down one boundary at a time to exactly the asset's version, and
+the asset must declare the boundary the chain names for that version. A crossing
+lowers no floor, so every ratcheted metric is still compared against the asset.
+`node --test .github/scripts/*.test.mjs` runs the ratchet's tests, including one
+that crosses from every version the tracked baseline's chain reaches.
 Do not promote focused subsets or one-off explicit target files as the baseline.
 Promotion requires a full-run snapshot with non-empty `omc_version` metadata.
 
