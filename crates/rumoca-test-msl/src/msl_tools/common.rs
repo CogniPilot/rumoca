@@ -587,6 +587,14 @@ pub fn typed_exception_reasons(
         .collect()
 }
 
+/// The kind named by a reason text that [`typed_exception_reasons`] wrote,
+/// or `None` when the text does not start with a known kind.
+#[must_use]
+pub fn typed_exception_kind(reason: &str) -> Option<TraceExceptionKind> {
+    let (kind, _) = reason.split_once(':')?;
+    TraceExceptionKind::parse(kind.trim())
+}
+
 fn parse_trace_exclusions(
     payload: &Value,
 ) -> Result<std::collections::BTreeMap<String, TraceException>> {
@@ -1047,10 +1055,17 @@ mod tests {
             exceptions["C.Node"].retired_by,
             Some(ComparatorImprovement::NearZeroChannelScaling)
         );
-        assert_eq!(
-            typed_exception_reasons(exceptions)["B.Chaos"],
-            "model_issue: chaotic"
-        );
+        let reasons = typed_exception_reasons(exceptions);
+        assert_eq!(reasons["B.Chaos"], "model_issue: chaotic");
+        for (model, kind) in [
+            ("A.Noise", TraceExceptionKind::ImpureSource),
+            ("B.Chaos", TraceExceptionKind::ModelIssue),
+            ("C.Node", TraceExceptionKind::ComparatorLimitation),
+        ] {
+            assert_eq!(typed_exception_kind(&reasons[model]), Some(kind));
+        }
+        assert_eq!(typed_exception_kind("free text without a kind"), None);
+        assert_eq!(typed_exception_kind("unknown_kind: reason"), None);
     }
 
     /// Nothing free-form reaches the gate: the v1 list, a missing or unknown

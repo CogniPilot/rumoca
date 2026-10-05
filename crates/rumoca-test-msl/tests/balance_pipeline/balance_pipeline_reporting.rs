@@ -6,6 +6,13 @@ use rumoca_sim::sim_trace_compare::{
 };
 use std::collections::{BTreeMap, HashSet};
 
+mod report_tables;
+use report_tables::{
+    format_mls_contract_coverage_markdown, format_msl_package_pass_rate_compact_table,
+    format_msl_package_pass_rate_markdown, format_msl_package_pass_rate_terminal_table,
+    format_msl_package_trace_accuracy_markdown,
+};
+
 // =============================================================================
 // Result JSON write + balance summary printing
 // =============================================================================
@@ -47,18 +54,24 @@ struct MslPackagePassRateRow {
     dae_passed: usize,
     solve_passed: usize,
     ic_passed: usize,
+    /// Strict-high trace parity with OMC when `parity_measured`; completed
+    /// simulations otherwise.
     sim_passed: usize,
+    /// Simulations that ran to completion, whatever their parity.
+    simulated_passed: usize,
     parse_percent: f64,
     flatten_percent: f64,
     dae_percent: f64,
     solve_percent: f64,
     ic_percent: f64,
     sim_percent: f64,
+    simulated_percent: f64,
     parse_avg_seconds: Option<f64>,
     flatten_avg_seconds: Option<f64>,
     dae_avg_seconds: Option<f64>,
     solve_avg_seconds: Option<f64>,
     ic_avg_seconds: Option<f64>,
+    /// Mean simulation seconds over completed simulations and timeouts.
     sim_avg_seconds: Option<f64>,
     /// Models whose single attempt exceeded a phase budget.
     too_slow: usize,
@@ -71,6 +84,8 @@ struct MslPackagePassRateReport {
     selection_kind: String,
     selection_pattern: String,
     model_count: usize,
+    /// Whether an OMC trace comparison decided `sim_passed` (strict-high).
+    parity_measured: bool,
     rows: Vec<MslPackagePassRateRow>,
     overall: MslPackagePassRateRow,
 }
@@ -84,6 +99,7 @@ struct MslPackagePassRateCounts {
     solve_passed: usize,
     ic_passed: usize,
     sim_passed: usize,
+    simulated_passed: usize,
     flatten_seconds: f64,
     flatten_timed: usize,
     dae_seconds: f64,
@@ -436,40 +452,19 @@ fn build_mls_contract_coverage_report(summary: &MslSummary) -> MlsContractCovera
     }
 }
 
-fn format_mls_contract_coverage_markdown(report: &MlsContractCoverageReport) -> String {
-    let mut markdown = String::new();
-    markdown
-        .push_str("| MLS Category | n | Compile | Solve IR | Balance | Sim | Phases | Errors |\n");
-    markdown.push_str("|---|---:|---:|---:|---:|---:|---|---|\n");
-    for row in &report.rows {
-        markdown.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
-            row.category,
-            row.models,
-            percent_cell(row.compiled, row.models),
-            percent_cell(row.solve_ir, row.models),
-            percent_cell(row.balanced, row.models),
-            percent_cell(row.sim_ok, row.models),
-            count_map_cell(&row.phase_counts),
-            count_map_cell(&row.error_code_counts)
-        ));
-    }
-    markdown
-}
-
 fn format_mls_contract_coverage_terminal_table(report: &MlsContractCoverageReport) -> String {
     let mut table = String::new();
     table.push_str(&format!(
-        "{:<14} {:>4} {:>7} {:>8} {:>7} {:>6}  {:<24} {}\n",
-        "MLS Category", "n", "Compile", "Solve", "Balance", "Sim", "Phases", "Errors"
+        "{:<14} {:>4} {:>7} {:>8} {:>7} {:>9}  {:<24} {}\n",
+        "MLS Category", "n", "Flat", "Solve IR", "Balance", "Simulated", "Phases", "Errors"
     ));
     table.push_str(&format!(
-        "{:-<14} {:-<4} {:-<7} {:-<8} {:-<7} {:-<6}  {:-<24} {:-<1}\n",
+        "{:-<14} {:-<4} {:-<7} {:-<8} {:-<7} {:-<9}  {:-<24} {:-<1}\n",
         "", "", "", "", "", "", "", ""
     ));
     for row in &report.rows {
         table.push_str(&format!(
-            "{:<14} {:>4} {:>7} {:>8} {:>7} {:>6}  {:<24} {}\n",
+            "{:<14} {:>4} {:>7} {:>8} {:>7} {:>9}  {:<24} {}\n",
             row.category,
             row.models,
             percent_cell(row.compiled, row.models),
@@ -527,12 +522,14 @@ fn pass_rate_row(
         solve_passed: counts.solve_passed,
         ic_passed: counts.ic_passed,
         sim_passed: counts.sim_passed,
+        simulated_passed: counts.simulated_passed,
         parse_percent: rounded_percent(counts.parse_passed, counts.n),
         flatten_percent: rounded_percent(counts.flatten_passed, counts.n),
         dae_percent: rounded_percent(counts.dae_passed, counts.n),
         solve_percent: rounded_percent(counts.solve_passed, counts.n),
         ic_percent: rounded_percent(counts.ic_passed, counts.n),
         sim_percent: rounded_percent(counts.sim_passed, counts.n),
+        simulated_percent: rounded_percent(counts.simulated_passed, counts.n),
         parse_avg_seconds,
         flatten_avg_seconds: avg_seconds(counts.flatten_seconds, counts.flatten_timed),
         dae_avg_seconds: avg_seconds(counts.dae_seconds, counts.dae_timed),
@@ -585,6 +582,7 @@ fn build_msl_package_pass_rate_report_with_parity(
         selection_kind: msl_target_scope().as_str().to_string(),
         selection_pattern: ROOT_MSL_EXAMPLE_SELECTION_PATTERN.to_string(),
         model_count: overall.n,
+        parity_measured: parity.is_some(),
         rows,
         overall,
     }
@@ -655,6 +653,7 @@ fn add_result_to_pass_rate_counts(
         .and_then(|model| model.ic_matches)
         .unwrap_or_else(|| result_solved_initial_conditions(result));
     let sim_passed = sim_passed_with_trace_parity(result, parity_model, parity);
+    let simulated = result_simulated_successfully(result);
     if result_reached_flatten_output(result) {
         counts.flatten_passed += 1;
     }
@@ -669,6 +668,9 @@ fn add_result_to_pass_rate_counts(
     }
     if sim_passed {
         counts.sim_passed += 1;
+    }
+    if simulated {
+        counts.simulated_passed += 1;
     }
     if let Some(seconds) = stage_time_or_timeout(
         result_reached_flatten_output(result),
@@ -707,7 +709,7 @@ fn add_result_to_pass_rate_counts(
         counts.ic_timed += 1;
     }
     if let Some(seconds) = stage_time_or_timeout(
-        sim_passed,
+        simulated,
         result.sim_wall_seconds,
         result,
         rumoca_worker::WorkerProgressPhase::Sim,
@@ -772,367 +774,6 @@ fn write_msl_package_pass_rate_report(
         print!("{terminal_table}");
     }
     Ok(())
-}
-
-fn format_msl_package_pass_rate_markdown(report: &MslPackagePassRateReport) -> String {
-    let mut markdown = String::new();
-    markdown.push_str("| MSL Package | n | Ast | Time | Flat | Time | Dae | Time | Solve | Time | IC | Time | Sim | Time |\n");
-    markdown.push_str("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
-    for row in &report.rows {
-        append_pass_rate_markdown_row(&mut markdown, row);
-    }
-    append_pass_rate_markdown_row(&mut markdown, &report.overall);
-    markdown
-}
-
-fn append_pass_rate_markdown_row(markdown: &mut String, row: &MslPackagePassRateRow) {
-    markdown.push_str(&format!(
-        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-        row.package,
-        row.n,
-        percent_cell(row.parse_passed, row.n),
-        avg_time_cell(row.parse_avg_seconds),
-        percent_cell(row.flatten_passed, row.n),
-        avg_time_cell(row.flatten_avg_seconds),
-        percent_cell(row.dae_passed, row.n),
-        avg_time_cell(row.dae_avg_seconds),
-        percent_cell(row.solve_passed, row.n),
-        avg_time_cell(row.solve_avg_seconds),
-        percent_cell(row.ic_passed, row.n),
-        avg_time_cell(row.ic_avg_seconds),
-        percent_cell(row.sim_passed, row.n),
-        avg_time_cell(row.sim_avg_seconds)
-    ));
-}
-
-fn avg_time_cell(avg_seconds: Option<f64>) -> String {
-    match avg_seconds {
-        Some(value) if value.is_finite() => format!("{value:.2}s"),
-        _ => "-".to_string(),
-    }
-}
-
-fn format_msl_package_pass_rate_terminal_table(report: &MslPackagePassRateReport) -> String {
-    let widths = PassRateTerminalWidths::from_report(report);
-    let mut table = String::new();
-    append_pass_rate_terminal_header(&mut table, &widths);
-    for row in &report.rows {
-        append_pass_rate_terminal_row(&mut table, row, &widths);
-    }
-    append_pass_rate_terminal_separator(&mut table, &widths);
-    append_pass_rate_terminal_row(&mut table, &report.overall, &widths);
-    table
-}
-
-#[derive(Clone, Copy)]
-struct PassRateTerminalWidths {
-    package: usize,
-    count: usize,
-    parse: StageColumnWidths,
-    flatten: StageColumnWidths,
-    dae: StageColumnWidths,
-    solve: StageColumnWidths,
-    ic: StageColumnWidths,
-    sim: StageColumnWidths,
-}
-
-#[derive(Clone, Copy)]
-struct StageColumnWidths {
-    percent: usize,
-    time: usize,
-}
-
-impl PassRateTerminalWidths {
-    fn from_report(report: &MslPackagePassRateReport) -> Self {
-        let rows = pass_rate_rows_with_overall(report);
-        Self {
-            package: rows
-                .iter()
-                .map(|row| row.package.len())
-                .chain(std::iter::once("MSL Package".len()))
-                .max()
-                .unwrap_or("MSL Package".len())
-                + 1,
-            count: rows
-                .iter()
-                .map(|row| row.n.to_string().len())
-                .chain(std::iter::once("n".len()))
-                .max()
-                .unwrap_or("n".len()),
-            parse: stage_widths(
-                "Ast",
-                rows.iter().map(|row| {
-                    (
-                        percent_cell(row.parse_passed, row.n),
-                        avg_time_cell(row.parse_avg_seconds),
-                    )
-                }),
-            ),
-            flatten: stage_widths(
-                "Flat",
-                rows.iter().map(|row| {
-                    (
-                        percent_cell(row.flatten_passed, row.n),
-                        avg_time_cell(row.flatten_avg_seconds),
-                    )
-                }),
-            ),
-            dae: stage_widths(
-                "Dae",
-                rows.iter().map(|row| {
-                    (
-                        percent_cell(row.dae_passed, row.n),
-                        avg_time_cell(row.dae_avg_seconds),
-                    )
-                }),
-            ),
-            solve: stage_widths(
-                "Solve",
-                rows.iter().map(|row| {
-                    (
-                        percent_cell(row.solve_passed, row.n),
-                        avg_time_cell(row.solve_avg_seconds),
-                    )
-                }),
-            ),
-            ic: stage_widths(
-                "IC",
-                rows.iter().map(|row| {
-                    (
-                        percent_cell(row.ic_passed, row.n),
-                        avg_time_cell(row.ic_avg_seconds),
-                    )
-                }),
-            ),
-            sim: stage_widths(
-                "Sim",
-                rows.iter().map(|row| {
-                    (
-                        percent_cell(row.sim_passed, row.n),
-                        avg_time_cell(row.sim_avg_seconds),
-                    )
-                }),
-            ),
-        }
-    }
-}
-
-fn pass_rate_rows_with_overall(report: &MslPackagePassRateReport) -> Vec<&MslPackagePassRateRow> {
-    report
-        .rows
-        .iter()
-        .chain(std::iter::once(&report.overall))
-        .collect()
-}
-
-fn stage_widths(
-    label: &str,
-    cells: impl IntoIterator<Item = (String, String)>,
-) -> StageColumnWidths {
-    let mut percent = label.len();
-    let mut time = PASS_RATE_TERMINAL_MIN_TIME_WIDTH;
-    for (percent_cell, time_cell) in cells {
-        percent = percent.max(percent_cell.len());
-        time = time.max(time_cell.len());
-    }
-    StageColumnWidths { percent, time }
-}
-
-const PASS_RATE_TERMINAL_MIN_TIME_WIDTH: usize = "10.00s".len();
-
-fn append_pass_rate_terminal_header(table: &mut String, widths: &PassRateTerminalWidths) {
-    table.push_str(&format!(
-        "{:<package_width$}{:>count_width$} | {} | {} | {} | {} | {} | {}\n",
-        "MSL Package",
-        "n",
-        stage_header("Ast", widths.parse),
-        stage_header("Flat", widths.flatten),
-        stage_header("Dae", widths.dae),
-        stage_header("Solve", widths.solve),
-        stage_header("IC", widths.ic),
-        stage_header("Sim", widths.sim),
-        package_width = widths.package,
-        count_width = widths.count,
-    ));
-    append_pass_rate_terminal_separator(table, widths);
-}
-
-fn append_pass_rate_terminal_separator(table: &mut String, widths: &PassRateTerminalWidths) {
-    table.push_str(&format!(
-        "{:-<package_width$}{:-<count_width$}-+-{}-+-{}-+-{}-+-{}-+-{}-+-{}\n",
-        "",
-        "",
-        stage_separator(widths.parse),
-        stage_separator(widths.flatten),
-        stage_separator(widths.dae),
-        stage_separator(widths.solve),
-        stage_separator(widths.ic),
-        stage_separator(widths.sim),
-        package_width = widths.package,
-        count_width = widths.count,
-    ));
-}
-
-fn append_pass_rate_terminal_row(
-    table: &mut String,
-    row: &MslPackagePassRateRow,
-    widths: &PassRateTerminalWidths,
-) {
-    table.push_str(&format!(
-        "{:<package_width$}{:>count_width$} | {} | {} | {} | {} | {} | {}\n",
-        row.package,
-        row.n,
-        stage_cell(
-            percent_cell(row.parse_passed, row.n),
-            avg_time_cell(row.parse_avg_seconds),
-            widths.parse
-        ),
-        stage_cell(
-            percent_cell(row.flatten_passed, row.n),
-            avg_time_cell(row.flatten_avg_seconds),
-            widths.flatten
-        ),
-        stage_cell(
-            percent_cell(row.dae_passed, row.n),
-            avg_time_cell(row.dae_avg_seconds),
-            widths.dae
-        ),
-        stage_cell(
-            percent_cell(row.solve_passed, row.n),
-            avg_time_cell(row.solve_avg_seconds),
-            widths.solve
-        ),
-        stage_cell(
-            percent_cell(row.ic_passed, row.n),
-            avg_time_cell(row.ic_avg_seconds),
-            widths.ic
-        ),
-        stage_cell(
-            percent_cell(row.sim_passed, row.n),
-            avg_time_cell(row.sim_avg_seconds),
-            widths.sim
-        ),
-        package_width = widths.package,
-        count_width = widths.count,
-    ));
-}
-
-fn stage_header(label: &str, widths: StageColumnWidths) -> String {
-    format!(
-        "{:>percent_width$}  {:>time_width$}",
-        label,
-        "Time",
-        percent_width = widths.percent,
-        time_width = widths.time
-    )
-}
-
-fn stage_cell(percent: String, time: String, widths: StageColumnWidths) -> String {
-    format!(
-        "{:>percent_width$}  {:>time_width$}",
-        percent,
-        time,
-        percent_width = widths.percent,
-        time_width = widths.time
-    )
-}
-
-fn stage_separator(widths: StageColumnWidths) -> String {
-    "-".repeat(widths.percent + 2 + widths.time)
-}
-
-const PASS_RATE_PACKAGE_WIDTH: usize = 42;
-const PASS_RATE_COUNT_WIDTH: usize = 4;
-const PASS_RATE_PERCENT_WIDTH: usize = 6;
-const PASS_RATE_TIME_WIDTH: usize = 10;
-
-fn format_msl_package_pass_rate_compact_table(report: &MslPackagePassRateReport) -> String {
-    let mut table = String::new();
-    append_pass_rate_compact_header(&mut table);
-    for row in &report.rows {
-        append_pass_rate_compact_row(&mut table, row);
-    }
-    append_pass_rate_compact_separator(&mut table);
-    append_pass_rate_compact_row(&mut table, &report.overall);
-    table
-}
-
-fn append_pass_rate_compact_header(table: &mut String) {
-    table.push_str(&format!(
-        "{:<package_width$} {:>count_width$} {:>percent_width$} {:>time_width$} {:>percent_width$} {:>time_width$} {:>percent_width$} {:>time_width$} {:>solve_width$} {:>time_width$} {:>percent_width$} {:>time_width$} {:>percent_width$} {:>time_width$}\n",
-        "MSL Package",
-        "n",
-        "Ast",
-        "Time",
-        "Flatten",
-        "Time",
-        "DAE",
-        "Time",
-        "Solve",
-        "Time",
-        "IC",
-        "Time",
-        "Sim",
-        "Time",
-        package_width = PASS_RATE_PACKAGE_WIDTH,
-        count_width = PASS_RATE_COUNT_WIDTH,
-        percent_width = PASS_RATE_PERCENT_WIDTH,
-        time_width = PASS_RATE_TIME_WIDTH,
-        solve_width = PASS_RATE_SOLVE_WIDTH,
-    ));
-    append_pass_rate_compact_separator(table);
-}
-
-const PASS_RATE_SOLVE_WIDTH: usize = 8;
-
-fn append_pass_rate_compact_separator(table: &mut String) {
-    table.push_str(&format!(
-        "{:-<package_width$} {:-<count_width$} {:-<percent_width$} {:-<time_width$} {:-<percent_width$} {:-<time_width$} {:-<percent_width$} {:-<time_width$} {:-<solve_width$} {:-<time_width$} {:-<percent_width$} {:-<time_width$} {:-<percent_width$} {:-<time_width$}\n",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        package_width = PASS_RATE_PACKAGE_WIDTH,
-        count_width = PASS_RATE_COUNT_WIDTH,
-        percent_width = PASS_RATE_PERCENT_WIDTH,
-        time_width = PASS_RATE_TIME_WIDTH,
-        solve_width = PASS_RATE_SOLVE_WIDTH,
-    ));
-}
-
-fn append_pass_rate_compact_row(table: &mut String, row: &MslPackagePassRateRow) {
-    table.push_str(&format!(
-        "{:<package_width$} {:>count_width$} {:>percent_width$} {:>time_width$} {:>percent_width$} {:>time_width$} {:>percent_width$} {:>time_width$} {:>solve_width$} {:>time_width$} {:>percent_width$} {:>time_width$} {:>percent_width$} {:>time_width$}\n",
-        row.package,
-        row.n,
-        percent_cell(row.parse_passed, row.n),
-        avg_time_cell(row.parse_avg_seconds),
-        percent_cell(row.flatten_passed, row.n),
-        avg_time_cell(row.flatten_avg_seconds),
-        percent_cell(row.dae_passed, row.n),
-        avg_time_cell(row.dae_avg_seconds),
-        percent_cell(row.solve_passed, row.n),
-        avg_time_cell(row.solve_avg_seconds),
-        percent_cell(row.ic_passed, row.n),
-        avg_time_cell(row.ic_avg_seconds),
-        percent_cell(row.sim_passed, row.n),
-        avg_time_cell(row.sim_avg_seconds),
-        package_width = PASS_RATE_PACKAGE_WIDTH,
-        count_width = PASS_RATE_COUNT_WIDTH,
-        percent_width = PASS_RATE_PERCENT_WIDTH,
-        time_width = PASS_RATE_TIME_WIDTH,
-        solve_width = PASS_RATE_SOLVE_WIDTH,
-    ));
 }
 
 fn build_msl_package_trace_accuracy_report(
@@ -1244,33 +885,6 @@ fn trace_accuracy_row(
         channel_ok_percent: rounded_percent(channel_ok, counts.compared_channels),
         no_severe_percent: rounded_percent(counts.no_severe_models, counts.n),
     }
-}
-
-fn format_msl_package_trace_accuracy_markdown(report: &MslPackageTraceAccuracyReport) -> String {
-    let mut markdown = String::new();
-    markdown.push_str(
-        "| MSL Package | n | Compared | Trace | High | Near | Channel OK | No Severe |\n",
-    );
-    markdown.push_str("|---|---:|---:|---:|---:|---:|---:|---:|\n");
-    for row in &report.rows {
-        append_trace_accuracy_markdown_row(&mut markdown, row);
-    }
-    append_trace_accuracy_markdown_row(&mut markdown, &report.overall);
-    markdown
-}
-
-fn append_trace_accuracy_markdown_row(markdown: &mut String, row: &MslPackageTraceAccuracyRow) {
-    markdown.push_str(&format!(
-        "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
-        row.package,
-        row.n,
-        percent_cell(row.compared, row.n),
-        percent_cell(row.acceptable_agreement, row.n),
-        percent_cell(row.high_agreement, row.n),
-        percent_cell(row.near_agreement, row.n),
-        format_args!("{:.0}%", row.channel_ok_percent),
-        percent_cell(row.no_severe_models, row.n)
-    ));
 }
 
 pub(super) fn write_msl_package_trace_accuracy_report(summary: &MslSummary) -> io::Result<bool> {
@@ -1608,14 +1222,20 @@ mod tests {
         assert_eq!(report.overall.sim_percent, 20.0);
 
         let markdown = format_msl_package_pass_rate_markdown(&report);
+        assert!(markdown.starts_with(
+            "| MSL Package | n | Ast | Time | Flat | Time | Dae | Time | Solve | Time | IC | Time | Simulated | Time | High |\n"
+        ));
+        // Without an OMC comparison the High column is not measured.
         assert!(
             markdown.contains(
-                "| MSL Package | n | Ast | Time | Flat | Time | Dae | Time | Solve | Time | IC | Time | Sim | Time |"
-            )
+                "| Overall | 5 | 100% | 0.00s | 80% | - | 60% | - | 40% | - | 40% | - | 20% | - | - |"
+            ),
+            "{markdown}"
         );
         assert!(markdown.contains(
-            "| Overall | 5 | 100% | 0.00s | 80% | - | 60% | - | 40% | - | 40% | - | 20% | - |"
+            "- `Simulated`: % of n whose simulation ran to completion: a completion count, never a parity rate"
         ));
+        assert!(markdown.contains("`-` because no OMC comparison ran"));
 
         let terminal_table = format_msl_package_pass_rate_terminal_table(&report);
         assert!(terminal_table.contains("MSL Package"));
@@ -1699,7 +1319,8 @@ mod tests {
         assert_eq!(conn.error_code_counts.get("ECONN001"), Some(&1));
 
         let markdown = format_mls_contract_coverage_markdown(&report);
-        assert!(markdown.contains("| MLS Category | n | Compile | Solve IR | Balance | Sim |"));
+        assert!(markdown.contains("| MLS Category | n | Flat | Solve IR | Balance | Simulated |"));
+        assert!(markdown.contains("- `Flat`: % of n flattened without error"));
         assert!(markdown.contains("| ARR | 1 | 100% | 100% | 100% | 100% | Success:1 | - |"));
         assert!(
             markdown.contains("| CONN_STRM | 1 | 0% | 0% | 0% | 0% | Flatten:1 | ECONN001:1 |")
@@ -1811,6 +1432,17 @@ mod tests {
         assert_eq!(report.overall.sim_passed, 3);
         assert_eq!(report.overall.ic_percent, 80.0);
         assert_eq!(report.overall.sim_percent, 60.0);
+        // Completed simulations are counted apart from strict-high parity, and
+        // the table shows both under names that cannot be confused.
+        assert_eq!(report.overall.simulated_passed, 5);
+        assert!(report.parity_measured);
+        let markdown = format_msl_package_pass_rate_markdown(&report);
+        assert!(
+            markdown.contains("| Overall | 5 | 100% | 0.00s | 100% | - | 100% | - | 100% | - | 80% | - | 100% | - | 60% |"),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("`-` because no OMC comparison ran"));
+        assert!(!markdown.contains("| Sim |"));
     }
 
     #[test]
@@ -1967,8 +1599,23 @@ mod tests {
 
         let markdown = format_msl_package_trace_accuracy_markdown(&report);
         assert!(
-            markdown.contains("| Electrical.Analog | 3 | 67% | 67% | 33% | 33% | 100% | 67% |")
+            markdown
+                .starts_with("| MSL Package | n | Compared | High | Near | Deviation | Severe |\n")
         );
-        assert!(markdown.contains("| Overall | 4 | 75% | 50% | 25% | 25% | 93% | 50% |"));
+        assert!(
+            markdown.contains("| Electrical.Analog | 3 | 67% | 33% | 33% | 0% | 0% |"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("| Electrical.Digital | 1 | 100% | 0% | 0% | 100% | 100% |"));
+        assert!(markdown.contains("| Overall | 4 | 75% | 25% | 25% | 25% | 25% |"));
+        // The dropped columns stay derivable: Trace = High + Near, No Severe =
+        // Compared - Severe, and the channel share stays in the JSON row.
+        assert_eq!(
+            report.overall.acceptable_agreement,
+            report.overall.high_agreement + report.overall.near_agreement
+        );
+        assert_eq!(report.overall.compared - report.overall.no_severe_models, 1);
+        assert!(!markdown.contains("Channel OK"));
+        assert!(markdown.contains("- `Severe`: % of n with at least one channel at bounded normalized L1 error 0.8 or more, in any band"), "{markdown}");
     }
 }

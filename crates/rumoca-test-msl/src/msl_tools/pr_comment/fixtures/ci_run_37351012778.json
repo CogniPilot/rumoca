@@ -1,0 +1,69 @@
+{
+  "_about": "Counts from the full-scope CI run 37351012778 (PR 378): the quality snapshot scalars and the band table rows grouped by band, exit reason, and exception kind.",
+  "quality": {
+    "run_scope": "full",
+    "msl_version": "v4.1.0",
+    "omc_version": "a96aa1a-cmake",
+    "simulatable_attempted": 566,
+    "parse_models": 566,
+    "flatten_models": 542,
+    "compiled_models": 439,
+    "solve_models": 408,
+    "balance_denominator": 426,
+    "balanced_models": 426,
+    "initial_balanced_models": 426,
+    "unbalanced_models": 0,
+    "partial_models": 13,
+    "sim_target_models": 566,
+    "sim_attempted": 418,
+    "ic_ok": 374,
+    "sim_ok": 359,
+    "trace_accuracy_stats": {
+      "models_compared": 299,
+      "agreement_high": 299,
+      "agreement_minor": 0,
+      "agreement_deviation": 0,
+      "models_with_severe_channel": 0
+    }
+  },
+  "band_rows": [
+    {
+      "band": "high",
+      "count": 299
+    },
+    {
+      "band": "absent",
+      "exit_reason": "excluded",
+      "exception_kind": "reference_failure",
+      "count": 30
+    },
+    {
+      "band": "absent",
+      "exit_reason": "excluded",
+      "exception_kind": "model_issue",
+      "count": 7
+    },
+    {
+      "band": "absent",
+      "exit_reason": "excluded",
+      "exception_kind": "comparator_limitation",
+      "count": 22
+    },
+    {
+      "band": "absent",
+      "exit_reason": "reference_missing",
+      "model_name": "Modelica.Clocked.Examples.Elementary.ClockSignals.LogicalSample",
+      "count": 1
+    },
+    {
+      "band": "absent",
+      "exit_reason": "sim_failed",
+      "count": 59
+    },
+    {
+      "band": "absent",
+      "exit_reason": "not_attempted",
+      "count": 148
+    }
+  ]
+}

@@ -554,6 +554,14 @@ impl BandTable {
             && self.source.results_digest == other.source.results_digest
     }
 
+    /// A self-consistent table over `rows`, for fixtures in other modules'
+    /// tests: the cohort is the rows, and counts and digest are derived.
+    #[cfg(test)]
+    pub(crate) fn sealed(rows: Vec<BandRow>, meta: BandTableMeta) -> Self {
+        let cohort = rows.len();
+        Self::with_rows(rows, cohort, meta)
+    }
+
     fn with_rows(rows: Vec<BandRow>, cohort_roster_models: usize, meta: BandTableMeta) -> Self {
         Self {
             schema: BAND_TABLE_SCHEMA.to_string(),
@@ -1947,7 +1955,7 @@ mod soundness;
 use exclusions::exclusions_from;
 use exclusions::tracked_exclusions;
 mod trace_exit;
-pub use soundness::triage_package;
+pub use soundness::{SimulationOutcomes, triage_package};
 pub use trace_exit::{TraceExitKind, TraceExitRecord};
 
 #[cfg(test)]

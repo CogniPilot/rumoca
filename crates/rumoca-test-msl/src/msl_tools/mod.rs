@@ -10,6 +10,7 @@ pub mod parity_manifest;
 pub mod plot_compare;
 pub mod pr_comment;
 pub mod promote_quality_baseline;
+pub mod report_table;
 pub mod rerun;
 pub mod transition_diff;
 pub mod triage;

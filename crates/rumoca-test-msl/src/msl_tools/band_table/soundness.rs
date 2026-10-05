@@ -2,7 +2,35 @@
 //! completions are neither strict-high nor covered by a typed trace
 //! exception, and the package that owns each for triage.
 
+use std::collections::BTreeMap;
+
 use super::{BandLabel, BandRow, BandTable, ExitReason};
+use crate::msl_tools::common::{TraceExceptionKind, typed_exception_kind};
+
+/// How the band table classifies the run's completed simulations: verified
+/// (strict-high), excepted (a typed trace exception, by kind), or
+/// unclassified (the soundness roster). Their sum is the completions the
+/// table accounts for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SimulationOutcomes {
+    pub verified: usize,
+    pub excepted: BTreeMap<TraceExceptionKind, usize>,
+    /// Excluded rows whose recorded reason names no known exception kind.
+    pub excepted_untyped: usize,
+    pub unclassified: usize,
+}
+
+impl SimulationOutcomes {
+    /// Every typed or untyped excepted row.
+    pub fn excepted_total(&self) -> usize {
+        self.excepted.values().sum::<usize>() + self.excepted_untyped
+    }
+
+    /// Completions the band table accounts for.
+    pub fn classified_total(&self) -> usize {
+        self.verified + self.excepted_total() + self.unclassified
+    }
+}
 
 impl BandRow {
     /// Whether this model simulated without strict-high parity and without a
@@ -37,6 +65,24 @@ impl BandTable {
     /// still in it (SPEC_0033).
     pub fn unexcepted_non_high_rows(&self) -> impl Iterator<Item = &BandRow> {
         self.rows.iter().filter(|row| row.is_unexcepted_non_high())
+    }
+
+    /// The verified / excepted / unclassified split of the run's completions.
+    pub fn simulation_outcomes(&self) -> SimulationOutcomes {
+        let mut outcomes = SimulationOutcomes::default();
+        for row in &self.rows {
+            if row.band == BandLabel::High {
+                outcomes.verified += 1;
+            } else if row.exit_reason == Some(ExitReason::Excluded) {
+                match row.exit_detail.as_deref().and_then(typed_exception_kind) {
+                    Some(kind) => *outcomes.excepted.entry(kind).or_default() += 1,
+                    None => outcomes.excepted_untyped += 1,
+                }
+            } else if row.is_unexcepted_non_high() {
+                outcomes.unclassified += 1;
+            }
+        }
+        outcomes
     }
 }
 

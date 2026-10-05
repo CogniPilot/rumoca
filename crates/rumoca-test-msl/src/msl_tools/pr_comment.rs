@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 mod soundness;
 mod speed;
 
-use soundness::render_soundness_section;
+use soundness::{render_outcomes_section, render_soundness_section};
+
+use crate::msl_tools::report_table::legend_prefix;
 use speed::render_speed_section;
 
 const DEFAULT_RESULTS_DIR: &str = "target/msl/results";
@@ -104,7 +106,7 @@ fn render_quality_snapshot_summary(
         &json,
         baseline.as_ref(),
         "compiled_models",
-        "balance_denominator",
+        "simulatable_attempted",
     );
     let balance = quality_metric_cell(
         &json,
@@ -130,13 +132,15 @@ fn render_quality_snapshot_summary(
         }
     }
 
+    let outcomes = render_outcomes_section(results_dir, &json)?;
     let ci_gate_metrics = render_ci_gate_metrics_table(&json, baseline.as_ref());
 
     Ok(Some(format!(
-        "| Scope | MSL | OMC | Compile | Balance | Initial Balance | Simulation |\n\
+        "| Scope | MSL | OMC | Compile | Balance | Initial Balance | Simulated |\n\
          |---|---|---|---:|---:|---:|---:|\n\
          | `{run_scope}` | `{msl_version}` | `{omc_version}` | {compile} | {balance} | {initial_balance} | {simulation} |\n\
          {delta_note}\n\
+         {outcomes}\n\
          {ci_gate_metrics}"
     )))
 }
@@ -578,9 +582,14 @@ fn report_section_text(title: &str, text: &str) -> String {
     }
 }
 
+/// The pass-rate table with its Overall row and column legend shown and the
+/// per-package rows folded away.
 fn render_package_pass_rates_section(text: &str) -> String {
     let table = strip_time_columns(text.trim());
-    let lines = table.lines().collect::<Vec<_>>();
+    let (lines, legend): (Vec<_>, Vec<_>) = table
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .partition(|line| line.trim_start().starts_with('|'));
     if lines.len() < 3 {
         return table;
     }
@@ -603,6 +612,13 @@ fn render_package_pass_rates_section(text: &str) -> String {
         out.push_str(row);
         out.push('\n');
     }
+    if !legend.is_empty() {
+        out.push('\n');
+        for line in legend {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
     if !package_rows.is_empty() {
         out.push_str("\n<details>\n");
         out.push_str("<summary><strong>Per-package pass rates</strong></summary>\n\n");
@@ -622,7 +638,12 @@ fn render_package_pass_rates_section(text: &str) -> String {
 fn strip_time_columns(text: &str) -> String {
     let mut out = Vec::new();
     let mut time_indices: Option<Vec<usize>> = None;
+    // The per-stage `Time` columns are dropped, and their legend line with them.
+    let time_legend = legend_prefix("Time");
     for line in text.lines() {
+        if line.starts_with(&time_legend) {
+            continue;
+        }
         if !line.trim_start().starts_with('|') {
             time_indices = None;
             out.push(line.to_string());
@@ -747,6 +768,13 @@ mod tests {
         assert!(rendered.contains("<summary><strong>Per-package pass rates</strong></summary>"));
         assert!(rendered.contains("| Blocks | 10 | 100% | 90% |"));
         assert!(!rendered.contains("0.01s"));
+        // The legend stays beside the shown table, without the dropped Time columns.
+        let legend = rendered.find("- `Ast`: parsed").expect("Ast legend");
+        let details = rendered
+            .find("<summary><strong>Per-package pass rates</strong></summary>")
+            .expect("details");
+        assert!(legend < details, "{rendered}");
+        assert!(!rendered.contains("- `Time`:"), "{rendered}");
         assert!(rendered.contains("<summary><strong>MLS Contract Coverage</strong></summary>"));
         assert!(rendered.contains("| OTHER | 10 |"));
     }
@@ -837,7 +865,10 @@ mod tests {
             "| MSL Package | n | Ast | Time | Flat | Time |\n\
              |---|---:|---:|---:|---:|---:|\n\
              | Blocks | 10 | 100% | 0.01s | 90% | 0.02s |\n\
-             | Overall | 10 | 100% | 0.01s | 90% | 0.02s |\n",
+             | Overall | 10 | 100% | 0.01s | 90% | 0.02s |\n\
+             \n\
+             - `Ast`: parsed\n\
+             - `Time`: mean seconds\n",
         )
         .expect("write pass rates");
         fs::write(
@@ -869,6 +900,7 @@ mod tests {
                 "run_scope": "full",
                 "msl_version": "v4.1.0",
                 "omc_version": "OpenModelica 1.26.1",
+                "simulatable_attempted": 10,
                 "compiled_models": 10,
                 "balance_denominator": 10,
                 "balanced_models": 9,
@@ -898,6 +930,7 @@ mod tests {
                 "run_scope": "full",
                 "msl_version": "v4.1.0",
                 "omc_version": "OpenModelica 1.26.1",
+                "simulatable_attempted": 10,
                 "compiled_models": 10,
                 "balance_denominator": 10,
                 "balanced_models": 9,
@@ -915,5 +948,112 @@ mod tests {
             "| `full` | `v4.1.0` | `OpenModelica 1.26.1` | 10/10 | 9/10 | 8/10 | 0/10 |"
         ));
         assert!(!rendered.contains("| 10/10 | 9/10 | 8/10 | 0/0 |"));
+    }
+
+    /// One band-table row of a fixture group: a high row with one channel,
+    /// or an absent row with the group's exit reason and exception kind.
+    fn fixture_band_row(entry: &Value, model_name: &str) -> crate::msl_tools::band_table::BandRow {
+        let mut row = serde_json::json!({ "model_name": model_name, "band": entry["band"] });
+        if entry["band"] == "high" {
+            row["compared_variables"] = 1.into();
+            row["channel_high_count"] = 1.into();
+        } else {
+            row["exit_reason"] = entry["exit_reason"].clone();
+            let kind = json_str(entry, "exception_kind").unwrap_or("detail");
+            row["exit_detail"] = format!("{kind}: recorded reason").into();
+        }
+        serde_json::from_value(row).expect("row")
+    }
+
+    /// Write the CI run 37351012778 fixture (PR 378) as a results directory:
+    /// its quality snapshot and a band table with its rows' counts.
+    fn write_ci_run_fixture(results: &Path) {
+        use crate::msl_tools::band_table::{
+            BandTable, BandTableMeta, BandTableRunScope, BandTableSource,
+        };
+        let fixture: Value =
+            serde_json::from_str(include_str!("pr_comment/fixtures/ci_run_37351012778.json"))
+                .expect("fixture");
+        fs::write(
+            results.join("msl_quality_current.json"),
+            fixture["quality"].to_string(),
+        )
+        .expect("write quality snapshot");
+        let mut rows = Vec::new();
+        for (group, entry) in fixture["band_rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .enumerate()
+        {
+            for index in 0..json_u64(entry, "count").expect("count") {
+                let model_name = json_str(entry, "model_name").map_or_else(
+                    || format!("Modelica.Fixture.Examples.G{group}M{index}"),
+                    str::to_string,
+                );
+                rows.push(fixture_band_row(entry, &model_name));
+            }
+        }
+        let meta = BandTableMeta {
+            run_scope: BandTableRunScope::Full,
+            git_commit: "4b23ac6".to_string(),
+            working_tree_digest: None,
+            omc_version: Some("a96aa1a-cmake".to_string()),
+            source: BandTableSource {
+                trace_comparison_file: "sim_trace_comparison.json".to_string(),
+                trace_comparison_digest: "ci-run-37351012778".to_string(),
+                results_file: "msl_results.json".to_string(),
+                results_digest: "ci-run-37351012778".to_string(),
+                exclusions_file: "msl_trace_compare_exclusions.json".to_string(),
+                exclusions_digest: "ci-run-37351012778".to_string(),
+                exclusions_sha256: "ci-run-37351012778".to_string(),
+            },
+        };
+        let table = BandTable::sealed(rows, meta);
+        fs::write(
+            crate::msl_tools::band_table::band_table_path(results),
+            serde_json::to_string(&table).expect("serialize table"),
+        )
+        .expect("write band table");
+    }
+
+    /// The headline names completed simulations as `Simulated`, puts compiled
+    /// models over the attempted denominator, and splits the completions of
+    /// CI run 37351012778 into verified, excepted by kind, and unclassified,
+    /// which sum to the simulated count.
+    #[test]
+    fn pr_comment_splits_ci_run_completions_into_verified_excepted_and_unclassified() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let results = temp.path();
+        write_ci_run_fixture(results);
+
+        let rendered = render_pr_comment(results, None).expect("render comment");
+        assert!(
+            rendered.contains(
+                "| Scope | MSL | OMC | Compile | Balance | Initial Balance | Simulated |"
+            )
+        );
+        assert!(
+            rendered.contains(
+                "| `full` | `v4.1.0` | `a96aa1a-cmake` | 439/566 | 426/426 | 426/426 | 359/566 |"
+            ),
+            "{rendered}"
+        );
+        for line in [
+            "| Simulated: ran to completion | 359/566 |",
+            "| Verified: strict-high trace parity with OMC | 299 |",
+            "| Excepted: typed trace exception (reference_failure 30, model_issue 7, comparator_limitation 22) | 59 |",
+            "| Unclassified: soundness roster below, target 0 | 1 |",
+            "| Compiled, not simulated: failed or timed out after compiling | 80 |",
+            "_Verified + excepted + unclassified = simulated (299 + 59 + 1 = 359)._",
+            "- `Modelica.Clocked.Examples.Elementary.ClockSignals.LogicalSample`: absent (reference_missing",
+        ] {
+            assert!(rendered.contains(line), "missing {line} in {rendered}");
+        }
+        let outcomes = rendered.find("#### Simulation Outcomes").expect("outcomes");
+        let gates = rendered
+            .find("#### CI Gate Snapshot")
+            .expect("gate snapshot");
+        assert!(outcomes < gates);
     }
 }
