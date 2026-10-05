@@ -622,6 +622,7 @@ static {{ prefix }}Status rmc_events_continuous(ModelInstance* m) {
     bracket narrows through the same coordinates as in the linked runtime. -#}
 {%- macro root_refinement(plan) %}
 {%- if plan.refinement_method != "IllinoisMinmax" %}{{ fail("unsupported-feature:fmi.c.root-refinement " ~ plan.refinement_method) }}{% endif %}
+{%- if plan.tie_break != "ToleranceWindow" %}{{ fail("unsupported-feature:fmi.c.root-tie-break " ~ plan.tie_break) }}{% endif %}
 /* RootBracket: a domain change between `low` (no changed indicator has left
    its domain) and `high` (one has), narrowed to `tolerance`. */
 typedef struct {
@@ -655,6 +656,10 @@ static bool rmc_root_trial(const RmcRootBracket* b, double least, double* trial)
     if (b->low < projected && projected < b->high) { *trial = projected; return true; }
     if (b->low < middle && middle < b->high) { *trial = middle; return true; }
     return false;
+}
+/* RootBracket::application_window. */
+static double rmc_root_window(const RmcRootBracket* b, double upper) {
+    return fmin(b->low + b->tolerance, upper);
 }
 /* RootBracket::narrow. */
 static void rmc_root_narrow(RmcRootBracket* b, double trial, bool entered) {
@@ -727,12 +732,25 @@ static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, 
         memcpy(changed ? z_high : z_low, z, sizeof(z));
     }
     if (exhausted && !rmc_root_located(&bracket)) { RMC_LOG(m, "state event location exceeded its refinement budget"); return {{ prefix }}Error; }
-    memcpy(m->y, y0, sizeof(m->y));
+    /* RootTieBreak::ToleranceWindow (root.rs window_application): the window
+       end applies every change within one tolerance after the left limit when
+       a changed indicator stands in its new domain there. */
+    double application = bracket.high, window = rmc_root_window(&bracket, h);
+    bool integrated_to_application = false;
+    if (window > bracket.high) {
+        memcpy(m->y, y0, sizeof(m->y));
+        if ({{ integrate }}(m, t, window) != {{ prefix }}OK || rmc_domains_changed(m, z, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
+        if (changed) { application = window; integrated_to_application = true; }
+    }
+    if (!integrated_to_application) {
+        memcpy(m->y, y0, sizeof(m->y));
+        if ({{ integrate }}(m, t, application) != {{ prefix }}OK) return {{ prefix }}Error;
+    }
     bool enter = false;
-    if ({{ integrate }}(m, t, bracket.high) != {{ prefix }}OK || rmc_events_completed(m, &enter) != {{ prefix }}OK) return {{ prefix }}Error;
+    if (rmc_events_completed(m, &enter) != {{ prefix }}OK) return {{ prefix }}Error;
     bool reinit = false;
     if (enter && (rmc_events_update(m, &reinit) != {{ prefix }}OK || rmc_events_continuous(m) != {{ prefix }}OK)) return {{ prefix }}Error;
-    *advanced = bracket.high;
+    *advanced = application;
     return {{ prefix }}OK;
 }
 static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double step) {

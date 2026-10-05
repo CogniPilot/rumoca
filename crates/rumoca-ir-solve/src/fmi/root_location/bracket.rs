@@ -148,6 +148,19 @@ impl RootBracket {
         }
     }
 
+    /// The end of the [`ToleranceWindow`](super::RootTieBreak::ToleranceWindow)
+    /// of a located bracket whose scan sample ends at `upper`: one location
+    /// tolerance after the low end, rounded to the nearest coordinate, never
+    /// past `upper`.
+    ///
+    /// The earliest crossing lies in `(low, high]` and `high - low` is within
+    /// the tolerance, so the window end is at least `high` and within one
+    /// tolerance after the earliest crossing, on its far side.
+    #[must_use]
+    pub fn application_window(&self, upper: f64) -> f64 {
+        (self.low + self.tolerance).min(upper)
+    }
+
     /// Narrow to the evaluation at `trial`: it becomes `high` when an indicator
     /// had entered its new domain there and `low` otherwise. An end retained
     /// twice in a row has its weight halved (the Illinois step), and the end
