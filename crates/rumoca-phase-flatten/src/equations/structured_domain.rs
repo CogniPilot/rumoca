@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
@@ -226,4 +228,42 @@ fn offset_child_binders(
             binder
         })
         .collect()
+}
+
+/// The bodies of a loop that each own their own compact family, or `None`
+/// when the loop has a single body. Several bodies of one loop are
+/// independent declarative equations. An outer loop whose only body is a
+/// nested loop of several bodies is distributed over them:
+/// `for i loop for j loop A; B; end for; end for` yields the nests
+/// `for j loop A; end for` and `for j loop B; end for`, each repeated by the
+/// outer loop. Each body then owns one family over the whole `(i, j)` domain
+/// instead of one family per outer iteration, which would unroll the outer
+/// binder. The nest is kept, so an inner range that reads an outer binder
+/// keeps its meaning (MLS §8.3.3).
+pub(super) fn independent_for_bodies(
+    equations: &[ast::Equation],
+) -> Option<Cow<'_, [ast::Equation]>> {
+    if equations.len() > 1 {
+        return Some(Cow::Borrowed(equations));
+    }
+    let [
+        ast::Equation::For {
+            indices: inner_indices,
+            equations: inner_equations,
+        },
+    ] = equations
+    else {
+        return None;
+    };
+    (inner_equations.len() > 1).then(|| {
+        Cow::Owned(
+            inner_equations
+                .iter()
+                .map(|equation| ast::Equation::For {
+                    indices: inner_indices.clone(),
+                    equations: vec![equation.clone()],
+                })
+                .collect(),
+        )
+    })
 }

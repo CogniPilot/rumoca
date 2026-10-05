@@ -53,7 +53,8 @@ pub(crate) use conditional_and_eval::{
 use connections_graph::{extract_vcg_data_from_function_call, is_side_effect_only_function};
 pub(crate) use flattened_equations::FlattenedEquations;
 use structured_domain::{
-    SourceStructuredIteration, compact_domain_from_iterations, lift_full_iteration_child_family,
+    SourceStructuredIteration, compact_domain_from_iterations, independent_for_bodies,
+    lift_full_iteration_child_family,
 };
 use zero_sized_reductions::{expand_reduction_over_array_ref, simplify_zero_sized_reductions};
 
@@ -1076,10 +1077,8 @@ fn expand_for_equation(
     if indices.is_empty() {
         return flatten_equations_list(ctx, equations, prefix, span, origin, def_map);
     }
-    if equations.len() > 1 {
-        return expand_independent_for_bodies(
-            ctx, indices, equations, prefix, span, origin, def_map,
-        );
+    if let Some(bodies) = independent_for_bodies(equations) {
+        return expand_independent_for_bodies(ctx, indices, &bodies, prefix, span, origin, def_map);
     }
 
     // Classify regularity from the still-symbolic body BEFORE materializing, so the

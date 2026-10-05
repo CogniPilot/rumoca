@@ -21,6 +21,7 @@ scalar rows are derived views, not recovered structure.
 | Domain payloads are compact | IR serialization | Avoids O(N) metadata |
 | Binder ids are stable and explicit | `StructuredIndexBinder` / phase maps | Names can shadow |
 | Empty domains produce zero scalar rows | Scalar views | Valid zero-iteration ranges |
+| Each body of a loop nest owns one family over the whole nest | Flatten | An unrolled outer binder scalarizes every grid row |
 
 Structured families include source `for` equations, whole-array equations,
 slices, comprehensions, boundary ranges, and connection-generated array

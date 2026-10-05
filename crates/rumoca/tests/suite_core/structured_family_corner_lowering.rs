@@ -214,3 +214,114 @@ end MixedFamily;
         assert_eq!(row_counts, vec![2, 3, 6]);
     });
 }
+
+/// A clamped 2-D grid whose interior loop body holds two equations: the
+/// method-of-lines shape of the user guide's PDE examples. The interior
+/// derivative slots of `w` are a strided sub-range of the array (rows
+/// `2..N-1` of every column `2..N-1`), interleaved with the clamped edges.
+const GRID_TWO_BODY_INTERIOR: &str = r#"
+model GridTwoBodyInterior
+  parameter Integer N = 5;
+  Real u[N, N](each start = 1.0, each fixed = true);
+  Real w[N, N](each start = 0.0, each fixed = true);
+equation
+  for i in 1:N loop
+    der(u[i, 1]) = 0.0;
+    der(u[i, N]) = 0.0;
+    der(w[i, 1]) = 0.0;
+    der(w[i, N]) = 0.0;
+  end for;
+  for j in 2:N - 1 loop
+    der(u[1, j]) = 0.0;
+    der(u[N, j]) = 0.0;
+    der(w[1, j]) = 0.0;
+    der(w[N, j]) = 0.0;
+  end for;
+  for i in 2:N - 1 loop
+    for j in 2:N - 1 loop
+      der(u[i, j]) = w[i, j];
+      der(w[i, j]) = u[i + 1, j] + u[i - 1, j] + u[i, j + 1] + u[i, j - 1]
+        - 4.0 * u[i, j] + 10.0 * i + j;
+    end for;
+  end for;
+end GridTwoBodyInterior;
+"#;
+
+/// Each body of a nested loop keeps one family over the whole `(i, j)` domain;
+/// splitting the inner bodies must not unroll the outer binder into one family
+/// per row.
+#[test]
+fn nested_loop_bodies_each_keep_one_grid_family() {
+    let compiled = Compiler::new()
+        .model("GridTwoBodyInterior")
+        .compile_str(GRID_TWO_BODY_INTERIOR, "GridTwoBodyInterior.mo")
+        .expect("the grid model should compile");
+    compiled.dae.inspect(|view| {
+        let interior = view
+            .continuous_owners()
+            .filter_map(|owner| match owner {
+                rumoca_ir_dae::ContinuousOwnerView::Structured { family, .. } => {
+                    let domain = view
+                        .domain(family.domain())
+                        .expect("family domain resolves");
+                    (domain.structured().binders.len() == 2).then_some(family.scalar_rows())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            interior,
+            vec![9, 9],
+            "the two interior bodies must stay two 3x3 families, not one family per row"
+        );
+    });
+}
+
+/// The interior derivative families write strided state slots; each lowers to
+/// one rank-2 tensor node whose output map places every value in its own slot,
+/// with no scalar rows left for the interior.
+#[test]
+fn strided_grid_interior_lowers_to_rank_two_tensor_nodes() {
+    let compiled = Compiler::new()
+        .model("GridTwoBodyInterior")
+        .compile_str(GRID_TWO_BODY_INTERIOR, "GridTwoBodyInterior.mo")
+        .expect("the grid model should compile");
+    let solve = rumoca_sim::lower_solve_problem(&compiled.dae)
+        .expect("the grid model should lower to Solve IR");
+    let mut rank_two_rows = Vec::new();
+    let mut scalar_rows = 0usize;
+    for node in &solve.continuous.derivative_rhs.nodes {
+        match node {
+            rumoca_ir_solve::ComputeNode::Map { domain, .. }
+            | rumoca_ir_solve::ComputeNode::AffineStencil { domain, .. }
+                if domain.binders.len() == 2 =>
+            {
+                rank_two_rows.push(domain.scalar_count().expect("domain size"));
+            }
+            rumoca_ir_solve::ComputeNode::ScalarPrograms(block) => {
+                scalar_rows += block.programs().len();
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(rank_two_rows, vec![9, 9]);
+    assert!(
+        scalar_rows < 16,
+        "only edge rows may stay scalar, found {scalar_rows} scalar derivative rows"
+    );
+
+    // u = 1 everywhere, so der(w[i, j]) = 10 i + j on the interior and 0 on
+    // the edges; a misplaced strided output map moves these values.
+    let derivatives = evaluated_derivatives(
+        GRID_TWO_BODY_INTERIOR,
+        "GridTwoBodyInterior",
+        "GridTwoBodyInterior.mo",
+    );
+    let mut expected = vec![0.0; 50];
+    for i in 2..=4 {
+        for j in 2..=4 {
+            expected[25 + (i - 1) * 5 + (j - 1)] = (10 * i + j) as f64;
+        }
+    }
+    assert_eq!(derivatives, expected);
+}
