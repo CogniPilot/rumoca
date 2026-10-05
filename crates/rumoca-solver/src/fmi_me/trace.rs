@@ -153,10 +153,11 @@ impl MeTraceRecorder {
         state_count: usize,
         capacity: usize,
     ) -> Result<Self, MeTraceViolation> {
-        for (index, name) in names.iter().enumerate() {
-            if names[..index].contains(name) {
-                return Err(MeTraceViolation::DuplicateChannel { name: name.clone() });
-            }
+        // The first name already seen is the first duplicate in channel order.
+        let mut seen = rustc_hash::FxHashSet::default();
+        seen.reserve(names.len());
+        if let Some(name) = names.iter().find(|name| !seen.insert(name.as_str())) {
+            return Err(MeTraceViolation::DuplicateChannel { name: name.clone() });
         }
         let mut columns: Vec<Vec<f64>> = Vec::new();
         try_reserve(&mut columns, names.len(), "trace columns")?;
