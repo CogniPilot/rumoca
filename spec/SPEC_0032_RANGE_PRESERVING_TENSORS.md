@@ -149,6 +149,7 @@ or scalar-type-incompatible projection is rejected at this owner.
 | Structured B.1c uses compact map and target map | Solve IR | Preserve the authoritative discrete family |
 | A derivative family's output map is the affine image of its matched slots | `rumoca-phase-solve` | A strided grid interior stays one node |
 | A native backend executes a `Map`/`AffineStencil` node as one loop kernel over its compact domain, driven by the same point plan that generates the node's scalar view | `rumoca-eval-solve::AffineKernelPlan`, native backends | Compile cost independent of domain size; the kernel and the view cannot disagree |
+| A single-body structured initialization family whose points share one affine program lowers to one `Map` node over its consecutive residual rows; its Jacobian is that node's tensor JVP | `rumoca-phase-solve` initialization lowering | The initialization system stays compact through Solve and the runtime |
 
 `Map` represents canonical DAE residual families that are elementwise over a
 compact domain, including `der(u) = w` after DAE canonicalization. `AffineStencil`
@@ -176,6 +177,13 @@ results are bitwise identical to the view. The kernel takes its proven maxima as
 its length requirements and checks no bound per point. A node whose base program
 the kernel path does not support keeps the per-row path, chosen when the block
 is compiled.
+
+An initialization family is certified like a structured B.1c family: it
+becomes a `Map` node only when one base program with affine load and constant
+strides reproduces every point's compiled program exactly. The node writes the
+family's rows at the residual positions the per-point rows held, so projection,
+incidence, and scalar consumers see the same rows. Any other family keeps its
+scalar rows.
 
 Structured B.1c lowering uses `ComputeNode::Map` (or a stronger proven tensor
 node) together with a compact affine target map. Discrete row role, pre mode,
