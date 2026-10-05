@@ -219,7 +219,7 @@ fn build_policy(
         options.relative_tolerance(),
         outcome.nominals.clone(),
         state_count,
-        root_location.refinement_iteration_cap(),
+        *root_location,
     )
     .map(Some)
 }

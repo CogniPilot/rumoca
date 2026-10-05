@@ -34,6 +34,8 @@ mod render_solve;
 mod render_solve_ops;
 mod render_stmt;
 #[cfg(test)]
+mod root_refinement_render_tests;
+#[cfg(test)]
 mod scalar_plan_template_tests;
 mod scalar_program_plan;
 mod scalar_region_plan;
