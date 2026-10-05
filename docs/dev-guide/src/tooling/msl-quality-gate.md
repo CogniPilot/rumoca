@@ -316,13 +316,12 @@ so only matching results are timed:
   per model, x = scalar equations, y = compile seconds, rumoca vs OMC) rendered
   with the same embedded uPlot backend as `plot-compare`. Open it in a browser.
 
-The plot is rendered two ways from that one JSON:
+Speed is reported in two places:
 
 - **Local**: `omc-simulation-reference` writes `msl_speed_scaling.html` (uPlot).
-- **PR comment**: `cargo xtask repo msl pr-comment` reads the JSON and renders the table
-  plus a mermaid `xychart`. GitHub cannot execute JS, so the PR plot is mermaid,
-  not the uPlot viewer — and it is produced only by `pr-comment`, not on every
-  OMC run.
+- **PR comment**: `cargo xtask repo msl pr-comment` renders the **Speed vs OMC**
+  section from the run's results, OMC reference, and band table: totals, time to
+  runnable (JIT vs C toolchain), and simulation, each by system size.
 
 ### Fast local subset
 

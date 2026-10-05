@@ -1,7 +1,7 @@
 use super::*;
 
 /// A (high, 5 equations) is faster than OMC everywhere; B (near, 12
-/// equations) is slower than OMC in compiler work and simulation; C is in the
+/// equations) is slower than OMC in simulation; C is in the
 /// deviation band and D's OMC timing was taken under another worker count, so
 /// neither is timed.
 fn write_inputs(results: &Path, omc_workers: u64, rumoca_workers: u64, stage_workers: u64) {
@@ -100,8 +100,6 @@ fn every_aggregate_is_over_the_comparators_agreeing_set_with_a_high_only_line() 
     assert!(
         rendered.contains("| Total (model to results) | 2 | 9.1 | 13.0 | **1.43** | **1.76** |")
     );
-    // Compiler work: rumoca 1.2 + 3.0, OMC 2.4 + 2.0.
-    assert!(rendered.contains("| Compiler work | 2 | 4.2 | 4.4 | **1.05** |"));
     // Runnable: rumoca 1.5 + 3.5, OMC 4 + 6.
     assert!(
         rendered.contains("| Time to runnable (JIT vs C toolchain) | 2 | 5.0 | 10.0 | **2.00** |")
@@ -109,10 +107,12 @@ fn every_aggregate_is_over_the_comparators_agreeing_set_with_a_high_only_line() 
     // Simulation: rumoca 0.6 + 3.5 (initialization included), OMC 1 + 2.
     assert!(rendered.contains("| Simulation | 2 | 4.1 | 3.0 | **0.73** |"));
     assert!(rendered.contains("High band only (1 models)"));
-    assert!(rendered.contains("Compiler work 2.00×"));
+    assert!(rendered.contains("Time to runnable (JIT vs C toolchain) 2.67×"));
     assert!(rendered.contains("**FMU path:** not measured in CI"));
     assert!(rendered.contains("`timeTotal - timeSimulation`, which includes `timeCompile`"));
     assert!(rendered.contains("OMC loads the library once per session with `loadModel`"));
+    assert!(!rendered.contains("Compiler work"), "{rendered}");
+    assert!(!rendered.contains("timeFrontend"), "{rendered}");
     assert!(rendered.contains("`timeSimulation`, which includes its initialization"));
 }
 
@@ -121,11 +121,6 @@ fn the_size_tables_and_slower_list_name_the_dominant_cost() {
     let rendered = render_with(2, 2, 2);
     assert!(rendered.contains("| 1–9 | 1 |"));
     assert!(rendered.contains("| 10–24 | 1 |"));
-    assert!(rendered.contains("##### Compiler work (1 slower)"));
-    assert!(
-        rendered.contains("| `B` | 12 | 0.67 | flatten 1.200 s |"),
-        "{rendered}"
-    );
     assert!(rendered.contains("##### Simulation (1 slower)"));
     assert!(rendered.contains("| `B` | 12 | 0.57 | 40 steps, 2 events, 501 output points |"));
     assert!(rendered.contains("##### Time to runnable (JIT vs C toolchain) (0 slower)"));
@@ -192,7 +187,7 @@ fn missing_inputs_report_not_measured() {
 }
 
 #[test]
-fn a_compile_that_built_the_plan_is_left_out_of_compiler_work_and_counted() {
+fn a_compile_that_built_the_plan_is_counted_and_still_timed() {
     let temp = tempfile::tempdir().expect("tempdir");
     write_inputs(temp.path(), 2, 2, 2);
     let path = temp.path().join("msl_results.json");
@@ -205,16 +200,17 @@ fn a_compile_that_built_the_plan_is_left_out_of_compiler_work_and_counted() {
     }
     fs::write(&path, msl.to_string()).expect("write");
     let rendered = render_speed_section(temp.path()).expect("render");
-    // Compiler work: A alone, rumoca 1.2 against OMC 2.4.
     assert!(
-        rendered.contains("| Compiler work | 1 | 1.2 | 2.4 | **2.00** |"),
+        rendered.contains(
+            "1 timed rumoca compile(s) built the plan themselves and 0 row(s) do not record it; \
+             a plan built in the compile is in that model's `compile_seconds`."
+        ),
         "{rendered}"
     );
-    assert!(rendered.contains(
-        "1 timed rumoca compile(s) built the plan themselves and 0 row(s) do not record it"
-    ));
     assert!(!rendered.contains("Every timed rumoca compile started from the prepared plan"));
-    // The other comparisons still time both models.
+    // Every comparison still times both models.
+    assert!(rendered.contains("| Total (model to results) | 2 |"));
+    assert!(rendered.contains("| Time to runnable (JIT vs C toolchain) | 2 |"));
     assert!(rendered.contains("| Simulation | 2 |"));
 }
 

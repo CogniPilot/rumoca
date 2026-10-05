@@ -3,10 +3,10 @@
 //!
 //! Every published aggregate is taken over the trace-agreeing models (both
 //! tools produced traces in the `high` or `near` band), with a high-band-only
-//! line beside it. Compilation is compared three ways so each number compares
-//! like with like: the compiler's own work, the time until the model can run
-//! (rumoca's JIT against OMC's C toolchain), and the FMU path. A methodology
-//! block states the recorded conditions of both tools' runs.
+//! line beside it. Compilation is compared two ways so each number compares like
+//! with like: the time until the model can run (rumoca's JIT against OMC's C
+//! toolchain) and the FMU path. A methodology block states the recorded
+//! conditions of both tools' runs.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -50,9 +50,7 @@ struct RumocaSeconds {
 /// OMC's seconds for one model, from its self-reported `SimulationResult`.
 #[derive(Clone, Default)]
 struct OmcSeconds {
-    /// Frontend + backend + SimCode + templates, when OMC reported all four.
-    compiler_work: Option<f64>,
-    /// `timeTotal - timeSimulation`: compiler work plus the C toolchain.
+    /// `timeTotal - timeSimulation`: OMC's compiler plus its C toolchain.
     runnable: f64,
     simulation: f64,
     total: f64,
@@ -76,14 +74,12 @@ struct SpeedRecord {
 #[derive(Clone, Copy)]
 enum Comparison {
     Total,
-    CompilerWork,
     Runnable,
     Simulation,
 }
 
-const COMPARISONS: [Comparison; 4] = [
+const COMPARISONS: [Comparison; 3] = [
     Comparison::Total,
-    Comparison::CompilerWork,
     Comparison::Runnable,
     Comparison::Simulation,
 ];
@@ -92,7 +88,6 @@ impl Comparison {
     fn label(self) -> &'static str {
         match self {
             Self::Total => "Total (model to results)",
-            Self::CompilerWork => "Compiler work",
             Self::Runnable => "Time to runnable (JIT vs C toolchain)",
             Self::Simulation => "Simulation",
         }
@@ -102,15 +97,6 @@ impl Comparison {
         match self {
             Self::Total => {
                 "Rumoca = front end + Solve lowering + JIT + initialization + integration; OMC = `timeTotal`."
-            }
-            Self::CompilerWork => {
-                "Rumoca = front end + Solve lowering (`compile_seconds + ir_solve_seconds`); \
-                 OMC = `timeFrontend + timeBackend + timeSimCode + timeTemplates`. \
-                 Neither side includes native code generation. OMC loads the library once per \
-                 session with `loadModel`, outside every per-model timer; rumoca loads the library and \
-                 builds its resolution plan once per worker (`worker_prepare_seconds`), outside \
-                 every per-model timer, and `compile_seconds` includes resolving the model's \
-                 reachable library classes."
             }
             Self::Runnable => {
                 "Rumoca = front end + Solve lowering + Cranelift JIT (`compile_seconds + \
@@ -125,37 +111,28 @@ impl Comparison {
         }
     }
 
-    fn rumoca(self, record: &SpeedRecord) -> Option<f64> {
+    fn rumoca(self, record: &SpeedRecord) -> f64 {
         let r = &record.rumoca;
-        Some(match self {
+        match self {
             Self::Total => r.front_end + r.sim_build + r.initialization + r.run,
-            Self::CompilerWork => r.front_end + r.solve,
             Self::Runnable => r.front_end + r.sim_build,
             Self::Simulation => r.initialization + r.run,
-        })
+        }
     }
 
-    fn omc(self, record: &SpeedRecord) -> Option<f64> {
+    fn omc(self, record: &SpeedRecord) -> f64 {
         let o = &record.omc;
         match self {
-            Self::Total => Some(o.total),
-            Self::CompilerWork => o.compiler_work,
-            Self::Runnable => Some(o.runnable),
-            Self::Simulation => Some(o.simulation),
+            Self::Total => o.total,
+            Self::Runnable => o.runnable,
+            Self::Simulation => o.simulation,
         }
     }
 
     /// `(rumoca, omc)` seconds when both are known and positive.
     fn pair(self, record: &SpeedRecord) -> Option<(f64, f64)> {
-        // A compile that built the library resolution plan itself carries a
-        // one-time cost no OMC per-model timer has; only a recorded warm
-        // plan makes compiler work per-model on both sides.
-        if matches!(self, Self::CompilerWork) && record.plan_warm != Some(true) {
-            return None;
-        }
-        let rumoca = self.rumoca(record).filter(|seconds| *seconds > 0.0)?;
-        let omc = self.omc(record).filter(|seconds| *seconds > 0.0)?;
-        Some((rumoca, omc))
+        let (rumoca, omc) = (self.rumoca(record), self.omc(record));
+        (rumoca > 0.0 && omc > 0.0).then_some((rumoca, omc))
     }
 
     /// The rumoca phase that took longest for `record` within this comparison.
@@ -173,10 +150,6 @@ impl Comparison {
             ("DAE", r.dae),
         ];
         let phases: Vec<(&str, f64)> = match self {
-            Self::CompilerWork => front_end
-                .into_iter()
-                .chain([("Solve lowering", r.solve)])
-                .collect(),
             Self::Runnable | Self::Total => front_end
                 .into_iter()
                 .chain([("Solve lowering", r.solve), ("JIT", r.jit)])
@@ -358,7 +331,6 @@ fn speed_record(name: &str, high: bool, rumoca: &Value, omc: &Value) -> Option<S
     let total = positive_json_f64(omc, "total_system_seconds")?;
     let simulation = positive_json_f64(omc, "sim_system_seconds")?;
     let omc_seconds = OmcSeconds {
-        compiler_work: omc.get("omc_phases").and_then(omc_compiler_work),
         runnable: Some(total - simulation).filter(|seconds| *seconds > 0.0)?,
         simulation,
         total,
@@ -373,15 +345,6 @@ fn speed_record(name: &str, high: bool, rumoca: &Value, omc: &Value) -> Option<S
         omc_settings: omc.get("omc_settings").cloned(),
         plan_warm: rumoca.get("strict_plan_warm").and_then(Value::as_bool),
     })
-}
-
-/// OMC's frontend + backend + SimCode + templates, when all four are known.
-fn omc_compiler_work(phases: &Value) -> Option<f64> {
-    ["frontend", "backend", "sim_code", "templates"]
-        .into_iter()
-        .map(|key| json_f64(phases, key))
-        .sum::<Option<f64>>()
-        .filter(|seconds| *seconds > 0.0)
 }
 
 /// Throughput and median per-model speedup of `comparison` over `records`.
@@ -541,7 +504,8 @@ fn render_methodology(
          - Front end scope: rumoca loads the library and builds its resolution plan once per \
          worker (`worker_prepare_seconds`, recorded on each row with `strict_plan_warm`), and \
          `compile_seconds` covers resolving each model's reachable library classes for that \
-         model; OMC's `timeFrontend` follows one `loadModel` per session. {}\n\
+         model; OMC loads the library once per session with `loadModel`, outside every \
+         per-model timer. {}\n\
          - Parity gating: only models in the comparator's high or near band are timed; {} models.\
          \n\n</details>\n",
         host_field("image"),
@@ -705,9 +669,8 @@ fn median_value(values: impl IntoIterator<Item = f64>) -> f64 {
 #[cfg(test)]
 mod tests;
 
-/// What the rows record about the one-time resolution plan: a model whose
-/// compile built the plan itself, or whose row does not say, is left out of
-/// Compiler work.
+/// What the rows record about the one-time resolution plan: a compile that
+/// built the plan itself carries that one-time cost in its `compile_seconds`.
 fn plan_scope(records: &[SpeedRecord]) -> String {
     let cold = records
         .iter()
@@ -721,6 +684,6 @@ fn plan_scope(records: &[SpeedRecord]) -> String {
     }
     format!(
         "{cold} timed rumoca compile(s) built the plan themselves and {unrecorded} row(s) do not \
-         record it; those models are left out of Compiler work."
+         record it; a plan built in the compile is in that model's `compile_seconds`."
     )
 }
