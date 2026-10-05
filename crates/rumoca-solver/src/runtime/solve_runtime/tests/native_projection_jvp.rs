@@ -199,12 +199,52 @@ fn default_outputs_at_coordinates_call_each_program_output_in_order() {
             _external_tables: &[rumoca_core::ExternalTableData],
             _out: &mut [f64],
         ) -> Result<(), String> {
-            unreachable!("a selected output never evaluates the whole block")
+            Ok(())
         }
     }
+    impl CompiledSolveJacobianExpression for Declining {
+        fn call(
+            &self,
+            _y: &[f64],
+            _p: &[f64],
+            _t: f64,
+            _seed: &[f64],
+            _external_tables: &[rumoca_core::ExternalTableData],
+            _out: &mut [f64],
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    // Without selected entries every optional call declines.
+    let expression: &dyn CompiledSolveExpression = &Declining;
+    let jacobian: &dyn CompiledSolveJacobianExpression = &Declining;
+    let mut all = Vec::new();
     assert!(
-        !Declining
+        !expression
             .call_program_outputs_at(&[(0, 0)], (&[], &[], 0.0), &[], &mut out)
             .unwrap()
     );
+    assert!(
+        !expression
+            .call_program_outputs(0, &[], &[], 0.0, &[], &mut all)
+            .unwrap()
+    );
+    assert!(
+        !jacobian
+            .call_program_outputs(0, inputs, &[], &mut all)
+            .unwrap()
+    );
+    assert_eq!(
+        jacobian
+            .call_program_output((0, 0), &[], &[], 0.0, &seed, &[])
+            .unwrap(),
+        None
+    );
+    assert!(
+        !jacobian
+            .call_program_outputs_at(&[(0, 0)], inputs, &[], &mut out)
+            .unwrap()
+    );
+    expression.call(&[], &[], 0.0, &[], &mut out).unwrap();
+    jacobian.call(&[], &[], 0.0, &seed, &[], &mut out).unwrap();
 }

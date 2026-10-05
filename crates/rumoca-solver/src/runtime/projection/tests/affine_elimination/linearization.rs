@@ -130,4 +130,26 @@ fn a_certified_affine_linearization_is_reused_under_its_parameter_snapshot() {
     assert_eq!(refilled[2], reused);
     assert_eq!(refilled[3], all, "a changed snapshot forms every row again");
     assert_eq!(refilled[4], reused);
+    // The fixture answers the rest of the projection model contract from its
+    // cycle, scaled by the parameter where the residual is.
+    assert_eq!(retaining.algebraic_projection_plan().blocks.len(), 1);
+    assert_eq!(retaining.target_name_for_row(0), None);
+    let (y, p, v) = (vec![0.0; DIMENSION], [2.0], vec![1.0; DIMENSION]);
+    let (mut scaled, mut plain) = (vec![0.0; DIMENSION], vec![0.0; DIMENSION]);
+    retaining
+        .eval_jacobian_v(&y, &p, 0.0, &v, &mut scaled)
+        .unwrap();
+    retaining
+        .cycle
+        .eval_jacobian_v(&y, &p, 0.0, &v, &mut plain)
+        .unwrap();
+    assert_eq!(
+        scaled,
+        plain.iter().map(|value| 2.0 * value).collect::<Vec<_>>()
+    );
+    // A model without the certificate names no parameter snapshot.
+    assert_eq!(
+        retaining.cycle.implicit_row_static_gradient_parameters(1),
+        None
+    );
 }

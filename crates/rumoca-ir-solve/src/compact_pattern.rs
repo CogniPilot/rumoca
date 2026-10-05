@@ -106,6 +106,7 @@ mod tests {
     fn compact_slots_follow_rows_then_ascending_columns() {
         let layout = CompactPatternLayout::of(&pattern());
         assert_eq!(layout.len(), 3);
+        assert!(!layout.is_empty());
         assert_eq!(layout.slot(0, 0), Some(0));
         assert_eq!(layout.slot(0, 2), Some(1));
         assert_eq!(layout.slot(2, 1), Some(2));
