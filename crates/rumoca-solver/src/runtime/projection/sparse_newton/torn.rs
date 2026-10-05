@@ -14,9 +14,9 @@ impl TornNewtonCache {
         &mut self,
         source: &super::super::BlockJacobian,
         rhs: &DVector<f64>,
-        row_scales: &[f64],
-        variable_scales: &[f64],
+        (row_scales, variable_scales): (&[f64], &[f64]),
         layout: &solve::AffineEliminationLayout,
+        revision: Option<u64>,
     ) -> Option<DVector<f64>> {
         let n = layout.pattern().rows() as usize;
         if source.shape() != (n, n)
@@ -30,7 +30,7 @@ impl TornNewtonCache {
             self.system = TornSystem::new(layout);
         }
         let system = self.system.as_mut()?;
-        system.update(source, row_scales, variable_scales);
+        system.update(source, (row_scales, variable_scales), revision);
         system.solve(rhs)
     }
 
@@ -76,6 +76,9 @@ struct TornSystem {
     /// Whether `values` holds a conditioning of held inputs at all; until the
     /// first update every entry is recomputed.
     conditioned: bool,
+    /// The revision of the inputs `values` and the factor were last formed
+    /// from: an update under the same revision holds bitwise those inputs.
+    revision: Option<u64>,
     recovery: Box<[f64]>,
     /// For every block coordinate, the recovery columns its row can hold
     /// nonzero, ascending: a tear's own column, and for a causal target the
@@ -141,6 +144,7 @@ impl TornSystem {
             compact: rumoca_ir_solve::CompactPatternLayout::of(layout.pattern()),
             matched: None,
             conditioned: false,
+            revision: None,
             offsets: offsets.into_boxed_slice(),
             recovery: vec![0.0; n.checked_mul(capacity)?].into_boxed_slice(),
             support: vec![Vec::new(); n],
@@ -179,7 +183,16 @@ impl TornSystem {
         changed
     }
 
-    fn update(&mut self, source: &super::super::BlockJacobian, rows: &[f64], columns: &[f64]) {
+    fn update(
+        &mut self,
+        source: &super::super::BlockJacobian,
+        (rows, columns): (&[f64], &[f64]),
+        revision: Option<u64>,
+    ) {
+        if revision.is_some() && revision == self.revision {
+            return;
+        }
+        self.revision = revision;
         let mut changed = matches!(self.factor, Factor::Unfactored);
         changed |= self.preflight_guards(source);
         let fresh = !self.conditioned;

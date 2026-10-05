@@ -110,6 +110,9 @@ pub(crate) struct AffineLinearization {
     /// What a reuse checks and refreshes, when the Jacobian was formed row by
     /// row from reverse gradients.
     reuse: Option<ReuseKey>,
+    /// Names `jacobian`, `row_scales`, and `variable_scales` together (see
+    /// [`ScaledNewtonSystem::revision`]): issued fresh whenever one changes.
+    revision: u64,
 }
 
 /// The certified rows' parameter snapshot and the rows a reuse refills.
@@ -226,6 +229,7 @@ impl AffineLinearization {
             row_derived,
             fallback_targets: fallback_targets(model, block),
             reuse,
+            revision: next_revision(),
         })
     }
 
@@ -253,6 +257,9 @@ impl AffineLinearization {
         )? {
             return Ok(false);
         }
+        // The torn factorization reads the Jacobian and both scale vectors;
+        // refilled rows may change the Jacobian, the fallbacks only row scales.
+        let mut changed = !uncertified.is_empty();
         for &row in uncertified {
             let fallback = self.fallback_scale(model, point.candidate, row);
             let (jacobian, scales) = (&self.jacobian, &self.variable_scales);
@@ -268,8 +275,13 @@ impl AffineLinearization {
                 && !self.row_derived[row]
                 && !point.block.y_indices.contains(&index)
             {
-                self.row_scales[row] = model_variable_scale(model, index, point.candidate[index]);
+                let scale = model_variable_scale(model, index, point.candidate[index]);
+                changed |= scale.to_bits() != self.row_scales[row].to_bits();
+                self.row_scales[row] = scale;
             }
+        }
+        if changed {
+            self.revision = next_revision();
         }
         Ok(true)
     }
@@ -438,6 +450,7 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             variable_scales: &self.linearization.variable_scales,
             structure: self.structure.map(solve::JacobianStructure::pattern),
             tolerance: self.tolerance,
+            revision: Some(self.linearization.revision),
         };
         let finite = |v: &DVector<f64>| {
             v.len() == self.block.y_indices.len() && v.iter().all(|x| x.is_finite())
@@ -518,4 +531,10 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
         }
         Some(changed)
     }
+}
+
+/// A revision no linearization has held before.
+fn next_revision() -> u64 {
+    static REVISIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    REVISIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
 }

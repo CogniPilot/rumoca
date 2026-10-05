@@ -211,6 +211,7 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
         jacobian_row_scales(&jacobian.residual, variable_scales, variable_scales, None);
     let converged = scaled_residual_converged(residual, &row_scales, tol);
     let delta = scaled_newton_delta(ScaledNewtonSystem {
+        revision: None,
         jacobian: &jacobian.residual,
         residual,
         row_scales: &row_scales,

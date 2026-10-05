@@ -172,6 +172,7 @@ fn scaled_newton_system_normalizes_mixed_magnitude_columns() {
     let jacobian = DMatrix::from_diagonal(&DVector::from_vec(vec![1.0e-12, 1.0e12]));
     let jacobian = BlockJacobian::dense(jacobian);
     let delta = scaled_newton_delta(ScaledNewtonSystem {
+        revision: None,
         jacobian: &jacobian,
         residual: &[-1.0, -1.0],
         row_scales: &[1.0, 1.0],

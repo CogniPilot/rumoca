@@ -256,6 +256,10 @@ pub(crate) struct ScaledNewtonSystem<'a> {
     pub(crate) variable_scales: &'a [f64],
     pub(crate) structure: Option<&'a solve::StructuralPattern>,
     pub(crate) tolerance: f64,
+    /// A name for the Jacobian and both scale vectors together: two systems
+    /// with the same revision hold bitwise the same three, so a factorization
+    /// of one serves the other. `None` names nothing.
+    pub(crate) revision: Option<u64>,
 }
 
 pub(crate) fn scaled_newton_delta(system: ScaledNewtonSystem<'_>) -> Option<DVector<f64>> {
@@ -286,9 +290,9 @@ pub(crate) fn scaled_newton_delta_with_tearing(
     let delta = cache.solve_torn_scaled(
         system.jacobian,
         &rhs,
-        system.row_scales,
-        system.variable_scales,
+        (system.row_scales, system.variable_scales),
         layout,
+        system.revision,
     )?;
     Some(unscale_newton_delta(&delta, system.variable_scales))
 }
@@ -315,6 +319,7 @@ fn scaled_newton_delta_impl(
         variable_scales,
         structure,
         tolerance,
+        revision: _,
     } = system;
     if jacobian.nrows() != residual.len()
         || jacobian.nrows() != row_scales.len()

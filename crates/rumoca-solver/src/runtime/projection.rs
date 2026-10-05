@@ -960,6 +960,7 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
     let delta = model.solve_algebraic_newton_delta(
         block_index,
         ScaledNewtonSystem {
+            revision: None,
             jacobian: &jacobian,
             residual: &residual,
             row_scales: &row_scales,

@@ -336,6 +336,7 @@ fn dense_delta(
 ) -> Option<DVector<f64>> {
     let jacobian = super::super::BlockJacobian::dense(jacobian.clone());
     let system = crate::runtime::projection::ScaledNewtonSystem {
+        revision: None,
         jacobian: &jacobian,
         residual,
         row_scales: scales.0,

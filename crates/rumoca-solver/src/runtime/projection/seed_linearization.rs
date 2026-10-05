@@ -131,7 +131,7 @@ impl SeedBlockLinearization {
         let mut cache = cache.borrow_mut();
         let structured = match kind {
             StructuredSolve::Torn(layout) => {
-                cache.solve_torn_scaled(&self.jacobian, rhs, unit, unit, layout)
+                cache.solve_torn_scaled(&self.jacobian, rhs, (unit, unit), layout, None)
             }
             StructuredSolve::Sparse(pattern) => {
                 cache.solve_scaled(&self.jacobian, rhs, unit, unit, pattern)

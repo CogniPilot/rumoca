@@ -467,6 +467,7 @@ fn solve_coupled_initial_block<M: AlgebraicProjectionModel>(
     jacobian: BlockJacobian,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     let delta = scaled_newton_delta(ScaledNewtonSystem {
+        revision: None,
         jacobian: &jacobian,
         residual,
         row_scales: context.row_scales,

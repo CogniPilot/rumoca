@@ -65,12 +65,12 @@ impl SparseNewtonCache {
         &mut self,
         source: &super::BlockJacobian,
         rhs: &DVector<f64>,
-        row_scales: &[f64],
-        variable_scales: &[f64],
+        scales: (&[f64], &[f64]),
         layout: &rumoca_ir_solve::AffineEliminationLayout,
+        revision: Option<u64>,
     ) -> Option<DVector<f64>> {
         self.torn
-            .solve_scaled(source, rhs, row_scales, variable_scales, layout)
+            .solve_scaled(source, rhs, scales, layout, revision)
     }
 
     /// Size of the current ready torn reduced system: issued plus promoted

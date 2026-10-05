@@ -499,6 +499,7 @@ fn project_manifold_block<M: ManifoldProjectionModel>(
     }
     let before = scaled_residual_norm(&residual, &row_scales);
     let Some(delta) = scaled_newton_delta(ScaledNewtonSystem {
+        revision: None,
         jacobian: &jacobian,
         residual: &residual,
         row_scales: &row_scales,
