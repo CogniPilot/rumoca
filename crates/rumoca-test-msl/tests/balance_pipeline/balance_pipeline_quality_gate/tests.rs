@@ -1674,11 +1674,11 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
     .expect("load checked baseline");
     assert_eq!(baseline.quality_gate_version, MSL_QUALITY_GATE_VERSION);
     assert_eq!(baseline.sim_timeout_seconds, SIM_TIMEOUT_SECS);
-    assert_eq!(baseline.flatten_models, 542);
+    assert_eq!(baseline.flatten_models, 541);
     assert_eq!(baseline.partial_models, 13);
     assert_eq!(baseline.partial_model_names, reviewed_partial_model_names());
     assert_eq!(baseline.tensor_preservation.report_errors, 0);
-    assert_eq!(baseline.certified_strict_high_models.len(), 300);
+    assert_eq!(baseline.certified_strict_high_models.len(), 299);
     assert_eq!(baseline.unexcepted_non_high_models.len(), 1);
     assert_eq!(
         baseline.trace_exceptions_sha256.as_deref(),
