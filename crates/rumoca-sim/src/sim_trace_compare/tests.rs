@@ -691,6 +691,7 @@ fn event_discontinuous_real_channel_uses_step_hold_interpolation() {
             value_type: Some("Real".to_string()),
             variability: Some("continuous".to_string()),
             time_domain: Some("event-discontinuous".to_string()),
+            state_coordinate: None,
         }]),
         certification_profile: None,
     };
@@ -724,6 +725,7 @@ fn discrete_only_model_traces_contribute_to_metrics() {
             value_type: Some("Boolean".to_string()),
             variability: Some("discrete".to_string()),
             time_domain: Some("event-discrete".to_string()),
+            state_coordinate: None,
         }]),
         certification_profile: None,
     };
@@ -738,6 +740,7 @@ fn discrete_only_model_traces_contribute_to_metrics() {
             value_type: Some("Boolean".to_string()),
             variability: Some("discrete".to_string()),
             time_domain: Some("event-discrete".to_string()),
+            state_coordinate: None,
         }]),
         certification_profile: None,
     };
@@ -1495,6 +1498,7 @@ fn discrete_array_elements_ignore_the_group_floor() {
         value_type: Some("Real".to_string()),
         variability: Some("discrete".to_string()),
         time_domain: Some("event-discrete".to_string()),
+        state_coordinate: None,
     };
     let names = vec!["q[1]".to_string(), "q[2]".to_string()];
     let omc = SimTrace {
@@ -1594,4 +1598,50 @@ proptest! {
         prop_assert!(scale.normalization_scale >= DISCRETE_SCALE_FLOOR);
         prop_assert!(scale.normalization_scale >= scale.range);
     }
+}
+
+#[test]
+fn trace_metadata_carries_the_state_coordinate_source_of_a_simulated_variable() {
+    let simulated = crate::SimVariableMeta {
+        name: "$state_coordinates[2]".to_string(),
+        role: "state".to_string(),
+        is_state: true,
+        value_type: Some("Real".to_string()),
+        variability: Some("Continuous".to_string()),
+        time_domain: Some("continuous-time".to_string()),
+        unit: None,
+        start: None,
+        min: None,
+        max: None,
+        nominal: None,
+        fixed: None,
+        description: None,
+        state_coordinate: Some(rumoca_ir_solve::SolveStateCoordinate {
+            variable: "mass.s".to_string(),
+            derivative_order: 1,
+        }),
+    };
+    let meta = SimTraceVariableMeta::of(&simulated);
+    assert_eq!(meta.name, "$state_coordinates[2]");
+    assert_eq!(meta.role.as_deref(), Some("state"));
+    let json = serde_json::to_value(&meta).expect("trace metadata serializes");
+    assert_eq!(
+        json["state_coordinate"],
+        serde_json::json!({ "variable": "mass.s", "derivative_order": 1 })
+    );
+    let back: SimTraceVariableMeta = serde_json::from_value(json).expect("trace metadata decodes");
+    assert_eq!(
+        back.state_coordinate.map(|source| source.source_name()),
+        Some("der(mass.s)".to_string())
+    );
+
+    let plain = SimTraceVariableMeta::of(&crate::SimVariableMeta {
+        name: "y".to_string(),
+        role: "algebraic".to_string(),
+        is_state: false,
+        state_coordinate: None,
+        ..simulated
+    });
+    let json = serde_json::to_value(&plain).expect("plain metadata serializes");
+    assert!(json.get("state_coordinate").is_none());
 }

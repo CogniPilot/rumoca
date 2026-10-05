@@ -100,13 +100,22 @@ fn compare_state_sets(
     }
 }
 
+/// The states a Rumoca trace integrates, each named as the source scalar it
+/// is: a generated reduced-selection state scalar by the source scalar its
+/// Solve IR state coordinate map equates it to (a formal derivative order `k`
+/// wraps that name in `k` `der`s, which no OMC state name matches), every other
+/// state by its own name.
 fn rumoca_state_names(trace: &SimTrace) -> Option<BTreeSet<String>> {
     let states = trace
         .variable_meta
         .as_ref()?
         .iter()
         .filter(|meta| meta.role.as_deref() == Some("state"))
-        .map(|meta| meta.name.clone())
+        .map(|meta| {
+            meta.state_coordinate
+                .as_ref()
+                .map_or_else(|| meta.name.clone(), |source| source.source_name())
+        })
         .collect::<BTreeSet<_>>();
     Some(states)
 }
@@ -192,6 +201,87 @@ mod tests {
         let states = extract_omc_state_names_from_init_xml(xml);
 
         assert_eq!(states, BTreeSet::from(["a&b".to_string(), "x".to_string()]));
+    }
+
+    /// A worker trace whose `variable_meta` lists `states`, each with the
+    /// optional source scalar and order of a generated state coordinate.
+    fn trace(states: &[(&str, Option<(&str, u32)>)]) -> SimTrace {
+        let meta = states
+            .iter()
+            .map(|(name, source)| {
+                let mut meta = serde_json::json!({ "name": name, "role": "state" });
+                if let Some((variable, order)) = source {
+                    meta["state_coordinate"] =
+                        serde_json::json!({ "variable": variable, "derivative_order": order });
+                }
+                meta
+            })
+            .chain([serde_json::json!({ "name": "y", "role": "algebraic" })])
+            .collect::<Vec<_>>();
+        serde_json::from_value(serde_json::json!({
+            "times": [0.0],
+            "names": [],
+            "data": [],
+            "variable_meta": meta,
+        }))
+        .expect("worker trace decodes")
+    }
+
+    fn omc(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    fn compare(trace: &SimTrace, omc_states: &[&str]) -> StateSelectionMetric {
+        compare_state_sets(&rumoca_state_names(trace).unwrap(), &omc(omc_states))
+    }
+
+    #[test]
+    fn generated_state_coordinates_compare_by_the_source_scalars_they_equal() {
+        let charted = trace(&[
+            ("$state_coordinates[1]", Some(("mass.s", 0))),
+            ("$state_coordinates[2]", Some(("mass.v", 0))),
+            ("spring.phi_rel", None),
+        ]);
+        let metric = compare(&charted, &["mass.s", "mass.v", "spring.phi_rel"]);
+        assert!(metric.exact_state_set_match, "{metric:?}");
+        assert_eq!(metric.matching_state_count, 3);
+    }
+
+    #[test]
+    fn a_charted_selection_of_other_variables_is_still_a_mismatch() {
+        // The same chart integrating the damper instead of the mass: a real
+        // state-selection difference stays visible on both sides.
+        let charted = trace(&[
+            ("$state_coordinates[1]", Some(("damper.s_rel", 0))),
+            ("$state_coordinates[2]", Some(("mass.v", 0))),
+        ]);
+        let metric = compare(&charted, &["mass.s", "mass.v"]);
+        assert!(!metric.exact_state_set_match);
+        assert!(metric.state_count_match);
+        assert_eq!(metric.rumoca_only_states, ["damper.s_rel"]);
+        assert_eq!(metric.omc_only_states, ["mass.s"]);
+    }
+
+    #[test]
+    fn a_formal_derivative_coordinate_matches_no_omc_state_name() {
+        // `der(s_rel)` is integrated in place of the declared `v_rel`; OMC
+        // names no state `der(...)`, so the substitution is reported.
+        let charted = trace(&[
+            ("$state_coordinates[1]", Some(("s_rel", 0))),
+            ("$state_coordinates[2]", Some(("s_rel", 1))),
+        ]);
+        let metric = compare(&charted, &["s_rel", "v_rel"]);
+        assert_eq!(metric.matching_state_count, 1);
+        assert_eq!(metric.rumoca_only_states, ["der(s_rel)"]);
+        assert_eq!(metric.omc_only_states, ["v_rel"]);
+    }
+
+    #[test]
+    fn a_generated_state_without_a_source_keeps_its_own_name() {
+        let unmapped = trace(&[("$state_coordinates[1]", None)]);
+        let metric = compare(&unmapped, &["x"]);
+        assert_eq!(metric.rumoca_only_states, ["$state_coordinates[1]"]);
+        assert_eq!(metric.omc_only_states, ["x"]);
     }
 
     #[test]

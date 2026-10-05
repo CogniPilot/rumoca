@@ -296,20 +296,7 @@ struct SimTraceArtifact {
     names: Vec<String>,
     data: Vec<Vec<f64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    variable_meta: Option<Vec<SimTraceVariableMetaArtifact>>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct SimTraceVariableMetaArtifact {
-    name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    role: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    value_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    variability: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    time_domain: Option<String>,
+    variable_meta: Option<Vec<rumoca_sim::sim_trace_compare::SimTraceVariableMeta>>,
 }
 
 fn panic_message(panic_info: Box<dyn std::any::Any + Send>) -> String {
@@ -528,13 +515,7 @@ fn write_sim_trace_artifact(
             result
                 .variable_meta
                 .iter()
-                .map(|meta| SimTraceVariableMetaArtifact {
-                    name: meta.name.clone(),
-                    role: Some(meta.role.clone()),
-                    value_type: meta.value_type.clone(),
-                    variability: meta.variability.clone(),
-                    time_domain: meta.time_domain.clone(),
-                })
+                .map(rumoca_sim::sim_trace_compare::SimTraceVariableMeta::of)
                 .collect()
         }),
     };

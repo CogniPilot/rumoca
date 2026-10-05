@@ -298,13 +298,7 @@ fn trace_from_sim_result(model_name: &str, sim: &SimResult) -> SimTrace {
         Some(
             sim.variable_meta
                 .iter()
-                .map(|meta| SimTraceVariableMeta {
-                    name: meta.name.clone(),
-                    role: Some(meta.role.clone()),
-                    value_type: meta.value_type.clone(),
-                    variability: meta.variability.clone(),
-                    time_domain: meta.time_domain.clone(),
-                })
+                .map(SimTraceVariableMeta::of)
                 .collect(),
         )
     };
@@ -1042,6 +1036,7 @@ end NominalScaled;
             value_type: entry.value_type.clone(),
             variability: entry.variability.clone(),
             time_domain: entry.time_domain.clone(),
+            state_coordinate: entry.state_coordinate.clone(),
         };
         assert_eq!(trace_meta.name, "T");
     }

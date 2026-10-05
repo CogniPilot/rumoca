@@ -220,14 +220,32 @@ fn require_obligations(
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SimTraceVariableMeta {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value_type: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variability: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_domain: Option<String>,
+    /// For a generated state a reduced state selection integrates, the source
+    /// scalar it equals (Solve IR `SolveVariableMeta::state_coordinate`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_coordinate: Option<rumoca_ir_solve::SolveStateCoordinate>,
+}
+
+impl SimTraceVariableMeta {
+    /// The trace record of one simulated variable's metadata.
+    pub fn of(meta: &crate::SimVariableMeta) -> Self {
+        Self {
+            name: meta.name.clone(),
+            role: Some(meta.role.clone()),
+            value_type: meta.value_type.clone(),
+            variability: meta.variability.clone(),
+            time_domain: meta.time_domain.clone(),
+            state_coordinate: meta.state_coordinate.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
