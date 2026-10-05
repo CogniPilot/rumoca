@@ -1443,6 +1443,32 @@ struct ImplicitTensorDerivative {
     span: Span,
 }
 
+impl ImplicitTensorDerivative {
+    /// The derivative slots this node writes: the image of its affine output
+    /// map, or the contiguous run of a dense node.
+    fn outputs(&self) -> Result<Vec<usize>, LowerError> {
+        match &self.node {
+            solve::ComputeNode::Map {
+                domain, output_map, ..
+            }
+            | solve::ComputeNode::AffineStencil {
+                domain, output_map, ..
+            } => output_map.output_indices(domain).map_err(|_| {
+                LowerError::contract("structured derivative output map overflow", self.span)
+            }),
+            _ => {
+                let end = checked_ordinal_add(
+                    self.output_start,
+                    self.rows,
+                    "derivative output ordinal overflow",
+                    self.span,
+                )?;
+                Ok((self.output_start..end).collect())
+            }
+        }
+    }
+}
+
 struct ImplicitTensorForm<'dae> {
     matrix: dae::ExprId<'dae>,
     rhs: dae::ExprId<'dae>,
@@ -1623,37 +1649,6 @@ fn contiguous_state_output<'dae>(
         ) {
             return Err(LowerError::contract(
                 "implicit derivative vector does not occupy contiguous Solve state slots",
-                span,
-            ));
-        }
-    }
-    Ok(output_start)
-}
-
-fn contiguous_state_output_range<'dae>(
-    layout: &LoweredLayout<'dae>,
-    state: dae::StateId<'dae>,
-    first_scalar: usize,
-    rows: usize,
-    span: Span,
-) -> Result<usize, LowerError> {
-    let output_start = match variable_scalar_slot(layout, state.index(), first_scalar, span)? {
-        solve::ScalarSlot::Y { index, .. } => index,
-        _ => unreachable!("state declarations are Y slots"),
-    };
-    for offset in 1..rows {
-        let scalar = first_scalar
-            .checked_add(offset)
-            .ok_or_else(|| LowerError::contract("tensor derivative scalar overflow", span))?;
-        let expected = output_start
-            .checked_add(offset)
-            .ok_or_else(|| LowerError::contract("tensor derivative slot overflow", span))?;
-        if !matches!(
-            variable_scalar_slot(layout, state.index(), scalar, span)?,
-            solve::ScalarSlot::Y { index, .. } if index == expected
-        ) {
-            return Err(LowerError::contract(
-                "tensor derivative range does not occupy contiguous Solve state slots",
                 span,
             ));
         }
@@ -2082,6 +2077,13 @@ impl DerivativePiece {
             Self::Tensor(group) => group.output_start,
         }
     }
+
+    fn outputs(&self) -> Result<Vec<usize>, LowerError> {
+        match self {
+            Self::Scalar { outputs, .. } => Ok(outputs.clone()),
+            Self::Tensor(group) => group.outputs(),
+        }
+    }
 }
 
 impl DerivativeRows {
@@ -2106,63 +2108,75 @@ impl DerivativeRows {
         self.pieces.push(DerivativePiece::Tensor(Box::new(group)));
     }
 
+    /// One compute block whose pieces define every state derivative scalar
+    /// exactly once. A tensor piece may write a strided set of slots (the
+    /// interior of a grid) interleaved with scalar rows; coverage is checked
+    /// per slot, and nodes keep the order of their first output.
     fn into_compute_block(
         mut self,
         expected_outputs: usize,
         model_span: Span,
     ) -> Result<solve::ComputeBlock, LowerError> {
         self.pieces.sort_by_key(DerivativePiece::output_start);
+        let mut defined = vec![false; expected_outputs];
         let mut nodes = Vec::new();
         let mut scalars = ScalarRows::default();
-        let mut next_output = 0usize;
         for piece in self.pieces {
-            let output_start = piece.output_start();
-            if output_start != next_output {
-                return Err(LowerError::non_computable(
-                    format!(
-                        "derivative programs must define every state scalar exactly once; expected output {next_output}, found {output_start}"
-                    ),
-                    piece_span(&piece),
-                ));
-            }
+            let span = piece_span(&piece);
+            mark_defined_outputs(&mut defined, &piece.outputs()?, span)?;
             match piece {
                 DerivativePiece::Scalar {
                     program,
                     span,
                     outputs,
-                } => {
-                    let output_count = outputs.len();
-                    scalars.push_outputs(program, span, outputs);
-                    next_output = checked_ordinal_add(
-                        next_output,
-                        output_count,
-                        "derivative output ordinal overflow",
-                        span,
-                    )?;
-                }
+                } => scalars.push_outputs(program, span, outputs),
                 DerivativePiece::Tensor(group) => {
                     flush_scalar_rows(&mut scalars, &mut nodes)?;
-                    next_output = checked_ordinal_add(
-                        next_output,
-                        group.rows,
-                        "derivative output ordinal overflow",
-                        group.span,
-                    )?;
                     nodes.push(group.node);
                 }
             }
         }
         flush_scalar_rows(&mut scalars, &mut nodes)?;
-        if next_output != expected_outputs {
+        if let Some(missing) = defined.iter().position(|defined| !defined) {
             return Err(LowerError::non_computable(
                 format!(
-                    "derivative programs define {next_output} state scalars, but the checked layout contains {expected_outputs}"
+                    "derivative programs must define every state scalar exactly once; output {missing} of {expected_outputs} is undefined"
                 ),
                 model_span,
             ));
         }
         Ok(solve::ComputeBlock { nodes })
     }
+}
+
+/// Record that a derivative piece writes `outputs`; each state slot may be
+/// written once and must lie inside the checked layout.
+fn mark_defined_outputs(
+    defined: &mut [bool],
+    outputs: &[usize],
+    span: Span,
+) -> Result<(), LowerError> {
+    let state_count = defined.len();
+    for &output in outputs {
+        let Some(slot) = defined.get_mut(output) else {
+            return Err(LowerError::non_computable(
+                format!(
+                    "derivative output {output} lies outside the {state_count} state scalars of the checked layout"
+                ),
+                span,
+            ));
+        };
+        if *slot {
+            return Err(LowerError::non_computable(
+                format!(
+                    "derivative programs must define every state scalar exactly once; output {output} is defined twice"
+                ),
+                span,
+            ));
+        }
+        *slot = true;
+    }
+    Ok(())
 }
 
 fn checked_ordinal_add(

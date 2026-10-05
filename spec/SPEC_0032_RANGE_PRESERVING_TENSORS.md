@@ -146,6 +146,7 @@ or scalar-type-incompatible projection is rejected at this owner.
 | Solve grouping is semantic | `rumoca-phase-solve` | Backends do not redefine IR |
 | Scalar fallback uses shared scalarization | `rumoca-eval-solve` | One ordering implementation |
 | Structured B.1c uses compact map and target map | Solve IR | Preserve the authoritative discrete family |
+| A derivative family's output map is the affine image of its matched slots | `rumoca-phase-solve` | A strided grid interior stays one node |
 
 `Map` represents canonical DAE residual families that are elementwise over a
 compact domain, including `der(u) = w` after DAE canonicalization. `AffineStencil`
@@ -153,6 +154,13 @@ comes from structured DAE domains plus affine operand proofs; Solve lowering
 must not rediscover stencils by scanning anonymous scalar rows. Backends may
 fuse or split generated kernels as target-local codegen, but the reported
 kernel inventory must match the generated work.
+
+A derivative family's output slots are read from the structural matching and
+need not be contiguous: the interior of a grid writes a strided sub-range of
+its state array, interleaved with edge rows. Lowering fits one affine output
+map from the base point and one step per binder and checks it at every point;
+a family with no such map keeps its scalar rows. The derivative block proves
+that every state slot is written exactly once, not that pieces are adjacent.
 
 Structured B.1c lowering uses `ComputeNode::Map` (or a stronger proven tensor
 node) together with a compact affine target map. Discrete row role, pre mode,

@@ -60,39 +60,32 @@ pub(super) fn lower_explicit_tensor_derivative_family<'dae>(
     let DerivativeRhs::Explicit { expression, scalar } = candidate else {
         return Ok(None);
     };
-    if scalar != first_scalar
-        || !family_points_share_explicit_owner(
-            context,
-            first_row,
-            family,
-            state,
-            first_state_scalar,
-            expression,
-            &points,
-        )?
-    {
+    if scalar != first_scalar {
         return Ok(None);
     }
-    build_explicit_tensor_derivative(
-        context,
-        family,
-        state,
-        first_state_scalar,
-        expression,
-        domain,
-        points.len(),
-    )
+    let Some(state_scalars) = family_points_explicit_state_scalars(
+        context, first_row, family, state, expression, &points,
+    )?
+    else {
+        return Ok(None);
+    };
+    build_explicit_tensor_derivative(context, family, state, expression, domain, &state_scalars)
 }
 
-fn family_points_share_explicit_owner<'dae>(
+/// The matched state scalar of every domain point, in domain order, when each
+/// point's row explicitly defines the derivative of one scalar of `state`
+/// through the same expression. Which scalar a point defines is read from the
+/// matching, so a family over a strided sub-range of the state array (the
+/// interior of a grid) qualifies; whether those scalars form an affine output
+/// map is decided by the caller.
+fn family_points_explicit_state_scalars<'dae>(
     context: ContinuousContext<'_, 'dae>,
     first_row: usize,
     family: dae::StructuredFamilyView<'dae>,
     state: dae::StateId<'dae>,
-    first_state_scalar: usize,
     expression: dae::ExprId<'dae>,
     points: &[Vec<i64>],
-) -> Result<bool, LowerError> {
+) -> Result<Option<Vec<usize>>, LowerError> {
     let body = family
         .bodies()
         .get(0)
@@ -102,28 +95,24 @@ fn family_points_share_explicit_owner<'dae>(
         .domain(family.domain())
         .expect("checked family domain resolves")
         .extents();
+    let span = family.provenance().span();
+    let mut state_scalars = Vec::with_capacity(points.len());
     for (point, values) in points.iter().enumerate() {
         let row = first_row.checked_add(point).ok_or_else(|| {
-            LowerError::contract(
-                "structured derivative row ordinal overflow",
-                family.provenance().span(),
-            )
-        })?;
-        let expected_scalar = first_state_scalar.checked_add(point).ok_or_else(|| {
-            LowerError::contract(
-                "structured derivative state-scalar ordinal overflow",
-                family.provenance().span(),
-            )
+            LowerError::contract("structured derivative row ordinal overflow", span)
         })?;
         let Some(UnknownId::Derivative {
             state: found_state,
             scalar: found_scalar,
         }) = context.matching.get(&row).copied()
         else {
-            return Ok(false);
+            return Ok(None);
         };
-        if found_state != state || usize::try_from(found_scalar).ok() != Some(expected_scalar) {
-            return Ok(false);
+        let Ok(state_scalar) = usize::try_from(found_scalar) else {
+            return Ok(None);
+        };
+        if found_state != state {
+            return Ok(None);
         }
         let body_scalar = family
             .scalar_view()
@@ -138,26 +127,26 @@ fn family_points_share_explicit_owner<'dae>(
             body_scalar,
             Some((family.domain(), values)),
             state,
-            expected_scalar,
+            state_scalar,
         )?
         else {
-            return Ok(false);
+            return Ok(None);
         };
         if found_expression != expression || found_scalar != body_scalar {
-            return Ok(false);
+            return Ok(None);
         }
+        state_scalars.push(state_scalar);
     }
-    Ok(true)
+    Ok(Some(state_scalars))
 }
 
 fn build_explicit_tensor_derivative<'dae>(
     context: ContinuousContext<'_, 'dae>,
     family: dae::StructuredFamilyView<'dae>,
     state: dae::StateId<'dae>,
-    first_state_scalar: usize,
     expression: dae::ExprId<'dae>,
     domain: &rumoca_core::StructuredIndexDomain,
-    rows: usize,
+    state_scalars: &[usize],
 ) -> Result<Option<ImplicitTensorDerivative>, LowerError> {
     let span = family.provenance().span();
     let Ok((base_ops, load_strides, const_strides)) =
@@ -176,10 +165,22 @@ fn build_explicit_tensor_derivative<'dae>(
         // structured derivative families that do not admit that certificate.
         return Ok(None);
     };
-    let output_start =
-        contiguous_state_output_range(context.layout, state, first_state_scalar, rows, span)?;
-    let output_map = solve::TensorOutputMap::dense_contiguous(output_start, domain)
-        .map_err(|_| LowerError::contract("structured derivative output map overflow", span))?;
+    let outputs = state_scalars
+        .iter()
+        .map(|&scalar| state_output_slot(context.layout, state, scalar, span))
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(output_map) = solve::TensorOutputMap::from_outputs(domain, &outputs)
+        .map_err(|_| LowerError::contract("structured derivative output map overflow", span))?
+    else {
+        // Points whose derivative slots are not one affine image of the
+        // domain keep their scalar rows.
+        return Ok(None);
+    };
+    let output_start = outputs
+        .iter()
+        .copied()
+        .min()
+        .expect("a nonempty family writes at least one derivative slot");
     let is_stencil = reads_neighboring_state_scalars(
         context.layout,
         state,
@@ -213,9 +214,24 @@ fn build_explicit_tensor_derivative<'dae>(
     Ok(Some(ImplicitTensorDerivative {
         node,
         output_start,
-        rows,
+        rows: outputs.len(),
         span,
     }))
+}
+
+fn state_output_slot(
+    layout: &LoweredLayout<'_>,
+    state: dae::StateId<'_>,
+    scalar: usize,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    match variable_scalar_slot(layout, state.index(), scalar, span)? {
+        solve::ScalarSlot::Y { index, .. } => Ok(index),
+        _ => Err(LowerError::contract(
+            "a state scalar has no Solve state slot",
+            span,
+        )),
+    }
 }
 
 fn reads_neighboring_state_scalars(

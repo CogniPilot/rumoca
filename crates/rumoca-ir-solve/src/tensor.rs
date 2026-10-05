@@ -81,6 +81,47 @@ impl TensorOutputMap {
         })
     }
 
+    /// The affine map whose row-major enumeration of `domain` writes exactly
+    /// `outputs`, in order, or `None` when no affine map does. Each stride is
+    /// read from the point one step along its binder and the candidate is then
+    /// checked against every point, so a strided sub-range of an array (the
+    /// interior of a grid) keeps one compact owner.
+    pub fn from_outputs(
+        domain: &StructuredIndexDomain,
+        outputs: &[usize],
+    ) -> Result<Option<Self>, TensorOutputMapError> {
+        let extents = domain
+            .extents()
+            .map_err(|error| TensorOutputMapError::StructuredIndexDomain { error })?;
+        let point_count = extents
+            .iter()
+            .try_fold(1usize, |count, extent| count.checked_mul(*extent))
+            .ok_or(TensorOutputMapError::OutputIndexOverflow)?;
+        let Some(&start) = outputs.first() else {
+            return Ok(None);
+        };
+        if point_count != outputs.len() {
+            return Ok(None);
+        }
+        let mut strides = Vec::new();
+        let mut later_count = 1usize;
+        for (dimension, extent) in extents.iter().copied().enumerate().rev() {
+            if extent > 1 {
+                let stride = output_delta(start, outputs[later_count])?;
+                strides.extend(
+                    (stride != 0).then_some(AffineStencilIndexStrideTerm { dimension, stride }),
+                );
+            }
+            later_count = later_count
+                .checked_mul(extent)
+                .ok_or(TensorOutputMapError::OutputIndexOverflow)?;
+        }
+        // Ascending dimension order, as affine load strides are recorded.
+        strides.reverse();
+        let map = Self { start, strides };
+        Ok((map.output_indices(domain)? == outputs).then_some(map))
+    }
+
     pub fn output_indices(
         &self,
         domain: &StructuredIndexDomain,
@@ -180,6 +221,12 @@ impl TensorOutputMap {
         }
         usize::try_from(value).map_err(|_| TensorOutputMapError::OutputIndexOverflow)
     }
+}
+
+fn output_delta(from: usize, to: usize) -> Result<isize, TensorOutputMapError> {
+    let delta = i128::try_from(to).map_err(|_| TensorOutputMapError::OutputIndexOverflow)?
+        - i128::try_from(from).map_err(|_| TensorOutputMapError::OutputIndexOverflow)?;
+    isize::try_from(delta).map_err(|_| TensorOutputMapError::OutputIndexOverflow)
 }
 
 fn aggregate_affine_index_strides(
