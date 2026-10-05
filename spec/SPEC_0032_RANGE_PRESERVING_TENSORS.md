@@ -148,6 +148,7 @@ or scalar-type-incompatible projection is rejected at this owner.
 | Scalar fallback uses shared scalarization | `rumoca-eval-solve` | One ordering implementation |
 | Structured B.1c uses compact map and target map | Solve IR | Preserve the authoritative discrete family |
 | A derivative family's output map is the affine image of its matched slots | `rumoca-phase-solve` | A strided grid interior stays one node |
+| A native backend executes a `Map`/`AffineStencil` node as one loop kernel over its compact domain, driven by the same point plan that generates the node's scalar view | `rumoca-eval-solve::AffineKernelPlan`, native backends | Compile cost independent of domain size; the kernel and the view cannot disagree |
 
 `Map` represents canonical DAE residual families that are elementwise over a
 compact domain, including `der(u) = w` after DAE canonicalization. `AffineStencil`
@@ -162,6 +163,19 @@ its state array, interleaved with edge rows. Lowering fits one affine output
 map from the base point and one step per binder and checks it at every point;
 a family with no such map keeps its scalar rows. The derivative block proves
 that every state slot is written exactly once, not that pieces are adjacent.
+
+An affine tensor node's point plan is constructed once from its domain, output
+map, base program, and stride metadata. Construction combines each operation's
+strides per binder and proves over the whole domain that every load and output
+index lies in `[0, max]` and every strided constant is finite (each bound is
+affine or monotone in every binder ordinal, so its extremes lie on the domain
+box's corners). The scalar view is the plan evaluated at each point in canonical
+order; a native kernel evaluates the same plan in a loop nest with the view's
+integer index arithmetic and IEEE constant operations in the same order, so its
+results are bitwise identical to the view. The kernel takes its proven maxima as
+its length requirements and checks no bound per point. A node whose base program
+the kernel path does not support keeps the per-row path, chosen when the block
+is compiled.
 
 Structured B.1c lowering uses `ComputeNode::Map` (or a stronger proven tensor
 node) together with a compact affine target map. Discrete row role, pre mode,
