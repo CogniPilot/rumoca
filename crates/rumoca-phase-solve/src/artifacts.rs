@@ -2,8 +2,7 @@ use rumoca_ir_solve as solve;
 
 use crate::LowerError;
 use crate::ad::{
-    lower_compute_block_full_jvp, lower_compute_block_jvp,
-    lower_scalar_program_block_full_ad_with_spans, lower_scalar_program_block_full_jvp,
+    lower_compute_block_full_jvp, lower_compute_block_jvp, lower_scalar_program_block_full_jvp,
 };
 
 pub(crate) fn lower_solve_artifacts(
@@ -12,26 +11,10 @@ pub(crate) fn lower_solve_artifacts(
 ) -> Result<solve::SolveArtifacts, LowerError> {
     let implicit_rhs =
         rumoca_eval_solve::to_scalar_program_block(&problem.continuous.implicit_rhs)?;
-    let derivative_rhs =
-        rumoca_eval_solve::to_scalar_program_block(&problem.continuous.derivative_rhs)?;
-    let implicit_jacobian_v_scalar = solve::ScalarProgramBlock::with_output_indices(
-        lower_scalar_program_block_full_ad_with_spans(
-            implicit_rhs.programs(),
-            implicit_rhs.program_spans(),
-            &problem.layout,
-        )?,
-        implicit_rhs.program_spans().to_vec(),
-        implicit_rhs.output_indices().to_vec(),
-    )?;
-    let full_jacobian_v = solve::ScalarProgramBlock::with_output_indices(
-        lower_scalar_program_block_full_ad_with_spans(
-            derivative_rhs.programs(),
-            derivative_rhs.program_spans(),
-            &problem.layout,
-        )?,
-        derivative_rhs.program_spans().to_vec(),
-        derivative_rhs.output_indices().to_vec(),
-    )?;
+    let implicit_jacobian_v_scalar =
+        full_jvp_scalar_view(&problem.continuous.implicit_rhs, &problem.layout)?;
+    let full_jacobian_v =
+        full_jvp_scalar_view(&problem.continuous.derivative_rhs, &problem.layout)?;
     let implicit_jacobian_v = lower_compute_block_jvp(&problem.continuous.implicit_rhs)?;
     let manifold_jacobian_v = lower_compute_block_jvp(&problem.continuous.manifold_residual)?;
     let initialization_jacobian_v = lower_compute_block_full_jvp(
@@ -74,6 +57,21 @@ pub(crate) fn lower_solve_artifacts(
     artifacts.initialization.structural = initialization;
     specialize_algebraic_jacobians(problem, &implicit_rhs, &mut artifacts.continuous.structural)?;
     Ok(artifacts)
+}
+
+/// The scalar view of `block`'s full JVP, seeded over solver Y followed by P.
+///
+/// Forward AD is a per-operation rule that depends neither on a load's index
+/// nor on a constant's value under this seed mode, so differentiating a tensor
+/// node's base program once and taking the scalar view yields exactly the
+/// rows that differentiating each scalar row of the primal view would
+/// (SPEC_0032 §4); the AD cost stays proportional to the node, not its domain.
+fn full_jvp_scalar_view(
+    block: &solve::ComputeBlock,
+    layout: &solve::VarLayout,
+) -> Result<solve::ScalarProgramBlock, LowerError> {
+    let jvp = lower_compute_block_full_jvp(block, layout.y_scalars())?;
+    Ok(rumoca_eval_solve::to_scalar_program_block(&jvp)?)
 }
 
 /// The discrete event rows' JVPs; a family whose rows do not all lower is

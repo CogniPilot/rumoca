@@ -239,6 +239,7 @@ mod structured_initialization_family;
 mod supplied_derivative_record_fields;
 mod switched_integral_accuracy;
 mod tensor_affine_moment;
+mod tensor_jvp_scalar_view;
 mod tensor_refresh_dependencies;
 mod zero_product_terms;
 mod zero_size_function_values;
