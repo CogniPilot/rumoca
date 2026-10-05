@@ -1,6 +1,7 @@
 mod derivatives;
 mod expression_rules;
 mod integer_bounds;
+mod specialization_schedule;
 #[cfg(test)]
 mod tests;
 mod value_relevance;
@@ -41,11 +42,13 @@ pub(super) type ValueShape = Vec<u32>;
 /// key repeats. The report states the bound it exceeded rather than claiming a
 /// proof that no fixed point exists, because this analysis does not decide that.
 ///
-/// **Owner.** `ShapeAnalyzer::ensure_specialization`, the only place a
-/// certificate is minted.
+/// **Owner.** `ShapeAnalyzer::ensure_specialization` in `specialization_schedule`,
+/// the only place a certificate is minted; it walks a chain this bound admits
+/// without growing the native stack with the chain.
 ///
 /// **Evidence.** `function_shapes/tests/value_proven_shapes.rs`:
-/// `value_recursion_without_a_fixed_point_is_bounded` (rejected),
+/// `value_recursion_without_a_fixed_point_is_bounded` (rejected, and on a
+/// 256 KiB stack in `value_recursion_bound_is_reported_on_a_small_stack`),
 /// `scalar_valued_recursion_reuses_one_specialization` and
 /// `converging_value_keyed_recursion_terminates` (accepted).
 const SPECIALIZATION_DEPTH_LIMIT: usize = 256;
@@ -681,6 +684,9 @@ impl FunctionShapeAnalysis {
                 structural_selections: HashSet::new(),
             },
             active_specializations: Vec::new(),
+            chain_depths: Vec::new(),
+            pending_bodies: Vec::new(),
+            inline_base: 0,
         };
         analyzer.discover_model_calls()?;
         analyzer.discover_derivative_calls()?;
@@ -937,6 +943,7 @@ impl FunctionShapeAnalysis {
 
 struct DiscoveryCheckpoint {
     certificates: usize,
+    pending_bodies: usize,
     call_keys: HashSet<FunctionSpecializationKey>,
     constructor_keys: HashSet<FunctionSpecializationKey>,
 }
@@ -945,6 +952,12 @@ struct ShapeAnalyzer<'flat> {
     flat: &'flat flat::Model,
     analysis: FunctionShapeAnalysis,
     active_specializations: Vec<usize>,
+    /// Length of the value-keyed call chain that minted each specialization.
+    chain_depths: Vec<usize>,
+    /// Specializations whose bodies wait for their walk root to drain them.
+    pending_bodies: Vec<specialization_schedule::PendingBody>,
+    /// `active_specializations` length where the current depth-first walk began.
+    inline_base: usize,
 }
 
 impl ShapeAnalyzer<'_> {
@@ -1083,7 +1096,8 @@ impl ShapeAnalyzer<'_> {
                 .iter()
                 .flat_map(|(condition, value)| [condition, value])
                 .chain(std::iter::once(else_branch))
-                .try_for_each(|arm| self.discover_calls(arm, values));
+                .try_for_each(|arm| self.discover_calls(arm, values))
+                .and_then(|()| self.drain_pending_bodies(checkpoint.pending_bodies));
             // A certified callee must also have a representable body.
             let representable = every_arm.is_ok()
                 && self.analysis.certificates[checkpoint.certificates..]
@@ -1363,57 +1377,6 @@ impl ShapeAnalyzer<'_> {
         Ok(Vec::new())
     }
 
-    fn ensure_specialization(
-        &mut self,
-        key: FunctionSpecializationKey,
-        call_span: Span,
-    ) -> Result<usize, ToDaeError> {
-        let caller = self.active_specializations.last().copied();
-        if let Some(index) = self.analysis.certificate_by_key.get(&key).copied() {
-            self.record_dependency(caller, index);
-            return Ok(index);
-        }
-        if self.active_specializations.len() >= SPECIALIZATION_DEPTH_LIMIT {
-            return Err(ToDaeError::unsupported_flat(
-                "function shape specialization",
-                format!(
-                    "`{}` needs more than {SPECIALIZATION_DEPTH_LIMIT} nested value-proven \
-                     specializations, which is the bound this analysis admits; no activation in \
-                     the chain repeated an earlier proven argument",
-                    key.function
-                ),
-                call_span,
-            ));
-        }
-        let function =
-            self.flat.functions.get(&key.function).ok_or_else(|| {
-                ToDaeError::unresolved_reference(key.function.as_str(), call_span)
-            })?;
-        let certificate = resolve_certificate(
-            self.flat,
-            function,
-            key.clone(),
-            call_span,
-            &self.analysis.model_values,
-        )?;
-        let index = self.analysis.certificates.len();
-        self.analysis.certificate_by_key.insert(key, index);
-        self.analysis.certificates.push(certificate);
-        self.analysis.dependencies.push(Vec::new());
-        self.record_dependency(caller, index);
-
-        let values = self.analysis.certificates[index].values.clone();
-        self.active_specializations.push(index);
-        let result = (|| {
-            self.discover_parameter_defaults(function, &values)?;
-            self.discover_statements(&function.body, &values)
-        })();
-        let completed = self.active_specializations.pop();
-        debug_assert_eq!(completed, Some(index));
-        result?;
-        Ok(index)
-    }
-
     fn discover_parameter_defaults(
         &mut self,
         function: &rumoca_core::Function,
@@ -1434,6 +1397,7 @@ impl ShapeAnalyzer<'_> {
     fn checkpoint(&self) -> DiscoveryCheckpoint {
         DiscoveryCheckpoint {
             certificates: self.analysis.certificates.len(),
+            pending_bodies: self.pending_bodies.len(),
             call_keys: self.analysis.call_certificates.keys().cloned().collect(),
             constructor_keys: self
                 .analysis
@@ -1447,6 +1411,8 @@ impl ShapeAnalyzer<'_> {
     fn restore(&mut self, checkpoint: DiscoveryCheckpoint) {
         let count = checkpoint.certificates;
         self.analysis.certificates.truncate(count);
+        self.chain_depths.truncate(count);
+        self.pending_bodies.truncate(checkpoint.pending_bodies);
         self.analysis.dependencies.truncate(count);
         for dependencies in &mut self.analysis.dependencies {
             dependencies.retain(|&dependency| dependency < count);
@@ -2478,5 +2444,5 @@ fn checked_shape_arithmetic(
     })
 }
 
-// SPEC_0021 file-size exception: this file is 2482 lines, over the 2000-line
+// SPEC_0021 file-size exception: this file is 2448 lines, over the 2000-line
 // action threshold; split plan: extract the FunctionSpecializationKey construction and the per-shape provenance derivation into sibling modules under function_shapes/.

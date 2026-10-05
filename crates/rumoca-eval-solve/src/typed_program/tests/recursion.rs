@@ -117,3 +117,20 @@ fn recursive_call_beyond_the_depth_limit_fails_at_that_call() {
         assert!(error.to_string().contains("depth limit of 64"), "{error}");
     }
 }
+
+/// Both the deepest admitted chain and the refusal one call beyond it run
+/// within 1 MiB, the smallest default thread stack of a hosted platform (the
+/// Windows main thread): each member invocation takes one interpreter frame,
+/// so the depth limit bounds the native stack.
+#[test]
+fn recursion_depth_limit_holds_on_a_small_stack() {
+    std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(|| {
+            recursive_group_executes_each_member_invocation_in_its_own_frame();
+            recursive_call_beyond_the_depth_limit_fails_at_that_call();
+        })
+        .expect("spawn the small-stack evaluation")
+        .join()
+        .expect("the recursive evaluation stays within a small stack");
+}

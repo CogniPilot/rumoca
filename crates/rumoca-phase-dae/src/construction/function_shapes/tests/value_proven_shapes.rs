@@ -778,6 +778,28 @@ fn an_assigned_local_does_not_prove_a_later_extent() {
 /// and reported, never left to exhaust the process stack.
 #[test]
 fn value_recursion_without_a_fixed_point_is_bounded() {
+    assert_value_recursion_bound_is_reported();
+}
+
+/// Stack a thread far smaller than any platform default runs the analysis on:
+/// the proof walks a chain of distinct specializations iteratively, so its
+/// native stack use does not grow with the chain the bound admits.
+const SMALL_STACK_BYTES: usize = 256 * 1024;
+
+/// The bounded rejection holds on a small native stack.
+#[test]
+fn value_recursion_bound_is_reported_on_a_small_stack() {
+    std::thread::Builder::new()
+        .stack_size(SMALL_STACK_BYTES)
+        .spawn(assert_value_recursion_bound_is_reported)
+        .expect("spawn the small-stack analysis")
+        .join()
+        .expect("the analysis stays within a small stack");
+}
+
+/// `function f input Integer n; output Real y[n]; algorithm y := f(n + 1);`
+/// called as `f(1)`: every activation proves a strictly larger argument.
+fn assert_value_recursion_bound_is_reported() {
     let mut sources = SourceMap::new();
     let source = sources.add("unbounded.mo", "f(1);");
     let span = Span::from_offsets(source, 0, 5);
