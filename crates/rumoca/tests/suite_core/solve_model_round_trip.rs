@@ -277,7 +277,8 @@ fn fmi_component_wire_carries_declared_causality() {
         rumoca_phase_solve::fmi::FMI_COMPONENT_SCHEMA_VERSION
     );
     assert!(json.starts_with(&format!("{{{current}")), "{json}");
-    let superseded = json.replacen(&current, "\"schema_version\":1", 1);
+    let previous = rumoca_phase_solve::fmi::FMI_COMPONENT_SCHEMA_VERSION - 1;
+    let superseded = json.replacen(&current, &format!("\"schema_version\":{previous}"), 1);
     let mut deserializer = serde_json::Deserializer::from_str(&superseded);
     let error = rumoca_phase_solve::fmi::deserialize_fmi_component(&mut deserializer)
         .map(|_| ())
@@ -285,7 +286,7 @@ fn fmi_component_wire_carries_declared_causality() {
     assert!(
         error
             .to_string()
-            .contains("unsupported FMI component schema 1"),
+            .contains(&format!("unsupported FMI component schema {previous}")),
         "{error}"
     );
 }

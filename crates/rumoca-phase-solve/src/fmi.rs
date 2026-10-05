@@ -52,8 +52,11 @@ impl FmiLoweringError {
 /// Current FMI component wire schema; every other version is rejected.
 ///
 /// 2 carries each variable's declared `input`/`output` prefix where it differs
-/// from the exported causality.
-pub const FMI_COMPONENT_SCHEMA_VERSION: u16 = 2;
+/// from the exported causality. 3 replays into a component whose
+/// `RootLocationPlan` refines state-event brackets by its Illinois minmax
+/// method rather than bisection (SPEC_0044 ME-EVENT-004), so a replayed wire
+/// locates its events where the compiler that wrote it does.
+pub const FMI_COMPONENT_SCHEMA_VERSION: u16 = 3;
 
 /// Borrowed, canonical construction inputs for one correlated FMI component.
 #[derive(Serialize)]

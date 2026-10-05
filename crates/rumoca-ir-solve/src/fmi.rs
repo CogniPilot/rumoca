@@ -62,7 +62,7 @@ pub use metadata::{
     FmiCausality, FmiDeclaredCausality, FmiInitial, FmiStorageColumn, FmiStorageRun,
     FmiValueBacking, FmiVariability, FmiVariable, FmiVariableInput,
 };
-pub use root_location::{RootLocationPlan, RootTieBreak};
+pub use root_location::{RootBracket, RootLocationPlan, RootRefinementMethod, RootTieBreak};
 
 /// Configuration-Mode capability declared by the checked FMI component.
 ///

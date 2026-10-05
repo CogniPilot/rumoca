@@ -3,7 +3,11 @@
 //! The plan is constructed with the component, so the linked runtime, the
 //! generated C, and every other executor read one set of location rules
 //! instead of each deriving its own scan cadence, tolerance, refinement
-//! budget, or tie-break.
+//! method, refinement budget, or tie-break.
+
+mod bracket;
+
+pub use bracket::RootBracket;
 
 /// Which crossing an accepted interval applies when several indicators change
 /// domain in it.
@@ -14,6 +18,20 @@ pub enum RootTieBreak {
     LeastApplicationCoordinate,
 }
 
+/// How a bracket around a domain change is narrowed to the location tolerance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub enum RootRefinementMethod {
+    /// Illinois-weighted regula falsi (M. Dowell and P. Jarratt, "A modified
+    /// regula falsi method for computing the root of an equation", BIT 11,
+    /// 168-174, 1971), kept half a location tolerance inside the bracket and
+    /// projected onto the minmax radius around the bracket midpoint of the ITP
+    /// method (I. F. D. Oliveira and R. H. C. Takahashi, "An Enhancement of the
+    /// Bisection Method Average Performance Preserving Minmax Optimality",
+    /// ACM TOMS 47(1):5, 2020, doi:10.1145/3423597). [`RootBracket`] is the
+    /// arithmetic.
+    IllinoisMinmax,
+}
+
 /// The root-location rules of one FMI component.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub struct RootLocationPlan {
@@ -22,7 +40,13 @@ pub struct RootLocationPlan {
     scan_fraction: f64,
     /// The scan resolution of an experiment without a finite positive width.
     fallback_scan_resolution: f64,
-    /// Bisection steps a bracket may take before location fails typed.
+    refinement_method: RootRefinementMethod,
+    /// Evaluations the refinement may take beyond the bisection count of its
+    /// bracket: the `n0` of the minmax projection.
+    minmax_slack: u32,
+    /// Refinement evaluations a bracket may take before location fails typed.
+    /// It exceeds every bound the minmax projection proves for a bracket at
+    /// most `2^(cap - slack)` location tolerances wide.
     refinement_iteration_cap: usize,
     /// Machine epsilons, scaled by the interval's time magnitude, that make
     /// up the roundoff of one accepted interval.
@@ -35,6 +59,8 @@ impl RootLocationPlan {
     pub const STANDARD: Self = Self {
         scan_fraction: 1.0 / 8.0,
         fallback_scan_resolution: 1.0e-3,
+        refinement_method: RootRefinementMethod::IllinoisMinmax,
+        minmax_slack: 4,
         refinement_iteration_cap: 128,
         roundoff_epsilons: 100.0,
         tie_break: RootTieBreak::LeastApplicationCoordinate,
@@ -84,6 +110,28 @@ impl RootLocationPlan {
         (event_time - root_time).abs() <= self.interval_roundoff(interval_start, duration)
     }
 
+    /// Open the refinement of a domain change observed between `low` (no
+    /// changed indicator has left its domain) and `high` (one has), to be
+    /// narrowed to `tolerance` by the plan's method.
+    #[must_use]
+    pub fn open_bracket(&self, low: f64, high: f64, tolerance: f64) -> RootBracket {
+        match self.refinement_method {
+            RootRefinementMethod::IllinoisMinmax => {
+                RootBracket::open(low, high, tolerance, self.minmax_slack)
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn refinement_method(&self) -> RootRefinementMethod {
+        self.refinement_method
+    }
+
+    #[must_use]
+    pub const fn minmax_slack(&self) -> u32 {
+        self.minmax_slack
+    }
+
     #[must_use]
     pub const fn refinement_iteration_cap(&self) -> usize {
         self.refinement_iteration_cap
@@ -111,7 +159,25 @@ mod tests {
         assert_eq!(plan.location_tolerance(1.0e-12, 0.5), 1.0e-12);
         assert_eq!(plan.location_tolerance(1.0, 0.5), 0.5);
         assert_eq!(plan.refinement_iteration_cap(), 128);
+        assert_eq!(
+            plan.refinement_method(),
+            RootRefinementMethod::IllinoisMinmax
+        );
+        assert_eq!(plan.minmax_slack(), 4);
         assert_eq!(plan.tie_break(), RootTieBreak::LeastApplicationCoordinate);
+    }
+
+    /// The cap covers the minmax bound of the widest bracket the standard
+    /// plan issues: one scan resolution over a tolerance of the roundoff of
+    /// that resolution alone, about `2^46`.
+    #[test]
+    fn the_cap_covers_the_minmax_bound_of_every_standard_bracket() {
+        let plan = RootLocationPlan::STANDARD;
+        let scan = plan.scan_resolution(1.0);
+        let tolerance = plan.location_tolerance(plan.interval_roundoff(0.0, scan), scan);
+        let bracket = plan.open_bracket(0.0, scan, tolerance);
+        assert!(bracket.evaluation_bound() <= 50);
+        assert!(bracket.evaluation_bound() < plan.refinement_iteration_cap());
     }
 
     /// A root within the interval's roundoff of a scheduled time event is the
