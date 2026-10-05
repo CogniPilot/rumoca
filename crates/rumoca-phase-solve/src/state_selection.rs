@@ -15,10 +15,10 @@ use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{
     AliasQuotientReport, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
     FormalStateCandidate, FormalStateCoordinate, PreparedDae, PreparedStateCoordinates,
-    ReducedSelectionChart, StateSelection, StructuralError, construct_formal_derivatives,
-    demote_inert_states, fold_constant_values, fold_evaluable_parameters,
-    formal_alias_quotient_report, holds_redundant_loop_closure, inline_annotated_calls,
-    inline_formal_calls, prepare_for_solve, quotient_aliases, quotient_formal_aliases,
+    ReducedSelectionChart, SourceStructuralAnalysis, StateSelection, StructuralError,
+    construct_formal_derivatives, demote_inert_states, fold_constant_values,
+    fold_evaluable_parameters, formal_alias_quotient_report, inline_annotated_calls,
+    inline_formal_calls, prepare_for_solve_from_source, quotient_aliases, quotient_formal_aliases,
 };
 
 use crate::lower::typed_functions::formal_stages::lower_state_selection_stages;
@@ -197,10 +197,13 @@ fn prepare_source<'source>(
     model: &'source dae::Dae,
     overrides: &HashMap<String, f64>,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
-    if let Some(reduced) = reduce_loop_closure(model, overrides)? {
+    // One structural analysis of the source serves the early loop-closure
+    // decision and the reducer's first round (SPEC_0053 §1).
+    let source = SourceStructuralAnalysis::of(model);
+    if let Some(reduced) = reduce_loop_closure(&source, overrides)? {
         return Ok(reduced);
     }
-    match prepare_for_solve(model) {
+    match prepare_for_solve_from_source(source) {
         Ok(prepared) => reduce_or_retain(model, prepared, overrides),
         // The ordinary reducer cannot desingularize every constrained system: a
         // buried orientation lock (a quaternion body under a loop joint) leaves
@@ -276,18 +279,19 @@ fn reduce_or_retain<'source>(
 }
 
 /// SPEC_0053 §1: decide reduction from the source when it holds a redundant
-/// loop closure ([`holds_redundant_loop_closure`]). Such a closure survives
-/// every direct demotion into the reducer's manifold and classifies redundant,
-/// so [`reduce_or_retain`] would reduce to exactly this formal selection; it is
-/// built here without running the per-state reducer. `None` leaves the
-/// decision to the reducer: no such closure, an inert state that needs
-/// demotion first, no formal construction, or a formal dimension that does not
-/// reduce the source states.
+/// loop closure ([`SourceStructuralAnalysis::holds_redundant_loop_closure`]).
+/// Such a closure survives every direct demotion into the reducer's manifold
+/// and classifies redundant, so [`reduce_or_retain`] would reduce to exactly
+/// this formal selection; it is built here without running the per-state
+/// reducer. `None` leaves the decision to the reducer: no such closure, an
+/// inert state that needs demotion first, no formal construction, or a formal
+/// dimension that does not reduce the source states.
 fn reduce_loop_closure(
-    model: &dae::Dae,
+    source: &SourceStructuralAnalysis<'_>,
     overrides: &HashMap<String, f64>,
 ) -> Result<Option<PreparedSelection<'static>>, StructuralError> {
-    if !holds_redundant_loop_closure(model) || demote_inert_states(model)?.is_some() {
+    let model = source.model();
+    if !source.holds_redundant_loop_closure() || demote_inert_states(model)?.is_some() {
         return Ok(None);
     }
     let Ok(formal) = construct_formal_derivatives(model) else {

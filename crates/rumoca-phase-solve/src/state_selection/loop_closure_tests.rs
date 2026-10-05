@@ -3,6 +3,7 @@
 use rumoca_core::{SourceMap, Span, VarName};
 
 use super::*;
+use rumoca_phase_structural::prepare_for_solve;
 
 /// `der(x)=vx; der(y)=vy; der(vx)=-lambda*x; der(vy)=-lambda*y-g;` closed by
 /// `x*x+y*y=1` (a loop closure defining no state) when `closed`, or by `x=y`
@@ -78,8 +79,8 @@ fn pendulum(closed: bool) -> dae::Dae {
 
 #[test]
 fn only_a_closure_defining_no_state_is_a_redundant_loop_closure() {
-    assert!(holds_redundant_loop_closure(&pendulum(true)));
-    assert!(!holds_redundant_loop_closure(&pendulum(false)));
+    assert!(SourceStructuralAnalysis::of(&pendulum(true)).holds_redundant_loop_closure());
+    assert!(!SourceStructuralAnalysis::of(&pendulum(false)).holds_redundant_loop_closure());
 }
 
 #[test]
@@ -92,15 +93,16 @@ fn a_redundant_loop_closure_reduces_to_the_basis_the_reducer_selects() {
         "the reducer classifies the closure redundant"
     );
     let through_reducer = reduce_or_retain(&model, prepared, &overrides).unwrap();
-    let decided = reduce_loop_closure(&model, &overrides)
+    let decided = reduce_loop_closure(&SourceStructuralAnalysis::of(&model), &overrides)
         .unwrap()
         .expect("the closure decides reduction without the reducer");
     assert_eq!(
         decided.integrated_names().unwrap(),
         through_reducer.integrated_names().unwrap()
     );
+    let direct = pendulum(false);
     assert!(
-        reduce_loop_closure(&pendulum(false), &overrides)
+        reduce_loop_closure(&SourceStructuralAnalysis::of(&direct), &overrides)
             .unwrap()
             .is_none()
     );
@@ -113,7 +115,7 @@ fn a_loop_closure_selection_names_each_generated_state_by_its_source() {
     // the source scalar (and formal order) its projection equation equates it
     // to, and those names are the selection's integrated basis.
     let model = pendulum(true);
-    let decided = reduce_loop_closure(&model, &HashMap::new())
+    let decided = reduce_loop_closure(&SourceStructuralAnalysis::of(&model), &HashMap::new())
         .unwrap()
         .expect("the closure decides reduction without the reducer");
     let mut basis = decided.integrated_names().unwrap();

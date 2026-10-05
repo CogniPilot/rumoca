@@ -28,7 +28,6 @@ use rumoca_ir_dae as dae;
 
 pub use causal_definitions::CausalDefinitions;
 pub use causal_discrete::{CausalDiscreteError, CausalDiscretePlan, DiscreteRealDefinition};
-pub use dae_transform::holds_redundant_loop_closure;
 pub use dae_transform::{
     AliasClassReport, AliasMemberReport, AliasQuotientReport, AliasQuotientScope, AliasRefusal,
     FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
@@ -44,6 +43,7 @@ pub use dae_transform::{
     own_loop_guarded_relations, prepare_for_solve, quotient_aliases, quotient_formal_aliases,
     unlocalizable_loop_guards,
 };
+pub use dae_transform::{SourceStructuralAnalysis, prepare_for_solve_from_source};
 pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};
 pub use differential_structure::{

@@ -29,7 +29,8 @@ mod loop_closures;
 #[cfg(test)]
 use holonomic_attempt::refused_holonomic_outcome;
 use holonomic_attempt::{HolonomicAttempt, attempt_holonomic_candidate};
-pub use loop_closures::holds_redundant_loop_closure;
+mod source_analysis;
+pub use source_analysis::{SourceStructuralAnalysis, prepare_for_solve_from_source};
 mod component_constraint;
 mod component_projection;
 mod constant_values;
@@ -575,6 +576,13 @@ pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, Structural
     prepare_for_solve_with_observer(model, &mut ())
 }
 
+/// The source system's first structural analysis and the incidence its next
+/// round may reuse, as [`structural_analysis_capturing`] builds them.
+type SourceRound = (
+    Result<PreparedStructuralAnalysis, StructuralError>,
+    Option<crate::incidence::ReusableIncidence>,
+);
+
 /// The diagnostic inspection surface: the exact same reduction as
 /// [`prepare_for_solve`], paired with an owned [`ReductionReport`] of every
 /// round this call actually traversed.
@@ -599,9 +607,24 @@ fn prepare_for_solve_with_observer<'source>(
     model: &'source dae::Dae,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'source>, StructuralError> {
+    prepare_with_source_round(model, None, observer)
+}
+
+/// [`prepare_for_solve_with_observer`] given the source system's first
+/// analysis when one is already built; it serves the first reduction round
+/// only when no requested state rebuilds the source.
+fn prepare_with_source_round<'source>(
+    model: &'source dae::Dae,
+    source_round: Option<SourceRound>,
+    observer: &mut impl ReductionObserver,
+) -> Result<PreparedDae<'source>, StructuralError> {
     let selected = match reconstruction::rebuild_requested_states(model) {
         Ok(Some(selected)) => selected,
-        Ok(None) => return reduce_for_solve_with_observer(model, observer),
+        Ok(None) => {
+            let first =
+                source_round.unwrap_or_else(|| structural_analysis_capturing(model, None, None));
+            return reduce_from_first_round(model, first, observer);
+        }
         Err(error) => return observed_failure(error, observer),
     };
     match reduce_for_solve_with_observer(&selected, observer)? {
@@ -637,7 +660,19 @@ fn reduce_for_solve_with_observer<'source>(
     model: &'source dae::Dae,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'source>, StructuralError> {
-    let (singular, mut current_reusable) = match structural_analysis_capturing(model, None, None) {
+    reduce_from_first_round(
+        model,
+        structural_analysis_capturing(model, None, None),
+        observer,
+    )
+}
+
+fn reduce_from_first_round<'source>(
+    model: &'source dae::Dae,
+    first: SourceRound,
+    observer: &mut impl ReductionObserver,
+) -> Result<PreparedDae<'source>, StructuralError> {
+    let (singular, mut current_reusable) = match first {
         (Ok(structural), _) => return borrowed_with_observer(model, structural, observer),
         (Err(error @ StructuralError::Singular { .. }), reusable) => (error, reusable),
         (Err(StructuralError::EmptySystem), _) => {
