@@ -300,6 +300,23 @@ impl BlockReuse {
         }
     }
 
+    /// [`Self::expression`], with a fresh block compiled by `fresh` (which may
+    /// keep the block's tensor nodes compact) instead of from its scalar view.
+    pub(super) fn expression_with_fresh(
+        &self,
+        primary: Option<&Rc<dyn CompiledSolveExpression>>,
+        block: &solve::ScalarProgramBlock,
+        fresh: &mut dyn FnMut() -> Option<Rc<dyn CompiledSolveExpression>>,
+        compile: &mut dyn FnMut(
+            &solve::ScalarProgramBlock,
+        ) -> Option<Rc<dyn CompiledSolveExpression>>,
+    ) -> Option<Rc<dyn CompiledSolveExpression>> {
+        match self {
+            Self::Fresh => fresh(),
+            _ => self.expression(primary, block, compile),
+        }
+    }
+
     /// The compiled Jacobian form of `block`, as [`Self::expression`].
     pub(super) fn jacobian(
         &self,

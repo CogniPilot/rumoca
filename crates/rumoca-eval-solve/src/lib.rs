@@ -51,6 +51,7 @@ mod typed_program;
 mod update_rows;
 pub use block_residual_split::PreparedBlockResidualSplit;
 pub use compute_block_scalarize::{
+    AffineKernelConst, AffineKernelLoad, AffineKernelNode, AffineKernelPlan,
     ScalarProgramProjection, ScalarizeError, checked_contiguous_output_count,
     checked_tensor_output_count, scalar_program_output_count, scalar_program_output_indices,
     tensor_output_indices, to_scalar_program_block, to_scalar_program_projection,

@@ -277,3 +277,52 @@ fn native_failure_is_propagated_without_publishing_partial_outputs_or_retrying()
     assert_eq!(error.source_span(), Some(span()));
     assert_eq!(output, [0.0]);
 }
+
+#[test]
+fn a_compact_map_compiles_as_one_native_kernel_without_per_row_code() {
+    let domain = rumoca_core::StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 64,
+            step: 1,
+        }],
+    };
+    let unit = vec![solve::AffineStencilIndexStrideTerm {
+        dimension: 0,
+        stride: 1,
+    }];
+    let block = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::Map {
+            output_map: solve::TensorOutputMap {
+                start: 0,
+                strides: unit.clone(),
+            },
+            domain,
+            base_ops: vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::Unary {
+                    dst: 1,
+                    op: solve::UnaryOp::Neg,
+                    arg: 0,
+                },
+                solve::LinearOp::StoreOutput { src: 1 },
+            ],
+            load_strides: vec![solve::AffineStencilLoadStride {
+                op_position: 0,
+                terms: unit,
+            }],
+            const_strides: Vec::new(),
+            metadata: solve::TensorNodeMetadata::default(),
+            span: span(),
+        }],
+    };
+    assert_eq!(
+        super::native_compute_inventory(&block).unwrap(),
+        Some(super::NativeComputeInventory {
+            kernels: 1,
+            compiled_rows: 0,
+        })
+    );
+}

@@ -7,6 +7,8 @@ struct CraneliftExpression(rumoca_exec_cranelift::CompiledExpressionRows);
 
 struct CraneliftJacobianExpression(rumoca_exec_cranelift::CompiledJacobianV);
 
+struct CraneliftComputeExpression(rumoca_exec_cranelift::CompiledComputeExpression);
+
 struct CraneliftProjectionJacobian(rumoca_exec_cranelift::CompiledProjectionJacobian);
 
 struct CraneliftAssignmentSchedule(rumoca_exec_cranelift::CompiledAssignmentSchedule);
@@ -57,6 +59,21 @@ impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
             .map_err(|error| error.to_string())
     }
 
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), String> {
+        self.0
+            .call_with_external_tables(y, p, t, external_tables, out)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl rumoca_solver::CompiledSolveExpression for CraneliftComputeExpression {
     fn call(
         &self,
         y: &[f64],
@@ -251,6 +268,17 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         .map_err(|error| error.to_string())
     }
 
+    fn compile_compute_expression(
+        &self,
+        block: &rumoca_ir_solve::ComputeBlock,
+    ) -> Result<Option<Rc<dyn rumoca_solver::CompiledSolveExpression>>, String> {
+        rumoca_exec_cranelift::compile_expression_compute_block(block, self.pure_calls.as_ref())
+            .map(|compiled| {
+                compiled.map(|compiled| Rc::new(CraneliftComputeExpression(compiled)) as Rc<_>)
+            })
+            .map_err(|error| error.to_string())
+    }
+
     fn compile_jacobian_expression(
         &self,
         block: &rumoca_ir_solve::ScalarProgramBlock,
@@ -371,4 +399,28 @@ pub(crate) fn backend(
         pure_calls,
         call_cells: Default::default(),
     })
+}
+
+/// How the native backend compiles one compute block for whole-block calls:
+/// compact tensor nodes running as loop kernels, and scalar rows compiled one
+/// by one (SPEC_0032 §4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeComputeInventory {
+    pub kernels: usize,
+    pub compiled_rows: usize,
+}
+
+/// The native compilation inventory of `block`, or `None` when the backend
+/// compiles the block's scalar view row by row.
+pub fn native_compute_inventory(
+    block: &rumoca_ir_solve::ComputeBlock,
+) -> Result<Option<NativeComputeInventory>, String> {
+    rumoca_exec_cranelift::compile_expression_compute_block(block, None)
+        .map(|compiled| {
+            compiled.map(|compiled| NativeComputeInventory {
+                kernels: compiled.kernel_count(),
+                compiled_rows: compiled.compiled_row_count(),
+            })
+        })
+        .map_err(|error| error.to_string())
 }

@@ -1,5 +1,6 @@
 use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
 
+use super::kernel_plan::{AffineKernelNode, AffineKernelPlan};
 use super::{ScalarizeError, scalarize_vec_with_capacity_optional};
 
 pub(super) fn scalarize_affine_rows_with_span(
@@ -10,110 +11,24 @@ pub(super) fn scalarize_affine_rows_with_span(
     kind: &'static str,
     span: rumoca_core::Span,
 ) -> Result<Vec<Vec<LinearOp>>, ScalarizeError> {
-    validate_affine_stride_metadata(domain, base_ops, load_strides, const_strides, kind, span)?;
-    let load_strides = combined_load_strides(load_strides, base_ops.len(), kind, span)?;
-    let const_strides = combined_const_strides(const_strides, base_ops.len(), kind, span)?;
-    let index_tuples = domain
-        .index_tuples()
-        .map_err(|err| ScalarizeError::ShapeContract {
-            message: format!("structured index domain is invalid: {err}"),
-            span: Some(span),
+    let plan = AffineKernelPlan::new(AffineKernelNode {
+        domain,
+        output_map: None,
+        base_ops,
+        load_strides,
+        const_strides,
+        kind,
+        span,
+    })?;
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(plan.point_count())
+        .map_err(|_| ScalarizeError::AllocationOverflow {
+            kind,
+            capacity: plan.point_count(),
+            span,
         })?;
-    let Some(base_tuple) = index_tuples.first() else {
-        return Ok(Vec::new());
-    };
-    let mut rows = scalarize_vec_with_capacity(index_tuples.len(), kind, span)?;
-    for index_tuple in &index_tuples {
-        let mut ops = cloned_linear_ops(base_ops, kind, span)?;
-        for stride in &load_strides {
-            apply_affine_load_stride(
-                &mut ops,
-                stride,
-                domain,
-                base_tuple,
-                index_tuple,
-                kind,
-                span,
-            )?;
-        }
-        for stride in &const_strides {
-            apply_affine_const_stride(
-                &mut ops,
-                stride,
-                domain,
-                base_tuple,
-                index_tuple,
-                kind,
-                span,
-            )?;
-        }
-        rows.push(ops);
-    }
+    plan.for_each_point(|ordinals| rows.push(plan.row_at(base_ops, ordinals)));
     Ok(rows)
-}
-
-fn combined_load_strides(
-    strides: &[rumoca_ir_solve::AffineStencilLoadStride],
-    op_count: usize,
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<Vec<rumoca_ir_solve::AffineStencilLoadStride>, ScalarizeError> {
-    let mut terms_by_op =
-        vec![None::<Vec<rumoca_ir_solve::AffineStencilIndexStrideTerm>>; op_count];
-    for stride in strides {
-        let Some(terms) = terms_by_op.get_mut(stride.op_position) else {
-            return Err(affine_stride_error(
-                kind,
-                stride.op_position,
-                op_count,
-                "LoadY, LoadP, or LoadSeed",
-                None,
-                span,
-            ));
-        };
-        terms
-            .get_or_insert_with(Vec::new)
-            .extend(stride.terms.iter().cloned());
-    }
-    Ok(terms_by_op
-        .into_iter()
-        .enumerate()
-        .filter_map(|(op_position, terms)| {
-            terms.map(|terms| rumoca_ir_solve::AffineStencilLoadStride { op_position, terms })
-        })
-        .collect())
-}
-
-fn combined_const_strides(
-    strides: &[rumoca_ir_solve::AffineStencilConstStride],
-    op_count: usize,
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<Vec<rumoca_ir_solve::AffineStencilConstStride>, ScalarizeError> {
-    let mut terms_by_op =
-        vec![None::<Vec<rumoca_ir_solve::AffineStencilConstStrideTerm>>; op_count];
-    for stride in strides {
-        let Some(terms) = terms_by_op.get_mut(stride.op_position) else {
-            return Err(affine_stride_error(
-                kind,
-                stride.op_position,
-                op_count,
-                "Const",
-                None,
-                span,
-            ));
-        };
-        terms
-            .get_or_insert_with(Vec::new)
-            .extend(stride.terms.iter().cloned());
-    }
-    Ok(terms_by_op
-        .into_iter()
-        .enumerate()
-        .filter_map(|(op_position, terms)| {
-            terms.map(|terms| rumoca_ir_solve::AffineStencilConstStride { op_position, terms })
-        })
-        .collect())
 }
 
 /// Expand a tensor output map into concrete scalar output slots.
@@ -289,92 +204,6 @@ impl StrideTermDimension for rumoca_ir_solve::AffineStencilConstStrideTerm {
     }
 }
 
-fn apply_affine_load_stride(
-    ops: &mut [LinearOp],
-    stride: &rumoca_ir_solve::AffineStencilLoadStride,
-    domain: &rumoca_core::StructuredIndexDomain,
-    base_tuple: &[i64],
-    index_tuple: &[i64],
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<(), ScalarizeError> {
-    let op_count = ops.len();
-    match ops.get_mut(stride.op_position) {
-        Some(LinearOp::LoadY { index, .. })
-        | Some(LinearOp::LoadP { index, .. })
-        | Some(LinearOp::LoadSeed { index, .. }) => {
-            *index = apply_index_terms(
-                *index,
-                &stride.terms,
-                domain,
-                base_tuple,
-                index_tuple,
-                kind,
-                span,
-            )?;
-            Ok(())
-        }
-        Some(op) => Err(affine_stride_error(
-            kind,
-            stride.op_position,
-            op_count,
-            "LoadY, LoadP, or LoadSeed",
-            Some(linear_op_name(op)),
-            span,
-        )),
-        None => Err(affine_stride_error(
-            kind,
-            stride.op_position,
-            op_count,
-            "LoadY, LoadP, or LoadSeed",
-            None,
-            span,
-        )),
-    }
-}
-
-fn apply_affine_const_stride(
-    ops: &mut [LinearOp],
-    stride: &rumoca_ir_solve::AffineStencilConstStride,
-    domain: &rumoca_core::StructuredIndexDomain,
-    base_tuple: &[i64],
-    index_tuple: &[i64],
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<(), ScalarizeError> {
-    let op_count = ops.len();
-    match ops.get_mut(stride.op_position) {
-        Some(LinearOp::Const { value, .. }) => {
-            *value = apply_const_terms(
-                *value,
-                &stride.terms,
-                domain,
-                base_tuple,
-                index_tuple,
-                kind,
-                span,
-            )?;
-            Ok(())
-        }
-        Some(op) => Err(affine_stride_error(
-            kind,
-            stride.op_position,
-            op_count,
-            "Const",
-            Some(linear_op_name(op)),
-            span,
-        )),
-        None => Err(affine_stride_error(
-            kind,
-            stride.op_position,
-            op_count,
-            "Const",
-            None,
-            span,
-        )),
-    }
-}
-
 fn affine_stride_error(
     kind: &'static str,
     op_position: usize,
@@ -453,154 +282,6 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
         LinearOp::PureCall { .. } => "PureCall",
         LinearOp::PureCallDirectional { .. } => "PureCallDirectional",
     }
-}
-
-fn cloned_linear_ops(
-    ops: &[LinearOp],
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<Vec<LinearOp>, ScalarizeError> {
-    let mut cloned = scalarize_vec_with_capacity(ops.len(), kind, span)?;
-    cloned.extend_from_slice(ops);
-    Ok(cloned)
-}
-
-fn scalarize_vec_with_capacity<T>(
-    capacity: usize,
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<Vec<T>, ScalarizeError> {
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(capacity)
-        .map_err(|_| ScalarizeError::AllocationOverflow {
-            kind,
-            capacity,
-            span,
-        })?;
-    Ok(values)
-}
-
-fn apply_index_terms(
-    base_index: usize,
-    terms: &[rumoca_ir_solve::AffineStencilIndexStrideTerm],
-    domain: &rumoca_core::StructuredIndexDomain,
-    base_tuple: &[i64],
-    index_tuple: &[i64],
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<usize, ScalarizeError> {
-    let mut value = i128::try_from(base_index).map_err(|_| ScalarizeError::ShapeContract {
-        message: format!("native {kind} family load base index exceeds arithmetic range"),
-        span: Some(span),
-    })?;
-    let mut dimension_strides = vec![0i128; domain.binders.len()];
-    for term in terms {
-        let Some(stride) = dimension_strides.get_mut(term.dimension) else {
-            return Err(ScalarizeError::InvalidStrideDimension {
-                kind,
-                dimension: term.dimension,
-                dimension_count: domain.binders.len(),
-                span,
-            });
-        };
-        *stride = stride.checked_add(term.stride as i128).ok_or_else(|| {
-            ScalarizeError::ShapeContract {
-                message: format!("native {kind} family load stride accumulation overflowed"),
-                span: Some(span),
-            }
-        })?;
-    }
-    for (dimension, stride) in dimension_strides.into_iter().enumerate() {
-        let delta = i128::from(ordinal_delta(
-            dimension,
-            domain,
-            base_tuple,
-            index_tuple,
-            kind,
-            span,
-        )?);
-        let offset = delta
-            .checked_mul(stride)
-            .ok_or_else(|| ScalarizeError::ShapeContract {
-                message: format!("native {kind} family load stride multiplication overflowed"),
-                span: Some(span),
-            })?;
-        value = value
-            .checked_add(offset)
-            .ok_or_else(|| ScalarizeError::ShapeContract {
-                message: format!("native {kind} family load index accumulation overflowed"),
-                span: Some(span),
-            })?;
-    }
-    if value < 0 {
-        return Err(ScalarizeError::NegativeLoadIndex { kind, value, span });
-    }
-    usize::try_from(value).map_err(|_| ScalarizeError::ShapeContract {
-        message: format!("native {kind} family load index exceeds host range"),
-        span: Some(span),
-    })
-}
-
-fn apply_const_terms(
-    base_value: f64,
-    terms: &[rumoca_ir_solve::AffineStencilConstStrideTerm],
-    domain: &rumoca_core::StructuredIndexDomain,
-    base_tuple: &[i64],
-    index_tuple: &[i64],
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<f64, ScalarizeError> {
-    let mut value = base_value;
-    let mut dimension_strides = vec![0.0f64; domain.binders.len()];
-    for term in terms {
-        let Some(stride) = dimension_strides.get_mut(term.dimension) else {
-            return Err(ScalarizeError::InvalidStrideDimension {
-                kind,
-                dimension: term.dimension,
-                dimension_count: domain.binders.len(),
-                span,
-            });
-        };
-        *stride += term.stride;
-        if !stride.is_finite() {
-            return Err(ScalarizeError::ShapeContract {
-                message: format!("native {kind} family constant stride accumulation is non-finite"),
-                span: Some(span),
-            });
-        }
-    }
-    for (dimension, stride) in dimension_strides.into_iter().enumerate() {
-        value +=
-            ordinal_delta(dimension, domain, base_tuple, index_tuple, kind, span)? as f64 * stride;
-        if !value.is_finite() && base_value.is_finite() {
-            return Err(ScalarizeError::ShapeContract {
-                message: format!("native {kind} family constant adjustment is non-finite"),
-                span: Some(span),
-            });
-        }
-    }
-    Ok(value)
-}
-
-fn ordinal_delta(
-    dimension: usize,
-    domain: &rumoca_core::StructuredIndexDomain,
-    base_tuple: &[i64],
-    index_tuple: &[i64],
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<i64, ScalarizeError> {
-    let Some(binder) = domain.binders.get(dimension) else {
-        return Err(ScalarizeError::InvalidStrideDimension {
-            kind,
-            dimension,
-            dimension_count: domain.binders.len(),
-            span,
-        });
-    };
-    let step = binder.step;
-    Ok((index_tuple[dimension] - base_tuple[dimension]) / step)
 }
 
 pub(super) fn checked_tensor_output_count_optional(

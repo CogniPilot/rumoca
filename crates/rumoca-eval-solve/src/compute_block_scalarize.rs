@@ -5,6 +5,7 @@ use rumoca_ir_solve::{
 
 mod affine;
 mod dense;
+mod kernel_plan;
 
 pub use affine::{
     checked_tensor_output_count, scalar_program_output_count, scalar_program_output_indices,
@@ -13,6 +14,7 @@ pub use affine::{
 use affine::{checked_tensor_output_count_optional, scalarize_affine_rows_with_span};
 pub(crate) use affine::{tensor_output_count, validate_affine_stride_metadata};
 use dense::{MatMulScalarizeInput, scalarize_linsolve, scalarize_matmul};
+pub use kernel_plan::{AffineKernelConst, AffineKernelLoad, AffineKernelNode, AffineKernelPlan};
 
 /// Expand tensor `ComputeBlock` nodes to flat scalar programs.
 ///

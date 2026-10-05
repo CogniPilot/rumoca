@@ -31,6 +31,23 @@ pub(super) fn compiled_expression(
     backend.and_then(|backend| optional_compiled(label, backend.compile_expression(block)))
 }
 
+/// `block` compiled by `backend` for whole-block calls with its tensor nodes
+/// kept compact, or `scalar` (the block's scalar view) compiled when the
+/// backend has no compact form for it.
+pub(super) fn compiled_compute_expression(
+    backend: Option<&Rc<dyn SolveExecutionBackend>>,
+    label: &str,
+    block: &solve::ComputeBlock,
+    scalar: &solve::ScalarProgramBlock,
+) -> Option<Rc<dyn CompiledSolveExpression>> {
+    let backend = backend?;
+    match backend.compile_compute_expression(block) {
+        Ok(Some(compiled)) => Some(compiled),
+        Ok(None) => optional_compiled(label, backend.compile_expression(scalar)),
+        Err(error) => optional_compiled(label, Err(error)),
+    }
+}
+
 /// `block` compiled by `backend` as a forward-mode Jacobian, if it compiles.
 pub(super) fn compiled_jacobian(
     backend: Option<&Rc<dyn SolveExecutionBackend>>,

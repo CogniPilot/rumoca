@@ -121,6 +121,8 @@ struct Measurement {
     dae_scalar_residual_view_available: bool,
     solve_map_nodes: usize,
     solve_affine_stencil_nodes: usize,
+    native_kernels: usize,
+    native_compiled_rows: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -136,6 +138,8 @@ struct CompileInventory {
     dae_scalar_residual_view_available: bool,
     solve_map_nodes: usize,
     solve_affine_stencil_nodes: usize,
+    native_kernels: usize,
+    native_compiled_rows: usize,
 }
 
 fn whole_array_source(size: usize) -> String {
@@ -274,6 +278,12 @@ fn inventory(result: &CompilationResult) -> Result<CompileInventory> {
     let solve = rumoca_sim::lower_solve_problem(&result.dae)
         .context("tensor workload failed Solve-IR lowering")?;
     let solve_counts = solve.compute_node_counts();
+    // The native derivative block: compact nodes run as loop kernels, so the
+    // number of rows compiled one by one must not grow with the domain.
+    let native = rumoca_sim::native_compute_inventory(&solve.continuous.derivative_rhs)
+        .map_err(anyhow::Error::msg)
+        .context("tensor workload failed native compilation")?
+        .unwrap_or_default();
     Ok(CompileInventory {
         states,
         algebraics,
@@ -286,6 +296,8 @@ fn inventory(result: &CompilationResult) -> Result<CompileInventory> {
         dae_scalar_residual_view_available,
         solve_map_nodes: solve_counts.map,
         solve_affine_stencil_nodes: solve_counts.affine_stencil,
+        native_kernels: native.kernels,
+        native_compiled_rows: native.compiled_rows,
     })
 }
 
@@ -312,6 +324,8 @@ fn measure_workload(
             dae_scalar_residual_view_available: false,
             solve_map_nodes: 0,
             solve_affine_stencil_nodes: 0,
+            native_kernels: 0,
+            native_compiled_rows: 0,
         })
         .collect::<Vec<_>>();
     collect_samples(workload, &mut measurements, repetitions)?;
@@ -373,6 +387,8 @@ fn record_sample(measurement: &mut Measurement, elapsed: Duration, inventory: Co
     measurement.dae_scalar_residual_view_available = inventory.dae_scalar_residual_view_available;
     measurement.solve_map_nodes = inventory.solve_map_nodes;
     measurement.solve_affine_stencil_nodes = inventory.solve_affine_stencil_nodes;
+    measurement.native_kernels = inventory.native_kernels;
+    measurement.native_compiled_rows = inventory.native_compiled_rows;
 }
 
 struct StructuralAssessment {
@@ -416,6 +432,7 @@ fn assess_structure(workload: Workload, measurements: &[Measurement]) -> Structu
                     &mut failures,
                     format!("N={size}: expected a native Solve Map node"),
                 );
+                require_native_kernels(measurement, 1, 0, &mut failures);
                 compact_storage &= measurement.equations == 0;
             }
             Workload::CascadedFirstOrder => {
@@ -443,6 +460,7 @@ fn assess_structure(workload: Workload, measurements: &[Measurement]) -> Structu
                     &mut failures,
                     format!("N={size}: expected a native Solve AffineStencil node"),
                 );
+                require_native_kernels(measurement, 1, 1, &mut failures);
                 require_structure(
                     measurement.equations == 1,
                     &mut failures,
@@ -483,6 +501,28 @@ fn assess_grid(measurement: &Measurement, failures: &mut Vec<String>) {
             >= measurement.structured_families,
         failures,
         format!("N={size}: expected one native Solve tensor node per grid family"),
+    );
+    require_native_kernels(measurement, measurement.structured_families, 0, failures);
+}
+
+/// The native derivative block runs at least `kernels` loop kernels and
+/// compiles exactly `rows` scalar rows one by one, at every size: a runtime
+/// that re-expanded the compact nodes into per-row code fails here.
+fn require_native_kernels(
+    measurement: &Measurement,
+    kernels: usize,
+    rows: usize,
+    failures: &mut Vec<String>,
+) {
+    let size = measurement.size;
+    require_structure(
+        measurement.native_kernels >= kernels && measurement.native_compiled_rows == rows,
+        failures,
+        format!(
+            "N={size}: expected at least {kernels} native loop kernels and {rows} per-row \
+             compiled rows, found {} kernels and {} rows",
+            measurement.native_kernels, measurement.native_compiled_rows
+        ),
     );
 }
 
@@ -574,7 +614,7 @@ fn print_workload(report: &WorkloadReport, max_exponent: f64) {
         println!(
             "  N={:<5} median={:>9.3} ms equations={} families={} domain_points={} \
              row_major={} binder_substitution={} non_materialized={} dae_scalar_view={} \
-             solve_maps={} solve_stencils={}",
+             solve_maps={} solve_stencils={} native_kernels={} native_rows={}",
             measurement.size,
             measurement.median_ms,
             measurement.equations,
@@ -586,6 +626,8 @@ fn print_workload(report: &WorkloadReport, max_exponent: f64) {
             measurement.dae_scalar_residual_view_available,
             measurement.solve_map_nodes,
             measurement.solve_affine_stencil_nodes,
+            measurement.native_kernels,
+            measurement.native_compiled_rows,
         );
     }
     for failure in &report.structural_failures {
@@ -653,6 +695,8 @@ mod tests {
             non_materialized_families: 1,
             dae_scalar_residual_view_available: false,
             solve_affine_stencil_nodes: 1,
+            native_kernels: 1,
+            native_compiled_rows: 1,
             ..Measurement::default()
         }
     }
@@ -673,7 +717,28 @@ mod tests {
         let assessment = assess_structure(Workload::GridTwoBodyInterior, &[measurement]);
 
         assert!(!assessment.integrity_passed);
-        assert_eq!(assessment.failures.len(), 2);
+        assert_eq!(assessment.failures.len(), 3);
+    }
+
+    #[test]
+    fn per_row_native_compilation_cannot_pass_structural_ratchet() {
+        // Compact Solve nodes whose runtime compiles every scalar row.
+        let side = grid_side(128);
+        let measurement = Measurement {
+            size: 128,
+            structured_families: 10,
+            compact_domain_points: 2 * side * side,
+            solve_map_nodes: 4,
+            solve_affine_stencil_nodes: 6,
+            native_kernels: 0,
+            native_compiled_rows: 2 * side * side,
+            ..Measurement::default()
+        };
+
+        let assessment = assess_structure(Workload::GridTwoBodyInterior, &[measurement]);
+
+        assert!(!assessment.integrity_passed);
+        assert_eq!(assessment.failures.len(), 1);
     }
 
     #[test]
@@ -708,13 +773,15 @@ mod tests {
         let assessment =
             assess_structure(Workload::CascadedFirstOrder, &[cascaded_measurement(128)]);
 
-        assert!(assessment.integrity_passed);
+        // Placeholder rows break both the one-boundary-row invariant and the
+        // compact-storage contract.
+        assert!(!assessment.integrity_passed);
         assert!(!assessment.spec_0032_compact_storage);
     }
 
     #[test]
     fn compact_cascaded_owner_can_satisfy_structural_ratchet() {
-        let assessment = assess_structure(Workload::CascadedFirstOrder, &[cascaded_measurement(2)]);
+        let assessment = assess_structure(Workload::CascadedFirstOrder, &[cascaded_measurement(1)]);
 
         assert!(assessment.integrity_passed);
         assert!(assessment.spec_0032_compact_storage);

@@ -37,6 +37,7 @@ mod register_storage_tests;
 mod selected_jvp;
 mod selected_residual;
 mod status;
+mod tensor_kernel;
 pub(crate) mod typed_program;
 
 use host_runtime::{host_jit_builder, register_math_symbols, with_active_external_tables};
@@ -49,6 +50,7 @@ use input_validation::{
 use interpreter::execute_row;
 use owned_jit_module::{OwnedJitModule, declare_far_call_in_func};
 pub(crate) use projection_batch::SharedProjectionModule;
+pub(crate) use tensor_kernel::{CompiledTensorKernels, residual_tensor_kernel_supported};
 
 // Each compiled program writes its outputs through the trailing `*mut f64`
 // pointer (one program may emit several outputs via consecutive StoreOutputs).

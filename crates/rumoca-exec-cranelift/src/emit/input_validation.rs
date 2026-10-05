@@ -8,7 +8,7 @@ pub(crate) struct InputRequirements {
 }
 
 impl InputRequirements {
-    fn merge(self, other: Self) -> Self {
+    pub(super) fn merge(self, other: Self) -> Self {
         Self {
             y_len: self.y_len.max(other.y_len),
             p_len: self.p_len.max(other.p_len),

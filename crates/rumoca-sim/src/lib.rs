@@ -67,6 +67,11 @@ mod native_execution {
         None
     }
 }
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "solver-rk45", feature = "solver-diffsol")
+))]
+pub use native_execution::{NativeComputeInventory, native_compute_inventory};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;

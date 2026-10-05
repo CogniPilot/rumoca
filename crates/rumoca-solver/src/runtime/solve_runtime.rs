@@ -95,8 +95,8 @@ use refresh_execution::static_refresh_parameter_indices;
 use refresh_projection::*;
 use seed_linearization::SeedProjectionCache;
 use support::{
-    build_visible_name_index, compiled_expression, compiled_jacobian, copy_runtime_values,
-    copy_runtime_values_into, fill_inactive_root_output, optional_compiled,
+    build_visible_name_index, compiled_compute_expression, compiled_expression, compiled_jacobian,
+    copy_runtime_values, copy_runtime_values_into, fill_inactive_root_output, optional_compiled,
     reserve_runtime_index_map_capacity, reserve_runtime_vec_capacity, resize_runtime_values,
     validate_finite_runtime_output, validate_runtime_output_len, visible_value_index_error,
     zero_runtime_values,
@@ -159,6 +159,17 @@ pub trait SolveExecutionBackend {
         &self,
         block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String>;
+
+    /// Prepare a whole compute block for whole-block calls with its affine
+    /// tensor nodes executed natively over their compact domains (SPEC_0032
+    /// §4). `Ok(None)` means the backend has no compact form for this block,
+    /// and the caller compiles the block's scalar view instead.
+    fn compile_compute_expression(
+        &self,
+        _block: &solve::ComputeBlock,
+    ) -> Result<Option<Rc<dyn CompiledSolveExpression>>, String> {
+        Ok(None)
+    }
 
     fn compile_assignment_schedule(
         &self,
@@ -629,9 +640,17 @@ impl SolveRuntime {
             primary.map(|primary| primary.derivative_scalar.block()),
             &derivative_scalar_rhs,
         )
-        .expression(
+        .expression_with_fresh(
             primary.and_then(|primary| primary.compiled_derivative_rhs.as_ref()),
             &derivative_scalar_rhs,
+            &mut || {
+                compiled_compute_expression(
+                    execution_backend.as_ref(),
+                    "derivative_rhs",
+                    &model.problem.continuous.derivative_rhs,
+                    &derivative_scalar_rhs,
+                )
+            },
             &mut |block| compiled_expression(execution_backend.as_ref(), "derivative_rhs", block),
         );
         let refresh_owners = &model.problem.continuous.refresh_owners;
