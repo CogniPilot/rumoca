@@ -163,21 +163,23 @@ fn bits(result: &SimResult) -> Vec<Vec<u64>> {
 
 /// [`assert_trajectory_exact_under`] for native execution, which splits the
 /// compiled residual programs, and for the interpreter, which splits the
-/// prepared ones; returns the interpreter's counts.
+/// prepared ones; returns the native and the interpreter counts.
 fn assert_trajectory_exact(
     label: &str,
     dae: &rumoca_ir_dae::Dae,
-) -> rumoca_solver::BlockResidualSplitCounts {
+) -> (
+    rumoca_solver::BlockResidualSplitCounts,
+    rumoca_solver::BlockResidualSplitCounts,
+) {
     let native = assert_trajectory_exact_under(label, dae, SimExecutionPolicy::Auto);
     assert!(
         native.calls > 0 && native.fallbacks == 0,
         "{label} native: {native:?}"
     );
-    assert!(
-        native.batched_rows > 0,
-        "{label} native: compiled residual passes evaluate their rows in one batch: {native:?}"
-    );
-    assert_trajectory_exact_under(label, dae, SimExecutionPolicy::Interpreter)
+    (
+        native,
+        assert_trajectory_exact_under(label, dae, SimExecutionPolicy::Interpreter),
+    )
 }
 
 /// Split and unsplit trajectories under `policy` agree bit for bit; returns
@@ -206,7 +208,10 @@ fn fixture_splits_are_exact_and_evaluate_each_invariant_part_once_per_call() {
     let chain_programs = check_splits("TangentChain", &lower(&chain));
     assert!(chain_programs >= 1, "a chain program splits");
     assert!(check_splits("TangentLoops", &lower(&loops)) >= 1);
-    let counts = assert_trajectory_exact("TangentChain", &chain);
+    let (native, counts) = assert_trajectory_exact("TangentChain", &chain);
+    // The chain block's rows are one-output programs with no shared residual
+    // output selection, so native residual passes evaluate them in one batch.
+    assert!(native.batched_rows > 0, "{native:?}");
     assert!(counts.calls > 0, "the chain block splits: {counts:?}");
     assert_eq!(counts.fallbacks, 0);
     // The chain's one split block: exactly one invariant evaluation per split
@@ -279,7 +284,21 @@ fn fourbar1_splits_are_exact() {
         "SplitFourbar1",
         &[root],
     );
-    assert!(check_splits("Fourbar1", &lower(&dae)) >= 1);
-    let counts = assert_trajectory_exact("Fourbar1", &dae);
+    let model = lower(&dae);
+    assert!(check_splits("Fourbar1", &model) >= 1);
+    // Every multi-row affine block of Fourbar1 shares residual programs across
+    // its rows, so its passes evaluate the shared output selection once per
+    // program and never the per-row batch.
+    let structures = model.artifacts.continuous.structural.algebraic_projection();
+    let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
+    assert!(
+        blocks
+            .iter()
+            .zip(structures)
+            .filter(|(block, _)| block.rows.len() > 1)
+            .all(|(_, structure)| structure.residual_output_evaluation().is_some())
+    );
+    let (native, counts) = assert_trajectory_exact("Fourbar1", &dae);
+    assert_eq!(native.batched_rows, 0, "{native:?}");
     assert!(counts.calls > 0 && counts.fallbacks == 0, "{counts:?}");
 }
