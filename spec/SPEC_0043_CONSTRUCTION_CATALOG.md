@@ -635,6 +635,7 @@ initialization residual system.
 | FMI 2 scalar variables and FMI 3 tensor variables derive from the same checked storage runs | Version adapters | Version projection cannot repeat equation lowering |
 | The consuming `FmiCCodegenView` contains either the event-free proof or the parameter-assertion proof of SPEC_0044 ME-EVENT-003, plus the ordered parameter-initialization proof of ME-PARAM-001. It admits only the implemented Real public ABI. Whole-inventory encoding requires those proofs; pure-call owners and initial values come from the same retained model. The unrestricted correlated view remains non-serializable | FMI C profile construction | Assertion support cannot bypass admission, pair foreign bodies or initial values with metadata, or discard validation |
 | Unsupported source types fail in `rumoca-phase-solve::fmi` before target rendering | FMI lowering | No plausible default representation |
+| `FmiComponent::construct` attaches `RootLocationPlan::STANDARD`; its `RootBracket` opens with the schedule `tolerance * 2^(n + minmax_slack)`, `n` the bisection count, halves it per evaluation, and admits only trials within the minmax radius of the midpoint, so the evaluation bound is fixed when the bracket is constructed (SPEC_0040 SOLVE-C64) | `rumoca-ir-solve::fmi::root_location` | Termination is proven at construction, not checked per indicator |
 
 ### 9. Solve Algorithm Block Construction Catalog (pending: 2026-08-08 plan, M3-4)
 
