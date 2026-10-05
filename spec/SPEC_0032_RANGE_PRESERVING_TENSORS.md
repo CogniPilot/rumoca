@@ -150,6 +150,7 @@ or scalar-type-incompatible projection is rejected at this owner.
 | A derivative family's output map is the affine image of its matched slots | `rumoca-phase-solve` | A strided grid interior stays one node |
 | A native backend executes a `Map`/`AffineStencil` node as one loop kernel over its compact domain, driven by the same point plan that generates the node's scalar view | `rumoca-eval-solve::AffineKernelPlan`, native backends | Compile cost independent of domain size; the kernel and the view cannot disagree |
 | A single-body structured initialization family whose points share one affine program lowers to one `Map` node over its consecutive residual rows; its Jacobian is that node's tensor JVP | `rumoca-phase-solve` initialization lowering | The initialization system stays compact through Solve and the runtime |
+| A scalar Jacobian artifact of a block is the scalar view of the block's tensor JVP: forward AD runs once per tensor node's base program | `rumoca-phase-solve` artifacts | Under the solver-y and parameter seed every AD rule is independent of load indices and constant values, so the view equals per-row AD while its cost follows the node, not its domain |
 
 `Map` represents canonical DAE residual families that are elementwise over a
 compact domain, including `der(u) = w` after DAE canonicalization. `AffineStencil`
