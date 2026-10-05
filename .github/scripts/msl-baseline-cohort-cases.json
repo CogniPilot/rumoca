@@ -1,0 +1,227 @@
+{
+  "about": "Shared verdicts of the cohort-relative baseline comparison. Each case applies a JSON merge patch (RFC 7396) to `base` for the reference and for the candidate, then lists the metric labels that regress and improve, or the error an inconsistent snapshot raises. Read by .github/scripts/msl-baseline-ratchet.test.mjs and crates/xtask/src/verify_cmd/msl_quality_baseline/cohort/tests.rs.",
+  "base": {
+    "certified_strict_high_models": ["A", "B", "C", "D"],
+    "trace_model_evidence": {
+      "A": { "ic_deviation_channels": 1, "ic_severe_channels": 0, "ic_violation_mass": 0.5, "state_set": { "rumoca_only": 1, "omc_only": 1, "exact": false } },
+      "B": { "ic_deviation_channels": 0, "ic_severe_channels": 0, "ic_violation_mass": 0.0, "state_set": { "rumoca_only": 0, "omc_only": 0, "exact": true } },
+      "C": { "ic_deviation_channels": 0, "ic_severe_channels": 0, "ic_violation_mass": 0.0, "state_set": { "rumoca_only": 2, "omc_only": 1, "exact": false } },
+      "D": { "ic_deviation_channels": 0, "ic_severe_channels": 0, "ic_violation_mass": 0.0, "state_set": { "rumoca_only": 0, "omc_only": 0, "exact": true } }
+    },
+    "runtime_ratio_cohort_models": ["A", "B", "C", "D"],
+    "runtime_model_ratios": {
+      "A": { "system": 1.0, "wall": 10.0 },
+      "B": { "system": 2.0, "wall": 20.0 },
+      "C": { "system": 3.0, "wall": 30.0 },
+      "D": { "system": 4.0, "wall": 40.0 }
+    },
+    "runtime_ratio_stats": {
+      "system_ratio_both_success": { "median": 2.5 },
+      "wall_ratio_both_success": { "median": 25.0 }
+    },
+    "trace_accuracy_stats": {
+      "models_compared": 4,
+      "agreement_high": 4,
+      "agreement_minor": 0,
+      "agreement_deviation": 0,
+      "bad_channels_total": 0,
+      "severe_channels_total": 0,
+      "models_with_severe_channel": 0,
+      "models_with_any_channel_deviation": 0,
+      "violation_mass_total": 0.0,
+      "initial_condition": {
+        "models_compared": 4,
+        "deviation_channels_total": 1,
+        "severe_channels_total": 0,
+        "violation_mass_total": 0.5
+      },
+      "state_selection": {
+        "models_compared": 4,
+        "exact_state_set_match_models": 2,
+        "total_rumoca_only_states": 3,
+        "total_omc_only_states": 2
+      }
+    }
+  },
+  "grown": {
+    "certified_strict_high_models": ["A", "B", "C", "D", "E", "F", "G"],
+    "trace_model_evidence": {
+      "E": { "ic_deviation_channels": 3, "ic_severe_channels": 1, "ic_violation_mass": 2.0, "state_set": { "rumoca_only": 4, "omc_only": 4, "exact": false } },
+      "F": { "ic_deviation_channels": 0, "ic_severe_channels": 0, "ic_violation_mass": 0.0, "state_set": { "rumoca_only": 0, "omc_only": 0, "exact": true } },
+      "G": { "ic_deviation_channels": 0, "ic_severe_channels": 0, "ic_violation_mass": 0.0 }
+    },
+    "runtime_ratio_cohort_models": ["A", "B", "C", "D", "E", "F", "G"],
+    "runtime_model_ratios": {
+      "E": { "system": 0.1, "wall": 1.0 },
+      "F": { "system": 0.1, "wall": 1.0 },
+      "G": { "system": 0.1, "wall": 1.0 }
+    },
+    "runtime_ratio_stats": {
+      "system_ratio_both_success": { "median": 1.0 },
+      "wall_ratio_both_success": { "median": 10.0 }
+    },
+    "trace_accuracy_stats": {
+      "models_compared": 7,
+      "agreement_high": 7,
+      "initial_condition": {
+        "models_compared": 7,
+        "deviation_channels_total": 4,
+        "severe_channels_total": 1,
+        "violation_mass_total": 2.5
+      },
+      "state_selection": {
+        "models_compared": 6,
+        "exact_state_set_match_models": 3,
+        "total_rumoca_only_states": 7,
+        "total_omc_only_states": 6
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "an identical snapshot neither regresses nor improves",
+      "reference": {},
+      "candidate": {},
+      "regressions": [],
+      "improvements": []
+    },
+    {
+      "name": "new models raise every raw total and lower the whole-run medians, yet no shared model got worse",
+      "reference": {},
+      "candidate": "grown",
+      "regressions": [],
+      "improvements": []
+    },
+    {
+      "name": "a shared model that loses its exact state set is refused even while the cohort grows",
+      "reference": {},
+      "candidate": ["grown", {
+        "trace_model_evidence": { "B": { "state_set": { "rumoca_only": 1, "exact": false } } },
+        "trace_accuracy_stats": { "state_selection": { "exact_state_set_match_models": 2, "total_rumoca_only_states": 8 } }
+      }],
+      "regressions": ["state-set rumoca-only states", "state-set exact matches"],
+      "improvements": []
+    },
+    {
+      "name": "an initial-condition deviation on a shared model is refused",
+      "reference": {},
+      "candidate": {
+        "trace_model_evidence": { "A": { "ic_deviation_channels": 2 } },
+        "trace_accuracy_stats": { "initial_condition": { "deviation_channels_total": 2 } }
+      },
+      "regressions": ["initial-condition deviation channels"],
+      "improvements": []
+    },
+    {
+      "name": "a shared model that improves is reported as an improvement",
+      "reference": {},
+      "candidate": {
+        "trace_model_evidence": { "A": { "ic_deviation_channels": 0, "ic_violation_mass": 0.0 } },
+        "trace_accuracy_stats": { "initial_condition": { "deviation_channels_total": 0, "violation_mass_total": 0.0 } }
+      },
+      "regressions": [],
+      "improvements": ["initial-condition deviation channels", "initial-condition violation mass"]
+    },
+    {
+      "name": "a wall speedup drop beyond 35 percent over the reference cohort is refused",
+      "reference": {},
+      "candidate": {
+        "runtime_model_ratios": { "A": { "wall": 5.0 }, "B": { "wall": 10.0 }, "C": { "wall": 15.0 }, "D": { "wall": 20.0 } },
+        "runtime_ratio_stats": { "wall_ratio_both_success": { "median": 12.5 } }
+      },
+      "regressions": ["runtime wall speedup median"],
+      "improvements": []
+    },
+    {
+      "name": "timing less than 90 percent of the reference runtime cohort is refused",
+      "reference": {},
+      "candidate": {
+        "runtime_ratio_cohort_models": ["A", "B"],
+        "runtime_model_ratios": { "C": null, "D": null },
+        "runtime_ratio_stats": { "system_ratio_both_success": { "median": 1.5 }, "wall_ratio_both_success": { "median": 15.0 } }
+      },
+      "regressions": ["runtime cohort coverage"],
+      "improvements": []
+    },
+    {
+      "name": "a reference without per-model evidence is compared over its strict-high roster",
+      "reference": { "trace_model_evidence": null, "runtime_model_ratios": null },
+      "candidate": "grown",
+      "regressions": [],
+      "improvements": []
+    },
+    {
+      "name": "a reference without per-model evidence still refuses a shared-model regression",
+      "reference": { "trace_model_evidence": null, "runtime_model_ratios": null },
+      "candidate": ["grown", {
+        "trace_model_evidence": { "A": { "ic_deviation_channels": 2 } },
+        "trace_accuracy_stats": { "initial_condition": { "deviation_channels_total": 5 } }
+      }],
+      "regressions": ["initial-condition deviation channels"],
+      "improvements": []
+    },
+    {
+      "name": "a reference without per-model evidence refuses a candidate missing any of its models",
+      "reference": { "trace_model_evidence": null, "runtime_model_ratios": null },
+      "candidate": {
+        "certified_strict_high_models": ["A", "B", "C"],
+        "trace_model_evidence": { "D": null },
+        "trace_accuracy_stats": {
+          "models_compared": 3,
+          "agreement_high": 3,
+          "initial_condition": { "models_compared": 3 },
+          "state_selection": { "models_compared": 3, "exact_state_set_match_models": 1 }
+        }
+      },
+      "regressions": [
+        "initial-condition deviation channels",
+        "initial-condition severe channels",
+        "initial-condition violation mass",
+        "state-set rumoca-only states",
+        "state-set omc-only states",
+        "state-set exact matches"
+      ],
+      "improvements": []
+    },
+    {
+      "name": "a reference whose roster is not its compared set compares the recorded totals",
+      "reference": { "trace_model_evidence": null, "runtime_model_ratios": null, "certified_strict_high_models": ["A", "B", "C"] },
+      "candidate": "grown",
+      "regressions": [
+        "initial-condition deviation channels",
+        "initial-condition severe channels",
+        "initial-condition violation mass",
+        "state-set rumoca-only states",
+        "state-set omc-only states"
+      ],
+      "improvements": ["state-set exact matches"]
+    },
+    {
+      "name": "a candidate without per-model evidence compares the recorded totals and whole-run medians",
+      "reference": {},
+      "candidate": ["grown", { "trace_model_evidence": null, "runtime_model_ratios": null }],
+      "regressions": [
+        "initial-condition deviation channels",
+        "initial-condition severe channels",
+        "initial-condition violation mass",
+        "state-set rumoca-only states",
+        "state-set omc-only states",
+        "runtime system speedup median",
+        "runtime wall speedup median"
+      ],
+      "improvements": ["state-set exact matches"]
+    },
+    {
+      "name": "per-model evidence that does not add up to its totals is refused",
+      "reference": {},
+      "candidate": { "trace_model_evidence": { "A": { "ic_deviation_channels": 5 } } },
+      "error": "per-model evidence"
+    },
+    {
+      "name": "per-model runtime ratios that do not give the recorded median are refused",
+      "reference": {},
+      "candidate": { "runtime_ratio_stats": { "wall_ratio_both_success": { "median": 99.0 } } },
+      "error": "median"
+    }
+  ]
+}

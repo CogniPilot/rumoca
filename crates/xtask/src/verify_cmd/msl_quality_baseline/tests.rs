@@ -58,17 +58,47 @@ fn header(omc_version: &str) -> MslQualityBaselineHeader {
             models_with_any_channel_deviation: 60,
             violation_mass_total: 229.0,
             initial_condition: InitialConditionStats {
+                models_compared: None,
                 deviation_channels_total: 439,
                 severe_channels_total: 50,
                 violation_mass_total: 121.0,
             },
             state_selection: StateSelectionStats {
+                models_compared: None,
                 exact_state_set_match_models: 164,
                 total_rumoca_only_states: 108,
                 total_omc_only_states: 122,
             },
         },
+        cohort: Default::default(),
     }
+}
+
+/// Record per-model state-set evidence (rumoca-only state counts, no
+/// initial-condition deviations) and the totals it sums to.
+fn with_state_evidence(
+    mut baseline: MslQualityBaselineHeader,
+    models: &[(&str, usize)],
+) -> MslQualityBaselineHeader {
+    let evidence = models
+        .iter()
+        .map(|(model, rumoca_only)| {
+            let state_set = json!({"rumoca_only": rumoca_only, "omc_only": 0, "exact": *rumoca_only == 0});
+            (model.to_string(), json!({"ic_deviation_channels": 0, "ic_severe_channels": 0, "ic_violation_mass": 0.0, "state_set": state_set}))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    baseline.cohort = serde_json::from_value(json!({ "trace_model_evidence": evidence })).unwrap();
+    let initial = &mut baseline.trace_accuracy_stats.initial_condition;
+    initial.models_compared = Some(models.len());
+    initial.deviation_channels_total = 0;
+    initial.severe_channels_total = 0;
+    initial.violation_mass_total = 0.0;
+    let state = &mut baseline.trace_accuracy_stats.state_selection;
+    state.models_compared = Some(models.len());
+    state.total_rumoca_only_states = models.iter().map(|(_, count)| count).sum();
+    state.total_omc_only_states = 0;
+    state.exact_state_set_match_models = models.iter().filter(|(_, count)| *count == 0).count();
+    baseline
 }
 
 fn promoted_bridge() -> PromotedBaselineBridge {
@@ -343,6 +373,25 @@ fn partial_schema_migration_rejects_unrelated_cumulative_regression() {
     let error =
         choose_baseline(&promoted, &checked_in).expect_err("unrelated regression must fail");
     assert!(error.to_string().contains("compiled models"), "{error}");
+}
+
+#[test]
+fn schema_migration_compares_state_sets_over_the_models_both_baselines_measured() {
+    let promoted = with_state_evidence(promoted_v3("a96aa1a-cmake"), &[("A", 2), ("B", 0)]);
+    let grown = with_state_evidence(header("a96aa1a-cmake"), &[("A", 2), ("B", 0), ("C", 9)]);
+    assert_eq!(
+        choose_baseline(&promoted, &grown).expect("a newly measured model is no regression"),
+        BaselineChoice::CheckedInMigration
+    );
+
+    let regressed = with_state_evidence(header("a96aa1a-cmake"), &[("A", 3), ("B", 0), ("C", 9)]);
+    let error = choose_baseline(&promoted, &regressed).expect_err("a shared model regressed");
+    assert!(
+        error
+            .to_string()
+            .contains("state-set rumoca-only states over 2 shared models"),
+        "{error}"
+    );
 }
 
 #[test]

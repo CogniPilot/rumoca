@@ -5,11 +5,19 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { cohortComparison } from './msl-baseline-cohort.mjs';
 import {
   ensurePromotableSnapshot,
   promoteBaselineIfImproved,
   ratchetDecision,
 } from './msl-baseline-ratchet.mjs';
+
+const COHORT_CASES = JSON.parse(
+  fs.readFileSync(new URL('./msl-baseline-cohort-cases.json', import.meta.url), 'utf8'),
+);
+const REAL_STATE_SETS = JSON.parse(
+  fs.readFileSync(new URL('./msl-baseline-real-state-sets.json', import.meta.url), 'utf8'),
+);
 
 const CHECKED_IN_BASELINE_PATH = fileURLToPath(
   new URL(
@@ -411,4 +419,127 @@ test('the tracked baseline ratchets over every promoted schema its chain reaches
     link = link.previous;
   }
   assert.ok(reached > 0, `quality schema ${schema} declares no crossable boundary`);
+});
+
+// RFC 7396 JSON merge patch: objects merge, null deletes, anything else
+// replaces.
+function mergePatch(target, patch) {
+  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+    return structuredClone(patch);
+  }
+  const result =
+    typeof target === 'object' && target !== null && !Array.isArray(target)
+      ? structuredClone(target)
+      : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      delete result[key];
+    } else {
+      result[key] = mergePatch(result[key], value);
+    }
+  }
+  return result;
+}
+
+function cohortCaseSnapshot(side) {
+  const patches = Array.isArray(side) ? side : [side];
+  return patches.reduce(
+    (snapshot, patch) => mergePatch(snapshot, typeof patch === 'string' ? COHORT_CASES[patch] : patch),
+    COHORT_CASES.base,
+  );
+}
+
+const metricLabel = (line) => line.split(':')[0].split(' over ')[0];
+
+for (const cohortCase of COHORT_CASES.cases) {
+  test(`cohort comparison: ${cohortCase.name}`, () => {
+    const reference = cohortCaseSnapshot(cohortCase.reference);
+    const candidate = cohortCaseSnapshot(cohortCase.candidate);
+    if (cohortCase.error) {
+      assert.throws(() => cohortComparison(reference, candidate), new RegExp(cohortCase.error));
+      return;
+    }
+    const verdict = cohortComparison(reference, candidate);
+    assert.deepEqual(verdict.regressions.map(metricLabel), cohortCase.regressions);
+    assert.deepEqual(verdict.improvements.map(metricLabel), cohortCase.improvements);
+  });
+}
+
+// A snapshot from per-model evidence, with the totals the evidence sums to.
+function evidenceSnapshot(evidence) {
+  const models = Object.values(evidence);
+  const sum = (pick) => models.reduce((total, entry) => total + pick(entry), 0);
+  const snapshot = fullSnapshot();
+  const roster = Object.keys(evidence);
+  snapshot.certified_strict_high_models = roster;
+  snapshot.trace_model_evidence = structuredClone(evidence);
+  Object.assign(snapshot.trace_accuracy_stats, {
+    models_compared: roster.length,
+    agreement_high: roster.length,
+    agreement_minor: 0,
+    agreement_deviation: 0,
+    models_with_severe_channel: 0,
+  });
+  snapshot.trace_accuracy_stats.initial_condition = {
+    models_compared: roster.length,
+    deviation_channels_total: sum((entry) => entry.ic_deviation_channels),
+    severe_channels_total: sum((entry) => entry.ic_severe_channels),
+    violation_mass_total: sum((entry) => entry.ic_violation_mass),
+  };
+  snapshot.trace_accuracy_stats.state_selection = {
+    models_compared: roster.length,
+    exact_state_set_match_models: sum((entry) => Number(entry.state_set.exact)),
+    total_rumoca_only_states: sum((entry) => entry.state_set.rumoca_only),
+    total_omc_only_states: sum((entry) => entry.state_set.omc_only),
+  };
+  return snapshot;
+}
+
+test('real state-set evidence: renamed states on certified models are refused, new models are not', () => {
+  const reference = evidenceSnapshot(REAL_STATE_SETS.reference);
+  const candidate = evidenceSnapshot(REAL_STATE_SETS.candidate);
+  candidate.sim_ok += 2;
+  const decision = decide(candidate, reference);
+  assert.equal(decision.promote, false);
+  assert.deepEqual(decision.regressions, [
+    'state-set rumoca-only states over 10 shared models: 27 -> 53',
+    'state-set omc-only states over 10 shared models: 27 -> 53',
+  ]);
+
+  // The same models as they were: the newly compared models alone, which the
+  // raw totals counted as a regression, promote.
+  const unchanged = evidenceSnapshot({
+    ...REAL_STATE_SETS.candidate,
+    ...REAL_STATE_SETS.reference,
+  });
+  unchanged.sim_ok += 2;
+  const promoted = decide(unchanged, reference);
+  assert.equal(promoted.promote, true, promoted.reason);
+  assert.ok(
+    unchanged.trace_accuracy_stats.state_selection.total_rumoca_only_states >
+      reference.trace_accuracy_stats.state_selection.total_rumoca_only_states,
+  );
+});
+
+test('the run cohort, not the whole run, carries the runtime medians', () => {
+  const reference = fullSnapshot();
+  reference.runtime_ratio_cohort_models = ['A', 'B'];
+  const current = fullSnapshot();
+  current.sim_ok = 6;
+  current.runtime_ratio_cohort_models = ['A', 'B', 'C'];
+  current.runtime_model_ratios = {
+    A: { system: 2.0, wall: 10.0 },
+    B: { system: 2.0, wall: 10.0 },
+    C: { system: 0.1, wall: 0.5 },
+  };
+  current.runtime_ratio_stats.system_ratio_both_success.median = 2.0;
+  current.runtime_ratio_stats.wall_ratio_both_success.median = 10.0;
+  assert.equal(decide(current, reference).promote, true);
+
+  current.runtime_model_ratios.B.wall = 1.0;
+  current.runtime_model_ratios.A.wall = 1.0;
+  current.runtime_ratio_stats.wall_ratio_both_success.median = 1.0;
+  const regressed = decide(current, reference);
+  assert.equal(regressed.promote, false);
+  assert.match(regressed.reason, /runtime wall speedup median over 2 reference cohort models/);
 });

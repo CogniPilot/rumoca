@@ -2,6 +2,7 @@
 
 mod cache;
 mod certified_cohort;
+mod cohort_evidence;
 mod compiler_contract_migration;
 mod parity_measurement;
 mod reference_stage;
@@ -15,6 +16,7 @@ mod tests;
 use super::*;
 use cache::*;
 use certified_cohort::*;
+use cohort_evidence::*;
 use compiler_contract_migration::*;
 use indexmap::{IndexMap, IndexSet};
 pub(super) use parity_measurement::*;
@@ -1237,6 +1239,9 @@ pub(super) fn write_current_msl_quality_snapshot(
                 })?,
             );
             insert_soundness_roster(root, &cohort.table)?;
+            if let Some(parity) = measurement.gate_input() {
+                insert_cohort_evidence(root, parity, &cohort.table)?;
+            }
         }
     }
     let baseline_path = msl_quality_current_path();

@@ -1,0 +1,227 @@
+{
+  "about": "Per-model initial-condition and state-set evidence recorded by two main-branch MSL runs: the run behind the promoted version-8 asset (CI run 36060605842 at b92932c0fabe9d8fee2dcafaeac457ecb164cc00) and CI run 37263890988 at ca730092ce437ec91f2cb179dec4f294de04b484. The reference holds every certified model whose state set differs between the two runs; the candidate holds the same models plus two models first compared in the later run.",
+  "reference": {
+    "Modelica.Blocks.Examples.PID_Controller": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Initialize": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 3,
+        "omc_only": 3,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Steinmetz": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 7,
+        "omc_only": 7,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_withLosses": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Polyphase.Examples.TransformerYY": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Rotational.Examples.First": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Rotational.Examples.FirstGrounded": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.Accelerate": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.InitialConditions": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 4,
+        "omc_only": 4,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.Oscillator": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    }
+  },
+  "candidate": {
+    "Modelica.Blocks.Examples.PID_Controller": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 6,
+        "omc_only": 6,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Initialize": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 7,
+        "omc_only": 7,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Steinmetz": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 9,
+        "omc_only": 9,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_withLosses": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 8,
+        "omc_only": 8,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Polyphase.Examples.TransformerYY": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Rotational.Examples.First": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 4,
+        "omc_only": 4,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Rotational.Examples.FirstGrounded": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 4,
+        "omc_only": 4,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.Accelerate": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.InitialConditions": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 8,
+        "omc_only": 8,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.Oscillator": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 4,
+        "omc_only": 4,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DC_CompareCharacteristics": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 6,
+        "omc_only": 6,
+        "exact": false
+      }
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0,
+      "state_set": {
+        "rumoca_only": 6,
+        "omc_only": 6,
+        "exact": false
+      }
+    }
+  }
+}

@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { cohortComparison } from './msl-baseline-cohort.mjs';
+
 const DEFAULT_CHECKED_IN_BASELINE_PATH = fileURLToPath(
   new URL(
     '../../crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json',
@@ -50,30 +52,10 @@ const OMC_DEPENDENT_LOWER_IS_BETTER = [
     'trace models with bad channels',
     ['trace_accuracy_stats', 'models_with_any_channel_deviation'],
   ],
-  [
-    'initial-condition deviation channels',
-    ['trace_accuracy_stats', 'initial_condition', 'deviation_channels_total'],
-  ],
-  [
-    'initial-condition severe channels',
-    ['trace_accuracy_stats', 'initial_condition', 'severe_channels_total'],
-  ],
-  [
-    'state-set rumoca-only states',
-    ['trace_accuracy_stats', 'state_selection', 'total_rumoca_only_states'],
-  ],
-  [
-    'state-set omc-only states',
-    ['trace_accuracy_stats', 'state_selection', 'total_omc_only_states'],
-  ],
 ];
 
 const LOWER_FLOAT_IS_BETTER = [
   ['trace violation mass', ['trace_accuracy_stats', 'violation_mass_total']],
-  [
-    'initial-condition violation mass',
-    ['trace_accuracy_stats', 'initial_condition', 'violation_mass_total'],
-  ],
 ];
 
 export function promoteBaselineIfImproved({
@@ -194,7 +176,9 @@ export function ratchetDecision(current, baseline, checkedIn) {
     compareDerivedMetrics(current, baseline, improvements, regressions);
     compareUnexceptedRoster(current, baseline, improvements, regressions);
     compareTraceExceptions(current, baseline, improvements, regressions);
-    compareRuntimeSpeedups(current, baseline, improvements, regressions);
+    const cohort = cohortComparison(baseline, current);
+    improvements.push(...cohort.improvements);
+    regressions.push(...cohort.regressions);
   } else {
     improvements.push(`OMC context: ${baselineOmc} -> ${currentOmc}`);
   }
@@ -360,31 +344,6 @@ function compareIntegerMetrics(
       improvements,
       regressions,
     );
-  }
-}
-
-function compareRuntimeSpeedups(current, baseline, improvements, regressions) {
-  for (const [label, path] of [
-    [
-      'runtime system speedup median',
-      ['runtime_ratio_stats', 'system_ratio_both_success', 'median'],
-    ],
-    [
-      'runtime wall speedup median',
-      ['runtime_ratio_stats', 'wall_ratio_both_success', 'median'],
-    ],
-  ]) {
-    const currentRatio = numberAt(current, path, 'current snapshot');
-    const baselineRatio = numberAt(baseline, path, 'baseline snapshot');
-    if (currentRatio < baselineRatio * 0.65) {
-      regressions.push(
-        `${label}: ${baselineRatio.toExponential(6)} -> ${currentRatio.toExponential(6)}`,
-      );
-    } else if (currentRatio > baselineRatio) {
-      improvements.push(
-        `${label}: ${baselineRatio.toExponential(6)} -> ${currentRatio.toExponential(6)}`,
-      );
-    }
   }
 }
 
