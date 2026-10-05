@@ -496,21 +496,46 @@ struct MslSummary {
     tensor_report_errors: usize,
 }
 
+/// The checked-out commit the run measured. A prebuilt test binary carries the
+/// manifest directory of its build sandbox, which is not a checkout, so the
+/// working directory the harness runs it from is consulted next.
 fn current_git_commit() -> String {
-    let output = Command::new("git")
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    first_git_commit(
+        [Some(manifest_dir), std::env::current_dir().ok()]
+            .into_iter()
+            .flatten(),
+    )
+}
+
+fn first_git_commit(dirs: impl IntoIterator<Item = PathBuf>) -> String {
+    dirs.into_iter()
+        .find_map(|dir| git_head_commit(&dir))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn git_head_commit(dir: &Path) -> Option<String> {
+    let out = Command::new("git")
         .args(["rev-parse", "HEAD"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output();
-    match output {
-        Ok(out) if out.status.success() => {
-            let commit = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if commit.is_empty() {
-                "unknown".to_string()
-            } else {
-                commit
-            }
-        }
-        _ => "unknown".to_string(),
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    let commit = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !commit.is_empty()).then_some(commit)
+}
+
+#[cfg(test)]
+mod git_commit_tests {
+    use super::*;
+
+    #[test]
+    fn a_build_directory_outside_any_checkout_falls_through_to_the_run_directory() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let commit = first_git_commit([sandbox.path().to_path_buf(), checkout]);
+        assert_eq!(commit.len(), 40, "{commit}");
+        assert!(commit.chars().all(|c| c.is_ascii_hexdigit()), "{commit}");
+        assert_eq!(first_git_commit([sandbox.path().to_path_buf()]), "unknown");
     }
 }
 
