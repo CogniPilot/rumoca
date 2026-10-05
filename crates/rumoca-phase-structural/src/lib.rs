@@ -34,14 +34,15 @@ pub use dae_transform::{
     FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
     FormalStageEquation, FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate,
     InitialValuePin, InitialValueRole, PinTerm, PreparedDae, PreparedReducedChart,
-    PreparedStructuralAnalysis, PreparedSystem, ReducedSelectionChart, ReductionCandidateGroup,
-    ReductionIdentity, ReductionLane, ReductionOutcome, ReductionRecord, ReductionReport,
-    ReductionSnapshot, ReductionStop, StateSelection, UnlocalizableGuard, UnmatchedKind,
-    UnmatchedName, alias_quotient_report, construct_formal_derivatives, demote_inert_states,
-    fold_constant_values, fold_evaluable_parameters, formal_alias_quotient_report,
-    inline_annotated_calls, inline_formal_calls, inspect_prepare_for_solve,
-    inspect_quotient_aliases, own_loop_guarded_relations, prepare_for_solve, quotient_aliases,
-    quotient_formal_aliases, unlocalizable_loop_guards,
+    PreparedStateCoordinate, PreparedStateCoordinates, PreparedStructuralAnalysis, PreparedSystem,
+    ReducedSelectionChart, ReducedSelectionMaps, ReductionCandidateGroup, ReductionIdentity,
+    ReductionLane, ReductionOutcome, ReductionRecord, ReductionReport, ReductionSnapshot,
+    ReductionStop, StateSelection, UnlocalizableGuard, UnmatchedKind, UnmatchedName,
+    alias_quotient_report, construct_formal_derivatives, demote_inert_states, fold_constant_values,
+    fold_evaluable_parameters, formal_alias_quotient_report, inline_annotated_calls,
+    inline_formal_calls, inspect_prepare_for_solve, inspect_quotient_aliases,
+    own_loop_guarded_relations, prepare_for_solve, quotient_aliases, quotient_formal_aliases,
+    unlocalizable_loop_guards,
 };
 pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};

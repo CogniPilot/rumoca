@@ -8,6 +8,8 @@ use rumoca_core::StateSelect;
 pub struct FormalStateCoordinate<'formal> {
     value: dae::VariableId<'formal>,
     successor: dae::VariableId<'formal>,
+    origin: dae::VariableId<'formal>,
+    order: u32,
     scalar: u32,
 }
 
@@ -15,6 +17,10 @@ pub struct FormalStateCoordinate<'formal> {
 pub(in crate::dae_transform) struct SelectedCoordinate {
     pub value: u32,
     pub successor: u32,
+    /// The formal value coordinate of the source declaration at order zero,
+    /// of which `value` is the `order`-th formal derivative.
+    pub origin: u32,
+    pub order: u32,
     pub scalar: u32,
 }
 
@@ -43,7 +49,7 @@ pub struct FormalStateCandidate<'system, 'source> {
     formal: &'system FormalDerivativeSystem<'source>,
     model: dae::Dae,
     variables: Vec<u32>,
-    state: Option<u32>,
+    coordinates: Option<super::super::PreparedStateCoordinates>,
     selection: Vec<SelectedCoordinate>,
     charts: Vec<super::super::PreparedReducedChart>,
     structural: super::super::PreparedStructuralAnalysis,
@@ -53,7 +59,7 @@ pub struct FormalStateCandidateView<'map, 'source, 'formal, 'target> {
     pub formal: FormalDerivativeView<'map, 'source, 'formal>,
     pub view: dae::DaeView<'target>,
     variables: &'map [u32],
-    state: Option<u32>,
+    coordinates: Option<&'map super::super::PreparedStateCoordinates>,
     selection: &'map [SelectedCoordinate],
 }
 
@@ -85,7 +91,8 @@ impl<'source, 'formal> FormalDerivativeView<'_, 'source, 'formal> {
         let next = order
             .checked_add(1)
             .ok_or_else(|| candidate_error("state derivative order overflows"))?;
-        let (Some(value), Some(successor)) = (
+        let (Some(origin), Some(value), Some(successor)) = (
+            self.coordinate(variable, 0),
             self.coordinate(variable, order),
             self.coordinate(variable, next),
         ) else {
@@ -93,9 +100,13 @@ impl<'source, 'formal> FormalDerivativeView<'_, 'source, 'formal> {
                 "state coordinate has no formal derivative successor",
             ));
         };
+        let order = u32::try_from(order)
+            .map_err(|_| candidate_error("state derivative order overflows"))?;
         Ok(FormalStateCoordinate {
             value,
             successor,
+            origin,
+            order,
             scalar,
         })
     }
@@ -137,12 +148,14 @@ impl<'source> FormalDerivativeSystem<'source> {
                 .map(|coordinate| SelectedCoordinate {
                     value: coordinate.value.index(),
                     successor: coordinate.successor.index(),
+                    origin: coordinate.origin.index(),
+                    order: coordinate.order,
                     scalar: coordinate.scalar,
                 })
                 .collect::<Vec<_>>();
             Ok((selection, chosen.charts))
         })?;
-        let (model, variables, state) =
+        let (model, variables, coordinates) =
             super::super::reconstruction::rebuild_state_candidate(&self.model, &selection)?;
         let charts = charts
             .into_iter()
@@ -153,7 +166,7 @@ impl<'source> FormalDerivativeSystem<'source> {
             formal: self,
             model,
             variables,
-            state,
+            coordinates,
             selection,
             charts,
             structural,
@@ -233,7 +246,10 @@ impl FormalStateCandidate<'_, '_> {
             self.model,
             Vec::new(),
             self.structural,
-            self.charts.into_boxed_slice(),
+            super::super::ReducedSelectionMaps {
+                coordinates: self.coordinates,
+                charts: self.charts.into_boxed_slice(),
+            },
         )
     }
 
@@ -247,7 +263,7 @@ impl FormalStateCandidate<'_, '_> {
                     formal,
                     view,
                     variables: &self.variables,
-                    state: self.state,
+                    coordinates: self.coordinates.as_ref(),
                     selection: &self.selection,
                 })
             })
@@ -267,7 +283,13 @@ impl<'source, 'target> FormalStateCandidateView<'_, 'source, '_, 'target> {
     }
 
     pub fn state(&self) -> Option<dae::VariableId<'target>> {
-        self.state.and_then(|id| self.view.variable_id(id as usize))
+        self.coordinates?.state(self.view)
+    }
+
+    /// The generated state and the source scalar each of its scalars equals,
+    /// naming variables of `view`; `None` for an empty selection.
+    pub fn state_coordinates(&self) -> Option<&'_ super::super::PreparedStateCoordinates> {
+        self.coordinates
     }
 
     /// Value, successor, and row-major scalar offset for one integration slot.

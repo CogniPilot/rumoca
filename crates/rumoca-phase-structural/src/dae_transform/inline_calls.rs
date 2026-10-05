@@ -60,7 +60,7 @@ pub fn inline_formal_calls(
         dae,
         manifold,
         manifold_redundant,
-        charts,
+        reduced,
         ..
     } = &prepared
     else {
@@ -80,7 +80,7 @@ pub fn inline_formal_calls(
         })
         .collect();
     let structural = super::structural_analysis(&model)?;
-    super::transformed(model, manifold, structural, charts.clone())
+    super::transformed(model, manifold, structural, reduced.clone())
 }
 
 /// One flag per source expression: whether that call node is inlined.

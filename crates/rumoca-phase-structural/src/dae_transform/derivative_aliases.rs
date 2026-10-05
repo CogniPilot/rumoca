@@ -37,7 +37,7 @@ pub(super) fn normalize(prepared: PreparedDae<'_>) -> Result<PreparedDae<'_>, St
     // renumbers variables, so any charts (which name variable ordinals) could
     // not survive it unchanged. The reduced-selection path that issues charts
     // finalizes through `into_prepared` and never reaches this normalization.
-    transformed(model, manifold, structural, Box::new([]))
+    transformed(model, manifold, structural, Default::default())
 }
 
 fn implicit_states(system: PreparedSystem<'_, '_>) -> Vec<u32> {

@@ -2366,3 +2366,43 @@ fn unlocalizable_guards_round_trip_and_are_omitted_when_empty() {
     );
     assert!(UnlocalizableGuard::covering(&back.unlocalizable_guards, 1).is_none());
 }
+
+#[test]
+fn state_coordinate_is_named_by_its_source_and_omitted_when_absent() {
+    let value = SolveStateCoordinate {
+        variable: "mass.s".to_string(),
+        derivative_order: 0,
+    };
+    let rate = SolveStateCoordinate {
+        derivative_order: 2,
+        ..value.clone()
+    };
+    assert_eq!(value.source_name(), "mass.s");
+    assert_eq!(rate.source_name(), "der(der(mass.s))");
+
+    let mut meta = SolveVariableMeta {
+        name: "$state_coordinates[1]".to_string(),
+        source_span: Span::DUMMY,
+        role: "state".to_string(),
+        is_state: true,
+        value_type: None,
+        variability: None,
+        time_domain: None,
+        unit: None,
+        start: None,
+        min: None,
+        max: None,
+        nominal: None,
+        fixed: None,
+        description: None,
+        state_coordinate: None,
+    };
+    let plain = serde_json::to_string(&meta).expect("serialize plain metadata");
+    assert!(!plain.contains("\"state_coordinate\""));
+    meta.state_coordinate = Some(rate.clone());
+    let charted = serde_json::to_string(&meta).expect("serialize charted metadata");
+    let back: SolveVariableMeta = serde_json::from_str(&charted).expect("decode metadata");
+    assert_eq!(back.state_coordinate, Some(rate));
+    let decoded: SolveVariableMeta = serde_json::from_str(&plain).expect("decode plain");
+    assert_eq!(decoded.state_coordinate, None);
+}

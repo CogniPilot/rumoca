@@ -43,6 +43,7 @@ pub(crate) fn lower_solve_problem(
         pins,
         structural,
         charts,
+        ..
     } = prepared;
     if view.variable_count() == 0
         && view.continuous_owner_count() == 0

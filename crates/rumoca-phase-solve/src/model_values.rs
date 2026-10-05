@@ -163,7 +163,7 @@ pub fn lower_solve_model<'source>(
 
     begin_stage(SolveModelLoweringStage::RuntimeValues);
     let runtime_value_start = rumoca_core::maybe_start_timer();
-    let vectors = runtime_vectors(prepared.as_dae(), &problem, overrides)?;
+    let vectors = runtime_vectors(&prepared, &problem, overrides)?;
     let solve_model = solve::SolveModel {
         problem,
         pure_calls: package.pure_calls,
@@ -209,11 +209,13 @@ struct RuntimeVectors {
 }
 
 fn runtime_vectors(
-    model: &dae::Dae,
+    prepared: &rumoca_phase_structural::PreparedDae<'_>,
     problem: &solve::SolveProblem,
     overrides: &HashMap<String, f64>,
 ) -> Result<RuntimeVectors, SolveModelLoweringError> {
-    model.inspect(|view| {
+    let model = prepared.as_dae();
+    prepared.inspect(|system| {
+        let view = system.view;
         let evaluator = NumericEvaluator::with_overrides(view, |variable, scalar| {
             variable
                 .scalar_name(scalar)
@@ -224,6 +226,7 @@ fn runtime_vectors(
             view,
             problem,
             evaluator,
+            state_coordinates: StateCoordinateSources::of(&system)?,
         }
         .build()
     })
@@ -234,6 +237,7 @@ struct RuntimeVectorBuilder<'model, 'dae, F> {
     view: dae::DaeView<'dae>,
     problem: &'model solve::SolveProblem,
     evaluator: NumericEvaluator<'dae, F>,
+    state_coordinates: StateCoordinateSources<'dae>,
 }
 
 impl<'dae, F> RuntimeVectorBuilder<'_, 'dae, F>
@@ -329,7 +333,7 @@ where
                 let slot = visible_variable_slot(self.problem, id, variable, scalar, &name)?;
                 programs.push(slot_projection(slot, variable.declaration().span())?);
                 spans.push(variable.declaration().span());
-                metadata.push(self.variable_meta(id, variable, name.clone()));
+                metadata.push(self.variable_meta(id, variable, scalar, name.clone()));
                 names.push(name);
             }
         }
@@ -488,6 +492,7 @@ where
         &self,
         id: dae::VariableId<'dae>,
         variable: dae::VariableView<'dae>,
+        scalar: usize,
         name: String,
     ) -> solve::SolveVariableMeta {
         let time_domain = self
@@ -523,6 +528,7 @@ where
             // None here does not affect the solve.
             fixed: variable.fixed_uniform(),
             description: variable.description().map(str::to_string),
+            state_coordinate: self.state_coordinates.source(id, scalar),
         }
     }
 
@@ -554,6 +560,36 @@ struct RuntimeColumns {
     initial_y: Vec<f64>,
     solver_nominals: Vec<f64>,
     parameters: Vec<f64>,
+}
+
+/// The generated state a reduced state selection integrates and, per state
+/// scalar, the source scalar its value projection equation equates it to, read
+/// from the map the formal state candidate issued with that equation.
+struct StateCoordinateSources<'dae> {
+    state: Option<(dae::VariableId<'dae>, Vec<solve::SolveStateCoordinate>)>,
+}
+
+impl<'dae> StateCoordinateSources<'dae> {
+    fn of(
+        system: &rumoca_phase_structural::PreparedSystem<'_, 'dae>,
+    ) -> Result<Self, SolveModelLoweringError> {
+        let state = crate::state_selection::state_coordinate_sources(system).map_err(|error| {
+            LowerError::Structural {
+                reason: error.to_string(),
+                span: error.source_span(),
+            }
+        })?;
+        Ok(Self { state })
+    }
+
+    fn source(
+        &self,
+        id: dae::VariableId<'dae>,
+        scalar: usize,
+    ) -> Option<solve::SolveStateCoordinate> {
+        let (state, sources) = self.state.as_ref()?;
+        (*state == id).then(|| sources[scalar].clone())
+    }
 }
 
 /// True when a checked declaration carries no numeric value at all.

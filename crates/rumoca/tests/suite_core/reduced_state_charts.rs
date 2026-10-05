@@ -608,3 +608,46 @@ fn circle_chart_runtime_chart_swap_completes_the_revolution_on_the_physical_bran
         "the swapped trajectory stays on the physical branch: worst observable error {worst}"
     );
 }
+
+#[test]
+fn a_formal_derivative_state_coordinate_names_its_source_and_order() {
+    // `Translational.Examples.Damper` integrates `der(springDamper3.s_rel)` in
+    // place of the declared `v_rel`: its generated state scalar is a formal
+    // derivative of one source scalar, and the Solve metadata records exactly
+    // that scalar and order, the same names the integrated basis reports.
+    let Some(root) = msl_root() else {
+        return;
+    };
+    let model = "Modelica.Mechanics.Translational.Examples.Damper";
+    let lowered = lowered_msl(&root, model);
+    let mut sources = lowered
+        .variable_meta
+        .iter()
+        .filter(|meta| meta.is_state)
+        .map(|meta| {
+            meta.state_coordinate
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} is a generated state", meta.name))
+        })
+        .collect::<Vec<_>>();
+    assert!(sources.iter().any(|source| {
+        source.variable == "springDamper3.s_rel" && source.derivative_order == 1
+    }));
+    let mut names = sources
+        .drain(..)
+        .map(rumoca_ir_solve::SolveStateCoordinate::source_name)
+        .collect::<Vec<_>>();
+    names.sort();
+    let dae = Compiler::new()
+        .model(model)
+        .source_root(root.to_str().expect("MSL root path is UTF-8"))
+        .compile_str(
+            "package ChartProbe import Modelica; end ChartProbe;",
+            "reduced_state_charts.mo",
+        )
+        .unwrap()
+        .dae;
+    let mut integrated = rumoca_phase_solve::integrated_state_names(&dae).unwrap();
+    integrated.sort();
+    assert_eq!(names, integrated);
+}

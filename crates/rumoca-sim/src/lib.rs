@@ -485,6 +485,7 @@ fn checked_variable_meta<'dae>(
         // solve lowering, not from this reduced flag.
         fixed: variable.fixed_uniform(),
         description: variable.description().map(str::to_string),
+        state_coordinate: None,
     }
 }
 

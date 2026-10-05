@@ -199,6 +199,31 @@ fn validate_correlations(view: CorrelationView<'_>) -> Result<(), SolveModelWire
             return Err(SolveModelWireError::VariableMetaName { index });
         }
     }
+    validate_state_coordinates(view.visible_names, view.variable_meta)
+}
+
+/// Each generated state coordinate names a distinct visible source scalar and
+/// derivative order, and only a state scalar carries one.
+fn validate_state_coordinates(
+    visible_names: &[String],
+    variable_meta: &[solve::SolveVariableMeta],
+) -> Result<(), SolveModelWireError> {
+    let visible = visible_names
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut sources = std::collections::BTreeSet::new();
+    for (index, metadata) in variable_meta.iter().enumerate() {
+        let Some(source) = &metadata.state_coordinate else {
+            continue;
+        };
+        if !metadata.is_state
+            || !visible.contains(source.variable.as_str())
+            || !sources.insert((source.variable.as_str(), source.derivative_order))
+        {
+            return Err(SolveModelWireError::StateCoordinate { index });
+        }
+    }
     Ok(())
 }
 
@@ -232,6 +257,9 @@ pub enum SolveModelWireError {
     VariableMetaName {
         index: usize,
     },
+    StateCoordinate {
+        index: usize,
+    },
     UnsupportedMassMatrix,
     ArtifactDerivation(String),
     Root(String),
@@ -258,6 +286,10 @@ impl std::fmt::Display for SolveModelWireError {
             Self::VariableMetaName { index } => write!(
                 formatter,
                 "SolveModel variable metadata at index {index} does not name the matching visible value"
+            ),
+            Self::StateCoordinate { index } => write!(
+                formatter,
+                "SolveModel state coordinate at index {index} does not name a distinct visible source scalar of a state"
             ),
             Self::UnsupportedMassMatrix => formatter.write_str(
                 "canonical SolveModel wire cannot encode a caller-selected non-identity mass matrix",

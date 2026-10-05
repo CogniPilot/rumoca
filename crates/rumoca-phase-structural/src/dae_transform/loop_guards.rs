@@ -39,24 +39,24 @@ pub fn own_loop_guarded_relations(
     if guards.is_empty() {
         return Ok(prepared);
     }
-    let (ids, redundant, charts) = match &prepared {
-        PreparedDae::Borrowed { .. } => (Vec::new(), Vec::new(), Box::default()),
+    let (ids, redundant, reduced) = match &prepared {
+        PreparedDae::Borrowed { .. } => (Vec::new(), Vec::new(), Default::default()),
         PreparedDae::Transformed {
             manifold,
             manifold_redundant,
-            charts,
+            reduced,
             ..
         } => (
             manifold.to_vec(),
             manifold_redundant.to_vec(),
-            charts.clone(),
+            reduced.clone(),
         ),
     };
     let (model, ids) =
         super::reconstruction::rebuild_loop_guards(prepared.as_dae(), &guards, &ids)?;
     let manifold = ManifoldEntry::replayed(ids, &redundant);
     let structural = structural_analysis(&model)?;
-    transformed(model, manifold, structural, charts)
+    transformed(model, manifold, structural, reduced)
 }
 
 /// One algebraic loop or implicit scalar block: its unknowns, its algebraic

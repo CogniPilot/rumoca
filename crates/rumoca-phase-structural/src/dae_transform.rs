@@ -57,6 +57,10 @@ mod observation;
 mod parameter_conditionals;
 mod reconstruction;
 mod runtime_quotients;
+mod selection_maps;
+pub use self::selection_maps::{
+    PreparedReducedChart, PreparedStateCoordinate, PreparedStateCoordinates, ReducedSelectionMaps,
+};
 mod semantic_owners;
 mod smooth_order;
 mod sortability;
@@ -111,29 +115,6 @@ pub use self::observation::{
     ReductionReport, ReductionSnapshot, ReductionStop, UnmatchedKind, UnmatchedName,
 };
 
-/// One admissible reduced state-selection chart, in the finalized transformed
-/// DAE's own variable-ordinal space.
-///
-/// The reduced state selection picks a Dependent/Independent split of a
-/// definitional first-integral coordinate group. A conserved first integral has
-/// no globally injective reduced chart, so the fixed primary split folds when a
-/// dependent coordinate passes through zero. This records one alternate split of
-/// that same group: the `dependent` coordinates are reconstructed and the
-/// `independent` coordinates are integrated. Each coordinate is a
-/// `(transformed variable ordinal, scalar)` pair naming a scalar of the finalized
-/// DAE that `PreparedDae::inspect` binds. The primary split is chart index zero.
-#[derive(Clone, Debug)]
-pub struct PreparedReducedChart {
-    pub dependent: Box<[(u32, u32)]>,
-    pub independent: Box<[(u32, u32)]>,
-    /// Reciprocal conditioning of this chart's dependent Jacobian at the
-    /// construction trial point, and the singular threshold it is measured
-    /// against. The mirror of a folding coordinate may sit at or below the
-    /// threshold here because it is regular at a different configuration.
-    pub trial_rcond: f64,
-    pub trial_singular_threshold: f64,
-}
-
 /// A finalized DAE ready for Solve lowering.
 pub enum PreparedDae<'source> {
     Borrowed {
@@ -150,10 +131,10 @@ pub enum PreparedDae<'source> {
         manifold_redundant: Box<[bool]>,
         pins: Box<[InitialValuePin]>,
         structural: PreparedStructuralAnalysis,
-        /// Admissible reduced state-selection charts issued by the
-        /// formal-derivative selection. Empty except on the reduced-selection
-        /// path that finalizes a folding definitional first-integral group.
-        charts: Box<[PreparedReducedChart]>,
+        /// The integrated state map and admissible reduced charts issued by
+        /// the formal-derivative selection. Empty except on the
+        /// reduced-selection path that finalizes a formal state candidate.
+        reduced: ReducedSelectionMaps,
     },
 }
 
@@ -183,17 +164,17 @@ impl PreparedDae<'_> {
     }
 
     pub fn inspect<R>(&self, inspect: impl for<'dae> FnOnce(PreparedSystem<'_, 'dae>) -> R) -> R {
-        let (manifold, pins, structural, charts) = match self {
+        let (manifold, pins, structural, reduced) = match self {
             Self::Borrowed {
                 pins, structural, ..
-            } => ([].as_slice(), pins, structural, [].as_slice()),
+            } => ([].as_slice(), pins, structural, None),
             Self::Transformed {
                 manifold,
                 pins,
                 structural,
-                charts,
+                reduced,
                 ..
-            } => (&**manifold, pins, structural, &**charts),
+            } => (&**manifold, pins, structural, Some(reduced)),
         };
         self.as_dae().inspect(|view| {
             let manifold = manifold
@@ -208,7 +189,8 @@ impl PreparedDae<'_> {
                 manifold: &manifold,
                 pins,
                 structural: structural.bind(view),
-                charts,
+                charts: reduced.map_or(&[], |reduced| &reduced.charts),
+                state_coordinates: reduced.and_then(|reduced| reduced.coordinates.as_ref()),
             })
         })
     }
@@ -236,6 +218,10 @@ pub struct PreparedSystem<'prepared, 'dae> {
     /// first-integral coordinate group, naming scalars of `view`. Empty for
     /// every prepared system without such a group.
     pub charts: &'prepared [PreparedReducedChart],
+    /// The integrated aggregate state of a formal state candidate and the
+    /// source scalar each of its scalars equals, naming variables of `view`;
+    /// `None` for every system no formal selection finalized.
+    pub state_coordinates: Option<&'prepared PreparedStateCoordinates>,
 }
 
 /// The structural analysis coupled to one prepared DAE root.
@@ -627,7 +613,7 @@ fn prepare_for_solve_with_observer<'source>(
             manifold_redundant: Box::new([]),
             pins,
             structural,
-            charts: Box::new([]),
+            reduced: ReducedSelectionMaps::default(),
         }),
         PreparedDae::Transformed {
             dae,
@@ -635,14 +621,14 @@ fn prepare_for_solve_with_observer<'source>(
             manifold_redundant,
             pins,
             structural,
-            charts,
+            reduced,
         } => Ok(PreparedDae::Transformed {
             dae,
             manifold,
             manifold_redundant,
             pins,
             structural,
-            charts,
+            reduced,
         }),
     }
 }
@@ -835,7 +821,7 @@ fn transformed(
     model: dae::Dae,
     manifold: Vec<ManifoldEntry>,
     structural: PreparedStructuralAnalysis,
-    charts: Box<[PreparedReducedChart]>,
+    reduced: ReducedSelectionMaps,
 ) -> Result<PreparedDae<'static>, StructuralError> {
     let pins = model.inspect(transferred_initial_values)?;
     let (expressions, redundant): (Vec<u32>, Vec<bool>) = manifold
@@ -848,7 +834,7 @@ fn transformed(
         manifold_redundant: redundant.into_boxed_slice(),
         pins: pins.into_boxed_slice(),
         structural,
-        charts,
+        reduced,
     })
 }
 
@@ -858,7 +844,7 @@ fn transformed_with_observer(
     structural: PreparedStructuralAnalysis,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'static>, StructuralError> {
-    let result = transformed(model, manifold, structural, Box::new([]))
+    let result = transformed(model, manifold, structural, ReducedSelectionMaps::default())
         .and_then(derivative_aliases::normalize);
     observer.observe(ReductionEvent::Stopped {
         outcome: match &result {

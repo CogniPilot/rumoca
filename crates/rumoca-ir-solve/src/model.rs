@@ -1715,6 +1715,34 @@ pub struct SolveVariableMeta {
     pub nominal: Option<String>,
     pub fixed: Option<bool>,
     pub description: Option<String>,
+    /// For a scalar of a generated state that a reduced state selection
+    /// integrates, the source scalar it equals; `None` for every other
+    /// visible scalar, each of which is its own declaration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_coordinate: Option<SolveStateCoordinate>,
+}
+
+/// The source scalar one generated state coordinate equals: the
+/// `derivative_order`-th time derivative of the visible scalar `variable`.
+/// Order zero is the declared value itself.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SolveStateCoordinate {
+    pub variable: String,
+    pub derivative_order: u32,
+}
+
+impl SolveStateCoordinate {
+    /// The coordinate named as its source scalar wrapped in `derivative_order`
+    /// `der`s, as a state-selection record names a formal derivative.
+    pub fn source_name(&self) -> String {
+        derivative_name(&self.variable, self.derivative_order as usize)
+    }
+}
+
+/// `name` wrapped in `order` `der`s: the name of the `order`-th formal time
+/// derivative of a source scalar; order zero is the scalar itself.
+pub fn derivative_name(name: &str, order: usize) -> String {
+    (0..order).fold(name.to_string(), |name, _| format!("der({name})"))
 }
 
 /// Solver-facing Solve IR package.

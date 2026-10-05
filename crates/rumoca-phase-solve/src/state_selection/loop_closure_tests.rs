@@ -96,13 +96,48 @@ fn a_redundant_loop_closure_reduces_to_the_basis_the_reducer_selects() {
         .unwrap()
         .expect("the closure decides reduction without the reducer");
     assert_eq!(
-        decided.integrated_names(),
-        through_reducer.integrated_names()
+        decided.integrated_names().unwrap(),
+        through_reducer.integrated_names().unwrap()
     );
-    assert_eq!(decided.basis, through_reducer.basis);
     assert!(
         reduce_loop_closure(&pendulum(false), &overrides)
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn a_loop_closure_selection_names_each_generated_state_by_its_source() {
+    // The reduce-from-source path issues the same state coordinate map as the
+    // reducer path: every integrated scalar of the lowered Solve model names
+    // the source scalar (and formal order) its projection equation equates it
+    // to, and those names are the selection's integrated basis.
+    let model = pendulum(true);
+    let decided = reduce_loop_closure(&model, &HashMap::new())
+        .unwrap()
+        .expect("the closure decides reduction without the reducer");
+    let mut basis = decided.integrated_names().unwrap();
+    basis.sort();
+    assert_eq!(basis.len(), 2, "a closed pendulum integrates two scalars");
+    let lowered = crate::lower_solve_model(&model, &HashMap::new(), |_| {}).unwrap();
+    let mut sources = lowered
+        .model()
+        .variable_meta
+        .iter()
+        .filter(|meta| meta.is_state)
+        .map(|meta| {
+            meta.state_coordinate
+                .as_ref()
+                .map(solve::SolveStateCoordinate::source_name)
+                .unwrap_or_else(|| panic!("{} names no source", meta.name))
+        })
+        .collect::<Vec<_>>();
+    sources.sort();
+    assert_eq!(sources, basis);
+    let declared = ["x", "y", "vx", "vy"];
+    assert!(sources.iter().all(|name| {
+        declared
+            .iter()
+            .any(|source| name == source || *name == format!("der({source})"))
+    }));
 }

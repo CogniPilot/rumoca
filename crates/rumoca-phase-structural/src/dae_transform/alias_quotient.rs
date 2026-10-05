@@ -111,7 +111,7 @@ pub fn quotient_formal_aliases(
         dae,
         manifold,
         manifold_redundant,
-        charts,
+        reduced,
         ..
     } = &prepared
     else {
@@ -125,7 +125,7 @@ pub fn quotient_formal_aliases(
     let (model, manifold) = super::reconstruction::rebuild_alias_quotient(dae, &plan, manifold)?;
     let manifold = super::ManifoldEntry::replayed(manifold, manifold_redundant);
     let structural = super::structural_analysis(&model)?;
-    super::transformed(model, manifold, structural, charts.clone())
+    super::transformed(model, manifold, structural, reduced.clone())
 }
 
 #[cfg(test)]

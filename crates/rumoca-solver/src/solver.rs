@@ -217,6 +217,8 @@ pub struct SimVariableMeta {
     pub nominal: Option<String>,
     pub fixed: Option<bool>,
     pub description: Option<String>,
+    /// The source scalar a generated reduced-selection state scalar equals.
+    pub state_coordinate: Option<rumoca_ir_solve::SolveStateCoordinate>,
 }
 
 #[derive(Debug, Clone)]

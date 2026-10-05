@@ -405,6 +405,7 @@ pub fn convert_variable_meta(meta: &[solve::SolveVariableMeta]) -> Vec<SimVariab
             nominal: item.nominal.clone(),
             fixed: item.fixed,
             description: item.description.clone(),
+            state_coordinate: item.state_coordinate.clone(),
         })
         .collect()
 }

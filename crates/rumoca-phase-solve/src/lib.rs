@@ -66,18 +66,17 @@ pub fn lower_solve_package(dae: &dae::Dae) -> Result<LoweredSolvePackage, LowerE
 }
 
 /// The scalars Solve lowering integrates for `dae`, as source scalar names in
-/// basis order: the state selection's own record when a formal selection chose
+/// basis order: the candidate's state coordinate map when a formal selection chose
 /// the basis (a formal derivative order `k` wraps the name in `k` `der`s), and
 /// the prepared system's states otherwise.
 pub fn integrated_state_names(dae: &dae::Dae) -> Result<Vec<String>, LowerError> {
-    let selection =
-        state_selection::prepare(dae, &std::collections::HashMap::new()).map_err(|error| {
-            LowerError::Structural {
-                reason: error.to_string(),
-                span: error.source_span(),
-            }
-        })?;
-    Ok(selection.integrated_names())
+    let structural = |error: rumoca_phase_structural::StructuralError| LowerError::Structural {
+        reason: error.to_string(),
+        span: error.source_span(),
+    };
+    state_selection::prepare(dae, &std::collections::HashMap::new())
+        .and_then(|selection| selection.integrated_names())
+        .map_err(structural)
 }
 
 /// Why Solve lowering kept the reducer's basis for `dae` although its

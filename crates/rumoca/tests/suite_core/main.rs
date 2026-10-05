@@ -233,6 +233,7 @@ mod sampled_timer_accuracy;
 mod selected_package_vectorization;
 mod semi_linear_zero_flow;
 mod sign_integer_result;
+mod state_coordinate_sources;
 mod state_select_priorities;
 mod supplied_derivative_record_fields;
 mod switched_integral_accuracy;
