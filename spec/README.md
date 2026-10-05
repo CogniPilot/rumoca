@@ -36,7 +36,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0041](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md) | Crate Ownership Catalog | architecture | ~142 | REFERENCE |
 | [SPEC_0042](SPEC_0042_GALEC_LANGUAGE_CATALOG.md) | GALEC Language and Decision Catalog | target/codegen | ~67 | REFERENCE |
 | [SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md) | Valid-by-Construction Catalog | IR | ~680 | REFERENCE |
-| [SPEC_0044](SPEC_0044_FMI_EXECUTION_CATALOG.md) | FMI Execution Contract Catalog | runtime/verification | ~538 | REFERENCE |
+| [SPEC_0044](SPEC_0044_FMI_EXECUTION_CATALOG.md) | FMI Execution Contract Catalog | runtime/verification | ~539 | REFERENCE |
 | [SPEC_0045](SPEC_0045_SOLVE_EXECUTABLE_VOCABULARY_AND_PROFILES.md) | Solve Executable Vocabulary and Profiles | IR | ~165 | DRAFT |
 | [SPEC_0046](SPEC_0046_SCHEDULED_DISCRETE_OWNERSHIP.md) | Scheduled Discrete Ownership | IR/runtime | ~187 | DRAFT |
 | [SPEC_0047](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md) | Solve Vocabulary and Target Refinement Catalog | IR/target | ~552 | REFERENCE |
