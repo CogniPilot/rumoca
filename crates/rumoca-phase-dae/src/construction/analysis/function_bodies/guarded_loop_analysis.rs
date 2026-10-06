@@ -1,4 +1,5 @@
 use super::*;
+use crate::construction::analysis::function_definitions::condition_implies_guard;
 
 pub(super) fn seed_guarded_sequence_scratch(
     statements: &[rumoca_core::Statement],
@@ -112,7 +113,7 @@ fn guarded_scratch_is_observable(
         || guarded_prefix_reads_name(statements, indices.0, branch, indices.1, target)
         || statements
             .iter()
-            .any(|statement| has_unguarded_target_read(statement, target, guard, false))
+            .any(|statement| has_unguarded_target_read(statement, (target, guard), context, false))
 }
 
 fn attach_guarded_seed(
@@ -188,8 +189,8 @@ fn guarded_prefix_reads_name(
 
 fn has_unguarded_target_read(
     statement: &rumoca_core::Statement,
-    target: &VarName,
-    guard: &Expression,
+    (target, guard): (&VarName, &Expression),
+    context: FunctionValidationContext<'_>,
     guarded: bool,
 ) -> bool {
     match statement {
@@ -200,9 +201,9 @@ fn has_unguarded_target_read(
                 && indices
                     .iter()
                     .any(|index| expression_reads_target(&index.range, target)))
-                || equations
-                    .iter()
-                    .any(|statement| has_unguarded_target_read(statement, target, guard, guarded))
+                || equations.iter().any(|statement| {
+                    has_unguarded_target_read(statement, (target, guard), context, guarded)
+                })
         }
         rumoca_core::Statement::If {
             cond_blocks,
@@ -212,35 +213,29 @@ fn has_unguarded_target_read(
             cond_blocks.iter().any(|block| {
                 (!guarded && expression_reads_target(&block.cond, target))
                     || block.stmts.iter().any(|statement| {
-                        let branch_guarded = guarded || condition_implies_guard(&block.cond, guard);
-                        has_unguarded_target_read(statement, target, guard, branch_guarded)
+                        let branch_guarded =
+                            guarded || condition_implies_guard(&block.cond, guard, context, 0);
+                        has_unguarded_target_read(
+                            statement,
+                            (target, guard),
+                            context,
+                            branch_guarded,
+                        )
                     })
             }) || else_block.as_ref().is_some_and(|statements| {
-                statements
-                    .iter()
-                    .any(|statement| has_unguarded_target_read(statement, target, guard, guarded))
+                statements.iter().any(|statement| {
+                    has_unguarded_target_read(statement, (target, guard), context, guarded)
+                })
             })
         }
         _ => !guarded && statement_reads_target(statement, target),
     }
 }
 
-fn condition_implies_guard(condition: &Expression, guard: &Expression) -> bool {
-    if rumoca_core::expressions_semantically_equal(condition, guard) {
-        return true;
-    }
-    matches!(
-        condition,
-        Expression::Binary {
-            op: OpBinary::And,
-            lhs,
-            rhs,
-            ..
-        } if condition_implies_guard(lhs, guard) || condition_implies_guard(rhs, guard)
-    )
-}
-
-pub(super) fn statement_reads_target(statement: &rumoca_core::Statement, target: &VarName) -> bool {
+pub(in crate::construction::analysis) fn statement_reads_target(
+    statement: &rumoca_core::Statement,
+    target: &VarName,
+) -> bool {
     match statement {
         rumoca_core::Statement::Assignment { comp, value, .. } => {
             expression_reads_target(value, target) || component_subscripts_read_target(comp, target)

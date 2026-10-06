@@ -586,7 +586,7 @@ fn path_partial_join(branches: &[FunctionDefinitions], target: &VarName) -> bool
     written
 }
 
-fn condition_implies_guard(
+pub(super) fn condition_implies_guard(
     condition: &Expression,
     guard: &Expression,
     context: FunctionValidationContext<'_>,
