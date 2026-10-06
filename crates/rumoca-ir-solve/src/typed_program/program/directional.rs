@@ -111,9 +111,13 @@ fn program_supports_directional(
                 program_supports_directional(body.body(), available)
             }
             SolveOperation::BroadcastBinary {
+                operator: SolveBinaryOperator::Divide,
+                scalar_on_lhs: true,
+                ..
+            }
+            | SolveOperation::BroadcastBinary {
                 operator:
-                    SolveBinaryOperator::Divide
-                    | SolveBinaryOperator::IntegerQuotient
+                    SolveBinaryOperator::IntegerQuotient
                     | SolveBinaryOperator::Power
                     | SolveBinaryOperator::Atan2
                     | SolveBinaryOperator::Min
@@ -225,6 +229,11 @@ fn program_supports_directional(
                     SolveBinaryOperator::Add
                     | SolveBinaryOperator::Subtract
                     | SolveBinaryOperator::Multiply,
+                ..
+            }
+            | SolveOperation::BroadcastBinary {
+                operator: SolveBinaryOperator::Divide,
+                scalar_on_lhs: false,
                 ..
             }
             | SolveOperation::Reduce {
@@ -1403,6 +1412,33 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                     .scale(aggregate.primal, scalar_tangent, provenance)?;
                 self.builder
                     .binary(SolveBinaryOperator::Add, first, second, provenance)?
+            }
+            // `a / s`: the scalar quotient rule of `derive_quotient` per
+            // element, `da / s - (a / s²) ds`.
+            SolveBinaryOperator::Divide if !scalar_on_lhs => {
+                let first = self.builder.broadcast_binary(
+                    SolveBinaryOperator::Divide,
+                    aggregate_tangent,
+                    scalar.primal,
+                    false,
+                    provenance,
+                )?;
+                let square = self.builder.binary(
+                    SolveBinaryOperator::Multiply,
+                    scalar.primal,
+                    scalar.primal,
+                    provenance,
+                )?;
+                let partial = self.builder.broadcast_binary(
+                    SolveBinaryOperator::Divide,
+                    aggregate.primal,
+                    square,
+                    false,
+                    provenance,
+                )?;
+                let second = self.builder.scale(partial, scalar_tangent, provenance)?;
+                self.builder
+                    .binary(SolveBinaryOperator::Subtract, first, second, provenance)?
             }
             _ => {
                 return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });

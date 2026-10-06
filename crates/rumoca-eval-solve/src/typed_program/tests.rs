@@ -1188,3 +1188,58 @@ fn scalar_broadcast_power_evaluates_at_the_tensor_boundary() {
 
     assert_eq!(outputs[0].elements(), [4.0, 9.0, 16.0].map(real_value));
 }
+
+#[test]
+fn scalar_broadcast_quotient_carries_the_elementwise_quotient_rule() {
+    let arithmetic = profile(SolveRealFormat::Binary64);
+    let scalar = SolveValueType::scalar(SolveScalarType::real(arithmetic));
+    let vector = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![3]).unwrap();
+    let table = SolvePureCallTable::construct(arithmetic, |table| {
+        for (ordinal, scalar_on_lhs) in [false, true].into_iter().enumerate() {
+            table.add_owner(
+                identity(13 + ordinal as u64),
+                vec![vector.clone(), scalar.clone()],
+                vec![SolvePureCallOutput::result(vector.clone())],
+                span(130),
+                |builder, inputs, outputs| {
+                    let vector = builder.load(inputs[0], span(131))?;
+                    let divisor = builder.load(inputs[1], span(132))?;
+                    let quotient = builder.broadcast_binary(
+                        SolveBinaryOperator::Divide,
+                        vector,
+                        divisor,
+                        scalar_on_lhs,
+                        span(133),
+                    )?;
+                    builder.store(outputs[0], quotient, span(134))
+                },
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        table.owners()[1].directional().is_none(),
+        "a scalar dividend over an aggregate has no directional rule"
+    );
+    let owner = &table.owners()[0];
+    let real_value = |value| real_kind(SolveRealFormat::Binary64, value);
+    let typed = |value_type: &SolveValueType, values: &[f64]| {
+        TypedValue::construct(
+            value_type.clone(),
+            values.iter().copied().map(real_value).collect(),
+        )
+        .unwrap()
+    };
+    let arguments = [
+        typed(&vector, &[2.0, 4.0, 8.0]),
+        typed(&vector, &[1.0, 0.0, 0.0]),
+        typed(&scalar, &[2.0]),
+        typed(&scalar, &[1.0]),
+    ];
+
+    let outputs = eval_pure_call_directional(&table, owner.id(), &arguments).unwrap();
+
+    assert_eq!(outputs[0].elements(), [1.0, 2.0, 4.0].map(real_value));
+    assert_eq!(outputs[1].elements(), [0.0, -1.0, -2.0].map(real_value));
+}
