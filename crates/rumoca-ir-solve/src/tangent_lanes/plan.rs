@@ -158,7 +158,9 @@ fn collect_seed_reads(program: &[LinearOp], reads: &mut Vec<usize>) {
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. }
             | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                collect_seed_reads(&program.update, reads);
+                for region in program.regions() {
+                    collect_seed_reads(region, reads);
+                }
             }
             LinearOp::FunctionConditional { program, .. } => {
                 for arm in &program.arms {

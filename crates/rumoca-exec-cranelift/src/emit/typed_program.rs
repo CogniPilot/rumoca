@@ -1019,7 +1019,14 @@ impl ProgramLowerer<'_, '_> {
                 captures,
                 destinations,
                 transition,
-            } => self.lower_fold(domain, initial, captures, destinations, transition),
+                continuation,
+            } => self.lower_fold(
+                domain,
+                initial,
+                captures,
+                destinations,
+                (transition, continuation.as_deref()),
+            ),
             solve::SolveOperation::MatrixMultiply {
                 destination,
                 lhs,

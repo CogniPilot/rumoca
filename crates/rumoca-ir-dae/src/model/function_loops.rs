@@ -182,6 +182,76 @@ impl<'dae> Functions<'_, 'dae> {
         Ok((fold, parent, state))
     }
 
+    /// End the loop at the start of the first iteration whose `condition` is
+    /// false (MLS §11.2.3 `while`). The loop domain is the proven pass bound;
+    /// `condition` is evaluated on the carried state before each pass, so it is
+    /// set before the body's first statement, reads only the carried
+    /// parameters and enclosing values, and never the loop's own binders.
+    pub fn continue_loop_while(
+        &mut self,
+        loop_body: &mut FunctionLoop<'dae>,
+        condition: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        let raw = function_fold_raw(self.storage, loop_body.fold, provenance)?;
+        if self.storage.function_folds[raw as usize]
+            .continuation
+            .is_some()
+        {
+            return Err(duplicate("function loop continuation", raw, provenance));
+        }
+        if !function_build_state(self.storage, &loop_body.body)
+            .statements
+            .is_empty()
+        {
+            return Err(DaeConstructionError::IncompleteDefinition {
+                kind: "function loop continuation before the body",
+                index: loop_body.fold.ordinal(),
+                span: provenance.span(),
+            });
+        }
+        expect_function_body_expression(self.storage, &loop_body.body, condition, provenance)?;
+        validate_function_value_reads(self.storage, &loop_body.body, condition, provenance)?;
+        // The carried parameters belong to the loop region, but no binder of
+        // the loop itself may be read: the predicate is the same at every
+        // binder value of a pass.
+        let own_domain = loop_body.domain.index();
+        let mut pending = vec![condition.index()];
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some(expression) = pending.pop() {
+            if !seen.insert(expression) {
+                continue;
+            }
+            let node = &self.storage.expressions.nodes[expression as usize];
+            if let ExprNode::Coordinate(crate::expression::Coordinate::Binder { domain, .. }) = node
+                && *domain == own_domain
+            {
+                return Err(DaeConstructionError::InvalidBinderScope {
+                    expected_domain: self.storage.domain_parent(loop_body.domain, provenance)?,
+                    found_domain: own_domain,
+                    span: provenance.span(),
+                });
+            }
+            node.for_each_child(&self.storage.expressions, |child| pending.push(child));
+        }
+        let found = self.storage.expr_type(condition, provenance)?;
+        if !found.is_scalar() {
+            return Err(DaeConstructionError::ExpectedScalar {
+                span: provenance.span(),
+            });
+        }
+        if found.scalar_type() != ScalarType::Boolean {
+            return Err(DaeConstructionError::TypeMismatch {
+                expected: ScalarType::Boolean,
+                found: found.scalar_type(),
+                span: provenance.span(),
+            });
+        }
+        self.storage.function_folds[raw as usize].continuation = Some(condition.index());
+        Ok(())
+    }
+
     pub fn assign_loop(
         &mut self,
         loop_body: &mut FunctionLoop<'dae>,

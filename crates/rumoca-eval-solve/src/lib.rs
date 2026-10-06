@@ -3974,7 +3974,26 @@ fn eval_function_fold(
         .index_tuple_iter()
         .map_err(|error| invalid_row(format!("invalid function-fold domain: {error}")))?;
     let mut scratch = RowEvalScratch::default();
+    let mut predicate = [0.0];
     for indices in points {
+        // MLS §11.2.3: a bounded `while` stops before the first pass whose
+        // condition is false; the fold result is the tuple at that point.
+        if let Some(continuation) = &program.continuation {
+            let check = PreparedRowEval::new(
+                &continuation.ops,
+                continuation.register_count,
+                input.y,
+                input.p,
+                input.t,
+                input.context,
+            )
+            .with_source_span(input.source_span)
+            .with_fold_context(&carried, &[], captures);
+            eval_row_prepared_fast(check, &mut scratch, &mut OutputCursor::new(&mut predicate))?;
+            if predicate[0] == 0.0 {
+                break;
+            }
+        }
         next.fill(0.0);
         let nested = PreparedRowEval::new(
             &program.update,
@@ -4709,7 +4728,11 @@ fn input_requirements_for_op(op: LinearOp) -> Result<RowInputRequirements, EvalS
         LinearOp::FunctionFold { program, .. }
         | LinearOp::GuardedFunctionFold { program, .. }
         | LinearOp::StoreOutputFunctionFold { program, .. } => {
-            row_input_requirements(&program.update)
+            program
+                .regions()
+                .try_fold(RowInputRequirements::default(), |requirements, region| {
+                    row_input_requirements(region).map(|found| requirements.merge(found))
+                })
         }
         // A region of a checked function conditional reads the same inputs as
         // its row (a model conditional's arms load solver and seed values).

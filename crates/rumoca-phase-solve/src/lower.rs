@@ -1720,6 +1720,7 @@ fn expression_contains_derivative_where<'dae>(
                     .expect("checked function fold identity resolves");
                 pending.extend(fold.initial_values().rhs_iter());
                 pending.extend(fold.update_values().rhs_iter());
+                pending.extend(fold.continuation());
             }
             dae::ExpressionOperation::Index { base, subscripts } => {
                 pending.push(base);

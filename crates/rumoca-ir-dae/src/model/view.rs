@@ -1219,6 +1219,12 @@ impl<'dae> FunctionFoldView<'dae> {
         };
     }
 
+    /// The Boolean predicate a bounded `while` fold evaluates on its carried
+    /// state before each pass; the first false value ends the fold.
+    pub fn continuation(self) -> Option<ExprId<'dae>> {
+        self.entry.continuation.map(ExprId::from_raw)
+    }
+
     pub fn targets(self) -> impl ExactSizeIterator<Item = FunctionValueId<'dae>> {
         self.entry
             .targets

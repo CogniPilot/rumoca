@@ -2922,11 +2922,28 @@ fn function_fold_dependencies(
                 span,
             ));
         }
+        // A bounded `while` predicate decides whether each pass applies, so
+        // every carried value depends on what it reads.
+        let control = match &program.continuation {
+            Some(continuation) => program_output_dependencies_with_fold(
+                &continuation.ops,
+                span,
+                Some(&carried),
+                Some(captures),
+                None,
+                source,
+            )?
+            .pop(),
+            None => None,
+        };
         let next = carried
             .iter()
             .cloned()
             .zip(updates)
-            .map(|(old, new)| old.union(new))
+            .map(|(old, new)| match &control {
+                Some(control) => old.union(new).union(control.clone()),
+                None => old.union(new),
+            })
             .collect::<Vec<_>>();
         if next == carried {
             return Ok(carried);

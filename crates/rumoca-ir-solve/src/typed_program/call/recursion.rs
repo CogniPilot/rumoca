@@ -322,7 +322,16 @@ pub(super) fn visit_calls(program: &TypedProgram, visit: &mut impl FnMut(SolvePu
                 visit_calls(if_false.body(), visit);
             }
             SolveOperation::Map { body, .. } => visit_calls(body.body(), visit),
-            SolveOperation::Fold { transition, .. } => visit_calls(transition.body(), visit),
+            SolveOperation::Fold {
+                transition,
+                continuation,
+                ..
+            } => {
+                visit_calls(transition.body(), visit);
+                if let Some(predicate) = continuation {
+                    visit_calls(predicate.body(), visit);
+                }
+            }
             _ => {}
         }
     }
@@ -350,7 +359,16 @@ fn program_cells(program: &TypedProgram) -> u64 {
                 if_true, if_false, ..
             } => program_cells(if_true.body()) + program_cells(if_false.body()),
             SolveOperation::Map { body, .. } => program_cells(body.body()),
-            SolveOperation::Fold { transition, .. } => program_cells(transition.body()),
+            SolveOperation::Fold {
+                transition,
+                continuation,
+                ..
+            } => {
+                program_cells(transition.body())
+                    + continuation
+                        .as_ref()
+                        .map_or(0, |predicate| program_cells(predicate.body()))
+            }
             _ => 0,
         })
         .sum::<u64>();

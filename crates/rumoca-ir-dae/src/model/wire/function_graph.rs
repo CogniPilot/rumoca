@@ -318,7 +318,12 @@ fn push_statement_roots(statements: &[FunctionStatementInput], pending: &mut Vec
                 pending.push(*condition);
                 pending.push(*message);
             }
-            FunctionStatementInput::For { statements, .. } => {
+            FunctionStatementInput::For {
+                statements,
+                continuation,
+                ..
+            } => {
+                pending.extend(continuation.iter().copied());
                 push_statement_roots(statements, pending);
             }
         }

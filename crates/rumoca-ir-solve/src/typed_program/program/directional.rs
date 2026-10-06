@@ -143,8 +143,15 @@ fn program_supports_directional(
                 program_supports_directional(if_true.body(), available)
                     && program_supports_directional(if_false.body(), available)
             }
-            SolveOperation::Fold { transition, .. } => {
+            SolveOperation::Fold {
+                transition,
+                continuation,
+                ..
+            } => {
                 program_supports_directional(transition.body(), available)
+                    && continuation.as_ref().is_none_or(|predicate| {
+                        program_supports_directional(predicate.body(), available)
+                    })
             }
             SolveOperation::Unary {
                 destination,
@@ -549,12 +556,13 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 captures,
                 destinations,
                 transition,
+                continuation,
             } => self.derive_fold(
                 domain,
                 initial,
                 captures,
                 destinations,
-                transition,
+                (transition, continuation.as_deref()),
                 provenance,
             ),
             SolveOperation::Map {
@@ -1296,17 +1304,23 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         initial: &[SolveRegisterId],
         captures: &[SolveRegisterId],
         destinations: &[SolveRegisterId],
-        transition: &SolveProgramRegion,
+        (transition, continuation): (&SolveProgramRegion, Option<&SolveProgramRegion>),
         provenance: Span,
     ) -> Result<(), SolveProgramConstructionError> {
         let initial = self.expanded_registers(initial, provenance)?;
         let captures = self.expanded_registers(captures, provenance)?;
         let transition = derive_region(transition, self.available)?;
+        // The predicate decides control flow only; over the expanded tuple it
+        // reads the primal values and stops primal and tangent together.
+        let continuation = continuation
+            .map(|predicate| derive_region(predicate, self.available))
+            .transpose()?;
         let values = self.builder.fold_from_region(
             domain.clone(),
             &initial,
             &captures,
             transition,
+            continuation,
             provenance,
         )?;
         self.bind_expanded(destinations, &values, provenance)

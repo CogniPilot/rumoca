@@ -194,3 +194,28 @@ fn an_event_algorithm_reads_its_target_entry_value_as_pre() {
         .compile_str(MODELS, "While.mo")
         .expect("the event algorithm constructs");
 }
+
+#[test]
+fn a_bounded_while_fold_ends_at_its_first_false_condition() {
+    // `halve` runs while `i < 100 and not found`: its compact fold carries
+    // that condition as a continuation instead of running all 100 passes.
+    let compiled = Compiler::new()
+        .model("While.Functions")
+        .compile_str(MODELS, "While.mo")
+        .expect("the model compiles");
+    compiled.dae.inspect(|view| {
+        let function = (0..view.function_count())
+            .filter_map(|index| view.function_id(index).and_then(|id| view.function(id)))
+            .find(|function| function.name().as_str().ends_with("halve"))
+            .expect("the halve function remains visible");
+        let continued = function
+            .statements()
+            .filter_map(|statement| match statement {
+                rumoca_ir_dae::FunctionStatementView::For { fold, .. } => Some(fold),
+                _ => None,
+            })
+            .filter_map(|fold| view.function_fold(fold))
+            .any(|fold| fold.continuation().is_some());
+        assert!(continued, "the while fold carries its condition");
+    });
+}

@@ -232,6 +232,7 @@ fn project_functions(view: dae::DaeView<'_>) -> Vec<Value> {
                             "initial_definitions": definition_ordinals(fold.initial_values()),
                             "update_definitions": definition_ordinals(fold.update_values()),
                             "output_definitions": definition_ordinals(fold.output_values()),
+                            "continuation": fold.continuation().map(|condition| condition.index()),
                             "provenance": fold.provenance(),
                         })
                     })

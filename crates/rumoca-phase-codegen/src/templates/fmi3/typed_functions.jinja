@@ -28,12 +28,17 @@ else { {{ call(region_name ~ "_false", op.captures, op.destinations)|trim }} }
 {% elif op.operation == "fold" -%}
 {
 {% for dst in op.destinations %}{{ copy("r" ~ dst, "r" ~ op.initial[loop.index0]) }}{% endfor -%}
+int fold_done=0; (void)fold_done;
 {% for binder in op.domain.binders -%}
 {% set count = 0 if (binder.step > 0 and binder.lower > binder.upper) or (binder.step < 0 and binder.lower < binder.upper) else (binder.upper - binder.lower)//binder.step + 1 -%}
 int64_t b{{ loop.index0 }}[1]={ {{ integer(binder.lower) }} };
-for (size_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }}; ++i{{ loop.index0 }}) {
+for (size_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }} && !fold_done; ++i{{ loop.index0 }}) {
 if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% endfor -%}
+{% if op.continuation -%}
+{ bool fold_continue[1]; if ({{ region_name }}_continue((const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% else %}NULL{% endfor %} }, (void*[]){ fold_continue })) return 1; fold_done = !fold_continue[0]; }
+if (!fold_done)
+{% endif -%}
 if ({{ region_name }}_fold((const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %} }, (void*[]){ {% for output in op.destinations %}r{{ output }},{% else %}NULL{% endfor %} })) return 1;
 {% for binder in op.domain.binders %} } {% endfor %}
 }
@@ -51,6 +56,9 @@ if ({{ region_name }}_fold((const void*[]){ {% for input in op.destinations + op
 {{ definition(op.if_false.body, child ~ "_false", prefix) -}}
 {% elif op.operation == "fold" -%}
 {{ definition(op.transition.body, child ~ "_fold", prefix) -}}
+{% if op.continuation -%}
+{{ definition(op.continuation.body, child ~ "_continue", prefix) -}}
+{% endif -%}
 {% endif -%}
 {% endfor -%}
 static int {{ name }}(const void* const in[], void* const out[]) {

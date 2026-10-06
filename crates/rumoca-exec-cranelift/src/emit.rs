@@ -729,7 +729,9 @@ fn residual_program_cost(program: &[LinearOp]) -> usize {
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. }
             | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                1usize.saturating_add(residual_program_cost(&program.update))
+                program.regions().fold(1usize, |cost, region| {
+                    cost.saturating_add(residual_program_cost(region))
+                })
             }
             LinearOp::FunctionConditional { program, .. } => {
                 let arm_cost = program.arms.iter().fold(0usize, |cost, arm| {
@@ -1180,9 +1182,9 @@ impl CraneliftEmitter {
             match operation {
                 LinearOp::FunctionFold { program, .. }
                 | LinearOp::GuardedFunctionFold { program, .. }
-                | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                    self.ensure_conditional_programs(&program.update, kind)?;
-                }
+                | LinearOp::StoreOutputFunctionFold { program, .. } => program
+                    .regions()
+                    .try_for_each(|region| self.ensure_conditional_programs(region, kind))?,
                 LinearOp::FunctionConditional { program, .. } => {
                     self.ensure_nested_conditional_program(program, kind)?;
                 }
@@ -1336,7 +1338,9 @@ impl CraneliftEmitter {
         self.canonical_fold_functions
             .push((program.clone(), function));
         self.ensure_fold_programs(&program.update, kind)?;
-        self.ensure_conditional_programs(&program.update, kind)?;
+        for region in program.regions() {
+            self.ensure_conditional_programs(region, kind)?;
+        }
 
         let mut context = self.module.make_context();
         context.func.signature = signature;
@@ -3399,7 +3403,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         // code even when runtime indexing requires a register tape: the tape
         // remains addressable, while we eliminate loop control and integer
         // div/rem from every estimator matrix reduction.
-        if count <= INLINE_FIXED_FOLD_POINT_LIMIT && program.update.len() <= 128 {
+        // A bounded `while` fold keeps its loop: each pass first tests the
+        // continuation and exits with the current tuple when it is false.
+        if count <= INLINE_FIXED_FOLD_POINT_LIMIT
+            && program.update.len() <= 128
+            && program.continuation.is_none()
+        {
             for ordinal in 0..count {
                 let constants = fold_index_constants(&program.domain, &extents, &strides, ordinal);
                 let indices = constants
@@ -3437,6 +3446,20 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
         self.fb.switch_to_block(body);
         self.fb.seal_block(body);
+        if let Some(continuation) = &program.continuation {
+            let predicate = self.lower_fold_continuation(
+                carried_slot,
+                captures,
+                captures_ptr,
+                (program.carried_count, &continuation.ops),
+            )?;
+            let zero = self.fb.ins().f64const(0.0);
+            let proceed = self.fb.ins().fcmp(FloatCC::NotEqual, predicate, zero);
+            let pass = self.fb.create_block();
+            self.fb.ins().brif(proceed, pass, &[], exit, &[]);
+            self.fb.switch_to_block(pass);
+            self.fb.seal_block(pass);
+        }
         let mut indices = Vec::with_capacity(program.domain.binders.len());
         for ((binder, extent), stride) in program.domain.binders.iter().zip(extents).zip(strides) {
             let position = if stride == 1 {
@@ -3468,6 +3491,54 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.fb.switch_to_block(exit);
         self.fb.seal_block(exit);
         Ok(())
+    }
+
+    /// Evaluate a bounded `while` fold's continuation on the carried tuple.
+    fn lower_fold_continuation(
+        &mut self,
+        carried_slot: StackSlot,
+        captures: &[cranelift_codegen::ir::Value],
+        captures_ptr: Option<cranelift_codegen::ir::Value>,
+        (carried_count, ops): (usize, &[LinearOp]),
+    ) -> Result<cranelift_codegen::ir::Value, CompileError> {
+        let pointer_type = self.module.target_config().pointer_type();
+        let backing_regs_ptr = create_fold_register_tape(self.fb, pointer_type, ops)?;
+        let mut continuation_regs = HashMap::new();
+        let mut continuation = RowLowerCtx {
+            fb: self.fb,
+            module: self.module,
+            math: self.math,
+            regs: &mut continuation_regs,
+            y_ptr: self.y_ptr,
+            p_ptr: self.p_ptr,
+            t_value: self.t_value,
+            v_ptr: self.v_ptr,
+            backing_regs_ptr,
+            flags: self.flags,
+            loaded_y: None,
+            loaded_p: None,
+            fold_carried: Some(carried_slot),
+            fold_indices: Some(&[]),
+            fold_index_constants: None,
+            fold_captures: Some(captures),
+            fold_captures_ptr: captures_ptr,
+            conditional_captures: self.conditional_captures,
+            conditional_captures_ptr: self.conditional_captures_ptr,
+            fold_functions: self.fold_functions,
+            conditional_functions: self.conditional_functions,
+            pure_call_functions: self.pure_call_functions,
+            pure_call_results: HashMap::new(),
+            nested_fold_results: HashMap::new(),
+            conditional_results: HashMap::new(),
+            fold_carried_versions: vec![0; carried_count],
+            known_constants: HashMap::new(),
+        };
+        match continuation.lower_fold_update_body(ops)?.as_slice() {
+            [LinearOp::StoreOutput { src }] => continuation.lookup(*src),
+            _ => Err(CompileError::Backend(
+                "a fold continuation stores exactly one predicate".to_string(),
+            )),
+        }
     }
 
     fn lower_function_fold_iteration(

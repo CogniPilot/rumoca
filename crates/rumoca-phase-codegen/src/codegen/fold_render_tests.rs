@@ -122,6 +122,33 @@ fn tensor_update() -> Arc<solve::FunctionFoldProgram> {
     Arc::new(solve::FunctionFoldProgram::checked(domain(3), 3, 1, update).expect("checked fold"))
 }
 
+/// `while x > 0.1 loop x := x*0.5; end while` as a fold over `1:100` that ends
+/// at its first false continuation.
+fn halving() -> Arc<solve::FunctionFoldProgram> {
+    let update = vec![
+        LinearOp::LoadFoldCarried { dst: 0, index: 0 },
+        LinearOp::Const { dst: 1, value: 0.5 },
+        binary(2, BinaryOp::Mul, 0, 1),
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    let continuation = vec![
+        LinearOp::LoadFoldCarried { dst: 0, index: 0 },
+        LinearOp::Const { dst: 1, value: 0.1 },
+        LinearOp::Compare {
+            dst: 2,
+            op: CompareOp::Gt,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    Arc::new(
+        solve::FunctionFoldProgram::checked(domain(100), 1, 0, update)
+            .and_then(|program| program.with_continuation(continuation))
+            .expect("checked continued fold"),
+    )
+}
+
 fn program() -> Vec<LinearOp> {
     let fold = |dst, program, initial_start| LinearOp::FunctionFold {
         dst_start: dst,
@@ -160,9 +187,10 @@ fn program() -> Vec<LinearOp> {
             dimensions: vec![3].into(),
             indices: vec![TensorIndex::Runtime(19)].into(),
         },
+        fold(21, halving(), 3),
         LinearOp::StoreOutputRange {
             start: 6,
-            count: 15,
+            count: 16,
             stride: 1,
         },
     ]
@@ -287,4 +315,6 @@ fn every_fold_form_matches_the_linked_evaluator_bit_for_bit() {
     // Guards: the inactive fold keeps its seed; the active one folds.
     assert_eq!(expected[2..4], expected[0..2]);
     assert_eq!(expected[4..6], [0.5, 1.0]);
+    // The continued fold stops after four halvings of 1.0.
+    assert_eq!(expected[15], 0.0625);
 }

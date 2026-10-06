@@ -439,6 +439,7 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "register_count" => Some(Value::from(program.register_count)),
             "domain" => Some(Value::from_serialize(&program.domain)),
             "update" => Some(super::scalar_region_plan::fold_update_value(program)),
+            "continuation" => Some(super::scalar_region_plan::fold_continuation_value(program)),
             _ => None,
         },
         LinearOp::GuardedFunctionFold {
@@ -456,6 +457,7 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "register_count" => Some(Value::from(program.register_count)),
             "domain" => Some(Value::from_serialize(&program.domain)),
             "update" => Some(super::scalar_region_plan::fold_update_value(program)),
+            "continuation" => Some(super::scalar_region_plan::fold_continuation_value(program)),
             _ => None,
         },
         LinearOp::FunctionConditional {
@@ -513,6 +515,7 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "register_count" => Some(Value::from(program.register_count)),
             "domain" => Some(Value::from_serialize(&program.domain)),
             "update" => Some(super::scalar_region_plan::fold_update_value(program)),
+            "continuation" => Some(super::scalar_region_plan::fold_continuation_value(program)),
             "result_base" => Some(Value::from(result_base)),
             "count" => Some(Value::from(count)),
             "condition" => condition.map(|condition| Value::from(condition as usize)),
@@ -962,6 +965,7 @@ pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
             "register_count",
             "domain",
             "update",
+            "continuation",
         ],
         LinearOp::GuardedFunctionFold { .. } => &[
             "kind",
@@ -974,6 +978,7 @@ pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
             "register_count",
             "domain",
             "update",
+            "continuation",
         ],
         LinearOp::FunctionConditional { .. } => &[
             "kind",
@@ -1010,6 +1015,7 @@ pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
             "register_count",
             "domain",
             "update",
+            "continuation",
             "result_base",
             "count",
             "condition",

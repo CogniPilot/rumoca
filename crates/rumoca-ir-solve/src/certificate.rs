@@ -219,7 +219,9 @@ fn program_dependencies(program: &[LinearOp]) -> Option<BTreeSet<DependencySlot>
             | LinearOp::ImpureRandomInteger { .. } => return None,
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. } => {
-                dependencies.extend(program_dependencies(&program.update)?);
+                for region in program.regions() {
+                    dependencies.extend(program_dependencies(region)?);
+                }
             }
             LinearOp::FunctionConditional { program, .. } => {
                 for arm in &program.arms {

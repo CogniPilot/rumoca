@@ -410,15 +410,43 @@ where
             self.function_fold_values.push((fold, values));
             self.domain_points.push((fold_view.domain(), point));
             self.scoped_expression_values.push(FxHashMap::default());
-            let next = self.function_loop_iteration(fold_view, statements.clone());
+            // MLS §11.2.3: a bounded `while` stops before the first pass whose
+            // condition is false, with the values that pass would have read.
+            let next = match fold_view.continuation() {
+                Some(condition) => {
+                    self.expression(condition)
+                        .and_then(|value| match value.as_slice() {
+                            [0.0] => Ok(None),
+                            [1.0] => self
+                                .function_loop_iteration(fold_view, statements.clone())
+                                .map(Some),
+                            _ => Err(failure(
+                                NumericEvaluationErrorKind::InvalidValue,
+                                "while condition is not scalar Boolean",
+                                span,
+                            )),
+                        })
+                }
+                None => self
+                    .function_loop_iteration(fold_view, statements.clone())
+                    .map(Some),
+            };
             self.scoped_expression_values.pop();
             self.domain_points.pop();
             let (_, previous) = self
                 .function_fold_values
                 .pop()
                 .expect("active function fold stack remains balanced");
-            values = next?;
-            debug_assert_eq!(values.len(), previous.len());
+            match next? {
+                Some(next) => {
+                    debug_assert_eq!(next.len(), previous.len());
+                    values = next;
+                }
+                None => {
+                    values = previous;
+                    break;
+                }
+            }
         }
         Ok(values)
     }

@@ -441,6 +441,19 @@ pub struct FunctionFoldProgram {
     pub capture_count: usize,
     pub register_count: usize,
     pub update: Vec<LinearOp>,
+    /// A bounded `while` fold's predicate (MLS §11.2.3), evaluated on the
+    /// carried tuple and captures before each pass; the first false value
+    /// ends the fold with that tuple. It reads no binder.
+    #[serde(default)]
+    pub continuation: Option<FoldContinuation>,
+}
+
+/// The checked predicate region of a bounded `while` fold: exactly one
+/// stored output, read as a Boolean (nonzero continues).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FoldContinuation {
+    pub register_count: usize,
+    pub ops: Vec<LinearOp>,
 }
 
 impl FunctionFoldProgram {
@@ -469,7 +482,33 @@ impl FunctionFoldProgram {
             capture_count,
             register_count,
             update,
+            continuation: None,
         })
+    }
+
+    /// Make this fold end at the first pass whose `ops` predicate is false.
+    /// The region reads the carried tuple and captures only, never a binder,
+    /// and stores exactly one value.
+    pub fn with_continuation(
+        mut self,
+        ops: Vec<LinearOp>,
+    ) -> Result<Self, ScalarProgramRegisterError> {
+        let register_count =
+            continuation_register_count(&ops, self.carried_count, self.capture_count)?;
+        self.continuation = Some(FoldContinuation {
+            register_count,
+            ops,
+        });
+        Ok(self)
+    }
+
+    /// Every op region of the fold: the update, then the continuation.
+    pub fn regions(&self) -> impl Iterator<Item = &[LinearOp]> {
+        std::iter::once(self.update.as_slice()).chain(
+            self.continuation
+                .as_ref()
+                .map(|continuation| continuation.ops.as_slice()),
+        )
     }
 
     pub fn register_flow(&self) -> Result<ScalarProgramRegisterFlow, ScalarProgramRegisterError> {
@@ -488,8 +527,41 @@ impl FunctionFoldProgram {
                 reason: "stored update register count does not match its body",
             });
         }
+        if let Some(continuation) = &self.continuation
+            && continuation_register_count(
+                &continuation.ops,
+                self.carried_count,
+                self.capture_count,
+            )? != continuation.register_count
+        {
+            return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+                op_index: 0,
+                reason: "stored continuation register count does not match its region",
+            });
+        }
         Ok(flow)
     }
+}
+
+/// The register count of a continuation region over a fold's carried tuple
+/// and captures; a binder read or any output count but one is refused.
+fn continuation_register_count(
+    ops: &[LinearOp],
+    carried_count: usize,
+    capture_count: usize,
+) -> Result<usize, ScalarProgramRegisterError> {
+    let flow = ScalarProgramRegisterFlow::derive_inner(
+        ops,
+        Some((carried_count, 0, capture_count)),
+        None,
+    )?;
+    if fold_output_count(ops, 0)? != 1 {
+        return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+            op_index: 0,
+            reason: "a fold continuation stores exactly one predicate",
+        });
+    }
+    Ok(flow.register_count())
 }
 
 /// One checked condition and its lazily selected correlated result region.

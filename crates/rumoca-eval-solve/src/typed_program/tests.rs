@@ -744,6 +744,67 @@ fn compact_fold_executes_one_transition_owner_over_the_checked_domain() {
 }
 
 #[test]
+fn a_continued_fold_ends_at_its_first_false_predicate() {
+    let arithmetic = profile(SolveRealFormat::Binary64);
+    let integer = SolveValueType::scalar(SolveScalarType::integer(arithmetic));
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            id: 7,
+            display_name: "i".into(),
+            lower: 1,
+            upper: 100,
+            step: 1,
+        }],
+    };
+    let table = SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            identity(8),
+            Vec::new(),
+            vec![SolvePureCallOutput::result(integer.clone())],
+            span(70),
+            |builder, _inputs, outputs| {
+                let zero =
+                    builder.constant(SolveValue::integer(arithmetic, 0).unwrap(), span(71))?;
+                let sum = builder.fold_while(
+                    domain.clone(),
+                    &[zero],
+                    &[],
+                    span(72),
+                    |predicate, carried, _captures, outputs| {
+                        let sum = predicate.load(carried[0], span(72))?;
+                        let limit = predicate
+                            .constant(SolveValue::integer(arithmetic, 10).unwrap(), span(72))?;
+                        let below = predicate.compare(
+                            rumoca_ir_solve::SolveCompareOperator::Less,
+                            sum,
+                            limit,
+                            span(72),
+                        )?;
+                        predicate.store(outputs[0], below, span(72))
+                    },
+                    |transition, carried, _captures, binders, outputs| {
+                        let sum = transition.load(carried[0], span(72))?;
+                        let index = transition.load(binders[0], span(72))?;
+                        let next =
+                            transition.binary(SolveBinaryOperator::Add, sum, index, span(72))?;
+                        transition.store(outputs[0], next, span(72))
+                    },
+                )?;
+                builder.store(outputs[0], sum[0], span(73))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    // The wire replays the continuation through the checked builder.
+    let json = serde_json::to_string(&table).unwrap();
+    let table: SolvePureCallTable = serde_json::from_str(&json).unwrap();
+    // 0, 1, 3, 6, 10: the fifth predicate is false.
+    let output = eval_pure_call(&table, table.owners()[0].id(), &[]).unwrap();
+    assert_eq!(output[0].elements(), [SolveValueKind::Integer(10)]);
+}
+
+#[test]
 fn directional_fold_differentiates_only_the_selected_structured_region() {
     let arithmetic = profile(SolveRealFormat::Binary64);
     let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));

@@ -644,12 +644,13 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                 captures,
                 destinations,
                 transition,
+                continuation,
             } => self.eval_fold(
                 domain,
                 initial,
                 captures,
                 destinations,
-                transition,
+                (transition, continuation.as_deref()),
                 provenance,
             ),
             SolveOperation::Scale {
@@ -796,7 +797,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         initial: &[SolveRegisterId],
         captures: &[SolveRegisterId],
         destinations: &[SolveRegisterId],
-        transition: &SolveProgramRegion,
+        (transition, continuation): (&SolveProgramRegion, Option<&SolveProgramRegion>),
         provenance: Span,
     ) -> Result<(), TypedProgramEvalError> {
         let mut carried = initial
@@ -811,6 +812,13 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .index_tuple_iter()
             .map_err(|_| invalid_error("iterate compact fold domain", provenance))?;
         for tuple in tuples {
+            // MLS §11.2.3: a bounded `while` stops before the first pass whose
+            // condition is false, with the tuple that pass would have read.
+            if let Some(continuation) = continuation
+                && !self.fold_continues(continuation, &carried, &captures, provenance)?
+            {
+                break;
+            }
             let mut arguments = carried;
             arguments.extend(captures.iter().cloned());
             arguments.extend(
@@ -836,6 +844,33 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             self.write(*destination, value, provenance)?;
         }
         Ok(())
+    }
+
+    /// Whether a bounded `while` fold runs its next pass: its continuation
+    /// region evaluated on the carried tuple and captures.
+    fn fold_continues(
+        &mut self,
+        continuation: &SolveProgramRegion,
+        carried: &[TypedValue],
+        captures: &[TypedValue],
+        provenance: Span,
+    ) -> Result<bool, TypedProgramEvalError> {
+        let mut arguments = carried.to_vec();
+        arguments.extend(captures.iter().cloned());
+        let mut scope = InvocationScope::new(self.table);
+        let predicate = eval_region(
+            self.table,
+            continuation,
+            &arguments,
+            &mut scope,
+            self.mode,
+            self.chain,
+        )?;
+        match predicate.as_slice() {
+            [value] if value.elements() == [SolveValueKind::Boolean(false)] => Ok(false),
+            [value] if value.elements() == [SolveValueKind::Boolean(true)] => Ok(true),
+            _ => invalid("evaluate compact fold continuation", provenance),
+        }
     }
 
     fn eval_map(

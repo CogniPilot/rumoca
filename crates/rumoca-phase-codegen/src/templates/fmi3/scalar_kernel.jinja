@@ -271,14 +271,26 @@
             {%- if op.carried_count > 0 %}
             for (size_t k=0; k<{{ op.carried_count }}; ++k) fold_carried[k] = fold_seed[k];
             {%- endif %}
+            int fold_done = 0; (void)fold_done;
 {%- if op.kind == "GuardedFunctionFold" %}
             if (r[{{ op.activation }}] != 0.0)
 {%- endif %}
             {
 {%- for binder in op.domain.binders %}{% set count = 0 if (binder.step > 0 and binder.lower > binder.upper) or (binder.step < 0 and binder.lower < binder.upper) else (binder.upper - binder.lower) // binder.step + 1 %}
-            for (int64_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }}; ++i{{ loop.index0 }}) {
+            for (int64_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }} && !fold_done; ++i{{ loop.index0 }}) {
             fold_index[{{ loop.index0 }}] = {{ binder.lower }} + i{{ loop.index0 }}*({{ binder.step }});
 {%- endfor %}
+{%- if op.continuation is not none %}
+            {
+                double fold_predicate[1];
+                double r[{{ [op.continuation.register_count, 1]|max }}]; (void)r;
+{%- for continuation_op in op.continuation.ops %}
+{{ scalar_op(continuation_op, "fold_predicate", error_status) }}
+{%- endfor %}
+                fold_done = fold_predicate[0] == 0.0;
+            }
+{%- endif %}
+            if (!fold_done) {
             double fold_next[{{ [op.carried_count, 1]|max }}];
             {
                 double r[{{ [op.update.register_count, 1]|max }}]; (void)r;
@@ -289,6 +301,7 @@
             {%- if op.carried_count > 0 %}
             for (size_t k=0; k<{{ op.carried_count }}; ++k) fold_carried[k] = fold_next[k];
             {%- endif %}
+            }
 {%- for binder in op.domain.binders %}
             }
 {%- endfor %}

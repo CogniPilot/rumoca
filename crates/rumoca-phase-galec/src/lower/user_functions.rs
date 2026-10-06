@@ -1265,6 +1265,7 @@ fn lower_function_for<'a, 'dae>(
     let fold_view = view
         .function_fold(fold)
         .expect("checked function fold resolves");
+    super::expression_function_folds::refuse_while_fold(fold_view, span)?;
     let domain = view
         .domain(fold_view.domain())
         .expect("checked function fold domain resolves");

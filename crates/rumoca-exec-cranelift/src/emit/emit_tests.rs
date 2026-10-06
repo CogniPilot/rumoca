@@ -159,6 +159,71 @@ fn compiled_function_fold_executes_a_retained_native_loop() {
 }
 
 #[test]
+fn compiled_function_fold_ends_at_its_first_false_continuation() {
+    // `s := s + i` over `i in 1:100` while `s < 10`: 0, 1, 3, 6, 10, then stop.
+    let program = rumoca_ir_solve::FunctionFoldProgram::checked(
+        rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 100,
+                step: 1,
+            }],
+        },
+        1,
+        0,
+        vec![
+            LinearOp::LoadFoldCarried { dst: 0, index: 0 },
+            LinearOp::LoadFoldIndex {
+                dst: 1,
+                dimension: 0,
+            },
+            LinearOp::Binary {
+                dst: 2,
+                op: BinaryOp::Add,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ],
+    )
+    .and_then(|program| {
+        program.with_continuation(vec![
+            LinearOp::LoadFoldCarried { dst: 0, index: 0 },
+            LinearOp::Const {
+                dst: 1,
+                value: 10.0,
+            },
+            LinearOp::Compare {
+                dst: 2,
+                op: rumoca_ir_solve::CompareOp::Lt,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ])
+    })
+    .expect("construct continued fold");
+    let row = vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::FunctionFold {
+            dst_start: 1,
+            initial_start: 0,
+            capture_start: 0,
+            program: std::sync::Arc::new(program),
+        },
+        LinearOp::StoreOutput { src: 1 },
+    ];
+    let compiled = compile_residual_rows(&[row]).expect("compile continued fold");
+    let mut out = [0.0];
+    compiled
+        .call(&[], &[], 0.0, &mut out)
+        .expect("evaluate continued fold");
+    assert_eq!(out, [10.0]);
+}
+
+#[test]
 fn compiled_function_fold_executes_matrix_multiply_as_a_native_loop() {
     let mut update = Vec::new();
     for index in 0..8 {

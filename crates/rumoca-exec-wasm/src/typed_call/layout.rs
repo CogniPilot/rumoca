@@ -193,6 +193,7 @@ impl FramePlan {
                     captures,
                     destinations,
                     transition,
+                    continuation,
                     ..
                 } => {
                     // Fold destinations are fresh private SSA ranges. They
@@ -213,6 +214,14 @@ impl FramePlan {
                     )?;
                     region.counter = alloc(2, &mut self.scratch_bytes, 8)?;
                     regions.push(region);
+                    // A bounded `while` predicate reads copies of the tuple and the
+                    // captures and returns one Boolean.
+                    let inputs = destinations.len() + captures.len();
+                    regions.extend(self.plan_fold_predicate(
+                        continuation.as_deref(),
+                        inputs,
+                        callees,
+                    )?);
                 }
                 solve::SolveOperation::Call { owner, .. } => {
                     let callee = callees
@@ -231,6 +240,27 @@ impl FramePlan {
             self.calls.push(call);
         }
         Ok(())
+    }
+
+    /// A bounded `while` fold's predicate reads copies of the carried tuple
+    /// and the captures and returns one Boolean.
+    fn plan_fold_predicate(
+        &mut self,
+        predicate: Option<&solve::SolveProgramRegion>,
+        inputs: usize,
+        callees: &[Option<Self>],
+    ) -> Result<Option<Self>, TypedCallCompileError> {
+        let Some(predicate) = predicate else {
+            return Ok(None);
+        };
+        Self::region(
+            predicate.body(),
+            &mut self.scratch_bytes,
+            callees,
+            &vec![None; inputs],
+            OutputPolicy::Returned,
+        )
+        .map(Some)
     }
 
     fn plan_map_region(

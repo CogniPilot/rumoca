@@ -111,8 +111,15 @@ fn collect_calls(program: &solve::TypedProgram, pending: &mut Vec<solve::SolvePu
                 collect_calls(if_false.body(), pending);
             }
             solve::SolveOperation::Map { body, .. } => collect_calls(body.body(), pending),
-            solve::SolveOperation::Fold { transition, .. } => {
+            solve::SolveOperation::Fold {
+                transition,
+                continuation,
+                ..
+            } => {
                 collect_calls(transition.body(), pending);
+                if let Some(predicate) = continuation {
+                    collect_calls(predicate.body(), pending);
+                }
             }
             _ => {}
         }

@@ -32,6 +32,8 @@ struct FoldTransition<'dae> {
     parameter_definitions: Vec<dae::FunctionDefinitionId<'dae>>,
     /// Definition identity of each end-of-iteration update.
     update_definitions: Vec<dae::FunctionDefinitionId<'dae>>,
+    /// A bounded `while` fold's predicate over the carried state.
+    continuation: Option<dae::ExprId<'dae>>,
     domain: dae::DomainId<'dae>,
 }
 
@@ -39,6 +41,7 @@ struct FoldTransition<'dae> {
 type CarriedLayout<'dae> = Vec<(u32, dae::ValueTypeId<'dae>, Range<usize>)>;
 
 /// Everything one iteration of a fold needs that is fixed before it runs.
+#[derive(Clone, Copy)]
 struct FoldIteration<'a, 'dae> {
     fold: dae::FunctionFoldId<'dae>,
     transition: &'a FoldTransition<'dae>,
@@ -96,7 +99,11 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .function_scope(fold.function(), Some(fold))
             .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
         let (captures, environment) = self.capture_environment_for_fold(
-            transition.update_expressions.iter().copied(),
+            transition
+                .update_expressions
+                .iter()
+                .copied()
+                .chain(transition.continuation),
             fold,
             scope,
         )?;
@@ -117,15 +124,34 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             assertions: &assertions,
             provenance,
         };
-        let destinations = self.builder.fold(
-            domain,
-            &initial_flat,
-            &captures,
-            provenance,
-            move |builder, carried, captures, binders, outputs| {
-                iteration.lower(builder, carried, captures, binders, outputs)
-            },
-        )?;
+        let destinations = match transition.continuation {
+            Some(continuation) => self.builder.fold_while(
+                domain,
+                &initial_flat,
+                &captures,
+                provenance,
+                move |builder, carried, captures, outputs| {
+                    iteration.lower_continuation(
+                        builder,
+                        continuation,
+                        (carried, captures),
+                        outputs,
+                    )
+                },
+                move |builder, carried, captures, binders, outputs| {
+                    iteration.lower(builder, carried, captures, binders, outputs)
+                },
+            )?,
+            None => self.builder.fold(
+                domain,
+                &initial_flat,
+                &captures,
+                provenance,
+                move |builder, carried, captures, binders, outputs| {
+                    iteration.lower(builder, carried, captures, binders, outputs)
+                },
+            )?,
+        };
         for (offset, slot) in assertions.slots.iter().enumerate() {
             let value = destinations
                 .get(assertions.start + offset)
@@ -277,10 +303,40 @@ fn checked_transition<'dae>(
         parameter_definitions,
         update_definitions,
         domain: fold_view.domain(),
+        continuation: fold_view.continuation(),
     }))
 }
 
 impl<'dae> FoldIteration<'_, 'dae> {
+    /// Build a bounded `while` fold's predicate region over the carried
+    /// tuple and the captures.
+    fn lower_continuation<'region>(
+        self,
+        builder: &mut solve::TypedProgramBuilder<'region>,
+        continuation: dae::ExprId<'dae>,
+        (carried, captures): (
+            &[solve::ProgramSlot<'region>],
+            &[solve::ProgramSlot<'region>],
+        ),
+        outputs: &[solve::ProgramSlot<'region>],
+    ) -> Result<(), solve::SolveProgramConstructionError> {
+        let mut lowerer = load_region_lowerer(
+            builder,
+            captures,
+            self.environment,
+            self.context,
+            self.provenance,
+        )?;
+        self.seed_carried_values(&mut lowerer, carried)?;
+        let value = lowerer.expression(continuation)?;
+        match (value.leaves.as_slice(), outputs) {
+            ([predicate], [output]) => lowerer.builder.store(*output, *predicate, self.provenance),
+            _ => Err(solve::SolveProgramConstructionError::InvalidFold {
+                provenance: self.provenance,
+            }),
+        }
+    }
+
     /// Build one iteration of the transition region.
     fn lower<'region>(
         self,

@@ -265,6 +265,10 @@ pub enum SolveOperation {
         captures: Box<[SolveRegisterId]>,
         destinations: Box<[SolveRegisterId]>,
         transition: Box<SolveProgramRegion>,
+        /// A bounded `while` loop's predicate over the carried tuple and the
+        /// captures, evaluated before each pass; the first false value ends
+        /// the loop with the current tuple (MLS §11.2.3).
+        continuation: Option<Box<SolveProgramRegion>>,
     },
     /// Elementwise multiplication of one aggregate by one scalar.
     Scale {
@@ -1122,7 +1126,74 @@ impl<'program> TypedProgramBuilder<'program> {
                 build(builder, carried, captures, binders, outputs)
             },
         )?;
-        self.fold_from_region(domain, initial, captures, transition, provenance)
+        self.fold_from_region(domain, initial, captures, transition, None, provenance)
+    }
+
+    /// A fold that ends at the first pass whose `continuation` predicate,
+    /// built over the carried tuple and the captures, is false.
+    pub fn fold_while(
+        &mut self,
+        domain: StructuredIndexDomain,
+        initial: &[ProgramRegister<'program>],
+        captures: &[ProgramRegister<'program>],
+        provenance: Span,
+        continuation: impl for<'region> FnOnce(
+            &mut TypedProgramBuilder<'region>,
+            &[ProgramSlot<'region>],
+            &[ProgramSlot<'region>],
+            &[ProgramSlot<'region>],
+        ) -> Result<(), SolveProgramConstructionError>,
+        build: impl for<'region> FnOnce(
+            &mut TypedProgramBuilder<'region>,
+            &[ProgramSlot<'region>],
+            &[ProgramSlot<'region>],
+            &[ProgramSlot<'region>],
+            &[ProgramSlot<'region>],
+        ) -> Result<(), SolveProgramConstructionError>,
+    ) -> Result<Vec<ProgramRegister<'program>>, SolveProgramConstructionError> {
+        require_provenance(provenance)?;
+        let carried_types = self.register_types_for(initial, provenance)?;
+        let capture_types = self.register_types_for(captures, provenance)?;
+        let carried_count = carried_types.len();
+        let predicate = self.build_region(
+            carried_types
+                .iter()
+                .chain(&capture_types)
+                .cloned()
+                .collect(),
+            vec![SolveValueType::scalar(SolveScalarType::Boolean)],
+            provenance,
+            |builder, inputs, outputs| {
+                let (carried, captures) = inputs.split_at(carried_count);
+                continuation(builder, carried, captures, outputs)
+            },
+        )?;
+        let binder_types = vec![
+            SolveValueType::scalar(SolveScalarType::integer(self.arithmetic));
+            domain.binders.len()
+        ];
+        let capture_count = capture_types.len();
+        let mut input_types = carried_types.clone();
+        input_types.extend(capture_types);
+        input_types.extend(binder_types);
+        let transition = self.build_region(
+            input_types,
+            carried_types,
+            provenance,
+            |builder, inputs, outputs| {
+                let (carried, remaining) = inputs.split_at(carried_count);
+                let (captures, binders) = remaining.split_at(capture_count);
+                build(builder, carried, captures, binders, outputs)
+            },
+        )?;
+        self.fold_from_region(
+            domain,
+            initial,
+            captures,
+            transition,
+            Some(predicate),
+            provenance,
+        )
     }
 
     pub fn map(
@@ -1257,6 +1328,7 @@ impl<'program> TypedProgramBuilder<'program> {
         initial: &[ProgramRegister<'program>],
         captures: &[ProgramRegister<'program>],
         transition: SolveProgramRegion,
+        continuation: Option<SolveProgramRegion>,
         provenance: Span,
     ) -> Result<Vec<ProgramRegister<'program>>, SolveProgramConstructionError> {
         require_provenance(provenance)?;
@@ -1275,6 +1347,14 @@ impl<'program> TypedProgramBuilder<'program> {
             || transition.outputs.as_ref() != carried_types
             || transition.body.arithmetic() != self.arithmetic
             || transition.provenance != provenance
+            || continuation.as_ref().is_some_and(|predicate| {
+                predicate.inputs.as_ref()
+                    != &expected_inputs[..carried_types.len() + capture_types.len()]
+                    || predicate.outputs.as_ref()
+                        != [SolveValueType::scalar(SolveScalarType::Boolean)]
+                    || predicate.body.arithmetic() != self.arithmetic
+                    || predicate.provenance != provenance
+            })
         {
             return Err(SolveProgramConstructionError::InvalidFold { provenance });
         }
@@ -1301,6 +1381,7 @@ impl<'program> TypedProgramBuilder<'program> {
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
                 transition: Box::new(transition),
+                continuation: continuation.map(Box::new),
             },
             provenance,
         );

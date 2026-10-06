@@ -676,6 +676,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         fold.initial_values()
             .rhs_iter()
             .chain(fold.update_values().rhs_iter())
+            .chain(fold.continuation())
             .any(|root| {
                 let mut reads_active = false;
                 dae::for_each_expression(self.view, root, |_, expression| {

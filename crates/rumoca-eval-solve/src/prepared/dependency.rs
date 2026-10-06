@@ -72,7 +72,9 @@ fn collect_y_input_ranges(program: &[LinearOp], ranges: &mut Vec<Range<usize>>) 
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. }
             | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                collect_y_input_ranges(&program.update, ranges);
+                for region in program.regions() {
+                    collect_y_input_ranges(region, ranges);
+                }
             }
             LinearOp::FunctionConditional { program, .. } => {
                 for arm in &program.arms {
@@ -152,7 +154,7 @@ pub(super) fn op_can_fail(op: &LinearOp) -> bool {
         LinearOp::FunctionFold { program, .. }
         | LinearOp::GuardedFunctionFold { program, .. }
         | LinearOp::StoreOutputFunctionFold { program, .. } => {
-            program.update.iter().any(op_can_fail)
+            program.regions().flatten().any(op_can_fail)
         }
         LinearOp::FunctionConditional { program, .. } => program
             .arms
@@ -219,7 +221,9 @@ fn collect_parameter_indices(row: &[LinearOp], indices: &mut BTreeSet<usize>) {
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. }
             | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                collect_parameter_indices(&program.update, indices);
+                for region in program.regions() {
+                    collect_parameter_indices(region, indices);
+                }
             }
             LinearOp::FunctionConditional { program, .. } => {
                 for arm in &program.arms {

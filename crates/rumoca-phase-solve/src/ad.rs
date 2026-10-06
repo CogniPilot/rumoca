@@ -504,7 +504,7 @@ fn ops_reference_seeded_inputs(ops: &[LinearOp], seed_mode: SeedMode<'_>) -> boo
                 && matches!(op, LinearOp::LoadP { .. } | LinearOp::LoadIndexedP { .. })
             || matches!(op, LinearOp::FunctionFold { program, .. }
                 | LinearOp::GuardedFunctionFold { program, .. }
-                if ops_reference_seeded_inputs(&program.update, seed_mode))
+                if program.regions().any(|region| ops_reference_seeded_inputs(region, seed_mode)))
             || matches!(op, LinearOp::FunctionConditional { program, .. }
                 if program
                     .arms
@@ -1401,6 +1401,15 @@ impl<'a> AdBuilder<'a> {
             .capture_count
             .checked_mul(2)
             .ok_or_else(|| unsupported("function-fold AD capture count overflow"))?;
+        // The continuation decides control flow only: it reads the primal
+        // lanes and stops primal and tangent lanes together.
+        let continuation = primal
+            .continuation
+            .as_ref()
+            .map(|continuation| {
+                self.derive_conditional_region(&continuation.ops, StoreOutputMode::Primal)
+            })
+            .transpose()?;
         let program = Arc::new(
             rumoca_ir_solve::FunctionFoldProgram::checked(
                 primal.domain.clone(),
@@ -1408,6 +1417,10 @@ impl<'a> AdBuilder<'a> {
                 capture_count,
                 update.ops,
             )
+            .and_then(|program| match continuation {
+                Some(ops) => program.with_continuation(ops),
+                None => Ok(program),
+            })
             .map_err(|error| {
                 unsupported(&format!("function-fold AD register proof failed: {error}"))
             })?,

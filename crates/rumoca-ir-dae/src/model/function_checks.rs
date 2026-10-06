@@ -61,7 +61,7 @@ pub(super) fn validate_function_dependencies(
         .iter()
         .map(|definition| definition.rhs)
         .collect::<Vec<_>>();
-    push_function_statement_expressions(function_statements(function), &mut roots);
+    push_function_expression_roots(storage, function, &mut roots);
     for expression in roots {
         let latest_call = storage
             .expressions
@@ -131,7 +131,7 @@ fn collect_group_dependencies(
         .iter()
         .map(|definition| definition.rhs)
         .collect::<Vec<_>>();
-    push_function_statement_expressions(function_statements(entry), &mut pending);
+    push_function_expression_roots(storage, entry, &mut pending);
     while let Some(expression) = pending.pop() {
         let index = expression as usize;
         if std::mem::replace(&mut seen[index], true) {
@@ -156,6 +156,22 @@ fn function_statements(function: &FunctionEntry) -> &[FunctionStatementWire] {
         .as_ref()
         .and_then(FunctionBodyEntry::modelica)
         .map_or(&[], |definition| definition.statements.as_slice())
+}
+
+/// Every expression a function body reads outside its definitions: statement
+/// conditions and messages, and each compact loop's continuation predicate.
+fn push_function_expression_roots(
+    storage: &Storage,
+    function: &FunctionEntry,
+    pending: &mut Vec<u32>,
+) {
+    push_function_statement_expressions(function_statements(function), pending);
+    pending.extend(
+        function
+            .folds
+            .iter()
+            .filter_map(|raw| storage.function_folds[*raw as usize].continuation),
+    );
 }
 
 fn push_function_statement_expressions(
@@ -357,6 +373,7 @@ pub(super) fn reserve_function_fold<'dae>(
         targets,
         iteration_locals,
         parameter_definitions: Vec::new(),
+        continuation: None,
         initial_definitions: initial_values,
         update_definitions: Vec::new(),
         output_definitions: Vec::new(),

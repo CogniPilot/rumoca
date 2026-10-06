@@ -337,6 +337,67 @@ fn integer_fold(
     (table.finish(), site)
 }
 
+/// `s := s + i` over `i in 1:14400` while `s < limit`, from the input `s`.
+fn continued_fold() -> (solve::SolvePureCallTable, solve::SolvePureCallSite) {
+    let p = profile();
+    let integer = solve::SolveValueType::scalar(solve::SolveScalarType::integer(p));
+    let mut table = solve::SolvePureCallTable::builder(p);
+    let owner = table
+        .add_owner(
+            identity(21),
+            vec![integer.clone(), integer.clone()],
+            vec![solve::SolvePureCallOutput::result(integer)],
+            span(210),
+            |b, inputs, outputs| {
+                let initial = b.load(inputs[0], span(211))?;
+                let limit = b.load(inputs[1], span(211))?;
+                let result = b.fold_while(
+                    domain(1, 14400, 1),
+                    &[initial],
+                    &[limit],
+                    span(212),
+                    |r, carried, captures, outputs| {
+                        let sum = r.load(carried[0], span(213))?;
+                        let limit = r.load(captures[0], span(213))?;
+                        let below =
+                            r.compare(solve::SolveCompareOperator::Less, sum, limit, span(213))?;
+                        r.store(outputs[0], below, span(213))
+                    },
+                    |r, carried, _, binders, outputs| {
+                        let old = r.load(carried[0], span(214))?;
+                        let index = r.load(binders[0], span(214))?;
+                        let next =
+                            r.binary(solve::SolveBinaryOperator::Add, old, index, span(214))?;
+                        r.store(outputs[0], next, span(214))
+                    },
+                )?;
+                b.store(outputs[0], result[0], span(215))
+            },
+        )
+        .unwrap();
+    let site = table.call_site(owner).unwrap();
+    (table.finish(), site)
+}
+
+#[test]
+fn a_continued_fold_ends_at_its_first_false_predicate() {
+    let (table, site) = continued_fold();
+    let compiled = compile_pure_call_wasm(&table, &site).unwrap();
+    let mut runner = Runner::new(&compiled);
+    // 0, 1, 3, 6, 10 stops below 10; a start at the limit runs no pass.
+    for (start, limit, expected) in [(0, 10, 10), (5, 5, 5), (0, 1_000_000_000, 103_687_200)] {
+        let inputs = vec![
+            vec![solve::SolveValueKind::Integer(start)],
+            vec![solve::SolveValueKind::Integer(limit)],
+        ];
+        let (status, actual) = runner.run(&cells(inputs.iter().flatten().copied()));
+        assert_eq!(status, 0);
+        let oracle = oracle(&table, &site, &inputs).unwrap();
+        assert_eq!(actual, oracle);
+        assert_eq!(oracle, cells([solve::SolveValueKind::Integer(expected)]));
+    }
+}
+
 #[test]
 fn finite_fold_domains_are_compact_ordered_and_empty_is_identity() {
     let mut sizes = Vec::new();

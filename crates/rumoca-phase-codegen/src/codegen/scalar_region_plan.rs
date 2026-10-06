@@ -85,6 +85,15 @@ pub(super) fn fold_update_value(program: &Arc<solve::FunctionFoldProgram>) -> Va
     planned(RegionSource::FoldUpdate(Arc::clone(program)))
 }
 
+/// The template view of a bounded `while` fold's continuation region, or
+/// none; its one store is the predicate checked before each pass.
+pub(super) fn fold_continuation_value(program: &Arc<solve::FunctionFoldProgram>) -> Value {
+    if program.continuation.is_none() {
+        return Value::from(());
+    }
+    planned(RegionSource::FoldContinuation(Arc::clone(program)))
+}
+
 fn planned(source: RegionSource) -> Value {
     let region = PlanRegionValue { source };
     let targets = local_output_targets(region.ops());
@@ -95,6 +104,7 @@ fn planned(source: RegionSource) -> Value {
 enum RegionSource {
     Conditional(Arc<solve::FunctionConditionalProgram>, RegionPart),
     FoldUpdate(Arc<solve::FunctionFoldProgram>),
+    FoldContinuation(Arc<solve::FunctionFoldProgram>),
 }
 
 #[derive(Debug)]
@@ -113,6 +123,10 @@ impl PlanRegionValue {
             }
             RegionSource::Conditional(program, RegionPart::Fallback) => &program.fallback,
             RegionSource::FoldUpdate(program) => &program.update,
+            RegionSource::FoldContinuation(program) => program
+                .continuation
+                .as_ref()
+                .map_or(&[], |continuation| continuation.ops.as_slice()),
         }
     }
 
@@ -128,6 +142,10 @@ impl PlanRegionValue {
                 program.fallback_register_count
             }
             RegionSource::FoldUpdate(program) => program.register_count,
+            RegionSource::FoldContinuation(program) => program
+                .continuation
+                .as_ref()
+                .map_or(0, |continuation| continuation.register_count),
         }
     }
 

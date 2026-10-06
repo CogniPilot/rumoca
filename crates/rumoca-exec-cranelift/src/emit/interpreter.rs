@@ -680,6 +680,30 @@ fn execute_general_op(
                 .index_tuple_iter()
                 .map_err(|error| CompileError::Backend(error.to_string()))?
             {
+                if let Some(continuation) = &program.continuation {
+                    let mut predicate = None;
+                    let mut continuation_regs = vec![0.0; continuation.register_count];
+                    for operation in continuation.ops.iter().cloned() {
+                        match operation {
+                            LinearOp::StoreOutput { src } => {
+                                predicate = Some(read_reg_value(&continuation_regs, src as usize));
+                            }
+                            operation => execute_general_op(
+                                &mut continuation_regs,
+                                operation,
+                                GeneralOpContext {
+                                    fold_carried: Some(&carried),
+                                    fold_indices: Some(&[]),
+                                    fold_captures: Some(&captures),
+                                    ..context
+                                },
+                            )?,
+                        }
+                    }
+                    if predicate == Some(0.0) {
+                        break;
+                    }
+                }
                 let mut update_regs = vec![0.0; update_count];
                 let mut outputs = Vec::with_capacity(program.carried_count);
                 for operation in program.update.iter().cloned() {

@@ -304,9 +304,10 @@ fn reads_unknown(op: &LinearOp, unknowns: &BTreeSet<usize>) -> bool {
             .is_some(),
         LinearOp::FunctionFold { program, .. }
         | LinearOp::GuardedFunctionFold { program, .. }
-        | LinearOp::StoreOutputFunctionFold { program, .. } => {
-            program.update.iter().any(|op| reads_unknown(op, unknowns))
-        }
+        | LinearOp::StoreOutputFunctionFold { program, .. } => program
+            .regions()
+            .flatten()
+            .any(|op| reads_unknown(op, unknowns)),
         LinearOp::FunctionConditional { program, .. } => program
             .arms
             .iter()

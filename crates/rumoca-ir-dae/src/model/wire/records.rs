@@ -144,6 +144,9 @@ pub(super) enum FunctionStatementInput {
         domain: u32,
         targets: Vec<u32>,
         iteration_locals: Vec<u32>,
+        /// The fold's continuation predicate, when it is a bounded `while`.
+        #[serde(default)]
+        continuation: Option<u32>,
         statements: Vec<FunctionStatementInput>,
         #[serde(deserialize_with = "deserialize_provenance")]
         begin_provenance: DaeProvenance,

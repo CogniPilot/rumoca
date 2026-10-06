@@ -112,8 +112,15 @@ fn operation_budget(program: &solve::TypedProgram) -> Option<usize> {
             solve::SolveOperation::Map { body, .. } => {
                 count = count.checked_add(operation_budget(body.body())?)?
             }
-            solve::SolveOperation::Fold { transition, .. } => {
-                count = count.checked_add(operation_budget(transition.body())?)?
+            solve::SolveOperation::Fold {
+                transition,
+                continuation,
+                ..
+            } => {
+                count = count.checked_add(operation_budget(transition.body())?)?;
+                if let Some(predicate) = continuation {
+                    count = count.checked_add(operation_budget(predicate.body())?)?;
+                }
             }
             _ => {}
         }

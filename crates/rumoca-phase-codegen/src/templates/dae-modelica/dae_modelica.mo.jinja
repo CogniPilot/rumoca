@@ -145,6 +145,9 @@
   {%- elif statement.kind == "for" -%}
   {%- set fold = function.folds[statement.fold] -%}
 {{ "  " * depth }}for {% for binder in dae.domains[fold.domain].domain.binders %}{{ binder_clause(binder) }}{% if not loop.last %}, {% endif %}{% endfor %} loop
+  {%- if fold.continuation is not none %}
+{{ "  " * (depth + 1) }}if not ({{ expr(fold.continuation) }}) then break; end if;
+  {%- endif %}
   {%- for nested in statement.statements %}
 {{ function_statement(function, nested, depth + 1) }}
   {%- endfor %}

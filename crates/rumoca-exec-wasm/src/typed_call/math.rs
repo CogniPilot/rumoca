@@ -45,7 +45,16 @@ pub(super) fn collect(program: &solve::TypedProgram, imports: &mut BTreeSet<Math
                 collect(if_false.body(), imports);
             }
             solve::SolveOperation::Map { body, .. } => collect(body.body(), imports),
-            solve::SolveOperation::Fold { transition, .. } => collect(transition.body(), imports),
+            solve::SolveOperation::Fold {
+                transition,
+                continuation,
+                ..
+            } => {
+                collect(transition.body(), imports);
+                if let Some(predicate) = continuation {
+                    collect(predicate.body(), imports);
+                }
+            }
             _ => {}
         }
     }

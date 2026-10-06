@@ -63,13 +63,13 @@ pub use linear_op::{
     shared_value_proof_failures,
 };
 pub use linear_op::{
-    BinaryOp, BlockResidualSplit, BlockResidualSplitError, CompareOp, FoldInitialSource,
-    FoldTensorNode, FoldTensorUpdate, FoldTensorUpdateStore, FunctionConditionalArmProgram,
-    FunctionConditionalOwnerId, FunctionConditionalProgram, FunctionFoldProgram, LinearOp,
-    MAX_TENSOR_LANES, MatrixProductShape, RandomGenerator, Reg, ScalarProgramRegisterError,
-    ScalarProgramRegisterFlow, StridedOperand, TargetAssignmentShape, TensorConcatenateSource,
-    TensorIndex, TensorInputKind, TensorSubscript, TensorUpdateSubscript, UnaryOp,
-    prune_dead_constants, resolve_indexed_slot,
+    BinaryOp, BlockResidualSplit, BlockResidualSplitError, CompareOp, FoldContinuation,
+    FoldInitialSource, FoldTensorNode, FoldTensorUpdate, FoldTensorUpdateStore,
+    FunctionConditionalArmProgram, FunctionConditionalOwnerId, FunctionConditionalProgram,
+    FunctionFoldProgram, LinearOp, MAX_TENSOR_LANES, MatrixProductShape, RandomGenerator, Reg,
+    ScalarProgramRegisterError, ScalarProgramRegisterFlow, StridedOperand, TargetAssignmentShape,
+    TensorConcatenateSource, TensorIndex, TensorInputKind, TensorSubscript, TensorUpdateSubscript,
+    UnaryOp, prune_dead_constants, resolve_indexed_slot,
 };
 pub use model::*;
 pub use parameter_reads::read_parameter_slots;
@@ -88,7 +88,7 @@ pub use visitor::{
 
 pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 72;
+pub const SOLVE_SCHEMA_VERSION: u16 = 73;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -624,7 +624,7 @@ fn validate_function_conditional_owners(
                 LinearOp::FunctionFold { program, .. }
                 | LinearOp::GuardedFunctionFold { program, .. }
                 | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                    visit(&program.update, owners)
+                    program.regions().find_map(|region| visit(region, owners))
                 }
                 _ => None,
             };

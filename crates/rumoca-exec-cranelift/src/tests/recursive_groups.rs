@@ -108,3 +108,75 @@ fn compiled_recursive_group_counts_member_invocations_against_the_profile_limit(
         assert_eq!(call(&compiled, &table, owner, 2.0).unwrap(), 2.0);
     }
 }
+
+/// `x := x * 0.5` over `1:1000` while `x > limit`: a compact typed fold that
+/// ends at its first false continuation.
+fn halving_table() -> SolvePureCallTable {
+    let span = fixture_span();
+    let real = real_type();
+    SolvePureCallTable::construct(arithmetic(), |table| {
+        table.add_owner(
+            identity(9),
+            vec![real.clone(), real.clone()],
+            vec![SolvePureCallOutput::result(real.clone())],
+            span,
+            |builder, inputs, outputs| {
+                let x = builder.load(inputs[0], span)?;
+                let limit = builder.load(inputs[1], span)?;
+                let domain = rumoca_core::StructuredIndexDomain {
+                    binders: vec![rumoca_core::StructuredIndexBinder {
+                        id: 0,
+                        display_name: "i".to_string(),
+                        lower: 1,
+                        upper: 1000,
+                        step: 1,
+                    }],
+                };
+                let result = builder.fold_while(
+                    domain,
+                    &[x],
+                    &[limit],
+                    span,
+                    |predicate, carried, captures, outputs| {
+                        let x = predicate.load(carried[0], span)?;
+                        let limit = predicate.load(captures[0], span)?;
+                        let above =
+                            predicate.compare(SolveCompareOperator::Greater, x, limit, span)?;
+                        predicate.store(outputs[0], above, span)
+                    },
+                    |transition, carried, _, _, outputs| {
+                        let x = transition.load(carried[0], span)?;
+                        let half =
+                            transition.constant(SolveValue::real(arithmetic(), 0.5), span)?;
+                        let next =
+                            transition.binary(SolveBinaryOperator::Multiply, x, half, span)?;
+                        transition.store(outputs[0], next, span)
+                    },
+                )?;
+                builder.store(outputs[0], result[0], span)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+#[test]
+fn compiled_typed_fold_ends_at_its_first_false_continuation() {
+    let table = halving_table();
+    let compiled = compile_pure_call_table(&table).unwrap();
+    let site = table.owners()[0].call_site();
+    for (x, limit, expected) in [(1.0, 0.1, 0.0625), (0.05, 0.1, 0.05)] {
+        let mut output = [0.0];
+        compiled
+            .call_scalar_payload(
+                rumoca_eval_solve::PureCallInvocation::Primal(&site),
+                &[x, limit],
+                &mut output,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(output[0], expected);
+    }
+}

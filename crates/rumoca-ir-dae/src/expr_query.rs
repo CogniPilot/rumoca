@@ -315,6 +315,7 @@ fn push_children<'dae>(
                 .expect("checked function fold identity resolves");
             pending.extend(fold.initial_values().rhs_iter());
             pending.extend(fold.update_values().rhs_iter());
+            pending.extend(fold.continuation());
         }
         ExpressionOperation::Index { base, subscripts } => {
             push_subscripts(subscripts, pending);

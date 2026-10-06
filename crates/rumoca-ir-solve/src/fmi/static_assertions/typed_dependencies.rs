@@ -102,6 +102,9 @@ fn transfer(table: &SolvePureCallTable, op: &Op, slots: &mut [bool], registers: 
             captures,
             destinations,
             transition,
+            // The predicate only ends the loop early, and it reads only the
+            // carried tuple and captures already met below.
+            continuation: _,
         } => {
             let mut carried = read(registers, initial);
             let captures = read(registers, captures);

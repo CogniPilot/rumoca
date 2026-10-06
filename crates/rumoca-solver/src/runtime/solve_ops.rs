@@ -265,7 +265,7 @@ fn op_reads_solver_or_time(op: &solve::LinearOp) -> bool {
         solve::LinearOp::FunctionFold { program, .. }
         | solve::LinearOp::GuardedFunctionFold { program, .. }
         | solve::LinearOp::StoreOutputFunctionFold { program, .. } => {
-            row_reads_solver_or_time(&program.update)
+            program.regions().any(row_reads_solver_or_time)
         }
         solve::LinearOp::FunctionConditional { program, .. } => {
             program.arms.iter().any(|arm| {

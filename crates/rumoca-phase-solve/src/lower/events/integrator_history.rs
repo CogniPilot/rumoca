@@ -296,7 +296,9 @@ pub(super) fn collect_linear_op_dependencies(
             solve::LinearOp::FunctionFold { program, .. }
             | solve::LinearOp::GuardedFunctionFold { program, .. }
             | solve::LinearOp::StoreOutputFunctionFold { program, .. } => {
-                collect_linear_op_dependencies(&program.update, dependencies)?;
+                for region in program.regions() {
+                    collect_linear_op_dependencies(region, dependencies)?;
+                }
             }
             solve::LinearOp::FunctionConditional { program, .. } => {
                 for arm in &program.arms {

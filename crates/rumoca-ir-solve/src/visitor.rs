@@ -384,7 +384,9 @@ pub fn walk_linear_op_slice<V: SolveVisitor + ?Sized>(
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. }
             | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                walk_linear_op_slice(visitor, kind, &program.update)?;
+                for region in program.regions() {
+                    walk_linear_op_slice(visitor, kind, region)?;
+                }
             }
             LinearOp::FunctionConditional { program, .. } => {
                 for arm in &program.arms {

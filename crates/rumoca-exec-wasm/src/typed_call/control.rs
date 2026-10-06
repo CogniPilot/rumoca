@@ -39,6 +39,7 @@ impl<'a> Emitter<'a> {
                 captures,
                 destinations,
                 transition,
+                continuation,
             } => {
                 let child = &self.plan.regions[index][0];
                 let carried = destinations
@@ -61,7 +62,27 @@ impl<'a> Emitter<'a> {
                     self.store_integer(*slot, binder.lower);
                 }
                 self.store_integer(child.counter, 0);
-                self.fold_loop(index, transition, child, &carried, &inputs, domain)
+                let continuation = match continuation {
+                    Some(predicate) => {
+                        let plan = &self.plan.regions[index][1];
+                        let predicate_inputs =
+                            interface(predicate.body(), plan, solve::SolveStorageClass::Input);
+                        self.copy_pairs(
+                            &predicate_inputs[initial.len()..initial.len() + captures.len()],
+                            &capture_ranges,
+                        );
+                        Some((predicate.as_ref(), plan, predicate_inputs))
+                    }
+                    None => None,
+                };
+                self.fold_loop(
+                    index,
+                    (transition, continuation),
+                    child,
+                    &carried,
+                    &inputs,
+                    domain,
+                )
             }
             _ => unreachable!("checked control dispatch"),
         }
@@ -110,7 +131,7 @@ impl<'a> Emitter<'a> {
     fn fold_loop(
         &mut self,
         index: usize,
-        region: &'a solve::SolveProgramRegion,
+        (region, continuation): (&'a solve::SolveProgramRegion, Option<PredicateFrame<'a>>),
         plan: &'a FramePlan,
         carried: &[CellRange],
         inputs: &[CellRange],
@@ -134,6 +155,22 @@ impl<'a> Emitter<'a> {
         self.push(I::I64Const(count as i64));
         self.push(I::I64GeU);
         self.push(I::BrIf(1));
+        if let Some((predicate, predicate_plan, predicate_inputs)) = &continuation {
+            // MLS §11.2.3: leave before the first pass whose condition is false.
+            self.copy_pairs(&predicate_inputs[..carried.len()], carried);
+            self.region_body(index, 1, predicate, predicate_plan)?;
+            let [output] = interface(
+                predicate.body(),
+                predicate_plan,
+                solve::SolveStorageClass::Output,
+            )[..] else {
+                return Err(TypedCallCompileError::SiteMismatch);
+            };
+            self.address(output);
+            self.push(I::I64Load(CELL));
+            self.push(I::I64Eqz);
+            self.push(I::BrIf(1));
+        }
         self.copy_pairs(&inputs[..carried.len()], carried);
         self.region_body(index, 0, region, plan)?;
         let outputs = interface(region.body(), plan, solve::SolveStorageClass::Output);
@@ -178,6 +215,10 @@ impl<'a> Emitter<'a> {
         self.push(I::I64Store(CELL));
     }
 }
+
+/// A bounded `while` fold's predicate region, its frame plan, and its
+/// input cells.
+type PredicateFrame<'a> = (&'a solve::SolveProgramRegion, &'a FramePlan, Vec<CellRange>);
 
 fn interface(
     program: &solve::TypedProgram,

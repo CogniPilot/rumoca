@@ -164,7 +164,9 @@ pub(crate) use construction_checks::{
 /// exported causality.
 /// 43 marks a B.1c owner whose targets are unread observations of a
 /// continuous-time definition, evaluated at every output point.
-pub const DAE_SCHEMA_VERSION: u16 = 43;
+/// 44 adds an optional continuation predicate to compact function folds: a
+/// bounded `while` loop is one fold that ends at its first false predicate.
+pub const DAE_SCHEMA_VERSION: u16 = 44;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -499,6 +501,10 @@ pub(crate) struct FunctionFoldEntry {
     pub(crate) initial_definitions: Vec<u32>,
     pub(crate) update_definitions: Vec<u32>,
     pub(crate) output_definitions: Vec<u32>,
+    /// A Boolean expression of the loop body scope, evaluated on the carried
+    /// state at the start of each iteration; the first false value ends the
+    /// fold with that state (a bounded `while`, MLS §11.2.3).
+    pub(crate) continuation: Option<u32>,
     pub(crate) provenance: DaeProvenance,
 }
 

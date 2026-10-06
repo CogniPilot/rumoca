@@ -802,6 +802,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             &targets,
             source_fold.parameter_values(),
         )?;
+        let loop_body = self.rebuild_continuation(target, loop_body, source_fold)?;
         let loop_body = self.rebuild_loop_statements(target, function, loop_body, statements)?;
         self.seed_current(
             target,
@@ -868,6 +869,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             &targets,
             source_fold.parameter_values(),
         )?;
+        let child = self.rebuild_continuation(target, child, source_fold)?;
         let child = self.rebuild_loop_statements(target, function, child, statements)?;
         self.seed_current(
             target,
@@ -886,6 +888,23 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             source_fold.output_values(),
         )?;
         Ok(parent)
+    }
+
+    /// Replay a bounded `while` fold's continuation over the rebuilt carried
+    /// parameters, before the body's first statement.
+    fn rebuild_continuation(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        mut loop_body: dae::FunctionLoop<'target>,
+        source_fold: dae::FunctionFoldView<'source>,
+    ) -> Result<dae::FunctionLoop<'target>, dae::DaeConstructionError> {
+        if let Some(condition) = source_fold.continuation() {
+            let value = self.rebuild_expression(target, loop_body.body(), condition)?;
+            target.functions(|functions| {
+                functions.continue_loop_while(&mut loop_body, value, source_fold.provenance())
+            })?;
+        }
+        Ok(loop_body)
     }
 
     fn rebuild_loop_statements(
