@@ -3,8 +3,8 @@ mod top_level_definedness;
 
 use super::*;
 use crate::construction::function_shapes::ProvenValue;
-use guarded_loop_analysis::seed_guarded_sequence_scratch;
 pub(super) use guarded_loop_analysis::statement_reads_target;
+use guarded_loop_analysis::{confine_guarded_seeds, seed_guarded_sequence_scratch};
 use top_level_definedness::{
     after_top_level_statement, before_top_level_statement, validate_top_level_statements,
 };
@@ -1212,7 +1212,7 @@ fn resolve_sequence_definitions(
     mut definedness: Option<&mut FunctionDefinednessPlan>,
 ) -> Result<(), ToDaeError> {
     debug_assert_eq!(statements.len(), plans.len());
-    seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
+    let seeds = seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
     let mut index = 0usize;
     while index < statements.len() {
         let partial_before = match definedness.as_deref_mut() {
@@ -1261,6 +1261,7 @@ fn resolve_sequence_definitions(
         }
         index += count;
     }
+    confine_guarded_seeds(statements, seeds, context, definitions);
     Ok(())
 }
 
@@ -1585,7 +1586,7 @@ fn resolve_fold_definitions(
     let (domain, source_depth, plans, targets, iteration_locals) = planned;
     let enclosing_definitions = definitions.clone();
     let (indices, statements) = flattened_function_loop_source(indices, statements, source_depth);
-    seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
+    let seeds = seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
     let point_count = domain.scalar_count().map_err(|error| {
         ToDaeError::unsupported_flat(
             "function loop transition",
@@ -1634,8 +1635,14 @@ fn resolve_fold_definitions(
         resolve_fold_iteration(statements, plans, point_context, definitions)?;
         definitions.forget_varying_guard_paths(context.generated_booleans, iteration_locals);
     }
+    // A seeded value stays carried by this transition; only what code after
+    // the loop may read of it is confined to the seed's guard.
+    confine_guarded_seeds(statements, seeds, context, definitions);
+    definitions.forget_varying_guard_paths(context.generated_booleans, iteration_locals);
     targets.retain(|target| {
-        definitions.is_defined(target) || definitions.has_total_guarded_definition(target)
+        definitions.is_defined(target)
+            || definitions.has_total_guarded_definition(target)
+            || definitions.has_seeded_slot(target)
     });
     definitions.restore_names(&enclosing_definitions, iteration_locals);
     Ok(())

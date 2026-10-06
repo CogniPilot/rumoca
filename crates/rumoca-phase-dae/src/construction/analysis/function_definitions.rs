@@ -37,6 +37,9 @@ struct BranchOnlyCoverage {
     /// so a top-level read is admitted behind a call-scoped definedness
     /// assertion (`admit_asserted_reads`).
     path_partial: bool,
+    /// A guarded scratch seed gave the value a carried slot in the compact
+    /// transition that wrote it; MLS §12.4.4 still leaves it undefined here.
+    seeded: bool,
 }
 
 #[derive(Clone)]
@@ -125,6 +128,31 @@ impl FunctionDefinitions {
 
     pub(super) fn is_defined(&self, name: &VarName) -> bool {
         self.values.contains_key(name)
+    }
+
+    /// Replace a seeded definition by a proof that holds only under `guard`.
+    pub(super) fn guard_seeded_value(&mut self, target: &VarName, guard: Expression, span: Span) {
+        if self.values.remove(target).is_none() {
+            return;
+        }
+        self.branch_only.insert(
+            target.clone(),
+            BranchOnlyCoverage {
+                span,
+                guard: Some(guard),
+                coverage: Some(ValueCoverage::Whole),
+                path_partial: false,
+                seeded: true,
+            },
+        );
+    }
+
+    /// Whether a compact transition carries `name` through a guarded seed,
+    /// whatever paths may read it.
+    pub(super) fn has_seeded_slot(&self, name: &VarName) -> bool {
+        self.branch_only
+            .get(name)
+            .is_some_and(|definition| definition.seeded)
     }
 
     pub(super) fn has_total_guarded_definition(&self, name: &VarName) -> bool {
@@ -246,6 +274,7 @@ impl FunctionDefinitions {
                     guard: Some(condition.clone()),
                     coverage: Some(coverage.clone()),
                     path_partial,
+                    seeded: false,
                 },
             );
         }
@@ -301,6 +330,7 @@ impl FunctionDefinitions {
                 guard: None,
                 coverage: None,
                 path_partial,
+                seeded: false,
             },
         );
         Ok(())
@@ -1141,13 +1171,19 @@ fn settled_subscript_integer(
         .flatten()
 }
 
-/// Whether `expression` reads only generated Booleans and settled Integers,
-/// values no statement changes within their scope.
+/// Whether `expression` reads only function inputs (MLS §12.2: never assigned),
+/// generated Booleans and settled Integers, values no statement changes within
+/// their scope.
 fn reads_only_immutable(expression: &Expression, context: FunctionValidationContext<'_>) -> bool {
     let mut references = Vec::new();
     expression.collect_var_refs(&mut references);
     references.iter().all(|reference| {
         context.static_integers.contains_key(reference)
+            || context
+                .function
+                .inputs
+                .iter()
+                .any(|input| input.name == reference.as_str())
             || context
                 .generated_booleans
                 .iter()
