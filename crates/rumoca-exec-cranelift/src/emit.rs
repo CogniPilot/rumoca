@@ -6338,8 +6338,8 @@ fn fold_binary_constant(op: BinaryOp, lhs: f64, rhs: f64) -> Option<f64> {
         BinaryOp::Sub => lhs - rhs,
         BinaryOp::Mul => lhs * rhs,
         BinaryOp::Div => lhs / rhs,
-        BinaryOp::Min => lhs.min(rhs),
-        BinaryOp::Max => lhs.max(rhs),
+        BinaryOp::Min => rumoca_ir_solve::real_extremum(lhs, rhs, true),
+        BinaryOp::Max => rumoca_ir_solve::real_extremum(lhs, rhs, false),
         _ => return None,
     })
 }
@@ -6487,10 +6487,33 @@ fn emit_binary_op(
             bool_to_f64(fb, or_bits)
         }
         BinaryOp::Atan2 => call_binary_math(fb, module, math, BinaryMathFn::Atan2, lhs, rhs)?,
-        BinaryOp::Min => fb.ins().fmin(lhs, rhs),
-        BinaryOp::Max => fb.ins().fmax(lhs, rhs),
+        BinaryOp::Min => emit_real_extremum(fb, lhs, rhs, true),
+        BinaryOp::Max => emit_real_extremum(fb, lhs, rhs, false),
     };
     Ok(value)
+}
+
+/// `rumoca_ir_solve::real_extremum`: a single NaN operand is ignored, two give
+/// the quiet NaN `lhs + rhs`, and a tie selects `rhs`.
+fn emit_real_extremum(
+    fb: &mut FunctionBuilder<'_>,
+    lhs: cranelift_codegen::ir::Value,
+    rhs: cranelift_codegen::ir::Value,
+    minimum: bool,
+) -> cranelift_codegen::ir::Value {
+    let lhs_nan = fb.ins().fcmp(FloatCC::Unordered, lhs, lhs);
+    let rhs_nan = fb.ins().fcmp(FloatCC::Unordered, rhs, rhs);
+    let both_nan = fb.ins().band(lhs_nan, rhs_nan);
+    let ordered = if minimum {
+        FloatCC::LessThan
+    } else {
+        FloatCC::GreaterThan
+    };
+    let strictly = fb.ins().fcmp(ordered, lhs, rhs);
+    let keep_lhs = fb.ins().bor(strictly, rhs_nan);
+    let selected = fb.ins().select(keep_lhs, lhs, rhs);
+    let quiet = fb.ins().fadd(lhs, rhs);
+    fb.ins().select(both_nan, quiet, selected)
 }
 
 fn emit_compare_op(

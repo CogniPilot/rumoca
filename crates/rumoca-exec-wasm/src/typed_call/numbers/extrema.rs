@@ -1,4 +1,4 @@
-//! Numeric extrema ignore a single NaN, as the canonical evaluator does.
+//! Numeric extrema follow `rumoca_ir_solve::real_extremum`: a single NaN is ignored.
 use super::*;
 
 impl Emitter<'_> {
@@ -32,7 +32,6 @@ impl Emitter<'_> {
         });
         self.is_nan(9);
         self.push(I::I32Or);
-        // Equal operands select rhs. Rust's canonical min/max contract permits
         // either equal input (including signed zeros), not portable tie bits.
         self.push(I::Select);
         self.push(I::End);

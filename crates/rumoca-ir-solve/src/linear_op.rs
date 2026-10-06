@@ -289,6 +289,27 @@ impl BinaryOp {
     }
 }
 
+/// Real `min` (`minimum` true) or `max` as every backend evaluates it: a single
+/// NaN operand is ignored, two NaN operands give a quiet NaN (`lhs + rhs`), and
+/// otherwise the strictly smaller (larger) operand is returned, `rhs` on a tie.
+///
+/// This is defined here rather than by the host's `f32::min`/`f64::min`,
+/// whose handling of a signaling NaN differs between targets.
+#[must_use]
+pub fn real_extremum<T>(lhs: T, rhs: T, minimum: bool) -> T
+where
+    T: Copy + PartialOrd + std::ops::Add<Output = T>,
+{
+    let nan = |value: T| value.partial_cmp(&value).is_none();
+    match (nan(lhs), nan(rhs)) {
+        (true, true) => lhs + rhs,
+        (true, false) => rhs,
+        (false, true) => lhs,
+        (false, false) if (minimum && lhs < rhs) || (!minimum && lhs > rhs) => lhs,
+        (false, false) => rhs,
+    }
+}
+
 /// Comparison operation that yields Modelica boolean-as-real (`0.0`/`1.0`).
 ///
 /// Equality and inequality are exact IEEE comparisons at Solve-IR row level.
@@ -2949,6 +2970,25 @@ fn checked_register_count(max_register: Option<Reg>) -> Result<usize, ScalarProg
 #[cfg(test)]
 mod tests {
     use super::{BinaryOp, CompareOp, LinearOp, UnaryOp};
+
+    #[test]
+    fn real_extremum_ignores_one_nan_and_quiets_two() {
+        use super::real_extremum;
+        let signaling = f64::from_bits(0x7ff0_0000_0000_0001);
+        for minimum in [true, false] {
+            assert_eq!(real_extremum(signaling, 1.0, minimum), 1.0);
+            assert_eq!(real_extremum(-2.0, f64::NAN, minimum), -2.0);
+            let both = real_extremum(signaling, signaling, minimum);
+            assert!(both.is_nan() && both.to_bits() & (1 << 51) != 0);
+        }
+        assert_eq!(real_extremum(1.0, 2.0, true), 1.0);
+        assert_eq!(real_extremum(1.0, 2.0, false), 2.0);
+        assert_eq!(
+            real_extremum(-0.0f64, 0.0, true).to_bits(),
+            0.0f64.to_bits()
+        );
+        assert_eq!(real_extremum(f32::NAN, 3.0f32, true), 3.0);
+    }
 
     #[test]
     fn compare_op_equality_is_exact_not_epsilon_based() {

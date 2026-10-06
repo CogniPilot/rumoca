@@ -218,8 +218,8 @@ fn eval_real_binary_f32(operator: SolveBinaryOperator, lhs: f32, rhs: f32) -> f3
         SolveBinaryOperator::Divide => lhs / rhs,
         SolveBinaryOperator::Power => lhs.powf(rhs),
         SolveBinaryOperator::Atan2 => lhs.atan2(rhs),
-        SolveBinaryOperator::Min => lhs.min(rhs),
-        SolveBinaryOperator::Max => lhs.max(rhs),
+        SolveBinaryOperator::Min => rumoca_ir_solve::real_extremum(lhs, rhs, true),
+        SolveBinaryOperator::Max => rumoca_ir_solve::real_extremum(lhs, rhs, false),
         SolveBinaryOperator::And
         | SolveBinaryOperator::Or
         | SolveBinaryOperator::IntegerQuotient
@@ -236,8 +236,8 @@ fn eval_real_binary_f64(operator: SolveBinaryOperator, lhs: f64, rhs: f64) -> f6
         SolveBinaryOperator::Divide => lhs / rhs,
         SolveBinaryOperator::Power => lhs.powf(rhs),
         SolveBinaryOperator::Atan2 => lhs.atan2(rhs),
-        SolveBinaryOperator::Min => lhs.min(rhs),
-        SolveBinaryOperator::Max => lhs.max(rhs),
+        SolveBinaryOperator::Min => rumoca_ir_solve::real_extremum(lhs, rhs, true),
+        SolveBinaryOperator::Max => rumoca_ir_solve::real_extremum(lhs, rhs, false),
         SolveBinaryOperator::And
         | SolveBinaryOperator::Or
         | SolveBinaryOperator::IntegerQuotient

@@ -35,8 +35,8 @@ pub fn eval_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
         BinaryOp::And => ((lhs != 0.0) && (rhs != 0.0)) as u8 as f64,
         BinaryOp::Or => ((lhs != 0.0) || (rhs != 0.0)) as u8 as f64,
         BinaryOp::Atan2 => lhs.atan2(rhs),
-        BinaryOp::Min => lhs.min(rhs),
-        BinaryOp::Max => lhs.max(rhs),
+        BinaryOp::Min => rumoca_ir_solve::real_extremum(lhs, rhs, true),
+        BinaryOp::Max => rumoca_ir_solve::real_extremum(lhs, rhs, false),
     }
 }
 

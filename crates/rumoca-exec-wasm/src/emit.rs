@@ -654,7 +654,7 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn emit_extremum(&mut self, lhs: Reg, rhs: Reg, is_min: bool) -> Result<(), String> {
-        // Canonical eval_binary uses Rust min/max: suppress a single NaN.
+        // `rumoca_ir_solve::real_extremum`: suppress a single NaN.
         // Read through push_reg so scalar locals and private arenas agree.
         self.emit_is_nan(lhs)?;
         self.emit_is_nan(rhs)?;

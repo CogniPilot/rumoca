@@ -59,7 +59,8 @@ pub use layout::{
 };
 pub use linear_op::{
     AssignmentProgram, CappedValue, SHARED_VALUE_REGISTER_CAP, SharedValueError,
-    SharedValueSegment, SharedValueSegments, share_program_values, shared_value_proof_failures,
+    SharedValueSegment, SharedValueSegments, real_extremum, share_program_values,
+    shared_value_proof_failures,
 };
 pub use linear_op::{
     BinaryOp, BlockResidualSplit, BlockResidualSplitError, CompareOp, FoldInitialSource,
