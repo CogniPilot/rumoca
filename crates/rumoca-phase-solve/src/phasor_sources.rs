@@ -3,15 +3,15 @@
 //!
 //! A visible scalar `v` is recorded when one continuous residual equation
 //! states `v = E` and `E` reduces, by substitution alone, to `atan2(y, x)`
-//! (an angle) or `cos(atan2(y, x))` (the cosine of one) of two visible scalar
-//! coordinates `y` and `x`, each up to sign. The reduction follows a Modelica
+//! (an angle) or `cos(atan2(y, x))` (the cosine of one) of two visible Real
+//! scalar coordinates `y` and `x`, each up to sign. The reduction follows a Modelica
 //! function call into its result definition with the call's arguments bound to
 //! its parameters, and selects a conditional branch only when the guard
 //! reduces to a literal (`Modelica.Math.atan3(y, x, 0)` is `atan2(y, x)`
 //! because its `y0 == 0` guard does). A conditional whose guard does not
 //! reduce is admitted only when every branch reduces to an angle of the same
-//! coordinates. Nothing else is read: no name, no numeric value, and no
-//! parameter value, which a run may override.
+//! coordinates. Nothing else is read: no name, no run-time value, and no
+//! parameter value, which a run may override; only literals fold.
 //!
 //! The fact holds at every point satisfying the equation, whatever the
 //! equation is matched to, so it is independent of causalization. A scalar
@@ -277,7 +277,7 @@ fn scalar_coordinate<'dae>(
 }
 
 /// The variable whose current value a coordinate read is, when that value is
-/// a traced Real channel: a state, algebraic, input, or discrete Real.
+/// a traced Real channel: a Real state, algebraic, input, or discrete Real.
 fn visible_value_variable<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
@@ -288,7 +288,9 @@ fn visible_value_variable<'dae>(
         | dae::CoordinateView::Algebraic(_)
         | dae::CoordinateView::Input(_)
         | dae::CoordinateView::DiscreteReal(_) => {
-            view.expression(expression)?.variable_coordinate()
+            let variable = view.expression(expression)?.variable_coordinate()?;
+            (view.variable(variable)?.value_type().scalar_type() == dae::ScalarType::Real)
+                .then_some(variable)
         }
         _ => None,
     }

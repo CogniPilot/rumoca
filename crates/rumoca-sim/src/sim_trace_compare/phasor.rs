@@ -21,8 +21,9 @@
 //!   the components carry the verdict there. A sample is never dropped on the
 //!   angle alone.
 //!
-//! A channel left with no defined sample is reported among the model's
-//! undefined phasor channels instead of as a compared channel.
+//! A channel the dropped samples leave without a comparable sample pair is
+//! reported among the model's undefined phasor channels instead of as a
+//! compared channel.
 
 use std::collections::BTreeMap;
 

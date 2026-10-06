@@ -373,10 +373,10 @@ pub struct ModelDeviationMetric {
     #[serde(default)]
     pub initial_condition: InitialConditionStats,
     pub worst_variables: Vec<ChannelDeviationMetric>,
-    /// Common phasor channels left without a defined sample: the phasor is
-    /// zero at the comparator's resolution throughout both traces, and its
-    /// agreeing component channels carry the verdict (see the `phasor`
-    /// module).
+    /// Common phasor channels left without a comparable sample pair once the
+    /// samples where the phasor is zero at the comparator's resolution in both
+    /// traces are dropped; their agreeing component channels carry the
+    /// verdict (see the `phasor` module).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub undefined_phasor_channels: Vec<String>,
 }
@@ -508,7 +508,7 @@ pub fn compare_model_traces(
 }
 
 /// Per-channel metrics for every variable the two traces have in common, and
-/// the common phasor channels left without a defined sample.
+/// the common phasor channels left without a comparable sample pair.
 ///
 /// Every channel is compared pointwise first. A channel the Rumoca trace
 /// records as a function of a phasor is then compared again under the
