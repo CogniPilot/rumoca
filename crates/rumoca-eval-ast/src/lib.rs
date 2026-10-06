@@ -3,6 +3,7 @@
 pub mod ast_scalar;
 pub mod component_family;
 pub mod connection;
+pub mod declared_constants;
 pub mod eval;
 pub mod eval_instantiate;
 mod function_control;

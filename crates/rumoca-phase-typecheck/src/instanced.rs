@@ -135,6 +135,9 @@ impl TypeChecker {
         self.populate_operator_record_capabilities(tree);
         self.function_signatures = function_signatures::build_function_signatures(tree);
         self.eval_ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
+        self.eval_ctx.declared_constants = std::sync::Arc::new(
+            rumoca_eval_ast::declared_constants::DeclaredConstants::from_tree(tree),
+        );
         let (type_table, type_ids_by_def_id) = match self.build_type_context(tree) {
             Ok(context) => context,
             Err(error) => {

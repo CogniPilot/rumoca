@@ -154,7 +154,17 @@ impl Context {
             crate::ast_lower::PredefinedIntrinsicIds::from_tree(tree),
         )?;
         let eval_ctx = self.param_eval_context(Some(var_name));
-        let Some(dim) = try_eval_integer_with_context(&lowered, &eval_ctx) else {
+        let dim = try_eval_integer_with_context(&lowered, &eval_ctx).or_else(|| {
+            // MLS 5.3: a constant the dimension names is evaluated in its own
+            // declaration scope, whichever class declares the array.
+            let constants = self.declared_constants.get_or_init(|| {
+                std::sync::Arc::new(
+                    rumoca_eval_ast::declared_constants::DeclaredConstants::from_tree(tree),
+                )
+            });
+            rumoca_eval_ast::eval::eval_integer_of_declared_constants(expr, constants)
+        });
+        let Some(dim) = dim else {
             return Err(FlattenError::unresolved_component_dimension(
                 var_name,
                 expr.to_string(),

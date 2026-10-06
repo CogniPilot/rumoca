@@ -20,6 +20,7 @@ impl Context {
     pub(crate) fn new() -> Self {
         Self {
             declared_dimensions: std::sync::Arc::default(),
+            declared_constants: std::cell::OnceCell::new(),
             parameter_values: rustc_hash::FxHashMap::default(),
             real_parameter_values: rustc_hash::FxHashMap::default(),
             boolean_parameter_values: rustc_hash::FxHashMap::default(),

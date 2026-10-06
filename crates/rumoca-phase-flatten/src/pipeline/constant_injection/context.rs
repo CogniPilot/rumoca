@@ -19,6 +19,9 @@ impl ConstantOccurrenceId {
 /// Context for flattening.
 pub(crate) struct Context {
     pub(crate) declared_dimensions: std::sync::Arc<rumoca_eval_ast::eval::DeclaredDimensions>,
+    /// Constant declarations by declaration identity, indexed on first use.
+    pub(crate) declared_constants:
+        std::cell::OnceCell<std::sync::Arc<rumoca_eval_ast::declared_constants::DeclaredConstants>>,
     /// Parameter values for evaluating for-equation ranges (name -> integer value).
     pub parameter_values: rustc_hash::FxHashMap<String, i64>,
     /// Real parameter values for evaluating function arguments (name -> real value).
