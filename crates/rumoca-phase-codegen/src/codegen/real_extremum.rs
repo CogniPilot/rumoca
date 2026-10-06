@@ -57,7 +57,9 @@ fn print(rule: &Rule, syntax: &Syntax, minimum: bool) -> String {
         Rule::A => "a".into(),
         Rule::B => "b".into(),
         Rule::IsNan(operand) => (syntax.is_nan)(print(operand, syntax, minimum)),
-        Rule::And(lhs, rhs) => (syntax.and)(print(lhs, syntax, minimum), print(rhs, syntax, minimum)),
+        Rule::And(lhs, rhs) => {
+            (syntax.and)(print(lhs, syntax, minimum), print(rhs, syntax, minimum))
+        }
         Rule::Or(lhs, rhs) => (syntax.or)(print(lhs, syntax, minimum), print(rhs, syntax, minimum)),
         Rule::Add(lhs, rhs) => format!(
             "({} + {})",

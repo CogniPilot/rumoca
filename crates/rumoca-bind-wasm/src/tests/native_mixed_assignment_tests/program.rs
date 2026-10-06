@@ -137,7 +137,7 @@ fn check_metadata(program: &serde_json::Value, stages: &serde_json::Value, sourc
         .iter()
         .map(|stage| {
             serde_json::json!({
-                "source_node": stage["source_node"], "target_start": stage["target_start"],
+                "source": stage["source"], "target_start": stage["target_start"],
                 "target_count": stage["target_count"],
                 "target_stride": 1,
                 "target_block_width": 1,
@@ -247,7 +247,7 @@ fn fused_native_profile_preserves_state_and_coupled_equation_refusals() {
         (
             "model Stateful Real x(start=0); equation der(x)=1; end Stateful;",
             "Stateful",
-            "reject states",
+            "native evaluation has no continuous states",
         ),
     ] {
         let error =

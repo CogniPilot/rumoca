@@ -231,3 +231,11 @@ fn affine_stencil_reads_only_previous_family_and_rejects_neighbor_targets() {
     }
     assert!(derive(&source, &targets, &layout).is_err());
 }
+
+/// The continuous residual node a stage evaluates.
+fn continuous_node(stage: &NativeRefreshAssignmentStage) -> usize {
+    match stage.source() {
+        NativeStageSource::Continuous { node } => node,
+        NativeStageSource::Discrete { row } => panic!("discrete row {row} has no continuous node"),
+    }
+}

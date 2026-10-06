@@ -523,14 +523,5 @@ fn operations_match(a: &[LinearOp], b: &[LinearOp]) -> bool {
         })
 }
 
-/// The continuous residual node a stage evaluates.
-#[cfg(test)]
-fn continuous_node(stage: &NativeRefreshAssignmentStage) -> usize {
-    match stage.source() {
-        NativeStageSource::Continuous { node } => node,
-        NativeStageSource::Discrete { row } => panic!("discrete row {row} has no continuous node"),
-    }
-}
-
 #[cfg(test)]
 mod tests;

@@ -29,9 +29,13 @@ fn same(actual: f64, expected: f64) -> bool {
 #[test]
 fn the_rendered_c_helpers_compute_real_extremum_on_every_nan_case() {
     let cases = cases();
-    let mut source = String::from("#include <math.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n");
+    let mut source = String::from(
+        "#include <math.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n",
+    );
     source.push_str(&prelude("c").unwrap());
-    source.push_str("static double value(uint64_t bits) { double out; memcpy(&out, &bits, 8); return out; }\n");
+    source.push_str(
+        "static double value(uint64_t bits) { double out; memcpy(&out, &bits, 8); return out; }\n",
+    );
     source.push_str("static uint64_t bits(double value) { uint64_t out; memcpy(&out, &value, 8); return out; }\n");
     source.push_str("int main(void) {\n");
     for (a, b) in &cases {
