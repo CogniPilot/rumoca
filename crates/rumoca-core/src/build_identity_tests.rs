@@ -21,17 +21,19 @@ fn build_identity_and_merge_parents_track_the_current_checkout() {
     // commit and must say so rather than invent one.
     let Some(commit) = git(&["rev-parse", "--short=12", "HEAD"]) else {
         assert_eq!(super::build_identity(), None);
-        assert!(super::build_merge_parents().is_empty());
+        assert_eq!(super::build_merge_parents(), None);
         return;
     };
     let identity = super::build_identity().expect("a git checkout has an identity");
     assert_eq!(identity.trim_end_matches("-dirty"), commit);
-    let line = git(&["rev-list", "--parents", "-n", "1", "HEAD"]).unwrap();
-    let parents = line
-        .split_whitespace()
-        .skip(1)
+    // The commit object names its parents even in a shallow checkout.
+    let object = git(&["cat-file", "commit", "HEAD"]).unwrap();
+    let parents = object
+        .lines()
+        .take_while(|line| !line.is_empty())
+        .filter_map(|line| line.strip_prefix("parent "))
         .map(|parent| &parent[..12])
         .collect::<Vec<_>>();
     let expected: &[&str] = if parents.len() > 1 { &parents } else { &[] };
-    assert_eq!(super::build_merge_parents(), expected);
+    assert_eq!(super::build_merge_parents(), Some(expected));
 }

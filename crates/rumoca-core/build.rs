@@ -30,14 +30,20 @@ fn main() {
 
     let identity =
         commit_identity().map_or_else(|| "None".to_owned(), |value| format!("Some(\"{value}\")"));
-    let parents = merge_parents()
-        .iter()
-        .map(|parent| format!("\"{parent}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let parents = merge_parents().map_or_else(
+        || "None".to_owned(),
+        |parents| {
+            let quoted = parents
+                .iter()
+                .map(|parent| format!("\"{parent}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Some(&[{quoted}])")
+        },
+    );
     let generated = format!(
         "pub(crate) const BUILD_IDENTITY: Option<&str> = {identity};\n\
-         pub(crate) const BUILD_MERGE_PARENTS: &[&str] = &[{parents}];\n"
+         pub(crate) const BUILD_MERGE_PARENTS: Option<&[&str]> = {parents};\n"
     );
 
     let out_dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR for build scripts");
@@ -85,21 +91,25 @@ fn tracked_git_paths() -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-/// The parents of the built commit when it is a merge, first parent first.
+/// The parents of the built commit when it is a merge, first parent first;
+/// empty for an ordinary commit and `None` when git cannot say.
 ///
 /// A pull-request build checks out a synthetic merge of the head into the
 /// base; its identity is that merge, and the parents name the head and base it
-/// combines. An ordinary commit reports no parents.
-fn merge_parents() -> Vec<String> {
-    let Some(line) = git(&["rev-list", "--parents", "-n", "1", "HEAD"]) else {
-        return Vec::new();
-    };
-    let parents = line.split_whitespace().skip(1).collect::<Vec<_>>();
-    if parents.len() < 2 {
-        return Vec::new();
-    }
-    parents
-        .into_iter()
-        .map(|parent| parent.chars().take(12).collect())
-        .collect()
+/// combines. The parents are read from the commit object itself, which a
+/// shallow checkout keeps intact while it hides the parent commits from
+/// history walks.
+fn merge_parents() -> Option<Vec<String>> {
+    let object = git(&["cat-file", "commit", "HEAD"])?;
+    let parents = object
+        .lines()
+        .take_while(|line| !line.is_empty())
+        .filter_map(|line| line.strip_prefix("parent "))
+        .map(|parent| parent.chars().take(12).collect::<String>())
+        .collect::<Vec<_>>();
+    Some(if parents.len() < 2 {
+        Vec::new()
+    } else {
+        parents
+    })
 }

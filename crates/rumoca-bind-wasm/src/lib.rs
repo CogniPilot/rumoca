@@ -529,7 +529,8 @@ pub fn check(source: &str) -> Result<JsValue, WasmError> {
 // ==========================================================================
 
 /// The compiler version and the one git identity every artifact reports: the
-/// built commit (`null` when unknown) and, for a merge build, its parents.
+/// built commit and, for a merge build, its parents (`[]` for an ordinary
+/// commit; each `null` when git could not say).
 pub(crate) fn compiler_provenance() -> Value {
     serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),

@@ -54,14 +54,14 @@ pub fn build_identity() -> Option<&'static str> {
 }
 
 /// The short parents of the built commit when it is a merge, first parent
-/// first; empty for an ordinary commit or when git cannot say.
+/// first; empty for an ordinary commit and `None` when git cannot say.
 ///
 /// A pull-request build compiles a synthetic merge of the request head into
 /// its base. [`build_identity`] is that merge commit, which exists only on the
 /// hosting service; the parents name the head and base it combines, so a
 /// report can state both what was built and which head it came from.
 #[must_use]
-pub fn build_merge_parents() -> &'static [&'static str] {
+pub fn build_merge_parents() -> Option<&'static [&'static str]> {
     BUILD_MERGE_PARENTS
 }
 
