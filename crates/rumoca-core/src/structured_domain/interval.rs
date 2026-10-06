@@ -41,6 +41,11 @@ impl IntegerInterval {
         self.lower.is_none() && self.upper.is_none()
     }
 
+    /// Whether no Integer satisfies both endpoints (a contradiction).
+    pub fn is_empty(self) -> bool {
+        matches!((self.lower, self.upper), (Some(lower), Some(upper)) if lower > upper)
+    }
+
     /// Values in both intervals (a conjunction of facts).
     pub fn meet(self, other: Self) -> Self {
         Self {
@@ -144,6 +149,63 @@ fn corner_products(lhs: (i64, i64), rhs: (i64, i64)) -> Option<(i64, i64)> {
     Some((*products.iter().min()?, *products.iter().max()?))
 }
 
+/// A closed set of Real values `lower <= v <= upper`; `None` leaves that side
+/// unconstrained.
+///
+/// Facts about a Real value come only from literal assignments and from
+/// comparisons with literals (MLS §3.7.1), whose values are never NaN; a
+/// strict comparison is kept as its closed hull, a superset, so an interval
+/// that is empty proves a contradiction while a nonempty one proves nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RealInterval {
+    pub lower: Option<f64>,
+    pub upper: Option<f64>,
+}
+
+impl RealInterval {
+    pub const UNBOUNDED: Self = Self {
+        lower: None,
+        upper: None,
+    };
+
+    /// The single value of a literal; `None` for a NaN, which no literal is.
+    pub fn exact(value: f64) -> Option<Self> {
+        (!value.is_nan()).then_some(Self {
+            lower: Some(value),
+            upper: Some(value),
+        })
+    }
+
+    pub fn is_unbounded(self) -> bool {
+        self.lower.is_none() && self.upper.is_none()
+    }
+
+    /// Whether no Real satisfies both endpoints (a contradiction).
+    pub fn is_empty(self) -> bool {
+        matches!((self.lower, self.upper), (Some(lower), Some(upper)) if lower > upper)
+    }
+
+    /// Values in both intervals (a conjunction of facts).
+    pub fn meet(self, other: Self) -> Self {
+        let pick = |lhs: Option<f64>, rhs: Option<f64>, larger: bool| match (lhs, rhs) {
+            (Some(a), Some(b)) => Some(if larger { a.max(b) } else { a.min(b) }),
+            (value, None) | (None, value) => value,
+        };
+        Self {
+            lower: pick(self.lower, other.lower, true),
+            upper: pick(self.upper, other.upper, false),
+        }
+    }
+
+    /// The smallest interval holding both (a join of alternative paths).
+    pub fn hull(self, other: Self) -> Self {
+        Self {
+            lower: self.lower.zip(other.lower).map(|(a, b)| a.min(b)),
+            upper: self.upper.zip(other.upper).map(|(a, b)| a.max(b)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::IntegerInterval;
@@ -194,6 +256,33 @@ mod tests {
         assert_eq!(
             IntegerInterval::exact(i64::MIN).negate(),
             IntegerInterval::UNBOUNDED
+        );
+    }
+}
+
+#[cfg(test)]
+mod real_tests {
+    use super::{IntegerInterval, RealInterval};
+
+    #[test]
+    fn literal_facts_meet_to_a_contradiction_and_hull_to_a_superset() {
+        let zero = RealInterval::exact(0.0).unwrap();
+        let one = RealInterval::exact(1.0).unwrap();
+        assert!(zero.meet(one).is_empty());
+        assert!(!zero.meet(RealInterval::UNBOUNDED).is_empty());
+        assert_eq!(
+            zero.hull(one),
+            RealInterval {
+                lower: Some(0.0),
+                upper: Some(1.0)
+            }
+        );
+        assert!(zero.hull(RealInterval::UNBOUNDED).is_unbounded());
+        assert_eq!(RealInterval::exact(f64::NAN), None);
+        assert!(
+            IntegerInterval::exact(0)
+                .meet(IntegerInterval::exact(1))
+                .is_empty()
         );
     }
 }

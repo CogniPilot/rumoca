@@ -416,11 +416,12 @@ fn guarded_output_loop_requires_a_fallthrough_value() {
     // The one diagnostic this shape owns, not "any of three". The other two
     // messages the old disjunction accepted belong to different rejections,
     // so accepting them here meant a regression that swapped one cause for
-    // another stayed green.
+    // another stayed green. The join keeps `values` for a later path that
+    // selects `enabled`; none follows, so the return is where it is refused.
     assert!(
         error
             .to_string()
-            .contains("`guardedFill` leaves output `values` without a definition on some branch"),
+            .contains("`guardedFill` returns `values` without defining every declared element"),
         "unexpected diagnostic: {error}"
     );
 }

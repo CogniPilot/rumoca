@@ -118,6 +118,7 @@ mod function_equation_shape;
 mod function_fold_projection;
 mod function_generic_loop_definedness;
 mod function_guard_bounded_ranges;
+mod function_guard_fact_definedness;
 mod function_guarded_element_writes;
 mod function_guarded_loop_definedness;
 mod function_inner_index_slice_compaction;

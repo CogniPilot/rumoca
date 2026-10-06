@@ -10,7 +10,7 @@
 //! pass after the last of them is the last one: `B = max(U - s + 1, 0) + 1`.
 //! A path that ends the loop may write `k` freely: `c` is false afterwards.
 
-use super::super::guard_facts::GuardFacts;
+use super::super::super::guard_facts::{FactScope, GuardFacts};
 use super::*;
 use std::collections::BTreeSet;
 
@@ -55,11 +55,11 @@ pub(super) fn exit_or_advance_bound(
                 flag,
                 counter,
                 cx,
+                reals: HashSet::new(),
                 limit: i64::MIN,
             };
             let start = Outcomes::from([(Exit::Open, Advance::None)]);
-            let Some((outcomes, _)) =
-                proof.sequence(&block.stmts, start, GuardFacts::entry(cx.integers))
+            let Some((outcomes, _)) = proof.sequence(&block.stmts, start, GuardFacts::entry())
             else {
                 continue;
             };
@@ -110,19 +110,29 @@ struct PassProof<'a> {
     flag: &'a VarName,
     counter: &'a VarName,
     cx: WhileContext<'a>,
+    /// A pass bound reads Integer facts only.
+    reals: HashSet<VarName>,
     /// The largest proven value of the counter at any of its increments.
     limit: i64,
 }
 
 impl PassProof<'_> {
+    fn facts(&self) -> FactScope<'_> {
+        FactScope {
+            shapes: self.cx.shapes,
+            integers: self.cx.integers,
+            reals: &self.reals,
+        }
+    }
+
     /// The outcomes of every path through `statements` from `outcomes`, and
     /// the guard facts after them; `None` when an increment is unbounded.
-    fn sequence<'scope>(
+    fn sequence(
         &mut self,
         statements: &[rumoca_core::Statement],
         mut outcomes: Outcomes,
-        mut facts: GuardFacts<'scope>,
-    ) -> Option<(Outcomes, GuardFacts<'scope>)> {
+        mut facts: GuardFacts,
+    ) -> Option<(Outcomes, GuardFacts)> {
         for statement in statements {
             if let rumoca_core::Statement::If {
                 cond_blocks,
@@ -135,25 +145,25 @@ impl PassProof<'_> {
                 continue;
             }
             outcomes = self.statement(statement, &facts, outcomes)?;
-            facts.after(statement, self.cx.shapes);
+            facts.after(statement, self.facts());
         }
         Some((outcomes, facts))
     }
 
     /// Every branch from the facts its conditions select, and the fall-through
     /// path of an `if` without `else`, joined.
-    fn conditional<'scope>(
+    fn conditional(
         &mut self,
         cond_blocks: &[StatementBlock],
         else_block: Option<&[rumoca_core::Statement]>,
         outcomes: Outcomes,
-        facts: &GuardFacts<'scope>,
-    ) -> Option<(Outcomes, GuardFacts<'scope>)> {
+        facts: &GuardFacts,
+    ) -> Option<(Outcomes, GuardFacts)> {
         let conditions = cond_blocks
             .iter()
             .map(|block| &block.cond)
             .collect::<Vec<_>>();
-        let mut entries = facts.branch_entries(&conditions, self.cx.shapes);
+        let mut entries = facts.branch_entries(&conditions, self.facts());
         let fallthrough = entries.pop().expect("an if has a fall-through entry");
         let mut joined = Outcomes::new();
         let mut exits = Vec::with_capacity(entries.len() + 1);
@@ -175,7 +185,7 @@ impl PassProof<'_> {
     fn statement(
         &mut self,
         statement: &rumoca_core::Statement,
-        facts: &GuardFacts<'_>,
+        facts: &GuardFacts,
         outcomes: Outcomes,
     ) -> Option<Outcomes> {
         let (exit, advance) = match plain_assignment(statement) {
@@ -203,7 +213,7 @@ impl PassProof<'_> {
         &mut self,
         target: &VarName,
         value: &Expression,
-        facts: &GuardFacts<'_>,
+        facts: &GuardFacts,
     ) -> Option<(Option<Exit>, Option<Advance>)> {
         if target == self.flag {
             let literal_false = matches!(

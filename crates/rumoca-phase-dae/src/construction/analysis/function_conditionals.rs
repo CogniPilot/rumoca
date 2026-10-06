@@ -286,27 +286,40 @@ fn resolve_reachable_branches(
         first_reached: false,
         pruned: false,
     };
+    let conditions = blocks.iter().map(|block| &block.cond).collect::<Vec<_>>();
+    // Value facts may show that no execution reaches a branch, or that every
+    // execution reaching the conditional takes one; the binder region of a
+    // certain branch is then the whole region.
+    let reachable = definitions.reachable_paths(&conditions, context);
     let mut remaining = definitions.folds.clone();
     for (ordinal, (block, plans)) in blocks.iter().zip(branches.iter_mut()).enumerate() {
         definitions.require_readable(&block.cond, context, span)?;
         let mut state = definitions.clone();
-        let reached = state.folds.assume_from(&remaining, &block.cond, context);
+        let certain = reachable[ordinal + 1..].iter().all(|reaches| !reaches);
+        let reached = if certain {
+            state.folds = remaining.clone();
+            state.folds.reaches()
+        } else {
+            state.folds.assume_from(&remaining, &block.cond, context)
+        };
         remaining.assume(&block.cond, false, context);
-        if !reached {
+        if !reached || !reachable[ordinal] {
             resolved.pruned = true;
             continue;
         }
         resolved.first_reached |= ordinal == 0;
         state.enter_guard(&block.cond, context);
+        state.enter_path(&conditions, ordinal, context);
         resolve_conditional_branch(&block.stmts, plans, context, &mut state)?;
         resolved.push(state, &block.stmts, plans);
     }
-    let falls_through = remaining.reaches();
+    let falls_through = remaining.reaches() && reachable[conditions.len()];
     resolved.exhaustive = match (fallback_statements, fallback_plans) {
         (Some(statements), Some(plans)) => {
             if falls_through {
                 let mut state = definitions.clone();
                 state.folds = remaining.clone();
+                state.enter_path(&conditions, conditions.len(), context);
                 resolve_conditional_branch(statements, plans, context, &mut state)?;
                 resolved.push(state, statements, plans);
             }
@@ -321,6 +334,7 @@ fn resolve_reachable_branches(
         state.define_from_earlier_iterations(&ordered);
     }
     if !resolved.exhaustive {
+        definitions.enter_path(&conditions, conditions.len(), context);
         let fallthrough = std::mem::replace(&mut definitions.folds, remaining);
         definitions.define_from_earlier_iterations(&ordered);
         definitions.folds = fallthrough;
@@ -441,7 +455,7 @@ fn resolve_static_loop_branch(
     Ok(ordered)
 }
 
-fn static_boolean_expression(
+pub(super) fn static_boolean_expression(
     expression: &Expression,
     context: FunctionValidationContext<'_>,
 ) -> Result<Option<bool>, ToDaeError> {
@@ -566,7 +580,10 @@ fn static_boolean_expression_at_depth(
     }
 }
 
-fn is_immutable_guard(condition: &Expression, context: FunctionValidationContext<'_>) -> bool {
+pub(super) fn is_immutable_guard(
+    condition: &Expression,
+    context: FunctionValidationContext<'_>,
+) -> bool {
     let mut references = Vec::new();
     condition.collect_var_refs(&mut references);
     !references.is_empty()

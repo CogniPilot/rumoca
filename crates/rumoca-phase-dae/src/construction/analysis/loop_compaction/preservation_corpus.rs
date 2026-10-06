@@ -38,7 +38,7 @@ const BOOLEAN_TYPE: TypeId = TypeId(3);
 const STRING_TYPE: TypeId = TypeId(4);
 const CLOCK_TYPE: TypeId = TypeId(5);
 
-pub(super) fn span() -> Span {
+pub(in crate::construction::analysis) fn span() -> Span {
     Span::from_offsets(SourceId::DUMMY, 0, 1)
 }
 
@@ -261,7 +261,7 @@ pub(super) fn component(name: &str, subs: Vec<Subscript>) -> ComponentReference 
     .expect("the harness component reference has exact identity")
 }
 
-pub(super) fn var(name: &str) -> Expression {
+pub(in crate::construction::analysis) fn var(name: &str) -> Expression {
     Expression::VarRef {
         name: rumoca_core::Reference::new(name),
         subscripts: Vec::new(),
@@ -280,14 +280,14 @@ pub(super) fn element(name: &str, subscript: Expression) -> Expression {
     }
 }
 
-pub(super) fn real(value: f64) -> Expression {
+pub(in crate::construction::analysis) fn real(value: f64) -> Expression {
     Expression::Literal {
         value: Literal::Real(value),
         span: span(),
     }
 }
 
-pub(super) fn integer(value: i64) -> Expression {
+pub(in crate::construction::analysis) fn integer(value: i64) -> Expression {
     Expression::Literal {
         value: Literal::Integer(value),
         span: span(),
@@ -301,7 +301,11 @@ pub(super) fn boolean(value: bool) -> Expression {
     }
 }
 
-pub(super) fn binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
+pub(in crate::construction::analysis) fn binary(
+    op: OpBinary,
+    lhs: Expression,
+    rhs: Expression,
+) -> Expression {
     Expression::Binary {
         op,
         lhs: Box::new(lhs),
@@ -310,7 +314,10 @@ pub(super) fn binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expressi
     }
 }
 
-pub(super) fn assign(target: &str, value: Expression) -> rumoca_core::Statement {
+pub(in crate::construction::analysis) fn assign(
+    target: &str,
+    value: Expression,
+) -> rumoca_core::Statement {
     rumoca_core::Statement::Assignment {
         comp: component(target, Vec::new()),
         value,

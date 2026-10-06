@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use super::guard_facts::GuardFacts;
+use super::super::guard_facts::{FactScope, GuardFacts};
 use super::*;
 use rumoca_core::BuiltinFunction;
 
@@ -19,13 +19,17 @@ pub(super) fn rectangularize_dependent_loops(
     shapes: &ShapeEnvironment,
     integers: &HashSet<VarName>,
 ) -> Result<Vec<rumoca_core::Statement>, ToDaeError> {
-    let mut facts = GuardFacts::entry(integers);
+    let mut facts = GuardFacts::entry();
+    // Dependent domains are Integer ranges; no Real fact bounds them.
+    let reals = HashSet::new();
     rectangularize_loops_in_scope(
         statements,
         Scope {
             static_integers,
             shapes,
             bounds: &HashMap::new(),
+            integers,
+            reals: &reals,
         },
         &mut facts,
     )
@@ -37,6 +41,18 @@ struct Scope<'a> {
     static_integers: &'a HashMap<VarName, i64>,
     shapes: &'a ShapeEnvironment,
     bounds: &'a HashMap<VarName, (i64, i64)>,
+    integers: &'a HashSet<VarName>,
+    reals: &'a HashSet<VarName>,
+}
+
+impl<'a> Scope<'a> {
+    fn facts(self) -> FactScope<'a> {
+        FactScope {
+            shapes: self.shapes,
+            integers: self.integers,
+            reals: self.reals,
+        }
+    }
 }
 
 /// Rewrite one statement sequence in order, carrying the guard facts that
@@ -44,7 +60,7 @@ struct Scope<'a> {
 fn rectangularize_loops_in_scope(
     statements: &[rumoca_core::Statement],
     scope: Scope<'_>,
-    facts: &mut GuardFacts<'_>,
+    facts: &mut GuardFacts,
 ) -> Result<Vec<rumoca_core::Statement>, ToDaeError> {
     statements
         .iter()
@@ -55,7 +71,7 @@ fn rectangularize_loops_in_scope(
 fn rectangularize_statement(
     statement: &rumoca_core::Statement,
     scope: Scope<'_>,
-    facts: &mut GuardFacts<'_>,
+    facts: &mut GuardFacts,
 ) -> Result<rumoca_core::Statement, ToDaeError> {
     if let rumoca_core::Statement::If {
         cond_blocks,
@@ -71,13 +87,17 @@ fn rectangularize_statement(
         span,
     } = statement
     else {
-        facts.after(statement, scope.shapes);
+        facts.after(statement, scope.facts());
         return Ok(statement.clone());
     };
     // MLS §11.2.2 evaluates the ranges once on entry, under the facts that
     // hold before the loop; the body sees only facts no iteration changes.
     let range_facts = facts.clone();
-    let mut body_facts = facts.loop_entry(equations, indices);
+    let binders = indices
+        .iter()
+        .map(|index| VarName::new(&index.ident))
+        .collect::<Vec<_>>();
+    let mut body_facts = facts.loop_entry(equations, &binders);
     *facts = facts.loop_entry(equations, &[]);
     let mut bounds = scope.bounds.clone();
     let mut rectangular = Vec::with_capacity(indices.len());
@@ -148,7 +168,7 @@ fn rectangularize_loop_body(
     equations: &[rumoca_core::Statement],
     scope: Scope<'_>,
     bounds: &HashMap<VarName, (i64, i64)>,
-    facts: &mut GuardFacts<'_>,
+    facts: &mut GuardFacts,
 ) -> Result<Vec<rumoca_core::Statement>, ToDaeError> {
     let (body_static, body_shapes) =
         scoped_domain_facts(scope.static_integers, scope.shapes, bounds);
@@ -158,6 +178,8 @@ fn rectangularize_loop_body(
             static_integers: &body_static,
             shapes: &body_shapes,
             bounds,
+            integers: scope.integers,
+            reals: scope.reals,
         },
         facts,
     )?;
@@ -196,10 +218,10 @@ fn rectangularize_conditional(
     fallback: Option<&[rumoca_core::Statement]>,
     span: Span,
     scope: Scope<'_>,
-    facts: &mut GuardFacts<'_>,
+    facts: &mut GuardFacts,
 ) -> Result<rumoca_core::Statement, ToDaeError> {
     let conditions = branches.iter().map(|block| &block.cond).collect::<Vec<_>>();
-    let mut entries = facts.branch_entries(&conditions, scope.shapes);
+    let mut entries = facts.branch_entries(&conditions, scope.facts());
     let mut fallthrough = entries
         .pop()
         .expect("branch entries end with the fall-through");

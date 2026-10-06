@@ -26,6 +26,7 @@ mod function_record_assemblies;
 mod function_reductions;
 mod function_returns;
 mod function_value_types;
+mod guard_facts;
 mod history_operators;
 mod initial_algorithms;
 mod initial_parameter_equations;
@@ -102,7 +103,10 @@ use function_bodies::{
     validate_function_subscripts, validate_functions,
 };
 pub(super) use function_conditionals::{branch_never_completes, selected_conditional_statements};
-use function_conditionals::{plan_function_conditional, resolve_function_conditional};
+use function_conditionals::{
+    is_immutable_guard, plan_function_conditional, resolve_function_conditional,
+    static_boolean_expression,
+};
 use function_definitions::FunctionDefinitions;
 pub(super) use function_definitions::FunctionValueSeed;
 use function_externals::validate_external_function;
@@ -489,6 +493,9 @@ struct FunctionValidationContext<'scope> {
     /// The binders of the compact loops whose body is being resolved as one
     /// generic iteration: immutable within an iteration, but not settled.
     loop_binders: &'scope HashSet<VarName>,
+    /// The scalar Integer and Real values of the function, which value facts
+    /// (`guard_facts`) may bound.
+    scalars: &'scope guard_facts::ScalarKinds,
     /// Whether this source sequence reaches a call-scoped or loop action
     /// owner, directly or through runtime conditionals that guard its actions.
     call_scoped_actions: bool,

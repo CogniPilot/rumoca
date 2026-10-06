@@ -148,10 +148,10 @@ fn a_proven_true_condition_selects_a_nested_arm() {
 /// The fold must not start at a *later* condition just because that one is
 /// proven: MLS §11.5 reaches `elseif m == 3` only if `u < 0.5` evaluated to
 /// false, and nothing here settles that. The function is value-keyed (`y[m]`
-/// reads `m`), so the specialization exists and `m == 3` really is proven —
-/// the rejection has to come from the scan order, not from an absent key.
+/// reads `m`), so the specialization exists and `m == 3` really is proven; the
+/// runtime condition still selects first, so `u < 0.5` yields the loop's value.
 #[test]
-fn an_unproven_condition_keeps_the_checked_branch_rule() {
+fn an_unproven_condition_keeps_the_runtime_scan_order() {
     let source = r#"
 within;
 function pickchain
@@ -175,15 +175,19 @@ equation
   z = pickchain(3, time);
 end UnprovenBranch;
 "#;
-    let error = Compiler::new()
+    let compiled = Compiler::new()
         .model("UnprovenBranch")
         .compile_str(source, "UnprovenBranch.mo")
-        .expect_err("a runtime branch still owns only direct value assignments");
-    let rendered = format!("{error:?}");
-    assert!(
-        rendered.contains("`pickchain` leaves output `y` without a definition on some branch"),
-        "unexpected diagnostic: {rendered}"
-    );
+        .expect("every runtime path defines y");
+    for (time, expected) in [(0.25, [0.25; 3]), (0.75, [1.0, 2.0, 3.0])] {
+        let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], time)
+            .expect("checked DAE should evaluate");
+        assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+        for (index, value) in expected.into_iter().enumerate() {
+            let name = format!("z[{}]", index + 1);
+            close(algebraic(&probe.report, &name), value, &name);
+        }
+    }
 }
 
 /// The complement of the scan-order rule: when the *first* condition is proven

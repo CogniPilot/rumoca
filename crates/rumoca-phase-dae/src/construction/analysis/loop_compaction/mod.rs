@@ -5,7 +5,6 @@ mod bounded_while;
 mod dependent_domains;
 #[cfg(test)]
 mod finite_counter_tests;
-mod guard_facts;
 /// Dataflow liveness over the function statement tree, and the store-deletion
 /// evidence built from it.
 ///
@@ -33,7 +32,7 @@ mod loop_local_substitution;
 /// written and once as [`compact_function_loops`] rewrites it, and requires the
 /// two executions to agree on the function's outputs.
 #[cfg(test)]
-mod preservation_corpus;
+pub(super) mod preservation_corpus;
 #[cfg(test)]
 mod preservation_differential_tests;
 #[cfg(test)]

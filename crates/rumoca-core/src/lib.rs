@@ -100,9 +100,9 @@ pub use source_map::{SourceMap, placeholder_source_name, source_id_for_name};
 pub use statement_rewriter::{FallibleStatementRewriter, StatementRewriter};
 pub use structured_domain::{
     AffineForm, ArrayAccess, ComprehensionScalarView, ComprehensionTemplate, IndexAxis, IndexBox,
-    IndexUnion, IntegerInterval, Progression, RegularForFamily, SetAnswer, StructuredIndexBinder,
-    StructuredIndexDomain, StructuredIndexDomainError, checked_product, flatten_coordinates, image,
-    row_major_coordinates, row_major_strides, solve_point,
+    IndexUnion, IntegerInterval, Progression, RealInterval, RegularForFamily, SetAnswer,
+    StructuredIndexBinder, StructuredIndexDomain, StructuredIndexDomainError, checked_product,
+    flatten_coordinates, image, row_major_coordinates, row_major_strides, solve_point,
 };
 pub use subscript::Subscript;
 
