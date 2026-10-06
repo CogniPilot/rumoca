@@ -31,8 +31,8 @@
 {%- elif operator == "And" -%}if __r{{ lhs }} != 0.0 && __r{{ rhs }} != 0.0 { 1.0 } else { 0.0 }
 {%- elif operator == "Or" -%}if __r{{ lhs }} != 0.0 || __r{{ rhs }} != 0.0 { 1.0 } else { 0.0 }
 {%- elif operator == "Atan2" -%}__r{{ lhs }}.atan2(__r{{ rhs }})
-{%- elif operator == "Min" -%}__r{{ lhs }}.min(__r{{ rhs }})
-{%- elif operator == "Max" -%}__r{{ lhs }}.max(__r{{ rhs }})
+{%- elif operator == "Min" -%}rumoca_real_min(__r{{ lhs }}, __r{{ rhs }})
+{%- elif operator == "Max" -%}rumoca_real_max(__r{{ lhs }}, __r{{ rhs }})
 {%- else -%}{{ fail("unsupported-feature:scalar.binary." ~ operator) }}
 {%- endif -%}
 {%- endmacro %}
@@ -100,6 +100,7 @@
 
 #![allow(dead_code, non_snake_case)]
 
+{{ real_extremum_prelude("rust") }}
 pub type Scalar = f64;
 
 pub const Y_LEN: usize = {{ solve.layout.y_scalars }};

@@ -409,6 +409,16 @@ impl<'a> MlirFamilyRenderer<'a> {
         lhs: solve::Reg,
         rhs: solve::Reg,
     ) -> Result<(), minijinja::Error> {
+        if let minimum @ (solve::BinaryOp::Min | solve::BinaryOp::Max) = op {
+            let call = super::super::real_extremum::mlir_call(
+                minimum == solve::BinaryOp::Min,
+                &self.reg(dst),
+                &self.reg(lhs),
+                &self.reg(rhs),
+            );
+            self.line(format!("      {call}"));
+            return Ok(());
+        }
         if let Some(operation) = mlir_binary_operation(op) {
             self.line(format!(
                 "      {} = {operation} {}, {} : f64",
@@ -596,9 +606,10 @@ fn mlir_binary_operation(op: solve::BinaryOp) -> Option<&'static str> {
         solve::BinaryOp::Div => Some("arith.divf"),
         solve::BinaryOp::Pow => Some("math.powf"),
         solve::BinaryOp::Atan2 => Some("math.atan2"),
-        solve::BinaryOp::Min => Some("arith.minnumf"),
-        solve::BinaryOp::Max => Some("arith.maxnumf"),
-        solve::BinaryOp::And | solve::BinaryOp::Or => None,
+        solve::BinaryOp::Min
+        | solve::BinaryOp::Max
+        | solve::BinaryOp::And
+        | solve::BinaryOp::Or => None,
     }
 }
 

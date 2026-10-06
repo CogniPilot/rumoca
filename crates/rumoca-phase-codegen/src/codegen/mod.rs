@@ -34,6 +34,7 @@ mod me_projection;
 #[cfg(test)]
 mod native_scalar_laziness_tests;
 mod pure_call_families;
+mod real_extremum;
 mod render_expr;
 mod render_solve;
 mod render_solve_ops;
@@ -679,6 +680,10 @@ fn create_environment() -> Environment<'static> {
     env.add_function("source_ref", source_ref_function);
 
     // Custom functions for expression rendering
+    env.add_function(
+        "real_extremum_prelude",
+        real_extremum::real_extremum_prelude_function,
+    );
     env.add_function("render_expr", render_expr_function);
     env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_solve_row_wgsl", render_solve_row_wgsl_function);

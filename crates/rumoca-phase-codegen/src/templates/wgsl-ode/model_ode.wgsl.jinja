@@ -19,6 +19,7 @@
 {%- set derivative_kernel_count = ((native_families | length) + fallback_chunks) if (native_families | length) > 0 or fallback | length > 0 else 1 %}
 
 // model: {{ name }}
+{{ real_extremum_prelude("wgsl") }}
 const ROWS: u32 = {{ derivative.output_count }}u;
 const Y_LEN: u32 = {{ solve.layout.y_scalars }}u;
 const P_LEN: u32 = {{ solve.layout.p_scalars }}u;

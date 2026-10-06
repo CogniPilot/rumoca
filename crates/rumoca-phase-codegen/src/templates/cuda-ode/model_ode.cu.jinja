@@ -23,8 +23,8 @@
 {%- elif operator == "And" -%}((__r{{ lhs }} != 0.0 && __r{{ rhs }} != 0.0) ? 1.0 : 0.0)
 {%- elif operator == "Or" -%}((__r{{ lhs }} != 0.0 || __r{{ rhs }} != 0.0) ? 1.0 : 0.0)
 {%- elif operator == "Atan2" -%}atan2(__r{{ lhs }}, __r{{ rhs }})
-{%- elif operator == "Min" -%}fmin(__r{{ lhs }}, __r{{ rhs }})
-{%- elif operator == "Max" -%}fmax(__r{{ lhs }}, __r{{ rhs }})
+{%- elif operator == "Min" -%}rumoca_real_min(__r{{ lhs }}, __r{{ rhs }})
+{%- elif operator == "Max" -%}rumoca_real_max(__r{{ lhs }}, __r{{ rhs }})
 {%- else -%}{{ fail("unsupported-feature:scalar.binary." ~ operator) }}
 {%- endif -%}
 {%- endmacro %}
@@ -94,7 +94,7 @@
 // differential evidence before this target may advertise them.
 
 #include <math.h>
-
+{{ real_extremum_prelude("cuda") }}
 {%- set name = model_name | default("model") | sanitize %}
 {%- set derivative = solve_blocks.continuous.derivative_rhs %}
 {%- set nodes = derivative.nodes %}

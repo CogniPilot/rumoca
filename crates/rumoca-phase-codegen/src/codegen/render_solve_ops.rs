@@ -48,8 +48,8 @@ pub(super) fn render_solve_binary_wgsl(op: &str, lhs: String, rhs: String) -> Re
             "select(0.0, 1.0, (({lhs}) != 0.0) || (({rhs}) != 0.0))"
         )),
         "Atan2" => Ok(format!("atan2({lhs}, {rhs})")),
-        "Min" => Ok(format!("min({lhs}, {rhs})")),
-        "Max" => Ok(format!("max({lhs}, {rhs})")),
+        "Min" => Ok(format!("rumoca_real_min({lhs}, {rhs})")),
+        "Max" => Ok(format!("rumoca_real_max({lhs}, {rhs})")),
         _ => Err(render_err(format!("unsupported solve binary op: {op}"))),
     }
 }

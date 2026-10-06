@@ -52,7 +52,7 @@ for (size_t k=0; k<{{ ty.scalar_count }}; ++k) { if ({{ src }}[k] != 0.0 && {{ s
 {%- endmacro %}
 
 {%- macro binary(operator, a, b) -%}
-{%- if operator in ["power", "atan2", "min", "max"] -%}{{ {"power":"pow", "atan2":"atan2", "min":"fmin", "max":"fmax"}[operator] }}({{ a }},{{ b }})
+{%- if operator in ["power", "atan2", "min", "max"] -%}{{ {"power":"pow", "atan2":"atan2", "min":"rumoca_real_min", "max":"rumoca_real_max"}[operator] }}({{ a }},{{ b }})
 {%- elif operator in ["add", "subtract", "multiply", "divide", "and", "or"] -%}({{ a }} {{ {"add":"+", "subtract":"-", "multiply":"*", "divide":"/", "and":"&&", "or":"||"}[operator] }} {{ b }})
 {%- else -%}{{ fail("unsupported-feature:fmi.c.pure-call: binary " ~ operator) }}{% endif -%}
 {%- endmacro %}

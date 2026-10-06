@@ -29,8 +29,8 @@
 {%- elif operator == "And" -%}((r[{{ lhs }}] != 0.0 && r[{{ rhs }}] != 0.0) ? 1.0 : 0.0)
 {%- elif operator == "Or" -%}((r[{{ lhs }}] != 0.0 || r[{{ rhs }}] != 0.0) ? 1.0 : 0.0)
 {%- elif operator == "Atan2" -%}atan2(r[{{ lhs }}], r[{{ rhs }}])
-{%- elif operator == "Min" -%}fmin(r[{{ lhs }}], r[{{ rhs }}])
-{%- elif operator == "Max" -%}fmax(r[{{ lhs }}], r[{{ rhs }}])
+{%- elif operator == "Min" -%}rumoca_real_min(r[{{ lhs }}], r[{{ rhs }}])
+{%- elif operator == "Max" -%}rumoca_real_max(r[{{ lhs }}], r[{{ rhs }}])
 {%- else -%}{{ fail("unsupported-feature:scalar.binary." ~ operator) }}
 {%- endif -%}
 {%- endmacro %}

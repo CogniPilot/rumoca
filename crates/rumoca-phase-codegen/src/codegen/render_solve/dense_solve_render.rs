@@ -628,11 +628,20 @@ fn emit_one_linear_op_mlir(
         let lhs = solve_field_usize(&v, "lhs")?;
         let rhs = solve_field_usize(&v, "rhs")?;
         let op_name = solve_variant_name(&get_field(&v, "op")?)?;
-        let mop = binary_to_mlir_op(&op_name)
-            .ok_or_else(|| render_err(format!("unsupported binary in MatMul ops: {op_name}")))?;
-        out.push_str(&format!(
-            "    %{pfx}_r{dst} = {mop} %{pfx}_r{lhs}, %{pfx}_r{rhs} : f64\n"
-        ));
+        let (dst, lhs, rhs) = (
+            format!("%{pfx}_r{dst}"),
+            format!("%{pfx}_r{lhs}"),
+            format!("%{pfx}_r{rhs}"),
+        );
+        if matches!(op_name.as_str(), "Min" | "Max") {
+            let call = super::super::real_extremum::mlir_call(op_name == "Min", &dst, &lhs, &rhs);
+            out.push_str(&format!("    {call}\n"));
+        } else {
+            let mop = binary_to_mlir_op(&op_name).ok_or_else(|| {
+                render_err(format!("unsupported binary in MatMul ops: {op_name}"))
+            })?;
+            out.push_str(&format!("    {dst} = {mop} {lhs}, {rhs} : f64\n"));
+        }
     } else if get_field(op, "StoreOutput").is_ok() {
         // In MatMul context the register file holds the matrix values — no output store here.
     } else {
@@ -667,8 +676,6 @@ fn binary_to_mlir_op(op: &str) -> Option<&'static str> {
         "Mul" => Some("arith.mulf"),
         "Div" => Some("arith.divf"),
         "Pow" => Some("math.powf"),
-        "Min" => Some("arith.minnumf"),
-        "Max" => Some("arith.maxnumf"),
         _ => None,
     }
 }

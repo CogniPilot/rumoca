@@ -743,6 +743,8 @@ fn cuda_ode_generated_kernel_compiles_and_executes_cpu_emulation() {
             r#"struct Dim3 {{ int x; }};
 static Dim3 blockIdx, blockDim, threadIdx;
 #define __global__
+#define __host__
+#define __device__
 #include {:?}
 
 int main() {{

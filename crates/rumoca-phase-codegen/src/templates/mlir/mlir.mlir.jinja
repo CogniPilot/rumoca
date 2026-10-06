@@ -118,8 +118,6 @@
 {%- elif op == "Div" -%}arith.divf
 {%- elif op == "Pow" -%}math.powf
 {%- elif op == "Atan2" -%}math.atan2
-{%- elif op == "Min" -%}arith.minnumf
-{%- elif op == "Max" -%}arith.maxnumf
 {%- endif -%}
 {%- endmacro %}
 
@@ -201,6 +199,8 @@
 {%- set mop = binary_mlir(op.Binary.op) | trim %}
 {%- if mop %}
     %r{{ r }}_{{ dst }} = {{ mop }} %r{{ r }}_{{ lhs }}, %r{{ r }}_{{ rhs }} : f64
+{%- elif op.Binary.op in ["Min", "Max"] %}
+    %r{{ r }}_{{ dst }} = func.call @rumoca_real_{{ op.Binary.op | lower }}(%r{{ r }}_{{ lhs }}, %r{{ r }}_{{ rhs }}) : (f64, f64) -> f64
 {%- elif op.Binary.op == "And" %}
     %andz{{ r }}_{{ dst }} = arith.constant 0.0 : f64
     %andlb{{ r }}_{{ dst }} = arith.cmpf une, %r{{ r }}_{{ lhs }}, %andz{{ r }}_{{ dst }} : f64
@@ -271,6 +271,8 @@ module @{{ name }} {
   func.func private @rumoca_solve_linear_component(i64, i64, i64, i64) -> f64
   func.func private @rumoca_solve_linear(i64, i64, i64, i64)
 
+  // Real min/max (SPEC_0040 SOLVE-C65).
+{{ real_extremum_prelude("mlir") }}
   // eval_derivative — state derivatives: out[i] = xdot_i = f_i(y, p, t)
   // Map/AffineStencil nodes remain one compact scf.for kernel. Only genuine
   // scalar fallback rows are emitted as straight-line SSA.
