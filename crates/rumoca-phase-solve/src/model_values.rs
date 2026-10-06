@@ -227,6 +227,7 @@ fn runtime_vectors(
             problem,
             evaluator,
             state_coordinates: StateCoordinateSources::of(&system)?,
+            phasors: crate::phasor_sources::PhasorSources::of(view),
         }
         .build()
     })
@@ -238,6 +239,7 @@ struct RuntimeVectorBuilder<'model, 'dae, F> {
     problem: &'model solve::SolveProblem,
     evaluator: NumericEvaluator<'dae, F>,
     state_coordinates: StateCoordinateSources<'dae>,
+    phasors: crate::phasor_sources::PhasorSources,
 }
 
 impl<'dae, F> RuntimeVectorBuilder<'_, 'dae, F>
@@ -529,6 +531,7 @@ where
             fixed: variable.fixed_uniform(),
             description: variable.description().map(str::to_string),
             state_coordinate: self.state_coordinates.source(id, scalar),
+            phasor: self.phasors.source(id, scalar),
         }
     }
 
@@ -746,7 +749,7 @@ fn union_alias_equation<'dae>(
     residual: dae::ExprId<'dae>,
     classes: &mut SignedUnionFind,
 ) {
-    let Some((lhs, rhs)) = alias_equation_sides(view, residual) else {
+    let Some((lhs, rhs)) = equation_sides(view, residual) else {
         return;
     };
     let (Some(lhs_terms), Some(rhs_terms)) = (
@@ -767,7 +770,7 @@ fn union_alias_equation<'dae>(
 
 /// View a residual root as the two sides of the equality it states, folding the
 /// sign wrappers and literal-zero terms an exact `a = b` can carry.
-fn alias_equation_sides<'dae>(
+pub(crate) fn equation_sides<'dae>(
     view: dae::DaeView<'dae>,
     mut expression: dae::ExprId<'dae>,
 ) -> Option<(dae::ExprId<'dae>, dae::ExprId<'dae>)> {
@@ -877,7 +880,7 @@ fn value_coordinate_variable<'dae>(
 
 /// Resolve a single one-based constant subscript into a zero-based scalar of a
 /// one-dimensional array coordinate.
-fn single_index_scalar<'dae>(
+pub(crate) fn single_index_scalar<'dae>(
     view: dae::DaeView<'dae>,
     subscripts: dae::SubscriptsView<'dae>,
     scalar_count: usize,

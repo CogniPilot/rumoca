@@ -1,6 +1,7 @@
 //! Unit tests for trace comparison and reference-scale normalization.
 
 mod json_roundtrip;
+mod phasor;
 
 use super::normalization::{
     CONTINUOUS_ABSOLUTE_SCALE_FLOOR, DISCRETE_SCALE_FLOOR, MAGNITUDE_SCALE_FRACTION,
@@ -9,6 +10,17 @@ use super::normalization::{
 use super::*;
 use proptest::prelude::*;
 use std::path::PathBuf;
+
+impl ChannelRule<'_> {
+    /// The pointwise rule with no array-group floor.
+    pub(super) fn pointwise(use_step_hold: bool) -> Self {
+        Self {
+            use_step_hold,
+            array_group_floor: None,
+            phasor: None,
+        }
+    }
+}
 
 fn ramp_series(len: usize, f: impl Fn(f64) -> f64) -> (Vec<f64>, Vec<Option<f64>>) {
     let times = (0..len)
@@ -82,8 +94,7 @@ fn channel_normalized_l1_matches_expected_value() {
         "x",
         ChannelSeries::new(&[0.0, 0.5, 1.0], &[Some(0.0), Some(1.0), Some(2.0)]),
         ChannelSeries::new(&[0.0, 0.5, 1.0], &[Some(0.0), Some(1.1), Some(2.1)]),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("channel should compare");
 
@@ -103,8 +114,7 @@ fn channel_normalized_l1_is_finite_when_reference_is_near_zero() {
         "u",
         ChannelSeries::new(&[0.0, 1.0], &[Some(1.0), Some(1.0)]),
         ChannelSeries::new(&[0.0, 1.0], &[Some(0.0), Some(0.0)]),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("channel should compare");
     // A unit-size residual against an all-zero reference is still a full
@@ -122,8 +132,7 @@ fn channel_mean_abs_error_uses_time_weighted_integration() {
         "x",
         ChannelSeries::new(&[0.0, 0.001, 1.0], &[Some(200.0), Some(100.0), Some(100.0)]),
         ChannelSeries::new(&[0.0, 0.001, 1.0], &[Some(100.0), Some(100.0), Some(100.0)]),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("channel should compare");
 
@@ -139,8 +148,7 @@ fn channel_shape_labels_constant_offset() {
         "x",
         ChannelSeries::new(&[0.0, 0.5, 1.0], &[Some(1.0), Some(2.0), Some(3.0)]),
         ChannelSeries::new(&[0.0, 0.5, 1.0], &[Some(0.0), Some(1.0), Some(2.0)]),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("channel should compare");
 
@@ -153,8 +161,7 @@ fn channel_shape_labels_scale_error() {
         "x",
         ChannelSeries::new(&[0.0, 0.5, 1.0], &[Some(0.0), Some(2.0), Some(4.0)]),
         ChannelSeries::new(&[0.0, 0.5, 1.0], &[Some(0.0), Some(1.0), Some(2.0)]),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("channel should compare");
 
@@ -167,8 +174,7 @@ fn channel_shape_labels_discrete_event_time_mismatch() {
         "q",
         ChannelSeries::new(&[0.0, 0.6, 1.0], &[Some(0.0), Some(1.0), Some(1.0)]),
         ChannelSeries::new(&[0.0, 0.4, 1.0], &[Some(0.0), Some(1.0), Some(1.0)]),
-        true,
-        None,
+        ChannelRule::pointwise(true),
     )
     .expect("channel should compare");
 
@@ -196,8 +202,7 @@ fn one_tick_clock_lead_is_labelled_event_time_mismatch() {
         "sample1.y",
         ChannelSeries::new(&rumoca_times, &rumoca_values),
         ChannelSeries::new(&omc_times, &omc_values),
-        true,
-        None,
+        ChannelRule::pointwise(true),
     )
     .expect("channel should compare");
 
@@ -247,8 +252,7 @@ fn discrete_value_disagreement_is_not_labelled_event_time_mismatch() {
         "feedback.u2",
         ChannelSeries::new(&times, &rumoca_values),
         ChannelSeries::new(&times, &omc_values),
-        true,
-        None,
+        ChannelRule::pointwise(true),
     )
     .expect("channel should compare");
 
@@ -280,8 +284,7 @@ fn discrete_inversion_over_the_whole_horizon_is_not_labelled_event_time_mismatch
         "q",
         ChannelSeries::new(&times, &rumoca_values),
         ChannelSeries::new(&times, &omc_values),
-        true,
-        None,
+        ChannelRule::pointwise(true),
     )
     .expect("channel should compare");
 
@@ -299,8 +302,7 @@ fn numerically_coincident_discrete_events_compare_on_the_right_limit() {
         "q",
         ChannelSeries::new(&rumoca_times, &rumoca_values),
         ChannelSeries::new(&omc_times, &omc_values),
-        true,
-        None,
+        ChannelRule::pointwise(true),
     )
     .expect("channel should compare");
 
@@ -326,8 +328,7 @@ fn continuous_event_left_limit_is_not_coalesced_with_the_settled_coordinate() {
         "continuous_jump",
         ChannelSeries::new(&rumoca_times, &rumoca_values),
         ChannelSeries::new(&omc_times, &omc_values),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("continuous event channel should compare");
 
@@ -349,8 +350,7 @@ fn discrete_event_shift_integrates_only_the_different_hold_interval() {
         "q",
         ChannelSeries::new(&rumoca_times, &rumoca_values),
         ChannelSeries::new(&omc_times, &omc_values),
-        true,
-        None,
+        ChannelRule::pointwise(true),
     )
     .expect("channel should compare");
 
@@ -383,8 +383,7 @@ fn discrete_channel_metric(
         "q",
         ChannelSeries::new(&rumoca.0, &rumoca.1),
         ChannelSeries::new(&omc.0, &omc.1),
-        true,
-        None,
+        ChannelRule::pointwise(true),
     )
     .expect("channel should compare");
     assert!(
@@ -668,8 +667,7 @@ fn discrete_channel_uses_step_hold_interpolation() {
         "q",
         ChannelSeries::new(&[0.0, 1.0], &[Some(0.0), Some(1.0)]),
         ChannelSeries::new(&[0.0, 0.5, 1.0], &[Some(0.0), Some(0.0), Some(1.0)]),
-        true,
-        None,
+        ChannelRule::pointwise(true),
     )
     .expect("channel compare");
     assert!(
@@ -692,6 +690,7 @@ fn event_discontinuous_real_channel_uses_step_hold_interpolation() {
             variability: Some("continuous".to_string()),
             time_domain: Some("event-discontinuous".to_string()),
             state_coordinate: None,
+            phasor: None,
         }]),
         certification_profile: None,
     };
@@ -726,6 +725,7 @@ fn discrete_only_model_traces_contribute_to_metrics() {
             variability: Some("discrete".to_string()),
             time_domain: Some("event-discrete".to_string()),
             state_coordinate: None,
+            phasor: None,
         }]),
         certification_profile: None,
     };
@@ -741,6 +741,7 @@ fn discrete_only_model_traces_contribute_to_metrics() {
             variability: Some("discrete".to_string()),
             time_domain: Some("event-discrete".to_string()),
             state_coordinate: None,
+            phasor: None,
         }]),
         certification_profile: None,
     };
@@ -817,6 +818,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         channel_violation_mass: 0.0,
         initial_condition: InitialConditionStats::default(),
         worst_variables: Vec::new(),
+        undefined_phasor_channels: Vec::new(),
     };
     assert_eq!(
         classify_trace_metric(
@@ -847,6 +849,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         channel_violation_mass: 0.0,
         initial_condition: InitialConditionStats::default(),
         worst_variables: Vec::new(),
+        undefined_phasor_channels: Vec::new(),
     };
     assert_eq!(
         classify_trace_metric(
@@ -877,6 +880,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         channel_violation_mass: 0.1,
         initial_condition: InitialConditionStats::default(),
         worst_variables: Vec::new(),
+        undefined_phasor_channels: Vec::new(),
     };
     assert_eq!(
         classify_trace_metric(
@@ -1044,6 +1048,7 @@ fn channel_distribution_metric(
         channel_violation_mass: deviation as f64,
         initial_condition: InitialConditionStats::default(),
         worst_variables: Vec::new(),
+        undefined_phasor_channels: Vec::new(),
     }
 }
 
@@ -1106,8 +1111,7 @@ fn constant_zero_reference_channel_is_not_severe() {
         "ground.p.i",
         ChannelSeries::new(&times, &rumoca_values),
         ChannelSeries::new(&times, &omc_values),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("channel should compare");
 
@@ -1135,8 +1139,7 @@ fn small_constant_reference_uses_magnitude_floor() {
         "leakage.i",
         ChannelSeries::new(&times, &rumoca_values),
         ChannelSeries::new(&times, &omc_values),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("channel should compare");
 
@@ -1164,8 +1167,7 @@ fn genuine_deviation_on_large_signal_is_unchanged() {
         "x",
         ChannelSeries::new(&times, &rumoca_values),
         ChannelSeries::new(&times, &omc_values),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("channel should compare");
 
@@ -1190,8 +1192,7 @@ fn missing_channel_mapping_shape_still_reachable() {
         "unmapped",
         ChannelSeries::new(&times, &rumoca_values),
         ChannelSeries::new(&times, &omc_values),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("channel should compare");
 
@@ -1218,8 +1219,7 @@ fn flat_non_zero_reference_still_reports_channel_mapping() {
         "unmapped.level",
         ChannelSeries::new(&times, &rumoca_values),
         ChannelSeries::new(&times, &omc_values),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("channel should compare");
 
@@ -1253,8 +1253,7 @@ fn large_dc_offset_channel_still_reports_a_real_deviation() {
         "wall.T",
         ChannelSeries::new(&times, &rumoca_values),
         ChannelSeries::new(&times, &omc_values),
-        false,
-        None,
+        ChannelRule::pointwise(false),
     )
     .expect("channel should compare");
 
@@ -1499,6 +1498,7 @@ fn discrete_array_elements_ignore_the_group_floor() {
         variability: Some("discrete".to_string()),
         time_domain: Some("event-discrete".to_string()),
         state_coordinate: None,
+        phasor: None,
     };
     let names = vec!["q[1]".to_string(), "q[2]".to_string()];
     let omc = SimTrace {
@@ -1547,8 +1547,7 @@ proptest! {
             "x",
             ChannelSeries::new(&times, &rumoca),
             ChannelSeries::new(&times, &omc),
-            false,
-            None,
+            ChannelRule::pointwise(false),
         )
         .expect("channel should compare");
 
@@ -1576,8 +1575,7 @@ proptest! {
             "x",
             ChannelSeries::new(&coarse_times, &coarse_values),
             ChannelSeries::new(&fine_times, &fine_values),
-            false,
-            None,
+            ChannelRule::pointwise(false),
         )
         .expect("channel should compare");
 
@@ -1620,6 +1618,7 @@ fn trace_metadata_carries_the_state_coordinate_source_of_a_simulated_variable() 
             variable: "mass.s".to_string(),
             derivative_order: 1,
         }),
+        phasor: None,
     };
     let meta = SimTraceVariableMeta::of(&simulated);
     assert_eq!(meta.name, "$state_coordinates[2]");
@@ -1640,6 +1639,7 @@ fn trace_metadata_carries_the_state_coordinate_source_of_a_simulated_variable() 
         role: "algebraic".to_string(),
         is_state: false,
         state_coordinate: None,
+        phasor: None,
         ..simulated
     });
     let json = serde_json::to_value(&plain).expect("plain metadata serializes");

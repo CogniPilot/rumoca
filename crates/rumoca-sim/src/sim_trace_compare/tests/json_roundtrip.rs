@@ -73,8 +73,7 @@ fn json_roundtrip_does_not_manufacture_a_continuous_event_ramp() {
             "voltage",
             ChannelSeries::new(&candidate.times, &candidate.data[0]),
             ChannelSeries::new(&reference_times, &reference_values),
-            false,
-            None,
+            ChannelRule::pointwise(false),
         )
         .unwrap()
     };

@@ -2396,6 +2396,7 @@ fn state_coordinate_is_named_by_its_source_and_omitted_when_absent() {
         fixed: None,
         description: None,
         state_coordinate: None,
+        phasor: None,
     };
     let plain = serde_json::to_string(&meta).expect("serialize plain metadata");
     assert!(!plain.contains("\"state_coordinate\""));

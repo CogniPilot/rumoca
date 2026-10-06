@@ -366,6 +366,7 @@ mod tests {
             channel_violation_mass: 0.0,
             initial_condition: Default::default(),
             worst_variables: Vec::new(),
+            undefined_phasor_channels: Vec::new(),
         }
     }
 }

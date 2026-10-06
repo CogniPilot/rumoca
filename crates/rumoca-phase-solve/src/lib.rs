@@ -11,6 +11,7 @@ mod layout;
 mod lower;
 mod model_values;
 mod model_wire;
+mod phasor_sources;
 mod proven_tearing;
 mod state_selection;
 

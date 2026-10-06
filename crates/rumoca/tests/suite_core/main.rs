@@ -210,6 +210,7 @@ mod parameter_comprehension_values;
 mod parameter_inventory;
 mod parameter_relations;
 mod periodic_source_counter_regression;
+mod phasor_sources;
 mod piecewise_index_reduction;
 mod pipeline_test;
 mod predefined_function_lookup;

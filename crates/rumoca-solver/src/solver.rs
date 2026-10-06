@@ -219,6 +219,8 @@ pub struct SimVariableMeta {
     pub description: Option<String>,
     /// The source scalar a generated reduced-selection state scalar equals.
     pub state_coordinate: Option<rumoca_ir_solve::SolveStateCoordinate>,
+    /// The phasor a visible angle or power-factor scalar is a function of.
+    pub phasor: Option<rumoca_ir_solve::SolvePhasor>,
 }
 
 #[derive(Debug, Clone)]

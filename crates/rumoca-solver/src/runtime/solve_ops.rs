@@ -406,6 +406,7 @@ pub fn convert_variable_meta(meta: &[solve::SolveVariableMeta]) -> Vec<SimVariab
             fixed: item.fixed,
             description: item.description.clone(),
             state_coordinate: item.state_coordinate.clone(),
+            phasor: item.phasor.clone(),
         })
         .collect()
 }

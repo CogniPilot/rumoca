@@ -1,4 +1,5 @@
 mod normalization;
+mod phasor;
 #[cfg(test)]
 mod tests;
 
@@ -7,8 +8,10 @@ use normalization::{
     robust_reference_percentiles, sample_range,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+
+pub use phasor::PhasorChannelEvidence;
 
 const GRID_DEDUP_EPS: f64 = 1.0e-12;
 const THRESHOLD_COMPARE_EPS: f64 = 1.0e-12;
@@ -232,6 +235,10 @@ pub struct SimTraceVariableMeta {
     /// scalar it equals (Solve IR `SolveVariableMeta::state_coordinate`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_coordinate: Option<rumoca_ir_solve::SolveStateCoordinate>,
+    /// For an angle or power-factor channel, the phasor it is a function of
+    /// (Solve IR `SolveVariableMeta::phasor`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phasor: Option<rumoca_ir_solve::SolvePhasor>,
 }
 
 impl SimTraceVariableMeta {
@@ -244,6 +251,7 @@ impl SimTraceVariableMeta {
             variability: meta.variability.clone(),
             time_domain: meta.time_domain.clone(),
             state_coordinate: meta.state_coordinate.clone(),
+            phasor: meta.phasor.clone(),
         }
     }
 }
@@ -276,6 +284,10 @@ pub struct ChannelDeviationMetric {
     pub initial_abs_error: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_bounded_normalized_error: Option<f64>,
+    /// How this channel was compared as a function of a phasor, when the
+    /// Rumoca trace records one for it (see the `phasor` module).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phasor: Option<PhasorChannelEvidence>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -361,6 +373,12 @@ pub struct ModelDeviationMetric {
     #[serde(default)]
     pub initial_condition: InitialConditionStats,
     pub worst_variables: Vec<ChannelDeviationMetric>,
+    /// Common phasor channels left without a defined sample: the phasor is
+    /// zero at the comparator's resolution throughout both traces, and its
+    /// agreeing component channels carry the verdict (see the `phasor`
+    /// module).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undefined_phasor_channels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -426,7 +444,7 @@ pub fn compare_model_traces(
     validate_trace("Rumoca", rumoca)?;
     validate_trace("OMC", omc)?;
 
-    let mut channels = compare_common_channels(rumoca, omc)?;
+    let (mut channels, undefined_phasor_channels) = compare_common_channels(rumoca, omc)?;
     channels.sort_by(|a, b| {
         b.bounded_normalized_l1_error
             .partial_cmp(&a.bounded_normalized_l1_error)
@@ -485,59 +503,142 @@ pub fn compare_model_traces(
         channel_violation_mass,
         initial_condition,
         worst_variables,
+        undefined_phasor_channels,
     })
 }
 
-/// Per-channel metrics for every variable the two traces have in common.
+/// Per-channel metrics for every variable the two traces have in common, and
+/// the common phasor channels left without a defined sample.
+///
+/// Every channel is compared pointwise first. A channel the Rumoca trace
+/// records as a function of a phasor is then compared again under the
+/// `phasor` rule, which reads the pointwise verdicts of the phasor's own
+/// component channels.
 fn compare_common_channels(
     rumoca: &SimTrace,
     omc: &SimTrace,
-) -> Result<Vec<ChannelDeviationMetric>, TraceCompareError> {
-    let rumoca_series = series_map(rumoca);
-    let omc_series = series_map(omc);
-    let rumoca_discrete_channels = discrete_channel_names(rumoca);
-    let omc_discrete_channels = discrete_channel_names(omc);
-    let rumoca_names: HashSet<String> = rumoca_series.keys().cloned().collect();
-    let omc_names: HashSet<String> = omc_series.keys().cloned().collect();
-    let common: HashSet<String> = rumoca_names.intersection(&omc_names).cloned().collect();
-    if common.is_empty() {
-        return Err(TraceCompareError::NoCommonVariables);
+) -> Result<(Vec<ChannelDeviationMetric>, Vec<String>), TraceCompareError> {
+    let pair = TracePair::new(rumoca, omc)?;
+    let mut channels = pair
+        .common
+        .iter()
+        .filter_map(|name| Some((name.clone(), pair.compare(name, None)?)))
+        .collect::<BTreeMap<_, _>>();
+    let mut undefined_phasor_channels = Vec::new();
+    for (name, recorded) in phasor::recorded_phasors(rumoca) {
+        if !channels.contains_key(name) {
+            continue;
+        }
+        let rule = phasor::PhasorRule::new(recorded, &pair, &channels);
+        match pair.compare(name, Some(&rule)) {
+            Some(metric) => {
+                channels.insert(name.clone(), metric);
+            }
+            None => {
+                channels.remove(name);
+                undefined_phasor_channels.push(name.clone());
+            }
+        }
     }
-
-    let array_group_floors = reference_array_group_floors(
-        &omc.times,
-        &omc_series,
-        &common,
-        &rumoca_discrete_channels,
-        &omc_discrete_channels,
-        comparison_window(&rumoca.times, &omc.times),
-    );
-
-    let channels: Vec<ChannelDeviationMetric> = common
-        .into_iter()
-        .filter_map(|name| {
-            let is_discrete_channel =
-                rumoca_discrete_channels.contains(&name) || omc_discrete_channels.contains(&name);
-            let array_group_floor = if is_discrete_channel {
-                None
-            } else {
-                array_element_base(&name)
-                    .and_then(|base| array_group_floors.get(base))
-                    .copied()
-            };
-            compare_channel(
-                &name,
-                ChannelSeries::new(&rumoca.times, rumoca_series.get(&name)?),
-                ChannelSeries::new(&omc.times, omc_series.get(&name)?),
-                is_discrete_channel,
-                array_group_floor,
-            )
-        })
-        .collect();
     if channels.is_empty() {
         return Err(TraceCompareError::NoComparableSamples);
     }
-    Ok(channels)
+    undefined_phasor_channels.sort();
+    Ok((channels.into_values().collect(), undefined_phasor_channels))
+}
+
+/// The two traces' channels, keyed by name, with what comparing one of their
+/// common channels needs.
+struct TracePair<'a> {
+    rumoca: &'a SimTrace,
+    omc: &'a SimTrace,
+    rumoca_series: HashMap<String, Vec<Option<f64>>>,
+    omc_series: HashMap<String, Vec<Option<f64>>>,
+    rumoca_discrete_channels: HashSet<String>,
+    omc_discrete_channels: HashSet<String>,
+    common: BTreeSet<String>,
+    array_group_floors: HashMap<String, f64>,
+}
+
+impl<'a> TracePair<'a> {
+    fn new(rumoca: &'a SimTrace, omc: &'a SimTrace) -> Result<Self, TraceCompareError> {
+        let rumoca_series = series_map(rumoca);
+        let omc_series = series_map(omc);
+        let common = rumoca_series
+            .keys()
+            .filter(|name| omc_series.contains_key(*name))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if common.is_empty() {
+            return Err(TraceCompareError::NoCommonVariables);
+        }
+        let rumoca_discrete_channels = discrete_channel_names(rumoca);
+        let omc_discrete_channels = discrete_channel_names(omc);
+        let array_group_floors = reference_array_group_floors(
+            &omc.times,
+            &omc_series,
+            &common,
+            &rumoca_discrete_channels,
+            &omc_discrete_channels,
+            comparison_window(&rumoca.times, &omc.times),
+        );
+        Ok(Self {
+            rumoca,
+            omc,
+            rumoca_series,
+            omc_series,
+            rumoca_discrete_channels,
+            omc_discrete_channels,
+            common,
+            array_group_floors,
+        })
+    }
+
+    /// Both traces' samples of one channel.
+    fn series(&self, name: &str) -> Option<(ChannelSeries<'_>, ChannelSeries<'_>)> {
+        Some((
+            ChannelSeries::new(&self.rumoca.times, self.rumoca_series.get(name)?),
+            ChannelSeries::new(&self.omc.times, self.omc_series.get(name)?),
+        ))
+    }
+
+    fn is_discrete(&self, name: &str) -> bool {
+        self.rumoca_discrete_channels.contains(name) || self.omc_discrete_channels.contains(name)
+    }
+
+    fn compare(
+        &self,
+        name: &str,
+        phasor: Option<&phasor::PhasorRule<'_>>,
+    ) -> Option<ChannelDeviationMetric> {
+        let is_discrete_channel = self.is_discrete(name);
+        let array_group_floor = if is_discrete_channel {
+            None
+        } else {
+            array_element_base(name)
+                .and_then(|base| self.array_group_floors.get(base))
+                .copied()
+        };
+        let (rumoca, omc) = self.series(name)?;
+        compare_channel(
+            name,
+            rumoca,
+            omc,
+            ChannelRule {
+                use_step_hold: is_discrete_channel,
+                array_group_floor,
+                phasor,
+            },
+        )
+    }
+}
+
+/// How one channel's samples are compared.
+#[derive(Clone, Copy)]
+struct ChannelRule<'a> {
+    use_step_hold: bool,
+    array_group_floor: Option<f64>,
+    phasor: Option<&'a phasor::PhasorRule<'a>>,
 }
 
 fn validate_trace(trace_label: &'static str, trace: &SimTrace) -> Result<(), TraceCompareError> {
@@ -616,7 +717,7 @@ fn comparison_window(rumoca_times: &[f64], omc_times: &[f64]) -> Option<(f64, f6
 fn reference_array_group_floors(
     omc_times: &[f64],
     omc_series: &HashMap<String, Vec<Option<f64>>>,
-    names: &HashSet<String>,
+    names: &BTreeSet<String>,
     rumoca_discrete_channels: &HashSet<String>,
     omc_discrete_channels: &HashSet<String>,
     window: Option<(f64, f64)>,
@@ -964,26 +1065,34 @@ fn compare_channel(
     name: &str,
     rumoca: ChannelSeries<'_>,
     omc: ChannelSeries<'_>,
-    use_step_hold: bool,
-    array_group_floor: Option<f64>,
+    rule: ChannelRule<'_>,
 ) -> Option<ChannelDeviationMetric> {
     if !rumoca.is_comparable() || !omc.is_comparable() {
         return None;
     }
-
+    let use_step_hold = rule.use_step_hold;
     let deduped_grid = channel_comparison_grid(rumoca.times, omc.times, use_step_hold)?;
     if deduped_grid.len() < 2 {
         return None;
     }
 
+    let interp = |series: ChannelSeries<'_>, t: f64| match rule.phasor {
+        Some(phasor) => phasor.interp(series, t, use_step_hold),
+        None => interp_channel(series.times, series.values, t, use_step_hold),
+    };
+    let mut undefined_samples = 0;
     let samples = deduped_grid
         .iter()
         .map(|&t| {
-            (
-                t,
-                interp_channel(rumoca.times, rumoca.values, t, use_step_hold),
-                interp_channel(omc.times, omc.values, t, use_step_hold),
-            )
+            let (r, o) = (interp(rumoca, t), interp(omc, t));
+            match rule.phasor {
+                None => (t, r, o),
+                Some(phasor) if phasor.undefined_at(t) => {
+                    undefined_samples += 1;
+                    (t, None, None)
+                }
+                Some(phasor) => (t, r.map(|r| o.map_or(r, |o| phasor.align(r, o))), o),
+            }
         })
         .collect::<Vec<_>>();
 
@@ -993,11 +1102,11 @@ fn compare_channel(
     }
 
     let mean_abs_error = acc.integral_abs_error / acc.integral_duration;
-    let scale = reference_scale(&acc.ref_samples, use_step_hold, array_group_floor);
+    let scale = reference_scale(&acc.ref_samples, use_step_hold, rule.array_group_floor);
     let normalization_scale = scale.normalization_scale;
     let normalized_l1_error = mean_abs_error / normalization_scale;
     let bounded_normalized_l1_error = normalized_l1_error / (1.0 + normalized_l1_error);
-    let initial_abs_error = initial_abs_error(rumoca, omc);
+    let initial_abs_error = initial_abs_error(rumoca, omc, rule.phasor);
     let initial_bounded_normalized_error = initial_abs_error.map(|error| {
         let normalized = error / normalization_scale;
         normalized / (1.0 + normalized)
@@ -1028,18 +1137,32 @@ fn compare_channel(
         normalized_max_abs_error: acc.max_abs_error / normalization_scale,
         initial_abs_error,
         initial_bounded_normalized_error,
+        phasor: rule.phasor.map(|phasor| phasor.evidence(undefined_samples)),
     })
 }
 
-fn initial_abs_error(rumoca: ChannelSeries<'_>, omc: ChannelSeries<'_>) -> Option<f64> {
+/// The absolute difference of the two traces' settled values at their common
+/// exact start time; for a phasor channel, as its rule aligns them, and none
+/// where the rule leaves the start undefined.
+fn initial_abs_error(
+    rumoca: ChannelSeries<'_>,
+    omc: ChannelSeries<'_>,
+    phasor: Option<&phasor::PhasorRule<'_>>,
+) -> Option<f64> {
     let rumoca_time = *rumoca.times.first()?;
     let omc_time = *omc.times.first()?;
     if !rumoca_time.is_finite() || !omc_time.is_finite() || rumoca_time != omc_time {
         return None;
     }
 
-    let rumoca_value = settled_value_at_exact_start(rumoca)?;
+    let mut rumoca_value = settled_value_at_exact_start(rumoca)?;
     let omc_value = settled_value_at_exact_start(omc)?;
+    if let Some(phasor) = phasor {
+        if phasor.undefined_at(rumoca_time) {
+            return None;
+        }
+        rumoca_value = phasor.align(rumoca_value, omc_value);
+    }
     let error = (rumoca_value - omc_value).abs();
     error.is_finite().then_some(error)
 }
@@ -1542,6 +1665,18 @@ fn interp_channel(
 }
 
 fn interp_linear(times: &[f64], values: &[Option<f64>], t: f64) -> Option<f64> {
+    interp_linear_by(times, values, t, |v0, v1| v1 - v0)
+}
+
+/// Linear interpolation whose increment from `v0` toward `v1` is
+/// `increment(v0, v1)`: the plain difference for a value on the line, the
+/// shortest signed arc for an angle.
+fn interp_linear_by(
+    times: &[f64],
+    values: &[Option<f64>],
+    t: f64,
+    increment: impl Fn(f64, f64) -> f64,
+) -> Option<f64> {
     if times.len() < 2 || times.len() != values.len() {
         return None;
     }
@@ -1573,7 +1708,7 @@ fn interp_linear(times: &[f64], values: &[Option<f64>], t: f64) -> Option<f64> {
                 return Some(v0);
             }
             let alpha = (t - t0) / (t1 - t0);
-            Some(v0 + alpha * (v1 - v0))
+            Some(v0 + alpha * increment(v0, v1))
         }
     }
 }

@@ -199,7 +199,35 @@ fn validate_correlations(view: CorrelationView<'_>) -> Result<(), SolveModelWire
             return Err(SolveModelWireError::VariableMetaName { index });
         }
     }
-    validate_state_coordinates(view.visible_names, view.variable_meta)
+    validate_state_coordinates(view.visible_names, view.variable_meta)?;
+    validate_phasors(view.visible_names, view.variable_meta)
+}
+
+/// Each phasor names two distinct visible Real scalars, neither of them the
+/// scalar whose phasor it is.
+fn validate_phasors(
+    visible_names: &[String],
+    variable_meta: &[solve::SolveVariableMeta],
+) -> Result<(), SolveModelWireError> {
+    let real = visible_names
+        .iter()
+        .zip(variable_meta)
+        .filter(|(_, metadata)| metadata.value_type.as_deref() == Some("Real"))
+        .map(|(name, _)| name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for (index, metadata) in variable_meta.iter().enumerate() {
+        let Some(phasor) = &metadata.phasor else {
+            continue;
+        };
+        if phasor.re == phasor.im
+            || [&phasor.re, &phasor.im]
+                .into_iter()
+                .any(|component| *component == metadata.name || !real.contains(component.as_str()))
+        {
+            return Err(SolveModelWireError::Phasor { index });
+        }
+    }
+    Ok(())
 }
 
 /// Each generated state coordinate names a distinct visible source scalar and
@@ -260,6 +288,9 @@ pub enum SolveModelWireError {
     StateCoordinate {
         index: usize,
     },
+    Phasor {
+        index: usize,
+    },
     UnsupportedMassMatrix,
     ArtifactDerivation(String),
     Root(String),
@@ -290,6 +321,10 @@ impl std::fmt::Display for SolveModelWireError {
             Self::StateCoordinate { index } => write!(
                 formatter,
                 "SolveModel state coordinate at index {index} does not name a distinct visible source scalar of a state"
+            ),
+            Self::Phasor { index } => write!(
+                formatter,
+                "SolveModel phasor at index {index} does not name two distinct visible Real component scalars"
             ),
             Self::UnsupportedMassMatrix => formatter.write_str(
                 "canonical SolveModel wire cannot encode a caller-selected non-identity mass matrix",

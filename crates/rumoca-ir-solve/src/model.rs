@@ -1720,6 +1720,32 @@ pub struct SolveVariableMeta {
     /// visible scalar, each of which is its own declaration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_coordinate: Option<SolveStateCoordinate>,
+    /// For a scalar whose defining equation makes it the angle of a phasor,
+    /// or the cosine of that angle, the phasor's component scalars; `None`
+    /// for every other visible scalar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phasor: Option<SolvePhasor>,
+}
+
+/// The phasor one visible scalar is a function of: its defining equation
+/// reads `atan2(im, re)` of the two visible scalars `im` and `re`, each up to
+/// sign. Its angle is meaningful only modulo `2*pi`, and neither the angle
+/// nor its cosine is defined where the phasor `(re, im)` is zero.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SolvePhasor {
+    pub function: SolvePhasorFunction,
+    pub re: String,
+    pub im: String,
+}
+
+/// How a scalar depends on the angle of its phasor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SolvePhasorFunction {
+    /// The angle itself, on any `2*pi` branch.
+    Angle,
+    /// The cosine of the angle (a power factor).
+    CosineOfAngle,
 }
 
 /// The source scalar one generated state coordinate equals: the

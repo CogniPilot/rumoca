@@ -1037,6 +1037,7 @@ end NominalScaled;
             variability: entry.variability.clone(),
             time_domain: entry.time_domain.clone(),
             state_coordinate: entry.state_coordinate.clone(),
+            phasor: entry.phasor.clone(),
         };
         assert_eq!(trace_meta.name, "T");
     }

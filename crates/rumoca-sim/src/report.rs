@@ -164,6 +164,7 @@ mod tests {
                 fixed: None,
                 description: None,
                 state_coordinate: None,
+                phasor: None,
             }],
         };
         let request = SimulationRequestSummary {
