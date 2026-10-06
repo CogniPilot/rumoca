@@ -13,11 +13,13 @@
 mod affine_tests;
 mod finite_for;
 mod flow;
+mod interval;
 mod operations;
 #[cfg(test)]
 mod tests;
 
 pub(in crate::construction) use finite_for::infer_finite_for_counter_bounds;
+pub(in crate::construction) use interval::IntegerInterval;
 
 use super::*;
 
@@ -28,51 +30,57 @@ impl ShapeEnvironment {
         &self,
         expression: &Expression,
     ) -> Option<(i64, i64)> {
+        self.proven_integer_interval(expression).bounds()
+    }
+
+    /// The Integer interval this scope proves for `expression`, each endpoint
+    /// proven separately. Settled values, binder bounds and guard facts are its
+    /// sources; checked arithmetic combines them.
+    pub(in crate::construction) fn proven_integer_interval(
+        &self,
+        expression: &Expression,
+    ) -> IntegerInterval {
         if let Some(ProvenValue::Integer(value)) = eval_expr(expression, &self.shape_aware_values())
             .ok()
             .as_ref()
             .and_then(ProvenValue::from_settled)
         {
-            return Some((value, value));
+            return IntegerInterval::exact(value);
         }
         match expression {
             Expression::Literal {
                 value: Literal::Integer(value),
                 ..
-            } => Some((*value, *value)),
+            } => IntegerInterval::exact(*value),
             Expression::VarRef {
                 name, subscripts, ..
-            } if subscripts.is_empty() => self.integer_bounds.get(name.var_name()).copied(),
-            Expression::Unary { op, rhs, .. } => {
-                let (lower, upper) = self.proven_integer_bounds(rhs)?;
-                match op {
-                    OpUnary::Plus => Some((lower, upper)),
-                    OpUnary::Minus => Some((upper.checked_neg()?, lower.checked_neg()?)),
-                    _ => None,
-                }
-            }
+            } if subscripts.is_empty() => self
+                .integer_bounds
+                .get(name.var_name())
+                .copied()
+                .unwrap_or(IntegerInterval::UNBOUNDED),
+            Expression::Unary { op, rhs, .. } => match op {
+                OpUnary::Plus => self.proven_integer_interval(rhs),
+                OpUnary::Minus => self.proven_integer_interval(rhs).negate(),
+                _ => IntegerInterval::UNBOUNDED,
+            },
             Expression::Binary { op, lhs, rhs, .. } => {
-                let (lhs_lower, lhs_upper) = self.proven_integer_bounds(lhs)?;
-                let (rhs_lower, rhs_upper) = self.proven_integer_bounds(rhs)?;
+                let lhs = self.proven_integer_interval(lhs);
+                let rhs = self.proven_integer_interval(rhs);
                 match op {
-                    OpBinary::Add | OpBinary::AddElem => Some((
-                        lhs_lower.checked_add(rhs_lower)?,
-                        lhs_upper.checked_add(rhs_upper)?,
-                    )),
-                    OpBinary::Sub | OpBinary::SubElem => Some((
-                        lhs_lower.checked_sub(rhs_upper)?,
-                        lhs_upper.checked_sub(rhs_lower)?,
-                    )),
-                    OpBinary::Mul | OpBinary::MulElem => {
-                        operations::multiply((lhs_lower, lhs_upper), (rhs_lower, rhs_upper))
-                    }
-                    _ => None,
+                    OpBinary::Add | OpBinary::AddElem => lhs.add(rhs),
+                    OpBinary::Sub | OpBinary::SubElem => lhs.subtract(rhs),
+                    OpBinary::Mul | OpBinary::MulElem => lhs.multiply(rhs),
+                    _ => IntegerInterval::UNBOUNDED,
                 }
             }
             Expression::BuiltinCall { function, args, .. } => {
                 operations::builtin(self, *function, args)
+                    .map_or(IntegerInterval::UNBOUNDED, |(lower, upper)| {
+                        IntegerInterval::finite(lower, upper)
+                    })
             }
-            _ => None,
+            _ => IntegerInterval::UNBOUNDED,
         }
     }
 
@@ -217,8 +225,12 @@ fn infer_loop_integer_bounds(
     bind_loop_integer_bounds(indices, &mut scoped_shapes);
     infer_acyclic_integer_bounds(statements, &mut scoped_shapes, invalidated);
     for target in flow::written_integer_targets(statements) {
-        if let Some((lower, upper)) = scoped_shapes.integer_bounds.get(&target) {
-            shapes.merge_integer_bounds(target, *lower, *upper);
+        if let Some((lower, upper)) = scoped_shapes
+            .integer_bounds
+            .get(&target)
+            .and_then(|interval| interval.bounds())
+        {
+            shapes.merge_integer_bounds(target, lower, upper);
         }
     }
 }

@@ -14,7 +14,7 @@ pub(in crate::construction) use expression_rules::{
 };
 use expression_rules::{expression_shape, reject_shape_call};
 pub(in crate::construction) use integer_bounds::{
-    infer_finite_for_counter_bounds, infer_function_integer_bounds,
+    IntegerInterval, infer_finite_for_counter_bounds, infer_function_integer_bounds,
 };
 use rumoca_core::{DefId, FunctionInstanceId, InstanceId};
 use rumoca_eval_flat::constant::{DeferredParameterSource, EvalEnvironment};
@@ -100,7 +100,7 @@ pub(super) struct ShapeEnvironment {
     shapes: HashMap<VarName, ValueShape>,
     /// Conservative finite bounds for scalar Integer values whose exact value
     /// is not fixed at translation time (most notably compact loop binders).
-    integer_bounds: HashMap<VarName, (i64, i64)>,
+    integer_bounds: HashMap<VarName, IntegerInterval>,
     /// Exact lexical compact-domain bounds, distinct from runtime value bounds.
     slice_binders: HashMap<VarName, (i64, i64)>,
     /// Settled scalar Integer declaration values, retaining their exact source
@@ -295,7 +295,26 @@ impl ShapeEnvironment {
         self.record_dimension_extents(&name, &[]);
         self.shapes.insert(name.clone(), Vec::new());
         self.integer_bounds
-            .insert(name, (lower.min(upper), lower.max(upper)));
+            .insert(name, IntegerInterval::finite(lower, upper));
+    }
+
+    /// Conjoin a path fact about a scalar Integer, such as an enclosing guard's
+    /// `radius <= 4`, with what this scope already proves about it.
+    pub(in crate::construction) fn refine_integer_interval(
+        &mut self,
+        name: VarName,
+        interval: IntegerInterval,
+    ) {
+        if interval.is_unbounded() {
+            return;
+        }
+        let refined = self
+            .integer_bounds
+            .get(&name)
+            .copied()
+            .unwrap_or(IntegerInterval::UNBOUNDED)
+            .meet(interval);
+        self.integer_bounds.insert(name, refined);
     }
 
     /// Bind one loop or comprehension binder over `range`: its proven value
@@ -412,8 +431,9 @@ impl ShapeEnvironment {
         let merged = self
             .integer_bounds
             .get(&name)
+            .and_then(|interval| interval.bounds())
             .map_or((lower, upper), |(owned_lower, owned_upper)| {
-                ((*owned_lower).min(lower), (*owned_upper).max(upper))
+                (owned_lower.min(lower), owned_upper.max(upper))
             });
         self.bind_integer_bounds(name, merged.0, merged.1);
     }

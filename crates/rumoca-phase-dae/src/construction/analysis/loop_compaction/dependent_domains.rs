@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests;
 
+use super::guard_facts::GuardFacts;
 use super::*;
 use rumoca_core::BuiltinFunction;
 
@@ -16,29 +17,45 @@ pub(super) fn rectangularize_dependent_loops(
     statements: &[rumoca_core::Statement],
     static_integers: &HashMap<VarName, i64>,
     shapes: &ShapeEnvironment,
+    integers: &HashSet<VarName>,
 ) -> Result<Vec<rumoca_core::Statement>, ToDaeError> {
-    rectangularize_loops_in_scope(statements, static_integers, shapes, &HashMap::new())
+    let mut facts = GuardFacts::entry(integers);
+    rectangularize_loops_in_scope(
+        statements,
+        Scope {
+            static_integers,
+            shapes,
+            bounds: &HashMap::new(),
+        },
+        &mut facts,
+    )
 }
 
+/// The proven values, value bounds and binder bounds of one lexical scope.
+#[derive(Clone, Copy)]
+struct Scope<'a> {
+    static_integers: &'a HashMap<VarName, i64>,
+    shapes: &'a ShapeEnvironment,
+    bounds: &'a HashMap<VarName, (i64, i64)>,
+}
+
+/// Rewrite one statement sequence in order, carrying the guard facts that
+/// hold before each statement.
 fn rectangularize_loops_in_scope(
     statements: &[rumoca_core::Statement],
-    static_integers: &HashMap<VarName, i64>,
-    shapes: &ShapeEnvironment,
-    enclosing_bounds: &HashMap<VarName, (i64, i64)>,
+    scope: Scope<'_>,
+    facts: &mut GuardFacts<'_>,
 ) -> Result<Vec<rumoca_core::Statement>, ToDaeError> {
     statements
         .iter()
-        .map(|statement| {
-            rectangularize_statement(statement, static_integers, shapes, enclosing_bounds)
-        })
+        .map(|statement| rectangularize_statement(statement, scope, facts))
         .collect()
 }
 
 fn rectangularize_statement(
     statement: &rumoca_core::Statement,
-    static_integers: &HashMap<VarName, i64>,
-    shapes: &ShapeEnvironment,
-    enclosing_bounds: &HashMap<VarName, (i64, i64)>,
+    scope: Scope<'_>,
+    facts: &mut GuardFacts<'_>,
 ) -> Result<rumoca_core::Statement, ToDaeError> {
     if let rumoca_core::Statement::If {
         cond_blocks,
@@ -46,14 +63,7 @@ fn rectangularize_statement(
         span,
     } = statement
     {
-        return rectangularize_conditional(
-            cond_blocks,
-            else_block.as_deref(),
-            *span,
-            static_integers,
-            shapes,
-            enclosing_bounds,
-        );
+        return rectangularize_conditional(cond_blocks, else_block.as_deref(), *span, scope, facts);
     }
     let rumoca_core::Statement::For {
         indices,
@@ -61,14 +71,21 @@ fn rectangularize_statement(
         span,
     } = statement
     else {
+        facts.after(statement, scope.shapes);
         return Ok(statement.clone());
     };
-    let mut bounds = enclosing_bounds.clone();
+    // MLS §11.2.2 evaluates the ranges once on entry, under the facts that
+    // hold before the loop; the body sees only facts no iteration changes.
+    let range_facts = facts.clone();
+    let mut body_facts = facts.loop_entry(equations, indices);
+    *facts = facts.loop_entry(equations, &[]);
+    let mut bounds = scope.bounds.clone();
     let mut rectangular = Vec::with_capacity(indices.len());
     let mut guards = Vec::new();
     for index in indices {
         let range_span = expression_span(&index.range)?;
-        let (index_static, index_shapes) = scoped_domain_facts(static_integers, shapes, &bounds);
+        let (index_static, mut index_shapes) =
+            scoped_domain_facts(scope.static_integers, scope.shapes, &bounds);
         if let Some((lower, step, upper)) =
             static_function_range(&index.range, &index_static, &index_shapes)?
         {
@@ -79,6 +96,7 @@ fn rectangularize_statement(
             rectangular.push(index.clone());
             continue;
         }
+        range_facts.refine(&mut index_shapes);
         let Some(envelope) =
             dependent_range_envelope(&index.range, &index_static, &index_shapes, &bounds)?
         else {
@@ -86,10 +104,10 @@ fn rectangularize_statement(
             continue;
         };
         require_entry_invariant_range(&index.range, equations, range_span)?;
-        let Some(reference) = first_binder_reference(equations, &index.ident) else {
-            rectangular.push(index.clone());
-            continue;
-        };
+        // A body that never reads its binder still runs once per element of
+        // the source range, so its guard reads the binder it introduces.
+        let reference = first_binder_reference(equations, &index.ident)
+            .unwrap_or_else(|| Reference::generated(&index.ident));
         guards.push(range_membership_guard(
             reference,
             &index.range,
@@ -107,7 +125,7 @@ fn rectangularize_statement(
         });
         bounds.insert(VarName::new(&index.ident), (envelope.lower, envelope.upper));
     }
-    let equations = rectangularize_loop_body(equations, static_integers, shapes, &bounds)?;
+    let equations = rectangularize_loop_body(equations, scope, &bounds, &mut body_facts)?;
     let equations = match combine_guards(guards) {
         Some(condition) => vec![rumoca_core::Statement::If {
             cond_blocks: vec![rumoca_core::StatementBlock {
@@ -128,12 +146,21 @@ fn rectangularize_statement(
 
 fn rectangularize_loop_body(
     equations: &[rumoca_core::Statement],
-    static_integers: &HashMap<VarName, i64>,
-    shapes: &ShapeEnvironment,
+    scope: Scope<'_>,
     bounds: &HashMap<VarName, (i64, i64)>,
+    facts: &mut GuardFacts<'_>,
 ) -> Result<Vec<rumoca_core::Statement>, ToDaeError> {
-    let (body_static, body_shapes) = scoped_domain_facts(static_integers, shapes, bounds);
-    let equations = rectangularize_loops_in_scope(equations, &body_static, &body_shapes, bounds)?;
+    let (body_static, body_shapes) =
+        scoped_domain_facts(scope.static_integers, scope.shapes, bounds);
+    let equations = rectangularize_loops_in_scope(
+        equations,
+        Scope {
+            static_integers: &body_static,
+            shapes: &body_shapes,
+            bounds,
+        },
+        facts,
+    )?;
     let mut rewriter = MaskedComprehensionRewriter {
         static_integers: &body_static,
         shapes: &body_shapes,
@@ -168,27 +195,29 @@ fn rectangularize_conditional(
     branches: &[rumoca_core::StatementBlock],
     fallback: Option<&[rumoca_core::Statement]>,
     span: Span,
-    static_integers: &HashMap<VarName, i64>,
-    shapes: &ShapeEnvironment,
-    bounds: &HashMap<VarName, (i64, i64)>,
+    scope: Scope<'_>,
+    facts: &mut GuardFacts<'_>,
 ) -> Result<rumoca_core::Statement, ToDaeError> {
+    let conditions = branches.iter().map(|block| &block.cond).collect::<Vec<_>>();
+    let mut entries = facts.branch_entries(&conditions, scope.shapes);
+    let mut fallthrough = entries
+        .pop()
+        .expect("branch entries end with the fall-through");
     let cond_blocks = branches
         .iter()
-        .map(|block| {
+        .zip(&mut entries)
+        .map(|(block, entry)| {
             Ok(rumoca_core::StatementBlock {
                 cond: block.cond.clone(),
-                stmts: rectangularize_loops_in_scope(
-                    &block.stmts,
-                    static_integers,
-                    shapes,
-                    bounds,
-                )?,
+                stmts: rectangularize_loops_in_scope(&block.stmts, scope, entry)?,
             })
         })
         .collect::<Result<Vec<_>, ToDaeError>>()?;
     let else_block = fallback
-        .map(|branch| rectangularize_loops_in_scope(branch, static_integers, shapes, bounds))
+        .map(|branch| rectangularize_loops_in_scope(branch, scope, &mut fallthrough))
         .transpose()?;
+    entries.push(fallthrough);
+    *facts = GuardFacts::join(&entries);
     Ok(rumoca_core::Statement::If {
         cond_blocks,
         else_block,
@@ -338,22 +367,27 @@ fn dependent_range_envelope(
     for (name, (lower, upper)) in bounds {
         scoped_shapes.bind_integer_bounds(name.clone(), *lower, *upper);
     }
-    let Some((start_lower, start_upper)) = scoped_shapes.proven_integer_bounds(start) else {
-        return Ok(None);
-    };
-    let Some((end_lower, end_upper)) = scoped_shapes.proven_integer_bounds(end) else {
-        return Ok(None);
-    };
+    // MLS §10.4.1: every element lies between the start and the end, so an
+    // ascending range needs only the least start and the greatest end, each
+    // proven by any source (settled values, binders, guards).
+    let start = scoped_shapes.proven_integer_interval(start);
+    let end = scoped_shapes.proven_integer_interval(end);
     let (lower, upper) = if step > 0 {
-        (start_lower, end_upper)
+        (start.lower, end.upper)
     } else {
-        (end_lower, start_upper)
+        (end.lower, start.upper)
     };
-    if step != 1
-        && step != -1
-        && (lower.checked_sub(start_upper).is_none() || upper.checked_sub(start_lower).is_none())
-    {
+    let (Some(lower), Some(upper)) = (lower, upper) else {
         return Ok(None);
+    };
+    if step != 1 && step != -1 {
+        // A strided membership guard is anchored at the start.
+        let Some((start_lower, start_upper)) = start.bounds() else {
+            return Ok(None);
+        };
+        if lower.checked_sub(start_upper).is_none() || upper.checked_sub(start_lower).is_none() {
+            return Ok(None);
+        }
     }
     Ok(Some(DependentEnvelope { lower, upper, step }))
 }

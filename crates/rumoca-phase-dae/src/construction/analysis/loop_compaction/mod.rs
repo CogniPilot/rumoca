@@ -5,6 +5,7 @@ mod bounded_while;
 mod dependent_domains;
 #[cfg(test)]
 mod finite_counter_tests;
+mod guard_facts;
 /// Dataflow liveness over the function statement tree, and the store-deletion
 /// evidence built from it.
 ///
@@ -132,7 +133,12 @@ pub(super) fn compact_function_loops(
         shapes: &bounded_shapes,
     }
     .rewrite_statements(&compacted);
-    let compacted = rectangularize_dependent_loops(&compacted, static_integers, &bounded_shapes)?;
+    let compacted = rectangularize_dependent_loops(
+        &compacted,
+        static_integers,
+        &bounded_shapes,
+        &scalar_integer_names(function, flat),
+    )?;
     let Some(span) = first_dependent_loop_range(&compacted, static_integers, &bounded_shapes)?
     else {
         return Ok(compacted);
@@ -145,6 +151,21 @@ pub(super) fn compact_function_loops(
         ),
         span,
     ))
+}
+
+/// The scalar Integer inputs, outputs and locals of `function`.
+fn scalar_integer_names(function: &rumoca_core::Function, flat: &flat::Model) -> HashSet<VarName> {
+    function
+        .inputs
+        .iter()
+        .chain(&function.outputs)
+        .chain(&function.locals)
+        .filter(|value| {
+            value.effective_type.dimensions().is_empty()
+                && effective_function_scalar_type(flat, value) == Some(dae::ScalarType::Integer)
+        })
+        .map(|value| VarName::new(&value.name))
+        .collect()
 }
 
 fn infer_declared_finite_counters(
