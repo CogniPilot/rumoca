@@ -239,7 +239,12 @@ impl Selection<'_> {
     /// Whether the conditional at `span` is a structural selection: shape
     /// discovery could not certify its run-time arms, or its arms are not
     /// structurally equal under a tunable guard.
-    fn selects(&self, branches: &[(Expression, Expression)], else_branch: &Expression, span: Span) -> bool {
+    fn selects(
+        &self,
+        branches: &[(Expression, Expression)],
+        else_branch: &Expression,
+        span: Span,
+    ) -> bool {
         self.values.is_structural_selection(span)
             || !retains_flat_guard(self.flat, self.evaluable, branches, else_branch)
     }

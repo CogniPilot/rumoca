@@ -418,9 +418,9 @@ fn guarded_output_loop_requires_a_fallthrough_value() {
     // so accepting them here meant a regression that swapped one cause for
     // another stayed green.
     assert!(
-        error.to_string().contains(
-            "`guardedFill` leaves output `values` without a definition on some branch"
-        ),
+        error
+            .to_string()
+            .contains("`guardedFill` leaves output `values` without a definition on some branch"),
         "unexpected diagnostic: {error}"
     );
 }

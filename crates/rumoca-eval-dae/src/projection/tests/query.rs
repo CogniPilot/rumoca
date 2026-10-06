@@ -383,4 +383,3 @@ fn query_free_calls_contribute_no_queried_dependency_over_a_record_body() {
         assert_eq!(project(view, root, &mut mixed, true).unwrap(), []);
     });
 }
-
