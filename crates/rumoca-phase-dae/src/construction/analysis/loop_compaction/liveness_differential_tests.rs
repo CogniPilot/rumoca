@@ -601,22 +601,22 @@ fn call_writing(target: &str) -> rumoca_core::Statement {
     }
 }
 
-/// A call's receiving element writes its target (MLS §12.4.4), and neither
-/// answer treats that write as a kill: the site's kill rule recognizes only an
-/// assignment, so the incoming value stays live wherever a later statement
-/// reads it. Both answers also agree that the element itself is not a read, so
-/// the two stay aligned on this form in both directions.
+/// A call's whole scalar receiving element writes its target after the
+/// arguments are read (MLS §11.2.1.1), so both answers treat it as a kill: a
+/// later read observes the call's output, not the incoming value. Both answers
+/// also agree that the element itself is not a read, so the two stay aligned
+/// on this form in both directions.
 #[test]
-fn a_call_receiving_element_is_a_write_neither_answer_kills_on() {
+fn a_call_receiving_element_is_a_write_both_answers_kill_on() {
     let name = VarName::new("t");
     let read_after = vec![call_writing("t"), assign("c", &["t"])];
     assert!(
-        statements_read_incoming_name(&read_after, &name),
-        "the syntactic scan sees the read behind the call"
+        !statements_read_incoming_name(&read_after, &name),
+        "the syntactic scan sees the call define `t` before the read"
     );
     assert!(
-        liveness::live_in(&read_after, &LiveSet::new()).contains(&name),
-        "the call is not a recognized kill, so the read behind it keeps `t` live"
+        !liveness::live_in(&read_after, &LiveSet::new()).contains(&name),
+        "the call kills `t`, so the read behind it observes the output"
     );
     let no_read_after = vec![call_writing("t"), assign("c", &[])];
     assert!(

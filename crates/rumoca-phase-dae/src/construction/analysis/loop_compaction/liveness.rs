@@ -453,6 +453,13 @@ fn live_in_statement(statement: &rumoca_core::Statement, live_out: &LiveSet) -> 
             span: _,
         } => {
             let mut live = live_out.clone();
+            // MLS §11.2.1.1: the call reads its arguments, then assigns each
+            // output, so a whole scalar receiver kills its incoming value.
+            for output in outputs.iter().flatten() {
+                if let Some(target) = scalar_assignment_target(output) {
+                    kill_value(&mut live, &target);
+                }
+            }
             // The callable is selected by a component reference whose
             // subscripts are ordinary value reads, evaluated where the call
             // runs. The reference's own name denotes a function rather than a

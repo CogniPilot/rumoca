@@ -1775,9 +1775,7 @@ fn resolve_fold_iteration(
             (
                 rumoca_core::Statement::FunctionCall { args, span, .. },
                 FunctionStatementPlan::MultiOutputCall { outputs },
-            ) => {
-                resolve_multi_output_definitions(args, *span, outputs, context, definitions)?;
-            }
+            ) => resolve_fold_multi_output(args, *span, outputs, context, definitions)?,
             _ => unreachable!("analysis admits only checked transition statements in a fold"),
         }
         index += 1;
@@ -1837,6 +1835,21 @@ fn resolve_fold_assignment(
         definitions.write_elements(assignment.target(), assignment.subscripts(), context, span)?;
     assignment.seed = assignment.seed.take().or(seed);
     Ok(())
+}
+
+/// A multiple-output call in a fold: a whole output the loop defines before
+/// any value exists is carried from a dead seed, as a whole assignment is.
+fn resolve_fold_multi_output(
+    arguments: &[Expression],
+    span: Span,
+    outputs: &mut [Option<FunctionAssignmentPlan>],
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    for output in outputs.iter_mut().flatten().filter(|output| output.is_whole()) {
+        seed_undefined_whole_loop_value(output, context, definitions, span)?;
+    }
+    resolve_multi_output_definitions(arguments, span, outputs, context, definitions)
 }
 
 fn seed_undefined_whole_loop_value(

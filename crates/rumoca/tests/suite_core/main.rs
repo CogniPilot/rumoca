@@ -123,6 +123,7 @@ mod function_guarded_loop_definedness;
 mod function_inner_index_slice_compaction;
 mod function_input_shadow_state_test;
 mod function_interface_and_body_bases;
+mod function_loop_call_outputs;
 mod function_loop_carried_record;
 mod function_loop_carried_scalar;
 mod function_loop_offset_slices;

@@ -1171,6 +1171,30 @@ fn statement_incoming_value_flow(
                 definitely_defined,
             }
         }
+        // MLS §11.2.1.1: a multiple-output call reads its arguments, then
+        // assigns each output; a whole scalar output defines its value. The
+        // subscripts selecting the callable are reads where the call runs.
+        rumoca_core::Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+            ..
+        } => IncomingValueFlow {
+            read: comp
+                .component_ref()
+                .is_some_and(|callable| component_subscripts_read_name(callable, name))
+                || args
+                    .iter()
+                    .any(|argument| expression_reads_name(argument, name))
+                || outputs
+                    .iter()
+                    .flatten()
+                    .any(|output| component_subscripts_read_name(output, name)),
+            definitely_defined: outputs
+                .iter()
+                .flatten()
+                .any(|output| scalar_assignment_target(output).as_ref() == Some(name)),
+        },
         _ => IncomingValueFlow {
             read: statements_read_name(std::slice::from_ref(statement), name),
             definitely_defined: false,
