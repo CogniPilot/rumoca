@@ -179,3 +179,72 @@ fn private_target_shared_prefix_retains_complete_original_typed_tuple() {
         );
     }
 }
+
+#[test]
+fn private_target_gather_fault_reports_its_issued_gather_status() {
+    let fixture = fixture::gather();
+    let prepared = prepared(&fixture);
+    let plan = prepared
+        .portable_target_value_plan(0, 0, 1)
+        .unwrap()
+        .unwrap();
+    let compiled = rumoca_exec_wasm::compile_private_program_wasm(
+        plan.program(),
+        &fixture.layout,
+        &fixture.calls,
+    )
+    .unwrap();
+    assert!(compiled.faults().is_empty());
+    let mut runner = runner::Runner::new_private(&compiled, &fixture.layout);
+    let y = [2., 9., -0., 11., 13., 17.];
+    for (index, value) in [(1., 42.), (2., 64.)] {
+        let (status, tuple) = runner.run_private(&y, &[index], compiled.output_count());
+        assert_eq!(status, 0);
+        assert_eq!(tuple[plan.private_result_offset()], value);
+    }
+    for index in [0., 3., 1.5, f64::NAN] {
+        let (status, _) = runner.run_private(&y, &[index], compiled.output_count());
+        let fault = compiled
+            .gather_faults()
+            .iter()
+            .find(|fault| fault.status == status as u32)
+            .expect("a failing gather reports one of its issued statuses");
+        assert_eq!(fault.kind, gather_fault_kind(index));
+    }
+}
+
+#[test]
+fn private_host_calls_check_the_issued_layout_before_execution() {
+    let fixture = fixture::plain(5);
+    let plan = prepared(&fixture)
+        .portable_target_value_plan(0, 0, 1)
+        .unwrap()
+        .unwrap();
+    let compiled = rumoca_exec_wasm::compile_private_program_wasm(
+        plan.program(),
+        &fixture.layout,
+        &fixture.calls,
+    )
+    .unwrap();
+    assert!(plan.private_result_offset() < compiled.output_count());
+    let cells = (compiled.scratch_bytes() as usize).div_ceil(8);
+    assert!(cells > 0, "the private tuple lives in scratch");
+    let y = [2., 9., -0., 11., 13., 17.];
+    for (y_len, p, scratch_len) in [
+        (5, &[0.5][..], cells),
+        (6, &[][..], cells),
+        (6, &[0.5][..], cells - 1),
+    ] {
+        let y = &y[..y_len];
+        let error = compiled
+            .call(y, p, 0., &mut vec![0.; scratch_len])
+            .unwrap_err();
+        assert!(error.to_string().contains("differ from issued layout"));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut scratch = vec![0.; cells];
+        let error = compiled.call(&y, &[0.5], 0., &mut scratch).unwrap_err();
+        assert!(error.to_string().contains("execute only on wasm32"));
+    }
+}

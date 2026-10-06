@@ -132,6 +132,74 @@ fn a_late_fault_in_a_complete_tuple_publishes_none_of_its_targets() {
     assert_eq!(runner::bytes(&actual), runner::bytes(&expected));
 }
 
+/// The kind a checked gather index fault reports: non-integral and
+/// non-finite indices fail conversion, integral ones outside `1..=2` the bound.
+pub(super) fn gather_fault_kind(index: f64) -> rumoca_exec_wasm::TypedCallFaultKind {
+    if index.is_finite() && index.fract() == 0. {
+        rumoca_exec_wasm::TypedCallFaultKind::IndexBounds
+    } else {
+        rumoca_exec_wasm::TypedCallFaultKind::IntegerConversion
+    }
+}
+
+#[test]
+fn a_model_gather_fault_reports_its_issued_gather_status_and_publishes_nothing() {
+    let fixture = fixture::gather();
+    let compiled = fixture.compile().unwrap();
+    assert!(compiled.faults().is_empty());
+    let mut runner = runner::Runner::new(&compiled, &fixture.layout);
+    let y = [2., 9., -0., 11., 13., 17.];
+    for (index, value) in [(1., 42.), (2., 64.)] {
+        let mut expected = y;
+        fixture.canonical(&mut expected, &[index]).unwrap();
+        let (status, actual) = runner.run(&y, &[index]);
+        assert_eq!(status, 0);
+        assert_eq!(runner::bytes(&actual), runner::bytes(&expected));
+        assert_eq!(actual[1], value);
+    }
+    for index in [0., 3., -1., 1.5, f64::NAN, f64::INFINITY] {
+        let mut expected = y;
+        fixture.canonical(&mut expected, &[index]).unwrap_err();
+        let (status, actual) = runner.run(&y, &[index]);
+        let fault = compiled
+            .gather_faults()
+            .iter()
+            .find(|fault| fault.status == status as u32)
+            .expect("a failing gather reports one of its issued statuses");
+        assert_eq!(fault.kind, gather_fault_kind(index));
+        assert_eq!(fault.provenance, fixture::span(1));
+        assert_eq!(runner::bytes(&actual), runner::bytes(&y));
+    }
+}
+
+#[test]
+fn host_calls_check_the_issued_layout_before_execution() {
+    let fixture = fixture::plain(5);
+    let compiled = fixture.compile().unwrap();
+    let cells = (compiled.scratch_bytes() as usize).div_ceil(8);
+    assert!(cells > 0, "the plain schedule owns private scratch");
+    let y = [2., 9., -0., 11., 13., 17.];
+    for (y_len, p, scratch_len) in [
+        (5, &[0.5][..], cells),
+        (6, &[][..], cells),
+        (6, &[0.5][..], cells - 1),
+    ] {
+        let mut y = y[..y_len].to_vec();
+        let error = compiled
+            .call(&mut y, p, 0., &mut vec![0.; scratch_len])
+            .unwrap_err();
+        assert!(error.to_string().contains("differ from issued layout"));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut scratch = vec![0.; cells];
+        let mut y = y;
+        let error = compiled.call(&mut y, &[0.5], 0., &mut scratch).unwrap_err();
+        assert!(error.to_string().contains("execute only on wasm32"));
+        assert_eq!(y, [2., 9., -0., 11., 13., 17.]);
+    }
+}
+
 #[test]
 fn a_missing_checked_call_table_refuses_before_emission() {
     let mut fixture = fixture::late_fault();

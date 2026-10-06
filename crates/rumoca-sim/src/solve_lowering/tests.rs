@@ -696,7 +696,7 @@ fn unprovided_input_is_rejected_instead_of_receiving_a_default_value() {
 /// `examples/interactive/rover` — and aborted `prepare_gpu_simulation` before any shader
 /// was rendered.
 #[test]
-fn gpu_preparation_seeds_host_driven_inputs_from_their_declared_start() {
+fn host_driven_preparation_seeds_inputs_from_their_declared_start() {
     let dae = compile(
         concat!(
             "model HostDrivenInput\n",
@@ -710,21 +710,28 @@ fn gpu_preparation_seeds_host_driven_inputs_from_their_declared_start() {
         "HostDrivenInput",
     );
 
-    let prepared = super::entry::lower_dae_for_gpu_preparation(&dae, &SimOptions::default())
-        .expect("a host-driven input carries its declared start into the prepared vectors");
-    let slot = prepared
-        .problem
-        .layout
-        .binding("u_cmd")
-        .expect("the input keeps a storage slot the host can write");
-    let rumoca_ir_solve::ScalarSlot::P { index, .. } = slot else {
-        panic!("a host-driven input belongs in parameter storage, got {slot:?}");
-    };
-    assert_eq!(
-        prepared.parameters.get(index).copied(),
-        Some(2.0),
-        "the seeded slot must hold the declared start, not a stand-in"
-    );
+    // Native expression-kernel preparation hands its host the same `P` slots, so it
+    // shares the rule.
+    for prepare in [
+        super::entry::lower_dae_for_gpu_preparation,
+        super::entry::lower_dae_for_native_preparation,
+    ] {
+        let prepared = prepare(&dae, &SimOptions::default())
+            .expect("a host-driven input carries its declared start into the prepared vectors");
+        let slot = prepared
+            .problem
+            .layout
+            .binding("u_cmd")
+            .expect("the input keeps a storage slot the host can write");
+        let rumoca_ir_solve::ScalarSlot::P { index, .. } = slot else {
+            panic!("a host-driven input belongs in parameter storage, got {slot:?}");
+        };
+        assert_eq!(
+            prepared.parameters.get(index).copied(),
+            Some(2.0),
+            "the seeded slot must hold the declared start, not a stand-in"
+        );
+    }
 
     // The strict rule for headless simulation is untouched: the same model still has no
     // provider when nothing drives it.

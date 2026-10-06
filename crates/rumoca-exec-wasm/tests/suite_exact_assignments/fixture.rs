@@ -91,6 +91,32 @@ pub(super) fn plain(unused_index: usize) -> Fixture {
     )
 }
 
+/// `y[1] := {42, 64}[p[0]]`: a checked model-scope gather whose runtime
+/// index can fail Integer conversion or the array bound.
+pub(super) fn gather() -> Fixture {
+    let programs = vec![vec![
+        solve::LinearOp::LoadY { dst: 0, index: 1 },
+        solve::LinearOp::Const { dst: 1, value: 42. },
+        solve::LinearOp::Const { dst: 2, value: 64. },
+        solve::LinearOp::LoadP { dst: 3, index: 0 },
+        solve::LinearOp::LoadIndexedRegister {
+            dst: 4,
+            base: 1,
+            stride: 1,
+            dimensions: vec![2].into_boxed_slice(),
+            indices: vec![solve::TensorIndex::Runtime(3)].into_boxed_slice(),
+        },
+        binary(5, solve::BinaryOp::Sub, 0, 4),
+        solve::LinearOp::StoreOutput { src: 5 },
+    ]];
+    assemble(
+        programs,
+        vec![row(0, 0, 0, 1, 4, 5)],
+        solve::SolvePureCallTable::builder(arithmetic()).finish(),
+        1,
+    )
+}
+
 pub(super) fn late_fault() -> Fixture {
     let profile = arithmetic();
     let value_type = solve::SolveValueType::scalar(solve::SolveScalarType::real(profile));

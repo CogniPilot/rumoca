@@ -7,6 +7,7 @@ mod carried_lifetimes;
 mod extrema_tensor;
 mod finite_domains;
 mod integer_quotients;
+mod integer_unaries;
 pub(crate) mod maps;
 pub(crate) mod math;
 mod matrix_products;

@@ -127,6 +127,14 @@ fn arithmetic_overflow_zero_or_unproved_range_and_opaque_receivers_keep_refusal(
         span: span(),
     });
     assert_eq!(prove(&source, &mut empty_shapes()), None);
+    // A reinit of the counter is a write of unknown value like any other.
+    let mut source = program(0, range(1, None, 14400), vec![increment()]);
+    source.push(Statement::Reinit {
+        variable: component("count", COUNTER),
+        value: integer(0),
+        span: span(),
+    });
+    assert_eq!(prove(&source, &mut empty_shapes()), None);
     let domain = Expression::Range {
         start: Box::new(integer(1)),
         step: None,

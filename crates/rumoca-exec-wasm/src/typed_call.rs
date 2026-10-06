@@ -85,7 +85,6 @@ pub struct CompiledTypedCallWasm {
     module_bytes: Vec<u8>,
     layout: TypedCallLayout,
     faults: Vec<TypedCallFault>,
-    owner: solve::SolvePureCallOwnerId,
     identity: solve::SolvePureCallIdentity,
     math_imports: Vec<&'static str>,
 }
@@ -102,10 +101,6 @@ impl CompiledTypedCallWasm {
     #[must_use]
     pub fn faults(&self) -> &[TypedCallFault] {
         &self.faults
-    }
-    #[must_use]
-    pub fn owner(&self) -> solve::SolvePureCallOwnerId {
-        self.owner
     }
     #[must_use]
     pub fn identity(&self) -> solve::SolvePureCallIdentity {
@@ -151,7 +146,6 @@ pub fn compile_pure_call_wasm(
         module_bytes,
         layout,
         faults,
-        owner: owner.id(),
         identity: owner.identity(),
         math_imports: linked
             .math_imports

@@ -198,6 +198,35 @@ fn replacing_native_source_revokes_issued_certificate() {
 }
 
 #[test]
+fn refused_native_issue_records_its_refusal_until_a_later_issue_succeeds() {
+    let (mut source, targets, layout) = fixture(16);
+    let mut owner = crate::ContinuousRefreshOwners::default();
+    assert!(owner.native_assignment_refusal().is_none());
+    owner
+        .issue_native_assignment_schedule(&source, &targets, &layout)
+        .unwrap();
+    let issued = source.clone();
+    if let ComputeNode::Map { load_strides, .. } = &mut source.nodes[1] {
+        load_strides[1].terms[0].stride = 2;
+    }
+    let refusal = owner
+        .issue_native_assignment_schedule(&source, &targets, &layout)
+        .unwrap_err();
+    assert_eq!(
+        refusal.0,
+        "native affine address exceeds its owned variable layout"
+    );
+    // A refusal revokes the earlier schedule and keeps the exact reason.
+    assert!(owner.native_assignment_schedule().is_none());
+    assert_eq!(owner.native_assignment_refusal(), Some(&refusal));
+    owner
+        .issue_native_assignment_schedule(&issued, &targets, &layout)
+        .unwrap();
+    assert!(owner.native_assignment_schedule().is_some());
+    assert!(owner.native_assignment_refusal().is_none());
+}
+
+#[test]
 fn equivalent_value_projection_does_not_hide_canonical_source_replacement() {
     let (mut source, targets, layout) = fixture(16);
     if let ComputeNode::Map { base_ops, .. } = &mut source.nodes[1] {

@@ -4,6 +4,9 @@ use super::*;
 use rumoca_core::ExpressionVisitor;
 use rumoca_ir_flat::StatementVisitor;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Default)]
 pub(super) struct CallEffects {
     completed: HashMap<VarName, bool>,

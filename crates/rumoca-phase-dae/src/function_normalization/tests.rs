@@ -289,3 +289,61 @@ fn separate_planning_calls_never_restart_a_function_owners_ordinal_allocator() {
         assert_eq!(ids.len(), 2);
     });
 }
+
+/// Records only source targets and loop indices; the loop hooks keep their
+/// default no-op bodies.
+#[derive(Default)]
+struct Targets {
+    targets: Vec<DefId>,
+    indices: Vec<String>,
+}
+
+impl ExpressionVisitor for Targets {}
+
+impl<'locals> GuardVisitor<'locals> for Targets {
+    fn visit_generated_read(&mut self, _key: GeneratedFunctionLocalKey<'locals>) {}
+    fn visit_definition_target(&mut self, _key: GeneratedFunctionLocalKey<'locals>) {}
+}
+
+impl<'locals> StatementVisitor<'locals> for Targets {
+    fn visit_source_target(&mut self, target: &ComponentReference) {
+        self.targets.push(target.root_def_id());
+    }
+    fn enter_for_index(&mut self, index: &rumoca_core::ForIndex) {
+        self.indices.push(index.ident.clone());
+    }
+}
+
+#[test]
+fn default_loop_hooks_still_observe_every_target_in_execution_order() {
+    let (sources, span) = source();
+    let function = mutable_gate_function(span);
+    GeneratedFunctionLocalCatalog::construct(&sources, |catalog| {
+        let mut targets = Targets::default();
+        for statement in &normalize(&function, catalog).unwrap() {
+            statement.visit(&mut targets);
+        }
+        let ids = |ids: &[u32]| ids.iter().copied().map(DefId::new).collect::<Vec<_>>();
+        assert_eq!(targets.targets, ids(&[RESULT, VALID, VALID, VALID, RESULT]));
+        assert_eq!(targets.indices, ["i", "j"]);
+    });
+}
+
+#[test]
+fn a_function_without_a_local_owner_is_a_local_catalog_error() {
+    let (sources, span) = source();
+    let mut undeclared = owner(span);
+    undeclared.def_id = None;
+    let mut uninstantiated = owner(span);
+    uninstantiated.instance_id = None;
+    GeneratedFunctionLocalCatalog::construct(&sources, |catalog| {
+        assert_eq!(
+            normalize(&undeclared, catalog).unwrap_err(),
+            NormalizationError::Local(GeneratedLocalError::MissingFunctionDeclaration)
+        );
+        assert_eq!(
+            normalize(&uninstantiated, catalog).unwrap_err(),
+            NormalizationError::Local(GeneratedLocalError::MissingFunctionInstance)
+        );
+    });
+}

@@ -95,3 +95,36 @@ pub fn compile_private_program_wasm(
         runtime,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_ir_solve::{LinearOp, SolveArithmeticProfile, SolveIntegerDomain, SolveRealFormat};
+
+    #[test]
+    fn the_private_tuple_holds_every_stored_output_of_the_block() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("private_program.mo"),
+            0,
+            1,
+        );
+        let program = vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::StoreOutput { src: 0 },
+            LinearOp::LoadP { dst: 1, index: 0 },
+            LinearOp::StoreOutput { src: 1 },
+            LinearOp::Const { dst: 2, value: 2. },
+            LinearOp::StoreOutput { src: 2 },
+        ];
+        let block = ScalarProgramBlock::with_program_spans(vec![program], vec![span]).unwrap();
+        let layout = VarLayout::from_parts(Default::default(), 1, 1);
+        let calls = SolvePureCallTable::builder(SolveArithmeticProfile::construct(
+            SolveRealFormat::Binary64,
+            SolveIntegerDomain::FULL,
+        ))
+        .finish();
+        let compiled = compile_private_program_wasm(&block, &layout, &calls).unwrap();
+        assert_eq!(compiled.output_count(), block.stored_output_count());
+        assert_eq!(compiled.output_count(), 3);
+    }
+}
