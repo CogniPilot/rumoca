@@ -220,6 +220,143 @@
         }
         for (size_t k=0; k<{{ op.result_count }}; ++k) fc_outer[{{ op.dst }}+k] = fc_out[k];
     }
+{#- Function folds follow `eval_function_fold`: the carried tuple starts from
+    its seed, every point of the rectangular row-major domain runs the update
+    region in its own register file and writes the complete next tuple, and
+    the folded tuple is the result. Update loads read the innermost fold's
+    `fold_carried`, `fold_index` and `fold_capture`; a nested fold shadows them
+    for its own block only. A guarded fold keeps its seed when inactive. A
+    nested fold (`StoreOutputFunctionFold`) seeds from enclosing registers and
+    the parent's carried tuple and writes `count` consecutive outputs of the
+    parent's next tuple: its folded values, or, when its condition selects the
+    parent, the parent's carried values at those same outputs. -#}
+{%- elif op.kind in ["FunctionFold", "GuardedFunctionFold", "StoreOutputFunctionFold"] %}{% set nested = op.kind == "StoreOutputFunctionFold" %}    {
+        double fold_seed[{{ [op.carried_count, 1]|max }}];
+        double fold_capture_seed[{{ [op.capture_count, 1]|max }}];
+{%- if nested %}
+        size_t fold_cursor = 0;
+{%- for source in op.initial %}
+{%- if source.Registers is defined %}
+        {%- if source.Registers.count > 0 %}
+        for (size_t k=0; k<{{ source.Registers.count }}; ++k) fold_seed[fold_cursor++] = r[{{ source.Registers.start }}+k];
+        {%- endif %}
+{%- else %}
+        {%- if source.ParentCarried.count > 0 %}
+        for (size_t k=0; k<{{ source.ParentCarried.count }}; ++k) fold_seed[fold_cursor++] = fold_carried[{{ source.ParentCarried.base }}+k];
+        {%- endif %}
+{%- endif %}
+{%- endfor %}
+        (void)fold_cursor;
+{%- else %}
+        {%- if op.carried_count > 0 %}
+        for (size_t k=0; k<{{ op.carried_count }}; ++k) fold_seed[k] = r[{{ op.initial_start }}+k];
+        {%- endif %}
+{%- endif %}
+        {%- if op.capture_count > 0 %}
+        for (size_t k=0; k<{{ op.capture_count }}; ++k) fold_capture_seed[k] = r[{{ op.capture_start }}+k];
+        {%- endif %}
+        (void)fold_capture_seed;
+{%- if nested and op.condition is defined and op.condition is not none %}
+        if ((r[{{ op.condition }}] != 0.0) != {{ 1 if op.nested_when_true else 0 }}) {
+            {%- if op.count > 0 %}
+            for (size_t k=0; k<{{ op.count }}; ++k) {{ output }}[{{ op.output_start }}+k] = fold_carried[{{ op.output_start }}+k];
+            {%- endif %}
+        } else
+{%- endif %}
+        {
+            double fold_carried[{{ [op.carried_count, 1]|max }}];
+            const double *const fold_capture = fold_capture_seed;
+            int64_t fold_index[{{ [op.domain.binders|length, 1]|max }}];
+            (void)fold_capture; (void)fold_index;
+            {%- if op.carried_count > 0 %}
+            for (size_t k=0; k<{{ op.carried_count }}; ++k) fold_carried[k] = fold_seed[k];
+            {%- endif %}
+{%- if op.kind == "GuardedFunctionFold" %}
+            if (r[{{ op.activation }}] != 0.0)
+{%- endif %}
+            {
+{%- for binder in op.domain.binders %}{% set count = 0 if (binder.step > 0 and binder.lower > binder.upper) or (binder.step < 0 and binder.lower < binder.upper) else (binder.upper - binder.lower) // binder.step + 1 %}
+            for (int64_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }}; ++i{{ loop.index0 }}) {
+            fold_index[{{ loop.index0 }}] = {{ binder.lower }} + i{{ loop.index0 }}*({{ binder.step }});
+{%- endfor %}
+            double fold_next[{{ [op.carried_count, 1]|max }}];
+            {
+                double r[{{ [op.update.register_count, 1]|max }}]; (void)r;
+{%- for update_op in op.update.ops %}
+{{ scalar_op(update_op, "fold_next", error_status) }}
+{%- endfor %}
+            }
+            {%- if op.carried_count > 0 %}
+            for (size_t k=0; k<{{ op.carried_count }}; ++k) fold_carried[k] = fold_next[k];
+            {%- endif %}
+{%- for binder in op.domain.binders %}
+            }
+{%- endfor %}
+            }
+{%- if nested %}
+            {%- if op.count > 0 %}
+            for (size_t k=0; k<{{ op.count }}; ++k) {{ output }}[{{ op.output_start }}+k] = fold_carried[{{ op.result_base }}+k];
+            {%- endif %}
+{%- else %}
+            {%- if op.carried_count > 0 %}
+            for (size_t k=0; k<{{ op.carried_count }}; ++k) r[{{ op.dst }}+k] = fold_carried[k];
+            {%- endif %}
+{%- endif %}
+        }
+    }
+{%- elif op.kind == "LoadFoldCarried" %}    r[{{ op.dst }}] = fold_carried[{{ op.index }}];
+{%- elif op.kind == "LoadFoldCapture" %}    r[{{ op.dst }}] = fold_capture[{{ op.index }}];
+{%- elif op.kind == "LoadFoldIndex" %}    r[{{ op.dst }}] = (double)fold_index[{{ op.dimension }}];
+{#- An indexed load from registers, the fold carried tuple, or the fold
+    captures: every runtime coordinate must be an exact in-range Integer. -#}
+{%- elif op.kind in ["LoadIndexedRegister", "LoadIndexedFoldCarried", "LoadIndexedFoldCapture"] %}    {
+        size_t fold_offset = 0;
+{%- for extent in op.dimensions %}{% set index = op.indices[loop.index0] %}
+{%- if index.Constant is defined %}
+        fold_offset = fold_offset*{{ extent }} + {{ index.Constant }};
+{%- else %}
+        { double v = r[{{ index.Runtime }}]; if (!(isfinite(v) && trunc(v) == v && v >= 1.0 && v <= {{ extent }}.0)) return {{ error_status }}; fold_offset = fold_offset*{{ extent }} + (size_t)v - 1; }
+{%- endif %}
+{%- endfor %}
+        r[{{ op.dst }}] = {{ {"LoadIndexedRegister": "r", "LoadIndexedFoldCarried": "fold_carried", "LoadIndexedFoldCapture": "fold_capture"}[op.kind] }}[{{ op.base }}+fold_offset*{{ op.stride }}];
+    }
+{#- Aggregate update of the carried tensor: for every element and lane, the
+    node graph starts from the carried source (node 0); an update node takes
+    its patch value when the patch is enabled and its subscripts select this
+    element, else its base node; a select node picks between earlier nodes. -#}
+{%- elif op.kind == "StoreOutputFoldTensorUpdate" %}    for (size_t e=0; e<{{ op.dimensions|product }}; ++e) {
+        long long tu_offset[{{ [op.updates|length, 1]|max }}]; (void)tu_offset;
+{%- for update in op.updates %}
+        {
+            size_t rest = e; long long value_offset = 0; int selected = 1;
+{%- for i in range(op.dimensions|length)|reverse %}
+            size_t c{{ i }} = rest % {{ op.dimensions[i] }}; rest /= {{ op.dimensions[i] }};
+{%- endfor %}
+{%- for subscript in update.subscripts %}{% set extent = op.dimensions[loop.index0] %}
+{%- if subscript == "Whole" %}
+            value_offset = value_offset*{{ extent }} + (long long)c{{ loop.index0 }};
+{%- elif subscript.Index.Constant is defined %}
+            if (c{{ loop.index0 }} != {{ subscript.Index.Constant }}) selected = 0;
+{%- else %}
+            { double v = r[{{ subscript.Index.Runtime }}]; if (!(isfinite(v) && round(v) == v && v >= 1.0 && v <= {{ extent }}.0) || (size_t)v - 1 != c{{ loop.index0 }}) selected = 0; }
+{%- endif %}
+{%- endfor %}
+            tu_offset[{{ loop.index0 }}] = selected ? value_offset : -1;
+        }
+{%- endfor %}
+        for (size_t l=0; l<{{ op.lanes }}; ++l) {
+            double tu_value[{{ op.nodes|length + 1 }}];
+            tu_value[0] = fold_carried[{{ op.source_base }}+e*{{ op.source_stride }}+l];
+{%- for node in op.nodes %}
+{%- if node.Update is defined %}{% set update = op.updates[node.Update.update] %}
+            tu_value[{{ loop.index }}] = ({% if update.condition is not none %}r[{{ update.condition }}] != 0.0 && {% endif %}tu_offset[{{ node.Update.update }}] >= 0) ? r[{{ update.value_start }}+tu_offset[{{ node.Update.update }}]*{{ update.value_stride }}+l] : tu_value[{{ node.Update.base }}];
+{%- else %}
+            tu_value[{{ loop.index }}] = r[{{ node.Select.condition }}] != 0.0 ? tu_value[{{ node.Select.if_true }}] : tu_value[{{ node.Select.if_false }}];
+{%- endif %}
+{%- endfor %}
+            {{ output }}[{{ op.output_start }}+e*{{ op.lanes }}+l] = tu_value[{{ op.result }}];
+        }
+    }
 {%- else %}{{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
 {%- endif %}
 {%- endmacro %}

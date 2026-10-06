@@ -24,6 +24,8 @@ mod fmi_c_assertions;
 #[cfg(test)]
 mod fmi_projection_tests;
 #[cfg(test)]
+mod fold_render_tests;
+#[cfg(test)]
 mod galec_golden_tests;
 #[cfg(test)]
 mod galec_manifest_template_tests;

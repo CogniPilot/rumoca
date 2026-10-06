@@ -1,7 +1,8 @@
-//! Template view of the regions of a checked function-conditional program.
+//! Template view of the regions of checked function-conditional and
+//! function-fold programs.
 //!
-//! Each arm condition, arm result, and the fallback is its own scalar program
-//! with a private register file. A region's `StoreOutput`/`StoreOutputRange`
+//! Each arm condition, arm result, conditional fallback, and fold update is its
+//! own scalar program with a private register file. A region's `StoreOutput`/`StoreOutputRange`
 //! write the region's outputs in order, so each is attached to its local
 //! output ordinals, and every region operation is viewed exactly as a block
 //! operation is.
@@ -75,34 +76,58 @@ pub(super) fn region_value(
     program: &Arc<solve::FunctionConditionalProgram>,
     part: RegionPart,
 ) -> Value {
-    let region = PlanRegionValue {
-        program: Arc::clone(program),
-        part,
-    };
+    planned(RegionSource::Conditional(Arc::clone(program), part))
+}
+
+/// The template view of the one-iteration update region of a fold `program`;
+/// its stores write the next carried tuple in order.
+pub(super) fn fold_update_value(program: &Arc<solve::FunctionFoldProgram>) -> Value {
+    planned(RegionSource::FoldUpdate(Arc::clone(program)))
+}
+
+fn planned(source: RegionSource) -> Value {
+    let region = PlanRegionValue { source };
     let targets = local_output_targets(region.ops());
     Value::from_object(region.with_targets(targets))
 }
 
 #[derive(Debug)]
+enum RegionSource {
+    Conditional(Arc<solve::FunctionConditionalProgram>, RegionPart),
+    FoldUpdate(Arc<solve::FunctionFoldProgram>),
+}
+
+#[derive(Debug)]
 struct PlanRegionValue {
-    program: Arc<solve::FunctionConditionalProgram>,
-    part: RegionPart,
+    source: RegionSource,
 }
 
 impl PlanRegionValue {
     fn ops(&self) -> &[solve::LinearOp] {
-        match self.part {
-            RegionPart::Condition(arm) => &self.program.arms[arm].condition,
-            RegionPart::Result(arm) => &self.program.arms[arm].result,
-            RegionPart::Fallback => &self.program.fallback,
+        match &self.source {
+            RegionSource::Conditional(program, RegionPart::Condition(arm)) => {
+                &program.arms[*arm].condition
+            }
+            RegionSource::Conditional(program, RegionPart::Result(arm)) => {
+                &program.arms[*arm].result
+            }
+            RegionSource::Conditional(program, RegionPart::Fallback) => &program.fallback,
+            RegionSource::FoldUpdate(program) => &program.update,
         }
     }
 
     fn register_count(&self) -> usize {
-        match self.part {
-            RegionPart::Condition(arm) => self.program.arms[arm].condition_register_count,
-            RegionPart::Result(arm) => self.program.arms[arm].result_register_count,
-            RegionPart::Fallback => self.program.fallback_register_count,
+        match &self.source {
+            RegionSource::Conditional(program, RegionPart::Condition(arm)) => {
+                program.arms[*arm].condition_register_count
+            }
+            RegionSource::Conditional(program, RegionPart::Result(arm)) => {
+                program.arms[*arm].result_register_count
+            }
+            RegionSource::Conditional(program, RegionPart::Fallback) => {
+                program.fallback_register_count
+            }
+            RegionSource::FoldUpdate(program) => program.register_count,
         }
     }
 
@@ -198,7 +223,13 @@ fn local_output_targets(ops: &[solve::LinearOp]) -> Vec<Option<Box<[usize]>>> {
         .map(|op| {
             let count = match op {
                 solve::LinearOp::StoreOutput { .. } => 1,
-                solve::LinearOp::StoreOutputRange { count, .. } => *count,
+                solve::LinearOp::StoreOutputRange { count, .. }
+                | solve::LinearOp::StoreOutputFunctionFold { count, .. } => *count,
+                solve::LinearOp::StoreOutputFoldTensorUpdate {
+                    dimensions, lanes, ..
+                } => dimensions
+                    .iter()
+                    .fold(*lanes, |count, extent| count * *extent as usize),
                 _ => return None,
             };
             let targets = (next..next + count).collect::<Box<[usize]>>();

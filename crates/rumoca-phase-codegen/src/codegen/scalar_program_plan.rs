@@ -296,6 +296,12 @@ pub(super) fn op_field(
     match key {
         "kind" => return Some(Value::from(op.kind_name())),
         "dst" => return op.dst_register().map(|value| Value::from(value as usize)),
+        // First region-local output a multi-output fold store writes.
+        "output_start" => {
+            return output_targets
+                .and_then(<[usize]>::first)
+                .map(|v| Value::from(*v));
+        }
         _ => {}
     }
     load_field(op, key)
@@ -432,7 +438,7 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "capture_count" => Some(Value::from(program.capture_count)),
             "register_count" => Some(Value::from(program.register_count)),
             "domain" => Some(Value::from_serialize(&program.domain)),
-            "update" => Some(Value::from_serialize(&program.update)),
+            "update" => Some(super::scalar_region_plan::fold_update_value(program)),
             _ => None,
         },
         LinearOp::GuardedFunctionFold {
@@ -449,7 +455,7 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "capture_count" => Some(Value::from(program.capture_count)),
             "register_count" => Some(Value::from(program.register_count)),
             "domain" => Some(Value::from_serialize(&program.domain)),
-            "update" => Some(Value::from_serialize(&program.update)),
+            "update" => Some(super::scalar_region_plan::fold_update_value(program)),
             _ => None,
         },
         LinearOp::FunctionConditional {
@@ -506,7 +512,7 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "capture_count" => Some(Value::from(program.capture_count)),
             "register_count" => Some(Value::from(program.register_count)),
             "domain" => Some(Value::from_serialize(&program.domain)),
-            "update" => Some(Value::from_serialize(&program.update)),
+            "update" => Some(super::scalar_region_plan::fold_update_value(program)),
             "result_base" => Some(Value::from(result_base)),
             "count" => Some(Value::from(count)),
             "condition" => condition.map(|condition| Value::from(condition as usize)),
@@ -985,6 +991,7 @@ pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
         }
         LinearOp::StoreOutputFoldTensorUpdate { .. } => &[
             "kind",
+            "output_start",
             "source_base",
             "source_stride",
             "dimensions",
@@ -995,6 +1002,7 @@ pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
         ],
         LinearOp::StoreOutputFunctionFold { .. } => &[
             "kind",
+            "output_start",
             "initial",
             "capture_start",
             "carried_count",
