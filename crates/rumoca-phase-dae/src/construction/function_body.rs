@@ -740,13 +740,9 @@ fn lower_conditional_multi_output_call<'dae>(
     for ((_, output), mut value) in selected.into_iter().zip(results) {
         let target = function_value_coordinate(symbols.coordinates, output.target());
         if !output.subscripts().is_empty() {
-            let base = match values.get(output.target()).copied() {
-                Some(value) => Some(value),
-                None => output
-                    .seed()
-                    .map(|seed| lower_function_value_seed(construction, seed, call.span))
-                    .transpose()?,
-            };
+            // As for a branch assignment: the seed was assigned where the
+            // enclosing sequence or loop begins.
+            let base = values.get(output.target()).copied();
             value = lower_function_array_update(
                 construction,
                 FunctionArrayUpdate {
@@ -810,7 +806,12 @@ fn lower_conditional_assignment<'dae>(
         None,
     )?;
     let subscripts = assignment.subscripts();
-    let base = conditional_assignment_base(construction, assignment, span, values)?;
+    // A branch updates the value in scope: a write earlier in this branch, or
+    // else the enclosing definition. An element write's seed is assigned once
+    // where its enclosing sequence or compact loop begins
+    // (`collect_function_sequence_seeds`); reseeding inside a loop body would
+    // discard what earlier iterations wrote.
+    let base = values.get(assignment.target()).copied();
     if !subscripts.is_empty() {
         lowered = lower_function_array_update(
             construction,
@@ -834,22 +835,6 @@ fn lower_conditional_assignment<'dae>(
     }
     values.insert(assignment.target().clone(), lowered);
     Ok(())
-}
-
-fn conditional_assignment_base<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    assignment: &FunctionAssignmentPlan,
-    span: Span,
-    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
-) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
-    if assignment.subscripts().is_empty() {
-        return Ok(None);
-    }
-    if let Some(seed) = assignment.seed() {
-        let seeded = lower_function_value_seed(construction, seed, span)?;
-        values.insert(assignment.target().clone(), seeded);
-    }
-    Ok(values.get(assignment.target()).copied())
 }
 
 struct NestedFunctionConditional<'scope, 'statement, 'dae> {
