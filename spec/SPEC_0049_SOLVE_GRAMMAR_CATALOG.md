@@ -82,8 +82,8 @@ edit, so re-read before relying on it.
 
 **Authority split.** The DRAFT parent rule plus its bound row here define the
 INTENDED SEMANTIC CONTRACT. The `Status` column REPORTS what today's checked
-constructors in `crates/rumoca-ir-solve/src/typed_program/program.rs` and
-`program/tensor.rs` admit, without adding normative future behavior. Constructor
+constructors in `crates/rumoca-ir-solve/src/typed_program/program.rs`,
+`program/construction_checks.rs`, and `program/tensor.rs` admit, without adding normative future behavior. Constructor
 parity tests prove the IMPLEMENTATION conforms to the row. A disagreement is
 therefore either an implementation defect or a separately reviewed spec
 amendment — never a constructor-wins resolution, because a mutable
