@@ -19,15 +19,17 @@ fn original_full_image_named_radius_preserves_compact_dae_family_bodies() {
     let source = include_str!("fixtures/fast_native_frame.mo");
     let flat = flatten_source(source, "FastNativeFrame", true).unwrap();
     assert_eq!(flat.equations.len(), 28_801);
-    assert_eq!(flat.structured_equations.len(), 181);
+    // One family per body of the row/column nest (gray, conditional scores),
+    // plus the selection vector.
+    assert_eq!(flat.structured_equations.len(), 3);
     let mut map = rumoca_core::SourceMap::new();
     map.add("conditional_template_test.mo", source);
     let dae = rumoca_phase_dae::to_dae(&flat, map).unwrap();
     dae.inspect(|view| {
-        assert_eq!(view.continuous_family_count(), 181);
-        for ordinal in 0..180 {
+        assert_eq!(view.continuous_family_count(), 3);
+        for ordinal in 0..2 {
             let family = view.continuous_family(ordinal).unwrap();
-            assert_eq!(family.scalar_rows(), 160, "family {ordinal}");
+            assert_eq!(family.scalar_rows(), 90 * 160, "family {ordinal}");
             assert_eq!(family.bodies().len(), 1, "family {ordinal}");
             assert_eq!(
                 family.scalar_view(),
