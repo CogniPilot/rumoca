@@ -224,7 +224,7 @@ fn test_get_version() {
 }
 
 #[test]
-fn test_git_identity_has_one_owner_in_every_report() {
+fn test_get_git_commit() {
     let identity = rumoca_core::build_identity();
     assert_eq!(get_git_commit().as_deref(), identity);
     let provenance = crate::compiler_provenance();
