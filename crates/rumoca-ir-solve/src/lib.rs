@@ -798,16 +798,9 @@ impl<'de> Deserialize<'de> for SolveProblem {
             .refresh_owners
             .rebuild_exact_assignment_programs(&problem.continuous.implicit_rhs)
             .map_err(serde::de::Error::custom)?;
-        // Optional target capability is re-issued from canonical wire owners.
-        let _ = problem
-            .continuous
-            .refresh_owners
-            .issue_native_assignment_schedule(
-                &problem.continuous.implicit_rhs,
-                &problem.continuous.implicit_row_targets,
-                &problem.layout,
-            );
         problem.validate().map_err(serde::de::Error::custom)?;
+        // The native value schedule is issued from the checked canonical rows.
+        issue_native_assignment_schedule(&mut problem);
         Ok(problem)
     }
 }
@@ -2021,18 +2014,6 @@ fn validate_continuous_system_shape(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
     let system = &problem.continuous;
-    system
-        .refresh_owners
-        .validate_native_assignment_schedule(
-            &system.implicit_rhs,
-            &system.implicit_row_targets,
-            &problem.layout,
-        )
-        .map_err(
-            |error| SolveProblemShapeContractError::ContinuousRefreshOwner {
-                detail: error.to_string(),
-            },
-        )?;
     system
         .implicit_rhs
         .validate_shape_contract("continuous.implicit_rhs")?;

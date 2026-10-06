@@ -172,25 +172,6 @@ fn varying_values_do_not_allow_any_cross_target_affine_read() {
 }
 
 #[test]
-fn varying_constant_replay_binds_original_stride_identity() {
-    let (source, targets, layout) = varying(350, 1.0);
-    let mut owner = crate::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    owner
-        .validate_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    let (changed, _, _) = varying(350, -1.0);
-    assert!(derive(&changed, &targets, &layout).is_ok());
-    assert!(
-        owner
-            .validate_native_assignment_schedule(&changed, &targets, &layout)
-            .is_err()
-    );
-}
-
-#[test]
 fn varying_unused_prefix_keeps_bare_zero_and_reversed_subtraction_profiles() {
     for zero in [false, true] {
         let (mut source, targets, layout) = varying(350, 1.0);

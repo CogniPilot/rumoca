@@ -2,7 +2,9 @@
 
 mod coverage;
 mod dependencies;
+mod derived_discrete;
 mod range;
+mod rebinding;
 mod scalar;
 mod span_index;
 mod targets;
@@ -12,34 +14,33 @@ use std::ops::Range;
 
 use super::{derive_target_assignment_shape_for_output, materialize_target_assignment};
 use crate::{
-    ComputeBlock, ComputeNode, LinearOp, TargetAssignmentShape, TensorOutputMap, VarLayout,
+    ComputeBlock, ComputeNode, LinearOp, Reg, SolveProblem, TargetAssignmentShape, TensorOutputMap,
+    VarLayout,
+};
+pub use derived_discrete::{
+    NativeDerivedOutput, NativeEvaluationRefusal, NativeIntegerSource, NativeOutputLane,
 };
 
-#[derive(Clone, Debug, PartialEq)]
-enum SourceProjection {
-    Tensor {
-        output_map: TensorOutputMap,
-        store: LinearOp,
-    },
-    Scalar {
-        program: usize,
-        output: usize,
-        stores: Vec<LinearOp>,
-    },
+/// The canonical Solve owner a native stage evaluates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeStageSource {
+    /// A node of the continuous implicit residual block.
+    Continuous { node: usize },
+    /// A stateless derived-discrete row (see [`NativeDerivedOutput`]).
+    Discrete { row: usize },
 }
 
 /// An exact native value stage, retaining its canonical source identity.
 #[derive(Clone, Debug)]
 pub struct NativeRefreshAssignmentStage {
-    source_node: usize,
-    source_projection: SourceProjection,
+    source: NativeStageSource,
     targets: coverage::Coverage,
     value_kernel: ComputeBlock,
 }
 
 impl NativeRefreshAssignmentStage {
-    pub fn source_node(&self) -> usize {
-        self.source_node
+    pub fn source(&self) -> NativeStageSource {
+        self.source
     }
     /// Exact owned range for dense stages. Sparse stages have no owned range.
     pub fn target_range(&self) -> Option<Range<usize>> {
@@ -66,16 +67,34 @@ impl NativeRefreshAssignmentStage {
     }
 }
 
-/// A complete family schedule derived from the canonical implicit equations.
+/// A complete stateless value schedule derived from the canonical implicit
+/// equations and the derived-discrete rows. Targets index the work space: the
+/// `y` solver coordinates followed by one private slot per derived output.
 /// Neither certificates nor their materialized kernels are accepted from wire.
 #[derive(Clone, Debug)]
 pub struct NativeRefreshAssignmentSchedule {
     stages: Vec<NativeRefreshAssignmentStage>,
+    derived_outputs: Vec<NativeDerivedOutput>,
+    work_layout: VarLayout,
+    lane_bytes: usize,
 }
 
 impl NativeRefreshAssignmentSchedule {
     pub fn stages(&self) -> &[NativeRefreshAssignmentStage] {
         &self.stages
+    }
+    /// Derived-discrete outputs in P-slot order, each with its typed lane.
+    pub fn derived_outputs(&self) -> &[NativeDerivedOutput] {
+        &self.derived_outputs
+    }
+    /// The layout stage kernels address: the problem layout with one private
+    /// Y work slot per derived output after the solver coordinates.
+    pub fn work_layout(&self) -> &VarLayout {
+        &self.work_layout
+    }
+    /// Size of the typed output-lane buffer (8-byte lanes first, then bytes).
+    pub fn lane_bytes(&self) -> usize {
+        self.lane_bytes
     }
 }
 
@@ -89,6 +108,37 @@ impl std::fmt::Display for NativeRefreshAssignmentRefusal {
 }
 impl std::error::Error for NativeRefreshAssignmentRefusal {}
 
+/// Why a problem has no native value schedule: a semantic feature the
+/// stateless evaluation does not own, or a construction form the schedule does
+/// not certify.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeScheduleRefusal {
+    Evaluation(NativeEvaluationRefusal),
+    Construction(NativeRefreshAssignmentRefusal),
+}
+
+impl std::fmt::Display for NativeScheduleRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Evaluation(refusal) => refusal.fmt(f),
+            Self::Construction(refusal) => refusal.fmt(f),
+        }
+    }
+}
+impl std::error::Error for NativeScheduleRefusal {}
+
+impl From<NativeEvaluationRefusal> for NativeScheduleRefusal {
+    fn from(refusal: NativeEvaluationRefusal) -> Self {
+        Self::Evaluation(refusal)
+    }
+}
+
+impl From<NativeRefreshAssignmentRefusal> for NativeScheduleRefusal {
+    fn from(refusal: NativeRefreshAssignmentRefusal) -> Self {
+        Self::Construction(refusal)
+    }
+}
+
 type Checked<T> = Result<T, NativeRefreshAssignmentRefusal>;
 fn refused<T>(reason: &'static str) -> Checked<T> {
     Err(NativeRefreshAssignmentRefusal(reason))
@@ -100,20 +150,102 @@ struct Family {
     outputs: Range<usize>,
 }
 
-/// Issue direct assignment stages for native families and canonical scalar rows.
-/// This is a deliberately bounded subset: affine progression tensor targets or
-/// scalar targets, pure arithmetic, and exact direct or zero isolators.
-pub(super) fn derive(
+/// Issue the stateless value schedule of `problem`: continuous implicit rows
+/// and derived-discrete rows, every derived read rebound to its work slot.
+pub(super) fn derive_for_problem(
+    problem: &SolveProblem,
+) -> Result<NativeRefreshAssignmentSchedule, NativeScheduleRefusal> {
+    let derived = derived_discrete::classify(problem)?;
+    let work_layout = problem.layout.with_private_y(derived.outputs.len()).ok_or(
+        NativeRefreshAssignmentRefusal("native work layout overflows"),
+    )?;
+    let source = rebinding::rebind_block(
+        &problem.continuous.implicit_rhs,
+        &derived.rebinding,
+        problem.layout.p_scalars(),
+    )?;
+    let mut discrete = Vec::with_capacity(derived.outputs.len());
+    for output in &derived.outputs {
+        discrete.push(scalar::derive_discrete(
+            output,
+            &problem.discrete.rhs,
+            &derived.rebinding,
+            &work_layout,
+        )?);
+    }
+    let families = derive_with(
+        &source,
+        &problem.continuous.implicit_row_targets,
+        &work_layout,
+        discrete,
+    )?;
+    // Program registers are Real: no stage may read an Integer work slot.
+    for output in derived
+        .outputs
+        .iter()
+        .filter(|output| output.lane == NativeOutputLane::Integer)
+    {
+        let slot = coverage::Coverage::dense(output.work_index..output.work_index + 1);
+        for read in families.iter().flat_map(|family| &family.reads) {
+            if read.overlaps(&slot)? {
+                return Err(NativeEvaluationRefusal::IntegerReaderRequiresTypedRegisters.into());
+            }
+        }
+    }
+    let stages = families.into_iter().map(|family| family.stage).collect();
+    Ok(NativeRefreshAssignmentSchedule {
+        stages,
+        derived_outputs: derived.outputs,
+        work_layout,
+        lane_bytes: derived.lane_bytes,
+    })
+}
+
+impl NativeRefreshAssignmentSchedule {
+    /// The schedule of one continuous residual block whose problem has no
+    /// discrete rows: the stages [`issue_native_assignment_schedule`] issues for
+    /// such a problem.
+    ///
+    /// [`issue_native_assignment_schedule`]: crate::issue_native_assignment_schedule
+    pub fn from_continuous_block(
+        source: &ComputeBlock,
+        targets: &[Option<crate::ScalarSlot>],
+        layout: &VarLayout,
+    ) -> Result<Self, NativeRefreshAssignmentRefusal> {
+        derive(source, targets, layout)
+    }
+}
+
+fn derive(
     source: &ComputeBlock,
     targets: &[Option<crate::ScalarSlot>],
     layout: &VarLayout,
 ) -> Checked<NativeRefreshAssignmentSchedule> {
+    Ok(NativeRefreshAssignmentSchedule {
+        stages: derive_with(source, targets, layout, Vec::new())?
+            .into_iter()
+            .map(|family| family.stage)
+            .collect(),
+        derived_outputs: Vec::new(),
+        work_layout: layout.clone(),
+        lane_bytes: 0,
+    })
+}
+
+/// Issue direct assignment stages for native families, canonical scalar rows
+/// and the `discrete` derived-output families. This is a deliberately bounded
+/// subset: affine progression tensor targets or scalar targets, pure
+/// arithmetic, and exact direct or zero isolators. Families are returned in
+/// dependency order.
+fn derive_with(
+    source: &ComputeBlock,
+    targets: &[Option<crate::ScalarSlot>],
+    layout: &VarLayout,
+    discrete: Vec<Family>,
+) -> Checked<Vec<Family>> {
     source
         .validate_shape_contract("native refresh assignments")
         .map_err(|_| NativeRefreshAssignmentRefusal("malformed native source"))?;
-    if source.nodes.is_empty() {
-        return refused("native assignment inventory is empty");
-    }
     let outputs = super::source_outputs::SourceOutputs::new(source)
         .map_err(|_| NativeRefreshAssignmentRefusal("malformed native output inventory"))?;
     let mut families = Vec::new();
@@ -124,9 +256,6 @@ pub(super) fn derive(
             families.push(derive_family(node, family, targets, layout)?);
         }
     }
-    if families.is_empty() {
-        return refused("native assignment inventory is empty");
-    }
     if !covers(
         families
             .iter()
@@ -136,36 +265,28 @@ pub(super) fn derive(
     ) {
         return refused("native source output coverage is incomplete or overlapping");
     }
+    families.extend(discrete);
+    if families.is_empty() {
+        return refused("native assignment inventory is empty");
+    }
     if !coverage::complete(
         families.iter().map(|family| &family.stage.targets),
         layout.y_scalars(),
     )? {
         return refused(
-            "native stateless targets are overlapping or do not cover the complete Y layout",
+            "native stateless targets are overlapping or do not cover the complete work layout",
         );
     }
     let order = dependency_order(&families)?;
-    let stages = order
+    let mut families = families.into_iter().map(Some).collect::<Vec<_>>();
+    order
         .into_iter()
         .map(|index| {
-            std::mem::replace(
-                &mut families[index].stage,
-                NativeRefreshAssignmentStage {
-                    source_node: 0,
-                    source_projection: SourceProjection::Tensor {
-                        output_map: TensorOutputMap {
-                            start: 0,
-                            strides: Vec::new(),
-                        },
-                        store: LinearOp::StoreOutput { src: 0 },
-                    },
-                    targets: coverage::Coverage::dense(0..0),
-                    value_kernel: ComputeBlock::default(),
-                },
-            )
+            families[index].take().ok_or(NativeRefreshAssignmentRefusal(
+                "native dependency order repeats a stage",
+            ))
         })
-        .collect();
-    Ok(NativeRefreshAssignmentSchedule { stages })
+        .collect()
 }
 
 fn dependency_order(families: &[Family]) -> Checked<Vec<usize>> {
@@ -343,14 +464,7 @@ fn derive_family(
     }
     Ok(Family {
         stage: NativeRefreshAssignmentStage {
-            source_node,
-            // These are the only original projection facts replaced by the
-            // final value kernel. Retain them to bind replay to the complete
-            // canonical source, including equivalent residual sign changes.
-            source_projection: SourceProjection::Tensor {
-                output_map: output_map.clone(),
-                store: operations[store].clone(),
-            },
+            source: NativeStageSource::Continuous { node: source_node },
             targets: target_coverage,
             value_kernel: ComputeBlock {
                 nodes: vec![final_node],
@@ -397,74 +511,8 @@ fn address_range(
     Ok(low as usize..high as usize + 1)
 }
 
-pub(super) fn matches(
-    a: &NativeRefreshAssignmentSchedule,
-    b: &NativeRefreshAssignmentSchedule,
-) -> bool {
-    a.stages.len() == b.stages.len()
-        && a.stages.iter().zip(&b.stages).all(|(a, b)| {
-            a.source_node == b.source_node
-                && a.source_projection == b.source_projection
-                && a.targets == b.targets
-                && node_matches(&a.value_kernel.nodes[0], &b.value_kernel.nodes[0])
-        })
-}
-
-fn node_matches(a: &ComputeNode, b: &ComputeNode) -> bool {
-    match (a, b) {
-        (ComputeNode::ScalarPrograms(a), ComputeNode::ScalarPrograms(b)) => {
-            a.program_spans() == b.program_spans()
-                && a.output_indices() == b.output_indices()
-                && a.programs().len() == b.programs().len()
-                && a.programs()
-                    .iter()
-                    .zip(b.programs())
-                    .all(|(a, b)| operations_match(a, b))
-        }
-        (
-            ComputeNode::Map {
-                domain: ad,
-                output_map: ao,
-                base_ops: ab,
-                load_strides: al,
-                const_strides: ac,
-                metadata: am,
-                span: aspan,
-            },
-            ComputeNode::Map {
-                domain: bd,
-                output_map: bo,
-                base_ops: bb,
-                load_strides: bl,
-                const_strides: bc,
-                metadata: bm,
-                span: bspan,
-            },
-        )
-        | (
-            ComputeNode::AffineStencil {
-                domain: ad,
-                output_map: ao,
-                base_ops: ab,
-                load_strides: al,
-                const_strides: ac,
-                metadata: am,
-                span: aspan,
-            },
-            ComputeNode::AffineStencil {
-                domain: bd,
-                output_map: bo,
-                base_ops: bb,
-                load_strides: bl,
-                const_strides: bc,
-                metadata: bm,
-                span: bspan,
-            },
-        ) => (ad, ao, al, ac, am, aspan) == (bd, bo, bl, bc, bm, bspan) && operations_match(ab, bb),
-        _ => false,
-    }
-}
-
+/// Operation equality with constants compared bit for bit (signed zero).
+#[cfg(test)]
 fn operations_match(a: &[LinearOp], b: &[LinearOp]) -> bool {
     a.len() == b.len()
         && a.iter().zip(b).all(|(a, b)| match (a, b) {
@@ -473,6 +521,15 @@ fn operations_match(a: &[LinearOp], b: &[LinearOp]) -> bool {
             }
             _ => a == b,
         })
+}
+
+/// The continuous residual node a stage evaluates.
+#[cfg(test)]
+fn continuous_node(stage: &NativeRefreshAssignmentStage) -> usize {
+    match stage.source() {
+        NativeStageSource::Continuous { node } => node,
+        NativeStageSource::Discrete { row } => panic!("discrete row {row} has no continuous node"),
+    }
 }
 
 #[cfg(test)]

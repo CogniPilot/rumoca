@@ -102,7 +102,7 @@ fn mixed_scalar_sparse_outputs_keep_compact_order_and_complete_source_prefix() {
             schedule
                 .stages()
                 .iter()
-                .map(|s| s.source_node())
+                .map(|s| continuous_node(s))
                 .collect::<Vec<_>>(),
             [1, 2, 2, 0]
         );
@@ -165,65 +165,6 @@ fn mixed_scalar_dependencies_reject_cycles_bounds_and_aliases() {
         programs[1][0] = LinearOp::LoadY { dst: 0, index: 0 }
     });
     assert!(derive(&source, &targets, &layout).is_err());
-}
-
-#[test]
-fn scalar_source_replay_retains_signed_zero_and_provenance() {
-    for change_span in [false, true] {
-        let (mut source, targets, layout) = mixed(16);
-        let mut owner = crate::ContinuousRefreshOwners::default();
-        owner
-            .issue_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap();
-        replace_boundary(&mut source, |programs, spans| {
-            if change_span {
-                spans[1] = span(10);
-            } else {
-                programs[1][5] = LinearOp::Const {
-                    dst: 5,
-                    value: -0.0,
-                };
-            }
-        });
-        assert!(
-            owner
-                .validate_native_assignment_schedule(&source, &targets, &layout)
-                .is_err()
-        );
-        owner
-            .issue_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap();
-        owner
-            .validate_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap();
-    }
-}
-
-#[test]
-fn scalar_output_mapping_replacement_revokes_equivalent_values() {
-    let (mut source, targets, layout) = mixed(16);
-    let mut owner = crate::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    let ComputeNode::ScalarPrograms(block) = &source.nodes[2] else {
-        panic!("source")
-    };
-    let mut programs = block.programs().to_vec();
-    programs.reverse();
-    let mut spans = block.program_spans().to_vec();
-    spans.reverse();
-    let mut indices = block.output_indices().to_vec();
-    indices.reverse();
-    source.nodes[2] = ComputeNode::ScalarPrograms(
-        ScalarProgramBlock::with_output_indices(programs, spans, indices).unwrap(),
-    );
-    assert!(derive(&source, &targets, &layout).is_ok());
-    assert!(
-        owner
-            .validate_native_assignment_schedule(&source, &targets, &layout)
-            .is_err()
-    );
 }
 
 #[test]

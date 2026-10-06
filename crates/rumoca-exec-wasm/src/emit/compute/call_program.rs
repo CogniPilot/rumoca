@@ -27,14 +27,25 @@ fn emit_with_budget(
     layout
         .validate_shape_contract()
         .map_err(|e| e.to_string())?;
-    assignments::validate_targets(schedule, layout.y_scalars())?;
-    let plans = assignments::checked_plans(schedule, layout)?;
+    // Stages address the work layout: the host Y scalars followed by one
+    // private slot per derived output.
+    let work = schedule.work_layout();
+    if work.p_scalars() != layout.p_scalars()
+        || work.y_scalars() != layout.y_scalars() + schedule.derived_outputs().len()
+    {
+        return Err("native schedule was issued for a different layout".into());
+    }
+    assignments::validate_targets(schedule, work.y_scalars())?;
+    let plans = assignments::checked_plans(schedule, work)?;
     let programs = plans
         .iter()
         .flat_map(|plan| plan.programs.iter().cloned())
         .collect::<Vec<_>>();
     let sites = conditional::call_sites(&programs)?;
-    if sites.is_empty() && !has_checked_model_operations(programs.iter().flatten()) {
+    if sites.is_empty()
+        && schedule.derived_outputs().is_empty()
+        && !has_checked_model_operations(programs.iter().flatten())
+    {
         return Err("native checked program has no checked operations".into());
     }
     let mut helpers = ProgramHelpers::new(table, &sites).map_err(|e| e.to_string())?;
@@ -50,7 +61,8 @@ fn emit_with_budget(
     let arena =
         arena::ArenaPlan::new(&programs, rank)?.ok_or("typed calls require private registers")?;
     let call_plan =
-        CallProgramPlan::new(&programs, &helpers, layout.y_scalars(), arena.inner_counter)?;
+        CallProgramPlan::new(&programs, &helpers, work.y_scalars(), arena.inner_counter)?
+            .with_output_lanes(layout.y_scalars(), schedule.lane_bytes())?;
     let mut module = Module::new();
     let types = add_types(&mut module);
     let mut catalog = add_import_section(&mut module, &imports, &types);
@@ -103,7 +115,7 @@ fn emit_with_budget(
     emitter.calls = Some(&call_plan);
     emitter.begin_call_program(layout)?;
     groups::invoke(&mut emitter, first_group, outlined.len())?;
-    emitter.finish_call_program();
+    emitter.finish_call_program(schedule.derived_outputs())?;
     function.instruction(&Instruction::End);
     let mut code = CodeSection::new();
     for body in bodies {

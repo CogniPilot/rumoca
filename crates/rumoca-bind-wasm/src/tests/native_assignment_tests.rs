@@ -214,10 +214,10 @@ fn native_model_wire_reissues_source_bound_schedule() {
     assert_eq!(issued_stage_ranges(&replay), original);
 }
 
-/// The issued native stages as (canonical source node, target range).
+/// The issued native stages as (canonical source, target range).
 pub(super) fn issued_stage_ranges(
     problem: &rumoca_ir_solve::SolveProblem,
-) -> Vec<(usize, std::ops::Range<usize>)> {
+) -> Vec<(rumoca_ir_solve::NativeStageSource, std::ops::Range<usize>)> {
     problem
         .continuous
         .refresh_owners
@@ -225,6 +225,6 @@ pub(super) fn issued_stage_ranges(
         .unwrap()
         .stages()
         .iter()
-        .map(|stage| (stage.source_node(), stage.target_range().unwrap()))
+        .map(|stage| (stage.source(), stage.target_range().unwrap()))
         .collect()
 }

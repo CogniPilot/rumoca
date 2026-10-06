@@ -82,16 +82,6 @@ fn terminal_scalar_stores_keep_one_compact_stage_per_original_program() {
         assert_eq!(schedule.stages[0].target_range(), Some(count..2 * count));
         assert_eq!(schedule.stages[1].target_range(), Some(0..count));
         let stage = &schedule.stages[1];
-        let SourceProjection::Scalar {
-            program,
-            output,
-            stores,
-        } = &stage.source_projection
-        else {
-            panic!("scalar source")
-        };
-        assert_eq!((*program, *output), (0, 0));
-        assert_eq!(stores, &original[4..]);
         let ComputeNode::ScalarPrograms(value) = &stage.value_kernel().nodes[0] else {
             panic!("value")
         };
@@ -304,29 +294,6 @@ fn scalar_store_logical_rows_targets_aliases_and_effects_stay_checked() {
     let mut effect = original;
     effect.insert(3, LinearOp::LoadSeed { dst: 10, index: 0 });
     assert!(derive(&source(vec![effect], None), &targets(3), &layout).is_err());
-}
-
-#[test]
-fn scalar_store_replay_keeps_every_store_and_prefix_literal_bit() {
-    let original = program(3, 0, TensorInputKind::P, 0);
-    let block = source(vec![original.clone()], None);
-    let layout = VarLayout::from_parts(Default::default(), 3, 3);
-    let mut owner = crate::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&block, &targets(3), &layout)
-        .unwrap();
-    owner
-        .validate_native_assignment_schedule(&block, &targets(3), &layout)
-        .unwrap();
-    let mut changed = original;
-    changed[3] = LinearOp::Const { dst: 9, value: 0.0 };
-    let altered = source(vec![changed], None);
-    assert!(derive(&altered, &targets(3), &layout).is_ok());
-    assert!(
-        owner
-            .validate_native_assignment_schedule(&altered, &targets(3), &layout)
-            .is_err()
-    );
 }
 
 #[test]

@@ -15,7 +15,7 @@ mod native_program_api;
 #[cfg(feature = "native-assignments")]
 pub use native_assignment_api::prepare_native_assignments;
 #[cfg(feature = "native-assignments")]
-pub use native_program_api::prepare_native_program;
+pub use native_program_api::{prepare_native_program, read_native_integer_lane};
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod gpu_api;
 mod scenario_config_api;

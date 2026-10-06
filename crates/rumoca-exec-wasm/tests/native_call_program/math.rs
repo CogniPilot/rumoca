@@ -50,20 +50,14 @@ fn scalar_and_nested_typed_math_share_catalog_relocation_and_atomic_y_recovery()
             solve::ScalarProgramBlock::with_program_spans(programs, vec![span(11200); 2]).unwrap(),
         )],
     };
-    let mut owners = solve::ContinuousRefreshOwners::default();
-    owners
-        .issue_native_assignment_schedule(
-            &source,
-            &[Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))],
-            &layout,
-        )
-        .unwrap();
-    let compiled = compile_native_assignment_schedule_with_calls_wasm(
-        owners.native_assignment_schedule().unwrap(),
+    let owners = solve::NativeRefreshAssignmentSchedule::from_continuous_block(
+        &source,
+        &[Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))],
         &layout,
-        &table,
     )
     .unwrap();
+    let compiled =
+        compile_native_assignment_schedule_with_calls_wasm(&owners, &layout, &table).unwrap();
     assert_eq!(compiled.math_imports(), ["sin", "cos", "log", "pow"]);
     let mut runner = ProgramRunner::new(&compiled, &layout);
     for value in [0.5, f64::INFINITY, f64::NAN, -0.0, 2.0] {

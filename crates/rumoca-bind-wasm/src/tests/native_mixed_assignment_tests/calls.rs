@@ -1,4 +1,5 @@
 //! Native model call scheduling, from the unchanged source and checked owners.
+mod derived_discrete;
 mod gathers;
 mod lazy_windows;
 mod maps;
@@ -22,6 +23,8 @@ struct CallExecution {
     p: usize,
     scratch: usize,
     y: usize,
+    /// Typed output-lane buffer (offset, bytes); zero when none is published.
+    lanes: (usize, usize),
 }
 
 impl CallExecution {
@@ -70,12 +73,22 @@ impl CallExecution {
             p: artifact["abi"]["p_offset"].as_u64().unwrap() as usize,
             scratch: artifact["abi"]["scratch_offset"].as_u64().unwrap_or(0) as usize,
             y: artifact["abi"]["y_count"].as_u64().unwrap() as usize,
+            lanes: (
+                artifact["abi"]["output_lanes_offset"].as_u64().unwrap_or(0) as usize,
+                artifact["abi"]["output_lanes_bytes"].as_u64().unwrap_or(0) as usize,
+            ),
         }
     }
     fn run(&mut self, p: &[f64]) -> Vec<f64> {
         let bytes = p.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
         self.memory.write(&mut self.store, self.p, &bytes).unwrap();
-        let arguments = (0, self.p as i32, 0., self.scratch as i32, 0);
+        let arguments = (
+            0,
+            self.p as i32,
+            0.,
+            self.scratch as i32,
+            self.lanes.0 as i32,
+        );
         match self.call {
             CallEntry::Direct(call) => call.call(&mut self.store, arguments).unwrap(),
             CallEntry::Checked(call) => assert_eq!(
@@ -94,5 +107,16 @@ impl CallExecution {
         y.chunks_exact(8)
             .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
             .collect()
+    }
+}
+
+impl CallExecution {
+    /// The published typed output lanes of the last successful call.
+    fn lanes(&self) -> Vec<u8> {
+        let mut bytes = vec![0; self.lanes.1];
+        self.memory
+            .read(&self.store, self.lanes.0, &mut bytes)
+            .unwrap();
+        bytes
     }
 }

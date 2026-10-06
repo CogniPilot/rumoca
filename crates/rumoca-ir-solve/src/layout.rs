@@ -411,6 +411,17 @@ impl VarLayout {
         self.y_scalars
     }
 
+    /// This layout with `extra` unnamed Y slots after the existing ones: the
+    /// private work slots a value schedule computes and reads but never
+    /// binds to a name.
+    #[must_use]
+    pub fn with_private_y(&self, extra: usize) -> Option<Self> {
+        Some(Self {
+            y_scalars: self.y_scalars.checked_add(extra)?,
+            ..self.clone()
+        })
+    }
+
     pub fn p_scalars(&self) -> usize {
         self.p_scalars
     }

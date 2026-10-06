@@ -46,16 +46,10 @@ fn fixture(
     let targets = (0..count + 4)
         .map(|index| Some(solve::scalar_slot_y(index)))
         .collect::<Vec<_>>();
-    let mut owners = solve::ContinuousRefreshOwners::default();
-    owners
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    (
-        owners.native_assignment_schedule().unwrap().clone(),
-        layout,
-        table,
-        site,
-    )
+    let owners =
+        solve::NativeRefreshAssignmentSchedule::from_continuous_block(&source, &targets, &layout)
+            .unwrap();
+    (owners, layout, table, site)
 }
 
 fn call_program(
@@ -280,16 +274,11 @@ fn identical_complete_coordinates_call_once_but_changed_y_arguments_are_evaluate
     let targets = (0..4)
         .map(|i| Some(solve::scalar_slot_y(i)))
         .collect::<Vec<_>>();
-    let mut owners = solve::ContinuousRefreshOwners::default();
-    owners
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    let compiled = compile_native_assignment_schedule_with_calls_wasm(
-        owners.native_assignment_schedule().unwrap(),
-        &layout,
-        &table,
-    )
-    .unwrap();
+    let owners =
+        solve::NativeRefreshAssignmentSchedule::from_continuous_block(&source, &targets, &layout)
+            .unwrap();
+    let compiled =
+        compile_native_assignment_schedule_with_calls_wasm(&owners, &layout, &table).unwrap();
     let mut runner = ProgramRunner::new(&compiled, &layout);
     for value in [3., -0., 7.] {
         *runner.store.data_mut() = 0;
@@ -416,19 +405,16 @@ fn value_independence_cannot_hide_a_call_fault_dependent_on_its_own_unknown_targ
             .unwrap(),
         )],
     };
-    let mut owners = solve::ContinuousRefreshOwners::default();
-    let error = owners
-        .issue_native_assignment_schedule(
-            &source,
-            &[Some(solve::scalar_slot_y(0))],
-            &solve::VarLayout::from_parts(Default::default(), 1, 0),
-        )
-        .unwrap_err();
+    let error = solve::NativeRefreshAssignmentSchedule::from_continuous_block(
+        &source,
+        &[Some(solve::scalar_slot_y(0))],
+        &solve::VarLayout::from_parts(Default::default(), 1, 0),
+    )
+    .unwrap_err();
     assert_eq!(
         error.to_string(),
         "native call inputs depend on its own assignment target"
     );
-    assert!(owners.native_assignment_schedule().is_none());
 }
 
 #[test]

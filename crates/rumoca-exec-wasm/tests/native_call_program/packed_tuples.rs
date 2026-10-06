@@ -86,11 +86,10 @@ fn fixture(
         .chain(0..count)
         .map(|i| Some(solve::scalar_slot_y(i)))
         .collect::<Vec<_>>();
-    let mut owners = solve::ContinuousRefreshOwners::default();
-    owners
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    let schedule = owners.native_assignment_schedule().unwrap().clone();
+    let owners =
+        solve::NativeRefreshAssignmentSchedule::from_continuous_block(&source, &targets, &layout)
+            .unwrap();
+    let schedule = owners;
     assert_eq!(schedule.stages().len(), 2);
     assert_eq!(schedule.stages()[0].target_range(), Some(0..count));
     assert_eq!(schedule.stages()[1].target_range(), Some(count..count * 2));

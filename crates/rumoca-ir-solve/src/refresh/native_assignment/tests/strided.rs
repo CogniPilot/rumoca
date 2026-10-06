@@ -33,11 +33,8 @@ fn columns(rows: usize, columns: usize) -> (ComputeBlock, Vec<Option<ScalarSlot>
 fn interleaved_columns_own_only_their_exact_slots_and_replay_source_inventory() {
     for (rows, column_count) in [(2, 3), (6, 16), (90, 160)] {
         let (source, targets, layout) = columns(rows, column_count);
-        let mut owner = crate::ContinuousRefreshOwners::default();
-        owner
-            .issue_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap();
-        let schedule = owner.native_assignment_schedule().unwrap();
+        let owner = derive(&source, &targets, &layout).unwrap();
+        let schedule = &owner;
         assert_eq!(schedule.stages().len(), column_count);
         for (column, stage) in schedule.stages().iter().enumerate() {
             assert_eq!(stage.target_range(), None);
@@ -51,16 +48,8 @@ fn interleaved_columns_own_only_their_exact_slots_and_replay_source_inventory() 
                 assert!(!stage.targets_overlap(other).unwrap());
             }
         }
-        owner
-            .validate_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap();
         let mut changed = targets.clone();
         changed.swap(0, rows);
-        assert!(
-            owner
-                .validate_native_assignment_schedule(&source, &changed, &layout)
-                .is_err()
-        );
     }
 }
 
@@ -74,11 +63,7 @@ fn aliased_missing_non_affine_and_coupled_column_ownership_is_refused() {
     let mut irregular = targets.clone();
     irregular.swap(0, 1);
     for bad in [aliased, missing, irregular] {
-        assert!(
-            crate::ContinuousRefreshOwners::default()
-                .issue_native_assignment_schedule(&source, &bad, &layout)
-                .is_err()
-        );
+        assert!(derive(&source, &bad, &layout).is_err());
     }
     let mut coupled = source.clone();
     let ComputeNode::Map {
@@ -91,11 +76,7 @@ fn aliased_missing_non_affine_and_coupled_column_ownership_is_refused() {
     };
     base_ops[1] = LinearOp::LoadY { dst: 1, index: 0 };
     load_strides[1].terms[0].stride = 16;
-    assert!(
-        crate::ContinuousRefreshOwners::default()
-            .issue_native_assignment_schedule(&coupled, &targets, &layout)
-            .is_err()
-    );
+    assert!(derive(&coupled, &targets, &layout).is_err());
 }
 
 #[test]
@@ -111,17 +92,12 @@ fn dependency_order_uses_exact_column_sets_and_real_cycles_still_refuse() {
     };
     base_ops[1] = LinearOp::LoadY { dst: 1, index: 1 };
     load_strides[1].terms[0].stride = 3;
-    let mut owner = crate::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
+    let owner = derive(&source, &targets, &layout).unwrap();
     assert_eq!(
         owner
-            .native_assignment_schedule()
-            .unwrap()
             .stages()
             .iter()
-            .map(|s| s.source_node())
+            .map(|s| continuous_node(s))
             .collect::<Vec<_>>(),
         [1, 0, 2]
     );
@@ -136,10 +112,7 @@ fn dependency_order_uses_exact_column_sets_and_real_cycles_still_refuse() {
     base_ops[1] = LinearOp::LoadY { dst: 1, index: 0 };
     load_strides[1].terms[0].stride = 3;
     assert_eq!(
-        crate::ContinuousRefreshOwners::default()
-            .issue_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap_err()
-            .to_string(),
+        derive(&source, &targets, &layout).unwrap_err().to_string(),
         "native assignment dependency cycle"
     );
 }

@@ -64,11 +64,8 @@ fn complementary_rectangular_slices_prove_exact_coverage_and_replay() {
             })
             .collect::<Vec<_>>();
         let layout = VarLayout::from_parts(Default::default(), rows * columns, rows * columns);
-        let mut owner = crate::ContinuousRefreshOwners::default();
-        owner
-            .issue_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap();
-        let stages = owner.native_assignment_schedule().unwrap().stages();
+        let owner = derive(&source, &targets, &layout).unwrap();
+        let stages = owner.stages();
         assert_eq!(stages.len(), 2);
         assert_eq!(stages[0].target_range(), None);
         assert_eq!(stages[0].target_count(), rows * width);
@@ -76,16 +73,8 @@ fn complementary_rectangular_slices_prove_exact_coverage_and_replay() {
         assert_eq!(stages[0].target_stride(), columns);
         assert_eq!(stages[0].target_span(), 0..(rows - 1) * columns + width);
         assert!(!stages[0].targets_overlap(&stages[1]).unwrap());
-        owner
-            .validate_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap();
         let mut altered = targets.clone();
         altered.swap(0, rows * width);
-        assert!(
-            owner
-                .validate_native_assignment_schedule(&source, &altered, &layout)
-                .is_err()
-        );
     }
 }
 

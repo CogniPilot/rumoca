@@ -45,9 +45,9 @@ pub(super) fn outline(
     let prefix = Function::new(locals.clone()).byte_len();
     let mut current = Function::new(locals.clone());
     let mut groups = Vec::new();
-    for (kernel, (stage, plan)) in schedule.stages().iter().zip(plans).enumerate() {
+    for (kernel, plan) in plans.iter().enumerate().take(schedule.stages().len()) {
         let encoded =
-            stage_body(stage, plan, catalog, arena, calls, kernel, faults)?.into_raw_body();
+            stage_body(schedule, kernel, plan, catalog, arena, calls, faults)?.into_raw_body();
         let instructions = &encoded[prefix..];
         if prefix
             .checked_add(instructions.len())
@@ -79,14 +79,16 @@ fn finish(function: &mut Function) {
 }
 
 fn stage_body(
-    stage: &solve::NativeRefreshAssignmentStage,
+    schedule: &solve::NativeRefreshAssignmentSchedule,
+    kernel: usize,
     plan: &KernelPlan<'_>,
     catalog: &ImportCatalog,
     arena: arena::ArenaPlan,
     calls: &CallProgramPlan,
-    kernel: usize,
     faults: &mut GatherFaults,
 ) -> Result<Function, String> {
+    let stage = &schedule.stages()[kernel];
+    let capture = integer_capture(schedule, stage, calls)?;
     let offset = stage
         .target_span()
         .start
@@ -98,6 +100,7 @@ fn stage_body(
     emitter.arena = Some(arena);
     emitter.calls = Some(calls);
     emitter.kernel_ordinal = kernel;
+    emitter.integer_capture = capture;
     emitter.gather_status_base = Some(
         faults
             .status_base
@@ -119,6 +122,31 @@ fn stage_body(
     }
     faults.entries.append(&mut emitter.gather_faults);
     Ok(function)
+}
+
+/// The Integer call cell a derived-output stage publishes into its lane.
+fn integer_capture(
+    schedule: &solve::NativeRefreshAssignmentSchedule,
+    stage: &solve::NativeRefreshAssignmentStage,
+    calls: &CallProgramPlan,
+) -> Result<Option<crate::emit::IntegerCapture>, String> {
+    let solve::NativeStageSource::Discrete { row } = stage.source() else {
+        return Ok(None);
+    };
+    let output = schedule
+        .derived_outputs()
+        .iter()
+        .find(|output| output.row() == row)
+        .ok_or("native discrete stage has no derived output")?;
+    let Some(solve::NativeIntegerSource::CallCell { operation, cell }) = output.integer_source()
+    else {
+        return Ok(None);
+    };
+    Ok(Some(crate::emit::IntegerCapture {
+        operation,
+        cell,
+        lane: super::buffers::lane_address(calls, output)?,
+    }))
 }
 
 pub(super) fn invoke(

@@ -84,6 +84,27 @@ fn event_iteration_contract_fixture() -> SolveProblem {
 }
 
 #[test]
+fn a_problem_with_states_records_its_typed_native_refusal() {
+    let mut problem = representative_solve_problem_fixture();
+    assert!(
+        problem
+            .continuous
+            .refresh_owners
+            .native_assignment_refusal()
+            .is_none()
+    );
+    issue_native_assignment_schedule(&mut problem);
+    let owners = &problem.continuous.refresh_owners;
+    assert!(owners.native_assignment_schedule().is_none());
+    assert_eq!(
+        owners.native_assignment_refusal(),
+        Some(&NativeScheduleRefusal::Evaluation(
+            NativeEvaluationRefusal::ContinuousStates
+        ))
+    );
+}
+
+#[test]
 fn event_iteration_contract_accepts_complete_typed_reverse_bijection() {
     event_iteration_contract_fixture()
         .validate_shape_contract()

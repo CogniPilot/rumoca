@@ -124,19 +124,13 @@ fn fixture(
         .unwrap(),
     );
     let layout = solve::VarLayout::from_parts(Default::default(), 2, 3);
-    let mut owners = solve::ContinuousRefreshOwners::default();
-    owners
-        .issue_native_assignment_schedule(
-            &source,
-            &[Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))],
-            &layout,
-        )
-        .unwrap();
-    (
-        owners.native_assignment_schedule().unwrap().clone(),
-        layout,
-        table,
+    let owners = solve::NativeRefreshAssignmentSchedule::from_continuous_block(
+        &source,
+        &[Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))],
+        &layout,
     )
+    .unwrap();
+    (owners, layout, table)
 }
 
 #[test]
@@ -263,20 +257,14 @@ fn conditional_complete_scalar_tuple_keeps_earlier_private_result_on_late_fault(
         .unwrap(),
     );
     let layout = solve::VarLayout::from_parts(Default::default(), 2, 2);
-    let mut owners = solve::ContinuousRefreshOwners::default();
-    owners
-        .issue_native_assignment_schedule(
-            &source,
-            &[Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))],
-            &layout,
-        )
-        .unwrap();
-    let compiled = compile_native_assignment_schedule_with_calls_wasm(
-        owners.native_assignment_schedule().unwrap(),
+    let owners = solve::NativeRefreshAssignmentSchedule::from_continuous_block(
+        &source,
+        &[Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))],
         &layout,
-        &table,
     )
     .unwrap();
+    let compiled =
+        compile_native_assignment_schedule_with_calls_wasm(&owners, &layout, &table).unwrap();
     let mut runner = ProgramRunner::new(&compiled, &layout);
     for value in [f64::from_bits(0x7ff8_4321_abcd_1234), f64::INFINITY] {
         let (status, actual) = runner.run(&[0., value]);

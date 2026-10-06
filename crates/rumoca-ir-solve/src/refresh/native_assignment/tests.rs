@@ -91,16 +91,13 @@ fn fixture(count: usize) -> (ComputeBlock, Vec<Option<ScalarSlot>>, VarLayout) {
 fn image_sized_native_stages_retain_compact_issued_order_and_prefix() {
     for count in [16, 160 * 90, 320 * 180] {
         let (source, targets, layout) = fixture(count);
-        let mut owner = crate::ContinuousRefreshOwners::default();
-        owner
-            .issue_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap();
-        let schedule = owner.native_assignment_schedule().unwrap();
+        let owner = derive(&source, &targets, &layout).unwrap();
+        let schedule = &owner;
         assert_eq!(
             schedule
                 .stages()
                 .iter()
-                .map(|stage| stage.source_node())
+                .map(|stage| continuous_node(stage))
                 .collect::<Vec<_>>(),
             [1, 0]
         );
@@ -116,11 +113,6 @@ fn image_sized_native_stages_retain_compact_issued_order_and_prefix() {
             assert_eq!(base_ops.len(), 6);
             assert_eq!(base_ops.last(), Some(&LinearOp::StoreOutput { src: 3 }));
         }
-        owner
-            .validate_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap();
-        let wire = serde_json::to_value(&owner).unwrap();
-        assert!(wire.get("native_assignment_schedule").is_none());
     }
 }
 
@@ -170,161 +162,8 @@ fn native_owner_rejects_cycles_coupled_targets_bad_bounds_and_overlaps() {
     );
     assert_eq!(
         derive(&source, &targets, &layout).unwrap_err().0,
-        "native stateless targets are overlapping or do not cover the complete Y layout"
+        "native stateless targets are overlapping or do not cover the complete work layout"
     );
-}
-
-#[test]
-fn replacing_native_source_revokes_issued_certificate() {
-    let (mut source, targets, layout) = fixture(16);
-    let mut owner = crate::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    if let ComputeNode::Map { base_ops, .. } = &mut source.nodes[1] {
-        base_ops[2] = LinearOp::Const { dst: 2, value: 3.0 };
-    }
-    assert!(
-        owner
-            .validate_native_assignment_schedule(&source, &targets, &layout)
-            .is_err()
-    );
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    owner
-        .validate_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-}
-
-#[test]
-fn refused_native_issue_records_its_refusal_until_a_later_issue_succeeds() {
-    let (mut source, targets, layout) = fixture(16);
-    let mut owner = crate::ContinuousRefreshOwners::default();
-    assert!(owner.native_assignment_refusal().is_none());
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    let issued = source.clone();
-    if let ComputeNode::Map { load_strides, .. } = &mut source.nodes[1] {
-        load_strides[1].terms[0].stride = 2;
-    }
-    let refusal = owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap_err();
-    assert_eq!(
-        refusal.0,
-        "native affine address exceeds its owned variable layout"
-    );
-    // A refusal revokes the earlier schedule and keeps the exact reason.
-    assert!(owner.native_assignment_schedule().is_none());
-    assert_eq!(owner.native_assignment_refusal(), Some(&refusal));
-    owner
-        .issue_native_assignment_schedule(&issued, &targets, &layout)
-        .unwrap();
-    assert!(owner.native_assignment_schedule().is_some());
-    assert!(owner.native_assignment_refusal().is_none());
-}
-
-#[test]
-fn equivalent_value_projection_does_not_hide_canonical_source_replacement() {
-    let (mut source, targets, layout) = fixture(16);
-    if let ComputeNode::Map { base_ops, .. } = &mut source.nodes[1] {
-        base_ops.insert(
-            base_ops.len() - 1,
-            LinearOp::Binary {
-                dst: 5,
-                op: BinaryOp::Sub,
-                lhs: 3,
-                rhs: 0,
-            },
-        );
-    }
-    let mut owner = crate::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    let prior = owner.native_assignment_schedule().unwrap().clone();
-    if let ComputeNode::Map { base_ops, .. } = &mut source.nodes[1] {
-        *base_ops.last_mut().unwrap() = LinearOp::StoreOutput { src: 5 };
-    }
-    // The equation changes from target-value=0 to value-target=0. Its final
-    // assignment value and prefix are identical, but its original source is
-    // different and must revoke the construction certificate.
-    let replacement = derive(&source, &targets, &layout).unwrap();
-    assert!(node_matches(
-        &prior.stages()[0].value_kernel().nodes[0],
-        &replacement.stages()[0].value_kernel().nodes[0]
-    ));
-    assert!(
-        owner
-            .validate_native_assignment_schedule(&source, &targets, &layout)
-            .is_err()
-    );
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    owner
-        .validate_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-
-    let (mut source, mut targets, layout) = fixture(16);
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    let prior = owner.native_assignment_schedule().unwrap().clone();
-    for node in &mut source.nodes {
-        if let ComputeNode::Map { output_map, .. } = node {
-            output_map.start = 16 - output_map.start;
-        }
-    }
-    targets.rotate_left(16);
-    // Reordering logical source outputs together with their targets also
-    // leaves every final value stage unchanged; it still changes source facts.
-    let replacement = derive(&source, &targets, &layout).unwrap();
-    for (prior, replacement) in prior.stages().iter().zip(replacement.stages()) {
-        assert!(node_matches(
-            &prior.value_kernel().nodes[0],
-            &replacement.value_kernel().nodes[0]
-        ));
-    }
-    assert!(
-        owner
-            .validate_native_assignment_schedule(&source, &targets, &layout)
-            .is_err()
-    );
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-}
-
-#[test]
-fn source_signed_zero_replacement_revokes_native_certificate() {
-    let (mut source, targets, layout) = fixture(16);
-    if let ComputeNode::Map { base_ops, .. } = &mut source.nodes[1] {
-        base_ops[2] = LinearOp::Const { dst: 2, value: 0.0 };
-    }
-    let mut owner = crate::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    if let ComputeNode::Map { base_ops, .. } = &mut source.nodes[1] {
-        base_ops[2] = LinearOp::Const {
-            dst: 2,
-            value: -0.0,
-        };
-    }
-    assert!(
-        owner
-            .validate_native_assignment_schedule(&source, &targets, &layout)
-            .is_err()
-    );
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    owner
-        .validate_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
 }
 
 #[test]

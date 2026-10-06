@@ -275,15 +275,11 @@ impl Program {
         p_count: usize,
     ) -> Self {
         let layout = solve::VarLayout::from_parts(Default::default(), y_count, p_count);
-        let mut owner = solve::ContinuousRefreshOwners::default();
-        owner
-            .issue_native_assignment_schedule(&block, &targets, &layout)
-            .unwrap();
-        let bytes = compile_native_assignment_schedule_wasm_bytes(
-            owner.native_assignment_schedule().unwrap(),
-            &layout,
+        let owner = solve::NativeRefreshAssignmentSchedule::from_continuous_block(
+            &block, &targets, &layout,
         )
         .unwrap();
+        let bytes = compile_native_assignment_schedule_wasm_bytes(&owner, &layout).unwrap();
         if y_count == 28_800
             && let Ok(path) = std::env::var("NATIVE_ARRAY_WASM_OUTPUT")
         {
@@ -720,15 +716,13 @@ fn native_private_arena_refuses_excess_storage_without_allocating_the_register_e
         )],
     };
     let layout = solve::VarLayout::from_parts(Default::default(), 1, 1);
-    let mut owner = solve::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&source, &[Some(solve::scalar_slot_y(0))], &layout)
-        .unwrap();
-    let error = compile_native_assignment_schedule_wasm_bytes(
-        owner.native_assignment_schedule().unwrap(),
+    let owner = solve::NativeRefreshAssignmentSchedule::from_continuous_block(
+        &source,
+        &[Some(solve::scalar_slot_y(0))],
         &layout,
     )
-    .unwrap_err();
+    .unwrap();
+    let error = compile_native_assignment_schedule_wasm_bytes(&owner, &layout).unwrap_err();
     assert!(
         error
             .to_string()

@@ -176,16 +176,10 @@ fn fixture(
     let targets = (0..2 * count)
         .map(|i| Some(solve::scalar_slot_y(i)))
         .collect::<Vec<_>>();
-    let mut owners = solve::ContinuousRefreshOwners::default();
-    owners
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    (
-        owners.native_assignment_schedule().unwrap().clone(),
-        layout,
-        table,
-        site,
-    )
+    let owners =
+        solve::NativeRefreshAssignmentSchedule::from_continuous_block(&source, &targets, &layout)
+            .unwrap();
+    (owners, layout, table, site)
 }
 
 fn expected(table: &solve::SolvePureCallTable, site: &solve::SolvePureCallSite, input: f64) -> f64 {
@@ -203,9 +197,12 @@ fn compact_map_and_stencil_calls_match_complete_canonical_real_boolean_coordinat
             schedule
                 .stages()
                 .iter()
-                .map(|s| s.source_node())
+                .map(|s| s.source())
                 .collect::<Vec<_>>(),
-            [1, 0]
+            [
+                solve::NativeStageSource::Continuous { node: 1 },
+                solve::NativeStageSource::Continuous { node: 0 }
+            ]
         );
         let compiled =
             compile_native_assignment_schedule_with_calls_wasm(&schedule, &layout, &table).unwrap();

@@ -41,14 +41,13 @@ pub(crate) fn with_prepared_native_model(
 pub(crate) fn checked_native_schedule(
     model: &rumoca_ir_solve::SolveModel,
 ) -> Result<&rumoca_ir_solve::NativeRefreshAssignmentSchedule, WasmError> {
+    // The issued schedule owns every semantic admission decision (states,
+    // events, history, clocks, initialization, typed outputs); only the
+    // external table bindings live on the model rather than the problem.
     let problem = &model.problem;
-    if problem.solve_layout.state_scalar_count() != 0
-        || rumoca_ir_solve::solve_event_class(problem).is_some()
-        || rumoca_ir_solve::solve_has_initialization(problem)
-        || !model.external_tables.is_empty()
-    {
+    if !model.external_tables.is_empty() {
         return Err(WasmError::new(
-            "native assignments reject states, initialization equations, events, clocks, and external tables",
+            "native evaluation has no external table storage",
         ));
     }
     problem
@@ -77,6 +76,11 @@ fn model_artifact(
 ) -> Result<String, WasmError> {
     let problem = &model.problem;
     let schedule = checked_native_schedule(model)?;
+    if !schedule.derived_outputs().is_empty() {
+        return Err(WasmError::new(
+            "derived discrete outputs are published through typed output lanes of the native program ABI, not the separate-stage copy ABI",
+        ));
+    }
     let y_count = problem.layout.y_scalars();
     let p_count = problem.layout.p_scalars();
     let max_output = schedule
@@ -149,7 +153,7 @@ fn stage_artifact(
         ));
     }
     Ok(serde_json::json!({
-        "source_node": stage.source_node(), "target_start": range.start,
+        "source": crate::native_program_api::stage_source(stage), "target_start": range.start,
         "target_count": range.len(),
         "module_sha256": format!("{:x}", Sha256::digest(&bytes)), "module_bytes": bytes,
     }))

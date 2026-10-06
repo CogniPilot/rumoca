@@ -34,7 +34,9 @@ pub use materialization::{
     materialize_target_assignment,
 };
 pub use native_assignment::{
+    NativeDerivedOutput, NativeEvaluationRefusal, NativeIntegerSource, NativeOutputLane,
     NativeRefreshAssignmentRefusal, NativeRefreshAssignmentSchedule, NativeRefreshAssignmentStage,
+    NativeScheduleRefusal, NativeStageSource,
 };
 pub use shared_schedule::SharedAssignmentSchedule;
 pub use staged_execution::{
@@ -452,10 +454,10 @@ pub enum RefreshSeedRule {
 /// Complete construction-issued continuous refresh inventory for one model.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ContinuousRefreshOwners {
+    /// The stateless native value schedule or why the problem has none;
+    /// `None` until [`issue_native_assignment_schedule`] runs.
     #[serde(skip)]
-    native_assignment_schedule: Option<NativeRefreshAssignmentSchedule>,
-    #[serde(skip)]
-    native_assignment_refusal: Option<NativeRefreshAssignmentRefusal>,
+    native_assignment: Option<Result<NativeRefreshAssignmentSchedule, NativeScheduleRefusal>>,
     #[serde(skip)]
     projection_affinities: BTreeMap<usize, bool>,
     algebraic: RefreshPlan,
@@ -635,54 +637,21 @@ impl<'de> Deserialize<'de> for ContinuousRefreshOwners {
     }
 }
 
+/// Issue the stateless native value schedule of `problem`, or the reason it has
+/// none, from its canonical rows. Construction and wire decoding both call
+/// this once; nothing re-derives or re-checks the issued schedule afterwards.
+pub fn issue_native_assignment_schedule(problem: &mut crate::SolveProblem) {
+    let issued = native_assignment::derive_for_problem(problem);
+    problem.continuous.refresh_owners.native_assignment = Some(issued);
+}
+
 impl ContinuousRefreshOwners {
-    /// Issue native stages from canonical equations and structural targets.
-    /// Refusal leaves the preserved scalar/projection path intact.
-    pub fn issue_native_assignment_schedule(
-        &mut self,
-        source: &ComputeBlock,
-        targets: &[Option<crate::ScalarSlot>],
-        layout: &crate::VarLayout,
-    ) -> Result<(), NativeRefreshAssignmentRefusal> {
-        self.native_assignment_schedule = None;
-        self.native_assignment_refusal = None;
-        match native_assignment::derive(source, targets, layout) {
-            Ok(schedule) => self.native_assignment_schedule = Some(schedule),
-            Err(error) => {
-                self.native_assignment_refusal = Some(error.clone());
-                return Err(error);
-            }
-        }
-        Ok(())
-    }
-
     pub fn native_assignment_schedule(&self) -> Option<&NativeRefreshAssignmentSchedule> {
-        self.native_assignment_schedule.as_ref()
+        self.native_assignment.as_ref()?.as_ref().ok()
     }
 
-    pub fn native_assignment_refusal(&self) -> Option<&NativeRefreshAssignmentRefusal> {
-        self.native_assignment_refusal.as_ref()
-    }
-
-    pub(crate) fn validate_native_assignment_schedule(
-        &self,
-        source: &ComputeBlock,
-        targets: &[Option<crate::ScalarSlot>],
-        layout: &crate::VarLayout,
-    ) -> Result<(), ContinuousRefreshConstructionError> {
-        if let Some(schedule) = &self.native_assignment_schedule {
-            let current = native_assignment::derive(source, targets, layout).map_err(|error| {
-                ContinuousRefreshConstructionError {
-                    reason: error.to_string(),
-                }
-            })?;
-            if !native_assignment::matches(schedule, &current) {
-                return refresh_error(
-                    "native assignment owner differs from its canonical source".into(),
-                );
-            }
-        }
-        Ok(())
+    pub fn native_assignment_refusal(&self) -> Option<&NativeScheduleRefusal> {
+        self.native_assignment.as_ref()?.as_ref().err()
     }
 
     /// The warm-start rule of one executor class: an importer-driven
@@ -767,8 +736,7 @@ impl ContinuousRefreshOwners {
         )?;
         Ok(Self {
             projection_affinities: BTreeMap::new(),
-            native_assignment_schedule: None,
-            native_assignment_refusal: None,
+            native_assignment: None,
             algebraic,
             derivative,
             root,
@@ -937,8 +905,7 @@ impl ContinuousRefreshOwners {
             crate::affinity::projection_affinities(implicit_rhs, &self.algebraic);
         self.omit_affine_projection_seeds();
         let Self {
-            native_assignment_schedule: _,
-            native_assignment_refusal: _,
+            native_assignment: _,
             projection_affinities: _,
             algebraic,
             derivative,

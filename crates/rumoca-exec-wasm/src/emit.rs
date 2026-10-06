@@ -349,6 +349,16 @@ struct BodyEmitter<'a> {
     program_span: Option<rumoca_core::Span>,
     operation_ordinal: usize,
     region_path: Vec<(usize, usize)>,
+    /// Copy one Integer call cell into its typed output lane after the call
+    /// at this operation of the stage program.
+    integer_capture: Option<IntegerCapture>,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::emit) struct IntegerCapture {
+    pub(in crate::emit) operation: usize,
+    pub(in crate::emit) cell: u32,
+    pub(in crate::emit) lane: u32,
 }
 
 impl<'a> BodyEmitter<'a> {
@@ -369,6 +379,7 @@ impl<'a> BodyEmitter<'a> {
             program_span: None,
             operation_ordinal: 0,
             region_path: Vec::new(),
+            integer_capture: None,
         }
     }
 

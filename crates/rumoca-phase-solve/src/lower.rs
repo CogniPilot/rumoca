@@ -96,6 +96,7 @@ pub(crate) fn lower_solve_problem(
             Some(span) => LowerError::contract(error.to_string(), span),
             None => LowerError::unspanned_non_computable(error.to_string()),
         })?;
+    solve::issue_native_assignment_schedule(&mut problem);
     solve::validate_problem_pure_call_sites(&problem, &pure_calls)?;
     Ok((problem, pure_calls))
 }

@@ -633,7 +633,7 @@ fn build_refresh_owners(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut owners = solve::ContinuousRefreshOwners::checked_for_source(
+    let owners = solve::ContinuousRefreshOwners::checked_for_source(
         &problem.continuous.implicit_rhs,
         algebraic,
         derivative,
@@ -645,11 +645,6 @@ fn build_refresh_owners(
         message: error.to_string(),
         span: catalog.first_span(),
     })?;
-    let _ = owners.issue_native_assignment_schedule(
-        &problem.continuous.implicit_rhs,
-        &problem.continuous.implicit_row_targets,
-        &problem.layout,
-    );
     Ok(owners)
 }
 

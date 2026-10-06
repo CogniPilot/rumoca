@@ -115,15 +115,10 @@ fn fixture(
     let targets = (0..COUNT)
         .map(|index| Some(solve::scalar_slot_y(index)))
         .collect::<Vec<_>>();
-    let mut owners = solve::ContinuousRefreshOwners::default();
-    owners
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    (
-        owners.native_assignment_schedule().unwrap().clone(),
-        layout,
-        table,
-    )
+    let owners =
+        solve::NativeRefreshAssignmentSchedule::from_continuous_block(&source, &targets, &layout)
+            .unwrap();
+    (owners, layout, table)
 }
 
 #[test]

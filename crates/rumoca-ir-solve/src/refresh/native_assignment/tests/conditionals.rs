@@ -104,14 +104,8 @@ fn all_conditional_regions_retain_external_y_dependencies_and_order() {
         &layout,
     )
     .unwrap();
-    assert_eq!(
-        schedule.stages()[0].source_projection,
-        SourceProjection::Scalar {
-            program: 1,
-            output: 1,
-            stores: vec![LinearOp::StoreOutput { src: 2 }],
-        }
-    );
+    // The independent second program is issued first.
+    assert_eq!(schedule.stages()[0].target_range(), Some(1..2));
 }
 
 #[test]

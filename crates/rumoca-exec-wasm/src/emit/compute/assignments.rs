@@ -7,6 +7,12 @@ pub(crate) fn emit_native_assignment_module(
     schedule: &solve::NativeRefreshAssignmentSchedule,
     layout: &VarLayout,
 ) -> Result<Vec<u8>, String> {
+    if !schedule.derived_outputs().is_empty() {
+        return Err(
+            "derived discrete outputs are published only by the checked native program entry"
+                .into(),
+        );
+    }
     layout
         .validate_shape_contract()
         .map_err(|error| error.to_string())?;

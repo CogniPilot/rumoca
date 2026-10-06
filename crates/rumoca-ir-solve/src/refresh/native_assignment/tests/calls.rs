@@ -92,7 +92,7 @@ fn compact_calls_retain_original_domain_order_and_complete_prefix() {
             schedule
                 .stages()
                 .iter()
-                .map(|s| s.source_node())
+                .map(|s| continuous_node(s))
                 .collect::<Vec<_>>(),
             [1, 0]
         );
@@ -101,7 +101,7 @@ fn compact_calls_retain_original_domain_order_and_complete_prefix() {
                 base_ops: original,
                 domain,
                 ..
-            } = &source.nodes[stage.source_node()]
+            } = &source.nodes[continuous_node(stage)]
             else {
                 panic!("source")
             };

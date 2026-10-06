@@ -1,18 +1,13 @@
 use super::super::{
     Checked, ComputeBlock, Family, NativeRefreshAssignmentRefusal, NativeRefreshAssignmentStage,
-    SourceProjection, coverage, coverage::Coverage, dependencies, refused,
+    NativeStageSource, coverage, coverage::Coverage, dependencies, refused,
 };
 use super::*;
 
 fn family(targets: Coverage, reads: Vec<Coverage>) -> Family {
     Family {
         stage: NativeRefreshAssignmentStage {
-            source_node: 0,
-            source_projection: SourceProjection::Scalar {
-                program: 0,
-                output: 0,
-                stores: Vec::new(),
-            },
+            source: NativeStageSource::Continuous { node: 0 },
             targets,
             value_kernel: ComputeBlock::default(),
         },

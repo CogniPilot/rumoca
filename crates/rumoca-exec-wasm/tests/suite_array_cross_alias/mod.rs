@@ -52,16 +52,15 @@ fn native_cross_overlapping_destination_versions_refuse_before_emission() {
             .map(|index| Some(solve::scalar_slot_y(index)))
             .collect::<Vec<_>>();
         let layout = solve::VarLayout::from_parts(Default::default(), 3, 6);
-        let mut owners = solve::ContinuousRefreshOwners::default();
-        let error = owners
-            .issue_native_assignment_schedule(&block, &targets, &layout)
-            .unwrap_err();
+        let error = solve::NativeRefreshAssignmentSchedule::from_continuous_block(
+            &block, &targets, &layout,
+        )
+        .unwrap_err();
         assert!(
             error
                 .to_string()
                 .contains("overlapping destination versions")
         );
-        assert!(owners.native_assignment_schedule().is_none());
     }
 }
 

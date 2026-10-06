@@ -205,11 +205,10 @@ fn fixture_with_stencil(
         .map(|index| Some(solve::scalar_slot_y(index)))
         .collect::<Vec<_>>();
     let layout = solve::VarLayout::from_parts(Default::default(), count * 2, count);
-    let mut owner = solve::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&block, &targets, &layout)
-        .unwrap();
-    (owner.native_assignment_schedule().unwrap().clone(), layout)
+    let owner =
+        solve::NativeRefreshAssignmentSchedule::from_continuous_block(&block, &targets, &layout)
+            .unwrap();
+    (owner, layout)
 }
 
 fn instantiate(
@@ -415,15 +414,13 @@ fn fused_native_execution_keeps_the_entire_issued_source_prefix() {
         )],
     };
     let layout = solve::VarLayout::from_parts(Default::default(), 1, 1);
-    let mut owner = solve::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&block, &[Some(solve::scalar_slot_y(0))], &layout)
-        .unwrap();
-    let bytes = compile_native_assignment_schedule_wasm_bytes(
-        owner.native_assignment_schedule().unwrap(),
+    let owner = solve::NativeRefreshAssignmentSchedule::from_continuous_block(
+        &block,
+        &[Some(solve::scalar_slot_y(0))],
         &layout,
     )
     .unwrap();
+    let bytes = compile_native_assignment_schedule_wasm_bytes(&owner, &layout).unwrap();
     let engine = Engine::default();
     let mut store = Store::new(&engine, Vec::<u64>::new());
     let memory = Memory::new(&mut store, MemoryType::new(1, None)).unwrap();

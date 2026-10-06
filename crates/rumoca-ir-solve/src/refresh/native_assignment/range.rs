@@ -172,11 +172,8 @@ pub(super) fn derive(
         .map_err(|_| NativeRefreshAssignmentRefusal("malformed native tensor value projection"))?;
     Ok(Family {
         stage: NativeRefreshAssignmentStage {
-            source_node: source.node() as usize,
-            source_projection: SourceProjection::Scalar {
-                program: source.program() as usize,
-                output: outputs.start,
-                stores: stores.to_vec(),
+            source: NativeStageSource::Continuous {
+                node: source.node() as usize,
             },
             targets: coverage::Coverage::dense(target_range),
             value_kernel: ComputeBlock {

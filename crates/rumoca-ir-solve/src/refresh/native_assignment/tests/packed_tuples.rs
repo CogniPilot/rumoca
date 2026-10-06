@@ -73,16 +73,6 @@ fn move_packed_tuples_keep_one_original_stage_and_ordered_prefix() {
         assert_eq!(schedule.stages.len(), 1);
         let stage = &schedule.stages[0];
         assert_eq!(stage.target_range(), Some(0..count));
-        let SourceProjection::Scalar {
-            program,
-            output,
-            stores,
-        } = &stage.source_projection
-        else {
-            panic!("original scalar tuple owner")
-        };
-        assert_eq!((*program, *output), (0, 0));
-        assert_eq!(stores, &original[split..]);
         let ComputeNode::ScalarPrograms(block) = &stage.value_kernel().nodes[0] else {
             panic!("one tuple value program")
         };
@@ -202,44 +192,5 @@ fn move_packed_range_store_checks_even_unused_call_arguments_against_whole_tuple
         } else {
             assert!(result.is_ok());
         }
-    }
-}
-
-#[test]
-fn move_packed_tuple_source_replacement_revokes_original_store_and_literal_owner() {
-    let ops = operations(3, false, false);
-    let block = source(ops.clone());
-    let mut owner = crate::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&block, &targets(3), &layout(3))
-        .unwrap();
-    owner
-        .validate_native_assignment_schedule(&block, &targets(3), &layout(3))
-        .unwrap();
-    for mutation in 0..2 {
-        let mut edited = ops.clone();
-        match mutation {
-            0 => {
-                edited.insert(
-                    12,
-                    LinearOp::Const {
-                        dst: 20,
-                        value: -0.,
-                    },
-                );
-            }
-            _ => {
-                edited[15] = LinearOp::StoreOutputRange {
-                    start: 12,
-                    count: 2,
-                    stride: 1,
-                };
-            }
-        }
-        assert!(
-            owner
-                .validate_native_assignment_schedule(&source(edited), &targets(3), &layout(3))
-                .is_err()
-        );
     }
 }

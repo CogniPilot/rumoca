@@ -6,6 +6,13 @@ use crate::typed_call::program::CallLayout;
 pub(in crate::emit) struct CallProgramPlan {
     pub bytes: u32,
     pub work_bytes: u32,
+    /// Bytes of the host Y buffer copied into and published from the work
+    /// region; the work region also holds private derived-output slots.
+    pub host_y_bytes: u32,
+    /// Staging offset and size of the typed output lanes, published to the
+    /// output pointer only after every stage succeeds.
+    pub lanes: u32,
+    pub lane_bytes: u32,
     pub input: u32,
     pub output: u32,
     pub scratch: u32,
@@ -56,6 +63,9 @@ impl CallProgramPlan {
         Ok(Self {
             bytes,
             work_bytes,
+            host_y_bytes: work_bytes,
+            lanes: 0,
+            lane_bytes: 0,
             input: work_bytes,
             output: output_offset,
             scratch: scratch_offset,
@@ -65,6 +75,34 @@ impl CallProgramPlan {
             helpers: calls,
             memos,
         })
+    }
+
+    /// Publish `host_y` of the work scalars to the host Y buffer and stage
+    /// `lane_bytes` of typed output lanes after the existing storage.
+    pub(in crate::emit) fn with_output_lanes(
+        mut self,
+        host_y: usize,
+        lane_bytes: usize,
+    ) -> Result<Self, String> {
+        let host_y_bytes = host_y
+            .checked_mul(8)
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|&n| n <= self.work_bytes)
+            .ok_or("native host Y exceeds the work region")?;
+        let lane_bytes = u32::try_from(lane_bytes).map_err(|_| "native output lanes overflow")?;
+        let lanes = self
+            .bytes
+            .checked_next_multiple_of(8)
+            .ok_or("native output lanes overflow")?;
+        let bytes = lanes
+            .checked_add(lane_bytes)
+            .filter(|&n| n <= 64 * 1024 * 1024)
+            .ok_or("native whole-program scratch exceeds 64 MiB")?;
+        self.host_y_bytes = host_y_bytes;
+        self.lanes = lanes;
+        self.lane_bytes = lane_bytes;
+        self.bytes = bytes;
+        Ok(self)
     }
 
     pub(super) fn call(&self, site: &solve::SolvePureCallSite) -> Result<CallLayout, String> {

@@ -76,15 +76,10 @@ fn typed_fixture() -> (
     let targets = (0..3)
         .map(|index| Some(solve::scalar_slot_y(index)))
         .collect::<Vec<_>>();
-    let mut owners = solve::ContinuousRefreshOwners::default();
-    owners
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    (
-        owners.native_assignment_schedule().unwrap().clone(),
-        layout,
-        table.finish(),
-    )
+    let owners =
+        solve::NativeRefreshAssignmentSchedule::from_continuous_block(&source, &targets, &layout)
+            .unwrap();
+    (owners, layout, table.finish())
 }
 
 fn run_cells(runner: &mut Runner, inputs: [f64; 3]) -> (i32, Vec<u64>) {

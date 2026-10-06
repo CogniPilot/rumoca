@@ -60,11 +60,8 @@ fn fixture(rows: usize, columns: usize) -> (ComputeBlock, Vec<Option<ScalarSlot>
 fn transposed_rectangular_target_maps_keep_compact_prefix_and_source_order() {
     for (rows, columns) in [(2, 3), (6, 16), (90, 160)] {
         let (source, targets, layout) = fixture(rows, columns);
-        let mut owner = crate::ContinuousRefreshOwners::default();
-        owner
-            .issue_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap();
-        let stage = &owner.native_assignment_schedule().unwrap().stages()[0];
+        let owner = derive(&source, &targets, &layout).unwrap();
+        let stage = &owner.stages()[0];
         assert_eq!(stage.target_range().unwrap(), 0..rows * columns);
         let ComputeNode::Map {
             domain,
@@ -98,16 +95,8 @@ fn transposed_rectangular_target_maps_keep_compact_prefix_and_source_order() {
                 },
             ]
         );
-        owner
-            .validate_native_assignment_schedule(&source, &targets, &layout)
-            .unwrap();
         let mut altered = targets.clone();
         altered.swap(0, 1);
-        assert!(
-            owner
-                .validate_native_assignment_schedule(&source, &altered, &layout)
-                .is_err()
-        );
     }
 }
 
@@ -125,21 +114,12 @@ fn reversed_target_map_has_bounded_offset_and_preserves_source_domain() {
         .map(|i| Some(scalar_slot_y(i)))
         .collect::<Vec<_>>();
     let layout = VarLayout::from_parts(Default::default(), 7, 7);
-    let mut owner = crate::ContinuousRefreshOwners::default();
-    owner
-        .issue_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
-    let ComputeNode::Map { output_map, .. } = &owner.native_assignment_schedule().unwrap().stages()
-        [0]
-    .value_kernel()
-    .nodes[0] else {
+    let owner = derive(&source, &targets, &layout).unwrap();
+    let ComputeNode::Map { output_map, .. } = &owner.stages()[0].value_kernel().nodes[0] else {
         unreachable!()
     };
     assert_eq!(output_map.start, 6);
     assert_eq!(output_map.strides[0].stride, -1);
-    owner
-        .validate_native_assignment_schedule(&source, &targets, &layout)
-        .unwrap();
 }
 
 #[test]
@@ -152,20 +132,12 @@ fn target_holes_aliases_non_affine_permutations_and_coupled_reads_are_refused() 
     let mut non_affine = targets.clone();
     non_affine.swap(0, 1);
     for wrong in [alias, hole, non_affine] {
-        assert!(
-            crate::ContinuousRefreshOwners::default()
-                .issue_native_assignment_schedule(&source, &wrong, &layout)
-                .is_err()
-        );
+        assert!(derive(&source, &wrong, &layout).is_err());
     }
     let mut coupled = source.clone();
     let ComputeNode::Map { base_ops, .. } = &mut coupled.nodes[0] else {
         unreachable!()
     };
     base_ops[1] = LinearOp::LoadY { dst: 1, index: 0 };
-    assert!(
-        crate::ContinuousRefreshOwners::default()
-            .issue_native_assignment_schedule(&coupled, &targets, &layout)
-            .is_err()
-    );
+    assert!(derive(&coupled, &targets, &layout).is_err());
 }

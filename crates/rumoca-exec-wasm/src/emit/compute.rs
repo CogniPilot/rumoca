@@ -261,6 +261,11 @@ impl BodyEmitter<'_> {
                 } => self.emit_mapped_range(start, count, stride, targets)?,
                 LinearOp::PureCall { .. } if self.calls.is_some() => {
                     self.emit_native_pure_call(op.clone(), Some(&program[..index]))?;
+                    if let Some(capture) = self.integer_capture
+                        && capture.operation == index
+                    {
+                        self.capture_integer_cell(capture)?;
+                    }
                 }
                 _ => self.emit_op(op.clone())?,
             }

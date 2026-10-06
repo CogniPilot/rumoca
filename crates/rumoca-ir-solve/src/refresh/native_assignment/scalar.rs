@@ -110,11 +110,8 @@ fn derive_program(
         .map_err(|_| NativeRefreshAssignmentRefusal("malformed native scalar value projection"))?;
     Ok(Family {
         stage: NativeRefreshAssignmentStage {
-            source_node: source.node() as usize,
-            source_projection: SourceProjection::Scalar {
-                program: source.program() as usize,
-                output,
-                stores: vec![operations[operations.len() - 1].clone()],
+            source: NativeStageSource::Continuous {
+                node: source.node() as usize,
             },
             targets: coverage::Coverage::dense(target..target + 1),
             value_kernel: ComputeBlock {
@@ -212,4 +209,65 @@ fn tensor_reads(
         reads.push(upper..end);
     }
     Ok(reads)
+}
+
+/// The value stage of one derived-discrete output: its discrete row program,
+/// every derived read rebound, publishing the stored register into the
+/// output's private work slot. A discrete row is already a value program, so
+/// no isolator is involved.
+pub(super) fn derive_discrete(
+    output: &NativeDerivedOutput,
+    rhs: &ScalarProgramBlock,
+    rebinding: &std::collections::BTreeMap<usize, usize>,
+    layout: &VarLayout,
+) -> Result<Family, NativeScheduleRefusal> {
+    let program = rhs
+        .program_index_for_output(output.row)
+        .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+    let source = rhs
+        .program(program)
+        .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+    let span = rhs
+        .program_span(program)
+        .ok_or(NativeRefreshAssignmentRefusal(
+            "native discrete program has no provenance",
+        ))?;
+    let operations = super::rebinding::rebind_operations(source, rebinding)?;
+    let Some(LinearOp::StoreOutput { .. }) = operations.last() else {
+        return Err(NativeEvaluationRefusal::MultiOutputDiscreteProgram.into());
+    };
+    let target = output.work_index;
+    let prefix = &operations[..operations.len() - 1];
+    crate::ScalarProgramRegisterFlow::derive(prefix).map_err(|_| {
+        NativeRefreshAssignmentRefusal("native discrete prefix has invalid register flow")
+    })?;
+    let reads = if prefix
+        .iter()
+        .any(|operation| matches!(operation, LinearOp::FunctionConditional { .. }))
+    {
+        super::range::checked_conditional_inputs(prefix, target..target + 1, layout)?
+    } else {
+        reads(prefix, target, layout)?
+    };
+    if prefix.iter().any(|operation| {
+        matches!(
+            operation,
+            LinearOp::PureCall { .. } | LinearOp::LoadIndexedRegister { .. }
+        )
+    }) {
+        super::range::checked_call_inputs(prefix, target..target + 1, layout)?;
+    }
+    let value_kernel = ScalarProgramBlock::with_program_spans(vec![operations], vec![span])
+        .map_err(|_| NativeRefreshAssignmentRefusal("malformed native discrete value program"))?;
+    Ok(Family {
+        stage: NativeRefreshAssignmentStage {
+            source: NativeStageSource::Discrete { row: output.row },
+            targets: coverage::Coverage::dense(target..target + 1),
+            value_kernel: ComputeBlock {
+                nodes: vec![ComputeNode::ScalarPrograms(value_kernel)],
+            },
+        },
+        reads: reads.into_iter().map(coverage::Coverage::dense).collect(),
+        outputs: 0..0,
+    })
 }
