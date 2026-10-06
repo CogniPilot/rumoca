@@ -12,6 +12,25 @@ pub(super) struct ReferenceBoundaryMigration {
 }
 
 fn reviewed_migration() -> ReferenceBoundaryMigration {
+    let mut migration = v13_migration();
+    migration.previous = Some(Box::new(migration.clone()));
+    migration.metric.from_quality_gate_version = 13;
+    migration.metric.to_quality_gate_version = 14;
+    migration.metric.change = "phasor-angle-comparison-v1".to_string();
+    migration.metric.strict_high_before = 298;
+    migration.metric.strict_high_after = 304;
+    migration.metric.policy_excluded_after = 53;
+    migration.metric.excluded_strict_high_before = 0;
+    migration.metric.excluded_non_high_before = 0;
+    migration.metric.exclusions_sha256 =
+        "19d0bef167c5120f371e59de5f3c4ed785779b16115f4689ebd8976be55a1a14".to_string();
+    migration.evidence_git_commit = "f45f742de6ca9d824e3b707d1e91b31edd33ac7f".to_string();
+    migration.evidence_run = "ang-compare-quasistatic-focused".to_string();
+    migration.policy_excluded_before = 59;
+    migration
+}
+
+fn v13_migration() -> ReferenceBoundaryMigration {
     let mut migration = v12_migration();
     migration.previous = Some(Box::new(migration.clone()));
     migration.metric.from_quality_gate_version = 12;
@@ -189,7 +208,8 @@ fn base_reference_boundary_migration() -> ReferenceBoundaryMigration {
 fn reviewed_boundary_migration(version: u64) -> Option<ReferenceBoundaryMigration> {
     match version {
         MSL_QUALITY_GATE_VERSION => Some(reviewed_migration()),
-        PREVIOUS_REFERENCE_BOUNDARY_VERSION => Some(v12_migration()),
+        PREVIOUS_REFERENCE_BOUNDARY_VERSION => Some(v13_migration()),
+        12 => Some(v12_migration()),
         11 => Some(v11_migration()),
         10 => Some(v10_migration()),
         9 => Some(v9_migration()),
@@ -263,7 +283,7 @@ mod tests {
     #[test]
     fn reference_boundary_migration_preserves_all_existing_ratchets() {
         let checked = checked_baseline();
-        for version in [4, 8, 9, 10, 11, 12] {
+        for version in [4, 8, 9, 10, 11, 12, 13] {
             preserves_ratchets_from(&checked, version);
         }
     }
@@ -322,6 +342,7 @@ mod tests {
         assert!(schema_target_reaches_current(10, &baseline));
         assert!(schema_target_reaches_current(11, &baseline));
         assert!(schema_target_reaches_current(12, &baseline));
+        assert!(schema_target_reaches_current(13, &baseline));
         assert!(!schema_target_reaches_current(3, &baseline));
         let migration = baseline.reference_boundary_migration.as_mut().unwrap();
         migration
@@ -329,7 +350,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .metric
-            .to_quality_gate_version = 13;
+            .to_quality_gate_version = 14;
         assert!(!schema_target_reaches_current(4, &baseline));
         assert!(validate_reference_boundary_migration(&baseline).is_err());
     }

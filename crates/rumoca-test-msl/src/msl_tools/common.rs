@@ -507,11 +507,6 @@ pub enum ComparatorImprovement {
     /// Compare period aggregates (Mean, RMS) at the model's annotation
     /// tolerance rather than at the reference's integration residue.
     AggregateToleranceAtAnnotationScale,
-    /// Compare angle channels on the circle, so pi and -pi across the atan2
-    /// branch cut agree, and treat the angle of an exactly zero phasor as
-    /// undefined rather than as whichever of 0, pi or -pi its signed zeros
-    /// select.
-    AngleBranchAwareComparison,
 }
 
 impl ComparatorImprovement {
@@ -520,7 +515,6 @@ impl ComparatorImprovement {
             "near_zero_channel_scaling" => Self::NearZeroChannelScaling,
             "event_instant_alignment" => Self::EventInstantAlignment,
             "aggregate_tolerance_at_annotation_scale" => Self::AggregateToleranceAtAnnotationScale,
-            "angle_branch_aware_comparison" => Self::AngleBranchAwareComparison,
             _ => return None,
         })
     }
@@ -710,7 +704,7 @@ fn parse_retired_by(
                     format!(
                         "exception '{model_name}' names no known `retired_by` improvement \
                      (near_zero_channel_scaling, event_instant_alignment, \
-                     aggregate_tolerance_at_annotation_scale, angle_branch_aware_comparison)"
+                     aggregate_tolerance_at_annotation_scale)"
                     )
                 })
         }
@@ -1142,7 +1136,7 @@ mod tests {
         let root = workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"));
         let exceptions = load_trace_exclusions_file(&root.join(TRACE_EXCLUSIONS_FILE_REL))
             .expect("tracked exceptions must parse");
-        assert_eq!(exceptions.len(), 59);
+        assert_eq!(exceptions.len(), 53);
         let count = |kind| {
             exceptions
                 .values()
@@ -1151,7 +1145,7 @@ mod tests {
         };
         assert_eq!(count(TraceExceptionKind::ReferenceFailure), 30);
         assert_eq!(count(TraceExceptionKind::ModelIssue), 7);
-        assert_eq!(count(TraceExceptionKind::ComparatorLimitation), 22);
+        assert_eq!(count(TraceExceptionKind::ComparatorLimitation), 16);
         for (model, exception) in &exceptions {
             if let Some(artifact) = &exception.evidence.artifact {
                 assert!(

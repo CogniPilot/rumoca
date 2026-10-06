@@ -97,54 +97,38 @@ current: Rumoca's angle alternates between 0 and pi, OMC's is 0 throughout.
 Each carries a `reference_failure` row in
 `crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json`.
 
-## Angles of zero and negative real phasors in QuasiStatic FluxTubes
+## Angles of zero and negative real phasors in QuasiStatic models
 
-In three QuasiStatic FluxTubes models every non-high channel is an `arg_*`
-angle, and every difference is the sign of a zero, not a value:
+In six QuasiStatic examples every channel that differed pointwise was an
+angle or a power factor, and every difference was the sign of a zero, not a
+value:
 
-- At `t = 0` a flux tube's phasor is exactly zero. `atan2` of a zero phasor
-  returns 0, pi or -pi according to the signs of its two zeros (Rumoca
-  evaluates `cuboidLeft.Phi` as `(-0, -0)`, hence -pi; OMC records 0). The
-  angle of a zero phasor is undefined.
+- Where a phasor is exactly zero, `atan2` returns 0, pi or -pi according to the
+  signs of its two zeros (Rumoca evaluates `cuboidLeft.Phi` as `(-0, -0)`,
+  hence -pi; OMC records 0). The FluxTubes phasors are zero at `t = 0` and in
+  QuadraticCoreAirgap until `t = 0.0124`; the Rectifier current is zero until
+  the load ramp starts at `t = 0.1`, so `voltageQS.pf = cos(arg(P + jQ))` is 1
+  against -1 there; the BalancingStar neutral current is zero throughout,
+  carrying only floating-point residue (at most 4e-15 A).
 - A phasor with a negative real part and a zero imaginary part lies on the
   branch cut: `atan2(+0, x)` is pi and `atan2(-0, x)` is -pi, the same angle.
-  `cuboidTop` and `idle` in CuboidSections, and both angle channels of
-  CylinderLeakage, record pi in one trace and -pi in the other for the whole
-  run.
 
-| Model | Channels (high / minor / deviating) | Differences |
+Solve lowering records each such channel's phasor from its defining equation
+(SPEC_0040 SOLVE-C65), and the comparator compares angles on the circle and
+drops a sample only where the phasor is zero in both traces and its component
+channels agree (SPEC_0050). Under that rule all six are strict-high:
+
+| Model | Compared channels (high / minor / deviating) | Undefined phasor channels |
 |---|---|---|
-| `Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CuboidSections` | 171 / 0 / 11 | 11 angles at `t = 0`; 5 of them pi against -pi throughout |
-| `Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CylinderSections` | 156 / 0 / 8 | 8 angles at `t = 0` only |
-| `Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.CylinderLeakage` | 232 / 0 / 2 | 2 angles, pi against -pi throughout |
+| `Electrical.QuasiStatic.Polyphase.Examples.BalancingStar` | 1213 / 0 / 0 | `currentSensor0.arg_i` |
+| `Electrical.QuasiStatic.SinglePhase.Examples.Rectifier` | 236 / 0 / 0 | none |
+| `Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.QuadraticCoreAirgap` | 318 / 0 / 0 | `magFluxSensor.arg_V_m` |
+| `Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CuboidSections` | 175 / 0 / 0 | 7 `arg_*` channels of exactly zero phasors |
+| `Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CylinderSections` | 164 / 0 / 0 | none |
+| `Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.CylinderLeakage` | 232 / 0 / 0 | `magneticFluxSensor.arg_V_m`, `magneticPotentialDifferenceSensor.arg_Phi` |
 
-Pointwise comparison of an angle is not identifying at a zero phasor or across
-the branch cut, so each carries a `comparator_limitation` row in
-`crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json`.
+An undefined phasor channel is one whose phasor is zero, at the comparator's
+resolution, in both traces wherever it is sampled, so it has no angle to
+compare; its component channels are compared and high. In these six models
+every such phasor is exactly zero or floating-point residue.
 Official reference traces and tolerances are unchanged.
-
-## Angles of zero and negative real phasors in Electrical.QuasiStatic
-
-The same two cases account for every non-high channel of two
-Electrical.QuasiStatic examples:
-
-- In `Polyphase.Examples.BalancingStar` the load balances the source: the phase
-  currents 10 A at 120 deg and 10/sqrt(3) A at -90 deg and -30 deg sum to an
-  exactly zero neutral current. Both traces carry only floating-point residue
-  (at most 4e-15 A) on `currentSensor0.i`, whose real and imaginary channels
-  agree; `atan2` of that residue gives -2.678 rad in Rumoca and -2.761 rad in
-  OMC.
-- In `SinglePhase.Examples.Rectifier` the quasi-static current is exactly zero
-  until the load ramp starts at `t = 0.1`, so its angle channels follow the
-  signs of the zeros (-pi against 0, and 0 against -pi for the source current,
-  with `voltageQS.pf = cos(arg_v - arg_i)` 1 against -1). After `t = 0.1` the
-  load is resistive and `voltageQS.arg_i` lies on the branch cut, pi against
-  -pi.
-
-| Model | Channels (high / minor / deviating) | Differences |
-|---|---|---|
-| `Electrical.QuasiStatic.Polyphase.Examples.BalancingStar` | 1213 / 0 / 1 | angle of the zero neutral current throughout |
-| `Electrical.QuasiStatic.SinglePhase.Examples.Rectifier` | 231 / 0 / 5 | 4 angles and 1 power factor for `t <= 0.1`; 1 angle pi against -pi after |
-
-Each carries a `comparator_limitation` row retired by
-`angle_branch_aware_comparison`.

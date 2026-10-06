@@ -17,9 +17,9 @@ use reference_boundary::{ReferenceBoundaryMigration, validate_reference_boundary
 const MSL_QUALITY_BASELINE_ASSET_URL: &str = "https://github.com/CogniPilot/rumoca/releases/download/msl-quality-baseline/msl_quality_baseline.json";
 const MSL_QUALITY_BASELINE_FALLBACK_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
-const MSL_QUALITY_GATE_VERSION: u64 = 13;
+const MSL_QUALITY_GATE_VERSION: u64 = 14;
 /// The reviewed boundary just behind the checked-in one.
-const PREVIOUS_REFERENCE_BOUNDARY_VERSION: u64 = 12;
+const PREVIOUS_REFERENCE_BOUNDARY_VERSION: u64 = 13;
 /// The version of the promoted release asset, the oldest reviewed boundary a
 /// promoted source may carry; every reviewed boundary from it up to
 /// [`PREVIOUS_REFERENCE_BOUNDARY_VERSION`] resolves to its checked-in migration.

@@ -18,6 +18,26 @@ pub(super) fn quality_gate_v3_metric_schema_migration() -> MslMetricSchemaMigrat
 }
 
 pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMigration {
+    let mut migration = v13_reference_boundary_migration();
+    migration.previous = Some(Box::new(migration.clone()));
+    migration.metric.from_quality_gate_version = 13;
+    migration.metric.to_quality_gate_version = 14;
+    migration.metric.change = "phasor-angle-comparison-v1".to_string();
+    migration.metric.strict_high_before = 298;
+    migration.metric.strict_high_after = 304;
+    migration.metric.policy_excluded_after = 53;
+    migration.metric.excluded_strict_high_before = 0;
+    migration.metric.excluded_non_high_before = 0;
+    migration.metric.exclusions_sha256 =
+        "19d0bef167c5120f371e59de5f3c4ed785779b16115f4689ebd8976be55a1a14".to_string();
+    migration.evidence_git_commit = "f45f742de6ca9d824e3b707d1e91b31edd33ac7f".to_string();
+    migration.evidence_run = "ang-compare-quasistatic-focused".to_string();
+    migration.policy_excluded_before = 59;
+    migration.roster_additions = Vec::new();
+    migration
+}
+
+pub(super) fn v13_reference_boundary_migration() -> MslReferenceBoundaryMigration {
     let mut migration = v12_reference_boundary_migration();
     migration.previous = Some(Box::new(migration.clone()));
     migration.metric.from_quality_gate_version = 12;

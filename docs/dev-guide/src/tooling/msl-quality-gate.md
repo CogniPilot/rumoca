@@ -179,9 +179,9 @@ under schema `msl_trace_exceptions_v2`. Every row is typed and evidenced:
 | `comparator_limitation` | the comparator cannot identify the channels; `retired_by` names the improvement that retires the row |
 
 A `comparator_limitation` row names one of `near_zero_channel_scaling`,
-`event_instant_alignment`, `aggregate_tolerance_at_annotation_scale`, or
-`angle_branch_aware_comparison`. The end state is fewer exceptions through a
-better comparator.
+`event_instant_alignment`, or `aggregate_tolerance_at_annotation_scale`. Angle
+and power-factor channels compare under the phasor rule (SPEC_0050) and need no
+row. The end state is fewer exceptions through a better comparator.
 
 The loader refuses an unknown kind, an empty reason, evidence with no stated
 fact, a malformed commit (at least seven hex digits), a repository artifact

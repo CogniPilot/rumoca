@@ -1723,20 +1723,30 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
         .reference_boundary_migration
         .expect("reviewed v4-to-v8 boundary chain");
     assert_eq!(reference, reviewed_reference_boundary_migration());
+    // The v14 boundary is a comparator-policy change: angle and power-factor
+    // channels compare under the SPEC_0050 phasor rule, which makes the six
+    // QuasiStatic angle comparator-limitation rows strict-high and retires
+    // them from the v13 file; it adds no row.
     assert_eq!(
-        reference.metric.strict_high_before,
+        reference.metric.strict_high_before + 6,
         reference.metric.strict_high_after
     );
-    // The typed-exception boundary types every reviewed row and removes none;
-    // the v13 boundary adds the Digital Counter and three FundamentalWave
-    // reference-failure rows, three QuasiStatic comparator-limitation rows
-    // (Electrical BalancingStar and Rectifier, FluxTubes QuadraticCoreAirgap)
-    // and the FluidHeatFlow TestOpenTank model-issue row to the v12 file.
     assert_eq!(
-        reference.policy_excluded_before + 8,
-        reference.metric.policy_excluded_after
+        reference.policy_excluded_before,
+        reference.metric.policy_excluded_after + 6
     );
     assert_eq!(reference.metric.excluded_strict_high_before, 0);
+    // The v13 boundary types every reviewed row and removes none: it adds the
+    // Digital Counter and three FundamentalWave reference-failure rows, three
+    // QuasiStatic comparator-limitation rows (Electrical BalancingStar and
+    // Rectifier, FluxTubes QuadraticCoreAirgap) and the FluidHeatFlow
+    // TestOpenTank model-issue row to the v12 file.
+    let v13 = reference.previous.as_deref().expect("checked v13 boundary");
+    assert_eq!(v13.metric.strict_high_before, v13.metric.strict_high_after);
+    assert_eq!(
+        v13.policy_excluded_before + 8,
+        v13.metric.policy_excluded_after
+    );
 
     let partial_migration = baseline
         .partial_classification_migration
@@ -1890,7 +1900,7 @@ fn quality_context_rejects_baseline_partial_roster_drift() {
 }
 
 /// A roster addition must name its defect and be in the roster it adds to;
-/// the v8 boundary's LogicalSample addition is reviewed and the v9 to v13
+/// the v8 boundary's LogicalSample addition is reviewed and the v9 to v14
 /// boundaries add none (SPEC_0050).
 #[test]
 fn roster_additions_name_their_defect_and_join_the_roster() {
@@ -1900,9 +1910,11 @@ fn roster_additions_name_their_defect_and_join_the_roster() {
     let head = baseline
         .reference_boundary_migration
         .as_ref()
-        .expect("checked v13 boundary");
+        .expect("checked v14 boundary");
     assert!(head.roster_additions.is_empty());
-    let v12 = head.previous.as_deref().expect("checked v12 boundary");
+    let v13 = head.previous.as_deref().expect("checked v13 boundary");
+    assert!(v13.roster_additions.is_empty());
+    let v12 = v13.previous.as_deref().expect("checked v12 boundary");
     assert!(v12.roster_additions.is_empty());
     let v11 = v12.previous.as_deref().expect("checked v11 boundary");
     assert!(v11.roster_additions.is_empty());
@@ -1926,6 +1938,7 @@ fn roster_additions_name_their_defect_and_join_the_roster() {
         .and_then(|migration| migration.previous.as_mut())
         .and_then(|migration| migration.previous.as_mut())
         .and_then(|migration| migration.previous.as_mut())
+        .and_then(|migration| migration.previous.as_mut())
         .unwrap()
         .roster_additions[0]
         .cause = " ".to_string();
@@ -1935,6 +1948,7 @@ fn roster_additions_name_their_defect_and_join_the_roster() {
     let mut outside = baseline;
     outside.reference_boundary_migration = outside
         .reference_boundary_migration
+        .and_then(|migration| migration.previous.map(|previous| *previous))
         .and_then(|migration| migration.previous.map(|previous| *previous))
         .and_then(|migration| migration.previous.map(|previous| *previous))
         .and_then(|migration| migration.previous.map(|previous| *previous))
