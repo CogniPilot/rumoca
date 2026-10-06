@@ -21,7 +21,7 @@ fn trace_stats(models_compared: usize, high: usize, minor: usize) -> MslTraceAcc
     }
 }
 
-fn parity_with(trace: MslTraceAccuracyStatsBaseline) -> MslParityGateInput {
+pub(super) fn parity_with(trace: MslTraceAccuracyStatsBaseline) -> MslParityGateInput {
     MslParityGateInput {
         total_models: Some(10),
         omc_version: Some("OpenModelica 1.26.1".to_string()),

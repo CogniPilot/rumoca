@@ -1552,12 +1552,14 @@ pub(super) fn sim_completion_report_notes(
 ) -> Vec<String> {
     let mut notes = Vec::new();
     let allowed_drop = stage_count_allowed_drop(gate_input.sim_target_models);
-    if stage_count_regressed(gate_input.sim_ok, baseline.sim_ok, allowed_drop) {
+    let sim_floor = certified_floor(baseline, baseline.sim_ok);
+    let ic_floor = certified_floor(baseline, baseline.ic_ok);
+    if stage_count_regressed(gate_input.sim_ok, sim_floor, allowed_drop) {
         push_stage_count_regression_reason_with_drop(
             &mut notes,
             "IC",
             gate_input.ic_ok,
-            baseline.ic_ok,
+            ic_floor,
             gate_input.sim_target_models,
             allowed_drop,
         );
@@ -1566,7 +1568,7 @@ pub(super) fn sim_completion_report_notes(
         &mut notes,
         "Sim",
         gate_input.sim_ok,
-        baseline.sim_ok,
+        sim_floor,
         gate_input.sim_target_models,
     );
     notes
@@ -1762,7 +1764,7 @@ pub(super) fn push_trace_regression_reasons(
         }
 
         let current_accounted = trace_accounted_models(current_trace);
-        let baseline_accounted = trace_accounted_models(baseline_trace);
+        let baseline_accounted = certified_floor(baseline, trace_accounted_models(baseline_trace));
         if current_accounted + TRACE_MODELS_COMPARED_ALLOWED_DROP < baseline_accounted {
             reasons.push(format!(
                 "trace model accounting regressed: current={} < baseline={} (allowed_drop={})",

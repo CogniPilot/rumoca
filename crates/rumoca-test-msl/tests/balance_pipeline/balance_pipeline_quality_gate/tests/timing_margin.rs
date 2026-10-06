@@ -1,3 +1,4 @@
+use super::gate_hole::parity_with;
 use super::*;
 
 fn timed_result(name: &str, sim_run_seconds: f64, ir_solve_seconds: f64) -> MslModelResult {
@@ -110,4 +111,57 @@ fn timing_margin_roster_is_disjoint_and_counted() {
             .contains("7 certified and 0 timing-margin"),
         "{error}"
     );
+}
+
+/// A run that loses exactly the held-back models to a timeout stays inside
+/// the ratcheted completion and trace-accounting counts, while losing one
+/// more is still a regression.
+#[test]
+fn timing_margin_models_leave_the_completion_and_accounting_floors() {
+    let mut baseline = MslQualityBaseline {
+        sim_ok: 8,
+        trace_accuracy_stats: Some(trace_accuracy_baseline()),
+        ..baseline_quality_template()
+    };
+    baseline.timing_margin_models.insert(
+        "SlowSim".to_string(),
+        TimingMarginEntry {
+            phase: "Sim".to_string(),
+            budget_share: 0.8,
+        },
+    );
+    let allowed_drop = stage_count_allowed_drop(10);
+    let sim_floor = 8 - 1 - allowed_drop;
+    for (sim_ok, regressed) in [(sim_floor, false), (sim_floor - 1, true)] {
+        let mut gate_input = gate_input_with_sim_rate(sim_ok, 10);
+        gate_input.solve_models = baseline.solve_models;
+        let notes = sim_completion_report_notes(gate_input, &baseline);
+        assert_eq!(
+            notes
+                .iter()
+                .any(|note| note.contains("Sim pass count regressed")),
+            regressed,
+            "{sim_ok}: {notes:?}"
+        );
+    }
+
+    let accounted = trace_accounted_models(&trace_accuracy_baseline());
+    let accounting_floor = accounted - 1 - TRACE_MODELS_COMPARED_ALLOWED_DROP;
+    for (current, regressed) in [(accounting_floor, false), (accounting_floor - 1, true)] {
+        let mut trace = trace_accuracy_baseline();
+        trace.models_compared = current
+            - trace_accounted_models(&MslTraceAccuracyStatsBaseline {
+                models_compared: 0,
+                ..trace_accuracy_baseline()
+            });
+        let mut reasons = Vec::new();
+        push_trace_regression_reasons(&mut reasons, &baseline, Some(&parity_with(trace)));
+        assert_eq!(
+            reasons
+                .iter()
+                .any(|reason| reason.contains("trace model accounting regressed")),
+            regressed,
+            "{current}: {reasons:?}"
+        );
+    }
 }
