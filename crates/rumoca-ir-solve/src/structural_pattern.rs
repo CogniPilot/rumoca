@@ -14,6 +14,8 @@ mod state_jacobian;
 mod tensor_update;
 
 #[cfg(test)]
+mod stacked_tests;
+#[cfg(test)]
 mod state_jacobian_tests;
 #[cfg(test)]
 mod tensor_update_tests;
