@@ -184,11 +184,19 @@ impl Snapshots<'_> {
         // Every selection stays listed, even with an empty remainder, so the
         // remainder conditional joins each value over the complete selection
         // and the else part stands for exactly the remaining case.
+        // Each selection already holds `active`, but the else part runs when
+        // none holds, which includes every path where `active` fails; under an
+        // active selection the remainder therefore stays guarded by it.
         if fallback.is_some() || remainders.iter().any(|block| !block.stmts.is_empty()) {
-            normalized.push(rumoca_core::Statement::If {
+            let guarded_else = fallback.is_some();
+            let remainder = rumoca_core::Statement::If {
                 cond_blocks: remainders,
                 else_block: fallback,
                 span,
+            };
+            normalized.push(match active {
+                Some(active) if guarded_else => guarded_statement(&remainder, active.clone()),
+                _ => remainder,
             });
         }
         Ok(())

@@ -121,6 +121,7 @@ mod function_guard_bounded_ranges;
 mod function_guard_fact_definedness;
 mod function_guarded_element_writes;
 mod function_guarded_loop_definedness;
+mod function_guarded_remainder;
 mod function_inner_index_slice_compaction;
 mod function_input_shadow_state_test;
 mod function_interface_and_body_bases;
