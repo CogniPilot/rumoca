@@ -530,9 +530,24 @@ mod git_commit_tests {
 
     #[test]
     fn a_build_directory_outside_any_checkout_falls_through_to_the_run_directory() {
+        // The run directory is a checkout of its own, so the test holds in a
+        // source snapshot that is not one (the local gate's archive).
         let sandbox = tempfile::tempdir().unwrap();
-        let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let commit = first_git_commit([sandbox.path().to_path_buf(), checkout]);
+        let checkout = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(["-c", "user.name=run", "-c", "user.email=run@localhost"])
+                .args(args)
+                .current_dir(checkout.path())
+                .output()
+                .unwrap()
+                .status;
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "run"]);
+        let commit =
+            first_git_commit([sandbox.path().to_path_buf(), checkout.path().to_path_buf()]);
         assert_eq!(commit.len(), 40, "{commit}");
         assert!(commit.chars().all(|c| c.is_ascii_hexdigit()), "{commit}");
         assert_eq!(first_git_commit([sandbox.path().to_path_buf()]), "unknown");
