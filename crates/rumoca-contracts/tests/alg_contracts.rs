@@ -622,3 +622,107 @@ fn alg_018_bounded_while_loop_runs_until_its_condition_fails() {
         "20 halves five times to 0.625, got {z:?}"
     );
 }
+
+// =============================================================================
+// ALG-019: One or zero of the bodies of the if-, elseif- and else-clauses is
+// selected, by evaluating the conditions sequentially until one is true
+// =============================================================================
+
+#[test]
+fn alg_019_if_statement_selects_its_branch_once_in_order() {
+    // The selected branch writes the value its conditions read: a later
+    // elseif is not evaluated again, and a selected loop runs to completion.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            function F
+                input Real x;
+                output Real y;
+            algorithm
+                y := x;
+                if y > 1 then
+                    for i in 1:3 loop
+                        y := y - 2;
+                    end for;
+                elseif y > -10 then
+                    y := 100;
+                else
+                    y := -100;
+                end if;
+            end F;
+            Real t(start = 0, fixed = true);
+            Real high;
+            Real middle;
+        equation
+            der(t) = 1;
+            high = F(5.0);
+            middle = F(0.0);
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    let high = trace.channel("high");
+    assert!(
+        high.iter().all(|&v| v == -1.0),
+        "5 takes the first branch and subtracts 2 three times, got {high:?}"
+    );
+    let middle = trace.channel("middle");
+    assert!(
+        middle.iter().all(|&v| v == 100.0),
+        "0 selects the elseif branch, got {middle:?}"
+    );
+}
+
+// =============================================================================
+// ALG-020: The expression of a for-loop is evaluated once before entering the
+// loop, including a range whose bounds are runtime Integer values
+// =============================================================================
+
+#[test]
+fn alg_020_runtime_range_iterates_exactly_its_source_elements() {
+    // -radius:radius has 2*radius + 1 elements, and none when radius < 0.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            function F
+                input Integer radius;
+                output Real count;
+                output Real squares;
+            algorithm
+                count := 0.0;
+                squares := 0.0;
+                if radius <= 4 then
+                    for d in -radius:radius loop
+                        count := count + 1;
+                        squares := squares + d*d;
+                    end for;
+                end if;
+            end F;
+            Real t(start = 0, fixed = true);
+            Real count;
+            Real squares;
+            Real emptyCount;
+            Real emptySquares;
+        equation
+            der(t) = 1;
+            (count, squares) = F(2);
+            (emptyCount, emptySquares) = F(-3);
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    for (name, expected) in [
+        ("count", 5.0),
+        ("squares", 10.0),
+        ("emptyCount", 0.0),
+        ("emptySquares", 0.0),
+    ] {
+        let values = trace.channel(name);
+        assert!(
+            values.iter().all(|&v| v == expected),
+            "{name} must be {expected}, got {values:?}"
+        );
+    }
+}

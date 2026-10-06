@@ -3698,6 +3698,20 @@ kind = 'Sim'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'ALG-019'
+case_id = 'alg_019_if_statement_selects_its_branch_once_in_order'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ALG-020'
+case_id = 'alg_020_runtime_range_iterates_exactly_its_source_elements'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'FUNC-032'
 case_id = 'func_032_external_function_without_purity_warns'
 test_file = 'tests/func_contracts.rs'

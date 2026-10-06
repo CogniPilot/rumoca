@@ -164,6 +164,24 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'ALG-019'
+category = 'Algorithm'
+name = 'If-statement branch selection'
+mls_ref = '§11.2.6'
+requirement = 'One or zero of the bodies of the if-, elseif- and else-clauses is selected, by evaluating the conditions sequentially until a condition evaluates to true'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-020'
+category = 'Algorithm'
+name = 'For range with runtime bounds'
+mls_ref = '§11.2.2'
+requirement = 'The expression of a for-loop shall be a vector expression evaluated once before entering the loop'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'ANN-001'
 category = 'Annotation'
 name = 'Forbidden constructs'
