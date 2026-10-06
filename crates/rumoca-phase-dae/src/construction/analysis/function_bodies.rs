@@ -1,10 +1,13 @@
 mod guarded_loop_analysis;
 mod top_level_definedness;
 
+use super::fold_scopes::IterationSummary;
 use super::*;
 use crate::construction::function_shapes::ProvenValue;
 pub(super) use guarded_loop_analysis::statement_reads_target;
 use guarded_loop_analysis::{confine_guarded_seeds, seed_guarded_sequence_scratch};
+use rumoca_core::Progression;
+use std::rc::Rc;
 use top_level_definedness::{
     after_top_level_statement, before_top_level_statement, validate_top_level_statements,
 };
@@ -31,6 +34,7 @@ pub(in crate::construction) fn validate_function_certificate(
     let static_integers = immutable_integer_defaults(function, flat, &certificate.values)?;
     let roles = function_expression_roles(function, flat);
     let staged_record_fields = HashSet::new();
+    let loop_binders = HashSet::new();
     let context = FunctionValidationContext {
         function,
         flat,
@@ -40,6 +44,7 @@ pub(in crate::construction) fn validate_function_certificate(
         shape_analysis: shapes,
         generated_booleans: &[],
         staged_record_fields: &staged_record_fields,
+        loop_binders: &loop_binders,
         call_scoped_actions: true,
     };
     if function.external.is_some() {
@@ -1570,6 +1575,9 @@ fn resolve_function_loop_definitions(
     Ok(())
 }
 
+/// Resolve a compact fold's definedness from one generic iteration (see
+/// `fold_scopes`): a learning round finds what every iteration certainly
+/// defines by its end, and a judging round checks every read against it.
 fn resolve_fold_definitions(
     source: (&[rumoca_core::ForIndex], &[rumoca_core::Statement], Span),
     planned: (
@@ -1587,56 +1595,63 @@ fn resolve_fold_definitions(
     let enclosing_definitions = definitions.clone();
     let (indices, statements) = flattened_function_loop_source(indices, statements, source_depth);
     let seeds = seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
-    let point_count = domain.scalar_count().map_err(|error| {
+    let invalid = |problem: String| {
         ToDaeError::unsupported_flat(
             "function loop transition",
             format!(
-                "`{}` has an invalid compact domain: {error}",
+                "`{}` has an invalid compact domain: {problem}",
                 context.function.name
             ),
             span,
         )
-    })?;
-    for ordinal in 0..point_count {
-        definitions.clear_names(iteration_locals);
-        let point = domain
-            .index_tuple_at(ordinal)
-            .map_err(|error| {
-                ToDaeError::unsupported_flat(
-                    "function loop transition",
-                    format!(
-                        "`{}` cannot project its compact domain: {error}",
-                        context.function.name
-                    ),
-                    span,
-                )
-            })?
-            .ok_or_else(|| {
-                ToDaeError::unsupported_flat(
-                    "function loop transition",
-                    format!(
-                        "`{}` has a missing compact-domain point",
-                        context.function.name
-                    ),
-                    span,
-                )
-            })?;
+    };
+    let point_count = domain
+        .scalar_count()
+        .map_err(|error| invalid(error.to_string()))?;
+    if point_count > 0 {
+        let binders = domain
+            .binders
+            .iter()
+            .zip(&indices)
+            .map(|(binder, index)| {
+                Progression::range(binder.lower, binder.step, binder.upper)
+                    .map(|values| (VarName::new(&index.ident), values, binder.step < 0))
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| invalid("a binder range overflows".to_string()))?;
+        // MLS §11.2.2: a binder shadows every outer value of its name and is
+        // fixed within one iteration.
         let mut integers = context.static_integers.clone();
-        integers.extend(
-            indices
-                .iter()
-                .zip(point)
-                .map(|(index, value)| (VarName::new(&index.ident), value)),
-        );
-        let point_context = FunctionValidationContext {
+        let mut loop_binders = context.loop_binders.clone();
+        for (name, _, _) in &binders {
+            integers.remove(name);
+            loop_binders.insert(name.clone());
+        }
+        let body_context = FunctionValidationContext {
             static_integers: &integers,
+            loop_binders: &loop_binders,
             ..context
         };
-        resolve_fold_iteration(statements, plans, point_context, definitions)?;
-        definitions.forget_varying_guard_paths(context.generated_booleans, iteration_locals);
+        definitions.folds.enter(binders);
+        let mut learning = definitions.clone();
+        let summary = resolve_fold_round(
+            statements,
+            plans,
+            body_context,
+            (&mut learning, None),
+            iteration_locals,
+        )?;
+        resolve_fold_round(
+            statements,
+            plans,
+            body_context,
+            (definitions, Some(summary)),
+            iteration_locals,
+        )?;
+        for (target, written) in definitions.folds.leave() {
+            definitions.add_loop_coverage(&target, written);
+        }
     }
-    // A seeded value stays carried by this transition; only what code after
-    // the loop may read of it is confined to the seed's guard.
     confine_guarded_seeds(statements, seeds, context, definitions);
     definitions.forget_varying_guard_paths(context.generated_booleans, iteration_locals);
     targets.retain(|target| {
@@ -1646,6 +1661,23 @@ fn resolve_fold_definitions(
     });
     definitions.restore_names(&enclosing_definitions, iteration_locals);
     Ok(())
+}
+
+/// One round of a generic fold iteration; returns what it certainly defines
+/// by its end.
+fn resolve_fold_round(
+    statements: &[rumoca_core::Statement],
+    plans: &mut [FunctionStatementPlan],
+    context: FunctionValidationContext<'_>,
+    (definitions, previous): (&mut FunctionDefinitions, Option<Rc<IterationSummary>>),
+    iteration_locals: &[VarName],
+) -> Result<Rc<IterationSummary>, ToDaeError> {
+    definitions.folds.begin_round(previous);
+    definitions.clear_names(iteration_locals);
+    resolve_fold_iteration(statements, plans, context, definitions)?;
+    definitions.forget_varying_guard_paths(context.generated_booleans, iteration_locals);
+    let defined = definitions.defined_names();
+    Ok(definitions.folds.end_round(defined, iteration_locals))
 }
 
 fn resolve_fold_iteration(

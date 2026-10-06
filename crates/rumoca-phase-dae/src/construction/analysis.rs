@@ -11,6 +11,7 @@ mod expression_events;
 mod expression_semi_linear;
 mod expression_validation;
 mod fixed_loops;
+mod fold_scopes;
 mod folded_guards;
 mod function_array_assemblies;
 mod function_bodies;
@@ -485,6 +486,9 @@ struct FunctionValidationContext<'scope> {
     /// Record-field coordinates already constructed by an enclosing staged
     /// assembly at this exact source position.
     staged_record_fields: &'scope HashSet<FunctionRecordFieldCoordinate>,
+    /// The binders of the compact loops whose body is being resolved as one
+    /// generic iteration: immutable within an iteration, but not settled.
+    loop_binders: &'scope HashSet<VarName>,
     /// Whether this source sequence reaches a call-scoped or loop action
     /// owner, directly or through runtime conditionals that guard its actions.
     call_scoped_actions: bool,
