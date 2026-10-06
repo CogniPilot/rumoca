@@ -2,8 +2,9 @@
 //! translation (SPEC_0040 DAE-C22, SPEC_0044 ME-PARAM-001).
 //!
 //! An equation conditional whose guard reads an ordinary parameter stays a
-//! run-time branch when its arms are structurally equal; otherwise equation
-//! lowering folds it as a structural selection. A variable's attribute or
+//! run-time branch when its arms are structurally equal; otherwise it is a
+//! structural selection, applied to the Flat model before analysis and
+//! recorded as a Flat branch selection. A variable's attribute or
 //! binding value folds such a guard when an arm calls a user function or its
 //! arms are not proven to share one shape. A folded guard freezes the
 //! parameter at its translation-time value, so a later set of it could not
@@ -14,9 +15,7 @@ use std::collections::HashSet;
 
 use rumoca_core::{Expression, ExpressionVisitor};
 
-use super::super::expression::conditional_guards::{
-    attribute_conditional_folds, retains_flat_guard,
-};
+use super::super::expression::conditional_guards::attribute_conditional_folds;
 use super::super::function_shapes::{ProvenValue, ShapeEnvironment};
 use super::clocks::when_conditional_selects_clock_structure;
 use super::{ValueReads, VarName, Variability, flat};
@@ -43,28 +42,24 @@ pub(super) fn folded_guard_parameters(
         flat,
         values,
         evaluable,
-        attribute_scope: false,
         owner: None,
         found: HashSet::new(),
         selections: Vec::new(),
-        if_span: None,
     };
-    for equation in flat.equations.iter().chain(&flat.initial_equations) {
-        scan.owner = Some(equation.span);
-        scan.visit_expression(&equation.residual);
-    }
+    // Equation conditionals, which include every binding that is not a
+    // parameter's or constant's, are selected before analysis and recorded as
+    // Flat branch selections (`structural_selections`). A parameter or
+    // constant binding and every start value lower as values (attribute
+    // scope).
     for variable in flat.variables.values() {
-        // A parameter or constant binding lowers as a value (attribute scope);
-        // any other declaration binding lowers as its equation.
         scan.owner = Some(variable.source_span);
-        scan.attribute_scope = matches!(
+        if matches!(
             variable.variability,
             Variability::Parameter(_) | Variability::Constant(_)
-        );
-        if let Some(binding) = &variable.binding {
+        ) && let Some(binding) = &variable.binding
+        {
             scan.visit_expression(binding);
         }
-        scan.attribute_scope = true;
         if let Some(start) = &variable.start {
             scan.visit_expression(start);
         }
@@ -90,13 +85,10 @@ struct GuardScan<'a> {
     flat: &'a flat::Model,
     values: &'a ShapeEnvironment,
     evaluable: &'a HashSet<VarName>,
-    attribute_scope: bool,
-    /// The equation or declaration being scanned.
+    /// The declaration being scanned.
     owner: Option<rumoca_core::Span>,
     found: HashSet<VarName>,
     selections: Vec<StructuralSelection>,
-    /// The span of the conditional being visited.
-    if_span: Option<rumoca_core::Span>,
 }
 
 impl GuardScan<'_> {
@@ -172,23 +164,8 @@ impl GuardScan<'_> {
 }
 
 impl ExpressionVisitor for GuardScan<'_> {
-    fn visit_expression(&mut self, expression: &Expression) {
-        if let Expression::If { span, .. } = expression {
-            self.if_span = Some(*span);
-        }
-        self.walk_expression(expression);
-    }
-
     fn visit_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
-        let structural = self
-            .if_span
-            .take()
-            .is_some_and(|span| self.values.is_structural_selection(span));
-        let folds = if self.attribute_scope {
-            attribute_conditional_folds(branches, else_branch, self.values)
-        } else {
-            structural || !retains_flat_guard(self.flat, self.evaluable, branches, else_branch)
-        };
+        let folds = attribute_conditional_folds(branches, else_branch, self.values);
         for (condition, _) in branches {
             let read = self.ordinary_parameters(condition);
             if folds
@@ -209,7 +186,7 @@ impl ExpressionVisitor for GuardScan<'_> {
     }
 }
 
-fn ordinary_parameters(
+pub(super) fn ordinary_parameters(
     flat: &flat::Model,
     evaluable: &HashSet<VarName>,
     expression: &Expression,

@@ -1298,18 +1298,27 @@ fn b1c_classification_ignores_discrete_guards_inside_a_continuous_value() {
 #[test]
 fn b1c_classification_rejects_mixed_discrete_and_continuous_if_branches() {
     let source = TestSource::new(
-        "model M Boolean m; Real y; equation if true then m = true; else y = 2.0; end if; end M;",
+        "model M Boolean m; Real y; equation if time > 0.5 then m = true; else y = 2.0; end if; end M;",
     );
     let mut model = test_model();
     add_primitive_variable(&mut model, &source, "m", "Boolean m", 8, Vec::new(), true);
     add_primitive_variable(&mut model, &source, "y", "Real y", 9, Vec::new(), false);
-    let owner = source.span("if true then m = true; else y = 2.0; end if", 0);
+    let owner = source.span("if time > 0.5 then m = true; else y = 2.0; end if", 0);
     model.add_equation(flat::Equation::new(
         Expression::If {
             branches: vec![(
-                Expression::Literal {
-                    value: Literal::Boolean(true),
-                    span: source.span("true", 0),
+                Expression::Binary {
+                    op: OpBinary::Gt,
+                    lhs: Box::new(Expression::VarRef {
+                        name: Reference::new("time"),
+                        subscripts: Vec::new(),
+                        span: source.span("time", 0),
+                    }),
+                    rhs: Box::new(Expression::Literal {
+                        value: Literal::Real(0.5),
+                        span: source.span("0.5", 0),
+                    }),
+                    span: source.span("time > 0.5", 0),
                 },
                 Expression::Binary {
                     op: OpBinary::Sub,
@@ -1320,7 +1329,7 @@ fn b1c_classification_rejects_mixed_discrete_and_continuous_if_branches() {
                     }),
                     rhs: Box::new(Expression::Literal {
                         value: Literal::Boolean(true),
-                        span: source.span("true", 1),
+                        span: source.span("true", 0),
                     }),
                     span: owner,
                 },

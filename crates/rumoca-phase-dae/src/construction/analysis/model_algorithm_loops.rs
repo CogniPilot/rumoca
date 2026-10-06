@@ -19,25 +19,24 @@ use std::borrow::Cow;
 use super::*;
 use rumoca_core::StatementRewriter;
 
-/// The model with every carrying `for` of its algorithms unrolled, borrowed
-/// unchanged when no algorithm has such a loop.
-pub(in crate::construction) fn unroll_carrying_algorithm_loops(
-    flat: &flat::Model,
-) -> Result<Cow<'_, flat::Model>, ToDaeError> {
-    if !flat
-        .algorithms
+/// Whether some algorithm of the model has a carrying `for`.
+pub(super) fn has_carrying_loops(flat: &flat::Model) -> bool {
+    flat.algorithms
         .iter()
         .any(|algorithm| contains_carrying_loop(&algorithm.statements))
-    {
+}
+
+/// The model with every carrying `for` of its algorithms unrolled under the
+/// model-scope values `shapes`, borrowed unchanged when no algorithm has such
+/// a loop.
+pub(super) fn unroll_carrying_algorithm_loops<'a>(
+    flat: &'a flat::Model,
+    shapes: &ShapeEnvironment,
+) -> Result<Cow<'a, flat::Model>, ToDaeError> {
+    if !has_carrying_loops(flat) {
         return Ok(Cow::Borrowed(flat));
     }
-    let constants = constant_context(flat)?;
-    let evaluable = evaluable_parameters(flat);
-    let shapes = FunctionShapeAnalysis::analyze_model(flat, &constants, Some(&evaluable))?;
-    let unroll = CarryingLoops {
-        flat,
-        shapes: shapes.model_values(),
-    };
+    let unroll = CarryingLoops { flat, shapes };
     let mut unrolled = flat.clone();
     for algorithm in &mut unrolled.algorithms {
         if contains_carrying_loop(&algorithm.statements) {

@@ -41,6 +41,7 @@ mod record_equation_elements;
 mod record_equations;
 mod sample_aliases;
 mod source_balance;
+mod structural_selections;
 mod structured_families;
 mod unexecuted_branches;
 mod when_chains;
@@ -134,7 +135,7 @@ use initial_algorithms::{
 use loop_compaction::compact_function_loops;
 use model_algorithm_calls::analyze_event_function_calls;
 pub(super) use model_algorithm_calls::{ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan};
-pub(super) use model_algorithm_loops::unroll_carrying_algorithm_loops;
+use structural_selections::{has_decidable_conditionals, select_structural_branches};
 use model_algorithm_statements::validate_model_algorithm;
 pub(super) use model_algorithm_statements::{collect_algorithm_writes, names_overlap};
 use model_algorithms::analyze_model_algorithm;
@@ -587,6 +588,25 @@ pub(super) enum RecordEquationFieldValue {
     Coordinate(VarName),
 }
 
+/// The Flat model every analysis and the construction read: carrying
+/// algorithm loops unrolled and structural selections applied (SPEC_0040
+/// DAE-C22), both from one model-scope shape analysis, and borrowed unchanged
+/// when neither applies.
+pub(super) fn prepared_flat(
+    flat: &flat::Model,
+) -> Result<std::borrow::Cow<'_, flat::Model>, ToDaeError> {
+    let carrying = model_algorithm_loops::has_carrying_loops(flat);
+    if !carrying && !has_decidable_conditionals(flat) {
+        return Ok(std::borrow::Cow::Borrowed(flat));
+    }
+    let constants = constant_context(flat)?;
+    let evaluable = evaluable_parameters(flat);
+    let shapes = FunctionShapeAnalysis::analyze_model(flat, &constants, Some(&evaluable))?;
+    let unrolled =
+        model_algorithm_loops::unroll_carrying_algorithm_loops(flat, shapes.model_values())?;
+    Ok(select_structural_branches(unrolled, shapes.model_values()))
+}
+
 // SPEC_0021: Exception - ToDAE analysis entry point assembling every Analysis field
 #[expect(
     clippy::too_many_lines,
@@ -608,13 +628,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         states,
         variables: mut roles,
         expressions: mut expression_roles,
-        structural_selections: folded_conditionals,
-    } = analyze_model_roles(
-        flat,
-        &clocks.sampled_targets,
-        function_shapes.model_values(),
-    )?;
-    function_shapes.add_structural_selections(folded_conditionals);
+    } = analyze_model_roles(flat, &clocks.sampled_targets)?;
     validate_runtime_coordinates(flat, &roles, &record_array_fields)?;
     let derived_parameters = analyze_derived_parameters(flat, &roles, templates.continuous(flat))?;
     apply_derived_parameter_roles(&derived_parameters.plans, &mut roles, &mut expression_roles);

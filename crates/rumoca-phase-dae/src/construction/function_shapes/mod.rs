@@ -850,17 +850,6 @@ impl FunctionShapeAnalysis {
         &self.model_values
     }
 
-    /// Record equation conditionals whose guard is not kept as a run-time
-    /// branch (SPEC_0040 DAE-C22), so every consumer folds them by the same
-    /// translation-time selection. The set only grows: a selection discovery
-    /// already recorded stays one.
-    pub(super) fn add_structural_selections(&mut self, spans: impl IntoIterator<Item = Span>) {
-        self.structural_selections.extend(spans);
-        let selections = Arc::new(self.structural_selections.clone());
-        self.model_values.structural_selections = Arc::clone(&selections);
-        self.attribute_values.structural_selections = selections;
-    }
-
     /// Record the model's settled evaluable parameters in both model scopes.
     pub(super) fn set_evaluable_parameters(
         &mut self,

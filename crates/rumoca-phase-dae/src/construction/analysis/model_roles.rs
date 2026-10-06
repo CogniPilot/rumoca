@@ -1,32 +1,21 @@
-use super::super::expression::conditional_guards::retains_flat_guard;
-use super::super::function_shapes::ProvenValue;
 use super::*;
 
 pub(super) struct ModelRoles {
     pub(super) states: HashSet<VarName>,
     pub(super) variables: HashMap<VarName, PlannedRole>,
     pub(super) expressions: HashMap<VarName, PlannedRole>,
-    /// Equation conditionals folded at translation (see [`DerivativeTargets`]).
-    pub(super) structural_selections: Vec<Span>,
 }
 
 pub(super) fn analyze_model_roles(
     flat: &flat::Model,
     sampled_values: &HashMap<InstanceId, SampledTarget>,
-    values: &ShapeEnvironment,
 ) -> Result<ModelRoles, ToDaeError> {
     let mut targets = DerivativeTargets {
-        flat,
-        values: Some(values),
         states: HashSet::new(),
-        folded: Vec::new(),
     };
     for equation in flat.equations.iter().chain(&flat.initial_equations) {
         targets.collect(&equation.residual)?;
     }
-    // Attribute and binding values keep their own conditional rule
-    // (`attribute_conditional_folds`), so every arm is scanned there.
-    targets.values = None;
     for expression in flat
         .variables
         .values()
@@ -34,11 +23,7 @@ pub(super) fn analyze_model_roles(
     {
         targets.collect(expression)?;
     }
-    let DerivativeTargets {
-        states,
-        folded: structural_selections,
-        ..
-    } = targets;
+    let DerivativeTargets { states } = targets;
     let mut assigned_discrete = event_targets(flat);
     assigned_discrete.extend(
         flat.variables
@@ -71,7 +56,6 @@ pub(super) fn analyze_model_roles(
         states,
         variables: roles,
         expressions: expression_roles,
-        structural_selections,
     })
 }
 
@@ -159,43 +143,24 @@ fn collect_previous_operand_names(expression: &Expression, discrete: &mut HashSe
 /// The variables `der(...)` is applied to in the equations the model keeps.
 ///
 /// MLS 3.7 §8.3.4 selects a structural branch at translation, so an arm the
-/// selection never takes is not part of the flattened system: a `der(y)` there
-/// does not make `y` a state (`if use_pder then der(y) else 0` in the
-/// `Blocks.Interfaces.Adaptors` with `use_pder = false`). The arm is pruned by
-/// the same decision DAE lowering folds it with: a guard kept as a run-time
-/// branch (SPEC_0040 DAE-C22) keeps every arm; any other guard proven by the
-/// translation-time value environment drops the arms it never selects. Each
-/// folded conditional is recorded as a structural selection, so validation and
-/// every later consumer read the same decision.
-struct DerivativeTargets<'a> {
-    flat: &'a flat::Model,
-    /// The equation-scope value environment; `None` scans every arm.
-    values: Option<&'a ShapeEnvironment>,
+/// selection never takes is not part of the system: a `der(y)` there does not
+/// make `y` a state (`if use_pder then der(y) else 0` in the
+/// `Blocks.Interfaces.Adaptors` with `use_pder = false`). The analyzed Flat
+/// model already has every structural selection applied
+/// (`structural_selections`), so every arm it keeps is reachable.
+struct DerivativeTargets {
     states: HashSet<VarName>,
-    folded: Vec<Span>,
 }
 
-impl DerivativeTargets<'_> {
+impl DerivativeTargets {
     fn collect(&mut self, expression: &Expression) -> Result<(), ToDaeError> {
-        match expression {
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args,
-                span,
-            } => self.derivative(args, *span)?,
-            Expression::If {
-                branches,
-                else_branch,
-                span,
-            } => {
-                if let Some(values) = self.values
-                    && !self.retained_guard(values, branches, else_branch, *span)
-                {
-                    self.folded.push(*span);
-                    return self.selected_arms(values, branches, else_branch);
-                }
-            }
-            _ => {}
+        if let Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args,
+            span,
+        } = expression
+        {
+            self.derivative(args, *span)?;
         }
         for child in expression_children(expression) {
             self.collect(child)?;
@@ -218,38 +183,6 @@ impl DerivativeTargets<'_> {
         };
         self.states.insert(name.var_name().clone());
         Ok(())
-    }
-
-    fn retained_guard(
-        &self,
-        values: &ShapeEnvironment,
-        branches: &[(Expression, Expression)],
-        else_branch: &Expression,
-        span: Span,
-    ) -> bool {
-        !values.is_structural_selection(span)
-            && values.evaluable().is_some_and(|evaluable| {
-                retains_flat_guard(self.flat, evaluable, branches, else_branch)
-            })
-    }
-
-    /// MLS §11.5: conditions are tested in order and only the first that holds
-    /// selects its arm; an unproven condition keeps its arm.
-    fn selected_arms(
-        &mut self,
-        values: &ShapeEnvironment,
-        branches: &[(Expression, Expression)],
-        else_branch: &Expression,
-    ) -> Result<(), ToDaeError> {
-        for (condition, value) in branches {
-            self.collect(condition)?;
-            match values.proven_value(condition) {
-                Some(ProvenValue::Boolean(false)) => {}
-                Some(ProvenValue::Boolean(true)) => return self.collect(value),
-                _ => self.collect(value)?,
-            }
-        }
-        self.collect(else_branch)
     }
 }
 

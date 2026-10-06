@@ -252,8 +252,8 @@ struct ReservedVariable<'flat, 'dae> {
 }
 
 pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToDaeError> {
-    let unrolled = analysis::unroll_carrying_algorithm_loops(flat)?;
-    let flat = unrolled.as_ref();
+    let prepared = analysis::prepared_flat(flat)?;
+    let flat = prepared.as_ref();
     let analysis = analyze(flat)?.with_semi_linear_rules(flat);
     if !flat.is_partial && !analysis.balance.is_balanced() {
         return Err(ToDaeError::unbalanced_from_detail(analysis.balance));
@@ -272,8 +272,8 @@ pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae
 pub(crate) fn construction_evidence(
     flat: &flat::Model,
 ) -> Result<(BalanceDetail, Vec<analysis::StructuralSelection>), ToDaeError> {
-    let unrolled = analysis::unroll_carrying_algorithm_loops(flat)?;
-    analyze(unrolled.as_ref()).map(|analysis| (analysis.balance, analysis.structural_selections))
+    let prepared = analysis::prepared_flat(flat)?;
+    analyze(prepared.as_ref()).map(|analysis| (analysis.balance, analysis.structural_selections))
 }
 
 fn build_checked<'dae>(
