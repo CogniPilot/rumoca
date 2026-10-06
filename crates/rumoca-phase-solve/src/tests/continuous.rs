@@ -389,27 +389,13 @@ fn nested_comprehension_binders_lower_through_lexical_domain_scopes() {
     let solve = lower_solve_problem(&model).unwrap();
     assert_eq!(solve.solve_layout.algebraic_scalar_count(), 6);
     assert_eq!(solve.continuous.residual.len().unwrap(), 6);
-    let [
-        ComputeNode::Map {
-            domain, output_map, ..
-        },
-    ] = solve.continuous.residual.nodes.as_slice()
-    else {
-        panic!("one compact comprehension residual Map expected");
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one compact multi-output residual block expected");
     };
-    assert_eq!(domain.index_tuples().unwrap().len(), 6);
-    assert_eq!(output_map.start, 0);
-    assert_eq!(
-        solve
-            .continuous
-            .residual
-            .produced_output_indices("nested comprehension test")
-            .unwrap(),
-        [0, 1, 2, 3, 4, 5]
-    );
-    let rows = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.residual).unwrap();
+    assert_eq!(rows.row_count(), 1);
+    assert_eq!(rows.stored_output_count(), 6);
     let mut actual = [0.0; 6];
-    rumoca_eval_solve::eval_scalar_program_block(&rows, &[0.0; 6], &[], 0.0, None, &mut actual)
+    rumoca_eval_solve::eval_scalar_program_block(rows, &[0.0; 6], &[], 0.0, None, &mut actual)
         .unwrap();
     assert_eq!(actual, [-2.0, -3.0, -4.0, -3.0, -4.0, -5.0]);
 }
