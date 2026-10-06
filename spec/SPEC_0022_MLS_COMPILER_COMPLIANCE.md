@@ -707,7 +707,7 @@ Defines state-to-state transitions with priority and timing control.
 | ARR-006 | Constructor non-empty | §10.4 | "array() or {} is not defined; there must be at least one argument" |
 | ARR-007 | Concatenation dimensions | §10.4 | "Arrays must have same number of dimensions for concatenation" |
 | ARR-008 | Concatenation size match | §10.4 | "Arrays must have identical sizes except for concatenation dimension" |
-| ARR-009 | Integer to Real coercion | §10.6.13 | "Integer expression automatically converted to Real in Real context" |
+| ARR-009 | Integer to Real coercion | §10.6.13 | "Integer expression automatically converted to Real in Real context". Rumoca: an Integer value assigned to a Real function variable inside a runtime conditional branch, which stands in for that variable until the branch join, is converted to Real at the assignment, so later statements of the branch (element updates, matrix algebra) read the declared Real value. Tested in `suite_core/function_branch_integer_conversion.rs` |
 | ARR-010 | promote n >= ndims | §10.3 | "promote(A, n): n ≥ ndims(A) is required" |
 | ARR-011 | promote n constant | §10.3 | "Argument n must be constant that can be evaluated during translation" |
 | ARR-012 | size i bounds | §10.3.1 | "size(A, i): required that 1 ≤ i ≤ ndims(A)". Rumoca: `size(A, i)` is the extent of `A`, not a read of its value; inside a function body whose shape proof settles that extent the query lowers to the Integer, so an output may ask its own extent before the algorithm defines it (`state := f(size(state, 1))`). Tested in `suite_core/function_loop_offset_slices.rs` |

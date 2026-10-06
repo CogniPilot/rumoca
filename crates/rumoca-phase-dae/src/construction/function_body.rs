@@ -847,6 +847,11 @@ fn lower_conditional_assignment<'dae>(
         value,
         None,
     )?;
+    // A branch value stands in for the target until the join, so a read of it
+    // sees the declared type, as a read of the assigned target would.
+    if assignment.subscripts().is_empty() {
+        lowered = conform_to_declared_type(construction, target, lowered, provenance)?;
+    }
     let subscripts = assignment.subscripts();
     // A branch updates the value in scope: a write earlier in this branch, or
     // else the enclosing definition. An element write's seed is assigned once
@@ -1850,4 +1855,24 @@ fn join_branch_targets<'dae>(
         )?);
     }
     Ok((targets, branches, fallback))
+}
+
+/// The value `target` holds after assigning `value` (MLS 3.6 §10.6.13 converts
+/// an Integer expression assigned to a Real variable).
+fn conform_to_declared_type<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    target: dae::FunctionValueId<'dae>,
+    value: dae::ExprId<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let declared = construction.functions(|functions| functions.value_type(target, provenance))?;
+    let declared = construction.types(|types| types.value_type(declared, provenance))?;
+    if declared.scalar_type() != dae::ScalarType::Real {
+        return Ok(value);
+    }
+    let generated = dae::DaeProvenance::generated(
+        dae::DaeGeneration::FunctionConditionLowering,
+        provenance.span(),
+    )?;
+    super::expression::promote_integer_value_to_real(construction, value, generated)
 }

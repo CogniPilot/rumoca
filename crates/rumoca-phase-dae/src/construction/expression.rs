@@ -383,22 +383,34 @@ fn promote_dynamic_deadline_to_real<'dae>(
     deadline: dae::ExprId<'dae>,
     owner: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let value_type =
-        construction.expressions(|expressions| expressions.value_type(deadline, owner))?;
-    if !value_type.is_scalar() || value_type.scalar_type() != dae::ScalarType::Integer {
-        return Ok(deadline);
-    }
     let generated =
         dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, owner.span())?;
-    let zero = construction.expressions(|expressions| {
+    promote_integer_value_to_real(construction, deadline, generated)
+}
+
+/// Materialize the MLS 3.6 §10.6.13 Integer-to-Real conversion of a scalar or
+/// array value, so a reader sees the Real value its destination declares.
+/// An Integer value is multiplied by the Real literal one, which is exact for
+/// every Integer a binary64 Real represents; any other value is returned as is.
+pub(super) fn promote_integer_value_to_real<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    value: dae::ExprId<'dae>,
+    generated: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let value_type =
+        construction.expressions(|expressions| expressions.value_type(value, generated))?;
+    if value_type.scalar_type() != dae::ScalarType::Integer {
+        return Ok(value);
+    }
+    let one = construction.expressions(|expressions| {
         expressions
             .at(generated)
-            .literal(dae::DaeLiteral::Real(0.0))
+            .literal(dae::DaeLiteral::Real(1.0))
     })?;
     construction.expressions(|expressions| {
         expressions
             .at(generated)
-            .binary(dae::BinaryOperator::Add, deadline, zero)
+            .binary(dae::BinaryOperator::Multiply, value, one)
     })
 }
 

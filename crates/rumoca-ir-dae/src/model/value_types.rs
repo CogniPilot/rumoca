@@ -19,6 +19,16 @@ impl<'dae> ValueTypes<'_, 'dae> {
         self.storage.intern_flat_type(flat_type, ty, provenance)
     }
 
+    /// Read an interned value type.
+    pub fn value_type(
+        &self,
+        id: ValueTypeId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<ValueType, DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        self.storage.value_type_at(id.index(), provenance).cloned()
+    }
+
     pub fn derived(
         &mut self,
         ty: ValueType,
