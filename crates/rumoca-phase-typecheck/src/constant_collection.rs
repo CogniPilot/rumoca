@@ -7,26 +7,6 @@
 use super::*;
 
 impl TypeChecker {
-    /// Collect integer/real/boolean constants from classes referenced by import aliases.
-    ///
-    /// When a class has `import generator = Modelica.Math.Random.Generators.Xorshift128plus`,
-    /// this adds `generator.nState = 4` to the eval context so that dimension expressions
-    /// like `Integer state[generator.nState]` can be evaluated.
-    pub(crate) fn collect_import_constants(
-        tree: &ClassTree,
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-    ) {
-        for idx in 0..tree.scope_tree.len() {
-            let scope_id = ScopeId::new(idx as u32);
-            let Some(scope) = tree.scope_tree.get(scope_id) else {
-                continue;
-            };
-            for import in &scope.imports {
-                Self::collect_constants_from_import(tree, import, ctx);
-            }
-        }
-    }
-
     /// Collect constants from direct model-level `extends(... redeclare ...)` overrides.
     ///
     /// MLS §7.3: redeclare modifiers in an extends clause define the effective
@@ -213,41 +193,6 @@ impl TypeChecker {
                 resolve_context,
                 ctx,
             );
-        }
-    }
-
-    /// Extract constant values from a single import and add them to the eval context.
-    ///
-    /// Recursively extracts from nested classes and extends chains so that
-    /// deeply nested subpackage constants are available for dimension evaluation.
-    fn collect_constants_from_import(
-        tree: &ClassTree,
-        import: &ScopeImport,
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-    ) {
-        let pairs: Vec<(String, rumoca_core::DefId)> = match import {
-            ScopeImport::Renamed { .. } | ScopeImport::Qualified { .. } => {
-                Self::import_constant_prefixes(import)
-            }
-            ScopeImport::Unqualified { .. } => return, // Too broad, skip
-        };
-        for (alias, def_id) in pairs {
-            let Some(class) = tree.get_class_by_def_id(def_id) else {
-                continue;
-            };
-            Self::extract_class_constants(&alias, class, ctx);
-            // Also extract from nested classes (subpackages) with qualified prefixes
-            Self::extract_nested_class_constants_for_import(tree, &alias, class, ctx);
-            // Follow extends chains to get inherited constants
-            for ext in &class.extends {
-                Self::extract_extends_modification_constants(&alias, ext, ctx);
-                Self::extract_import_extends_constants(
-                    tree,
-                    &alias,
-                    &ext.base_name.to_string(),
-                    ctx,
-                );
-            }
         }
     }
 
@@ -485,16 +430,6 @@ impl TypeChecker {
         }
     }
 
-    /// Apply direct extends-modifier constant overrides from one ancestor class.
-    pub(crate) fn extract_ancestor_extends_modification_constants(
-        ancestor: &ClassDef,
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-    ) {
-        for ext in &ancestor.extends {
-            Self::extract_extends_modification_constants("", ext, ctx);
-        }
-    }
-
     /// Extract constant integer/real/boolean values and array dimensions from a class definition.
     /// MLS §4.5: Constants have values determined at compile time.
     pub(crate) fn extract_class_constants(
@@ -689,74 +624,6 @@ impl TypeChecker {
         }
     }
 
-    /// Collect lexically enclosing constants for every instantiated component type.
-    ///
-    /// A declaration inside `Navigation.UKF.Estimator` may use the unqualified
-    /// package constant `TangentLength`.  The top-level model's enclosing scope
-    /// is unrelated, so these values are retained under their exact qualified
-    /// package names and resolved only through the component type's scope chain.
-    pub(crate) fn collect_component_type_enclosing_constants(
-        tree: &ClassTree,
-        overlay: &InstanceOverlay,
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-    ) {
-        let mut type_names = overlay
-            .components
-            .values()
-            .filter_map(|data| {
-                data.type_def_id
-                    .and_then(|def_id| tree.def_map.get(&def_id))
-                    .cloned()
-                    .or_else(|| {
-                        tree.get_class_by_qualified_name(&data.type_name)
-                            .is_some()
-                            .then_some(data.type_name.clone())
-                    })
-            })
-            .collect::<Vec<_>>();
-        type_names.sort();
-        type_names.dedup();
-
-        const MAX_PASSES: usize = 5;
-        for _ in 0..MAX_PASSES {
-            let previous_count = Self::collected_constant_count(ctx);
-            Self::extract_enclosing_constants(tree, &type_names, ctx);
-            if Self::collected_constant_count(ctx) == previous_count {
-                break;
-            }
-        }
-    }
-
-    /// Total constants collected so far, used to detect the fixpoint.
-    fn collected_constant_count(ctx: &rumoca_eval_ast::eval::TypeCheckEvalContext) -> usize {
-        ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len()
-    }
-
-    /// Extract constants from every class enclosing any of `type_names`.
-    fn extract_enclosing_constants(
-        tree: &ClassTree,
-        type_names: &[String],
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-    ) {
-        for type_name in type_names {
-            Self::extract_constants_enclosing(tree, type_name, ctx);
-        }
-    }
-
-    /// Extract constants from the classes that lexically enclose `type_name`.
-    fn extract_constants_enclosing(
-        tree: &ClassTree,
-        type_name: &str,
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-    ) {
-        for enclosing_name in tree.enclosing_class_names_of(type_name) {
-            let Some(enclosing) = tree.get_class_by_qualified_name(enclosing_name) else {
-                continue;
-            };
-            Self::extract_class_constants(enclosing_name, enclosing, ctx);
-        }
-    }
-
     fn collect_component_instance_type_nested_constants(
         tree: &ClassTree,
         instance_data: &rumoca_ir_ast::InstanceData,
@@ -910,28 +777,5 @@ impl TypeChecker {
                 ctx,
             );
         }
-    }
-
-    /// Collect constants from the enclosing class of the model being compiled (MLS §5.3).
-    ///
-    /// For `Modelica.Media.IdealGases.Common.SingleGasNasa.BaseProperties`,
-    /// the enclosing class is `Modelica.Media.IdealGases.Common.SingleGasNasa`.
-    /// Constants like `nX`, `nXi`, `nS` defined in the enclosing package are
-    /// needed for dimension expressions in the model (e.g., `Xi[nXi]`).
-    /// Uses multi-pass extraction to resolve cascading dependencies.
-    pub(crate) fn collect_enclosing_class_constants(
-        tree: &ClassTree,
-        model_name: &str,
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-    ) {
-        let Some(enclosing_name) = tree.enclosing_class_names_of(model_name).next() else {
-            return;
-        };
-        // Collect all ancestor classes (enclosing + full extends chain)
-        let ancestors = Self::collect_ancestor_classes(tree, enclosing_name);
-        if ancestors.is_empty() {
-            return;
-        }
-        Self::extract_enclosing_constants_multi_pass(&ancestors, ctx);
     }
 }

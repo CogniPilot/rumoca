@@ -71,10 +71,10 @@ pub use visitor::{
 
 pub type AstIndexMap<K, V> = IndexMap<K, V, rustc_hash::FxBuildHasher>;
 
+pub use declared_constants::DeclaredConstants;
 pub use external_object::{
     ExternalObjectLifecycle, ExternalObjectLifecycleError, ExternalObjectLifecycleRole,
 };
-pub use declared_constants::DeclaredConstants;
 pub use nodes::*;
 pub use semantic_identity::{
     classes_are_semantically_compatible, components_are_semantically_compatible,

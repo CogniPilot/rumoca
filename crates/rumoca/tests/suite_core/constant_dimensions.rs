@@ -317,7 +317,14 @@ fn a_nested_record_array_copy_is_one_whole_array_assignment_per_leaf_field() {
             _ => None,
         })
         .collect();
-    for leaf in ["result.state.gen", "result.state.edges.enabled", "result.state.edges.id"] {
-        assert!(leaves.iter().any(|name| name == leaf), "missing {leaf} in {leaves:?}");
+    for leaf in [
+        "result.state.gen",
+        "result.state.edges.enabled",
+        "result.state.edges.id",
+    ] {
+        assert!(
+            leaves.iter().any(|name| name == leaf),
+            "missing {leaf} in {leaves:?}"
+        );
     }
 }

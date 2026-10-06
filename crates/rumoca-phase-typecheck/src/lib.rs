@@ -1099,25 +1099,6 @@ impl TypeChecker {
         (None, None)
     }
 
-    /// Multi-pass extraction of constants from ancestor classes (MLS §4.5, §7.1).
-    fn extract_enclosing_constants_multi_pass(
-        ancestors: &[&ClassDef],
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-    ) {
-        const MAX_PASSES: usize = 5;
-        for _pass in 0..MAX_PASSES {
-            let prev = ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len();
-            for ancestor in ancestors {
-                Self::extract_ancestor_extends_modification_constants(ancestor, ctx);
-                Self::extract_class_constants("", ancestor, ctx);
-            }
-            let new = ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len();
-            if new == prev {
-                break;
-            }
-        }
-    }
-
     /// Multi-pass dimension evaluation for all dimension types (MLS §10.1).
     ///
     /// Iterates until no progress is made, handling dependencies between:

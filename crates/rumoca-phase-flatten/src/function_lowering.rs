@@ -1980,7 +1980,8 @@ fn record_copy_fields(
                 subs: Vec::new(),
                 def_id: field.def_id?,
             });
-            let comp = rumoca_core::ComponentReference::construct(target.local(), span, parts).ok()?;
+            let comp =
+                rumoca_core::ComponentReference::construct(target.local(), span, parts).ok()?;
             Some(rumoca_core::Statement::Assignment {
                 comp,
                 value: record_param_field_var_ref(&param.param_name, &field.name, span),
