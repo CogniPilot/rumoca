@@ -1686,7 +1686,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 return self.lower_index_at(base, subscripts, indices, node.provenance().span());
             }
             dae::ExpressionOperation::Array(elements) => {
-                return self.lower_array_at(elements, indices, node.provenance().span());
+                return self.lower_array_at(
+                    elements,
+                    indices,
+                    scalar_type,
+                    node.provenance().span(),
+                );
             }
             _ => return self.lower_aggregate_operation(id, node, indices, scalar_type),
         };
@@ -1889,6 +1894,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 value,
                 subscripts,
                 indices,
+                scalar_type,
                 node.provenance().span(),
             ),
             dae::ExpressionOperation::Comprehension { domain, body } => {

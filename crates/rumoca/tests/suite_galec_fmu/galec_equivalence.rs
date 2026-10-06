@@ -4778,3 +4778,93 @@ fn embedded_c_serves_a_conditional_branch_from_the_node_its_guard_selects() {
         String::from_utf8_lossy(&compile.stderr)
     );
 }
+
+// MLS §10.4/§10.6.13: mixed Integer/Real array constructors have one
+// common Real element type. Rank-one cat is represented by the same array
+// constructor, so its Integer zeros must be converted before GALEC selection.
+#[test]
+fn embedded_c_mixed_array_selection_promotes_every_branch() {
+    let source = r#"
+model MixedArraySmoke
+  function sigma
+    input Real u[2];
+    output Real y[2,3];
+  algorithm
+    y[:,1] := zeros(2);
+    for column in 1:2 loop
+      y[:,column+1] := column * u;
+    end for;
+  end sigma;
+  function mixed
+    input Real u[2];
+    output Real y[6];
+  protected
+    Real padded[6];
+    Real left[2];
+    Real right[2];
+    Real matrix[2,3];
+  algorithm
+    padded := cat(1, zeros(2), u, zeros(2));
+    left := {0, u[1]};
+    right := {u[2], 0};
+    matrix := sigma(u);
+    y := padded + cat(1, left, zeros(2), right)
+      + cat(1, matrix[:,1], matrix[:,2], matrix[:,3]);
+  end mixed;
+  constant Real samplePeriod = 0.1;
+  discrete Integer count(start = 0, fixed = true);
+  discrete output Real y[6](each start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    count = pre(count) + 1;
+    y = mixed({0.5 * count, -0.25 * count});
+  end when;
+end MixedArraySmoke;
+"#;
+    let driver = r#"#include <stdio.h>
+#include "MixedArraySmoke.h"
+static void row(const char *label, const MixedArraySmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%lu\n", label,
+           (double)state->count,
+           (double)state->y[0], (double)state->y[1], (double)state->y[2],
+           (double)state->y[3], (double)state->y[4], (double)state->y[5],
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    MixedArraySmokeState state;
+    char label[16];
+    MixedArraySmoke_startup(&state);
+    row("startup", &state);
+    MixedArraySmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        MixedArraySmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+    let fields = ["count", "y[1]", "y[2]", "y[3]", "y[4]", "y[5]", "y[6]"].map(|name| Field {
+        name,
+        kind: if name == "count" {
+            FieldKind::Integer
+        } else {
+            FieldKind::Real
+        },
+    });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("out");
+    let projection = project_embedded_c(dir.path(), "MixedArraySmoke", source);
+    write_rendered(&out, "MixedArraySmoke", &projection.files);
+    let c_run = run_c_ticks(&out, "MixedArraySmoke", driver, fields.len());
+    let reference = reference_ticks("MixedArraySmoke", source, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, "MixedArraySmoke", &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, "MixedArraySmoke");
+    assert_oracle_agrees(&oracle, &c_run, &reference, &fields, 0);
+    assert_equivalent(&c_run, &reference, &fields);
+    assert_eq!(
+        c_run.steps[4].values,
+        vec![5.0, 0.0, 2.5, 5.0, -2.5, 3.75, -2.5]
+    );
+}

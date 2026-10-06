@@ -610,6 +610,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         &mut self,
         elements: dae::ExpressionOperands<'dae>,
         indices: &[gast::Expression],
+        scalar_type: gast::ScalarType,
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
         let (first, rest) = indices.split_first().ok_or_else(|| {
@@ -633,7 +634,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                     span,
                 )
             })?;
-            return self.lower_at(element, rest);
+            // MLS §10.4/§10.6.13: the constructor's common element type
+            // also applies when a constant index selects an Integer operand.
+            return Ok(TypedExpression {
+                expression: coerce(self.lower_at(element, rest)?, scalar_type, span)?,
+                scalar_type,
+            });
         }
         let extent = u32::try_from(elements.len()).map_err(|_| {
             unsupported(
@@ -663,35 +669,34 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             let prefix_start = self.pending_prefix_statements.len();
             let value = self.lower_at(element, rest);
             self.conditional_activation_path.pop();
-            let value = value?;
+            // SPEC_0042 T5: GALEC has no implicit numeric promotion. Each
+            // branch must use the checked array's common element type before
+            // constructing the selection, including the fallback branch.
+            let value = coerce(value?, scalar_type, span)?;
             selected.push((
                 ordinal + 1,
                 SelectionValue {
                     prefix: self.pending_prefix_statements.split_off(prefix_start),
-                    expression: value.expression,
+                    expression: value,
                 },
-                value.scalar_type,
             ));
         }
-        let (_, fallback, scalar_type) = selected
+        let (_, fallback) = selected
             .pop()
             .expect("checked array constructor is nonempty");
         let branches = selected
             .into_iter()
-            .map(|(ordinal, value, branch_type)| {
-                debug_assert_eq!(branch_type, scalar_type);
-                SelectionBranch {
-                    condition_prefix: Vec::new(),
-                    condition: gast::Expression::binary(
-                        gast::BinaryOp::Eq,
-                        first.clone(),
-                        gast::Expression::Integer(
-                            i64::try_from(ordinal)
-                                .expect("checked array ordinal fits the GALEC index type"),
-                        ),
+            .map(|(ordinal, value)| SelectionBranch {
+                condition_prefix: Vec::new(),
+                condition: gast::Expression::binary(
+                    gast::BinaryOp::Eq,
+                    first.clone(),
+                    gast::Expression::Integer(
+                        i64::try_from(ordinal)
+                            .expect("checked array ordinal fits the GALEC index type"),
                     ),
-                    value,
-                }
+                ),
+                value,
             })
             .collect();
         Ok(self.lower_lazy_selection(branches, fallback, scalar_type, span))

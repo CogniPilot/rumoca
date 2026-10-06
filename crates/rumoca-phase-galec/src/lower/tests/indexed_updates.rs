@@ -790,3 +790,69 @@ fn a_diverted_conditional_update_keeps_each_materialized_call_inside_its_guard()
         );
     });
 }
+
+// MLS §10.6.13 and SPEC_0042 T5: projecting an Integer update of a
+// Real array must keep the array type, even when a constant index selects
+// only the updated value rather than constructing a conditional selection.
+#[test]
+fn integer_update_keeps_the_real_array_element_type() {
+    let mut sources = SourceMap::new();
+    let text = "Real q[2] = {0.25, 0.5}; q[1] := 0;";
+    let source = sources.add("integer-array-update.mo", text);
+    let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        dae.expressions(|expressions| {
+            let left = expressions.at(at).literal(dae::DaeLiteral::Real(0.25))?;
+            let right = expressions.at(at).literal(dae::DaeLiteral::Real(0.5))?;
+            let base = expressions.at(at).array([left, right])?;
+            let zero = expressions.at(at).literal(dae::DaeLiteral::Integer(0))?;
+            let index = expressions.at(at).literal(dae::DaeLiteral::Integer(1))?;
+            expressions.at(at).array_update(
+                base,
+                zero,
+                [dae::Subscript::Index {
+                    expression: index,
+                    provenance: at,
+                }],
+            )?;
+            Ok(())
+        })
+    })
+    .unwrap();
+    model.inspect(|view| {
+        let update = view.expression_id(view.expression_count() - 1).unwrap();
+        let variables = HashMap::new();
+        let previous = HashMap::new();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut lowerer =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
+        let selected = lowerer
+            .lower_at(update, &[gast::Expression::Integer(1)])
+            .unwrap();
+        assert_eq!(selected.scalar_type, gast::ScalarType::Real);
+        assert!(
+            matches!(selected.expression, gast::Expression::Call(ref call)
+            if call.function.lexeme() == "real")
+        );
+        let index = gast::Name::ident("i");
+        lowerer.loop_index_bounds.push(LoopIndexBound {
+            name: index.clone(),
+            minimum: 1,
+            maximum: 2,
+        });
+        let selected = lowerer
+            .lower_at(
+                update,
+                &[gast::Expression::Ref(gast::Reference::local(index))],
+            )
+            .unwrap();
+        assert_eq!(selected.scalar_type, gast::ScalarType::Real);
+        let gast::Expression::If(selection) = selected.expression else {
+            panic!("the dynamic index must select between update and base")
+        };
+        assert!(
+            matches!(selection.branches[0].1, gast::Expression::Call(ref call)
+            if call.function.lexeme() == "real")
+        );
+    });
+}

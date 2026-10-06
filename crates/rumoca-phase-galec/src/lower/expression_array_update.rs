@@ -36,6 +36,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         value: dae::ExprId<'dae>,
         subscripts: dae::SubscriptsView<'dae>,
         indices: &[gast::Expression],
+        scalar_type: gast::ScalarType,
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
         let base_dimensions = self
@@ -50,7 +51,10 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         let Some((value_indices, dynamic_conditions)) =
             self.array_update_value_indices(subscripts, indices, base_dimensions, span)?
         else {
-            return self.lower_at(base, indices);
+            return Ok(TypedExpression {
+                expression: coerce(self.lower_at(base, indices)?, scalar_type, span)?,
+                scalar_type,
+            });
         };
         let activation_operands = vec![base.index(), value.index()];
         self.conditional_activation_path
@@ -62,7 +66,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         let updated_start = self.pending_prefix_statements.len();
         let updated = self.lower_at(value, &value_indices);
         self.conditional_activation_path.pop();
-        let updated = updated?;
+        // MLS §10.6.13: an Integer slice assigned into a Real array
+        // retains the array's Real element type on both selection paths.
+        let updated = TypedExpression {
+            expression: coerce(updated?, scalar_type, span)?,
+            scalar_type,
+        };
         let Some(condition) = dynamic_conditions
             .into_iter()
             .reduce(|lhs, rhs| gast::Expression::binary(gast::BinaryOp::And, lhs, rhs))
@@ -82,11 +91,10 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         let historical_start = self.pending_prefix_statements.len();
         let historical = self.lower_at(base, indices);
         self.conditional_activation_path.pop();
-        let historical = historical?;
-        let scalar_type = historical.scalar_type;
+        let historical = coerce(historical?, scalar_type, span)?;
         let fallback = SelectionValue {
             prefix: self.pending_prefix_statements.split_off(historical_start),
-            expression: historical.expression,
+            expression: historical,
         };
         Ok(self.lower_lazy_selection(
             vec![SelectionBranch {
