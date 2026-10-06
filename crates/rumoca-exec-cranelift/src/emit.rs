@@ -8356,4 +8356,6 @@ fn catch_cranelift_unwind<T>(
 #[cfg(test)]
 mod emit_tests;
 #[cfg(test)]
+mod fold_tests;
+#[cfg(test)]
 mod interpreter_tests;
