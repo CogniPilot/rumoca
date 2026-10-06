@@ -1,5 +1,5 @@
 //! Ordered semantic occurrences with a membership-only index.
-use std::collections::HashSet;
+use crate::projection::HashSet;
 
 use super::FunctionParameterDependency;
 

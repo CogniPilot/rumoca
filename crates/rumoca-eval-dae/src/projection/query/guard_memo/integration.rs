@@ -35,7 +35,6 @@ impl<'dae> Projection<'_, 'dae> {
             return Start::None;
         }
         if !self.guard_root_capture() {
-            #[cfg(debug_assertions)]
             if let Some(memo) = &self.guard_memo {
                 memo.diagnostic(
                     profile::guard::Event::FrameFallback,
@@ -52,7 +51,6 @@ impl<'dae> Projection<'_, 'dae> {
             .domain_contexts
             .full_context(!memo.admission_saturated && memo.checked.len() < memo.key_limit)
         else {
-            #[cfg(debug_assertions)]
             memo.diagnostic(
                 profile::guard::Event::ContextFallback,
                 Some(expression.index()),
@@ -175,11 +173,12 @@ impl<'dae> Projection<'_, 'dae> {
             )
             || matches!(node.operation(), dae::ExpressionOperation::Builtin { .. } if !supported_builtin(self.view, node));
         if unsupported {
-            #[cfg(debug_assertions)]
-            self.guard_memo
-                .as_ref()
-                .unwrap()
-                .diagnostic(profile::guard::unsupported(node), Some(expression.index()));
+            if profile::enabled() {
+                self.guard_memo
+                    .as_ref()
+                    .unwrap()
+                    .diagnostic(profile::guard::unsupported(node), Some(expression.index()));
+            }
             self.guard_memo_invalidate();
         }
     }

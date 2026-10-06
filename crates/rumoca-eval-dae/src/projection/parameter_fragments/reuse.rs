@@ -1,5 +1,5 @@
 //! Complete parameter-relative fragments, shared only within one immutable DAE.
-use std::collections::HashMap;
+use crate::projection::HashMap;
 use std::sync::Arc;
 
 use crate::projection::{FunctionParameterDependency, domain_context::Context};

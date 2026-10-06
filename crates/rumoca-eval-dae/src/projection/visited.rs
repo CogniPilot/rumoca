@@ -1,5 +1,6 @@
 //! Exact projection membership, with bounded lazy scalar bitsets.
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use crate::projection::{HashMap, HashSet};
+use std::collections::hash_map::Entry;
 
 use super::{ScalarExpressionDependency, domain_context::DomainContextId};
 
@@ -69,7 +70,6 @@ impl Visited {
     pub(super) fn insert(&mut self, key: ScalarExpressionDependency) -> bool {
         let expression = key.expression as usize;
         if key.field.is_some() || expression >= DENSE_LIMIT || key.scalar >= DENSE_LIMIT {
-            #[cfg(debug_assertions)]
             super::profile::membership(
                 if key.field.is_some() {
                     super::profile::Membership::Field
@@ -109,7 +109,6 @@ impl Visited {
             )
         };
         inserted.unwrap_or_else(|| {
-            #[cfg(debug_assertions)]
             super::profile::fallback_key(&key);
             self.sparse.insert(key)
         })
@@ -119,7 +118,6 @@ impl Visited {
         self.sparse.clear();
         let reclaim =
             self.scopes > 0 && (self.scopes >= self.scope_limit || self.words >= self.word_limit);
-        #[cfg(debug_assertions)]
         super::profile::clear(self.generation, self.scopes, self.words, reclaim);
         if reclaim {
             // No previous-generation membership survives this boundary. Drop
@@ -160,7 +158,6 @@ fn insert_scoped(
             if *allocation.scopes >= allocation.scope_limit
                 || row + 1 > allocation.word_limit.saturating_sub(*allocation.words)
             {
-                #[cfg(debug_assertions)]
                 super::profile::membership(
                     if *allocation.scopes >= allocation.scope_limit {
                         super::profile::Membership::ScopeBudget
@@ -182,7 +179,6 @@ fn insert_scoped(
     if row >= bits.rows.len() {
         let additional = row + 1 - bits.rows.len();
         if additional > allocation.word_limit.saturating_sub(*allocation.words) {
-            #[cfg(debug_assertions)]
             super::profile::membership(super::profile::Membership::WordBudget, Some(key));
             return None;
         }
@@ -193,7 +189,6 @@ fn insert_scoped(
     let mask = 1_u64 << (key.scalar % 64);
     let inserted = bits.rows[row] & mask == 0;
     bits.rows[row] |= mask;
-    #[cfg(debug_assertions)]
     super::profile::membership(super::profile::Membership::Dense, None);
     Some(inserted)
 }
@@ -212,14 +207,12 @@ fn insert_bits(
     }
     let index = scalar / 64;
     if bits.sparse_from.is_some_and(|start| index >= start) {
-        #[cfg(debug_assertions)]
         super::profile::membership(super::profile::Membership::Cutover, None);
         return None;
     }
     if index >= bits.words.len() {
         let additional = index + 1 - bits.words.len();
         if additional > MAX_WORD_GAP + 1 || additional > limit.saturating_sub(*words) {
-            #[cfg(debug_assertions)]
             super::profile::membership(
                 if additional > MAX_WORD_GAP + 1 {
                     super::profile::Membership::Gap
@@ -240,7 +233,6 @@ fn insert_bits(
     let mask = 1_u64 << (scalar % 64);
     let inserted = bits.words[index] & mask == 0;
     bits.words[index] |= mask;
-    #[cfg(debug_assertions)]
     super::profile::membership(super::profile::Membership::Dense, None);
     Some(inserted)
 }

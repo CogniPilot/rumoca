@@ -1,5 +1,5 @@
 //! Exact cache keys with lazy dense storage for common plain scalar coordinates.
-use std::collections::HashMap;
+use crate::projection::HashMap;
 use std::sync::Arc;
 
 use crate::projection::{FunctionParameterDependency, ScalarExpressionDependency};

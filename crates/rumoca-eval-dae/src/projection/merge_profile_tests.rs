@@ -178,8 +178,8 @@ fn exact_profiles_keep_fold_results_separate_and_restore_generic_shared_caches()
             if key.dependency.output==0 && matches!(value,FunctionSummaryEntry::Complete(_)) {
                 Some(key.integers.iter().map(|i| i.value).collect::<Vec<_>>())
             } else { None }
-        }).collect::<std::collections::HashSet<_>>();
-        assert_eq!(profile_values,std::collections::HashSet::from([vec![1],vec![3]]));
+        }).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(profile_values,std::collections::BTreeSet::from([vec![1],vec![3]]));
         for (root,index) in [(6,0),(9,4)] {
             assert!(matches!(project(view,roots[root],&mut cache),Err(ProjectionError::IndexOutOfBounds {index:i,extent:3,..}) if i==index));
             assert_eq!(cache.completed_folds,folds);

@@ -1,5 +1,5 @@
 //! Ordered completed capture chunks; allocation identity only indexes live data.
-use std::collections::{HashMap, HashSet};
+use crate::projection::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 

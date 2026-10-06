@@ -1,7 +1,7 @@
 mod closure;
 mod fragments;
 
-use std::collections::{HashMap, HashSet};
+use crate::projection::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rumoca_ir_dae as dae;
@@ -37,7 +37,6 @@ pub(super) struct FoldGraph<'dae> {
     edge_membership: Vec<HashSet<usize>>,
     active: Option<usize>,
     cursor: usize,
-    #[cfg(debug_assertions)]
     edge_count: usize,
     #[cfg(test)]
     pub(super) repeated_edges: usize,
@@ -64,16 +63,12 @@ impl<'dae> FoldGraph<'dae> {
             && self.edge_membership[active].insert(index)
         {
             self.edges[active].push(index);
-            #[cfg(debug_assertions)]
-            {
-                self.edge_count += 1;
-            }
+            self.edge_count += 1;
         }
     }
 
     pub(super) fn begin_next(&mut self) -> Option<FoldNode<'dae>> {
         let node = self.nodes.get(self.cursor)?.clone();
-        #[cfg(debug_assertions)]
         super::profile::graph(&node, self.cursor, self.nodes.len(), self.edge_count);
         self.active = Some(self.cursor);
         self.cursor += 1;

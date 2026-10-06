@@ -10,7 +10,6 @@ struct IndexedWrite<'dae> {
     point: Option<Vec<i64>>,
     ordinal: Option<usize>,
     points: usize,
-    #[cfg(debug_assertions)]
     extent: u32,
 }
 
@@ -32,7 +31,6 @@ impl<'dae> Projection<'_, 'dae> {
         {
             self.cache.indexed_write_folds += 1;
         }
-        #[cfg(debug_assertions)]
         profile::indexed_write(
             node,
             checked.value,
@@ -147,7 +145,6 @@ fn prove_write_domain<'dae>(
         point: ordinal.map(|_| point),
         ordinal,
         points,
-        #[cfg(debug_assertions)]
         extent,
     })
 }

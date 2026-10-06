@@ -1,6 +1,6 @@
 //! Exact completed dependency sets; identical sets share storage, never owners.
 mod components;
-use std::collections::{HashMap, HashSet};
+use crate::projection::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::FunctionParameterDependency;
@@ -35,7 +35,7 @@ pub(super) fn complete(
     // Keys identify live, already interned allocations, not source identities.
     // Inventory retains those allocations throughout conversion, so no address
     // can be recycled. Unequal allocations never imply equal dependencies.
-    let mut outputs = HashMap::<*const usize, Arc<[FunctionParameterDependency]>>::new();
+    let mut outputs = HashMap::<*const usize, Arc<[FunctionParameterDependency]>>::default();
     let completed = components
         .of
         .into_iter()
@@ -134,7 +134,7 @@ fn initial_sets(
     let mut inventory = HashSet::default();
     // Completed direct inventories remain live in `direct`. Their shared
     // allocation is only a shortcut for reusing the exact same checked slice.
-    let mut direct_sets = HashMap::<*const FunctionParameterDependency, Set>::new();
+    let mut direct_sets = HashMap::<*const FunctionParameterDependency, Set>::default();
     let sets = direct
         .iter()
         .map(|values| {

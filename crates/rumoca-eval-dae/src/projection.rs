@@ -9,7 +9,6 @@ mod literal_update_sweeps;
 #[cfg(test)]
 mod merge_profile_tests;
 mod parameter_fragments;
-#[cfg(debug_assertions)]
 mod profile;
 mod query;
 mod scalar_selection;
@@ -203,7 +202,6 @@ pub fn for_each_scalar_coordinate_cached<'dae>(
     cache: &mut ScalarCoordinateProjectionCache<'dae>,
     mut visit: impl FnMut(dae::CoordinateView<'dae>, usize),
 ) -> Result<(), ProjectionError> {
-    #[cfg(debug_assertions)]
     profile::entry(root.index(), scalar_index);
     project_coordinates(
         view,
@@ -233,7 +231,6 @@ pub fn for_each_scalar_coordinate_filtered_cached<'dae>(
     relevant: impl Fn(dae::CoordinateView<'dae>) -> bool,
     mut visit: impl FnMut(dae::CoordinateView<'dae>, usize),
 ) -> Result<(), ProjectionError> {
-    #[cfg(debug_assertions)]
     profile::entry(root.index(), scalar_index);
     let mut filtered = |coordinate, scalar| {
         if relevant(coordinate) {
@@ -773,7 +770,6 @@ impl<'dae> Projection<'_, 'dae> {
         &mut self,
         node: &fold_graph::FoldNode<'dae>,
     ) -> Result<(), ProjectionError> {
-        #[cfg(debug_assertions)]
         profile::fold(self.view, node);
         self.projected_value(node.initial, node.field, node.scalar)?;
         if self.project_indexed_write_fold(node)? {
@@ -791,7 +787,6 @@ impl<'dae> Projection<'_, 'dae> {
             .index_tuples()
             .expect("checked fold domain remains representable");
         for point in points {
-            #[cfg(debug_assertions)]
             profile::point(node.fold);
             self.domain_contexts.push(fold.domain(), point);
             let projected = self.projected_value(node.update, node.field, node.scalar);
@@ -1214,10 +1209,10 @@ impl<'dae> Projection<'_, 'dae> {
         integers: &[IntegerBinding],
         span: Span,
     ) -> Result<FunctionSummaryEntry, ProjectionError> {
-        #[cfg(debug_assertions)]
         profile::function(
             "summary_begin",
-            self.view.function(function).unwrap(),
+            self.view,
+            function,
             dependency,
             (false, self.validation, self.function_frames.len()),
         );
@@ -1263,7 +1258,6 @@ impl<'dae> Projection<'_, 'dae> {
             self.cache.completed_folds = folds;
             self.cache.parameter_fragments = fragments;
         }
-        #[cfg(debug_assertions)]
         profile::function(
             if projected.is_err() {
                 "summary_error"
@@ -1272,7 +1266,8 @@ impl<'dae> Projection<'_, 'dae> {
             } else {
                 "summary_specialized"
             },
-            self.view.function(function).unwrap(),
+            self.view,
+            function,
             dependency,
             (false, self.validation, self.function_frames.len()),
         );

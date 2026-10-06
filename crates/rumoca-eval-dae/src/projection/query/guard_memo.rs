@@ -130,7 +130,6 @@ impl<'dae> GuardMemo<'dae> {
 
     fn begin(&mut self, key: Key) -> Start<'dae> {
         if let Some(checked) = self.checked.get(&key) {
-            #[cfg(debug_assertions)]
             self.diagnostic(profile::guard::Event::Hit, Some(key.expression));
             #[cfg(test)]
             {
@@ -142,7 +141,6 @@ impl<'dae> GuardMemo<'dae> {
             || self.checked.len() >= self.key_limit
             || self.recording.len() == RECORDING_LIMIT
         {
-            #[cfg(debug_assertions)]
             self.diagnostic(
                 if self.admission_saturated {
                     profile::guard::Event::Saturated
@@ -155,7 +153,6 @@ impl<'dae> GuardMemo<'dae> {
             );
             return Start::None;
         }
-        #[cfg(debug_assertions)]
         self.diagnostic(profile::guard::Event::Checking, Some(key.expression));
         self.recording.push(Recording {
             key,
@@ -168,7 +165,6 @@ impl<'dae> GuardMemo<'dae> {
 
     fn record(&mut self, effect: Effect<'dae>) {
         let charge = effect.charge();
-        #[cfg(debug_assertions)]
         self.diagnostic(
             match &effect {
                 Effect::Pending(_) => profile::guard::Event::PendingEffect,
@@ -176,7 +172,6 @@ impl<'dae> GuardMemo<'dae> {
             },
             None,
         );
-        #[cfg(debug_assertions)]
         let mut overflow = false;
         for recording in &mut self.recording {
             if !recording.complete {
@@ -184,8 +179,7 @@ impl<'dae> GuardMemo<'dae> {
             }
             if charge > self.payload_limit.saturating_sub(self.bytes) {
                 self.admission_saturated = true;
-                #[cfg(debug_assertions)]
-                set_overflow(&mut overflow);
+                overflow = true;
                 self.bytes -= recording.bytes;
                 recording.bytes = 0;
                 recording.effects = Vec::new();
@@ -196,14 +190,12 @@ impl<'dae> GuardMemo<'dae> {
             recording.bytes += charge;
             self.bytes += charge;
         }
-        #[cfg(debug_assertions)]
         if overflow {
             self.diagnostic(profile::guard::Event::PayloadCapacity, None);
         }
     }
 
     fn invalidate(&mut self) {
-        #[cfg(debug_assertions)]
         if !self.recording.is_empty() {
             self.diagnostic(profile::guard::Event::Invalidated, None);
         }
@@ -218,7 +210,6 @@ impl<'dae> GuardMemo<'dae> {
     fn finish(&mut self, success: bool, cacheable: bool) {
         let recording = self.recording.pop().expect("guard recording was opened");
         if success && recording.complete && self.checked.len() < self.key_limit {
-            #[cfg(debug_assertions)]
             self.diagnostic(
                 profile::guard::Event::Published,
                 Some(recording.key.expression),
@@ -232,7 +223,6 @@ impl<'dae> GuardMemo<'dae> {
             );
         } else {
             self.bytes -= recording.bytes;
-            #[cfg(debug_assertions)]
             self.diagnostic(
                 profile::guard::Event::Discarded,
                 Some(recording.key.expression),
@@ -240,8 +230,10 @@ impl<'dae> GuardMemo<'dae> {
         }
     }
 
-    #[cfg(debug_assertions)]
     fn diagnostic(&self, event: profile::guard::Event, expression: Option<u32>) {
+        if !profile::enabled() {
+            return;
+        }
         profile::guard::event(
             self.root.index(),
             event,
@@ -254,9 +246,4 @@ impl<'dae> GuardMemo<'dae> {
             ),
         );
     }
-}
-
-#[cfg(debug_assertions)]
-fn set_overflow(overflow: &mut bool) {
-    *overflow = true;
 }

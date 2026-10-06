@@ -1,4 +1,6 @@
-//! Opt-in native debug attribution; absent from release compiler artifacts.
+//! Opt-in native debug attribution. Every build compiles the same hooks;
+//! `enabled` is constant false without debug assertions, so release compiler
+//! artifacts do no profiling work.
 pub(super) mod guard;
 
 use std::sync::OnceLock;
@@ -6,9 +8,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rumoca_ir_dae as dae;
 
-fn enabled() -> bool {
+#[inline]
+pub(super) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("RUMOCA_NATIVE_SOURCE_PROFILE").is_some())
+    cfg!(debug_assertions)
+        && *ENABLED.get_or_init(|| std::env::var_os("RUMOCA_NATIVE_SOURCE_PROFILE").is_some())
 }
 
 #[track_caller]
@@ -79,9 +83,10 @@ pub(super) fn clear(generation: u64, scopes: usize, words: usize, reclaimed: boo
     }
 }
 
-pub(super) fn function(
+pub(super) fn function<'dae>(
     event: &str,
-    definition: dae::FunctionView<'_>,
+    view: dae::DaeView<'dae>,
+    function: dae::FunctionId<'dae>,
     dependency: &super::FunctionResultDependency,
     state: (bool, Option<u32>, usize),
 ) {
@@ -89,6 +94,7 @@ pub(super) fn function(
     if !enabled() {
         return;
     }
+    let definition = view.function(function).unwrap();
     let ordinal = COUNT.fetch_add(1, Ordering::Relaxed);
     if ordinal < 32 || ordinal.is_multiple_of(1_000) {
         let (cache_hit, validation_root, depth) = state;

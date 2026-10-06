@@ -5,8 +5,8 @@ mod profile;
 use super::{
     FunctionParameterDependency, dependencies::OrderedDependencies, domain_context::Context,
 };
+use crate::projection::HashMap;
 use rumoca_ir_dae as dae;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

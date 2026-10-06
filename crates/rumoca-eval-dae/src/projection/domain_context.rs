@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::projection::HashMap;
 use std::sync::Arc;
 
 use rumoca_ir_dae as dae;
