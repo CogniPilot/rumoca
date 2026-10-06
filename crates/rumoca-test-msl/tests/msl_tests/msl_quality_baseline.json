@@ -1,7 +1,7 @@
 {
   "quality_gate_version": 14,
   "run_scope": "full",
-  "git_commit": "20face9056ff23ca23b71d111151d174c3755a05",
+  "git_commit": "db4d45baf172ff2b9a4a0e12d93a4f372249dfd3",
   "msl_version": "v4.1.0",
   "omc_version": "a96aa1a-cmake",
   "sim_timeout_seconds": 12.0,
@@ -10,7 +10,7 @@
   "flatten_models": 542,
   "dae_models": 439,
   "compiled_models": 439,
-  "solve_models": 407,
+  "solve_models": 411,
   "balanced_models": 426,
   "unbalanced_models": 0,
   "partial_models": 13,
@@ -34,29 +34,29 @@
   "initial_unbalanced_models": 0,
   "sim_target_models": 566,
   "sim_attempted": 418,
-  "ic_attempted": 380,
-  "ic_ok": 373,
-  "ic_solver_fail": 7,
-  "sim_ok": 358,
-  "sim_success_rate": 0.6325088339222615,
+  "ic_attempted": 384,
+  "ic_ok": 375,
+  "ic_solver_fail": 9,
+  "sim_ok": 361,
+  "sim_success_rate": 0.6378091872791519,
   "runtime_context": {
-    "workers_used": 8,
+    "workers_used": 2,
     "omc_threads": 1
   },
   "runtime_ratio_stats": {
     "system_ratio_both_success": {
-      "sample_count": 216,
-      "min": 0.11476390773409256,
-      "median": 3.551871036667558,
-      "mean": 7.726866565031888,
-      "max": 47.03059632990261
+      "sample_count": 355,
+      "min": 0.0076013254633063515,
+      "median": 3.9252695434351415,
+      "mean": 6.127895093341385,
+      "max": 37.322664614309446
     },
     "wall_ratio_both_success": {
-      "sample_count": 216,
-      "min": 0.5493926469335589,
-      "median": 39.0524212442992,
-      "mean": 334.925184710602,
-      "max": 2778.927352584942
+      "sample_count": 355,
+      "min": 0.5357750235061471,
+      "median": 24.612849735468814,
+      "mean": 193.16869785394425,
+      "max": 1918.0690940233242
     }
   },
   "runtime_ratio_cohort_models": [
@@ -64,35 +64,60 @@
     "Modelica.Blocks.Examples.BusUsage_Utilities.Part",
     "Modelica.Blocks.Examples.CompareSincExpSine",
     "Modelica.Blocks.Examples.DemoSignalCharacteristic",
+    "Modelica.Blocks.Examples.DemonstrateContinuousSignalExtrema",
     "Modelica.Blocks.Examples.DemonstrateSignalExtrema",
+    "Modelica.Blocks.Examples.FilterWithRiseTime",
+    "Modelica.Blocks.Examples.Interaction1",
     "Modelica.Blocks.Examples.InverseModel",
+    "Modelica.Blocks.Examples.LogicalNetwork1",
     "Modelica.Blocks.Examples.Modulation",
     "Modelica.Blocks.Examples.Noise.Densities",
     "Modelica.Blocks.Examples.PID_Controller",
+    "Modelica.Blocks.Examples.ShowLogicalSources",
     "Modelica.Blocks.Examples.SinCosEncoder",
     "Modelica.Blocks.Examples.SlewRateLimiter",
+    "Modelica.Blocks.Examples.TotalHarmonicDistortion",
+    "Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks",
+    "Modelica.Clocked.Examples.CascadeControlledDrive.Continuous",
+    "Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked",
+    "Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled",
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClock",
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClockVectorized",
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample",
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.Hold",
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.Sample1",
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleClocked",
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleVectorizedAndClocked",
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.ShiftSample",
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.SubSample",
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.SuperSample",
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.TickBasedStep",
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse",
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedStep",
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.UpSample",
+    "Modelica.Clocked.Examples.Elementary.ClockSignals.RotationalSample",
     "Modelica.Clocked.Examples.Elementary.ClockSignals.ShiftSample",
     "Modelica.Clocked.Examples.Elementary.ClockSignals.SubSample",
     "Modelica.Clocked.Examples.Elementary.ClockSignals.SuperSample",
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.AssignClock",
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.AssignClockVectorized",
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample",
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.Hold",
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.Sample1",
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.SampleClocked",
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.SampleVectorizedAndClocked",
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.ShiftSample",
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.SubSample",
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.SuperSample",
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.TickBasedStep",
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep",
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.UpSample",
     "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClock",
     "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockToSquareWaveHold",
     "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockToTriggerHold",
+    "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockVectorized",
     "Modelica.Clocked.Examples.Elementary.RealSignals.BackSample",
+    "Modelica.Clocked.Examples.Elementary.RealSignals.FractionalDelay",
     "Modelica.Clocked.Examples.Elementary.RealSignals.Hold",
     "Modelica.Clocked.Examples.Elementary.RealSignals.HoldWithDAeffects1",
     "Modelica.Clocked.Examples.Elementary.RealSignals.HoldWithDAeffects2",
@@ -100,32 +125,54 @@
     "Modelica.Clocked.Examples.Elementary.RealSignals.Sample2",
     "Modelica.Clocked.Examples.Elementary.RealSignals.Sample3",
     "Modelica.Clocked.Examples.Elementary.RealSignals.SampleClocked",
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SampleVectorizedAndClocked",
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SampleWithADeffects",
     "Modelica.Clocked.Examples.Elementary.RealSignals.ShiftSample",
     "Modelica.Clocked.Examples.Elementary.RealSignals.SubSample",
     "Modelica.Clocked.Examples.Elementary.RealSignals.SuperSample",
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SuperSampleInterpolated",
     "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp",
     "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedStep",
     "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedRamp",
     "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedSine",
     "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedStep",
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoise",
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoiseXorshift64star",
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UpSample1",
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UpSample2",
     "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteController",
     "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteTextbookController",
+    "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWith_AD_DA_Effects",
     "Modelica.Clocked.Examples.SimpleControlledDrive.Continuous",
     "Modelica.Clocked.Examples.SimpleControlledDrive.ExactlyClockedWithDiscreteController",
+    "Modelica.Clocked.Examples.Systems.EngineThrottleControl",
     "Modelica.ComplexBlocks.Examples.TestConversionBlock",
+    "Modelica.Electrical.Analog.Examples.AmplifierWithOpAmpDetailed",
     "Modelica.Electrical.Analog.Examples.CauerLowPassAnalog",
     "Modelica.Electrical.Analog.Examples.CauerLowPassOPV",
     "Modelica.Electrical.Analog.Examples.CauerLowPassSC",
     "Modelica.Electrical.Analog.Examples.CharacteristicIdealDiodes",
+    "Modelica.Electrical.Analog.Examples.CharacteristicThyristors",
     "Modelica.Electrical.Analog.Examples.ChuaCircuit",
     "Modelica.Electrical.Analog.Examples.CompareTransformers",
     "Modelica.Electrical.Analog.Examples.ControlledSwitchWithArc",
     "Modelica.Electrical.Analog.Examples.DemoPowerSupply",
     "Modelica.Electrical.Analog.Examples.DemoPowerSupplyWithBuffer",
+    "Modelica.Electrical.Analog.Examples.DemonstrateLightning",
+    "Modelica.Electrical.Analog.Examples.DifferenceAmplifier",
+    "Modelica.Electrical.Analog.Examples.GenerationOfFMUs",
+    "Modelica.Electrical.Analog.Examples.HeatingMOSInverter",
+    "Modelica.Electrical.Analog.Examples.HeatingNPN_NORGate",
+    "Modelica.Electrical.Analog.Examples.HeatingPNP_NORGate",
     "Modelica.Electrical.Analog.Examples.HeatingRectifier",
     "Modelica.Electrical.Analog.Examples.IdealTriacCircuit",
     "Modelica.Electrical.Analog.Examples.InvertingAmp",
+    "Modelica.Electrical.Analog.Examples.Lines.CompareLineTrunks",
     "Modelica.Electrical.Analog.Examples.Lines.CompareLosslessLines",
+    "Modelica.Electrical.Analog.Examples.Lines.LightningLosslessTransmissionLine",
+    "Modelica.Electrical.Analog.Examples.Lines.LightningSegmentedTransmissionLine",
+    "Modelica.Electrical.Analog.Examples.Lines.SmoothStep",
+    "Modelica.Electrical.Analog.Examples.NandGate",
     "Modelica.Electrical.Analog.Examples.OpAmps.Adder",
     "Modelica.Electrical.Analog.Examples.OpAmps.Comparator",
     "Modelica.Electrical.Analog.Examples.OpAmps.ControlCircuit",
@@ -138,26 +185,40 @@
     "Modelica.Electrical.Analog.Examples.OpAmps.LowPass",
     "Modelica.Electrical.Analog.Examples.OpAmps.Multivibrator",
     "Modelica.Electrical.Analog.Examples.OpAmps.NonInvertingAmplifier",
+    "Modelica.Electrical.Analog.Examples.OpAmps.SchmittTrigger",
+    "Modelica.Electrical.Analog.Examples.OpAmps.SignalGenerator",
     "Modelica.Electrical.Analog.Examples.OpAmps.Subtracter",
     "Modelica.Electrical.Analog.Examples.OpAmps.VoltageFollower",
     "Modelica.Electrical.Analog.Examples.OvervoltageProtection",
     "Modelica.Electrical.Analog.Examples.ParallelResonance",
     "Modelica.Electrical.Analog.Examples.Rectifier",
     "Modelica.Electrical.Analog.Examples.Resistor",
+    "Modelica.Electrical.Analog.Examples.ResonanceCircuits",
     "Modelica.Electrical.Analog.Examples.SeriesResonance",
     "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor",
     "Modelica.Electrical.Analog.Examples.ShowVariableResistor",
     "Modelica.Electrical.Analog.Examples.SwitchWithArc",
+    "Modelica.Electrical.Analog.Examples.ThyristorBehaviourTest",
+    "Modelica.Electrical.Batteries.Examples.CCCV_Cell",
     "Modelica.Electrical.Batteries.Examples.SuperCapDischargeCharge",
+    "Modelica.Electrical.Digital.Examples.Adder4",
+    "Modelica.Electrical.Digital.Examples.Counter",
+    "Modelica.Electrical.Digital.Examples.Counter3",
+    "Modelica.Electrical.Digital.Examples.FlipFlop",
+    "Modelica.Electrical.Digital.Examples.FullAdder",
+    "Modelica.Electrical.Digital.Examples.HalfAdder",
+    "Modelica.Electrical.Digital.Examples.Multiplexer",
     "Modelica.Electrical.Machines.Examples.DCMachines.DCEE_Start",
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Cooling",
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_CurrentControlled",
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Drive",
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_QuasiStatic",
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Start",
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Temperature",
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_withLosses",
     "Modelica.Electrical.Machines.Examples.DCMachines.DCSE_SinglePhase",
     "Modelica.Electrical.Machines.Examples.DCMachines.DCSE_Start",
+    "Modelica.Electrical.Machines.Examples.DCMachines.DC_CompareCharacteristics",
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_DOL",
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Initialize",
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Inverter",
@@ -165,13 +226,21 @@
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_YD",
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_withLosses",
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMS_Start",
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_DOL",
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Generator",
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Rectifier",
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Braking",
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_CurrentSource",
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Inverter",
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_NoLoad",
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_ResistiveBraking",
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_VoltageSource",
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_DOL",
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_Inverter",
+    "Modelica.Electrical.Polyphase.Examples.Rectifier",
     "Modelica.Electrical.Polyphase.Examples.TestSensors",
     "Modelica.Electrical.Polyphase.Examples.TransformerYY",
+    "Modelica.Electrical.PowerConverters.Examples.ACAC.Dimmer_R",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.Rectifier1Pulse.Thyristor1Pulse_R",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.Rectifier1Pulse.Thyristor1Pulse_R_Characteristic",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.DiodeBridge2Pulse",
@@ -185,6 +254,7 @@
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_R",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RL",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV_Characteristic",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.DiodeCenterTap2Pulse",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_R",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RL",
@@ -199,6 +269,9 @@
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RL",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV_Characteristic",
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.PolyphaseTwoLevel_R",
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.PolyphaseTwoLevel_RL",
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.ThreePhaseTwoLevel_PWM",
     "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_R",
     "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_RL",
     "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepDown.ChopperStepDown_R",
@@ -207,10 +280,59 @@
     "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_R",
     "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_RL",
     "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL",
+    "Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingDelta",
+    "Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingStar",
+    "Modelica.Electrical.QuasiStatic.Polyphase.Examples.TestSensors",
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.MultipleResonance",
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.ParallelResonance",
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Rectifier",
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.SeriesResonance",
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Transformer",
     "Modelica.Electrical.Spice3.Examples.CoupledInductors",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks",
+    "Modelica.Fluid.Examples.ControlledTankSystem.ControlledTanks",
+    "Modelica.Fluid.Examples.Tanks.EmptyTanks",
+    "Modelica.Fluid.Examples.Tanks.ThreeTanks",
     "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.SaturatedInductor",
+    "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap",
+    "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection",
     "Modelica.Magnetic.FluxTubes.Examples.MovingCoilActuator.ArmatureStroke",
+    "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonPullInStroke",
     "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonQuasiStatic",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_DOL",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Initialize",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Inverter",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Steinmetz",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_YD",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_withLosses",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMS_Start",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_DOL",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Generator",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Rectifier",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Braking",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_CurrentSource",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Inverter",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_VoltageSource",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMR_Inverter",
+    "Modelica.Magnetic.FundamentalWave.Examples.Components.EddyCurrentLosses",
+    "Modelica.Magnetic.FundamentalWave.Examples.Components.PolyphaseInductance",
+    "Modelica.Magnetic.FundamentalWave.Examples.Components.SinglePhaseInductance",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.QuadraticCoreAirgap",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CuboidSections",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CylinderSections",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.CylinderLeakage",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.GeneralLeakage",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.LinearInductor",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.NonLinearInductor",
+    "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3",
+    "Modelica.Math.Random.Examples.GenerateRandomNumbers",
     "Modelica.Mechanics.MultiBody.Examples.Constraints.PrismaticConstraint",
     "Modelica.Mechanics.MultiBody.Examples.Constraints.RevoluteConstraint",
     "Modelica.Mechanics.MultiBody.Examples.Constraints.SphericalConstraint",
@@ -226,6 +348,7 @@
     "Modelica.Mechanics.MultiBody.Examples.Elementary.PendulumWithSpringDamper",
     "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravity",
     "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses",
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses2",
     "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheel",
     "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheelSetDriving",
     "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheelSetPulling",
@@ -235,7 +358,10 @@
     "Modelica.Mechanics.MultiBody.Examples.Elementary.Surfaces",
     "Modelica.Mechanics.MultiBody.Examples.Elementary.ThreeSprings",
     "Modelica.Mechanics.MultiBody.Examples.Elementary.UserDefinedGravityField",
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1a",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b",
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b_analytic",
+    "Modelica.Mechanics.MultiBody.Examples.Loops.EngineV6",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar2",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar_analytic",
@@ -257,6 +383,7 @@
     "Modelica.Mechanics.Translational.Examples.Damper",
     "Modelica.Mechanics.Translational.Examples.EddyCurrentBrake",
     "Modelica.Mechanics.Translational.Examples.ElastoGap",
+    "Modelica.Mechanics.Translational.Examples.GenerationOfFMUs",
     "Modelica.Mechanics.Translational.Examples.InitialConditions",
     "Modelica.Mechanics.Translational.Examples.Oscillator",
     "Modelica.Mechanics.Translational.Examples.PreLoad",
@@ -264,6 +391,15 @@
     "Modelica.Mechanics.Translational.Examples.SignConvention",
     "Modelica.Mechanics.Translational.Examples.Vehicle",
     "Modelica.Mechanics.Translational.Examples.WhyArrows",
+    "Modelica.Media.Examples.IdealGasH2O",
+    "Modelica.Media.Examples.SimpleLiquidWater",
+    "Modelica.Media.Incompressible.Examples.TestGlycol",
+    "Modelica.StateGraph.Examples.ExecutionPaths",
+    "Modelica.StateGraph.Examples.FirstExample",
+    "Modelica.StateGraph.Examples.FirstExample_Variant2",
+    "Modelica.StateGraph.Examples.FirstExample_Variant3",
+    "Modelica.StateGraph.Examples.ShowCompositeStep",
+    "Modelica.StateGraph.Examples.ShowExceptions",
     "Modelica.Thermal.FluidHeatFlow.Examples.IndirectCooling",
     "Modelica.Thermal.FluidHeatFlow.Examples.OneMass",
     "Modelica.Thermal.FluidHeatFlow.Examples.ParallelCooling",
@@ -271,28 +407,31 @@
     "Modelica.Thermal.FluidHeatFlow.Examples.PumpAndValve",
     "Modelica.Thermal.FluidHeatFlow.Examples.PumpDropOut",
     "Modelica.Thermal.FluidHeatFlow.Examples.SimpleCooling",
+    "Modelica.Thermal.FluidHeatFlow.Examples.TestCylinder",
+    "Modelica.Thermal.FluidHeatFlow.Examples.TestOpenTank",
     "Modelica.Thermal.FluidHeatFlow.Examples.TwoTanks",
     "Modelica.Thermal.FluidHeatFlow.Examples.WaterPump",
     "Modelica.Thermal.HeatTransfer.Examples.ControlledTemperature",
     "Modelica.Thermal.HeatTransfer.Examples.Motor",
-    "Modelica.Thermal.HeatTransfer.Examples.TwoMasses"
+    "Modelica.Thermal.HeatTransfer.Examples.TwoMasses",
+    "Modelica.Utilities.Examples.ReadRealMatrixFromFile"
   ],
   "unexcepted_non_high_models": [
     "Modelica.Clocked.Examples.Elementary.ClockSignals.LogicalSample"
   ],
   "trace_accuracy_stats": {
-    "models_compared": 298,
+    "models_compared": 307,
     "missing_trace_models": 1,
-    "skipped_models": 59,
-    "policy_excluded_models": 59,
+    "skipped_models": 53,
+    "policy_excluded_models": 53,
     "trace_nonidentifiable_models": 0,
-    "agreement_high": 298,
+    "agreement_high": 307,
     "agreement_high_percent": 100.0,
     "agreement_minor": 0,
     "agreement_minor_percent": 0.0,
     "agreement_deviation": 0,
     "agreement_deviation_percent": 0.0,
-    "total_channels_compared": 57406,
+    "total_channels_compared": 70053,
     "bad_channels_total": 0,
     "severe_channels_total": 0,
     "bad_channels_percent": 0.0,
@@ -306,38 +445,38 @@
     "models_with_any_channel_deviation_percent": 0.0,
     "max_model_channel_deviation_percent": 0.0,
     "bounded_normalized_l1": {
-      "sample_count": 298,
+      "sample_count": 307,
       "min": 0.0,
-      "median": 1.1648511377045768e-10,
-      "mean": 0.00004739919006632052,
-      "max": 0.009451344611708561
+      "median": 9.034963457574776e-11,
+      "mean": 0.000012143357260665106,
+      "max": 0.0009990010790338903
     },
-    "mean_model_mean_channel_bounded_normalized_l1": 0.00035471541197397666,
+    "mean_model_mean_channel_bounded_normalized_l1": 0.0002805424747976826,
     "max_model_max_channel_bounded_normalized_l1": 0.19725886202963985,
     "model_mean_channel_bounded_normalized_l1": {
-      "sample_count": 298,
+      "sample_count": 307,
       "min": 0.0,
-      "median": 6.626438135792475e-7,
-      "mean": 0.00035471541197397666,
-      "max": 0.01998717827490928
+      "median": 6.643185948260235e-7,
+      "mean": 0.0002805424747976826,
+      "max": 0.016965374701828115
     },
     "model_max_channel_bounded_normalized_l1": {
-      "sample_count": 298,
+      "sample_count": 307,
       "min": 0.0,
-      "median": 0.000006036820431890088,
-      "mean": 0.0065428513630060026,
+      "median": 6.077090941848794e-6,
+      "mean": 0.006273523816088627,
       "max": 0.19725886202963985
     },
     "initial_condition": {
-      "models_compared": 298,
-      "models_with_accurate_initial_conditions": 298,
+      "models_compared": 307,
+      "models_with_accurate_initial_conditions": 307,
       "models_with_initial_condition_deviation": 0,
       "models_with_unmeasured_initial_conditions": 0,
       "accurate_initial_conditions_percent": 100.0,
       "models_with_initial_condition_deviation_percent": 0.0,
       "models_with_unmeasured_initial_conditions_percent": 0.0,
-      "total_channels_compared": 57406,
-      "high_channels_total": 57406,
+      "total_channels_compared": 69912,
+      "high_channels_total": 69912,
       "near_channels_total": 0,
       "deviation_channels_total": 0,
       "severe_channels_total": 0,
@@ -348,20 +487,20 @@
       "violation_mass_total": 0.0,
       "violation_mass_mean_per_model": 0.0,
       "violation_mass_mean_per_channel": 0.0,
-      "mean_channel_bounded_normalized_error": 7.533105031578308e-8,
+      "mean_channel_bounded_normalized_error": 6.196232223036819e-8,
       "max_channel_bounded_normalized_error": 0.004315880983707611
     },
     "state_selection": {
-      "models_compared": 194,
-      "exact_state_set_match_models": 135,
-      "state_count_match_models": 182,
-      "exact_state_set_match_percent": 69.58762886597938,
-      "state_count_match_percent": 93.81443298969072,
-      "total_rumoca_states": 707,
-      "total_omc_states": 687,
-      "total_matching_states": 468,
-      "total_rumoca_only_states": 239,
-      "total_omc_only_states": 219,
+      "models_compared": 307,
+      "exact_state_set_match_models": 231,
+      "state_count_match_models": 291,
+      "exact_state_set_match_percent": 75.2442996742671,
+      "state_count_match_percent": 94.78827361563518,
+      "total_rumoca_states": 1561,
+      "total_omc_states": 1534,
+      "total_matching_states": 1388,
+      "total_rumoca_only_states": 173,
+      "total_omc_only_states": 146,
       "max_model_state_set_difference": 21
     }
   },
@@ -661,36 +800,36 @@
     "flatten_models": 542,
     "dae_models": 439,
     "compiled_models": 439,
-    "solve_models": 407,
+    "solve_models": 411,
     "balanced_models": 426,
     "initial_balanced_models": 426,
     "state_selection": {
-      "models_compared": 0,
-      "exact_state_set_match_models": 0,
-      "state_count_match_models": 0,
-      "exact_state_set_match_percent": 0,
-      "state_count_match_percent": 0,
-      "total_rumoca_states": 0,
-      "total_omc_states": 0,
-      "total_matching_states": 0,
-      "total_rumoca_only_states": 0,
-      "total_omc_only_states": 0,
-      "max_model_state_set_difference": 0
+      "models_compared": 307,
+      "exact_state_set_match_models": 231,
+      "state_count_match_models": 291,
+      "exact_state_set_match_percent": 75.2442996742671,
+      "state_count_match_percent": 94.78827361563518,
+      "total_rumoca_states": 1561,
+      "total_omc_states": 1534,
+      "total_matching_states": 1388,
+      "total_rumoca_only_states": 173,
+      "total_omc_only_states": 146,
+      "max_model_state_set_difference": 21
     },
     "omc_assertion_failure_models": 0,
     "sim_target_models": 566,
     "sim_attempted": 418,
-    "ic_attempted": 380,
-    "ic_ok": 373,
-    "ic_solver_fail": 7,
-    "sim_ok": 358,
-    "certified_simulations_strict_high": 298,
-    "reviewed_trace_exceptions": 59,
+    "ic_attempted": 384,
+    "ic_ok": 375,
+    "ic_solver_fail": 9,
+    "sim_ok": 361,
+    "certified_simulations_strict_high": 307,
+    "reviewed_trace_exceptions": 53,
     "unclassified_simulations": 1,
-    "classified_simulations_percent": 99.72067039106145,
+    "classified_simulations_percent": 99.7229916897507,
     "sim_nan": 0,
-    "sim_solver_fail": 49,
-    "sim_timeout": 11,
+    "sim_solver_fail": 50,
+    "sim_timeout": 7,
     "tensor_preservation": {
       "models_reported": 0,
       "family_bodies": 0,
@@ -713,12 +852,12 @@
       "EF036": 8,
       "EI035": 1,
       "EL005": 27,
-      "EMSL_TIMEOUT_MODEL_ATTEMPT": 12,
+      "EMSL_TIMEOUT_MODEL_ATTEMPT": 8,
       "ER130": 2,
       "ES016": 1,
       "ET004": 4,
       "EX002": 13,
-      "EX004": 1
+      "EX004": 3
     },
     "unsupported_feature_counts": {},
     "unsupported_feature_counts_by_backend": {},
@@ -766,9 +905,9 @@
     "CONN_STRM": {
       "models": 338,
       "compiled": 330,
-      "solve_ir": 251,
+      "solve_ir": 253,
       "balanced": 277,
-      "sim_ok": 219,
+      "sim_ok": 222,
       "phase_counts": {
         "Flatten": 5,
         "Resolve": 2,
@@ -785,7 +924,7 @@
         "EF020": 2,
         "EF024": 3,
         "EL005": 16,
-        "EMSL_TIMEOUT_MODEL_ATTEMPT": 9,
+        "EMSL_TIMEOUT_MODEL_ATTEMPT": 7,
         "ER130": 2,
         "ES016": 1,
         "EX002": 8,
@@ -838,7 +977,7 @@
     "OTHER": {
       "models": 86,
       "compiled": 85,
-      "solve_ir": 72,
+      "solve_ir": 74,
       "balanced": 77,
       "sim_ok": 56,
       "phase_counts": {
@@ -852,13 +991,14 @@
         "ED020": 1,
         "EI035": 1,
         "EL005": 10,
-        "EMSL_TIMEOUT_MODEL_ATTEMPT": 3,
-        "EX002": 5
+        "EMSL_TIMEOUT_MODEL_ATTEMPT": 1,
+        "EX002": 5,
+        "EX004": 2
       }
     }
   },
   "parity_measured": true,
-  "evidence_provenance": "stage, trace, and roster figures are CI run 37253114196 at 20face9056ff23ca23b71d111151d174c3755a05 (merged shards 1-4, 566 models, 298 strict-high, 59 policy-excluded, 1 unexcepted non-high model; ThyristorBridge2mPulse_RLV_Characteristic and Engine1b_analytic exceeded their hosted-runner time budgets and are not certified); the OMC state-selection comparison and runtime figures are the promoted version-7 release asset's (CI run 36060605842 at b92932c0fabe9d8fee2dcafaeac457ecb164cc00), whose not-raised state-set and runtime integrity bounds the fresh CI state-set comparison does not yet meet",
+  "evidence_provenance": "every figure is CI run 37457263123 at db4d45baf172ff2b9a4a0e12d93a4f372249dfd3 (merged shards 1-4, 566 models, 307 strict-high, 53 policy-excluded, 1 unexcepted non-high model), reproduced by merging that run's shard artifacts; the OMC context migration and the promoted-baseline bridge are the reviewed lineage carried from the previous checked-in baseline",
   "certified_strict_high_models": [
     "Modelica.Blocks.Examples.BusUsage",
     "Modelica.Blocks.Examples.BusUsage_Utilities.Part",
@@ -1034,6 +1174,7 @@
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RL",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV_Characteristic",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.DiodeCenterTap2Pulse",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_R",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RL",
@@ -1057,9 +1198,11 @@
     "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_R",
     "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_RL",
     "Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingDelta",
+    "Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingStar",
     "Modelica.Electrical.QuasiStatic.Polyphase.Examples.TestSensors",
     "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.MultipleResonance",
     "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.ParallelResonance",
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Rectifier",
     "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.SeriesResonance",
     "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Transformer",
     "Modelica.Electrical.Spice3.Examples.CoupledInductors",
@@ -1075,8 +1218,12 @@
     "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap",
     "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection",
     "Modelica.Magnetic.FluxTubes.Examples.MovingCoilActuator.ArmatureStroke",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.QuadraticCoreAirgap",
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap",
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CuboidSections",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CylinderSections",
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.CylinderLeakage",
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.GeneralLeakage",
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.LinearInductor",
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.NonLinearInductor",
@@ -1109,6 +1256,8 @@
     "Modelica.Mechanics.MultiBody.Examples.Elementary.UserDefinedGravityField",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1a",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b",
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b_analytic",
+    "Modelica.Mechanics.MultiBody.Examples.Loops.EngineV6",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar2",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar_analytic",
@@ -1160,6 +1309,4500 @@
     "Modelica.Utilities.Examples.ReadRealMatrixFromFile"
   ],
   "trace_exceptions_sha256": "19d0bef167c5120f371e59de5f3c4ed785779b16115f4689ebd8976be55a1a14",
+  "trace_model_evidence": {
+    "Modelica.Blocks.Examples.BusUsage": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.BusUsage_Utilities.Part": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.CompareSincExpSine": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.DemonstrateContinuousSignalExtrema": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.DemonstrateSignalExtrema": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.FilterWithRiseTime": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.Interaction1": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.InverseModel": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Blocks.Examples.LogicalNetwork1": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.Modulation": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.Noise.Densities": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.PID_Controller": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.ShowLogicalSources": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.SinCosEncoder": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.SlewRateLimiter": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Blocks.Examples.TotalHarmonicDistortion": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Clocked.Examples.CascadeControlledDrive.Continuous": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClock": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClockVectorized": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.Hold": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.Sample1": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleClocked": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleVectorizedAndClocked": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.ShiftSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.SubSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.SuperSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.TickBasedStep": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedStep": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.UpSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.ClockSignals.RotationalSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.ClockSignals.ShiftSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.ClockSignals.SubSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.ClockSignals.SuperSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.AssignClock": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.AssignClockVectorized": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.Hold": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.Sample1": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.SampleClocked": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.SampleVectorizedAndClocked": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.ShiftSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.SubSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.SuperSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.TickBasedStep": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.UpSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClock": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockToSquareWaveHold": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockToTriggerHold": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockVectorized": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.BackSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.FractionalDelay": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.Hold": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.HoldWithDAeffects1": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.HoldWithDAeffects2": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.Sample1": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.Sample2": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.Sample3": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SampleClocked": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SampleVectorizedAndClocked": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SampleWithADeffects": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.ShiftSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SubSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SuperSample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SuperSampleInterpolated": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedStep": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedRamp": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedSine": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedStep": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoise": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoiseXorshift64star": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UpSample1": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UpSample2": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteController": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteTextbookController": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWith_AD_DA_Effects": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.SimpleControlledDrive.Continuous": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.SimpleControlledDrive.ExactlyClockedWithDiscreteController": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Clocked.Examples.Systems.EngineThrottleControl": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.ComplexBlocks.Examples.TestConversionBlock": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.CauerLowPassAnalog": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.CauerLowPassOPV": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.CauerLowPassSC": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.CharacteristicIdealDiodes": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.CharacteristicThyristors": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.CompareTransformers": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 0,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.DemoPowerSupply": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.DemonstrateLightning": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.DifferenceAmplifier": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.GenerationOfFMUs": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.HeatingMOSInverter": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.HeatingNPN_NORGate": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.HeatingPNP_NORGate": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.HeatingRectifier": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.IdealTriacCircuit": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.InvertingAmp": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.Lines.CompareLineTrunks": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.Lines.CompareLosslessLines": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.Lines.LightningLosslessTransmissionLine": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.Lines.LightningSegmentedTransmissionLine": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 0,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.Lines.SmoothStep": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.NandGate": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.Adder": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.Comparator": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.DifferentialAmplifier": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.Differentiator": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.HighPass": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.Integrator": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.InvertingAmplifier": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.LCOscillator": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.LowPass": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.NonInvertingAmplifier": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.SchmittTrigger": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.Subtracter": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.VoltageFollower": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.OvervoltageProtection": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.ParallelResonance": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.Rectifier": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 0,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.Resistor": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.ResonanceCircuits": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.SeriesResonance": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.ShowVariableResistor": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Analog.Examples.ThyristorBehaviourTest": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Batteries.Examples.CCCV_Cell": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Batteries.Examples.SuperCapDischargeCharge": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Digital.Examples.Adder4": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Digital.Examples.Counter3": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Digital.Examples.FlipFlop": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Digital.Examples.FullAdder": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Digital.Examples.HalfAdder": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Digital.Examples.Multiplexer": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCEE_Start": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Cooling": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_QuasiStatic": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 3,
+        "omc_only": 3,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Start": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Temperature": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_withLosses": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 4,
+        "omc_only": 4,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCSE_SinglePhase": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCSE_Start": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DC_CompareCharacteristics": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 6,
+        "omc_only": 6,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_DOL": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Initialize": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Inverter": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Steinmetz": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_YD": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_withLosses": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_DOL": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Rectifier": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_CurrentSource": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Inverter": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_NoLoad": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_ResistiveBraking": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_VoltageSource": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_DOL": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_Inverter": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Polyphase.Examples.Rectifier": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Polyphase.Examples.TestSensors": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Polyphase.Examples.TransformerYY": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACAC.Dimmer_R": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.Rectifier1Pulse.Thyristor1Pulse_R": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.Rectifier1Pulse.Thyristor1Pulse_R_Characteristic": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.DiodeBridge2Pulse": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.HalfControlledBridge2Pulse": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_R": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RL": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV_Characteristic": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.DiodeCenterTap2Pulse": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_R": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RL": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.DiodeCenterTap2mPulse": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_R": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RL": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.DiodeCenterTapmPulse": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_R": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RL": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV_Characteristic": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.PolyphaseTwoLevel_R": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.PolyphaseTwoLevel_RL": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.ThreePhaseTwoLevel_PWM": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_R": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_RL": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepDown.ChopperStepDown_R": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepDown.ChopperStepDown_RL": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepUp.ChopperStepUp_R": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_R": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_RL": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingDelta": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingStar": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.QuasiStatic.Polyphase.Examples.TestSensors": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.MultipleResonance": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.ParallelResonance": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Rectifier": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.SeriesResonance": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Transformer": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Electrical.Spice3.Examples.CoupledInductors": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Fluid.Examples.ControlledTankSystem.ControlledTanks": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Fluid.Examples.Tanks.EmptyTanks": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Fluid.Examples.Tanks.ThreeTanks": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.SaturatedInductor": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Magnetic.FluxTubes.Examples.MovingCoilActuator.ArmatureStroke": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 4,
+        "omc_only": 4,
+        "exact": false
+      }
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.QuadraticCoreAirgap": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CuboidSections": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CylinderSections": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.CylinderLeakage": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.GeneralLeakage": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.LinearInductor": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.NonLinearInductor": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Math.Random.Examples.GenerateRandomNumbers": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Constraints.PrismaticConstraint": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Constraints.RevoluteConstraint": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Constraints.SphericalConstraint": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 7,
+        "omc_only": 6,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Constraints.UniversalConstraint": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 4,
+        "omc_only": 4,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulumInitTip": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.ForceAndTorque": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.FreeBody": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 7,
+        "omc_only": 6,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.HeatLosses": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 12,
+        "omc_only": 9,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.InitSpringConstant": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.LineForceWithTwoMasses": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.Pendulum": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.PendulumWithSpringDamper": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravity": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 8,
+        "omc_only": 6,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses2": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 11,
+        "omc_only": 9,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheel": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheelSetDriving": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 3,
+        "omc_only": 0,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheelSetPulling": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 3,
+        "omc_only": 0,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringDamperSystem": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 4,
+        "omc_only": 3,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringMassSystem": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringWithMass": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 4,
+        "omc_only": 3,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.Surfaces": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.ThreeSprings": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 4,
+        "omc_only": 3,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.UserDefinedGravityField": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1a": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b_analytic": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.EngineV6": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar2": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar_analytic": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.PlanarFourbar": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.ActuatedDrive": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.GearConstraint": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.GyroscopicEffects": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 11,
+        "omc_only": 9,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.MovingActuatedDrive": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Rotational.Examples.Backlash": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Rotational.Examples.CompareBrakingTorque": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 4,
+        "omc_only": 4,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Rotational.Examples.EddyCurrentBrake": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Rotational.Examples.ElasticBearing": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Rotational.Examples.First": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Rotational.Examples.FirstGrounded": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Rotational.Examples.RollingWheel": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.Accelerate": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.CompareBrakingForce": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.Damper": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 1,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.EddyCurrentBrake": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.ElastoGap": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.GenerationOfFMUs": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.InitialConditions": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.Oscillator": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.Sensors": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.SignConvention": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.Vehicle": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 2,
+        "exact": false
+      }
+    },
+    "Modelica.Mechanics.Translational.Examples.WhyArrows": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Media.Examples.IdealGasH2O": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 2,
+        "omc_only": 0,
+        "exact": false
+      }
+    },
+    "Modelica.Media.Examples.SimpleLiquidWater": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 3,
+        "omc_only": 1,
+        "exact": false
+      }
+    },
+    "Modelica.Media.Incompressible.Examples.TestGlycol": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.StateGraph.Examples.ExecutionPaths": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.StateGraph.Examples.FirstExample": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.StateGraph.Examples.FirstExample_Variant2": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.StateGraph.Examples.FirstExample_Variant3": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.StateGraph.Examples.ShowCompositeStep": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.StateGraph.Examples.ShowExceptions": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.IndirectCooling": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.OneMass": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.ParallelCooling": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.PumpAndValve": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.PumpDropOut": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.SimpleCooling": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.TestCylinder": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.TwoTanks": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.WaterPump": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.HeatTransfer.Examples.ControlledTemperature": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.HeatTransfer.Examples.Motor": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Thermal.HeatTransfer.Examples.TwoMasses": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    },
+    "Modelica.Utilities.Examples.ReadRealMatrixFromFile": {
+      "ic_deviation_channels": 0,
+      "ic_severe_channels": 0,
+      "ic_violation_mass": 0.0,
+      "state_set": {
+        "rumoca_only": 0,
+        "omc_only": 0,
+        "exact": true
+      }
+    }
+  },
+  "runtime_model_ratios": {
+    "Modelica.Blocks.Examples.BusUsage": {
+      "system": 15.485593875718376,
+      "wall": 740.4077472912221
+    },
+    "Modelica.Blocks.Examples.BusUsage_Utilities.Part": {
+      "system": 10.254729151735141,
+      "wall": 985.2596626438255
+    },
+    "Modelica.Blocks.Examples.CompareSincExpSine": {
+      "system": 1.0185508352081436,
+      "wall": 60.21190483477883
+    },
+    "Modelica.Blocks.Examples.DemoSignalCharacteristic": {
+      "system": 2.1967594593987814,
+      "wall": 79.14754262119752
+    },
+    "Modelica.Blocks.Examples.DemonstrateContinuousSignalExtrema": {
+      "system": 3.004177305794114,
+      "wall": 31.690185451124357
+    },
+    "Modelica.Blocks.Examples.DemonstrateSignalExtrema": {
+      "system": 2.542584427220256,
+      "wall": 5.5714522842585215
+    },
+    "Modelica.Blocks.Examples.FilterWithRiseTime": {
+      "system": 2.4215322337657796,
+      "wall": 67.34995589129937
+    },
+    "Modelica.Blocks.Examples.Interaction1": {
+      "system": 1.546637158340226,
+      "wall": 126.52846298767761
+    },
+    "Modelica.Blocks.Examples.InverseModel": {
+      "system": 11.424582444283764,
+      "wall": 230.2059371468341
+    },
+    "Modelica.Blocks.Examples.LogicalNetwork1": {
+      "system": 4.5414176101238075,
+      "wall": 309.3506331196659
+    },
+    "Modelica.Blocks.Examples.Modulation": {
+      "system": 15.173148977861638,
+      "wall": 123.57849913963125
+    },
+    "Modelica.Blocks.Examples.Noise.Densities": {
+      "system": 1.540208686133155,
+      "wall": 138.85782399391712
+    },
+    "Modelica.Blocks.Examples.PID_Controller": {
+      "system": 3.1665475046022973,
+      "wall": 37.7786889114342
+    },
+    "Modelica.Blocks.Examples.ShowLogicalSources": {
+      "system": 4.33470941750689,
+      "wall": 383.36409534548017
+    },
+    "Modelica.Blocks.Examples.SinCosEncoder": {
+      "system": 24.010457921432458,
+      "wall": 70.01969488180906
+    },
+    "Modelica.Blocks.Examples.SlewRateLimiter": {
+      "system": 6.160509396995865,
+      "wall": 168.42232389988914
+    },
+    "Modelica.Blocks.Examples.TotalHarmonicDistortion": {
+      "system": 10.225228684635113,
+      "wall": 54.261048014014996
+    },
+    "Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks": {
+      "system": 0.49774952139275697,
+      "wall": 10.502582328299521
+    },
+    "Modelica.Clocked.Examples.CascadeControlledDrive.Continuous": {
+      "system": 3.490065417589693,
+      "wall": 36.50695503682008
+    },
+    "Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked": {
+      "system": 0.3254678095448484,
+      "wall": 9.44339816866981
+    },
+    "Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled": {
+      "system": 0.5517213540141175,
+      "wall": 8.427193939831682
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClock": {
+      "system": 15.032907176653337,
+      "wall": 1567.944481776456
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClockVectorized": {
+      "system": 14.891626727051394,
+      "wall": 1095.3565229002538
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample": {
+      "system": 7.5814345280270565,
+      "wall": 519.6089857107529
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.Hold": {
+      "system": 11.589877563704166,
+      "wall": 701.4585344528389
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.Sample1": {
+      "system": 16.332851648865578,
+      "wall": 1418.1725060562264
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleClocked": {
+      "system": 12.785462604621964,
+      "wall": 1555.27255532254
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleVectorizedAndClocked": {
+      "system": 15.103044201027103,
+      "wall": 1289.8714404654404
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.ShiftSample": {
+      "system": 7.85109073959664,
+      "wall": 527.2020225890049
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.SubSample": {
+      "system": 6.7886103309819985,
+      "wall": 573.7293146947
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.SuperSample": {
+      "system": 6.26645084325323,
+      "wall": 573.0633101432643
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.TickBasedStep": {
+      "system": 16.944240776405728,
+      "wall": 1527.3024565825772
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse": {
+      "system": 13.35678684964803,
+      "wall": 1190.1617882328408
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedStep": {
+      "system": 16.04650219359229,
+      "wall": 1797.9636758097354
+    },
+    "Modelica.Clocked.Examples.Elementary.BooleanSignals.UpSample": {
+      "system": 6.517303265486591,
+      "wall": 571.5545511420047
+    },
+    "Modelica.Clocked.Examples.Elementary.ClockSignals.RotationalSample": {
+      "system": 2.8180269721877855,
+      "wall": 171.9938956264913
+    },
+    "Modelica.Clocked.Examples.Elementary.ClockSignals.ShiftSample": {
+      "system": 11.163859779944312,
+      "wall": 592.5417065349841
+    },
+    "Modelica.Clocked.Examples.Elementary.ClockSignals.SubSample": {
+      "system": 13.802627322542454,
+      "wall": 758.8008960427262
+    },
+    "Modelica.Clocked.Examples.Elementary.ClockSignals.SuperSample": {
+      "system": 11.68815615928794,
+      "wall": 791.7210521521846
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.AssignClock": {
+      "system": 17.453308663322574,
+      "wall": 1338.815946565929
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.AssignClockVectorized": {
+      "system": 12.66170841517618,
+      "wall": 1164.3654764766516
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample": {
+      "system": 4.615193446997545,
+      "wall": 411.2462033326732
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.Hold": {
+      "system": 3.9540809466758358,
+      "wall": 344.5726936137246
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.Sample1": {
+      "system": 15.937261257729142,
+      "wall": 1498.125003899742
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.SampleClocked": {
+      "system": 15.475275375196905,
+      "wall": 1673.9024601697909
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.SampleVectorizedAndClocked": {
+      "system": 13.082566810921865,
+      "wall": 1095.8659572463516
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.ShiftSample": {
+      "system": 4.381896487516644,
+      "wall": 351.8214427565893
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.SubSample": {
+      "system": 4.323622784991477,
+      "wall": 365.72612827462984
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.SuperSample": {
+      "system": 5.329386809992226,
+      "wall": 522.835052521632
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.TickBasedStep": {
+      "system": 13.705888836756971,
+      "wall": 1671.259471310046
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep": {
+      "system": 10.519143278299206,
+      "wall": 928.1380894768795
+    },
+    "Modelica.Clocked.Examples.Elementary.IntegerSignals.UpSample": {
+      "system": 4.349333854197623,
+      "wall": 385.75899975092426
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClock": {
+      "system": 15.16577171718217,
+      "wall": 1360.1011925092703
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockToSquareWaveHold": {
+      "system": 11.294793184539698,
+      "wall": 749.6513553940863
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockToTriggerHold": {
+      "system": 10.502308932470767,
+      "wall": 566.1220032170385
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockVectorized": {
+      "system": 16.920759114076837,
+      "wall": 1260.6111681722016
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.BackSample": {
+      "system": 11.037337096082998,
+      "wall": 637.0071409076105
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.FractionalDelay": {
+      "system": 9.639828742091847,
+      "wall": 650.5539234117043
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.Hold": {
+      "system": 11.802922667992734,
+      "wall": 802.1976558127268
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.HoldWithDAeffects1": {
+      "system": 7.338299968594781,
+      "wall": 586.7309189135864
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.HoldWithDAeffects2": {
+      "system": 10.775080949624972,
+      "wall": 518.5903319998241
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.Sample1": {
+      "system": 13.825007609940343,
+      "wall": 721.1220551948786
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.Sample2": {
+      "system": 12.268478532756436,
+      "wall": 868.3926940139709
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.Sample3": {
+      "system": 14.710452040713808,
+      "wall": 870.0819565805853
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SampleClocked": {
+      "system": 12.18378683625111,
+      "wall": 901.4821092511542
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SampleVectorizedAndClocked": {
+      "system": 7.7873192765727905,
+      "wall": 578.1276391739127
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SampleWithADeffects": {
+      "system": 8.795335139581999,
+      "wall": 441.36043004225576
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.ShiftSample": {
+      "system": 11.715266450207002,
+      "wall": 811.3876295282424
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SubSample": {
+      "system": 12.138864299589326,
+      "wall": 670.9482676705518
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SuperSample": {
+      "system": 13.241169685568982,
+      "wall": 758.7078974594782
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.SuperSampleInterpolated": {
+      "system": 9.228115267677737,
+      "wall": 642.1650593157726
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp": {
+      "system": 18.03685292082426,
+      "wall": 1572.2129501971312
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedStep": {
+      "system": 11.270633750305121,
+      "wall": 1918.0690940233242
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedRamp": {
+      "system": 14.571636420570465,
+      "wall": 1576.3313130261365
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedSine": {
+      "system": 13.277124867365414,
+      "wall": 1428.0148507124627
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedStep": {
+      "system": 10.119682543742213,
+      "wall": 1353.0452590941904
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoise": {
+      "system": 3.9167928916891737,
+      "wall": 432.6940338823978
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoiseXorshift64star": {
+      "system": 8.740591433878357,
+      "wall": 740.4823570943967
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UpSample1": {
+      "system": 11.302303142399788,
+      "wall": 702.1715098354008
+    },
+    "Modelica.Clocked.Examples.Elementary.RealSignals.UpSample2": {
+      "system": 11.49263292564974,
+      "wall": 529.660029398785
+    },
+    "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteController": {
+      "system": 4.791805510042907,
+      "wall": 180.29353046953503
+    },
+    "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteTextbookController": {
+      "system": 3.6814495541299608,
+      "wall": 173.82471002361714
+    },
+    "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWith_AD_DA_Effects": {
+      "system": 2.3972670254911357,
+      "wall": 76.27266736673127
+    },
+    "Modelica.Clocked.Examples.SimpleControlledDrive.Continuous": {
+      "system": 12.022735001984394,
+      "wall": 236.40226367922986
+    },
+    "Modelica.Clocked.Examples.SimpleControlledDrive.ExactlyClockedWithDiscreteController": {
+      "system": 3.2372195921126474,
+      "wall": 161.58299966342662
+    },
+    "Modelica.Clocked.Examples.Systems.EngineThrottleControl": {
+      "system": 3.1852902985402918,
+      "wall": 46.27295834531693
+    },
+    "Modelica.ComplexBlocks.Examples.TestConversionBlock": {
+      "system": 7.031975541003566,
+      "wall": 482.2522567768512
+    },
+    "Modelica.Electrical.Analog.Examples.AmplifierWithOpAmpDetailed": {
+      "system": 2.6112452458967375,
+      "wall": 47.10592642196127
+    },
+    "Modelica.Electrical.Analog.Examples.CauerLowPassAnalog": {
+      "system": 4.814643488036831,
+      "wall": 80.20220564589432
+    },
+    "Modelica.Electrical.Analog.Examples.CauerLowPassOPV": {
+      "system": 5.4494250418688726,
+      "wall": 24.612849735468814
+    },
+    "Modelica.Electrical.Analog.Examples.CauerLowPassSC": {
+      "system": 0.40731447408981225,
+      "wall": 0.7274299966166453
+    },
+    "Modelica.Electrical.Analog.Examples.CharacteristicIdealDiodes": {
+      "system": 2.505916470725341,
+      "wall": 88.99529461668823
+    },
+    "Modelica.Electrical.Analog.Examples.CharacteristicThyristors": {
+      "system": 1.913777151863662,
+      "wall": 64.16682302510165
+    },
+    "Modelica.Electrical.Analog.Examples.ChuaCircuit": {
+      "system": 6.991709467989759,
+      "wall": 21.145821545371273
+    },
+    "Modelica.Electrical.Analog.Examples.CompareTransformers": {
+      "system": 3.8760878464446966,
+      "wall": 6.8709081304019275
+    },
+    "Modelica.Electrical.Analog.Examples.ControlledSwitchWithArc": {
+      "system": 4.732608430327303,
+      "wall": 17.31601839127926
+    },
+    "Modelica.Electrical.Analog.Examples.DemoPowerSupply": {
+      "system": 0.8561431139963267,
+      "wall": 15.62284964107625
+    },
+    "Modelica.Electrical.Analog.Examples.DemoPowerSupplyWithBuffer": {
+      "system": 1.5113253237692286,
+      "wall": 2.9748737605441296
+    },
+    "Modelica.Electrical.Analog.Examples.DemonstrateLightning": {
+      "system": 14.769734097844072,
+      "wall": 43.61519983722949
+    },
+    "Modelica.Electrical.Analog.Examples.DifferenceAmplifier": {
+      "system": 2.4902142801022653,
+      "wall": 18.213481965967116
+    },
+    "Modelica.Electrical.Analog.Examples.GenerationOfFMUs": {
+      "system": 6.4338907996201815,
+      "wall": 11.950003284350457
+    },
+    "Modelica.Electrical.Analog.Examples.HeatingMOSInverter": {
+      "system": 0.436586537881275,
+      "wall": 20.219908837612962
+    },
+    "Modelica.Electrical.Analog.Examples.HeatingNPN_NORGate": {
+      "system": 0.366303965145331,
+      "wall": 8.778825129832875
+    },
+    "Modelica.Electrical.Analog.Examples.HeatingPNP_NORGate": {
+      "system": 0.34434218666794064,
+      "wall": 8.313834291151057
+    },
+    "Modelica.Electrical.Analog.Examples.HeatingRectifier": {
+      "system": 1.5456442990715558,
+      "wall": 58.025817043709885
+    },
+    "Modelica.Electrical.Analog.Examples.IdealTriacCircuit": {
+      "system": 1.4808700845478628,
+      "wall": 57.194007728666634
+    },
+    "Modelica.Electrical.Analog.Examples.InvertingAmp": {
+      "system": 1.6494024814533652,
+      "wall": 85.61809522358597
+    },
+    "Modelica.Electrical.Analog.Examples.Lines.CompareLineTrunks": {
+      "system": 0.595689753226674,
+      "wall": 6.134550857362167
+    },
+    "Modelica.Electrical.Analog.Examples.Lines.CompareLosslessLines": {
+      "system": 2.7348178684389794,
+      "wall": 106.48697700447126
+    },
+    "Modelica.Electrical.Analog.Examples.Lines.LightningLosslessTransmissionLine": {
+      "system": 1.1279842366649913,
+      "wall": 5.832945946039579
+    },
+    "Modelica.Electrical.Analog.Examples.Lines.LightningSegmentedTransmissionLine": {
+      "system": 1.2443490229425007,
+      "wall": 1.0247148473834722
+    },
+    "Modelica.Electrical.Analog.Examples.Lines.SmoothStep": {
+      "system": 0.9456053137765028,
+      "wall": 4.240203996844954
+    },
+    "Modelica.Electrical.Analog.Examples.NandGate": {
+      "system": 2.553636343086572,
+      "wall": 34.80405294579541
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.Adder": {
+      "system": 0.6234044416322361,
+      "wall": 32.200739294125405
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.Comparator": {
+      "system": 4.677141836482129,
+      "wall": 136.1611053038942
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.ControlCircuit": {
+      "system": 2.2187267645752407,
+      "wall": 21.888270466558357
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.DifferentialAmplifier": {
+      "system": 0.7109200518947334,
+      "wall": 10.88743005099471
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.Differentiator": {
+      "system": 2.8887882021046414,
+      "wall": 72.88846569853953
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.HighPass": {
+      "system": 1.0492226474376425,
+      "wall": 41.224711611685734
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.Integrator": {
+      "system": 2.9014034645255515,
+      "wall": 64.82095214341747
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.InvertingAmplifier": {
+      "system": 1.202102650283926,
+      "wall": 88.8482089628318
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.LCOscillator": {
+      "system": 5.74769554584243,
+      "wall": 101.37888339886506
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.LowPass": {
+      "system": 3.3892548570993037,
+      "wall": 71.90153757304724
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.Multivibrator": {
+      "system": 2.350213491235305,
+      "wall": 64.64908856321682
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.NonInvertingAmplifier": {
+      "system": 1.3028985291671444,
+      "wall": 65.9905609953077
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.SchmittTrigger": {
+      "system": 3.44356270670347,
+      "wall": 140.05312178830172
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.SignalGenerator": {
+      "system": 3.5038100001113235,
+      "wall": 65.44065911139229
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.Subtracter": {
+      "system": 3.6088597599016063,
+      "wall": 99.78089120609525
+    },
+    "Modelica.Electrical.Analog.Examples.OpAmps.VoltageFollower": {
+      "system": 1.8931068632255357,
+      "wall": 103.43391987972493
+    },
+    "Modelica.Electrical.Analog.Examples.OvervoltageProtection": {
+      "system": 1.5377501739348476,
+      "wall": 64.60246665543761
+    },
+    "Modelica.Electrical.Analog.Examples.ParallelResonance": {
+      "system": 7.924639309830845,
+      "wall": 42.19671453696853
+    },
+    "Modelica.Electrical.Analog.Examples.Rectifier": {
+      "system": 1.8523832836324978,
+      "wall": 7.585103991647657
+    },
+    "Modelica.Electrical.Analog.Examples.Resistor": {
+      "system": 1.542278206440725,
+      "wall": 131.79903574495953
+    },
+    "Modelica.Electrical.Analog.Examples.ResonanceCircuits": {
+      "system": 16.37705602690413,
+      "wall": 19.66818739603919
+    },
+    "Modelica.Electrical.Analog.Examples.SeriesResonance": {
+      "system": 5.992817015986659,
+      "wall": 35.21711454426195
+    },
+    "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor": {
+      "system": 3.4097877205503444,
+      "wall": 141.4929651334408
+    },
+    "Modelica.Electrical.Analog.Examples.ShowVariableResistor": {
+      "system": 4.198386695963091,
+      "wall": 143.3562259342552
+    },
+    "Modelica.Electrical.Analog.Examples.SwitchWithArc": {
+      "system": 3.9347936928987846,
+      "wall": 28.25578534804748
+    },
+    "Modelica.Electrical.Analog.Examples.ThyristorBehaviourTest": {
+      "system": 0.48726237001707007,
+      "wall": 29.11480572689519
+    },
+    "Modelica.Electrical.Batteries.Examples.CCCV_Cell": {
+      "system": 6.177990153882098,
+      "wall": 26.425616190158006
+    },
+    "Modelica.Electrical.Batteries.Examples.SuperCapDischargeCharge": {
+      "system": 18.349736584592964,
+      "wall": 31.54016886443472
+    },
+    "Modelica.Electrical.Digital.Examples.Adder4": {
+      "system": 0.45556599885671367,
+      "wall": 54.26744842878598
+    },
+    "Modelica.Electrical.Digital.Examples.Counter": {
+      "system": 0.02272962499270206,
+      "wall": 2.30173858672537
+    },
+    "Modelica.Electrical.Digital.Examples.Counter3": {
+      "system": 0.13482659209962855,
+      "wall": 17.098145235950167
+    },
+    "Modelica.Electrical.Digital.Examples.FlipFlop": {
+      "system": 0.018396045594375583,
+      "wall": 3.010562954901178
+    },
+    "Modelica.Electrical.Digital.Examples.FullAdder": {
+      "system": 0.09402246738105523,
+      "wall": 11.761741903302793
+    },
+    "Modelica.Electrical.Digital.Examples.HalfAdder": {
+      "system": 3.191023985644681,
+      "wall": 236.67344778988897
+    },
+    "Modelica.Electrical.Digital.Examples.Multiplexer": {
+      "system": 0.02294776780533346,
+      "wall": 3.3975942060666156
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCEE_Start": {
+      "system": 10.648035676231151,
+      "wall": 11.652155164307594
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Cooling": {
+      "system": 7.14983746190277,
+      "wall": 7.929915795033478
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_CurrentControlled": {
+      "system": 15.763784767800026,
+      "wall": 16.557033892725475
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Drive": {
+      "system": 15.34366819825094,
+      "wall": 7.9208764531735545
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_QuasiStatic": {
+      "system": 12.909450899046714,
+      "wall": 9.712848722726532
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Start": {
+      "system": 13.984639431336017,
+      "wall": 17.320418227871112
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Temperature": {
+      "system": 14.366088254538246,
+      "wall": 16.35076331272028
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_withLosses": {
+      "system": 9.663379743901032,
+      "wall": 8.376336783557587
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCSE_SinglePhase": {
+      "system": 6.69428866583021,
+      "wall": 8.283174277679622
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCSE_Start": {
+      "system": 8.662418296845932,
+      "wall": 8.905099015855034
+    },
+    "Modelica.Electrical.Machines.Examples.DCMachines.DC_CompareCharacteristics": {
+      "system": 8.909192879793519,
+      "wall": 6.590220108859543
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_DOL": {
+      "system": 7.644670193097778,
+      "wall": 7.881853101137013
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Initialize": {
+      "system": 8.063776852064898,
+      "wall": 8.071494432581058
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Inverter": {
+      "system": 5.59898806191048,
+      "wall": 5.898616237038706
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Steinmetz": {
+      "system": 4.180424044500628,
+      "wall": 5.842520948890998
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_YD": {
+      "system": 11.642323287220378,
+      "wall": 10.536650786642335
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_withLosses": {
+      "system": 5.527686008472484,
+      "wall": 5.900847544043206
+    },
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMS_Start": {
+      "system": 5.531746519134958,
+      "wall": 5.838909178995908
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_DOL": {
+      "system": 7.118587078316368,
+      "wall": 5.96158802101094
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Generator": {
+      "system": 6.9214943122441674,
+      "wall": 5.168503062265584
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Rectifier": {
+      "system": 0.32066239317091105,
+      "wall": 0.5357750235061471
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Braking": {
+      "system": 3.153666506866085,
+      "wall": 5.114589935843678
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_CurrentSource": {
+      "system": 14.388213033600149,
+      "wall": 5.494089076576707
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Inverter": {
+      "system": 6.857047323293149,
+      "wall": 5.423606651548426
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_NoLoad": {
+      "system": 8.262440145260669,
+      "wall": 6.884126192526433
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_ResistiveBraking": {
+      "system": 4.053173984004078,
+      "wall": 5.095110760981014
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_VoltageSource": {
+      "system": 8.879653275466373,
+      "wall": 5.174731197919146
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_DOL": {
+      "system": 3.0258737853543374,
+      "wall": 4.0183540426225495
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_Inverter": {
+      "system": 6.161738054163186,
+      "wall": 5.325269849126646
+    },
+    "Modelica.Electrical.Polyphase.Examples.Rectifier": {
+      "system": 5.883679629735316,
+      "wall": 9.061774709497344
+    },
+    "Modelica.Electrical.Polyphase.Examples.TestSensors": {
+      "system": 15.71460304224466,
+      "wall": 14.108547980739173
+    },
+    "Modelica.Electrical.Polyphase.Examples.TransformerYY": {
+      "system": 10.380193565564854,
+      "wall": 27.454415948541232
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACAC.Dimmer_R": {
+      "system": 2.908504927630514,
+      "wall": 4.012588305140282
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.Rectifier1Pulse.Thyristor1Pulse_R": {
+      "system": 2.321117680650127,
+      "wall": 50.16777502823246
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.Rectifier1Pulse.Thyristor1Pulse_R_Characteristic": {
+      "system": 2.0908939191963873,
+      "wall": 4.284597522889007
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.DiodeBridge2Pulse": {
+      "system": 2.5106385058834984,
+      "wall": 45.807256633717415
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.HalfControlledBridge2Pulse": {
+      "system": 1.7381141985374573,
+      "wall": 35.64893090574348
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_R": {
+      "system": 2.0363190277876133,
+      "wall": 40.64067087937805
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RL": {
+      "system": 1.9781902366330912,
+      "wall": 35.126304167197375
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV": {
+      "system": 1.997623977095194,
+      "wall": 38.257893551486596
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic": {
+      "system": 1.8860103275106446,
+      "wall": 2.982404478089149
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse": {
+      "system": 3.3915665093392646,
+      "wall": 17.586118034331435
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.HalfControlledBridge2mPulse": {
+      "system": 1.5572560898484868,
+      "wall": 14.279443530484325
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_R": {
+      "system": 0.882224601060133,
+      "wall": 13.628830652650514
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RL": {
+      "system": 1.3479792335522394,
+      "wall": 14.634078862963293
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV": {
+      "system": 0.7102045634702654,
+      "wall": 9.75065715146481
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV_Characteristic": {
+      "system": 0.9809450613397237,
+      "wall": 1.156172641453015
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.DiodeCenterTap2Pulse": {
+      "system": 2.2428546809343146,
+      "wall": 53.457106898013656
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_R": {
+      "system": 2.132397728867757,
+      "wall": 42.915961444879265
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RL": {
+      "system": 2.2135837246904586,
+      "wall": 39.12826566704543
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV": {
+      "system": 2.1482038161971633,
+      "wall": 37.654184019752044
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic": {
+      "system": 2.0527541240949816,
+      "wall": 3.1668788537293833
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.DiodeCenterTap2mPulse": {
+      "system": 7.58995713287265,
+      "wall": 22.757976627520364
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_R": {
+      "system": 0.4514732788037559,
+      "wall": 7.960983029567661
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RL": {
+      "system": 1.747012022442704,
+      "wall": 14.617628059290192
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV": {
+      "system": 1.7128556946977855,
+      "wall": 14.61369489379992
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.DiodeCenterTapmPulse": {
+      "system": 2.145316757248628,
+      "wall": 29.090907530784442
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_R": {
+      "system": 1.5502797491569602,
+      "wall": 21.500617238935156
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RL": {
+      "system": 1.8438116914747262,
+      "wall": 18.058780010572463
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV": {
+      "system": 1.6915661445694214,
+      "wall": 19.541030843791507
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV_Characteristic": {
+      "system": 1.724319367909656,
+      "wall": 2.172298096866463
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.PolyphaseTwoLevel_R": {
+      "system": 1.3425976407091447,
+      "wall": 5.703200589918268
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.PolyphaseTwoLevel_RL": {
+      "system": 1.3614365360444394,
+      "wall": 3.719453412231239
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.ThreePhaseTwoLevel_PWM": {
+      "system": 0.6732227341377227,
+      "wall": 3.5933398771108966
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_R": {
+      "system": 0.4530177362647122,
+      "wall": 12.82723261040154
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_RL": {
+      "system": 0.8987227153530598,
+      "wall": 12.661799824240763
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepDown.ChopperStepDown_R": {
+      "system": 2.856928700656694,
+      "wall": 16.3317764961763
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepDown.ChopperStepDown_RL": {
+      "system": 3.345764018149718,
+      "wall": 17.621408722936298
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepUp.ChopperStepUp_R": {
+      "system": 3.559309061220003,
+      "wall": 18.524603054132715
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_R": {
+      "system": 0.7264671846919184,
+      "wall": 19.2553520769254
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_RL": {
+      "system": 1.1642328147385526,
+      "wall": 14.588377689272292
+    },
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL": {
+      "system": 1.0368945365681483,
+      "wall": 9.80923931620304
+    },
+    "Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingDelta": {
+      "system": 19.996089711364597,
+      "wall": 3.2232293746947853
+    },
+    "Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingStar": {
+      "system": 18.689390333770426,
+      "wall": 1.7189298780485722
+    },
+    "Modelica.Electrical.QuasiStatic.Polyphase.Examples.TestSensors": {
+      "system": 11.744340646638951,
+      "wall": 1.4648908398046319
+    },
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.MultipleResonance": {
+      "system": 3.096217094544739,
+      "wall": 7.144949537881293
+    },
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.ParallelResonance": {
+      "system": 5.428735519974953,
+      "wall": 22.47551699834215
+    },
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Rectifier": {
+      "system": 2.6572403492159977,
+      "wall": 7.923098153312973
+    },
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.SeriesResonance": {
+      "system": 6.341012648430666,
+      "wall": 18.956389165085564
+    },
+    "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Transformer": {
+      "system": 11.845571179995558,
+      "wall": 16.05194710324951
+    },
+    "Modelica.Electrical.Spice3.Examples.CoupledInductors": {
+      "system": 0.8104536991088886,
+      "wall": 30.77266589311434
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank": {
+      "system": 0.07921596879957889,
+      "wall": 1.2195807273962842
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1": {
+      "system": 15.309713622575321,
+      "wall": 2.535735929662491
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2": {
+      "system": 1.2236940029429284,
+      "wall": 3.135289090384631
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1": {
+      "system": 0.997413259312296,
+      "wall": 2.1383747105336672
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2": {
+      "system": 0.8851352945204874,
+      "wall": 2.667226661807004
+    },
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks": {
+      "system": 1.0865347251767277,
+      "wall": 1.7223668395977771
+    },
+    "Modelica.Fluid.Examples.ControlledTankSystem.ControlledTanks": {
+      "system": 0.5813509522068495,
+      "wall": 13.589118517308336
+    },
+    "Modelica.Fluid.Examples.Tanks.EmptyTanks": {
+      "system": 1.1114731417793025,
+      "wall": 1.6877057302153906
+    },
+    "Modelica.Fluid.Examples.Tanks.ThreeTanks": {
+      "system": 0.017871312715094883,
+      "wall": 0.7049475743845383
+    },
+    "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.SaturatedInductor": {
+      "system": 4.795826004944341,
+      "wall": 68.19663466585146
+    },
+    "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap": {
+      "system": 5.021359969985177,
+      "wall": 78.22794345124652
+    },
+    "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection": {
+      "system": 4.995197875858963,
+      "wall": 77.73042205076072
+    },
+    "Modelica.Magnetic.FluxTubes.Examples.MovingCoilActuator.ArmatureStroke": {
+      "system": 5.75364220901655,
+      "wall": 11.53081198262755
+    },
+    "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonPullInStroke": {
+      "system": 0.6391055933098886,
+      "wall": 3.444998008412301
+    },
+    "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonQuasiStatic": {
+      "system": 0.4008306785077088,
+      "wall": 8.771200897255136
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_DOL": {
+      "system": 2.4881240606567876,
+      "wall": 2.6920743843781847
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Initialize": {
+      "system": 4.709554045361224,
+      "wall": 3.044620078762281
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Inverter": {
+      "system": 3.1312522821862334,
+      "wall": 2.620813759903775
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Steinmetz": {
+      "system": 2.900690386263692,
+      "wall": 3.739135240431101
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_YD": {
+      "system": 4.1259361945751465,
+      "wall": 4.317330891182329
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_withLosses": {
+      "system": 3.7383229160551688,
+      "wall": 3.602478680437403
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMS_Start": {
+      "system": 2.398434391734454,
+      "wall": 2.415962110423352
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_DOL": {
+      "system": 3.107450886109258,
+      "wall": 2.606417235290599
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Generator": {
+      "system": 1.603096641757944,
+      "wall": 1.3246285401754525
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Rectifier": {
+      "system": 0.6335132216746522,
+      "wall": 0.8868075411183658
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Braking": {
+      "system": 2.1933011758529477,
+      "wall": 3.617801535428196
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_CurrentSource": {
+      "system": 17.83013084448537,
+      "wall": 3.664598921141622
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Inverter": {
+      "system": 3.4929035751912463,
+      "wall": 1.4425575443337462
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_VoltageSource": {
+      "system": 3.395821075215702,
+      "wall": 2.332205004199629
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMR_Inverter": {
+      "system": 4.07496582293126,
+      "wall": 2.0617083656898734
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.Components.EddyCurrentLosses": {
+      "system": 2.426518596479905,
+      "wall": 5.046496486691629
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.Components.PolyphaseInductance": {
+      "system": 2.6208765460930517,
+      "wall": 4.134505216491573
+    },
+    "Modelica.Magnetic.FundamentalWave.Examples.Components.SinglePhaseInductance": {
+      "system": 1.8713338890958184,
+      "wall": 8.980548106712117
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.QuadraticCoreAirgap": {
+      "system": 5.397715518450105,
+      "wall": 8.557717709721143
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap": {
+      "system": 8.848283509650004,
+      "wall": 11.889340641079569
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection": {
+      "system": 8.661466116071052,
+      "wall": 11.578866665709997
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CuboidSections": {
+      "system": 3.2140868677100767,
+      "wall": 17.530691654104622
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CylinderSections": {
+      "system": 18.884520752602363,
+      "wall": 22.069906123933254
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.CylinderLeakage": {
+      "system": 6.822888546353019,
+      "wall": 13.70782670858293
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.GeneralLeakage": {
+      "system": 5.6167210175025515,
+      "wall": 33.46290491825673
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.LinearInductor": {
+      "system": 3.9018097137823435,
+      "wall": 13.024723883113923
+    },
+    "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.NonLinearInductor": {
+      "system": 1.7349375827054936,
+      "wall": 10.68142440289707
+    },
+    "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3": {
+      "system": 17.368929988666107,
+      "wall": 88.66036782672363
+    },
+    "Modelica.Math.Random.Examples.GenerateRandomNumbers": {
+      "system": 2.063232044560537,
+      "wall": 198.08720636342474
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Constraints.PrismaticConstraint": {
+      "system": 2.221403655516211,
+      "wall": 2.738695530242765
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Constraints.RevoluteConstraint": {
+      "system": 0.4735316528732164,
+      "wall": 3.189301732923688
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Constraints.SphericalConstraint": {
+      "system": 2.9525285077962296,
+      "wall": 4.404500197453614
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Constraints.UniversalConstraint": {
+      "system": 0.25185783825399777,
+      "wall": 2.15664214418746
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum": {
+      "system": 2.771813988331858,
+      "wall": 6.422943467706363
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulumInitTip": {
+      "system": 1.8025263247550536,
+      "wall": 5.7452643633414455
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.ForceAndTorque": {
+      "system": 4.838472071215933,
+      "wall": 6.549832101365988
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.FreeBody": {
+      "system": 3.504837342983427,
+      "wall": 6.756345796892974
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.HeatLosses": {
+      "system": 3.8246635304235337,
+      "wall": 6.157982018325754
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.InitSpringConstant": {
+      "system": 7.377021012890093,
+      "wall": 7.416233540143262
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.LineForceWithTwoMasses": {
+      "system": 2.383092455992256,
+      "wall": 4.370802252400948
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.Pendulum": {
+      "system": 4.441625648440401,
+      "wall": 8.072973147496949
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.PendulumWithSpringDamper": {
+      "system": 3.476565015600191,
+      "wall": 6.61486024912945
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravity": {
+      "system": 1.872522090948616,
+      "wall": 8.151977496365589
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses": {
+      "system": 4.0197075454574955,
+      "wall": 9.997957865294786
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses2": {
+      "system": 1.4632109169285488,
+      "wall": 4.1422251213631585
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheel": {
+      "system": 0.8799275172383816,
+      "wall": 6.861935974926053
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheelSetDriving": {
+      "system": 0.9153473955300933,
+      "wall": 4.119450853101093
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheelSetPulling": {
+      "system": 1.7813930195278347,
+      "wall": 4.645743030934925
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringDamperSystem": {
+      "system": 3.6085635564668603,
+      "wall": 5.88651210652861
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringMassSystem": {
+      "system": 4.267911983675574,
+      "wall": 6.701323445137926
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringWithMass": {
+      "system": 4.339878698325248,
+      "wall": 7.933203803167316
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.Surfaces": {
+      "system": 6.486818357666388,
+      "wall": 7.8587450059276
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.ThreeSprings": {
+      "system": 1.276067833684332,
+      "wall": 6.241671153742402
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Elementary.UserDefinedGravityField": {
+      "system": 0.21392656015270795,
+      "wall": 5.4503122049134065
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1a": {
+      "system": 1.3394570806787909,
+      "wall": 4.675484170410731
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b": {
+      "system": 1.2372731019369332,
+      "wall": 4.653290571521915
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b_analytic": {
+      "system": 1.04880963454322,
+      "wall": 1.1101003645880272
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.EngineV6": {
+      "system": 0.3635576698846135,
+      "wall": 0.8265051515740739
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1": {
+      "system": 2.0915250005067914,
+      "wall": 11.013256616446776
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar2": {
+      "system": 1.9859807866932624,
+      "wall": 4.462931499372197
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar_analytic": {
+      "system": 2.6660278910815887,
+      "wall": 2.845252548920354
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.PlanarFourbar": {
+      "system": 1.4610445225379745,
+      "wall": 5.449291166205316
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.ActuatedDrive": {
+      "system": 8.924188729088973,
+      "wall": 6.84393601424867
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.BevelGear1D": {
+      "system": 0.28683543083018653,
+      "wall": 3.9269059720421313
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.GearConstraint": {
+      "system": 2.466611904631538,
+      "wall": 4.343219127248759
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.GyroscopicEffects": {
+      "system": 1.199113655303702,
+      "wall": 5.067915104100101
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.MovingActuatedDrive": {
+      "system": 7.475134402117993,
+      "wall": 6.246034199517741
+    },
+    "Modelica.Mechanics.Rotational.Examples.Backlash": {
+      "system": 1.3109460582884398,
+      "wall": 31.91467380440089
+    },
+    "Modelica.Mechanics.Rotational.Examples.CompareBrakingTorque": {
+      "system": 19.733261363093252,
+      "wall": 34.42660844276271
+    },
+    "Modelica.Mechanics.Rotational.Examples.EddyCurrentBrake": {
+      "system": 14.476622189985662,
+      "wall": 164.6642075641765
+    },
+    "Modelica.Mechanics.Rotational.Examples.ElasticBearing": {
+      "system": 2.503254756238193,
+      "wall": 85.01523608423727
+    },
+    "Modelica.Mechanics.Rotational.Examples.First": {
+      "system": 4.95952602956562,
+      "wall": 61.70002953432863
+    },
+    "Modelica.Mechanics.Rotational.Examples.FirstGrounded": {
+      "system": 4.7446827701171514,
+      "wall": 67.75133976877966
+    },
+    "Modelica.Mechanics.Rotational.Examples.RollingWheel": {
+      "system": 3.2854675119510954,
+      "wall": 63.072546625128105
+    },
+    "Modelica.Mechanics.Translational.Examples.Accelerate": {
+      "system": 22.899215906831138,
+      "wall": 251.51951516225026
+    },
+    "Modelica.Mechanics.Translational.Examples.CompareBrakingForce": {
+      "system": 24.82336160836317,
+      "wall": 47.71108599329019
+    },
+    "Modelica.Mechanics.Translational.Examples.Damper": {
+      "system": 18.573588644901974,
+      "wall": 75.03969822688073
+    },
+    "Modelica.Mechanics.Translational.Examples.EddyCurrentBrake": {
+      "system": 8.915557711030592,
+      "wall": 159.27531107435317
+    },
+    "Modelica.Mechanics.Translational.Examples.ElastoGap": {
+      "system": 5.0699950670126865,
+      "wall": 41.9125595021317
+    },
+    "Modelica.Mechanics.Translational.Examples.GenerationOfFMUs": {
+      "system": 4.317595424867412,
+      "wall": 17.03104553031605
+    },
+    "Modelica.Mechanics.Translational.Examples.InitialConditions": {
+      "system": 9.215421651579033,
+      "wall": 48.85740451692046
+    },
+    "Modelica.Mechanics.Translational.Examples.Oscillator": {
+      "system": 5.5638256194231825,
+      "wall": 73.659636909681
+    },
+    "Modelica.Mechanics.Translational.Examples.PreLoad": {
+      "system": 2.8691866076107377,
+      "wall": 22.575929156734304
+    },
+    "Modelica.Mechanics.Translational.Examples.Sensors": {
+      "system": 14.068916652971563,
+      "wall": 111.01896473963883
+    },
+    "Modelica.Mechanics.Translational.Examples.SignConvention": {
+      "system": 24.459372098781753,
+      "wall": 205.94198079048442
+    },
+    "Modelica.Mechanics.Translational.Examples.Vehicle": {
+      "system": 9.459753964974082,
+      "wall": 14.871865915505808
+    },
+    "Modelica.Mechanics.Translational.Examples.WhyArrows": {
+      "system": 26.054901804799783,
+      "wall": 143.22895081478043
+    },
+    "Modelica.Media.Examples.IdealGasH2O": {
+      "system": 6.9400131732839805,
+      "wall": 35.228053471109575
+    },
+    "Modelica.Media.Examples.SimpleLiquidWater": {
+      "system": 6.492093547084188,
+      "wall": 43.56093523405926
+    },
+    "Modelica.Media.Incompressible.Examples.TestGlycol": {
+      "system": 0.0076013254633063515,
+      "wall": 1.122205490589234
+    },
+    "Modelica.StateGraph.Examples.ExecutionPaths": {
+      "system": 0.7878689447760919,
+      "wall": 71.28264746851248
+    },
+    "Modelica.StateGraph.Examples.FirstExample": {
+      "system": 3.687607498475312,
+      "wall": 304.65138816466765
+    },
+    "Modelica.StateGraph.Examples.FirstExample_Variant2": {
+      "system": 3.9252695434351415,
+      "wall": 235.99733220407072
+    },
+    "Modelica.StateGraph.Examples.FirstExample_Variant3": {
+      "system": 4.3809497528294425,
+      "wall": 289.1414901637974
+    },
+    "Modelica.StateGraph.Examples.ShowCompositeStep": {
+      "system": 0.7382586886448983,
+      "wall": 61.56759465447441
+    },
+    "Modelica.StateGraph.Examples.ShowExceptions": {
+      "system": 0.5657820988544309,
+      "wall": 47.62855868321025
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.IndirectCooling": {
+      "system": 12.859167722090579,
+      "wall": 54.23055309410348
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.OneMass": {
+      "system": 11.960606933872402,
+      "wall": 76.38570540214333
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.ParallelCooling": {
+      "system": 5.4434907914122315,
+      "wall": 52.547688833556265
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.ParallelPumpDropOut": {
+      "system": 4.115462722238268,
+      "wall": 40.63609172799168
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.PumpAndValve": {
+      "system": 3.005925274672938,
+      "wall": 40.863471303390114
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.PumpDropOut": {
+      "system": 12.90825096901866,
+      "wall": 68.93625009237984
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.SimpleCooling": {
+      "system": 21.776871062794488,
+      "wall": 93.79869027628003
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.TestCylinder": {
+      "system": 8.690748512560322,
+      "wall": 69.62280166889968
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.TestOpenTank": {
+      "system": 8.097498359920895,
+      "wall": 122.29683017150711
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.TwoTanks": {
+      "system": 5.78392996709217,
+      "wall": 114.2239910876502
+    },
+    "Modelica.Thermal.FluidHeatFlow.Examples.WaterPump": {
+      "system": 3.5405613992862635,
+      "wall": 42.3077080183023
+    },
+    "Modelica.Thermal.HeatTransfer.Examples.ControlledTemperature": {
+      "system": 4.979561081602053,
+      "wall": 36.27873642746518
+    },
+    "Modelica.Thermal.HeatTransfer.Examples.Motor": {
+      "system": 17.73904064038086,
+      "wall": 20.766309818141345
+    },
+    "Modelica.Thermal.HeatTransfer.Examples.TwoMasses": {
+      "system": 27.85250828163034,
+      "wall": 224.7544164023947
+    },
+    "Modelica.Utilities.Examples.ReadRealMatrixFromFile": {
+      "system": 37.322664614309446,
+      "wall": 847.9068082477271
+    }
+  },
   "omc_context_migration": {
     "from_omc_version": "OpenModelica 1.27.0~dev.beta.3",
     "to_omc_version": "a96aa1a-cmake",
