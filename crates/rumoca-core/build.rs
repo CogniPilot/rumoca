@@ -20,23 +20,25 @@ fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     // The identity must track the checkout, not the last time this crate
     // happened to rebuild: a stale constant reports an identity the binary does
-    // not have, which is a false match waiting to happen. HEAD changes on
-    // checkout and commit; the ref file changes on commit to the same branch.
-    for path in ["../../.git/HEAD", "../../.git/index"] {
-        if std::path::Path::new(path).exists() {
-            println!("cargo::rerun-if-changed={path}");
-        }
-    }
-    if let Some(head_ref) = git(&["symbolic-ref", "-q", "HEAD"]) {
-        let ref_path = format!("../../.git/{head_ref}");
-        if std::path::Path::new(&ref_path).exists() {
-            println!("cargo::rerun-if-changed={ref_path}");
-        }
+    // not have, which is a false match waiting to happen. Git resolves every
+    // path, so linked worktrees (whose `.git` is a file) and packed refs are
+    // tracked too: HEAD changes on checkout, the resolved ref (loose or
+    // packed) on commit, and the index on staging.
+    for path in tracked_git_paths() {
+        println!("cargo::rerun-if-changed={}", path.display());
     }
 
     let identity =
         commit_identity().map_or_else(|| "None".to_owned(), |value| format!("Some(\"{value}\")"));
-    let generated = format!("pub(crate) const BUILD_IDENTITY: Option<&str> = {identity};\n");
+    let parents = merge_parents()
+        .iter()
+        .map(|parent| format!("\"{parent}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let generated = format!(
+        "pub(crate) const BUILD_IDENTITY: Option<&str> = {identity};\n\
+         pub(crate) const BUILD_MERGE_PARENTS: &[&str] = &[{parents}];\n"
+    );
 
     let out_dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR for build scripts");
     let path = std::path::Path::new(&out_dir).join("build_identity.rs");
@@ -62,4 +64,42 @@ fn git(args: &[&str]) -> Option<String> {
         return None;
     }
     Some(String::from_utf8(output.stdout).ok()?.trim().to_owned())
+}
+
+/// Every git file whose change can change the identity, resolved by git so a
+/// linked worktree tracks its own HEAD and index and the shared refs.
+fn tracked_git_paths() -> Vec<std::path::PathBuf> {
+    let mut names = vec![
+        "HEAD".to_owned(),
+        "index".to_owned(),
+        "packed-refs".to_owned(),
+    ];
+    if let Some(head_ref) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        names.push(head_ref);
+    }
+    names
+        .iter()
+        .filter_map(|name| git(&["rev-parse", "--path-format=absolute", "--git-path", name]))
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.exists())
+        .collect()
+}
+
+/// The parents of the built commit when it is a merge, first parent first.
+///
+/// A pull-request build checks out a synthetic merge of the head into the
+/// base; its identity is that merge, and the parents name the head and base it
+/// combines. An ordinary commit reports no parents.
+fn merge_parents() -> Vec<String> {
+    let Some(line) = git(&["rev-list", "--parents", "-n", "1", "HEAD"]) else {
+        return Vec::new();
+    };
+    let parents = line.split_whitespace().skip(1).collect::<Vec<_>>();
+    if parents.len() < 2 {
+        return Vec::new();
+    }
+    parents
+        .into_iter()
+        .map(|parent| parent.chars().take(12).collect())
+        .collect()
 }

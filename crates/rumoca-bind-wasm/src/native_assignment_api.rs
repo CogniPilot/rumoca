@@ -1,9 +1,6 @@
 //! Portable CPU WASM preparation from construction-issued native value stages.
 
-use crate::{
-    GIT_COMMIT, WasmError, compile_requested_model, qualify_input_model_name,
-    with_singleton_session,
-};
+use crate::{WasmError, compile_requested_model, qualify_input_model_name, with_singleton_session};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
@@ -110,7 +107,7 @@ fn model_artifact(
         "profile": "native-direct-assignments-f64-v1",
         "model_name": model_name,
         "source_sha256": format!("{:x}", Sha256::digest(source.as_bytes())),
-        "compiler": { "version": env!("CARGO_PKG_VERSION"), "git_commit": GIT_COMMIT },
+        "compiler": crate::compiler_provenance(),
         "solve_schema_version": rumoca_ir_solve::SOLVE_SCHEMA_VERSION,
         "abi": { "export": "eval_residual", "arguments": ["yPtr:i32", "pPtr:i32", "time:f64", "seedPtr:i32", "outPtr:i32"],
             "memory_import": "env.memory", "memory_shared": false,

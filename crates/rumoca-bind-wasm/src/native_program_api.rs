@@ -1,6 +1,6 @@
 //! Single-call direct assignments from the compiler's certified native schedule.
 
-use crate::{GIT_COMMIT, WasmError, native_assignment_api};
+use crate::{WasmError, native_assignment_api};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
@@ -68,7 +68,7 @@ pub(crate) fn model_artifact(
         "profile": profile,
         "model_name": model_name,
         "source_sha256": format!("{:x}", Sha256::digest(source.as_bytes())),
-        "compiler": { "version": env!("CARGO_PKG_VERSION"), "git_commit": GIT_COMMIT },
+        "compiler": crate::compiler_provenance(),
         "solve_schema_version": rumoca_ir_solve::SOLVE_SCHEMA_VERSION,
         "module_sha256": format!("{:x}", Sha256::digest(&bytes)), "module_bytes": bytes,
         "abi": { "export": "eval_assignments",

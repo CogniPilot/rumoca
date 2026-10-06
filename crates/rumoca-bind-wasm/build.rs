@@ -18,12 +18,7 @@ fn command_output(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
-    // Re-run when HEAD changes in source checkouts.
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
-
-    let git_commit = command_output(&["git", "rev-parse", "--short=12", "HEAD"])
-        .unwrap_or_else(|| "unknown".to_string());
 
     let build_time_utc =
         command_output(&["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"]).unwrap_or_else(|| {
@@ -37,10 +32,7 @@ fn main() {
 
     // Emit build metadata as a generated Rust source included by lib.rs, rather
     // than RUMOCA_* rustc-env vars read with option_env!.
-    let metadata = format!(
-        "pub const GIT_COMMIT: &str = {git_commit:?};\n\
-         pub const BUILD_TIME_UTC: &str = {build_time_utc:?};\n"
-    );
+    let metadata = format!("pub const BUILD_TIME_UTC: &str = {build_time_utc:?};\n");
     fs::write(out_dir.join("build_metadata.rs"), metadata).expect("write build_metadata.rs");
 
     write_bundled_source_root_assets(&out_dir);

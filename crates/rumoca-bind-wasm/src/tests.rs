@@ -224,9 +224,16 @@ fn test_get_version() {
 }
 
 #[test]
-fn test_get_git_commit() {
-    let commit = get_git_commit();
-    assert!(!commit.is_empty());
+fn test_git_identity_has_one_owner_in_every_report() {
+    let identity = rumoca_core::build_identity();
+    assert_eq!(get_git_commit().as_deref(), identity);
+    let provenance = crate::compiler_provenance();
+    assert_eq!(provenance["git_commit"].as_str(), identity);
+    assert_eq!(
+        provenance["git_merge_parents"],
+        serde_json::json!(rumoca_core::build_merge_parents())
+    );
+    assert_eq!(provenance["version"], env!("CARGO_PKG_VERSION"));
 }
 
 #[test]
