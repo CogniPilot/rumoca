@@ -89,6 +89,14 @@ pub(super) struct SelectedFamily<'a> {
     pub(super) template: Option<&'a rumoca_core::ComprehensionTemplate>,
 }
 
+impl<'a> SelectedFamily<'a> {
+    /// The source template, which owns the family's discrete-value partition
+    /// whether or not its compact view is selected.
+    pub(super) fn source_template(&self) -> Option<&'a rumoca_core::ComprehensionTemplate> {
+        self.source.template.as_ref()
+    }
+}
+
 impl std::ops::Deref for SelectedFamily<'_> {
     type Target = flat::StructuredEquationFamily;
 

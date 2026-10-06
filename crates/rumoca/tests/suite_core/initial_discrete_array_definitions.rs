@@ -5,7 +5,9 @@
 //! determines it element by element, so the elements form one aggregate
 //! definition. A loop body that selects its equation through a parameter
 //! `if` keeps its rows as ordinary discrete-valued assignments (Appendix B),
-//! exactly as the same rows outside a loop.
+//! exactly as the same rows outside a loop. An if-equation whose arms each
+//! define the same element, under any guard, is that element's assignment of
+//! the conditional value.
 
 use rumoca::Compiler;
 
@@ -46,6 +48,36 @@ end SelectedRows;
 model SelectedConstantRows
   extends SelectedRows(stiff = true);
 end SelectedConstantRows;
+
+model GuardedRows
+  Real x(start = 1, fixed = true);
+  Boolean out[2];
+equation
+  der(x) = -1;
+  for i in 1:2 loop
+    if x > 0.7 then
+      out[i] = false;
+    else
+      out[i] = pre(out[i]) or x < 0.5*i;
+    end if;
+  end for;
+end GuardedRows;
+
+model GuardedElement
+  Real x(start = 1, fixed = true);
+  Boolean b;
+  Boolean out[2];
+equation
+  der(x) = -1;
+  if x > 0.7 then
+    b = false;
+    out[1] = false;
+  else
+    b = pre(b) or x < 0.5;
+    out[1] = true;
+  end if;
+  out[2] = x < 0.2;
+end GuardedElement;
 "#;
 
 fn simulate(model: &str, t_end: f64) -> rumoca_sim::SimResult {
@@ -98,4 +130,22 @@ fn parameter_selected_boolean_rows_in_a_loop_keep_their_discrete_owners() {
     let constant = simulate("SelectedConstantRows", 1.0);
     assert_eq!(value_at(&constant, "out[1]", 0.9), 0.0);
     assert_eq!(value_at(&constant, "out[2]", 0.9), 0.0);
+}
+
+#[test]
+fn conditional_arms_defining_one_element_are_its_assignment() {
+    let rows = simulate("GuardedRows", 1.0);
+    assert_eq!(value_at(&rows, "out[1]", 0.2), 0.0);
+    assert_eq!(value_at(&rows, "out[2]", 0.2), 0.0);
+    assert_eq!(value_at(&rows, "out[1]", 0.4), 0.0);
+    assert_eq!(value_at(&rows, "out[2]", 0.4), 1.0);
+    assert_eq!(value_at(&rows, "out[1]", 0.6), 1.0);
+    let element = simulate("GuardedElement", 1.0);
+    assert_eq!(value_at(&element, "b", 0.2), 0.0);
+    assert_eq!(value_at(&element, "out[1]", 0.2), 0.0);
+    assert_eq!(value_at(&element, "b", 0.4), 0.0);
+    assert_eq!(value_at(&element, "out[1]", 0.4), 1.0);
+    assert_eq!(value_at(&element, "b", 0.6), 1.0);
+    assert_eq!(value_at(&element, "out[2]", 0.6), 0.0);
+    assert_eq!(value_at(&element, "out[2]", 0.9), 1.0);
 }

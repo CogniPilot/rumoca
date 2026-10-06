@@ -330,7 +330,7 @@ pub(super) fn aggregate_discrete_connections(
             } else if let Some((target, subscripts, value)) =
                 discrete_element_assignment(equation, roles)
             {
-                (target, subscripts, Cow::Borrowed(value), true, true)
+                (target, subscripts, value, true, true)
             } else {
                 continue;
             };
@@ -485,7 +485,7 @@ impl AggregateConnectionGroup {
 fn discrete_element_assignment<'flat>(
     equation: &'flat flat::Equation,
     roles: &HashMap<VarName, PlannedRole>,
-) -> Option<(&'flat VarName, &'flat [Subscript], &'flat Expression)> {
+) -> Option<(&'flat VarName, &'flat [Subscript], Cow<'flat, Expression>)> {
     if matches!(equation.origin, flat::EquationOrigin::Connection { .. }) {
         return None;
     }
@@ -495,18 +495,57 @@ fn discrete_element_assignment<'flat>(
 fn discrete_element_expression<'flat>(
     expression: &'flat Expression,
     roles: &HashMap<VarName, PlannedRole>,
-) -> Option<(&'flat VarName, &'flat [Subscript], &'flat Expression)> {
-    let Expression::Binary {
-        op: OpBinary::Sub,
-        lhs,
-        rhs,
-        ..
-    } = expression
-    else {
-        return None;
-    };
-    let (target, subscripts) = discrete_value_base_reference(lhs, roles)?;
-    (!subscripts.is_empty()).then_some((target, subscripts, rhs.as_ref()))
+) -> Option<(&'flat VarName, &'flat [Subscript], Cow<'flat, Expression>)> {
+    let (element, value) = discrete_element_definition(expression, roles)?;
+    let (target, subscripts) = discrete_value_base_reference(element, roles)?;
+    Some((target, subscripts, value))
+}
+
+/// The subscripted discrete element `x[s]` an element equation defines, with
+/// its value. Every arm of a conditional residual defining the same element
+/// makes the conditional one element assignment `x[s] = if c then e1 else e2`
+/// (MLS 3.7 §8.3.4 equal-count if-equation, Appendix B solved form), whatever
+/// the guard's variability.
+fn discrete_element_definition<'flat>(
+    expression: &'flat Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Option<(&'flat Expression, Cow<'flat, Expression>)> {
+    match expression {
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs,
+            rhs,
+            ..
+        } => {
+            let (_, subscripts) = discrete_value_base_reference(lhs, roles)?;
+            (!subscripts.is_empty()).then_some((lhs.as_ref(), Cow::Borrowed(rhs.as_ref())))
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            span,
+        } => {
+            let (element, fallback) = discrete_element_definition(else_branch, roles)?;
+            let branches = branches
+                .iter()
+                .map(|(condition, arm)| {
+                    let (arm_element, value) = discrete_element_definition(arm, roles)?;
+                    arm_element
+                        .semantically_eq_ignoring_spans(element)
+                        .then(|| (condition.clone(), value.into_owned()))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some((
+                element,
+                Cow::Owned(Expression::If {
+                    branches,
+                    else_branch: Box::new(fallback.into_owned()),
+                    span: *span,
+                }),
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// Whether every body is an exact discrete element assignment whose

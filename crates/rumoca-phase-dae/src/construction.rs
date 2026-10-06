@@ -865,21 +865,13 @@ fn lower_structured_equations<'dae>(
         let generated_root = equation_generation(&family.origin);
         let domain =
             construction.domains(|domains| domains.structured(family.domain.clone(), owner))?;
-        let bodies = if let Some(template) = family.template {
-            let mut binders = HashMap::with_capacity(family.domain.binders.len());
-            for (ordinal, binder) in family.domain.binders.iter().enumerate() {
-                let id = construction.domains(|domains| domains.binder(domain, ordinal, owner))?;
-                binders.insert(VarName::new(&binder.display_name), id);
-            }
-            let mut scoped_shapes = functions.shapes.model_values().clone();
-            for (name, binder) in &binders {
-                // A StructuredIndexDomain binder is a scalar Integer by
-                // construction.  Carry that proof into function-call shape
-                // selection while lowering the compact body.
-                let (lower, upper) =
-                    construction.domains(|domains| domains.binder_bounds(*binder, owner))?;
-                scoped_shapes.bind_slice_binder(name.clone(), lower, upper);
-            }
+        // A discrete-value family is owned by its source template whether or not
+        // its optional compact view is selected: Appendix B discrete assignments
+        // never become continuous residual rows.
+        let mut compact = None;
+        if let Some(template) = family.source_template() {
+            let (binders, scoped_shapes) =
+                structured_template_scope(construction, functions, &family, domain, owner)?;
             if lower_partitioned_structured_template(
                 construction,
                 discrete_values,
@@ -898,7 +890,10 @@ fn lower_structured_equations<'dae>(
             )? {
                 continue;
             }
-            template
+            compact = Some((binders, scoped_shapes));
+        }
+        let bodies = match (family.template, compact) {
+            (Some(template), Some((binders, scoped_shapes))) => template
                 .body
                 .iter()
                 .map(|body| {
@@ -919,16 +914,15 @@ fn lower_structured_equations<'dae>(
                         owner.span(),
                     )
                 })
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            lower_materialized_family_bodies(
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => lower_materialized_family_bodies(
                 construction,
                 coordinates,
                 functions,
                 rows.equations,
                 &family,
                 owner,
-            )?
+            )?,
         };
         let scalar_view = family
             .template
@@ -1375,4 +1369,34 @@ fn equation_owner_provenance(
         Some(generation) => dae::DaeProvenance::generated(generation, span),
         None => dae::DaeProvenance::source(span),
     }
+}
+
+/// The domain binders of a structured family and the model shapes that carry
+/// each binder's proven bounds into function-call shape selection.
+fn structured_template_scope<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    family: &flat::StructuredEquationFamily,
+    domain: dae::DomainId<'dae>,
+    owner: dae::DaeProvenance,
+) -> Result<
+    (
+        HashMap<VarName, dae::DomainBinderId<'dae>>,
+        ShapeEnvironment,
+    ),
+    dae::DaeConstructionError,
+> {
+    let mut binders = HashMap::with_capacity(family.domain.binders.len());
+    for (ordinal, binder) in family.domain.binders.iter().enumerate() {
+        let id = construction.domains(|domains| domains.binder(domain, ordinal, owner))?;
+        binders.insert(VarName::new(&binder.display_name), id);
+    }
+    let mut scoped_shapes = functions.shapes.model_values().clone();
+    for (name, binder) in &binders {
+        // A StructuredIndexDomain binder is a scalar Integer by construction.
+        let (lower, upper) =
+            construction.domains(|domains| domains.binder_bounds(*binder, owner))?;
+        scoped_shapes.bind_slice_binder(name.clone(), lower, upper);
+    }
+    Ok((binders, scoped_shapes))
 }
