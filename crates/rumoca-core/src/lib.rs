@@ -99,9 +99,10 @@ pub use modelica_builtins::*;
 pub use source_map::{SourceMap, placeholder_source_name, source_id_for_name};
 pub use statement_rewriter::{FallibleStatementRewriter, StatementRewriter};
 pub use structured_domain::{
-    AffineForm, ArrayAccess, ComprehensionScalarView, ComprehensionTemplate, RegularForFamily,
-    StructuredIndexBinder, StructuredIndexDomain, StructuredIndexDomainError, checked_product,
-    flatten_coordinates, row_major_coordinates, row_major_strides,
+    AffineForm, ArrayAccess, ComprehensionScalarView, ComprehensionTemplate, IndexAxis, IndexBox,
+    IndexUnion, IntegerInterval, Progression, RegularForFamily, SetAnswer, StructuredIndexBinder,
+    StructuredIndexDomain, StructuredIndexDomainError, checked_product, flatten_coordinates, image,
+    row_major_coordinates, row_major_strides, solve_point,
 };
 pub use subscript::Subscript;
 

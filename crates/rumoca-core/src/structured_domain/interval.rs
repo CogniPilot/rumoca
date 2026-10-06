@@ -10,39 +10,39 @@
 /// unconstrained. Every operation is checked: an overflowing endpoint becomes
 /// unconstrained rather than wrapping.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in crate::construction) struct IntegerInterval {
-    pub(in crate::construction) lower: Option<i64>,
-    pub(in crate::construction) upper: Option<i64>,
+pub struct IntegerInterval {
+    pub lower: Option<i64>,
+    pub upper: Option<i64>,
 }
 
 impl IntegerInterval {
-    pub(in crate::construction) const UNBOUNDED: Self = Self {
+    pub const UNBOUNDED: Self = Self {
         lower: None,
         upper: None,
     };
 
-    pub(in crate::construction) fn finite(lower: i64, upper: i64) -> Self {
+    pub fn finite(lower: i64, upper: i64) -> Self {
         Self {
             lower: Some(lower.min(upper)),
             upper: Some(lower.max(upper)),
         }
     }
 
-    pub(in crate::construction) fn exact(value: i64) -> Self {
+    pub fn exact(value: i64) -> Self {
         Self::finite(value, value)
     }
 
     /// Both endpoints, when both are proven.
-    pub(in crate::construction) fn bounds(self) -> Option<(i64, i64)> {
+    pub fn bounds(self) -> Option<(i64, i64)> {
         Some((self.lower?, self.upper?))
     }
 
-    pub(in crate::construction) fn is_unbounded(self) -> bool {
+    pub fn is_unbounded(self) -> bool {
         self.lower.is_none() && self.upper.is_none()
     }
 
     /// Values in both intervals (a conjunction of facts).
-    pub(in crate::construction) fn meet(self, other: Self) -> Self {
+    pub fn meet(self, other: Self) -> Self {
         Self {
             lower: max_endpoint(self.lower, other.lower),
             upper: min_endpoint(self.upper, other.upper),
@@ -50,36 +50,36 @@ impl IntegerInterval {
     }
 
     /// The smallest interval holding both (a join of alternative paths).
-    pub(in crate::construction) fn hull(self, other: Self) -> Self {
+    pub fn hull(self, other: Self) -> Self {
         Self {
             lower: self.lower.zip(other.lower).map(|(a, b)| a.min(b)),
             upper: self.upper.zip(other.upper).map(|(a, b)| a.max(b)),
         }
     }
 
-    pub(in crate::construction) fn negate(self) -> Self {
+    pub fn negate(self) -> Self {
         Self {
             lower: self.upper.and_then(i64::checked_neg),
             upper: self.lower.and_then(i64::checked_neg),
         }
     }
 
-    pub(in crate::construction) fn add(self, other: Self) -> Self {
+    pub fn plus(self, other: Self) -> Self {
         Self {
             lower: checked(self.lower, other.lower, i64::checked_add),
             upper: checked(self.upper, other.upper, i64::checked_add),
         }
     }
 
-    pub(in crate::construction) fn subtract(self, other: Self) -> Self {
-        self.add(other.negate())
+    pub fn minus(self, other: Self) -> Self {
+        self.plus(other.negate())
     }
 
     /// Products of finite intervals take the four corner products; a
     /// half-bounded factor is kept only when scaled by an exact constant.
-    pub(in crate::construction) fn multiply(self, other: Self) -> Self {
+    pub fn times(self, other: Self) -> Self {
         if let (Some(lhs), Some(rhs)) = (self.bounds(), other.bounds()) {
-            return super::operations::multiply(lhs, rhs)
+            return corner_products(lhs, rhs)
                 .map_or(Self::UNBOUNDED, |(lower, upper)| Self::finite(lower, upper));
         }
         match (self.constant(), other.constant()) {
@@ -129,5 +129,71 @@ fn min_endpoint(lhs: Option<i64>, rhs: Option<i64>) -> Option<i64> {
     match (lhs, rhs) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (value, None) | (None, value) => value,
+    }
+}
+
+/// The least and greatest of the four corner products of two finite
+/// intervals.
+fn corner_products(lhs: (i64, i64), rhs: (i64, i64)) -> Option<(i64, i64)> {
+    let products = [
+        lhs.0.checked_mul(rhs.0)?,
+        lhs.0.checked_mul(rhs.1)?,
+        lhs.1.checked_mul(rhs.0)?,
+        lhs.1.checked_mul(rhs.1)?,
+    ];
+    Some((*products.iter().min()?, *products.iter().max()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IntegerInterval;
+
+    fn half(lower: Option<i64>, upper: Option<i64>) -> IntegerInterval {
+        IntegerInterval { lower, upper }
+    }
+
+    #[test]
+    fn a_half_bounded_fact_bounds_a_symmetric_range() {
+        // `radius <= 4` and `radius >= 0`: `-radius:radius` lies in -4..4.
+        let radius = half(None, Some(4)).meet(half(Some(0), None));
+        assert_eq!(radius, IntegerInterval::finite(0, 4));
+        assert_eq!(radius.negate(), IntegerInterval::finite(-4, 0));
+        assert_eq!(radius.negate().hull(radius), IntegerInterval::finite(-4, 4));
+    }
+
+    #[test]
+    fn arithmetic_keeps_each_proven_endpoint() {
+        let upper_only = half(None, Some(4));
+        assert_eq!(
+            upper_only.plus(IntegerInterval::exact(1)),
+            half(None, Some(5))
+        );
+        assert_eq!(upper_only.negate(), half(Some(-4), None));
+        assert_eq!(
+            upper_only.times(IntegerInterval::exact(-2)),
+            half(Some(-8), None)
+        );
+        assert!(upper_only.times(upper_only).is_unbounded());
+        assert_eq!(
+            IntegerInterval::finite(-2, 3).times(IntegerInterval::finite(-1, 4)),
+            IntegerInterval::finite(-8, 12)
+        );
+        assert_eq!(
+            upper_only.hull(IntegerInterval::exact(9)),
+            half(None, Some(9))
+        );
+    }
+
+    #[test]
+    fn an_overflowing_endpoint_becomes_unconstrained() {
+        let near_max = IntegerInterval::finite(0, i64::MAX);
+        assert_eq!(
+            near_max.plus(IntegerInterval::exact(1)),
+            half(Some(1), None)
+        );
+        assert_eq!(
+            IntegerInterval::exact(i64::MIN).negate(),
+            IntegerInterval::UNBOUNDED
+        );
     }
 }

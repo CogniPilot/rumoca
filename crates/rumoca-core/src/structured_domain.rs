@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::Expression;
 
+mod index_sets;
+mod interval;
+
+pub use index_sets::{IndexAxis, IndexBox, IndexUnion, Progression, SetAnswer, image, solve_point};
+pub use interval::IntegerInterval;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructuredIndexBinder {
     pub id: usize,

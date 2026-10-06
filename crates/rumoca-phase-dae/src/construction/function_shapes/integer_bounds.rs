@@ -13,13 +13,12 @@
 mod affine_tests;
 mod finite_for;
 mod flow;
-mod interval;
 mod operations;
 #[cfg(test)]
 mod tests;
 
 pub(in crate::construction) use finite_for::infer_finite_for_counter_bounds;
-pub(in crate::construction) use interval::IntegerInterval;
+pub(in crate::construction) use rumoca_core::IntegerInterval;
 
 use super::*;
 
@@ -68,9 +67,9 @@ impl ShapeEnvironment {
                 let lhs = self.proven_integer_interval(lhs);
                 let rhs = self.proven_integer_interval(rhs);
                 match op {
-                    OpBinary::Add | OpBinary::AddElem => lhs.add(rhs),
-                    OpBinary::Sub | OpBinary::SubElem => lhs.subtract(rhs),
-                    OpBinary::Mul | OpBinary::MulElem => lhs.multiply(rhs),
+                    OpBinary::Add | OpBinary::AddElem => lhs.plus(rhs),
+                    OpBinary::Sub | OpBinary::SubElem => lhs.minus(rhs),
+                    OpBinary::Mul | OpBinary::MulElem => lhs.times(rhs),
                     _ => IntegerInterval::UNBOUNDED,
                 }
             }

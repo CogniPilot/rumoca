@@ -3,16 +3,6 @@
 use super::*;
 use rumoca_core::BuiltinFunction;
 
-pub(super) fn multiply(lhs: (i64, i64), rhs: (i64, i64)) -> Option<(i64, i64)> {
-    let products = [
-        lhs.0.checked_mul(rhs.0)?,
-        lhs.0.checked_mul(rhs.1)?,
-        lhs.1.checked_mul(rhs.0)?,
-        lhs.1.checked_mul(rhs.1)?,
-    ];
-    Some((*products.iter().min()?, *products.iter().max()?))
-}
-
 pub(super) fn builtin(
     shapes: &ShapeEnvironment,
     function: BuiltinFunction,
