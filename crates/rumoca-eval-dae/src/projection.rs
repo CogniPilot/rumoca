@@ -345,10 +345,15 @@ struct FunctionFoldDependency {
 /// coordinates through the same frames. Remembering both keeps a body whose
 /// definitions share subexpressions, and a fold whose carried values read
 /// each other, linear in the body instead of exponential in its paths.
+/// Actual-argument validation walks the same frames without visiting
+/// coordinates, so it keeps its own completion sets: a completed projection
+/// also proves validation, but a completed validation emitted nothing.
 #[derive(Debug, Default)]
 struct FrameMemo {
     visited: HashSet<ScalarExpressionDependency>,
     folds: HashSet<FoldVisit>,
+    validated: HashSet<ScalarExpressionDependency>,
+    validated_folds: HashSet<FoldVisit>,
 }
 
 /// One completed fold dependency under the enclosing fold points.
@@ -643,10 +648,10 @@ impl<'dae> Projection<'_, 'dae> {
                 .collect(),
         };
         if self.direct_fold_memo_enabled()
-            && self
-                .frame_memos
-                .last()
-                .is_some_and(|memo| memo.folds.contains(&completed))
+            && self.frame_memos.last().is_some_and(|memo| {
+                memo.folds.contains(&completed)
+                    || (self.validating_actuals && memo.validated_folds.contains(&completed))
+            })
         {
             return Ok(());
         }
@@ -695,15 +700,16 @@ impl<'dae> Projection<'_, 'dae> {
             && projected.is_ok()
             && let Some(memo) = self.frame_memos.last_mut()
         {
-            memo.folds.insert(completed);
+            if self.validating_actuals {
+                memo.validated_folds.insert(completed);
+            } else {
+                memo.folds.insert(completed);
+            }
         }
         projected
     }
 
     fn direct_fold_memo_enabled(&self) -> bool {
-        if self.validating_actuals {
-            return false;
-        }
         #[cfg(test)]
         if self.cache.uncached_fold_reference {
             return false;
@@ -1324,9 +1330,8 @@ impl<'dae> Projection<'_, 'dae> {
         field: Option<usize>,
         scalar: usize,
     ) -> bool {
-        if self.validating_actuals
-            || self.validation_memo_forces_walk()
-            || self.guard_memo_forces_walk()
+        if !self.validating_actuals
+            && (self.validation_memo_forces_walk() || self.guard_memo_forces_walk())
         {
             return true;
         }
@@ -1337,6 +1342,9 @@ impl<'dae> Projection<'_, 'dae> {
             scalar,
             domain_context: self.expression_domain_context(expression),
         };
+        if self.validating_actuals {
+            return self.validate_once(dependency);
+        }
         match self.function_frames.last() {
             None => self.model_visited.insert(dependency),
             Some(FunctionFrame::Summary { function, .. }) => {
@@ -1351,6 +1359,21 @@ impl<'dae> Projection<'_, 'dae> {
                 .last_mut()
                 .is_none_or(|memo| memo.visited.insert(dependency)),
         }
+    }
+
+    /// Whether actual-argument validation must walk `dependency`: a scalar
+    /// already projected or validated in this frame, under the same activation
+    /// and domain context, validates the same way.
+    fn validate_once(&mut self, dependency: ScalarExpressionDependency) -> bool {
+        if !matches!(
+            self.function_frames.last(),
+            Some(FunctionFrame::Actual { .. })
+        ) {
+            return true;
+        }
+        self.frame_memos.last_mut().is_none_or(|memo| {
+            !memo.visited.contains(&dependency) && memo.validated.insert(dependency)
+        })
     }
 
     fn expression_domain_context(
