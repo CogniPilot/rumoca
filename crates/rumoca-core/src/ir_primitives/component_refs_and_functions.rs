@@ -924,6 +924,57 @@ pub fn resolve_record_constructor<'a>(
     })
 }
 
+/// The exact identity of one record's implicit constructor function (MLS 12.6):
+/// its exposed name, source declaration, and resolved function instance.
+///
+/// Every site that synthesizes a call of the constructor builds it through
+/// [`RecordConstructorRef::call`], so a constructor call always carries the
+/// resolved function metadata that DAE construction requires.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordConstructorRef {
+    pub name: String,
+    pub def_id: DefId,
+    pub instance_id: FunctionInstanceId,
+}
+
+impl RecordConstructorRef {
+    /// The identity of `constructor`, or `None` when it lacks a declaration or
+    /// instance identity.
+    pub fn of(constructor: &Function) -> Option<Self> {
+        Some(Self {
+            name: constructor.name.as_str().to_string(),
+            def_id: constructor.def_id?,
+            instance_id: constructor.instance_id?,
+        })
+    }
+
+    /// A call of this constructor with positional `args`.
+    pub fn call(&self, args: Vec<Expression>, span: Span) -> Expression {
+        let component_ref = ComponentReference::construct(
+            false,
+            span,
+            vec![ComponentRefPart {
+                ident: self.name.clone(),
+                span,
+                subs: Vec::new(),
+                def_id: self.def_id,
+            }],
+        )
+        .expect("record constructor identity has a nonzero resolved declaration");
+        Expression::FunctionCall {
+            name: Reference::with_component_reference(&self.name, component_ref)
+                .with_resolved_function(ResolvedFunctionReference {
+                    instance_id: self.instance_id,
+                    base_part_count: 0,
+                    transitively_non_replaceable: false,
+                }),
+            args,
+            is_constructor: true,
+            span,
+        }
+    }
+}
+
 fn same_record_layout(lhs: &Function, rhs: &Function) -> bool {
     lhs.inputs.len() == rhs.inputs.len()
         && lhs.inputs.iter().zip(&rhs.inputs).all(|(lhs, rhs)| {

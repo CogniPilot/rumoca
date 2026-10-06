@@ -19,7 +19,13 @@ fn record_fields_from_constructor_metadata(
     type_name: &str,
     type_def_id: Option<rumoca_core::DefId>,
     span: rumoca_core::Span,
-) -> Result<(String, rumoca_core::DefId, Vec<rumoca_core::FunctionParam>), FlattenError> {
+) -> Result<
+    (
+        rumoca_core::RecordConstructorRef,
+        Vec<rumoca_core::FunctionParam>,
+    ),
+    FlattenError,
+> {
     let type_def_id = type_def_id.ok_or_else(|| {
         FlattenError::missing_resolved_class_metadata(
             type_name,
@@ -36,18 +42,14 @@ fn record_fields_from_constructor_metadata(
                     span,
                 )
             })?;
-    let constructor_def_id = constructor.def_id.ok_or_else(|| {
+    let identity = rumoca_core::RecordConstructorRef::of(constructor).ok_or_else(|| {
         FlattenError::missing_resolved_class_metadata(
             type_name,
             "record constructor identity",
             constructor.span,
         )
     })?;
-    Ok((
-        constructor.name.as_str().to_string(),
-        constructor_def_id,
-        constructor.inputs.to_vec(),
-    ))
+    Ok((identity, constructor.inputs.to_vec()))
 }
 
 /// Rewrite FieldAccess on decomposed record params to direct VarRef.
@@ -119,29 +121,14 @@ impl ExpressionRewriter for WholeRecordParamRewriter<'_> {
                 .iter()
                 .find(|param| param.param_name == name.as_str())
         {
-            return rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::Reference::with_component_reference(
-                    &param.constructor_name,
-                    rumoca_core::ComponentReference::construct(
-                        false,
-                        *span,
-                        vec![rumoca_core::ComponentRefPart {
-                            ident: param.constructor_name.clone(),
-                            span: *span,
-                            subs: Vec::new(),
-                            def_id: param.constructor_def_id,
-                        }],
-                    )
-                    .expect("record constructor metadata has a nonzero resolved identity"),
-                ),
-                args: param
+            return param.constructor.call(
+                param
                     .fields
                     .iter()
                     .map(|field| record_param_field_var_ref(&param.param_name, &field.name, *span))
                     .collect(),
-                is_constructor: true,
-                span: *span,
-            };
+                *span,
+            );
         }
 
         self.walk_expression(expr)
@@ -720,18 +707,12 @@ fn seed_complete_record_defaults(flat: &mut flat::Model) {
         .values()
         .filter(|function| function.is_constructor)
         .filter_map(|function| {
-            let def_id = function.def_id?;
-            let instance_id = function.instance_id?;
+            let identity = rumoca_core::RecordConstructorRef::of(function)?;
             function
                 .inputs
                 .iter()
                 .all(|input| input.default.is_some())
-                .then(|| {
-                    (
-                        (def_id, function.name.as_str().to_string()),
-                        (function.name.clone(), instance_id),
-                    )
-                })
+                .then(|| ((identity.def_id, identity.name.clone()), identity))
         })
         .collect::<HashMap<_, _>>();
     for function in flat
@@ -749,22 +730,11 @@ fn seed_complete_record_defaults(flat: &mut flat::Model) {
             let Some(type_def_id) = value.type_def_id else {
                 continue;
             };
-            let Some((constructor_name, instance_id)) =
-                constructors.get(&(type_def_id, value.type_name.clone()))
+            let Some(constructor) = constructors.get(&(type_def_id, value.type_name.clone()))
             else {
                 continue;
             };
-            value.default = Some(rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::Reference::from_var_name(constructor_name.clone())
-                    .with_resolved_function(rumoca_core::ResolvedFunctionReference {
-                        instance_id: *instance_id,
-                        base_part_count: 0,
-                        transitively_non_replaceable: false,
-                    }),
-                args: Vec::new(),
-                is_constructor: true,
-                span: value.span,
-            });
+            value.default = Some(constructor.call(Vec::new(), value.span));
         }
     }
 }
@@ -817,14 +787,13 @@ fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, Fla
     for (func_name, func) in flat.functions.iter_mut() {
         let mut decomposed: Vec<DecomposedParam> = Vec::new();
         for (idx, input) in func.inputs.iter().enumerate() {
-            if let Some((constructor_name, constructor_def_id, fields)) =
+            if let Some((constructor, fields)) =
                 record_fields_by_function_input.get(&(func_name.clone(), idx))
             {
                 decomposed.push(DecomposedParam {
                     original_index: idx,
                     param_name: input.name.clone(),
-                    constructor_name: constructor_name.clone(),
-                    constructor_def_id: *constructor_def_id,
+                    constructor: constructor.clone(),
                     fields: fields.clone(),
                 });
             }
@@ -1096,8 +1065,7 @@ fn decompose_record_calls_in_when_equations(
 struct DecomposedParam {
     original_index: usize,
     param_name: String,
-    constructor_name: String,
-    constructor_def_id: rumoca_core::DefId,
+    constructor: rumoca_core::RecordConstructorRef,
     fields: Vec<rumoca_core::FunctionParam>,
 }
 
