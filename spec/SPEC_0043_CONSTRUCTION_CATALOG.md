@@ -630,7 +630,7 @@ initialization residual system.
 | Synthetic instance `DefId` allocation and late reference repair are absent | Flatten/Flat boundary | No identity adapters |
 | SPEC_0029 helper ownership changes with the implementing cutover | Same atomic change | Specs remain consistent |
 | Every node requires source/generated provenance | `flat::Model::construct` | No dummy provenance |
-| A synthesized record-constructor call is built only through `RecordConstructorRef::call` | `rumoca-core`, Flatten record-parameter lowering | No constructor call without resolved function metadata |
+| A synthesized record-constructor call is built only through `RecordConstructorRef::call`; a whole-record copy of a decomposed record input is one assignment per field (arrays whole) and builds no constructor call | `rumoca-core`, Flatten record-parameter lowering (`expand_record_copies`) | No constructor call without resolved function metadata; copies need none |
 
 ### 8. FMI Component Construction Catalog
 
