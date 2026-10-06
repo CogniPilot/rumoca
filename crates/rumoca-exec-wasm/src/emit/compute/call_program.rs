@@ -27,14 +27,7 @@ fn emit_with_budget(
     layout
         .validate_shape_contract()
         .map_err(|e| e.to_string())?;
-    // Stages address the work layout: the host Y scalars followed by one
-    // private slot per derived output.
-    let work = schedule.work_layout();
-    if work.p_scalars() != layout.p_scalars()
-        || work.y_scalars() != layout.y_scalars() + schedule.derived_outputs().len()
-    {
-        return Err("native schedule was issued for a different layout".into());
-    }
+    let work = work_layout(schedule, layout)?;
     assignments::validate_targets(schedule, work.y_scalars())?;
     let plans = assignments::checked_plans(schedule, work)?;
     let programs = plans
@@ -42,12 +35,7 @@ fn emit_with_budget(
         .flat_map(|plan| plan.programs.iter().cloned())
         .collect::<Vec<_>>();
     let sites = conditional::call_sites(&programs)?;
-    if sites.is_empty()
-        && schedule.derived_outputs().is_empty()
-        && !has_checked_model_operations(programs.iter().flatten())
-    {
-        return Err("native checked program has no checked operations".into());
-    }
+    require_checked_entry(schedule, &sites, &programs)?;
     let mut helpers = ProgramHelpers::new(table, &sites).map_err(|e| e.to_string())?;
     let imports = collect_imports(&programs)?
         .into_iter()
@@ -136,6 +124,37 @@ fn emit_with_budget(
         math_imports: imports.iter().map(|import| import.symbol()).collect(),
         pooled_arena_bytes: None,
     })
+}
+
+/// The layout stages address: the host Y scalars followed by one private slot
+/// per derived output, issued with the schedule for this host layout.
+fn work_layout<'a>(
+    schedule: &'a solve::NativeRefreshAssignmentSchedule,
+    layout: &VarLayout,
+) -> Result<&'a VarLayout, String> {
+    let work = schedule.work_layout();
+    if work.p_scalars() != layout.p_scalars()
+        || work.y_scalars() != layout.y_scalars() + schedule.derived_outputs().len()
+    {
+        return Err("native schedule was issued for a different layout".into());
+    }
+    Ok(work)
+}
+
+/// A checked entry is issued only for a program that needs one: an issued
+/// call, a checked model operation, or typed output lanes.
+fn require_checked_entry(
+    schedule: &solve::NativeRefreshAssignmentSchedule,
+    sites: &[solve::SolvePureCallSite],
+    programs: &[Vec<LinearOp>],
+) -> Result<(), String> {
+    if sites.is_empty()
+        && schedule.derived_outputs().is_empty()
+        && !has_checked_model_operations(programs.iter().flatten())
+    {
+        return Err("native checked program has no checked operations".into());
+    }
+    Ok(())
 }
 
 fn has_checked_model_operations<'a>(mut operations: impl Iterator<Item = &'a LinearOp>) -> bool {

@@ -409,23 +409,28 @@ fn integer_source(
             let cell = value
                 .checked_sub(*dst_start)
                 .ok_or(NativeEvaluationRefusal::IntegerComputedInReal)?;
-            let mut first = 0u32;
-            for output in site.outputs() {
-                let count = output.value_type().scalar_count();
-                if cell < first + count {
-                    return match output.value_type().element_type() {
-                        SolveScalarType::Integer(_) => {
-                            Ok(NativeIntegerSource::CallCell { operation, cell })
-                        }
-                        _ => Err(NativeEvaluationRefusal::IntegerComputedInReal),
-                    };
+            match cell_type(site, cell) {
+                Some(SolveScalarType::Integer(_)) => {
+                    Ok(NativeIntegerSource::CallCell { operation, cell })
                 }
-                first += count;
+                _ => Err(NativeEvaluationRefusal::IntegerComputedInReal),
             }
-            Err(NativeEvaluationRefusal::IntegerComputedInReal)
         }
         _ => Err(NativeEvaluationRefusal::IntegerComputedInReal),
     }
+}
+
+/// The scalar type of output cell `cell` of a pure call, in scalar order.
+fn cell_type(site: &crate::SolvePureCallSite, cell: u32) -> Option<SolveScalarType> {
+    let mut first = 0u32;
+    for output in site.outputs() {
+        let count = output.value_type().scalar_count();
+        if cell < first.checked_add(count)? {
+            return Some(output.value_type().element_type());
+        }
+        first += count;
+    }
+    None
 }
 
 fn defines(operation: &LinearOp, register: Reg) -> bool {

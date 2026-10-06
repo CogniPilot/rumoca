@@ -97,7 +97,7 @@ fn image_sized_native_stages_retain_compact_issued_order_and_prefix() {
             schedule
                 .stages()
                 .iter()
-                .map(|stage| continuous_node(stage))
+                .map(continuous_node)
                 .collect::<Vec<_>>(),
             [1, 0]
         );

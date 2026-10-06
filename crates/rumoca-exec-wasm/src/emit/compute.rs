@@ -260,17 +260,27 @@ impl BodyEmitter<'_> {
                     stride,
                 } => self.emit_mapped_range(start, count, stride, targets)?,
                 LinearOp::PureCall { .. } if self.calls.is_some() => {
-                    self.emit_native_pure_call(op.clone(), Some(&program[..index]))?;
-                    if let Some(capture) = self.integer_capture
-                        && capture.operation == index
-                    {
-                        self.capture_integer_cell(capture)?;
-                    }
+                    self.emit_program_call(op.clone(), &program[..index], index)?;
                 }
                 _ => self.emit_op(op.clone())?,
             }
         }
         Ok(())
+    }
+
+    /// One issued pure call of a stage program, followed by its Integer lane
+    /// capture when this call produces the stage's published Integer.
+    fn emit_program_call(
+        &mut self,
+        op: LinearOp,
+        prefix: &[LinearOp],
+        index: usize,
+    ) -> Result<(), String> {
+        self.emit_native_pure_call(op, Some(prefix))?;
+        match self.integer_capture {
+            Some(capture) if capture.operation == index => self.capture_integer_cell(capture),
+            _ => Ok(()),
+        }
     }
 
     fn emit_mapped_range(

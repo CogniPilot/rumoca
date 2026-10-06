@@ -102,7 +102,7 @@ fn mixed_scalar_sparse_outputs_keep_compact_order_and_complete_source_prefix() {
             schedule
                 .stages()
                 .iter()
-                .map(|s| continuous_node(s))
+                .map(continuous_node)
                 .collect::<Vec<_>>(),
             [1, 2, 2, 0]
         );

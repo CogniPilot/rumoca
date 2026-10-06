@@ -97,7 +97,7 @@ fn dependency_order_uses_exact_column_sets_and_real_cycles_still_refuse() {
         owner
             .stages()
             .iter()
-            .map(|s| continuous_node(s))
+            .map(continuous_node)
             .collect::<Vec<_>>(),
         [1, 0, 2]
     );

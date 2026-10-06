@@ -92,7 +92,7 @@ fn compact_calls_retain_original_domain_order_and_complete_prefix() {
             schedule
                 .stages()
                 .iter()
-                .map(|s| continuous_node(s))
+                .map(continuous_node)
                 .collect::<Vec<_>>(),
             [1, 0]
         );
