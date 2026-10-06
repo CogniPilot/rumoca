@@ -283,20 +283,7 @@ pub(in crate::construction) fn retains_flat_guard(
     let tunable = |name: &VarName| {
         !evaluable.contains(name) && matches!(variability(name), Some(Variability::Parameter(_)))
     };
-    let unknown = |name: &VarName| {
-        flat.variables.get(name).is_some_and(|variable| {
-            // Use the same resolved top-level ownership as role planning.
-            // Invalid ownership stays conservative here; role planning emits
-            // its original error before constructing a DAE coordinate.
-            let external =
-                super::super::analysis::is_external_input(flat, name, variable).unwrap_or(false);
-            !external
-                && !matches!(
-                    variable.variability,
-                    Variability::Parameter(_) | Variability::Constant(_)
-                )
-        })
-    };
+    let unknown = |name: &VarName| flat_unknown(flat, name);
     retains_parameter_guard(
         branches,
         else_branch,
@@ -305,4 +292,29 @@ pub(in crate::construction) fn retains_flat_guard(
             unknown: &unknown,
         },
     )
+}
+
+/// Whether `name` reads an unknown of the equation system: a leaf coordinate
+/// that is neither a parameter, a constant, nor an external input. A record
+/// aggregate reads every leaf field. A reference without a leaf layout reads
+/// no unknown here; record-equation analysis reports its error.
+fn flat_unknown(flat: &flat::Model, name: &VarName) -> bool {
+    let Ok(leaves) = super::super::analysis::reference_leaf_coordinates(flat, name, Span::DUMMY)
+    else {
+        return false;
+    };
+    leaves.iter().any(|leaf| {
+        flat.variables.get(leaf).is_some_and(|variable| {
+            // Use the same resolved top-level ownership as role planning.
+            // Invalid ownership stays conservative here; role planning emits
+            // its original error before constructing a DAE coordinate.
+            let external =
+                super::super::analysis::is_external_input(flat, leaf, variable).unwrap_or(false);
+            !external
+                && !matches!(
+                    variable.variability,
+                    Variability::Parameter(_) | Variability::Constant(_)
+                )
+        })
+    })
 }

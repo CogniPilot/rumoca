@@ -136,7 +136,6 @@ use initial_algorithms::{
 use loop_compaction::compact_function_loops;
 use model_algorithm_calls::analyze_event_function_calls;
 pub(super) use model_algorithm_calls::{ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan};
-use structural_selections::{has_decidable_conditionals, select_structural_branches};
 use model_algorithm_statements::validate_model_algorithm;
 pub(super) use model_algorithm_statements::{collect_algorithm_writes, names_overlap};
 use model_algorithms::analyze_model_algorithm;
@@ -156,10 +155,11 @@ pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans
 use record_array_fields::{
     analyze_record_array_fields, validate_record_array_field_runtime_coordinates,
 };
-pub(super) use record_equations::RecordFieldSystem;
 use record_equations::analyze_record_equations;
+pub(super) use record_equations::{RecordFieldSystem, reference_leaf_coordinates};
 use sample_aliases::analyze_sample_aliases;
 use source_balance::{SourceBalanceInput, source_balance};
+use structural_selections::{has_decidable_conditionals, select_structural_branches};
 use structured_families::{
     PartitionFamilies, record_equality_families, validate_structured_families,
 };

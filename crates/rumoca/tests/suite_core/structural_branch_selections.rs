@@ -33,6 +33,40 @@ model StiffArmSelection
   extends ArmSelection(stiff = true);
 end StiffArmSelection;
 
+type Frame = enumeration(world, frameA, frameB);
+
+record Orientation
+  Real T[3,3];
+  Real w[3];
+end Orientation;
+
+function nullRotation
+  output Orientation R;
+algorithm
+  R := Orientation(T = identity(3), w = zeros(3));
+end nullRotation;
+
+model RecordArms
+  parameter Frame frameIn = Frame.frameB;
+  parameter Frame frameOut = frameIn;
+  Real rIn[3] = {time, 2, 3};
+  Real rOut[3];
+  Orientation R1;
+  Orientation Ra = nullRotation();
+equation
+  if frameOut == frameIn then
+    rOut = rIn;
+    R1 = nullRotation();
+  else
+    if frameIn == Frame.world then
+      R1 = nullRotation();
+    else
+      R1 = Ra;
+    end if;
+    rOut = 2*rIn;
+  end if;
+end RecordArms;
+
 model RetainedBranch
   parameter Boolean fast = false;
   Real x(start = 1, fixed = true);
@@ -99,4 +133,16 @@ fn a_parameter_guard_over_different_unknowns_selects_its_arm() {
 #[test]
 fn a_parameter_guard_over_the_same_unknowns_stays_a_run_time_branch() {
     assert!(evaluable(&compile("RetainedBranch")).is_empty());
+}
+
+#[test]
+fn a_record_aggregate_arm_reads_its_field_unknowns() {
+    // `R1 = Ra` reads every field of both aggregates, so the arms differ in
+    // their unknowns and the parameter guard is a structural selection.
+    let selected = compile("RecordArms");
+    let mut evaluable = evaluable(&selected);
+    evaluable.sort();
+    assert_eq!(evaluable, ["frameIn", "frameOut"]);
+    assert!((value_at(&selected, "rOut[1]", 0.6) - 0.6).abs() < 1e-6);
+    assert_eq!(value_at(&selected, "R1.T[1,1]", 0.6), 1.0);
 }
