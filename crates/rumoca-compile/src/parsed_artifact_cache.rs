@@ -13,7 +13,7 @@ use crate::instrumentation::{
 };
 use crate::source_root_cache::{resolve_source_root_cache_dir, source_root_cache_compiler_version};
 
-const PARSED_ARTIFACT_CACHE_SCHEMA_VERSION: u32 = 5;
+const PARSED_ARTIFACT_CACHE_SCHEMA_VERSION: u32 = 6;
 const PARSED_ARTIFACT_CACHE_DIR: &str = "parsed-files";
 const MAX_IN_MEMORY_PARSED_ARTIFACTS: usize = 256;
 

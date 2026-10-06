@@ -363,6 +363,7 @@ fn check_class_structural(
     check_package_restrictions(class, diags);
     check_duplicate_imports(class, diags);
     check_function_restrictions(class, def, diags);
+    check_partial_derivative_function(class, diags);
     check_clock_restrictions(class, def, diags);
     check_stream_restrictions(class, def, diags);
     check_annotation_restrictions(class, diags);

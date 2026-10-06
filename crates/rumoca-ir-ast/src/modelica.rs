@@ -255,6 +255,11 @@ impl ClassDef {
         write!(out, "{} {}", self.class_type.as_str(), self.name.text)
             .expect("write to String never fails");
 
+        if let Some(derivative) = &self.partial_derivative {
+            write_der_class(&mut out, derivative, &self.description);
+            return out;
+        }
+
         write_description(&mut out, &self.description);
 
         writeln!(out).expect("write to String never fails");
@@ -676,4 +681,26 @@ impl Statement {
             }
         }
     }
+}
+
+/// The rest of a der-class specifier after its name (MLS §12.7.2).
+fn write_der_class(
+    out: &mut String,
+    derivative: &crate::PartialDerivative,
+    description: &[rumoca_core::Token],
+) {
+    let inputs: Vec<&str> = derivative
+        .inputs
+        .iter()
+        .map(|input| input.text.as_ref())
+        .collect();
+    write!(
+        out,
+        " = der({}, {})",
+        derivative.function,
+        inputs.join(", ")
+    )
+    .expect("write to String never fails");
+    write_description(out, description);
+    writeln!(out, ";").expect("write to String never fails");
 }

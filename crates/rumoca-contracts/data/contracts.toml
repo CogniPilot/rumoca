@@ -2643,6 +2643,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'FUNC-044'
+category = 'Function'
+name = 'Partial-derivative functions'
+mls_ref = '§12.7.2'
+requirement = 'f = der(g, u1, ...) defines the partial derivative of the function g with respect to its scalar Real inputs ui, applied in increasing order of i'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
 id = 'INST-001'
 category = 'Instantiation'
 name = 'Modification context'

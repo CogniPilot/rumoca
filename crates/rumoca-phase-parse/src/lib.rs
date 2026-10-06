@@ -989,28 +989,42 @@ end Base;
         assert_eq!(cell.shape_expr.len(), 2);
     }
 
+    /// The der-class records `der(g, u1, ...)` and never inherits from `g`.
+    fn assert_partial_derivative(class: &rumoca_ir_ast::ClassDef, inputs: &[&str]) {
+        assert!(class.extends.is_empty(), "a der-class must not extend g");
+        let derivative = class
+            .partial_derivative
+            .as_ref()
+            .expect("der-class records its partial derivative");
+        assert_eq!(derivative.function.to_string(), "f");
+        let recorded: Vec<&str> = derivative
+            .inputs
+            .iter()
+            .map(|input| input.text.as_ref())
+            .collect();
+        assert_eq!(recorded, inputs);
+    }
+
     #[test]
     fn test_parse_der_class_specifier_short_form() {
         let source = r#"
 function f
   input Real x;
-  output Real y;
+  input Real y;
+  output Real z;
 algorithm
-  y := x;
+  z := x*y;
 end f;
 
 function f_der = der(f, x);
+function f_xy = der(f, x, y) "mixed";
 "#;
 
         let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
         let f_der = ast.classes.get("f_der").expect("f_der should exist");
         assert_eq!(&*f_der.name.text, "f_der");
-        assert_eq!(f_der.extends.len(), 1, "expected one extends entry");
-        assert_eq!(
-            f_der.extends[0].base_name.to_string(),
-            "f",
-            "der short form should reference base function"
-        );
+        assert_partial_derivative(f_der, &["x"]);
+        assert_partial_derivative(ast.classes.get("f_xy").expect("f_xy"), &["x", "y"]);
     }
 
     #[test]
@@ -1018,19 +1032,19 @@ function f_der = der(f, x);
         let source = r#"
 function f
   input Real x;
-  output Real y;
+  input Real y;
+  output Real z;
 algorithm
-  y := x;
+  z := x*y;
 end f;
 
-function f_der = der(f, x);
+function f_xy = der(f, x, y) "mixed";
 "#;
 
         let reparsed = round_trip_ast(source);
-        let f_der = reparsed.classes.get("f_der").expect("f_der should exist");
-        assert_eq!(&*f_der.name.text, "f_der");
-        assert_eq!(f_der.extends.len(), 1, "expected one extends entry");
-        assert_eq!(f_der.extends[0].base_name.to_string(), "f");
+        let f_xy = reparsed.classes.get("f_xy").expect("f_xy should exist");
+        assert_partial_derivative(f_xy, &["x", "y"]);
+        assert_eq!(f_xy.description.len(), 1);
     }
 
     #[test]

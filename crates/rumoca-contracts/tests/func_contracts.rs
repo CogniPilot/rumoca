@@ -496,6 +496,38 @@ fn func_der_class_specifier_short_form_parses() {
     );
 }
 
+// =============================================================================
+// FUNC-044: Partial-derivative functions
+// "In f = der(g, u1,...), the function being defined is named f, and the
+// function being differentiated is g."
+// =============================================================================
+
+/// `f_x = der(f, x)` of `f = k*x*x` is `2*k*x`, so `f_x(3, 2)` is 12. A der-class
+/// once compiled as `extends f` returned 18, `f`'s own value; with no
+/// derivative synthesized it is refused instead.
+#[test]
+fn func_044_partial_derivative_function_refused() {
+    expect_resolve_failure_with_code(
+        r#"
+        function f
+            input Real x;
+            input Real k;
+            output Real y;
+        algorithm
+            y := k*x*x;
+        end f;
+
+        function f_x = der(f, x);
+
+        model Probe
+            Real d = f_x(3, 2);
+        end Probe;
+    "#,
+        "Probe",
+        "ER139",
+    );
+}
+
 #[test]
 fn func_default_input() {
     expect_parse_ok(

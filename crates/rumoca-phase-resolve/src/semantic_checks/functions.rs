@@ -3,6 +3,7 @@ use super::*;
 pub(super) const ER060_FUNCTION_INNER_OUTER_PREFIX: &str = "ER060";
 pub(super) const ER061_FUNCTION_CLOCK_COMPONENT: &str = "ER061";
 pub(super) const ER062_FUNCTION_INVALID_COMPONENT_TYPE: &str = "ER062";
+pub(super) const ER139_PARTIAL_DERIVATIVE_FUNCTION: &str = "ER139";
 
 /// FUNC-001: Public function components must have input or output prefix.
 /// FUNC-002: Assignment to function input is forbidden.
@@ -230,4 +231,37 @@ fn check_input_assignment(
     for stmt in stmts {
         let _ = visitor.visit_statement(stmt);
     }
+}
+
+/// FUNC-044: a partial-derivative function `f = der(g, u1, ...)` (MLS §12.7.2)
+/// is refused until its derivative is synthesized. Compiling it any other way
+/// evaluates something other than the derivative it declares.
+pub(super) fn check_partial_derivative_function(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
+    let Some(derivative) = &class.partial_derivative else {
+        return;
+    };
+    let inputs: Vec<&str> = derivative
+        .inputs
+        .iter()
+        .map(|input| input.text.as_ref())
+        .collect();
+    let declared = format!(
+        "{} = der({}, {})",
+        class.name.text,
+        derivative.function,
+        inputs.join(", ")
+    );
+    diags.push(semantic_error(
+        ER139_PARTIAL_DERIVATIVE_FUNCTION,
+        format!(
+            "partial-derivative function `{declared}` (MLS §12.7.2) is not supported: no \
+             derivative is synthesized for it, so it is refused rather than compiled as \
+             something else"
+        ),
+        label_from_token(
+            &class.name,
+            "check_partial_derivative_function/unsupported",
+            "partial-derivative function declared here",
+        ),
+    ));
 }
