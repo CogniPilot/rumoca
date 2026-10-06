@@ -195,10 +195,6 @@ fn mixed(count: u32) -> (solve::SolvePureCallTable, solve::SolvePureCallSite) {
 fn complete_typed_tuple_matches_oracle_with_changed_inputs_and_private_scratch() {
     let (table, site) = mixed(14400);
     let compiled = compile_pure_call_wasm(&table, &site).unwrap();
-    assert_eq!(
-        compiled.identity(),
-        table.owner(site.owner()).unwrap().identity()
-    );
     assert_eq!(compiled.layout().outputs, site.outputs());
     let mut runner = Runner::new(&compiled);
     for (index, value, flag) in [(1, 12.7, true), (14400, -8.3, false), (4000, -0.0, true)] {

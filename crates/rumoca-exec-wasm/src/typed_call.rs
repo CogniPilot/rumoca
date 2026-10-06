@@ -85,7 +85,6 @@ pub struct CompiledTypedCallWasm {
     module_bytes: Vec<u8>,
     layout: TypedCallLayout,
     faults: Vec<TypedCallFault>,
-    identity: solve::SolvePureCallIdentity,
     math_imports: Vec<&'static str>,
 }
 
@@ -101,10 +100,6 @@ impl CompiledTypedCallWasm {
     #[must_use]
     pub fn faults(&self) -> &[TypedCallFault] {
         &self.faults
-    }
-    #[must_use]
-    pub fn identity(&self) -> solve::SolvePureCallIdentity {
-        self.identity
     }
     /// Target math imports under `env`, in addition to the memory import.
     /// Bind `pow` to the target's Binary64 exponentiation intrinsic.
@@ -146,7 +141,6 @@ pub fn compile_pure_call_wasm(
         module_bytes,
         layout,
         faults,
-        identity: owner.identity(),
         math_imports: linked
             .math_imports
             .iter()
