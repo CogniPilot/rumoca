@@ -1,7 +1,7 @@
 {
   "quality_gate_version": 14,
   "run_scope": "full",
-  "git_commit": "db4d45baf172ff2b9a4a0e12d93a4f372249dfd3",
+  "git_commit": "642d2a5f4824f5f288c2bf4bc0c61d60673daa14",
   "msl_version": "v4.1.0",
   "omc_version": "a96aa1a-cmake",
   "sim_timeout_seconds": 12.0,
@@ -998,7 +998,25 @@
     }
   },
   "parity_measured": true,
-  "evidence_provenance": "every figure is CI run 37457263123 at db4d45baf172ff2b9a4a0e12d93a4f372249dfd3 (merged shards 1-4, 566 models, 307 strict-high, 53 policy-excluded, 1 unexcepted non-high model), reproduced by merging that run's shard artifacts; the OMC context migration and the promoted-baseline bridge are the reviewed lineage carried from the previous checked-in baseline",
+  "timing_margin_models": {
+    "Modelica.Electrical.Analog.Examples.Lines.LightningSegmentedTransmissionLine": {
+      "phase": "Solve",
+      "budget_share": 0.9771127803499999
+    },
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Rectifier": {
+      "phase": "Sim",
+      "budget_share": 0.5710021522444444
+    },
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV_Characteristic": {
+      "phase": "Sim",
+      "budget_share": 0.8093795738888889
+    },
+    "Modelica.Mechanics.MultiBody.Examples.Loops.EngineV6": {
+      "phase": "Sim",
+      "budget_share": 1.0099062421555556
+    }
+  },
+  "evidence_provenance": "every figure is CI run 37457263123 at db4d45baf172ff2b9a4a0e12d93a4f372249dfd3 (merged shards 1-4 under its 45 s simulation and 20 s phase budgets, 566 models, 307 strict-high of which 303 certified and 4 held back by the certification timing margin, 53 policy-excluded, 1 unexcepted non-high model), reproduced by merging that run's shard artifacts; the OMC context migration and the promoted-baseline bridge are the reviewed lineage carried from the previous checked-in baseline",
   "certified_strict_high_models": [
     "Modelica.Blocks.Examples.BusUsage",
     "Modelica.Blocks.Examples.BusUsage_Utilities.Part",
@@ -1105,7 +1123,6 @@
     "Modelica.Electrical.Analog.Examples.Lines.CompareLineTrunks",
     "Modelica.Electrical.Analog.Examples.Lines.CompareLosslessLines",
     "Modelica.Electrical.Analog.Examples.Lines.LightningLosslessTransmissionLine",
-    "Modelica.Electrical.Analog.Examples.Lines.LightningSegmentedTransmissionLine",
     "Modelica.Electrical.Analog.Examples.Lines.SmoothStep",
     "Modelica.Electrical.Analog.Examples.NandGate",
     "Modelica.Electrical.Analog.Examples.OpAmps.Adder",
@@ -1154,7 +1171,6 @@
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_YD",
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_withLosses",
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_DOL",
-    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Rectifier",
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_CurrentSource",
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Inverter",
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_NoLoad",
@@ -1174,7 +1190,6 @@
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RL",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV",
-    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV_Characteristic",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.DiodeCenterTap2Pulse",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_R",
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RL",
@@ -1257,7 +1272,6 @@
     "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1a",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b_analytic",
-    "Modelica.Mechanics.MultiBody.Examples.Loops.EngineV6",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar2",
     "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar_analytic",

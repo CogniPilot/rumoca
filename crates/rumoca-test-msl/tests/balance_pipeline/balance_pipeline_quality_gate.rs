@@ -12,6 +12,7 @@ mod soundness_roster;
 mod status;
 #[cfg(test)]
 mod tests;
+mod timing_margin;
 
 use super::*;
 use cache::*;
@@ -26,6 +27,7 @@ use runtime_cohort::*;
 use schema_migrations::*;
 use soundness_roster::*;
 use status::*;
+use timing_margin::*;
 
 // =============================================================================
 // MSL quality gate (compile/balance strict + simulation tolerant gate)
@@ -327,6 +329,11 @@ pub(super) struct MslQualityBaseline {
     /// not disappear while another entered, so the baseline owns the roster.
     #[serde(default, skip_serializing_if = "IndexSet::is_empty")]
     certified_strict_high_models: IndexSet<String>,
+    /// Strict-high completions whose evidence run used more than the
+    /// certification timing margin of a phase budget: reported, not certified,
+    /// and left out of every ratcheted count (SPEC_0050).
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    timing_margin_models: IndexMap<String, TimingMarginEntry>,
     /// Models that simulated without strict-high parity and without a typed
     /// trace exception. The target is empty; the gate fails when a current
     /// model is outside this roster, so it only shrinks (SPEC_0033).
@@ -1070,6 +1077,7 @@ pub(super) fn current_msl_quality_baseline(
                 .then(|| parity.runtime_model_ratios.keys().cloned().collect())
         }),
         certified_strict_high_models: IndexSet::new(),
+        timing_margin_models: IndexMap::new(),
         unexcepted_non_high_models: IndexSet::new(),
         trace_exceptions_sha256: None,
         evidence_provenance: None,
@@ -1223,13 +1231,24 @@ pub(super) fn write_current_msl_quality_snapshot(
             );
         }
         if let Some(cohort) = measurement.cohort() {
-            let certified = cohort
+            let strict_high = cohort
                 .table
                 .rows
                 .iter()
                 .filter(|row| row.band == BandLabel::High)
-                .map(|row| row.model_name.clone())
+                .map(|row| row.model_name.as_str());
+            let timing_margin =
+                timing_margin_models(summary, strict_high.clone(), PhaseBudgets::configured());
+            let certified = strict_high
+                .filter(|model| !timing_margin.contains_key(*model))
+                .map(str::to_string)
                 .collect::<IndexSet<_>>();
+            root.insert(
+                "timing_margin_models".to_string(),
+                serde_json::to_value(timing_margin).map_err(|error| {
+                    io::Error::other(format!("failed to serialize timing-margin roster: {error}"))
+                })?,
+            );
             root.insert(
                 "certified_strict_high_models".to_string(),
                 serde_json::to_value(certified).map_err(|error| {
@@ -1716,7 +1735,7 @@ pub(super) fn push_trace_regression_reasons(
             reasons,
             "Trace strict-high",
             current_trace.agreement_high,
-            baseline_trace.agreement_high,
+            certified_floor(baseline, baseline_trace.agreement_high),
             baseline.sim_target_models,
         );
         let current_classified = trace_classified_models(current_trace);
@@ -1725,7 +1744,7 @@ pub(super) fn push_trace_regression_reasons(
             reasons,
             "Trace classified",
             current_classified,
-            baseline_classified,
+            certified_floor(baseline, baseline_classified),
             baseline.sim_target_models,
         );
 
@@ -1737,7 +1756,7 @@ pub(super) fn push_trace_regression_reasons(
                 reasons,
                 "Trace no severe",
                 current_no_severe,
-                baseline_no_severe,
+                certified_floor(baseline, baseline_no_severe),
                 baseline.sim_target_models,
             );
         }

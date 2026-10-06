@@ -86,7 +86,7 @@ fn baseline_roster_count_must_equal_the_certified_aggregate() {
     let reasons = certified_cohort_regression_reasons(&baseline, &measured_cohort(2, 0));
     assert_eq!(reasons.len(), 1, "got: {reasons:?}");
     assert!(
-        reasons[0].contains("owns 1 model identities"),
+        reasons[0].contains("owns 1 certified and 0 timing-margin identities"),
         "got: {reasons:?}"
     );
 }

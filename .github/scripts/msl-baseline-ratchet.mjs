@@ -13,6 +13,11 @@ const DEFAULT_CHECKED_IN_BASELINE_PATH = fileURLToPath(
   ),
 );
 
+// A count every strict-high completion enters; the ones the certification
+// timing margin holds back (SPEC_0050) are left out of it when both snapshots
+// apply the margin rule.
+const CERTIFIED = true;
+
 const CONTEXT_INDEPENDENT_HIGHER_IS_BETTER = [
   ['parse models', ['parse_models']],
   ['flatten models', ['flatten_models']],
@@ -25,12 +30,12 @@ const CONTEXT_INDEPENDENT_HIGHER_IS_BETTER = [
   ['simulation attempts', ['sim_attempted']],
   ['initial-condition attempts', ['ic_attempted']],
   ['initial-condition solves', ['ic_ok']],
-  ['successful simulations', ['sim_ok']],
+  ['successful simulations', ['sim_ok'], CERTIFIED],
 ];
 
 const OMC_DEPENDENT_HIGHER_IS_BETTER = [
-  ['trace models compared', ['trace_accuracy_stats', 'models_compared']],
-  ['high trace agreement', ['trace_accuracy_stats', 'agreement_high']],
+  ['trace models compared', ['trace_accuracy_stats', 'models_compared'], CERTIFIED],
+  ['high trace agreement', ['trace_accuracy_stats', 'agreement_high'], CERTIFIED],
   [
     'state-set exact matches',
     ['trace_accuracy_stats', 'state_selection', 'exact_state_set_match_models'],
@@ -335,11 +340,16 @@ function compareIntegerMetrics(
   improvements,
   regressions,
 ) {
-  for (const [label, path] of metrics) {
+  const floored = appliesTimingMargin(current) && appliesTimingMargin(baseline);
+  for (const [label, path, certified] of metrics) {
+    const value = (snapshot, name) => {
+      const measured = integerAt(snapshot, path, name);
+      return certified && floored ? certifiedFloor(snapshot, measured) : measured;
+    };
     compareMetric(
       label,
-      integerAt(current, path, 'current snapshot'),
-      integerAt(baseline, path, 'baseline snapshot'),
+      value(current, 'current snapshot'),
+      value(baseline, 'baseline snapshot'),
       higherIsBetter,
       improvements,
       regressions,
@@ -360,18 +370,21 @@ function compareFloatMetrics(metrics, current, baseline, improvements, regressio
 }
 
 function compareDerivedMetrics(current, baseline, improvements, regressions) {
+  const floored = appliesTimingMargin(current) && appliesTimingMargin(baseline);
+  const certified = (snapshot, measured) =>
+    floored ? certifiedFloor(snapshot, measured) : measured;
   compareMetric(
     'high+near trace agreement',
-    traceHighNearCount(current),
-    traceHighNearCount(baseline),
+    certified(current, traceHighNearCount(current)),
+    certified(baseline, traceHighNearCount(baseline)),
     true,
     improvements,
     regressions,
   );
   compareMetric(
     'trace models without severe channels',
-    traceNoSevereCount(current),
-    traceNoSevereCount(baseline),
+    certified(current, traceNoSevereCount(current)),
+    certified(baseline, traceNoSevereCount(baseline)),
     true,
     improvements,
     regressions,
@@ -480,6 +493,26 @@ function compareFloatMetric(label, current, baseline, improvements, regressions)
   } else if (current > baseline + epsilon) {
     regressions.push(`${label}: ${baseline.toExponential(6)} -> ${current.toExponential(6)}`);
   }
+}
+
+// Whether a snapshot records the certification timing margin (SPEC_0050); a
+// snapshot from before the rule counts every strict-high completion.
+export function appliesTimingMargin(snapshot) {
+  return Object.hasOwn(snapshot, 'timing_margin_models');
+}
+
+// A count every strict-high completion enters, less the completions the
+// snapshot's timing margin leaves uncertified.
+export function certifiedFloor(snapshot, measured) {
+  const held = snapshot.timing_margin_models;
+  assert.equal(
+    typeof held === 'object' && held !== null && !Array.isArray(held),
+    true,
+    'timing_margin_models must be an object',
+  );
+  const count = Object.keys(held).length;
+  assert.equal(count <= measured, true, 'timing-margin models exceed the count they leave');
+  return measured - count;
 }
 
 function traceHighNearCount(snapshot) {

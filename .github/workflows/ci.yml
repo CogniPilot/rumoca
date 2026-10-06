@@ -11,6 +11,10 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
+  # MSL parity phase budgets, shared by the shards that measure under them and
+  # the merge that certifies against them (SPEC_0050 timing margin).
+  MSL_PARITY_SIM_TIMEOUT_SECS: 45
+  MSL_PARITY_MODEL_ATTEMPT_TIMEOUT_SECS: 20
 
 # Prevent duplicate runs
 concurrency:
@@ -1178,8 +1182,8 @@ jobs:
             --sim-parallelism 2 \
             --sim-worker-memory-mb 2048 \
             --sim-total-memory-mb 6144 \
-            --sim-timeout-secs 45 \
-            --model-attempt-timeout-secs 20 \
+            --sim-timeout-secs "$MSL_PARITY_SIM_TIMEOUT_SECS" \
+            --model-attempt-timeout-secs "$MSL_PARITY_MODEL_ATTEMPT_TIMEOUT_SECS" \
             --monitor-interval-secs 10
 
       - name: Upload shard results
@@ -1255,6 +1259,8 @@ jobs:
         run: |
           cargo xtask verify msl-parity \
             --merge-shards target/msl/shards \
+            --sim-timeout-secs "$MSL_PARITY_SIM_TIMEOUT_SECS" \
+            --model-attempt-timeout-secs "$MSL_PARITY_MODEL_ATTEMPT_TIMEOUT_SECS" \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests"
 
       # The band table is part of the merged evidence, not an optional extra:

@@ -15,12 +15,8 @@ pub(super) fn validate_certified_strict_high_roster(
         .trace_accuracy_stats
         .as_ref()
         .ok_or_else(|| io::Error::other("MSL quality baseline has no trace-accuracy statistics"))?;
-    if baseline.certified_strict_high_models.len() != trace.agreement_high {
-        return Err(io::Error::other(format!(
-            "MSL quality baseline certifies {} strict-high models but owns {} model identities",
-            trace.agreement_high,
-            baseline.certified_strict_high_models.len()
-        )));
+    if let Some(reason) = roster_count_mismatch(baseline, trace) {
+        return Err(io::Error::other(format!("MSL quality baseline {reason}")));
     }
     if let Some(model) = baseline
         .certified_strict_high_models
@@ -41,12 +37,8 @@ pub(super) fn certified_cohort_regression_reasons(
     let Some(trace) = baseline.trace_accuracy_stats.as_ref() else {
         return vec!["resolved baseline has no trace-accuracy evidence".to_string()];
     };
-    if baseline.certified_strict_high_models.len() != trace.agreement_high {
-        return vec![format!(
-            "resolved baseline certifies {} strict-high models but owns {} model identities",
-            trace.agreement_high,
-            baseline.certified_strict_high_models.len()
-        )];
+    if let Some(reason) = roster_count_mismatch(baseline, trace) {
+        return vec![format!("resolved baseline {reason}")];
     }
     let Some(cohort) = measurement.cohort() else {
         return vec![
@@ -59,6 +51,29 @@ pub(super) fn certified_cohort_regression_reasons(
         .iter()
         .filter_map(|model| certified_model_regression(model, cohort.table.row(model)))
         .collect()
+}
+
+/// Every strict-high model a baseline records is certified or held back by the
+/// timing margin, never both (SPEC_0050).
+fn roster_count_mismatch(
+    baseline: &MslQualityBaseline,
+    trace: &MslTraceAccuracyStatsBaseline,
+) -> Option<String> {
+    let certified = &baseline.certified_strict_high_models;
+    let margin = &baseline.timing_margin_models;
+    if let Some(model) = margin.keys().find(|model| certified.contains(*model)) {
+        return Some(format!(
+            "both certifies {model} and holds it back by the timing margin"
+        ));
+    }
+    (certified.len() + margin.len() != trace.agreement_high).then(|| {
+        format!(
+            "records {} strict-high models but owns {} certified and {} timing-margin identities",
+            trace.agreement_high,
+            certified.len(),
+            margin.len()
+        )
+    })
 }
 
 fn certified_model_regression(model: &str, current: Option<&BandRow>) -> Option<String> {
