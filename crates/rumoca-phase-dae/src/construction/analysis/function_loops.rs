@@ -207,6 +207,7 @@ fn validate_function_loop_body(
                 | FunctionStatementPlan::ProvenAssertion
                 | FunctionStatementPlan::RuntimeAssertion
                 | FunctionStatementPlan::MultiOutputCall { .. }
+                | FunctionStatementPlan::GeneratedBooleanAssignment { .. }
                 | FunctionStatementPlan::For { .. }
                 | FunctionStatementPlan::If { .. }
                 | FunctionStatementPlan::ProvenBranch { .. }
@@ -490,12 +491,24 @@ pub(in crate::construction) fn flattened_function_loop_source<'statement>(
     (flattened, statements)
 }
 
+/// The values one iteration of this loop writes.
+///
+/// A generated branch selection is certified to be defined and read only in
+/// the sequence that holds its definition, so it belongs to the innermost loop
+/// whose body holds that definition and is never a value of an enclosing loop.
 fn function_loop_targets(plans: &[FunctionStatementPlan]) -> Vec<VarName> {
+    loop_targets(plans, true)
+}
+
+fn loop_targets(plans: &[FunctionStatementPlan], own_generated: bool) -> Vec<VarName> {
     let mut targets = Vec::new();
     for plan in plans {
         match plan {
             FunctionStatementPlan::Assignment(assignment) => {
                 extend_unique_targets(&mut targets, [assignment.target().clone()]);
+            }
+            FunctionStatementPlan::GeneratedBooleanAssignment { target, .. } if own_generated => {
+                extend_unique_targets(&mut targets, [target.clone()]);
             }
             FunctionStatementPlan::RecordAssembly(assembly) => {
                 extend_unique_targets(&mut targets, [assembly.target.clone()]);
@@ -514,18 +527,18 @@ fn function_loop_targets(plans: &[FunctionStatementPlan]) -> Vec<VarName> {
             } => {
                 let mut branch_targets = branches
                     .iter()
-                    .flat_map(|branch| function_loop_targets(branch))
+                    .flat_map(|branch| loop_targets(branch, own_generated))
                     .collect::<Vec<_>>();
                 if let Some(fallback) = fallback {
-                    branch_targets.extend(function_loop_targets(fallback));
+                    branch_targets.extend(loop_targets(fallback, own_generated));
                 }
                 extend_unique_targets(&mut targets, branch_targets);
             }
             FunctionStatementPlan::ProvenBranch { statements, .. } => {
-                extend_unique_targets(&mut targets, function_loop_targets(statements));
+                extend_unique_targets(&mut targets, loop_targets(statements, own_generated));
             }
             FunctionStatementPlan::For { statements, .. } => {
-                extend_unique_targets(&mut targets, function_loop_targets(statements));
+                extend_unique_targets(&mut targets, loop_targets(statements, false));
             }
             _ => {}
         }

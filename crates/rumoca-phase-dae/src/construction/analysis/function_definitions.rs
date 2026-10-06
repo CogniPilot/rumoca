@@ -23,6 +23,9 @@ pub(super) struct FunctionDefinitions {
     admit_path_partial: HashSet<VarName>,
 }
 
+/// Guarded definedness proofs captured before a conditional joins its branches.
+pub(super) struct GuardedProofs(Vec<(VarName, BranchOnlyCoverage)>);
+
 #[derive(Clone)]
 struct BranchOnlyCoverage {
     span: Span,
@@ -190,15 +193,43 @@ impl FunctionDefinitions {
         }
     }
 
+    /// The guarded proofs `targets` hold before a conditional runs; see
+    /// [`Self::remember_guarded_branch`].
+    pub(super) fn guarded_proofs(&self, targets: &[VarName]) -> GuardedProofs {
+        GuardedProofs(
+            targets
+                .iter()
+                .filter_map(|target| {
+                    let proof = self.branch_only.get(target)?;
+                    (proof.guard.is_some() && proof.coverage.is_some())
+                        .then(|| (target.clone(), proof.clone()))
+                })
+                .collect(),
+        )
+    }
+
+    /// Record what a single-branch conditional over an immutable `condition`
+    /// leaves defined. A value already proven under a guard that `condition`
+    /// implies keeps that proof: its fall-through path retains the earlier
+    /// definition and the branch, entered under the same guard, defines at
+    /// least as much.
     pub(super) fn remember_guarded_branch(
         &mut self,
-        condition: &Expression,
+        (condition, prior): (&Expression, GuardedProofs),
         branch: &Self,
         targets: &[VarName],
+        context: FunctionValidationContext<'_>,
         span: Span,
     ) {
         for target in targets {
             if self.values.contains_key(target) {
+                continue;
+            }
+            if let Some((_, proof)) = prior.0.iter().find(|(name, _)| name == target)
+                && let Some(guard) = &proof.guard
+                && condition_implies_guard(condition, guard, context, 0)
+            {
+                self.branch_only.insert(target.clone(), proof.clone());
                 continue;
             }
             let Some(coverage) = branch.values.get(target) else {
@@ -220,9 +251,15 @@ impl FunctionDefinitions {
         }
     }
 
+    /// Forget, at the end of one loop iteration, every branch-only proof whose
+    /// guard can differ on the next iteration. A generated selection is
+    /// invariant only while its definition lies outside the loop: one defined
+    /// in the body (`reseeded`) is captured again on every iteration, so a
+    /// selection proven true at one point says nothing about the next.
     pub(super) fn forget_varying_guard_paths(
         &mut self,
         generated: &[function_returns::GeneratedBooleanDefinition],
+        reseeded: &[VarName],
     ) {
         for definition in self.branch_only.values_mut() {
             let Some(guard) = &definition.guard else {
@@ -231,9 +268,10 @@ impl FunctionDefinitions {
             let mut references = Vec::new();
             guard.collect_var_refs(&mut references);
             let invariant = references.iter().all(|target| {
-                generated
-                    .iter()
-                    .any(|generated| &generated.target == target)
+                !reseeded.contains(target)
+                    && generated
+                        .iter()
+                        .any(|generated| &generated.target == target)
             });
             if !invariant {
                 definition.guard = None;
@@ -598,10 +636,18 @@ pub(super) fn condition_implies_guard(
     if depth >= 16 {
         return false;
     }
-    if let Some(expanded) = generated_boolean_value(condition, context) {
+    // A generated Boolean holds the value its definition had at its own source
+    // point. Reasoning through that definition is sound only about values that
+    // cannot have changed since: an immutable guard on the implied side, or a
+    // definition that itself reads only immutable values.
+    if let Some(expanded) = generated_boolean_value(condition, context)
+        && reads_only_immutable(guard, context)
+    {
         return condition_implies_guard(expanded, guard, context, depth + 1);
     }
-    if let Some(expanded) = generated_boolean_value(guard, context) {
+    if let Some(expanded) = generated_boolean_value(guard, context)
+        && reads_only_immutable(expanded, context)
+    {
         return condition_implies_guard(condition, expanded, context, depth + 1);
     }
     match condition {
@@ -1093,4 +1139,18 @@ fn settled_subscript_integer(
     static_shape_integer_expression(expression, integers, context.shapes)
         .ok()
         .flatten()
+}
+
+/// Whether `expression` reads only generated Booleans and settled Integers,
+/// values no statement changes within their scope.
+fn reads_only_immutable(expression: &Expression, context: FunctionValidationContext<'_>) -> bool {
+    let mut references = Vec::new();
+    expression.collect_var_refs(&mut references);
+    references.iter().all(|reference| {
+        context.static_integers.contains_key(reference)
+            || context
+                .generated_booleans
+                .iter()
+                .any(|definition| &definition.target == reference)
+    })
 }

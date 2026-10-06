@@ -142,7 +142,7 @@ pub(super) fn compact(
     let function = harness_function(body.to_vec());
     let flat = harness_flat();
     let shapes = harness_shapes(&function);
-    compact_function_loops(body, &HashMap::new(), &shapes, &function, &flat, false)
+    compact_function_loops(body, &HashMap::new(), &shapes, &function, &flat)
 }
 
 /// One concrete assignment of entry values to every declared name.

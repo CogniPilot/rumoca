@@ -33,6 +33,45 @@ pub(super) fn lower_generated_boolean_assignment<'dae>(
     Ok(body)
 }
 
+/// Lower one loop statement that defines no carried value of its own plan
+/// kind: an assertion, or a branch selection captured on every iteration of its
+/// enclosing loop at the selection's source position in that iteration.
+fn lower_loop_action_statement<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    loop_body: &mut dae::FunctionLoop<'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    (statement, plan): (&rumoca_core::Statement, &FunctionStatementPlan),
+) -> Result<bool, dae::DaeConstructionError> {
+    let (target, value, span) = match plan {
+        FunctionStatementPlan::ProvenAssertion => return Ok(true),
+        FunctionStatementPlan::RuntimeAssertion => {
+            lower_function_loop_assertion(construction, symbols, loop_body, binders, statement)?;
+            return Ok(true);
+        }
+        FunctionStatementPlan::GeneratedBooleanAssignment {
+            target,
+            value,
+            span,
+        } => (target, value, *span),
+        _ => return Ok(false),
+    };
+    let lowered = lower_function_expression_scoped(
+        construction,
+        symbols.coordinates,
+        symbols.functions,
+        symbols.shapes,
+        loop_body.body(),
+        binders,
+        value,
+    )?;
+    let target = function_value_coordinate(symbols.coordinates, target);
+    let provenance = dae::DaeProvenance::source(span)?;
+    construction
+        .functions(|functions| functions.assign_loop(loop_body, target, lowered, provenance))?;
+    Ok(true)
+}
+
 pub(super) fn lower_integer_reduction<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
@@ -1328,11 +1367,13 @@ fn lower_one_function_loop_statement<'dae>(
     statement: &rumoca_core::Statement,
     plan: &FunctionStatementPlan,
 ) -> Result<dae::FunctionLoop<'dae>, dae::DaeConstructionError> {
-    if matches!(plan, FunctionStatementPlan::ProvenAssertion) {
-        return Ok(loop_body);
-    }
-    if matches!(plan, FunctionStatementPlan::RuntimeAssertion) {
-        lower_function_loop_assertion(construction, symbols, &mut loop_body, binders, statement)?;
+    if lower_loop_action_statement(
+        construction,
+        symbols,
+        &mut loop_body,
+        binders,
+        (statement, plan),
+    )? {
         return Ok(loop_body);
     }
     if lower_loop_multi_output_statement(

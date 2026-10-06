@@ -181,7 +181,7 @@ end UnprovenBranch;
         .expect_err("a runtime branch still owns only direct value assignments");
     let rendered = format!("{error:?}");
     assert!(
-        rendered.contains("requires assignments or nested conditionals in every checked branch"),
+        rendered.contains("`pickchain` leaves output `y` without a definition on some branch"),
         "unexpected diagnostic: {rendered}"
     );
 }

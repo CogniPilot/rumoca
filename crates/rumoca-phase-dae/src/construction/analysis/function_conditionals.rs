@@ -227,6 +227,9 @@ pub(super) fn resolve_function_conditional(
     } else {
         &completing_states
     };
+    let remembers_guard =
+        !exhaustive && blocks.len() == 1 && is_immutable_guard(&blocks[0].cond, context);
+    let prior = remembers_guard.then(|| definitions.guarded_proofs(&ordered));
     let joined = definitions.join_branches(
         joined_states,
         exhaustive,
@@ -235,8 +238,14 @@ pub(super) fn resolve_function_conditional(
         context,
         span,
     )?;
-    if !exhaustive && blocks.len() == 1 && is_immutable_guard(&blocks[0].cond, context) {
-        definitions.remember_guarded_branch(&blocks[0].cond, &branch_states[0], &ordered, span);
+    if let Some(prior) = prior {
+        definitions.remember_guarded_branch(
+            (&blocks[0].cond, prior),
+            &branch_states[0],
+            &ordered,
+            context,
+            span,
+        );
     }
     Ok(joined)
 }
