@@ -975,6 +975,9 @@ fn rewrite_decomposed_record_call_sites(
         if let Some(decomposed) = decomposition_map.get_name(func_name.as_str()) {
             for stmt in &mut func.body {
                 rewrite_field_access_in_statement(stmt, decomposed);
+            }
+            func.body = expand_record_copies(std::mem::take(&mut func.body), decomposed);
+            for stmt in &mut func.body {
                 rewrite_whole_record_params_in_statement(stmt, decomposed);
             }
             rewrite_decomposed_params_in_defaults(func, decomposed, true);
@@ -1874,4 +1877,115 @@ fn reads_any(expression: &rumoca_core::Expression, names: &HashSet<&str>) -> boo
     };
     rumoca_core::ExpressionVisitor::visit_expression(&mut reads, expression);
     reads.found
+}
+
+/// Lower a whole-record copy of a decomposed record input (`next := previous`,
+/// MLS 3.7 section 12.4.4) to one assignment per field, `next.f := previous_f`,
+/// recursively through nested statements. An array field is copied whole; a
+/// record-typed field is copied as one assignment that the next decomposition
+/// pass expands again. No constructor call is built for a copy.
+fn expand_record_copies(
+    statements: Vec<rumoca_core::Statement>,
+    params: &[DecomposedParam],
+) -> Vec<rumoca_core::Statement> {
+    let mut expanded = Vec::with_capacity(statements.len());
+    for statement in statements {
+        match statement {
+            rumoca_core::Statement::Assignment { comp, value, span } => {
+                match record_copy_fields(&comp, &value, params, span) {
+                    Some(copies) => expanded.extend(copies),
+                    None => expanded.push(rumoca_core::Statement::Assignment { comp, value, span }),
+                }
+            }
+            rumoca_core::Statement::For {
+                indices,
+                equations,
+                span,
+            } => expanded.push(rumoca_core::Statement::For {
+                indices,
+                equations: expand_record_copies(equations, params),
+                span,
+            }),
+            rumoca_core::Statement::While { block, span } => {
+                expanded.push(rumoca_core::Statement::While {
+                    block: expand_record_block(block, params),
+                    span,
+                })
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                span,
+            } => expanded.push(rumoca_core::Statement::If {
+                cond_blocks: cond_blocks
+                    .into_iter()
+                    .map(|block| expand_record_block(block, params))
+                    .collect(),
+                else_block: else_block.map(|block| expand_record_copies(block, params)),
+                span,
+            }),
+            rumoca_core::Statement::When { blocks, span } => {
+                expanded.push(rumoca_core::Statement::When {
+                    blocks: blocks
+                        .into_iter()
+                        .map(|block| expand_record_block(block, params))
+                        .collect(),
+                    span,
+                })
+            }
+            other => expanded.push(other),
+        }
+    }
+    expanded
+}
+
+fn expand_record_block(
+    block: rumoca_core::StatementBlock,
+    params: &[DecomposedParam],
+) -> rumoca_core::StatementBlock {
+    rumoca_core::StatementBlock {
+        cond: block.cond,
+        stmts: expand_record_copies(block.stmts, params),
+    }
+}
+
+/// The per-field assignments of `target := value` when `value` is a whole
+/// decomposed record input, or `None` when the statement is not such a copy.
+fn record_copy_fields(
+    target: &rumoca_core::ComponentReference,
+    value: &rumoca_core::Expression,
+    params: &[DecomposedParam],
+    span: rumoca_core::Span,
+) -> Option<Vec<rumoca_core::Statement>> {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = value
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    let param = params
+        .iter()
+        .find(|param| param.param_name == name.as_str())?;
+    param
+        .fields
+        .iter()
+        .map(|field| {
+            let mut parts = target.parts().to_vec();
+            parts.push(rumoca_core::ComponentRefPart {
+                ident: field.name.clone(),
+                span,
+                subs: Vec::new(),
+                def_id: field.def_id?,
+            });
+            let comp = rumoca_core::ComponentReference::construct(target.local(), span, parts).ok()?;
+            Some(rumoca_core::Statement::Assignment {
+                comp,
+                value: record_param_field_var_ref(&param.param_name, &field.name, span),
+                span,
+            })
+        })
+        .collect()
 }
