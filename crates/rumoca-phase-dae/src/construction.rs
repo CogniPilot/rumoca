@@ -1195,7 +1195,14 @@ fn lower_materialized_family_bodies<'dae>(
     family: &flat::StructuredEquationFamily,
     owner: dae::DaeProvenance,
 ) -> Result<Vec<dae::ExprId<'dae>>, dae::DaeConstructionError> {
-    materialized_family_bodies::lower(construction, coordinates, functions, equations, family, owner)
+    materialized_family_bodies::lower(
+        construction,
+        coordinates,
+        functions,
+        equations,
+        family,
+        owner,
+    )
 }
 
 pub(super) fn pack_row_major_body<'dae>(
