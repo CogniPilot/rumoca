@@ -27,8 +27,8 @@ pub use assignment_shape::{
     OutputYReads, derive_target_assignment_shape_for_output, derive_target_assignment_shapes,
     isolates_through_zero_coefficient, isolator_coefficient_proof, output_y_reads,
 };
-pub use dependency::ScalarProgramYDependency;
 use dependency::assignment_y_dependencies_for_shapes;
+pub use dependency::{ScalarProgramYDependency, YFootprint};
 pub use materialization::{
     IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue, isolated_parts,
     materialize_target_assignment,
@@ -1212,18 +1212,30 @@ fn exact_rows_can_commit_together(
         return Ok(false);
     };
     let dependencies = ScalarProgramYDependency::new(program);
+    // A row conflicts with another when its value reads the other's target;
+    // each row's read footprint is met with the targets once, not per pair.
+    let mut owners_by_target: BTreeMap<usize, Vec<_>> = BTreeMap::new();
+    for row in rows {
+        owners_by_target
+            .entry(row.target_index)
+            .or_default()
+            .push(row.owner_id);
+    }
     for row in rows {
         let Some(shape) = row.assignment_shape.as_ref() else {
             return Ok(false);
         };
-        for other in rows {
-            if other.owner_id != row.owner_id
-                && shape
-                    .value_registers()
-                    .any(|register| dependencies.depends_on(register, other.target_index))
-            {
-                return Ok(false);
-            }
+        let reads_other = |index: usize| {
+            owners_by_target
+                .get(&index)
+                .is_some_and(|owners| owners.iter().any(|owner| *owner != row.owner_id))
+        };
+        let conflicts = match dependencies.footprint(shape.value_registers()) {
+            Some(footprint) => footprint.indices().any(reads_other),
+            None => rows.iter().any(|other| other.owner_id != row.owner_id),
+        };
+        if conflicts {
+            return Ok(false);
         }
     }
     Ok(true)

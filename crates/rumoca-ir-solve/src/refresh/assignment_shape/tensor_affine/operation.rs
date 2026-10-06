@@ -21,9 +21,7 @@ impl OperandRange {
         target: usize,
         dependencies: &ScalarProgramYDependency<'_>,
     ) -> bool {
-        self.end().is_some_and(|end| {
-            (self.start..end).all(|register| !dependencies.depends_on(register, target))
-        })
+        self.end().is_some() && !dependencies.range_depends_on(self.start, self.count, target)
     }
 }
 
@@ -132,6 +130,11 @@ impl<'a> ProjectionOperation<'a> {
             operands,
             kind,
         })
+    }
+
+    /// Whether the operation is a sum, difference, negation, or copy.
+    pub(in crate::refresh) const fn is_linear(&self) -> bool {
+        matches!(self.kind, Kind::Linear)
     }
 
     pub(in crate::refresh) const fn operands(&self) -> [Option<OperandRange>; 2] {
