@@ -7,7 +7,6 @@ struct Scan<'scope, 'dae> {
     dimensions: Vec<dae::ExprId<'dae>>,
     scheduled: HashSet<u32>,
     eligible: bool,
-    refusal: Option<(profile::guard::Event, u32)>,
 }
 
 impl<'dae> GuardMemo<'dae> {
@@ -17,18 +16,9 @@ impl<'dae> GuardMemo<'dae> {
         expression: dae::ExprId<'dae>,
     ) -> bool {
         if let Some(eligible) = self.eligible.get(&expression.index()) {
-            self.diagnostic(
-                if *eligible {
-                    profile::guard::Event::EligibleCached
-                } else {
-                    profile::guard::Event::IneligibleCached
-                },
-                Some(expression.index()),
-            );
             return *eligible;
         }
         if self.eligible.len() == self.key_limit {
-            self.diagnostic(profile::guard::Event::KeyCapacity, Some(expression.index()));
             return false;
         }
         let mut scan = Scan {
@@ -37,42 +27,26 @@ impl<'dae> GuardMemo<'dae> {
             dimensions: vec![expression],
             scheduled: [expression.index()].into_iter().collect(),
             eligible: true,
-            refusal: None,
         };
         while let Some(root) = scan.dimensions.pop() {
-            self.traversal.visit_pruned(view, [root], |visited, node| {
-                scan.visit(view, visited, node)
-            });
+            self.traversal
+                .visit_pruned(view, [root], |_, node| scan.visit(view, node));
             if !scan.eligible {
                 break;
             }
         }
-        self.diagnostic(
-            scan.refusal
-                .map_or(profile::guard::Event::EligibleDerived, |(reason, _)| reason),
-            Some(
-                scan.refusal
-                    .map_or(expression.index(), |(_, expression)| expression),
-            ),
-        );
         self.eligible.insert(expression.index(), scan.eligible);
         scan.eligible
     }
 }
 
 impl<'dae> Scan<'_, 'dae> {
-    fn visit(
-        &mut self,
-        view: dae::DaeView<'dae>,
-        expression: dae::ExprId<'dae>,
-        node: dae::ExpressionView<'dae>,
-    ) -> bool {
+    fn visit(&mut self, view: dae::DaeView<'dae>, node: dae::ExpressionView<'dae>) -> bool {
         if !self.eligible {
             return false;
         }
         if !supported(view, node, self.root, self.actuals) {
             self.eligible = false;
-            self.refuse(view, expression, node);
             return false;
         }
         match node.operation() {
@@ -99,30 +73,10 @@ impl<'dae> Scan<'_, 'dae> {
         }
         if self.scheduled.len() == KEY_LIMIT {
             self.eligible = false;
-            self.refusal = Some((profile::guard::Event::KeyCapacity, dimension.index()));
             return;
         }
         self.scheduled.insert(dimension.index());
         self.dimensions.push(dimension);
-    }
-
-    fn refuse(
-        &mut self,
-        view: dae::DaeView<'dae>,
-        expression: dae::ExprId<'dae>,
-        node: dae::ExpressionView<'dae>,
-    ) {
-        if !profile::enabled() || self.refusal.is_some() {
-            return;
-        }
-        let reason = if matches!(node.operation(), dae::ExpressionOperation::Call { function, .. } if function == self.root)
-        {
-            profile::guard::Event::RootCall
-        } else {
-            profile::guard::unsupported(node)
-        };
-        profile::guard::refusal(self.root.index(), expression.index(), node, view);
-        self.refusal = Some((reason, expression.index()));
     }
 }
 

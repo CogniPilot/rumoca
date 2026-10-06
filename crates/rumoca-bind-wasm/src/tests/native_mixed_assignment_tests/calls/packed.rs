@@ -84,7 +84,7 @@ fn guarded_source_calls(node: &rumoca_ir_solve::ComputeNode) -> bool {
     })
 }
 
-fn check_frames(artifact: &serde_json::Value, edited: bool) -> Vec<serde_json::Value> {
+fn check_frames(artifact: &serde_json::Value, edited: bool) {
     let mut runner = CallExecution::new(artifact);
     let mut p = artifact["parameters"]
         .as_array()
@@ -92,7 +92,6 @@ fn check_frames(artifact: &serde_json::Value, edited: bool) -> Vec<serde_json::V
         .iter()
         .map(|v| v.as_f64().unwrap())
         .collect::<Vec<_>>();
-    let mut frames = Vec::new();
     for input in [
         [1., 2., 4., 8., 16.],
         [9., -0., 0., -2., 3.],
@@ -122,16 +121,7 @@ fn check_frames(artifact: &serde_json::Value, edited: bool) -> Vec<serde_json::V
                 value.to_bits()
             );
         }
-        frames.push(serde_json::json!({
-            "input_bits": input.map(|value| format!("{:016x}", value.to_bits())),
-            "expected_bits": expected.map(|value| format!("{:016x}", value.to_bits())),
-            "actual_bits": (1..=4).map(|index| {
-                format!("{:016x}", output[slot(artifact, &format!("y[{index}]"), "Y")].to_bits())
-            }).collect::<Vec<_>>(),
-            "input_immutable": true,
-        }));
     }
-    frames
 }
 
 #[test]
@@ -145,22 +135,6 @@ fn original_move_packed_source_tuple_admits_native_v3_and_executes_source_edit()
         ),
     ] {
         let artifact = artifact(&source);
-        let frames = check_frames(&artifact, edited);
-        if let Some(directory) = std::env::var_os("RUMOCA_TEST_AFFINE_ARTIFACT_DIR") {
-            let directory = std::path::Path::new(&directory);
-            std::fs::create_dir_all(directory).unwrap();
-            let name = if edited { "edited" } else { "baseline" };
-            std::fs::write(directory.join(format!("{name}.mo")), &source).unwrap();
-            std::fs::write(
-                directory.join(format!("{name}.json")),
-                serde_json::to_vec(&artifact).unwrap(),
-            )
-            .unwrap();
-            std::fs::write(
-                directory.join(format!("{name}-frames.json")),
-                serde_json::to_vec(&frames).unwrap(),
-            )
-            .unwrap();
-        }
+        check_frames(&artifact, edited);
     }
 }

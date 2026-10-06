@@ -4,13 +4,14 @@ mod dependencies;
 mod domain_context;
 mod fold_graph;
 mod indexed_write_fold;
+mod integer;
 mod literal_bindings;
 mod literal_update_sweeps;
 #[cfg(test)]
 mod merge_profile_tests;
 mod parameter_fragments;
-mod profile;
 mod query;
+mod record_fields;
 mod scalar_selection;
 #[cfg(test)]
 mod tests;
@@ -202,7 +203,6 @@ pub fn for_each_scalar_coordinate_cached<'dae>(
     cache: &mut ScalarCoordinateProjectionCache<'dae>,
     mut visit: impl FnMut(dae::CoordinateView<'dae>, usize),
 ) -> Result<(), ProjectionError> {
-    profile::entry(root.index(), scalar_index);
     project_coordinates(
         view,
         root,
@@ -231,7 +231,6 @@ pub fn for_each_scalar_coordinate_filtered_cached<'dae>(
     relevant: impl Fn(dae::CoordinateView<'dae>) -> bool,
     mut visit: impl FnMut(dae::CoordinateView<'dae>, usize),
 ) -> Result<(), ProjectionError> {
-    profile::entry(root.index(), scalar_index);
     let mut filtered = |coordinate, scalar| {
         if relevant(coordinate) {
             visit(coordinate, scalar);
@@ -770,7 +769,6 @@ impl<'dae> Projection<'_, 'dae> {
         &mut self,
         node: &fold_graph::FoldNode<'dae>,
     ) -> Result<(), ProjectionError> {
-        profile::fold(self.view, node);
         self.projected_value(node.initial, node.field, node.scalar)?;
         if self.project_indexed_write_fold(node)? {
             return Ok(());
@@ -787,7 +785,6 @@ impl<'dae> Projection<'_, 'dae> {
             .index_tuples()
             .expect("checked fold domain remains representable");
         for point in points {
-            profile::point(node.fold);
             self.domain_contexts.push(fold.domain(), point);
             let projected = self.projected_value(node.update, node.field, node.scalar);
             self.domain_contexts.pop();
@@ -1209,13 +1206,6 @@ impl<'dae> Projection<'_, 'dae> {
         integers: &[IntegerBinding],
         span: Span,
     ) -> Result<FunctionSummaryEntry, ProjectionError> {
-        profile::function(
-            "summary_begin",
-            self.view,
-            function,
-            dependency,
-            (false, self.validation, self.function_frames.len()),
-        );
         // Preserve the local error boundary before opening a frame or graph.
         let result = self.function_result(function, dependency.output, span)?;
         if !self.function_call_active.insert(dependency.clone()) {
@@ -1258,19 +1248,6 @@ impl<'dae> Projection<'_, 'dae> {
             self.cache.completed_folds = folds;
             self.cache.parameter_fragments = fragments;
         }
-        profile::function(
-            if projected.is_err() {
-                "summary_error"
-            } else if capture.cacheable && integers.is_empty() {
-                "summary_generic"
-            } else {
-                "summary_specialized"
-            },
-            self.view,
-            function,
-            dependency,
-            (false, self.validation, self.function_frames.len()),
-        );
         projected?;
         #[cfg(test)]
         {
@@ -1382,233 +1359,6 @@ impl<'dae> Projection<'_, 'dae> {
     ) -> domain_context::DomainContextId {
         let domain = self.node(expression).binder_domain();
         self.domain_contexts.for_domain(self.view, domain)
-    }
-
-    fn record_field(
-        &mut self,
-        expression: dae::ExprId<'dae>,
-        field: usize,
-        scalar_index: usize,
-    ) -> Result<(), ProjectionError> {
-        self.guard_memo_invalidate();
-        let fragment = self.begin_parameter_fragment(expression, Some(field), scalar_index);
-        if let parameter_fragments::Start::Cached(dependencies)
-        | parameter_fragments::Start::Imported(dependencies) = &fragment
-        {
-            self.replay_parameter_fragment(
-                dependencies,
-                matches!(fragment, parameter_fragments::Start::Imported(_)),
-            );
-            return Ok(());
-        }
-        let result = self.record_field_uncached(expression, field, scalar_index);
-        if matches!(fragment, parameter_fragments::Start::Checking) {
-            self.finish_parameter_fragment(result.is_ok());
-        }
-        result
-    }
-
-    fn record_field_uncached(
-        &mut self,
-        expression: dae::ExprId<'dae>,
-        field: usize,
-        scalar_index: usize,
-    ) -> Result<(), ProjectionError> {
-        let node = self.node(expression);
-        // A fold boundary owns its own re-entry guard, the same way
-        // `expression_to_project` treats one.
-        if let dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. }
-        | dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } = node.operation()
-        {
-            return self.function_fold_dependency(fold, carried, Some(field), scalar_index);
-        }
-        if !self.visit_expression_once(expression, Some(field), scalar_index) {
-            return Ok(());
-        }
-        match node.operation() {
-            dae::ExpressionOperation::Record(fields) => self.expression(
-                fields
-                    .get(field)
-                    .expect("checked record field ordinal is in range"),
-                scalar_index,
-            ),
-            dae::ExpressionOperation::Call {
-                function,
-                output,
-                arguments,
-                ..
-            } => self.function_call_record_field(
-                function,
-                output,
-                arguments,
-                field,
-                scalar_index,
-                node.provenance().span(),
-            ),
-            dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                self.record_field(definition.rhs(), field, scalar_index)
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
-                parameter,
-            )) => self.function_parameter_field(
-                parameter,
-                field,
-                scalar_index,
-                node.provenance().span(),
-            ),
-            dae::ExpressionOperation::Conditional(operands) => {
-                self.conditional_value(operands, Some(field), scalar_index)
-            }
-            dae::ExpressionOperation::Array(elements) => {
-                self.record_array_field(elements, field, scalar_index)
-            }
-            dae::ExpressionOperation::Comprehension { domain, body } => {
-                self.record_comprehension_field(domain, body, field, scalar_index)
-            }
-            dae::ExpressionOperation::Index { base, subscripts } => {
-                self.indexed_record_field(expression, base, subscripts, field, scalar_index)
-            }
-            dae::ExpressionOperation::ArrayUpdate {
-                base,
-                value,
-                subscripts,
-            } => self.array_update_field(base, value, subscripts, field, scalar_index),
-            _ => Err(unsupported_record_operation(node, field)),
-        }
-    }
-
-    fn function_parameter_field(
-        &mut self,
-        parameter: dae::FunctionParameterId<'dae>,
-        field: usize,
-        scalar_index: usize,
-        span: Span,
-    ) -> Result<(), ProjectionError> {
-        let Some(frame) = self.function_frames.last() else {
-            return Err(ProjectionError::FunctionRecursion { span });
-        };
-        if frame.function() != parameter.function() {
-            return Err(ProjectionError::FunctionRecursion { span });
-        }
-        match frame {
-            FunctionFrame::Actual { arguments, .. } => {
-                let argument = arguments
-                    .get(parameter.ordinal() as usize)
-                    .copied()
-                    .ok_or(ProjectionError::FunctionRecursion { span })?;
-                self.in_caller_context(|projection| {
-                    projection.record_field(argument, field, scalar_index)
-                })
-            }
-            FunctionFrame::Summary { function, .. } => {
-                let function = *function;
-                self.capture_function_parameter(
-                    function,
-                    FunctionParameterDependency::RecordField {
-                        activation: self.activation,
-                        parameter: parameter.ordinal(),
-                        field,
-                        scalar: scalar_index,
-                    },
-                    span,
-                )
-            }
-        }
-    }
-
-    fn record_array_field(
-        &mut self,
-        elements: dae::ExpressionOperands<'dae>,
-        field: usize,
-        scalar_index: usize,
-    ) -> Result<(), ProjectionError> {
-        let first = elements.get(0).expect("checked record array is nonempty");
-        let element_count = self.record_field_scalar_count(first, field);
-        let element = elements
-            .get(scalar_index / element_count)
-            .expect("checked record field scalar selects an array element");
-        self.record_field(element, field, scalar_index % element_count)
-    }
-
-    fn record_comprehension_field(
-        &mut self,
-        domain: dae::DomainId<'dae>,
-        body: dae::ExprId<'dae>,
-        field: usize,
-        scalar_index: usize,
-    ) -> Result<(), ProjectionError> {
-        let body_count = self.record_field_scalar_count(body, field);
-        let point_index = scalar_index / body_count;
-        let point = self
-            .view
-            .domain(domain)
-            .expect("checked comprehension domain resolves")
-            .structured()
-            .index_tuple_at(point_index)
-            .expect("checked comprehension domain remains valid")
-            .expect("checked record field scalar selects its domain");
-        self.domain_contexts.push(domain, point);
-        let result = self.record_field(body, field, scalar_index % body_count);
-        self.domain_contexts.pop();
-        result
-    }
-
-    fn indexed_record_field(
-        &mut self,
-        indexed: dae::ExprId<'dae>,
-        base: dae::ExprId<'dae>,
-        subscripts: dae::SubscriptsView<'dae>,
-        field: usize,
-        scalar_index: usize,
-    ) -> Result<(), ProjectionError> {
-        let field_width = self.record_field_width(indexed, field);
-        let record_index = scalar_index / field_width;
-        let field_index = scalar_index % field_width;
-        match self.indexed_base_scalar(
-            base,
-            subscripts,
-            self.node(indexed).value_type().dimensions(),
-            record_index,
-        ) {
-            Ok(base_record) => {
-                self.record_field(base, field, base_record * field_width + field_index)
-            }
-            Err(error)
-                if self.activation == Activation::Conditional
-                    && self.conservative_subscript(&error) =>
-            {
-                self.all_record_field_scalars(base, field)?;
-                self.subscripts(subscripts)
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    fn all_record_field_scalars(
-        &mut self,
-        expression: dae::ExprId<'dae>,
-        field: usize,
-    ) -> Result<(), ProjectionError> {
-        for scalar in 0..self.record_field_scalar_count(expression, field) {
-            self.record_field(expression, field, scalar)?;
-        }
-        Ok(())
-    }
-
-    fn record_field_scalar_count(&self, expression: dae::ExprId<'dae>, field: usize) -> usize {
-        let layout = self.record_layout(expression, field);
-        layout.outer_count() * layout.field_width()
-    }
-
-    fn record_field_width(&self, expression: dae::ExprId<'dae>, field: usize) -> usize {
-        self.record_layout(expression, field).field_width()
-    }
-
-    fn record_layout(&self, expression: dae::ExprId<'dae>, field: usize) -> dae::RecordFieldLayout {
-        let node = self.node(expression);
-        self.view
-            .record_field_layout(node.value_type_id(), field)
-            .expect("checked record projection has a finite field layout")
     }
 
     fn conditional(
@@ -2068,196 +1818,6 @@ impl<'dae> Projection<'_, 'dae> {
         )
     }
 
-    fn integer(
-        &mut self,
-        expression: dae::ExprId<'dae>,
-        scalar_index: usize,
-    ) -> Result<i64, ProjectionError> {
-        let raw = expression.index() as usize;
-        if self.integer_stack[raw] {
-            return Err(ProjectionError::DynamicSubscript {
-                span: self.node(expression).provenance().span(),
-            });
-        }
-        self.integer_stack[raw] = true;
-        let result = self.integer_inner(expression, scalar_index);
-        self.integer_stack[raw] = false;
-        result
-    }
-
-    fn integer_inner(
-        &mut self,
-        expression: dae::ExprId<'dae>,
-        scalar_index: usize,
-    ) -> Result<i64, ProjectionError> {
-        let node = self.node(expression);
-        self.expect_scalar_index(node, scalar_index)?;
-        let span = node.provenance().span();
-        match node.operation() {
-            dae::ExpressionOperation::Literal(
-                dae::DaeLiteral::Integer(value) | dae::DaeLiteral::Enumeration(value),
-            ) => Ok(*value),
-            dae::ExpressionOperation::Range(range) => {
-                let offset = i64::try_from(scalar_index)
-                    .map_err(|_| ProjectionError::IntegerOverflow { span })?;
-                range
-                    .start()
-                    .value()
-                    .checked_add(
-                        range
-                            .effective_step()
-                            .checked_mul(offset)
-                            .ok_or(ProjectionError::IntegerOverflow { span })?,
-                    )
-                    .ok_or(ProjectionError::IntegerOverflow { span })
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
-                let Some((_, point)) = self
-                    .domain_contexts
-                    .points
-                    .iter()
-                    .rev()
-                    .find(|(domain, _)| *domain == binder.domain())
-                else {
-                    return Err(ProjectionError::DynamicSubscript { span });
-                };
-                point
-                    .get(binder.ordinal() as usize)
-                    .copied()
-                    .ok_or(ProjectionError::DynamicSubscript { span })
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
-                parameter,
-            )) => self.integer_parameter(parameter, scalar_index, span),
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(parameter)) => {
-                let variable = self
-                    .view
-                    .variable(parameter.into())
-                    .expect("checked parameter coordinate resolves");
-                let binding = variable
-                    .binding()
-                    .ok_or(ProjectionError::DynamicSubscript { span })?;
-                self.integer(binding, scalar_index)
-            }
-            dae::ExpressionOperation::Unary { operator, operand } => {
-                let value = self.integer(operand, scalar_index)?;
-                match operator {
-                    dae::UnaryOperator::Plus => Ok(value),
-                    dae::UnaryOperator::Negate => value
-                        .checked_neg()
-                        .ok_or(ProjectionError::IntegerOverflow { span }),
-                    dae::UnaryOperator::Not => Err(ProjectionError::DynamicSubscript { span }),
-                }
-            }
-            dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
-                let lhs = self.integer(lhs, scalar_index)?;
-                let rhs = self.integer(rhs, scalar_index)?;
-                integer_binary(operator, lhs, rhs, span)
-            }
-            dae::ExpressionOperation::Call {
-                function,
-                output,
-                arguments,
-                ..
-            } => self.integer_call(function, output, arguments, scalar_index, span),
-            dae::ExpressionOperation::Array(elements) => {
-                let first = elements.get(0).expect("checked array is nonempty");
-                let element_count = self.scalar_count(first);
-                self.integer(
-                    elements
-                        .get(scalar_index / element_count)
-                        .expect("checked integer array projection selects an element"),
-                    scalar_index % element_count,
-                )
-            }
-            dae::ExpressionOperation::Index { base, subscripts } => {
-                let base_index = self.indexed_base_scalar(
-                    base,
-                    subscripts,
-                    node.value_type().dimensions(),
-                    scalar_index,
-                )?;
-                self.integer(base, base_index)
-            }
-            dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                self.integer(definition.rhs(), scalar_index)
-            }
-            _ => Err(ProjectionError::DynamicSubscript { span }),
-        }
-    }
-
-    fn integer_parameter(
-        &mut self,
-        parameter: dae::FunctionParameterId<'dae>,
-        scalar_index: usize,
-        span: Span,
-    ) -> Result<i64, ProjectionError> {
-        let Some(frame) = self.function_frames.last() else {
-            return Err(ProjectionError::FunctionRecursion { span });
-        };
-        if frame.function() != parameter.function() {
-            return Err(ProjectionError::FunctionRecursion { span });
-        }
-        let ordinal = parameter.ordinal();
-        match frame {
-            FunctionFrame::Actual { arguments, .. } => {
-                let argument = arguments
-                    .get(ordinal as usize)
-                    .copied()
-                    .ok_or(ProjectionError::FunctionRecursion { span })?;
-                self.in_caller_context(|projection| projection.integer(argument, scalar_index))
-            }
-            FunctionFrame::Summary { function, integers } => {
-                if let Some(binding) = integers
-                    .iter()
-                    .find(|binding| binding.parameter == ordinal && binding.scalar == scalar_index)
-                {
-                    return Ok(binding.value);
-                }
-                // An unbound conditional selector retains the ordinary dynamic
-                // base/subscript union. Do not request a stronger actual-value
-                // certificate from the caller or specialize Boolean/Real inputs.
-                if self.activation == Activation::Conditional {
-                    return Err(ProjectionError::DynamicSubscript { span });
-                }
-                let function = function.index();
-                if let Some(capture) = self
-                    .function_summary_captures
-                    .last_mut()
-                    .filter(|capture| capture.function == function)
-                    && !capture.needed_integers.contains(&(ordinal, scalar_index))
-                {
-                    capture.cacheable = false;
-                    capture.needed_integers.push((ordinal, scalar_index));
-                }
-                Err(ProjectionError::DynamicSubscript { span })
-            }
-        }
-    }
-
-    fn integer_call(
-        &mut self,
-        function: dae::FunctionId<'dae>,
-        output: u32,
-        arguments: dae::ExpressionOperands<'dae>,
-        scalar_index: usize,
-        span: Span,
-    ) -> Result<i64, ProjectionError> {
-        if self.function_frames.len() >= 256 {
-            return Err(ProjectionError::FunctionRecursion { span });
-        }
-        let arguments = arguments.iter().collect::<Vec<_>>();
-        self.validate_call_arguments(&arguments)?;
-        let result = self.function_result(function, output, span)?;
-        self.push_frame(FunctionFrame::Actual {
-            function,
-            arguments,
-        });
-        let value = self.integer(result, scalar_index);
-        self.pop_frame();
-        value
-    }
-
     /// Resolve the checked result definition a call continues into.
     fn function_result(
         &self,
@@ -2320,33 +1880,6 @@ fn checked_index(index: i64, extent: u32, span: Span) -> Result<u32, ProjectionE
         });
     }
     Ok(u32::try_from(index - 1).expect("positive in-range u32 index"))
-}
-
-fn integer_binary(
-    operator: dae::BinaryOperator,
-    lhs: i64,
-    rhs: i64,
-    span: Span,
-) -> Result<i64, ProjectionError> {
-    let overflow = || ProjectionError::IntegerOverflow { span };
-    match operator {
-        dae::BinaryOperator::Add | dae::BinaryOperator::ElementwiseAdd => {
-            lhs.checked_add(rhs).ok_or_else(overflow)
-        }
-        dae::BinaryOperator::Subtract | dae::BinaryOperator::ElementwiseSubtract => {
-            lhs.checked_sub(rhs).ok_or_else(overflow)
-        }
-        dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply => {
-            lhs.checked_mul(rhs).ok_or_else(overflow)
-        }
-        dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide if rhs != 0 => {
-            lhs.checked_div(rhs).ok_or_else(overflow)
-        }
-        dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower if rhs >= 0 => lhs
-            .checked_pow(u32::try_from(rhs).map_err(|_| overflow())?)
-            .ok_or_else(overflow),
-        _ => Err(ProjectionError::DynamicSubscript { span }),
-    }
 }
 
 /// The `(lhs, rhs)` scalar factor pairs whose products sum to row-major scalar

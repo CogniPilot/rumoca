@@ -1565,10 +1565,12 @@ impl DependencyState {
     }
 
     fn from_set(indices: BTreeSet<usize>) -> Self {
-        match indices.len() {
-            0 => Self::Empty,
-            1 => Self::Singleton(*indices.first().expect("one-element dependency set")),
-            _ => Self::Known(Arc::new(indices)),
+        let mut values = indices.iter().copied();
+        let leading = (values.next(), values.next());
+        match leading {
+            (None, _) => Self::Empty,
+            (Some(index), None) => Self::Singleton(index),
+            (Some(_), Some(_)) => Self::Known(Arc::new(indices)),
         }
     }
 

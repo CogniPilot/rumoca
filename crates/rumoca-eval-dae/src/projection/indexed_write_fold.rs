@@ -10,7 +10,6 @@ struct IndexedWrite<'dae> {
     point: Option<Vec<i64>>,
     ordinal: Option<usize>,
     points: usize,
-    extent: u32,
 }
 
 impl<'dae> Projection<'_, 'dae> {
@@ -31,13 +30,6 @@ impl<'dae> Projection<'_, 'dae> {
         {
             self.cache.indexed_write_folds += 1;
         }
-        profile::indexed_write(
-            node,
-            checked.value,
-            checked.ordinal,
-            checked.points,
-            checked.extent,
-        );
         // Preserve first-occurrence graph edge order. A passthrough precedes
         // the selected write iff the selected point is not ordinal zero.
         if checked.points > 0 && checked.ordinal != Some(0) {
@@ -145,7 +137,6 @@ fn prove_write_domain<'dae>(
         point: ordinal.map(|_| point),
         ordinal,
         points,
-        extent,
     })
 }
 

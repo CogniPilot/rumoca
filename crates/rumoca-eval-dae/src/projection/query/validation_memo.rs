@@ -70,7 +70,6 @@ impl<'dae> ValidationMemo<'dae> {
             binders: values,
         };
         if self.success.contains(&key) {
-            profile::validation_memo(self.root.index(), true, self.success.len());
             #[cfg(test)]
             {
                 self.hits += 1;
@@ -80,7 +79,6 @@ impl<'dae> ValidationMemo<'dae> {
         if self.success.len() == LIMIT {
             return Start::None;
         }
-        profile::validation_memo(self.root.index(), false, self.success.len());
         self.recording += 1;
         Start::Checking(key)
     }

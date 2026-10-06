@@ -313,8 +313,8 @@ fn affine_stencil_reads_only_previous_family_and_rejects_neighbor_targets() {
     targets.truncate(30);
     let layout = VarLayout::from_parts(Default::default(), 30, 16);
     source.nodes[0] = family(14, 16, 16, LinearOp::LoadY { dst: 1, index: 0 });
-    // A central difference consumes two shifted addresses of the already
-    // assigned grayscale family, once per interior point.
+    // The stencil subtracts two shifted addresses of the already assigned
+    // family, once per interior point.
     if let ComputeNode::Map {
         base_ops,
         load_strides,

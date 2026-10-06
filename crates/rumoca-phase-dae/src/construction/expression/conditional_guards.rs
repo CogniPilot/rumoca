@@ -209,17 +209,14 @@ impl<'a> ArmScan<'a> {
         }
     }
 
-    fn record_incidence(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
+    /// Records the authored reference itself, so the incidence keeps its source span.
+    fn record_incidence(&mut self, reference: &Expression) {
         let Some(operators) = &self.operators else {
             return;
         };
         let read = IncidenceRead {
             operators: operators.clone(),
-            reference: Expression::VarRef {
-                name: name.clone(),
-                subscripts: subscripts.to_vec(),
-                span: Span::DUMMY,
-            },
+            reference: reference.clone(),
         };
         if !self.reads.iter().any(|other| read.same(other)) {
             self.reads.push(read);
@@ -228,12 +225,14 @@ impl<'a> ArmScan<'a> {
 }
 
 impl rumoca_core::ExpressionVisitor for ArmScan<'_> {
-    fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
-        if (self.select)(name.var_name()) {
+    fn visit_expression(&mut self, expr: &Expression) {
+        if let Expression::VarRef { name, .. } = expr
+            && (self.select)(name.var_name())
+        {
             self.found = true;
-            self.record_incidence(name, subscripts);
+            self.record_incidence(expr);
         }
-        self.walk_var_ref(name, subscripts);
+        self.walk_expression(expr);
     }
 
     fn visit_builtin_call(&mut self, function: &rumoca_core::BuiltinFunction, args: &[Expression]) {

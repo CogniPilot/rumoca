@@ -20,6 +20,7 @@ mod native_assignment_tests;
 mod native_mixed_assignment_tests;
 mod portable_source_root_tests;
 mod scenario_config_tests;
+mod session_recovery_tests;
 mod simulation_runtime_tests;
 mod source_modelica_roundtrip_tests;
 mod source_root_api_tests;

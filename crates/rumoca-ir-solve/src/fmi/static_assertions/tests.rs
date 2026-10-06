@@ -115,3 +115,72 @@ fn runtime_post_commit_and_structured_updates_need_event_iteration() {
         discrete.structured_rhs = crate::ComputeBlock::from_scalar_program_block(row());
     });
 }
+
+/// Whole-tensor kernels settle exactly when every operand element settles; a
+/// state operand anywhere in a range keeps the result unsettled.
+#[test]
+fn tensor_kernels_settle_from_their_complete_operand_ranges() {
+    use crate::{TensorConcatenateSource, TensorInputKind};
+    let program = vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: TensorInputKind::P,
+            input_start: 0,
+            count: 3,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::LoadP { dst: 3, index: 3 },
+        LinearOp::LoadY { dst: 4, index: 0 },
+        LinearOp::LoadP { dst: 5, index: 4 },
+        LinearOp::TensorCross {
+            dst_start: 6,
+            lhs_start: 0,
+            rhs_start: 3,
+            lanes: 1,
+        },
+        LinearOp::TensorCross {
+            dst_start: 9,
+            lhs_start: 0,
+            rhs_start: 0,
+            lanes: 1,
+        },
+        LinearOp::MatrixMultiply {
+            dst_start: 12,
+            lhs_start: 0,
+            rhs_start: 0,
+            rows: 1,
+            inner: 3,
+            columns: 1,
+            lanes: 1,
+        },
+        LinearOp::TensorConcatenate {
+            dst_start: 13,
+            sources: vec![
+                TensorConcatenateSource {
+                    start: 0,
+                    dimensions: vec![3].into(),
+                },
+                TensorConcatenateSource {
+                    start: 3,
+                    dimensions: vec![3].into(),
+                },
+            ]
+            .into(),
+            dimensions: vec![6].into(),
+            axis: 0,
+            lanes: 1,
+        },
+        LinearOp::StoreOutput { src: 6 },
+        LinearOp::StoreOutput { src: 9 },
+        LinearOp::StoreOutput { src: 12 },
+        LinearOp::StoreOutput { src: 13 },
+    ];
+    let settled = scalar_dependencies::program_outputs(
+        &crate::SolvePureCallTable::default(),
+        &program,
+        &[false],
+        &[true; 5],
+    );
+    assert_eq!(settled, Some(vec![false, true, true, false]));
+}

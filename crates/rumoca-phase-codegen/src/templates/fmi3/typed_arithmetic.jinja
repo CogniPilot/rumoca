@@ -98,9 +98,12 @@ for (size_t k=0; k<{{ ty.scalar_count }}; ++k) {
 if ({{ a }} == INT64_MIN) return 1;
 {% endif -%}
 {{ dst }}[k] = {{ unary(op.operator, a, ty) }};
-{% elif op.operation == "binary" -%}
-{% set a = "r" ~ op.lhs ~ "[k]" -%}
-{% set b = "r" ~ op.rhs ~ "[k]" -%}
+{% elif op.operation in ["binary", "broadcast_binary"] -%}
+{#- A broadcast reads its scalar operand at element zero for every element. -#}
+{% set element = "r" ~ op.aggregate ~ "[k]" if op.operation == "broadcast_binary" else "" -%}
+{% set broadcast = "r" ~ op.scalar ~ "[0]" if op.operation == "broadcast_binary" else "" -%}
+{% set a = "r" ~ op.lhs ~ "[k]" if op.operation == "binary" else (broadcast if op.scalar_on_lhs else element) -%}
+{% set b = "r" ~ op.rhs ~ "[k]" if op.operation == "binary" else (element if op.scalar_on_lhs else broadcast) -%}
 {% if ty.scalar.kind == "integer" -%}
 {{ integer_binary(op.operator, dst ~ "[k]", a, b) -}}
 {% else -%}

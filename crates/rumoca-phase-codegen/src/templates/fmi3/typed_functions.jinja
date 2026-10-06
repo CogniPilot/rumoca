@@ -12,7 +12,7 @@ if ({{ name }}((const void*[]){ {% for input in inputs %}r{{ input }},{% else %}
 {% endmacro %}
 
 {%- macro operation(op, program, region_name, prefix="rumoca_pure_") -%}
-{% if op.operation in ["constant", "unary", "binary", "compare", "convert"] -%}
+{% if op.operation in ["constant", "unary", "binary", "broadcast_binary", "compare", "convert"] -%}
 {{ arithmetic(op, program) -}}
 {% elif op.operation == "load" -%}
 {{ copy("r" ~ op.destination, "s" ~ op.slot) -}}

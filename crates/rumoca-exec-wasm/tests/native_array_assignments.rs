@@ -1,7 +1,6 @@
 //! Execute construction-issued compact array assignments with independent values.
 
-#[path = "native_array_assignments/cross_alias.rs"]
-mod cross_alias;
+mod suite_array_cross_alias;
 
 use rumoca_exec_wasm::compile_native_assignment_schedule_wasm_bytes;
 use rumoca_ir_solve as solve;

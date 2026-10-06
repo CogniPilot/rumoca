@@ -6,7 +6,6 @@ type Entry = TypedFunc<(i32, i32, f64, i32, i32), i32>;
 pub(super) struct Run {
     pub(super) status: Option<i32>,
     pub(super) output: Vec<u8>,
-    pub(super) trap: Option<String>,
     pub(super) parameter_immutable: bool,
     pub(super) guards_unchanged: bool,
 }
@@ -86,7 +85,6 @@ impl Execution {
         }
         Run {
             status: status.as_ref().ok().copied(),
-            trap: status.err().map(|e| e.to_string()),
             output: bytes[..self.y_bytes].to_vec(),
             parameter_immutable,
             guards_unchanged,
@@ -156,16 +154,4 @@ pub(super) fn canonical(
         }
     }
     Ok(fixtures::bytes(&y))
-}
-
-pub(super) fn math_imports(bytes: &[u8]) -> Vec<String> {
-    let module = Module::new(&Engine::default(), bytes).unwrap();
-    module
-        .imports()
-        .filter(|import| matches!(import.ty(), wasmi::ExternType::Func(_)))
-        .map(|import| {
-            assert_eq!(import.module(), "env");
-            import.name().to_owned()
-        })
-        .collect()
 }

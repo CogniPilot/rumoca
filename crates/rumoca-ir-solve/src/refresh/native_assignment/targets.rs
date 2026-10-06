@@ -33,10 +33,12 @@ pub(super) fn derive(
     ))?;
     let mut sorted = indices.clone();
     sorted.sort_unstable();
-    let start = sorted[0];
-    let end = sorted
-        .last()
-        .unwrap()
+    // `first` proves the targets nonempty; folds seeded by it are total.
+    let start = indices.iter().copied().fold(first, usize::min);
+    let end = indices
+        .iter()
+        .copied()
+        .fold(first, usize::max)
         .checked_add(1)
         .ok_or(NativeRefreshAssignmentRefusal(
             "native target range overflows",

@@ -149,16 +149,20 @@ impl<'source> SourceCertificateQueries<'source> {
         label: &str,
     ) -> Result<(Option<TargetAssignmentShape>, bool), crate::ContinuousRefreshConstructionError>
     {
-        if self.active.as_ref().map(|(source, _)| *source) != Some(row.source) {
-            let (program, _) = super::super::scalar_source_program(self.source, row.source)?
-                .ok_or_else(|| crate::ContinuousRefreshConstructionError {
-                    reason: format!(
-                        "{label} refresh row refers to a missing canonical source program"
-                    ),
-                })?;
-            self.active = Some((row.source, CanonicalAssignmentQueries::new(program)));
-        }
-        let (_, queries) = self.active.as_mut().expect("source query just issued");
+        let queries = match &mut self.active {
+            Some((source, queries)) if *source == row.source => queries,
+            active => {
+                let (program, _) = super::super::scalar_source_program(self.source, row.source)?
+                    .ok_or_else(|| crate::ContinuousRefreshConstructionError {
+                        reason: format!(
+                            "{label} refresh row refers to a missing canonical source program"
+                        ),
+                    })?;
+                &mut active
+                    .insert((row.source, CanonicalAssignmentQueries::new(program)))
+                    .1
+            }
+        };
         Ok((
             queries.derive(row.output_offset, row.target_index),
             queries.is_causal(),

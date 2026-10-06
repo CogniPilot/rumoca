@@ -11,7 +11,6 @@ pub(crate) mod maps;
 pub(crate) mod math;
 mod matrix_products;
 mod real_stores;
-mod registration_source;
 mod returned_storage;
 mod scalar_cells;
 mod slice_updates;

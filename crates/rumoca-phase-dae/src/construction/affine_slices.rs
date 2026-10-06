@@ -84,12 +84,15 @@ pub(super) fn lower<'dae>(
     binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
     expression: &Expression,
 ) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
-    if !matches!(expression, Expression::Range { .. }) || binders.is_empty() {
+    let Expression::Range { span, .. } = expression else {
+        return Ok(None);
+    };
+    if binders.is_empty() {
         return Ok(None);
     }
     // Reconstruct the shape witness from these exact checked lexical owners.
     // Arbitrary inferred runtime Integer intervals do not grant eligibility.
-    let provenance = dae::DaeProvenance::source(expression_span(expression).expect("range span"))?;
+    let provenance = dae::DaeProvenance::source(*span)?;
     let mut shapes = symbols.shapes.clone();
     for (name, binder) in binders {
         let (lower, upper) =
@@ -154,15 +157,17 @@ pub(super) fn scoped_shapes(
         if extent == 0 {
             continue;
         }
-        let last = i128::from(binder.lower)
-            + i128::try_from(extent - 1).expect("domain extent") * i128::from(binder.step);
-        let last = i64::try_from(last).map_err(|_| {
-            ToDaeError::unsupported_flat(
-                "structured equation domain",
-                "last binder value overflows Integer",
-                span,
-            )
-        })?;
+        let last = i64::try_from(extent - 1)
+            .ok()
+            .and_then(|steps| steps.checked_mul(binder.step))
+            .and_then(|offset| binder.lower.checked_add(offset))
+            .ok_or_else(|| {
+                ToDaeError::unsupported_flat(
+                    "structured equation domain",
+                    "last binder value overflows Integer",
+                    span,
+                )
+            })?;
         values.bind_slice_binder(name, binder.lower, last);
     }
     Ok(values)

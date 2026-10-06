@@ -174,15 +174,11 @@ fn runtime_first_guard_keeps_later_structural_windows_lazy_and_recalibratable() 
 }
 
 fn artifact(source: &str) -> serde_json::Value {
-    artifact_with_owners(source, 1)
-}
-
-fn artifact_with_owners(source: &str, owners: usize) -> serde_json::Value {
     let artifact = crate::native_assignment_api::with_prepared_native_model(
         source,
         "LazyAffineWindows",
         |model, source, name| {
-            assert_eq!(model.pure_calls.owners().len(), owners);
+            assert_eq!(model.pure_calls.owners().len(), 1);
             crate::native_program_api::model_artifact(model, source, name)
         },
     )
@@ -279,9 +275,9 @@ fn parameter_dimension_guards_preserve_inactive_windows_over_algebraic_inputs() 
         } else {
             source.clone()
         };
-        // The original algebraic grayscale dependencies partition this source
-        // into three interior-row call contexts, each retaining its own owner.
-        let artifact = artifact_with_owners(&source, 3);
+        // The algebraic intermediate keeps the row and column nest one compact
+        // family, so every interior window shares one call owner.
+        let artifact = artifact(&source);
         let input = std::array::from_fn(|index| (index as f64 - 45.0) / 8.0);
         check(&artifact, edited, false, &input);
     }

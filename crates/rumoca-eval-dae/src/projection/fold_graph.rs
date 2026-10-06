@@ -37,7 +37,6 @@ pub(super) struct FoldGraph<'dae> {
     edge_membership: Vec<HashSet<usize>>,
     active: Option<usize>,
     cursor: usize,
-    edge_count: usize,
     #[cfg(test)]
     pub(super) repeated_edges: usize,
 }
@@ -63,13 +62,11 @@ impl<'dae> FoldGraph<'dae> {
             && self.edge_membership[active].insert(index)
         {
             self.edges[active].push(index);
-            self.edge_count += 1;
         }
     }
 
     pub(super) fn begin_next(&mut self) -> Option<FoldNode<'dae>> {
         let node = self.nodes.get(self.cursor)?.clone();
-        super::profile::graph(&node, self.cursor, self.nodes.len(), self.edge_count);
         self.active = Some(self.cursor);
         self.cursor += 1;
         Some(node)

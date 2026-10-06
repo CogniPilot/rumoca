@@ -647,23 +647,30 @@ pub(crate) fn clear_singleton_session() -> Result<(), WasmError> {
 
 fn singleton_session_lock() -> Result<MutexGuard<'static, Option<Session>>, WasmError> {
     #[cfg(target_arch = "wasm32")]
-    {
-        return SESSION.try_lock().map_err(|error| match error {
-            TryLockError::WouldBlock => WasmError::new(
+    let locked = match SESSION.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::WouldBlock) => {
+            return Err(WasmError::new(
                 "WASM session is already busy; retry after the current request completes",
-            ),
-            TryLockError::Poisoned(error) => {
-                WasmError::new(format!("WASM session lock is poisoned: {error}"))
-            }
-        });
-    }
-
+            ));
+        }
+        Err(TryLockError::Poisoned(poisoned)) => Err(poisoned),
+    };
     #[cfg(not(target_arch = "wasm32"))]
-    {
-        SESSION
-            .lock()
-            .map_err(|error| WasmError::new(format!("WASM session lock is poisoned: {error}")))
-    }
+    let locked = SESSION.lock();
+    Ok(locked.unwrap_or_else(discard_interrupted_session))
+}
+
+/// A request that panicked may have left the session mid-update. Its state is
+/// discarded, never reused, so the next request starts from a fresh session
+/// instead of every later request failing on the poisoned lock.
+fn discard_interrupted_session(
+    poisoned: std::sync::PoisonError<MutexGuard<'static, Option<Session>>>,
+) -> MutexGuard<'static, Option<Session>> {
+    let mut guard = poisoned.into_inner();
+    *guard = None;
+    SESSION.clear_poison();
+    guard
 }
 
 /// Qualify a bare model name against the single in-memory `input.mo` document

@@ -44,11 +44,14 @@ impl<'dae> Projection<'_, 'dae> {
         // A function validated as a root has empty formal inventories; the
         // same function used as a nested callee needs its full inventory to
         // check substitutions/addresses. Keep those roles in separate caches.
-        let mut cache = self
-            .cache
-            .query_validation
-            .remove(&function.index())
-            .unwrap_or_default();
+        // A function's validation cache is created on its first validation and
+        // moved out while this nested walk borrows the projection.
+        let mut cache = std::mem::take(
+            self.cache
+                .query_validation
+                .entry(function.index())
+                .or_default(),
+        );
         let mut ignored = |_, _| {};
         let mut validation = Projection {
             activation: self.activation,

@@ -38,10 +38,6 @@ fn native_wasm_return_predicates_preserve_inactive_and_active_gathers() {
     )
     .unwrap();
     assert_eq!(artifact["abi"]["result"], "status:i32");
-    if let Some(path) = std::env::var_os("RUMOCA_RETURN_WASM_ARTIFACT") {
-        let fixture = serde_json::json!({"source": SOURCE, "artifact": artifact});
-        std::fs::write(path, serde_json::to_vec(&fixture).unwrap()).unwrap();
-    }
     let mut execution = CallExecution::new(&artifact);
     let mut parameters = artifact["parameters"]
         .as_array()

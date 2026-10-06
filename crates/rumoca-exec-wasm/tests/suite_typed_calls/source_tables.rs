@@ -233,57 +233,12 @@ fn fixed_full_modelica_source_owner_executes_exact_recurrence_in_wasmi() {
         assert_eq!(compiled.layout().input_bytes, (14400 + 2) * 8);
         assert!(compiled.module_bytes().len() < 6000);
         fixed_source_cases(&table, &compiled, gain, subtract);
-        export_source_call(
-            &compiled,
-            json,
-            &format!("gain-{gain}-subtract-{subtract}.wasm"),
-            serde_json::json!({"gain": gain, "subtract": subtract}),
-            None,
-        );
         eprintln!(
             "SOURCE_NATIVE_FULL source_edit_gain={gain} subtract={subtract} wasm_bytes={} scratch_bytes={}",
             compiled.module_bytes().len(),
             compiled.layout().scratch_bytes
         );
     }
-}
-
-pub(super) fn export_source_call(
-    compiled: &CompiledTypedCallWasm,
-    json: &str,
-    filename: &str,
-    variant: serde_json::Value,
-    late_fault: Option<&rumoca_exec_wasm::TypedCallFault>,
-) {
-    let Ok(directory) = std::env::var("RUMOCA_NATIVE_SOURCE_WASM_OUTPUT_DIR") else {
-        return;
-    };
-    std::fs::create_dir_all(&directory).unwrap();
-    let artifact: serde_json::Value = serde_json::from_str(json).unwrap();
-    let path = std::path::Path::new(&directory).join(filename);
-    std::fs::write(&path, compiled.module_bytes()).unwrap();
-    let layout = compiled.layout();
-    let manifest = serde_json::json!({
-        "moduleFile": filename, "inputBytes": layout.input_bytes,
-        "outputBytes": layout.output_bytes, "scratchBytes": layout.scratch_bytes,
-        "source": artifact["source"], "variant": artifact["variant"],
-        "producerRevision": artifact["compilerRevision"],
-        "producerSourceSha256": artifact["compilerSourceSha256"],
-        "variantDescription": variant,
-        "mathImports": compiled.math_imports(),
-        "lateFailureStatus": late_fault.map(|fault| fault.status),
-        "lateFailureKind": late_fault.map(|fault| format!("{:?}",fault.kind)),
-        "lateFailureSourceSpan": late_fault.map(|fault| serde_json::json!({
-            "source_id": format!("{:?}",fault.provenance.source),
-            "start": fault.provenance.start.0, "end": fault.provenance.end.0,
-        })),
-        "cellFormat": "declared tuple order; 8-byte Binary64/i64/Boolean cells; row-major tensor",
-    });
-    std::fs::write(
-        path.with_extension("wasm.json"),
-        serde_json::to_string_pretty(&manifest).unwrap(),
-    )
-    .unwrap();
 }
 
 fn fixed_source_cases(
@@ -375,13 +330,6 @@ fn fixed_full_modelica_integer_fold_preserves_checked_order_atomic_fault_and_rec
     )));
     let site = owner.call_site();
     let compiled = compile_pure_call_wasm(&table, &site).unwrap();
-    export_source_call(
-        &compiled,
-        json,
-        "integer-seed.wasm",
-        serde_json::json!({"integer_seed": true}),
-        None,
-    );
     let mut runner = Runner::new(&compiled);
     let mut values = vec![0i64; 14400];
     values[0] = i64::MAX;

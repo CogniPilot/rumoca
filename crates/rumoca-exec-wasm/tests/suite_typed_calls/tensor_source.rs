@@ -78,13 +78,6 @@ fn check_source_variant(json: &str, source: &str, gain: f64) {
     assert_eq!(actual, oracle(&table, &site, &recovered).unwrap());
     assert!(compiled.layout().scratch_bytes < 14400 * 8 + 2048);
     assert!(compiled.module_bytes().len() < 4096);
-    source_tables::export_source_call(
-        &compiled,
-        json,
-        &format!("tensor-gain-{gain}.wasm"),
-        serde_json::json!({"gain":gain,"tensor":true}),
-        Some(fault),
-    );
     eprintln!(
         "SOURCE_TENSOR_FULL14400 gain={gain} module_bytes={} scratch_bytes={}",
         compiled.module_bytes().len(),
