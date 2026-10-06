@@ -41,7 +41,9 @@ struct Allocation<'a> {
 /// Sparse high addresses/fields and exhausted dense budgets keep the HashSet.
 #[derive(Debug)]
 pub(super) struct Visited {
-    expressions: Vec<Option<Box<Expression>>>,
+    /// Keyed by expression index, so allocation and teardown scale with the
+    /// expressions a capture touches rather than the highest index it reads.
+    expressions: HashMap<usize, Expression>,
     sparse: HashSet<ScalarExpressionDependency>,
     words: usize,
     scoped_words: usize,
@@ -54,7 +56,7 @@ pub(super) struct Visited {
 impl Default for Visited {
     fn default() -> Self {
         Self {
-            expressions: Vec::new(),
+            expressions: HashMap::default(),
             sparse: HashSet::default(),
             words: 0,
             scoped_words: 0,
@@ -72,10 +74,7 @@ impl Visited {
         if key.field.is_some() || expression >= DENSE_LIMIT || key.scalar >= DENSE_LIMIT {
             return self.sparse.insert(key);
         }
-        if self.expressions.len() <= expression {
-            self.expressions.resize_with(expression + 1, || None);
-        }
-        let entry = self.expressions[expression].get_or_insert_with(Default::default);
+        let entry = self.expressions.entry(expression).or_default();
         let inserted = if key.domain_context == DomainContextId::default() {
             insert_bits(
                 &mut entry.plain[key.activation.index()],
@@ -110,7 +109,7 @@ impl Visited {
             // full scoped storage rather than permanently charge obsolete
             // lexical IDs against future folds. Releasing capacities preserves
             // the aggregate allocation bound across disjoint expressions.
-            for expression in self.expressions.iter_mut().flatten() {
+            for expression in self.expressions.values_mut() {
                 expression.scoped = HashMap::default();
             }
             self.words -= self.scoped_words;

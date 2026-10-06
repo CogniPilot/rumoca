@@ -206,7 +206,7 @@ fn full_scoped_storage_is_reclaimed_only_after_membership_clear() {
         expected.clear();
         assert_eq!(actual.scopes, 0);
         assert_eq!(actual.words, 1);
-        assert!(actual.expressions[3].as_ref().unwrap().scoped.is_empty());
+        assert!(actual.expressions[&3].scoped.is_empty());
     }
 }
 
