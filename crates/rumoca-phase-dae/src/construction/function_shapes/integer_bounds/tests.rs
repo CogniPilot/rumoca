@@ -251,3 +251,42 @@ fn proven_tensor_extents_bound_ranges_without_publishing_settled_local_values() 
     );
     assert_eq!(shapes.proven_extent(&variable("limit")), None);
 }
+
+#[test]
+fn a_read_after_the_loop_sees_the_merged_interval_of_a_noncarried_target() {
+    // `last := i` inside the loop carries nothing, so after the loop `last`
+    // lies in its merged interval and `selected := last` inherits it.
+    let statements = vec![
+        assignment("last", integer(0)),
+        assignment("selected", integer(0)),
+        for_loop(vec![assignment("last", variable("i"))]),
+        assignment("selected", variable("last")),
+    ];
+    let mut shapes = ShapeEnvironment::with_capacity(3);
+    infer_function_integer_bounds(&statements, &mut shapes);
+    assert_eq!(
+        shapes.proven_integer_bounds(&variable("last")),
+        Some((0, 14400))
+    );
+    assert_eq!(
+        shapes.proven_integer_bounds(&variable("selected")),
+        Some((0, 14400))
+    );
+}
+
+#[test]
+fn a_read_inside_the_writing_loop_may_see_a_carried_value() {
+    // In the loop, `selected := last` may read the previous iteration's
+    // `last`; that is a carried read and keeps no finite interval.
+    let statements = vec![
+        assignment("last", integer(0)),
+        assignment("selected", integer(0)),
+        for_loop(vec![
+            assignment("selected", variable("last")),
+            assignment("last", variable("i")),
+        ]),
+    ];
+    let mut shapes = ShapeEnvironment::with_capacity(3);
+    infer_function_integer_bounds(&statements, &mut shapes);
+    assert_eq!(shapes.proven_integer_bounds(&variable("selected")), None);
+}

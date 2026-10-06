@@ -4,7 +4,12 @@ use super::*;
 use rumoca_core::Reference;
 
 /// A mutable recurrence needs a fixed-point proof; observing one iteration is
-/// never such a proof. Unknown writes also invalidate a previous finite fact.
+/// never such a proof. A definition inside a loop that reads the target
+/// itself, or any Integer the same loop writes, may read a value carried from
+/// an earlier iteration, so its target is invalidated. A read after the loop
+/// sees the loop's merged interval, which is sound for a target whose own
+/// definitions carry nothing. Unknown writes also invalidate a previous
+/// finite fact.
 pub(super) fn invalidated_integer_targets(
     statements: &[rumoca_core::Statement],
 ) -> HashSet<VarName> {
@@ -16,10 +21,10 @@ pub(super) fn invalidated_integer_targets(
     for (target, definitions) in &finder.definitions {
         if definitions.iter().any(|definition| {
             let mut references = Vec::new();
-            definition.collect_var_refs(&mut references);
+            definition.value.collect_var_refs(&mut references);
             references
                 .into_iter()
-                .any(|reference| &reference == target || finder.loop_writes.contains(&reference))
+                .any(|reference| &reference == target || definition.carried.contains(&reference))
         }) {
             invalidated.insert(target.clone());
         }
@@ -27,12 +32,37 @@ pub(super) fn invalidated_integer_targets(
     invalidated
 }
 
+/// One Integer definition and the Integers its enclosing loops write, whose
+/// values it may observe from an earlier iteration.
+struct Definition {
+    value: Expression,
+    carried: HashSet<VarName>,
+}
+
 #[derive(Default)]
 struct Writes {
-    definitions: HashMap<VarName, Vec<Expression>>,
-    loop_writes: HashSet<VarName>,
+    definitions: HashMap<VarName, Vec<Definition>>,
     unknown_writes: HashSet<VarName>,
-    loop_depth: usize,
+    enclosing_loop_writes: Vec<HashSet<VarName>>,
+}
+
+impl Writes {
+    fn carried(&self) -> HashSet<VarName> {
+        self.enclosing_loop_writes
+            .iter()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    fn visit_loop_body(&mut self, statements: &[rumoca_core::Statement]) {
+        self.enclosing_loop_writes
+            .push(written_integer_targets(statements));
+        for statement in statements {
+            rumoca_ir_flat::visitor::StatementVisitor::visit_statement(self, statement);
+        }
+        self.enclosing_loop_writes.pop();
+    }
 }
 
 pub(super) fn written_integer_targets(statements: &[rumoca_core::Statement]) -> HashSet<VarName> {
@@ -56,13 +86,14 @@ impl rumoca_ir_flat::visitor::StatementVisitor for Writes {
         value: &Expression,
     ) {
         if let Some(target) = integer_assignment_target(component) {
-            if self.loop_depth > 0 {
-                self.loop_writes.insert(target.clone());
-            }
+            let carried = self.carried();
             self.definitions
                 .entry(target)
                 .or_default()
-                .push(value.clone());
+                .push(Definition {
+                    value: value.clone(),
+                    carried,
+                });
         }
     }
 
@@ -71,11 +102,7 @@ impl rumoca_ir_flat::visitor::StatementVisitor for Writes {
         _: &[rumoca_core::ForIndex],
         statements: &[rumoca_core::Statement],
     ) {
-        self.loop_depth += 1;
-        for statement in statements {
-            self.visit_statement(statement);
-        }
-        self.loop_depth -= 1;
+        self.visit_loop_body(statements);
     }
 
     fn visit_statement_function_call(
@@ -88,20 +115,13 @@ impl rumoca_ir_flat::visitor::StatementVisitor for Writes {
             let Some(target) = integer_assignment_target(output) else {
                 continue;
             };
-            if self.loop_depth > 0 {
-                self.loop_writes.insert(target.clone());
-            }
             self.unknown_writes.insert(target);
         }
     }
 
     fn visit_statement(&mut self, statement: &rumoca_core::Statement) {
         if let rumoca_core::Statement::While { block, .. } = statement {
-            self.loop_depth += 1;
-            for statement in &block.stmts {
-                self.visit_statement(statement);
-            }
-            self.loop_depth -= 1;
+            self.visit_loop_body(&block.stmts);
         } else {
             self.walk_statement(statement);
         }
