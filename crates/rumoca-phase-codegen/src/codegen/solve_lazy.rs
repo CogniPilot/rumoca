@@ -328,6 +328,7 @@ fn pattern_kind(pattern: &solve::StructuralPattern) -> &'static str {
         solve::StructuralPatternView::Banded { .. } => "banded",
         solve::StructuralPatternView::Csr { .. } => "csr",
         solve::StructuralPatternView::Affine { .. } => "affine",
+        solve::StructuralPatternView::Stacked { .. } => "stacked",
     }
 }
 

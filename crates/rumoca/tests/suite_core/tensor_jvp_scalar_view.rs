@@ -66,3 +66,40 @@ fn the_derivative_jacobian_rows_are_the_view_of_the_tensor_jvp() {
     assert_eq!(view.output_indices(), primal.output_indices());
     assert_eq!(view.program_spans(), primal.program_spans());
 }
+
+/// The grid's derivative block holds several compact nodes (boundary
+/// families and interior stencils). The structural relation of its tensor JVP stacks the
+/// nodes' exact relations (SPEC_0039 `Stacked`) and equals, entry for entry,
+/// the relation derived from the JVP's scalar view.
+#[test]
+fn the_mixed_derivative_jacobian_relation_equals_its_scalar_view() {
+    let compiled = Compiler::new()
+        .model("StencilJvp")
+        .compile_str(STENCIL_SOURCE, "StencilJvp.mo")
+        .unwrap_or_else(|error| panic!("StencilJvp compiles: {error:?}"));
+    let problem = rumoca_sim::lower_solve_problem(&compiled.dae)
+        .unwrap_or_else(|error| panic!("StencilJvp lowers: {error:?}"));
+    let block = &problem.continuous.derivative_rhs;
+    let counts = block.compute_node_counts();
+    assert!(
+        counts.scalar_programs + counts.map + counts.affine_stencil >= 2,
+        "the derivative block holds several nodes: {counts:?}"
+    );
+    let jvp = rumoca_phase_solve::lower_compute_block_full_jvp(block, problem.layout.y_scalars())
+        .expect("tensor JVP");
+    let view = rumoca_eval_solve::to_scalar_program_block(&jvp).expect("JVP view");
+    let rows = view.output_count();
+    let columns = problem.layout.y_scalars() + problem.layout.p_scalars();
+    let span = view.first_source_span().expect("source-backed JVP");
+    let pattern = rumoca_eval_solve::derive_jacobian_pattern_from_jvp(&jvp, rows, columns, span)
+        .expect("compact relation");
+    assert!(matches!(
+        pattern.view(),
+        rumoca_ir_solve::StructuralPatternView::Stacked { .. }
+    ));
+    let scalar =
+        rumoca_eval_solve::derive_jacobian_pattern_from_scalar_jvp(&view, rows, columns, span)
+            .expect("scalar-view relation");
+    assert_eq!(pattern.nonzero_coordinates(), scalar.nonzero_coordinates());
+    assert_eq!(pattern.column_coloring(), scalar.column_coloring());
+}

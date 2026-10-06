@@ -9,6 +9,7 @@ use crate::{
     AffineStencilLoadStride, BinaryOp, LinearOp, Reg, ScalarProgramBlock, TensorOutputMap,
 };
 
+mod stacked;
 mod state_jacobian;
 mod tensor_update;
 
@@ -162,6 +163,9 @@ enum PatternRepresentation {
         row_start: u32,
         column_maps: Box<[AffineColumnMap]>,
     },
+    Stacked {
+        segments: Box<[stacked::PatternSegment]>,
+    },
 }
 
 /// One seed coordinate propagated affinely across a compact tensor domain.
@@ -189,6 +193,9 @@ pub enum StructuralPatternView<'pattern> {
     Affine {
         domain_rank: usize,
         access_count: usize,
+    },
+    Stacked {
+        segments: usize,
     },
 }
 
@@ -630,6 +637,9 @@ impl StructuralPattern {
                 domain_rank: domain.binders.len(),
                 access_count: column_maps.len(),
             },
+            PatternRepresentation::Stacked { segments } => StructuralPatternView::Stacked {
+                segments: segments.len(),
+            },
         }
     }
 
@@ -667,6 +677,7 @@ impl StructuralPattern {
                 column_maps,
             } => affine_columns_for_row(domain, *row_start, column_maps, row as usize)
                 .is_some_and(|columns| columns.binary_search(&(column as usize)).is_ok()),
+            PatternRepresentation::Stacked { segments } => stacked::contains(segments, row, column),
         }
     }
 
@@ -692,6 +703,7 @@ impl StructuralPattern {
                 column_maps,
                 ..
             } => domain.scalar_count().ok()?.checked_mul(column_maps.len()),
+            PatternRepresentation::Stacked { segments } => stacked::nonzero_upper_bound(segments),
         }
     }
 
@@ -752,6 +764,9 @@ impl StructuralPattern {
                 {
                     columns.into_iter().for_each(&mut *visitor);
                 }
+            }
+            PatternRepresentation::Stacked { segments } => {
+                stacked::visit_row_columns(segments, row, visitor);
             }
         }
     }
@@ -1015,6 +1030,9 @@ impl StructuralPattern {
                     self.visit_row_columns(row, &mut |column| columns[column].push(row));
                 }
             }
+            PatternRepresentation::Stacked { segments } => {
+                stacked::append_column_rows(&mut columns, segments);
+            }
         }
         columns
     }
@@ -1052,7 +1070,9 @@ impl StructuralPattern {
                     *upper_bandwidth,
                 );
             }
-            PatternRepresentation::Csr { .. } | PatternRepresentation::Affine { .. } => {}
+            PatternRepresentation::Csr { .. }
+            | PatternRepresentation::Affine { .. }
+            | PatternRepresentation::Stacked { .. } => {}
         }
         let column_rows = self.column_rows();
         let mut order: Vec<usize> = (0..column_rows.len()).collect();
@@ -1248,12 +1268,6 @@ fn derive_scalar_jvp_row_dependencies(
     columns: usize,
     owner_span: Span,
 ) -> Result<Vec<Vec<usize>>, StructuralPatternError> {
-    if owner_span.is_dummy() {
-        return Err(dependency_error(
-            "Jacobian sparsity requires source-backed owner provenance",
-            None,
-        ));
-    }
     if block.output_count() != rows {
         return Err(dependency_error(
             format!(
@@ -1263,13 +1277,44 @@ fn derive_scalar_jvp_row_dependencies(
             Some(owner_span),
         ));
     }
-
     let mut row_dependencies = vec![None; rows];
+    fill_scalar_jvp_rows(
+        block,
+        block.output_indices(),
+        columns,
+        owner_span,
+        &mut row_dependencies,
+    )?;
+    Ok(row_dependencies
+        .into_iter()
+        // An interior hole is explicitly identified by the checked sparse
+        // output map and therefore has no producing operation or edge.
+        .map(Option::unwrap_or_default)
+        .collect())
+}
+
+/// Write the seed dependencies of every output of `block` into the slot of the
+/// row `output_indices` names for it, refusing a row produced twice, a row
+/// outside `slots`, or a seed outside `columns`.
+fn fill_scalar_jvp_rows(
+    block: &ScalarProgramBlock,
+    output_indices: &[usize],
+    columns: usize,
+    owner_span: Span,
+    slots: &mut [Option<Vec<usize>>],
+) -> Result<(), StructuralPatternError> {
+    if owner_span.is_dummy() {
+        return Err(dependency_error(
+            "Jacobian sparsity requires source-backed owner provenance",
+            None,
+        ));
+    }
+    let rows = slots.len();
     let mut output_ordinal = 0usize;
     for (program_index, program) in block.programs().iter().enumerate() {
         let span = block.program_span(program_index).or(Some(owner_span));
         for dependencies in program_output_dependencies(program, span)? {
-            let output_index = *block.output_indices().get(output_ordinal).ok_or_else(|| {
+            let output_index = *output_indices.get(output_ordinal).ok_or_else(|| {
                 dependency_error(
                     format!(
                         "Jacobian sparsity output {output_ordinal} has no checked output identity"
@@ -1277,7 +1322,7 @@ fn derive_scalar_jvp_row_dependencies(
                     span,
                 )
             })?;
-            let slot = row_dependencies.get_mut(output_index).ok_or_else(|| {
+            let slot = slots.get_mut(output_index).ok_or_else(|| {
                 dependency_error(
                     format!("Jacobian sparsity output index {output_index} is outside 0..{rows}"),
                     span,
@@ -1302,21 +1347,16 @@ fn derive_scalar_jvp_row_dependencies(
             })?;
         }
     }
-    if output_ordinal != block.output_indices().len() {
+    if output_ordinal != output_indices.len() {
         return Err(dependency_error(
             format!(
                 "Jacobian emitted {output_ordinal} outputs but carries {} output identities",
-                block.output_indices().len()
+                output_indices.len()
             ),
             Some(owner_span),
         ));
     }
-    Ok(row_dependencies
-        .into_iter()
-        // An interior hole is explicitly identified by the checked sparse
-        // output map and therefore has no producing operation or edge.
-        .map(Option::unwrap_or_default)
-        .collect())
+    Ok(())
 }
 
 fn append_checked_columns(
@@ -3111,6 +3151,9 @@ enum PatternRepresentationWire {
         row_start: u32,
         column_maps: Box<[AffineColumnMap]>,
     },
+    Stacked {
+        segments: Box<[stacked::PatternSegmentWire]>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -3164,6 +3207,16 @@ impl StructuralPatternWire {
                 domain,
                 row_start,
                 column_maps,
+                provenance,
+            ),
+            PatternRepresentationWire::Stacked { segments } => StructuralPattern::checked_stacked(
+                rows,
+                columns,
+                segments
+                    .into_vec()
+                    .into_iter()
+                    .map(stacked::PatternSegmentWire::replay)
+                    .collect::<Result<_, _>>()?,
                 provenance,
             ),
         }

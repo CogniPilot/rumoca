@@ -42,6 +42,7 @@ shape, generated provenance, and one canonical representation:
 | `Banded` | Entries are bounded by checked lower/upper bandwidths |
 | `Csr` | Row offsets and strictly increasing bounded columns are canonical |
 | `Affine` | A compact index domain plus checked row/column affine maps |
+| `Stacked` | Segments, each a non-stacked pattern over every column whose local rows a one-to-one contiguous, nested-strided, or listed map places; segments share no row and unplaced rows are empty |
 
 CSR uses `u32` indices. Its row-offset count is `rows + 1`, begins at zero,
 ends at the column-index count, and is monotone. Columns are in bounds and
@@ -79,6 +80,7 @@ authorize an unreachable dynamic case inside fixed selection.
 | Matrix multiply | Algebraic propagation from both operand patterns |
 | Linear solve | All matrix/RHS dependencies unless a proved diagonal or block rule applies |
 | Runtime/effect operation | Union of its explicit register operands; the independent effect query records the runtime effect |
+| Compute block of several nodes | `Stacked` segments of its nodes over the rows each owns; an affine node keeps its `Affine` relation over its domain ordinals, placed through its output map, and a matrix product or solve is `Full` over its rows |
 
 Algebraic cancellation does not remove a dependency unless a separately proved
 rewrite establishes the identity under the selected numeric semantics.

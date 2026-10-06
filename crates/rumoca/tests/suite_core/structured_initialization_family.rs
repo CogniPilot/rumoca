@@ -1,6 +1,7 @@
 //! A structured initial-equation nest stays one compact owner through Solve
 //! (SPEC_0032 §4): its residual is one `Map` node, its Jacobian is that node's
-//! tensor JVP, and both views equal the per-point scalar rows exactly.
+//! tensor JVP, and both views equal the per-point scalar rows exactly; beside
+//! scalar rows its Jacobian relation stays exact (SPEC_0039 `Stacked`).
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, simulate_dae_with_diagnostics};
@@ -99,4 +100,59 @@ fn the_compact_initial_family_sets_every_start_value() {
             );
         }
     }
+}
+
+const MIXED_SOURCE: &str = r#"
+model MixedInit
+  parameter Integer nx = 4;
+  parameter Integer ny = 3;
+  parameter Real a = 0.3;
+  Real s[nx, ny];
+  Real z;
+initial equation
+  z = 2 * a;
+  for i in 1:nx loop
+    for j in 1:ny loop
+      s[i, j] = (i - 0.5) * a + j;
+    end for;
+  end for;
+equation
+  der(s) = -s;
+  der(z) = -z;
+end MixedInit;
+"#;
+
+/// An initialization residual mixing scalar rows with a compact family keeps
+/// an exact row relation (SPEC_0039 `Stacked`), so each row's settled read
+/// cone stays its own: the relation equals the one its scalar view derives.
+#[test]
+fn a_mixed_initial_residual_keeps_an_exact_row_relation() {
+    let compiled = Compiler::new()
+        .model("MixedInit")
+        .compile_str(MIXED_SOURCE, "MixedInit.mo")
+        .unwrap_or_else(|error| panic!("MixedInit compiles: {error:?}"));
+    let problem = rumoca_sim::lower_solve_problem(&compiled.dae)
+        .unwrap_or_else(|error| panic!("MixedInit lowers: {error:?}"));
+    let counts = problem.initialization.residual().compute_node_counts();
+    assert_eq!((counts.scalar_programs, counts.map), (1, 1));
+    let artifacts = rumoca_sim::lower_solve_artifacts(&problem).expect("artifacts");
+    let pattern = artifacts
+        .initialization
+        .structural
+        .residual()
+        .expect("initialization residual pattern")
+        .pattern();
+    assert!(matches!(
+        pattern.view(),
+        rumoca_ir_solve::StructuralPatternView::Stacked { .. }
+    ));
+    let scalar = rumoca_eval_solve::derive_jacobian_pattern_from_scalar_jvp(
+        &rumoca_eval_solve::to_scalar_program_block(&artifacts.initialization.residual_jacobian_v)
+            .expect("JVP view"),
+        pattern.rows() as usize,
+        pattern.columns() as usize,
+        pattern.provenance().span(),
+    )
+    .expect("scalar-view relation");
+    assert_eq!(pattern.nonzero_coordinates(), scalar.nonzero_coordinates());
 }

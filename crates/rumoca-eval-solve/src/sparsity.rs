@@ -17,8 +17,8 @@ use std::collections::BTreeSet;
 
 use rumoca_core::Span;
 use rumoca_ir_solve::{
-    ComputeBlock, ComputeNode, LinearOp, PatternDerivation, PatternProvenance, ScalarProgramBlock,
-    StructuralPattern, StructuralPatternError,
+    ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock, StructuralPattern,
+    StructuralPatternError,
 };
 
 use crate::{EvalSolveError, to_scalar_program_block};
@@ -83,13 +83,9 @@ pub fn derive_jacobian_pattern_from_jvp(
             ComputeNode::Map { .. } | ComputeNode::AffineStencil { .. }
         )
     }) {
-        // A mixed compact block has no single affine owner representation yet.
-        // Preserve the no-materialization boundary and fail conservatively to
-        // Full: it may cost compressed AD opportunities but cannot omit an edge.
-        let provenance =
-            PatternProvenance::derived(PatternDerivation::ConservativeFull, owner_span)
-                .map_err(|error| from_pattern_error(error, Some(owner_span)))?;
-        return StructuralPattern::full(rows, columns, provenance)
+        // A mixed compact block stacks its nodes' row relations, each affine
+        // node kept compact over its own domain (SPEC_0039 `Stacked`).
+        return StructuralPattern::derive_from_compute_jvp(block, rows, columns, owner_span)
             .map_err(|error| from_pattern_error(error, Some(owner_span)));
     }
     let scalar = to_scalar_program_block(block)?;
@@ -585,5 +581,153 @@ mod tests {
         assert!(pattern.contains(99_999, 100_000));
         assert!(!pattern.contains(99_999, 99_999));
         assert_eq!(pattern.nonzero_upper_bound(), Some(100_000));
+    }
+
+    /// One scalar row summing the seeds `seeds` (at least one).
+    fn seed_sum(seeds: &[usize]) -> Vec<LinearOp> {
+        let mut program = vec![LinearOp::LoadSeed {
+            dst: 0,
+            index: seeds[0],
+        }];
+        let mut sum = 0;
+        for &seed in &seeds[1..] {
+            let load = sum + 1;
+            program.push(LinearOp::LoadSeed {
+                dst: load,
+                index: seed,
+            });
+            program.push(LinearOp::Binary {
+                dst: load + 1,
+                op: BinaryOp::Add,
+                lhs: sum,
+                rhs: load,
+            });
+            sum = load + 1;
+        }
+        program.push(LinearOp::StoreOutput { src: sum });
+        program
+    }
+
+    fn scalar_node(rows: &[&[usize]]) -> ComputeNode {
+        let programs = rows.iter().map(|seeds| seed_sum(seeds)).collect();
+        ComputeNode::ScalarPrograms(
+            ScalarProgramBlock::with_source_span(
+                programs,
+                span()
+                    .require_provenance("sparsity fixture")
+                    .expect("fixture span is source-backed"),
+            )
+            .expect("sparsity fixture is computable"),
+        )
+    }
+
+    fn affine_node(start: usize, upper: i64, seed: usize) -> ComputeNode {
+        let domain = StructuredIndexDomain {
+            binders: vec![StructuredIndexBinder {
+                id: 0,
+                display_name: "i".into(),
+                lower: 1,
+                upper,
+                step: 1,
+            }],
+        };
+        ComputeNode::Map {
+            output_map: TensorOutputMap::dense_contiguous(start, &domain).unwrap(),
+            domain,
+            base_ops: vec![
+                LinearOp::LoadSeed {
+                    dst: 0,
+                    index: seed,
+                },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![AffineStencilLoadStride {
+                op_position: 0,
+                terms: vec![AffineStencilIndexStrideTerm {
+                    dimension: 0,
+                    stride: 1,
+                }],
+            }],
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: span(),
+        }
+    }
+
+    /// A block whose scalar rows and affine family rows share one owner stacks
+    /// the nodes' exact relations instead of claiming every row reads every
+    /// column, and agrees entry for entry with its scalar view.
+    #[test]
+    fn mixed_compact_jvp_stacks_exact_node_relations() {
+        let block = ComputeBlock {
+            nodes: vec![
+                scalar_node(&[&[0], &[0, 7]]),
+                affine_node(2, 4, 1),
+                scalar_node(&[&[6]]),
+            ],
+        };
+        let (rows, columns) = (7, 8);
+        let pattern = derive_jacobian_pattern_from_jvp(&block, rows, columns, span()).unwrap();
+        assert!(matches!(
+            pattern.view(),
+            StructuralPatternView::Stacked { segments: 3 }
+        ));
+        let scalar = derive_jacobian_pattern_from_scalar_jvp(
+            &to_scalar_program_block(&block).unwrap(),
+            rows,
+            columns,
+            span(),
+        )
+        .unwrap();
+        for row in 0..rows as u32 {
+            for column in 0..columns as u32 {
+                assert_eq!(
+                    pattern.contains(row, column),
+                    scalar.contains(row, column),
+                    "({row}, {column})"
+                );
+            }
+        }
+        assert_eq!(pattern.nonzero_coordinates(), scalar.nonzero_coordinates());
+        assert_eq!(pattern.column_rows(), scalar.column_rows());
+        assert_eq!(pattern.column_coloring(), scalar.column_coloring());
+        let replayed: StructuralPattern =
+            serde_json::from_str(&serde_json::to_string(&pattern).unwrap()).unwrap();
+        assert_eq!(replayed, pattern);
+    }
+
+    /// The affine segment of a stacked relation keeps its compact domain: a
+    /// family of 100000 rows beside one scalar row is never expanded.
+    #[test]
+    fn stacked_affine_segment_stays_compact() {
+        let block = ComputeBlock {
+            nodes: vec![scalar_node(&[&[0]]), affine_node(1, 100_000, 1)],
+        };
+        let pattern = derive_jacobian_pattern_from_jvp(&block, 100_001, 100_001, span()).unwrap();
+        assert!(matches!(
+            pattern.view(),
+            StructuralPatternView::Stacked { segments: 2 }
+        ));
+        assert!(pattern.contains(0, 0));
+        assert!(pattern.contains(100_000, 100_000));
+        assert!(!pattern.contains(100_000, 0));
+        assert_eq!(pattern.nonzero_upper_bound(), Some(100_001));
+    }
+
+    /// A decoded stacked relation whose segments claim one row twice is refused.
+    #[test]
+    fn stacked_replay_refuses_a_row_owned_twice() {
+        let block = ComputeBlock {
+            nodes: vec![scalar_node(&[&[0]]), affine_node(1, 3, 1)],
+        };
+        let pattern = derive_jacobian_pattern_from_jvp(&block, 4, 4, span()).unwrap();
+        let mut wire = serde_json::to_value(&pattern).unwrap();
+        let segments = wire["representation"]["stacked"]["segments"]
+            .as_array_mut()
+            .expect("stacked segments");
+        let first = segments[0].clone();
+        segments.push(first);
+        let error = serde_json::from_value::<StructuralPattern>(wire).unwrap_err();
+        assert!(error.to_string().contains("owned twice"), "{error}");
     }
 }
