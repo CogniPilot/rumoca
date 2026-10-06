@@ -175,7 +175,8 @@ impl SimError {
 impl From<RuntimeSolveError> for SimError {
     fn from(value: RuntimeSolveError) -> Self {
         match value {
-            RuntimeSolveError::SolveIr { message, span } => {
+            RuntimeSolveError::SolveIr { message, span }
+            | RuntimeSolveError::SourceFault { message, span } => {
                 let message = match span {
                     Some(span) => format!("{message} @ {span:?}"),
                     None => message,

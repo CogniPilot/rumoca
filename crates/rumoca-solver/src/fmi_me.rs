@@ -488,12 +488,14 @@ impl From<crate::runtime::solve_ops::RuntimeSolveError> for MeError {
     fn from(value: crate::runtime::solve_ops::RuntimeSolveError) -> Self {
         use crate::runtime::solve_ops::RuntimeSolveError as Runtime;
         match value {
-            Runtime::SolveIr { message, span } => Self::Evaluation {
-                message: match span {
-                    Some(span) => format!("{message} @ {span:?}"),
-                    None => message,
-                },
-            },
+            Runtime::SolveIr { message, span } | Runtime::SourceFault { message, span } => {
+                Self::Evaluation {
+                    message: match span {
+                        Some(span) => format!("{message} @ {span:?}"),
+                        None => message,
+                    },
+                }
+            }
             Runtime::UnsupportedModel { reason } => Self::UnsupportedModel { reason },
             unassignable @ Runtime::RefreshTargetUnassignable { .. } => Self::Evaluation {
                 message: unassignable.to_string(),

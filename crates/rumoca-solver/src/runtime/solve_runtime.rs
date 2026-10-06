@@ -251,6 +251,11 @@ impl From<solve_eval::EvalSolveError> for RuntimeSolveError {
                 coefficient,
                 span,
             },
+            fault @ (EvalSolveError::InvalidTensorIndex { .. }
+            | EvalSolveError::TensorIndexOutOfBounds { .. }) => Self::SourceFault {
+                message: fault.to_string(),
+                span: fault.source_span(),
+            },
             error => Self::solve_ir_with_span(error.to_string(), error.source_span()),
         }
     }

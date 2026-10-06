@@ -1348,7 +1348,8 @@ impl SolveRuntime {
                 evaluated_transactions: &mut evaluated_transactions,
             },
         )?;
-        self.collect_scalar_discrete_row_values(input, &mut eval_p_cache, &mut row_values)?;
+        let pending_fault =
+            self.collect_scalar_discrete_row_values(input, &mut eval_p_cache, &mut row_values)?;
         guarded_values.extend(self.collect_guarded_discrete_row_values(input, &mut eval_p_cache)?);
         self.collect_structured_discrete_row_values(input, &mut eval_p_cache, &mut row_values)?;
         self.override_relation_memory_row_values(snapshot.root_relation_overrides, &mut row_values);
@@ -1366,15 +1367,24 @@ impl SolveRuntime {
             )?;
         }
         changed |= self.commit_successful_event_transactions(evaluated_transactions, y, p)?;
-        Ok(changed)
+        // A fault read from an iterate that this pass changed is not a value
+        // of the settled solution; the next pass evaluates the row again.
+        match pending_fault {
+            Some(fault) if !changed => Err(fault),
+            _ => Ok(changed),
+        }
     }
 
+    /// Collect every scalar row value of one Appendix-B pass. A row whose
+    /// source operation faults keeps its previous value, and the first such
+    /// fault is returned for the caller to report if the pass settles.
     fn collect_scalar_discrete_row_values(
         &self,
         input: DiscreteSnapshotEvalInput<'_, '_, '_>,
         eval_p_cache: &mut EventEvalParamCache,
         row_values: &mut Vec<DiscreteRowValue>,
-    ) -> Result<(), RuntimeSolveError> {
+    ) -> Result<Option<RuntimeSolveError>, RuntimeSolveError> {
+        let mut pending_fault = None;
         let ordered_clocked = self.clock_partition_owns_clocked_rows();
         for row_idx in 0..self.model.problem.discrete.rhs.len() {
             if self.event_transaction_coverage.discrete_rows[row_idx] {
@@ -1401,7 +1411,7 @@ impl SolveRuntime {
             {
                 continue;
             }
-            let Some(value) = self.eval_discrete_row_for_pre_snapshot(
+            let value = match self.eval_discrete_row_for_pre_snapshot(
                 DiscreteRowEvalInput {
                     snapshot: input.snapshot,
                     row_idx,
@@ -1410,13 +1420,18 @@ impl SolveRuntime {
                     t: input.t,
                 },
                 eval_p_cache,
-            )?
-            else {
-                continue;
+            ) {
+                Ok(Some(value)) => value,
+                Ok(None) => continue,
+                Err(fault @ RuntimeSolveError::SourceFault { .. }) => {
+                    pending_fault.get_or_insert(fault);
+                    continue;
+                }
+                Err(error) => return Err(error),
             };
             row_values.push((self.model.problem.discrete.update_targets[row_idx], value));
         }
-        Ok(())
+        Ok(pending_fault)
     }
 
     fn discrete_row_reads_solver_or_time(&self, row_idx: usize) -> Result<bool, RuntimeSolveError> {

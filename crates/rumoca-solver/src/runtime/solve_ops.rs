@@ -69,6 +69,16 @@ pub enum RuntimeSolveError {
         "[EX004] algebraic block over {unknowns} is singular in its active branch combination {mode}; the model has no unique solution there"
     )]
     SingularActiveMode { unknowns: String, mode: String },
+
+    /// A source operation faulted on the values it read: an array index that
+    /// is not an Integer inside the declared extent. Within the event
+    /// iteration of MLS Appendix B the fault belongs to the iterate that
+    /// produced it, and it is reported only if the iteration settles with it.
+    #[error("solve-IR evaluation failed: {message}{}", span_suffix(*.span))]
+    SourceFault {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
 }
 
 fn span_suffix(span: Option<rumoca_core::Span>) -> String {
@@ -95,7 +105,8 @@ impl RuntimeSolveError {
             Self::SolveIr { span, .. }
             | Self::RefreshTargetUnassignable { span, .. }
             | Self::RefreshTargetSingular { span, .. }
-            | Self::NonFiniteValue { span, .. } => *span,
+            | Self::NonFiniteValue { span, .. }
+            | Self::SourceFault { span, .. } => *span,
             _ => None,
         }
     }
