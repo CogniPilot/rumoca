@@ -72,18 +72,6 @@ fn check_exhaustive_contexts(view: dae::DaeView<'_>) {
             for (domain, point) in &points {
                 contexts.push(*domain, point.clone());
             }
-            let full = contexts.full_context(true).unwrap();
-            let expected = points
-                .iter()
-                .map(|(domain, point)| (domain.index(), point.clone()))
-                .collect::<Vec<_>>();
-            assert_eq!(contexts.snapshot(full).as_ref(), &expected);
-            assert_eq!(*expected_ids.entry(expected.clone()).or_insert(full), full);
-            assert_eq!(contexts.full_context(false), Some(full));
-            assert_eq!(
-                observed_values.entry(full).or_insert(expected.clone()),
-                &expected
-            );
             for domain in std::iter::once(None).chain(domains.iter().copied().map(Some)) {
                 let expected = reference_context(view, &points, domain);
                 let actual = contexts.for_domain(view, domain);

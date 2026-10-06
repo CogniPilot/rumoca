@@ -9,7 +9,6 @@ impl<'dae> Projection<'_, 'dae> {
         field: usize,
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
-        self.guard_memo_invalidate();
         let fragment = self.begin_parameter_fragment(expression, Some(field), scalar_index);
         if let parameter_fragments::Start::Cached(dependencies)
         | parameter_fragments::Start::Imported(dependencies) = &fragment

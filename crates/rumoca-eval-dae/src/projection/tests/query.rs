@@ -54,11 +54,6 @@ fn query_filtered_and_full_consumers_keep_separate_complete_formal_inventories()
             assert!(project(view, root, &mut mixed, true).unwrap().is_empty());
             assert_eq!(mixed.function_results, reference.function_results);
         }
-        assert!(!mixed.query_validation.is_empty());
-        assert!(mixed.query_validation.values().all(|cache| {
-            cache.function_results.values().all(|entry|
-                    matches!(entry, FunctionSummaryEntry::Complete(values) if values.is_empty()))
-        }));
     });
 }
 
@@ -211,13 +206,15 @@ fn check_selector(kind: Nested) {
         for root in roots {
             let expected = project(view, *root, &mut reference, false);
             let filtered = project(view, *root, &mut mixed, true);
-            match &expected {
-                Ok(_) => assert!(filtered.unwrap().is_empty()),
-                Err(error) => assert_eq!(filtered.unwrap_err(), *error),
+            // A query excludes every coordinate: a call over plain actuals
+            // contributes nothing, and a selector actual is still walked.
+            match (&expected, filtered) {
+                (Err(error), Err(filtered)) => assert_eq!(filtered, *error),
+                (_, filtered) => assert!(filtered.unwrap().is_empty()),
             }
             assert_eq!(project(view, *root, &mut mixed, false), expected);
         }
-        let final_error = project(view, *roots.last().unwrap(), &mut mixed, true).unwrap_err();
+        let final_error = project(view, *roots.last().unwrap(), &mut mixed, false).unwrap_err();
         assert!(final_error.contains("IndexOutOfBounds") && final_error.contains("index: 4"));
     });
 }
@@ -238,23 +235,17 @@ fn nested_fixed_bad_index_selected_by_scalar_child_still_refuses() {
 }
 
 #[test]
-fn query_free_external_body_refusal_keeps_original_interface_and_span() {
+fn query_free_calls_contribute_no_queried_dependency_over_an_external_body() {
     fold_external::external_fold_model().inspect(|view| {
         let root = *calls(view).last().unwrap();
         let mut full = ScalarCoordinateProjectionCache::default();
         let mut filtered = ScalarCoordinateProjectionCache::default();
         let original = project(view, root, &mut full, false).unwrap_err();
         assert!(original.contains("ExternalFunction"));
-        assert_eq!(
-            project(view, root, &mut filtered, true).unwrap_err(),
-            original
-        );
-        assert!(
-            filtered
-                .query_validation
-                .values()
-                .all(|cache| cache.function_results.is_empty())
-        );
+        // A pure call reads only its actuals; none is queried, so the call
+        // contributes no queried dependency and its body is not walked.
+        assert_eq!(project(view, root, &mut filtered, true).unwrap(), []);
+        assert!(filtered.function_results.is_empty());
     });
 }
 
@@ -331,10 +322,6 @@ fn query_reads_inside_actual_selector_and_condition_remain_incident() {
             assert!(!actual.is_empty());
             assert!(actual.iter().all(|(_, scalar)| *scalar == 0));
         }
-        assert!(
-            filtered.query_validation.is_empty(),
-            "complex actual arguments must use the complete normal path"
-        );
     });
 }
 
@@ -387,71 +374,13 @@ fn record_argument() -> dae::Dae {
 }
 
 #[test]
-fn unsupported_record_body_refusal_is_not_hidden_by_query_free_arguments() {
+fn query_free_calls_contribute_no_queried_dependency_over_a_record_body() {
     record_argument().inspect(|view| {
         let root = *calls(view).last().unwrap();
         let mut mixed = ScalarCoordinateProjectionCache::default();
         let error = project(view, root, &mut mixed, false).unwrap_err();
         assert!(error.contains("UnsupportedRecordOperation"));
-        assert_eq!(project(view, root, &mut mixed, true).unwrap_err(), error);
-        assert!(
-            mixed
-                .query_validation
-                .values()
-                .all(|cache| cache.function_results.is_empty())
-        );
+        assert_eq!(project(view, root, &mut mixed, true).unwrap(), []);
     });
 }
 
-#[test]
-fn invocation_memo_keeps_nested_fold_graph_and_bounds_identical_to_full_validation() {
-    for offset in [0, 3, 4, -1] {
-        fold_context::fold_model(offset).inspect(|view| {
-            let mut memo = ScalarCoordinateProjectionCache::default();
-            let mut original = ScalarCoordinateProjectionCache {
-                uncached_validation_memo: true,
-                ..Default::default()
-            };
-            for root in calls(view).into_iter().cycle().take(4) {
-                assert_eq!(
-                    project(view, root, &mut memo, true),
-                    project(view, root, &mut original, true)
-                );
-                assert_eq!(
-                    project(view, root, &mut memo, false),
-                    project(view, root, &mut original, false)
-                );
-            }
-            let optimized = memo.query_validation.get(&0).unwrap();
-            let reference = original.query_validation.get(&0).unwrap();
-            assert_eq!(optimized.function_results, reference.function_results);
-            assert_eq!(optimized.completed_folds, reference.completed_folds);
-            assert_eq!(optimized.fold_edges, reference.fold_edges);
-            assert_eq!(original.validation_memo_hits, 0);
-            // Both axes are used here; each address may be distinct. The
-            // dedicated single-i fixture below proves actual memo reuse.
-        });
-    }
-}
-
-#[test]
-fn pure_index_memo_reuses_across_unused_inner_loop_without_changing_graph() {
-    fold_context::fold_model_used_axes(0, true).inspect(|view| {
-        let root = *calls(view).last().unwrap();
-        let mut optimized = ScalarCoordinateProjectionCache::default();
-        let mut reference = ScalarCoordinateProjectionCache {
-            uncached_validation_memo: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            project(view, root, &mut optimized, true),
-            project(view, root, &mut reference, true)
-        );
-        let a = optimized.query_validation.get(&0).unwrap();
-        let b = reference.query_validation.get(&0).unwrap();
-        assert_eq!(a.completed_folds, b.completed_folds);
-        assert_eq!(a.fold_edges, b.fold_edges);
-        assert!(optimized.validation_memo_hits > 0);
-        assert_eq!(reference.validation_memo_hits, 0);
-    });
-}

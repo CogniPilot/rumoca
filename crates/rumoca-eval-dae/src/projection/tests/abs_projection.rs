@@ -37,7 +37,6 @@ fn abs_preserves_external_refusal_and_clock_value_dependencies() {
 fn check_value_operands(view: dae::DaeView<'_>) {
     let mut cached = ScalarCoordinateProjectionCache::default();
     let mut reference = ScalarCoordinateProjectionCache {
-        uncached_guard_memo: true,
         ..Default::default()
     };
     let roots = abs_roots(view);
@@ -128,7 +127,6 @@ fn check_values(view: dae::DaeView<'_>, parameter: bool) {
     let root = abs_roots(view)[0];
     let mut cached = ScalarCoordinateProjectionCache::default();
     let mut reference = ScalarCoordinateProjectionCache {
-        uncached_guard_memo: true,
         ..Default::default()
     };
     for value in [

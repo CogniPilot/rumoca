@@ -1,5 +1,5 @@
 use super::*;
-use crate::projection::{FunctionFrame, Projection};
+use crate::projection::{FunctionFrame, Projection, ProjectionError, fold_graph};
 
 impl<'dae> Projection<'_, 'dae> {
     pub(in crate::projection) fn begin_parameter_fragment(
@@ -8,9 +8,6 @@ impl<'dae> Projection<'_, 'dae> {
         field: Option<usize>,
         scalar: usize,
     ) -> Start {
-        if self.validating_actuals {
-            return Start::None;
-        }
         #[cfg(test)]
         if self.cache.uncached_fold_reference || self.cache.uncached_parameter_fragments {
             return Start::None;
@@ -19,9 +16,6 @@ impl<'dae> Projection<'_, 'dae> {
             return Start::None;
         };
         let function = function.index();
-        if self.validation == Some(function) {
-            return Start::None;
-        }
         let key = ScalarExpressionDependency {
             activation: self.activation,
             expression: expression.index(),
@@ -99,5 +93,70 @@ impl<'dae> Projection<'_, 'dae> {
         capture.folds.capture_completed(dependencies);
         capture.fragments.capture_completed(dependencies);
         capture.sweeps.capture_completed(dependencies);
+    }
+
+    /// Project one expression scalar, replaying a completed parameter
+    /// fragment when the enclosing summary already captured it.
+    pub(in crate::projection) fn expression(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        let fragment = self.begin_parameter_fragment(expression, None, scalar_index);
+        if let Start::Cached(dependencies) | Start::Imported(dependencies) = &fragment {
+            self.replay_parameter_fragment(dependencies, matches!(fragment, Start::Imported(_)));
+            return Ok(());
+        }
+        let result = self.expression_uncached(expression, scalar_index);
+        if matches!(fragment, Start::Checking) {
+            self.finish_parameter_fragment(result.is_ok());
+        }
+        result
+    }
+
+    /// Defer one carried fold dependency to the enclosing summary's fold
+    /// graph, or replay its completed dependencies.
+    pub(in crate::projection) fn enqueue_fold(
+        &mut self,
+        fold: dae::FunctionFoldId<'dae>,
+        carried: u32,
+        field: Option<usize>,
+        scalar: usize,
+    ) -> Result<(), ProjectionError> {
+        let transition = self
+            .view
+            .function_fold(fold)
+            .expect("checked fold resolves");
+        let parent = self.view.domain(transition.domain()).unwrap().parent();
+        let context = self.domain_contexts.for_domain(self.view, parent);
+        let node = fold_graph::FoldNode {
+            activation: self.activation,
+            fold,
+            carried,
+            field,
+            scalar,
+            initial: transition.initial_values().rhs(carried as usize).unwrap(),
+            update: transition.update_values().rhs(carried as usize).unwrap(),
+            parent: self.domain_contexts.snapshot(context),
+        };
+        if let Some(dependencies) = self.cache.completed_folds.get(&node).cloned() {
+            #[cfg(test)]
+            {
+                self.cache.fold_reuses += 1;
+            }
+            for dependency in dependencies.iter().cloned() {
+                self.capture_function_parameter(
+                    fold.function(),
+                    dependency,
+                    transition.provenance().span(),
+                )?;
+            }
+        } else {
+            self.fold_summary_capture(fold.function())
+                .unwrap()
+                .folds
+                .enqueue(node);
+        }
+        Ok(())
     }
 }

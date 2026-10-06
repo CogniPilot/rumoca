@@ -129,26 +129,21 @@ fn size_checked_shape_does_not_evaluate_or_capture_external_and_clock_operands()
                     crate::NumericEvaluator::new(view).expression(root).unwrap(),
                     [7.0]
                 );
-                for disabled in [false, true] {
-                    let mut cache = ScalarCoordinateProjectionCache {
-                        uncached_guard_memo: disabled,
-                        ..Default::default()
-                    };
-                    let mut coordinates = Vec::new();
-                    for_each_scalar_coordinate_cached(
-                        view,
-                        root,
-                        0,
-                        None,
-                        &mut cache,
-                        |coordinate, scalar| coordinates.push((coordinate, scalar)),
-                    )
-                    .unwrap();
-                    assert!(coordinates.is_empty());
-                    assert!(cache.function_results.is_empty());
-                    assert!(cache.completed_folds.is_empty());
-                    assert!(cache.fold_edges.is_empty());
-                }
+                let mut cache = ScalarCoordinateProjectionCache::default();
+                let mut coordinates = Vec::new();
+                for_each_scalar_coordinate_cached(
+                    view,
+                    root,
+                    0,
+                    None,
+                    &mut cache,
+                    |coordinate, scalar| coordinates.push((coordinate, scalar)),
+                )
+                .unwrap();
+                assert!(coordinates.is_empty());
+                assert!(cache.function_results.is_empty());
+                assert!(cache.completed_folds.is_empty());
+                assert!(cache.fold_edges.is_empty());
             }
         });
 }

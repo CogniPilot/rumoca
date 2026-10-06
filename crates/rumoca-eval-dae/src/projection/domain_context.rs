@@ -19,63 +19,6 @@ impl DomainContextId {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::projection::tests::domain_context::domains_model;
-
-    #[test]
-    fn full_context_empty_and_denied_admission_preserve_allocation_counts() {
-        domains_model().inspect(|view| {
-            let domain = view.domain_id(0).unwrap();
-            let mut contexts = DomainContexts::default();
-            assert_eq!(
-                contexts.full_context(false),
-                Some(DomainContextId::default())
-            );
-            assert_eq!(contexts.full_created, 0);
-            assert!(contexts.contexts.is_empty());
-            contexts.push(domain, vec![1]);
-            assert_eq!(contexts.full_context(false), None);
-            assert_eq!(contexts.full_created, 0);
-            assert!(contexts.interned.is_empty());
-            let identity = contexts.full_context(true).unwrap();
-            assert_eq!(contexts.full_created, 1);
-            contexts.pop();
-            contexts.push(domain, vec![1]);
-            assert_eq!(contexts.full_context(false), Some(identity));
-            assert_eq!(contexts.full_created, 1);
-            assert_eq!(contexts.contexts.len(), 1);
-        });
-    }
-
-    #[test]
-    fn full_context_cap_retains_existing_and_ordinary_interned_identities() {
-        domains_model().inspect(|view| {
-            let outer = view.domain_id(0).unwrap();
-            let inner = view.domain_id(1).unwrap();
-            let mut contexts = DomainContexts::new(vec![(outer, vec![1])]);
-            contexts.full_created = 65_535;
-            let retained = contexts.full_context(true).unwrap();
-            assert_eq!(contexts.full_created, 65_536);
-            contexts.push(inner, vec![1]);
-            assert_eq!(contexts.full_context(true), None);
-            assert_eq!(contexts.full_context(false), None);
-            assert_eq!(contexts.contexts.len(), 1);
-            let ordinary = contexts.for_domain(view, Some(inner));
-            assert_eq!(contexts.full_context(false), Some(ordinary));
-            assert_eq!(contexts.full_created, 65_536);
-            contexts.pop();
-            assert_eq!(contexts.full_context(false), Some(retained));
-            assert_eq!(
-                contexts.snapshot(retained).as_ref(),
-                &vec![(outer.index(), vec![1])]
-            );
-            assert_eq!(contexts.contexts.len(), 2);
-        });
-    }
-}
-
 pub(super) type DomainPoint<'dae> = (dae::DomainId<'dae>, Vec<i64>);
 pub(super) type Context = Vec<(u32, Vec<i64>)>;
 
@@ -88,8 +31,6 @@ pub(super) struct DomainContexts<'dae> {
     pub(super) points: Vec<DomainPoint<'dae>>,
     lexical_domains: HashMap<u32, Vec<u32>>,
     current: HashMap<u32, DomainContextId>,
-    full_current: Option<DomainContextId>,
-    full_created: usize,
     interned: HashMap<Arc<Context>, DomainContextId>,
     contexts: Vec<Arc<Context>>,
     empty: Arc<Context>,
@@ -108,18 +49,15 @@ impl<'dae> DomainContexts<'dae> {
     pub(super) fn push(&mut self, domain: dae::DomainId<'dae>, point: Vec<i64>) {
         self.points.push((domain, point));
         self.current.clear();
-        self.full_current = None;
     }
 
     pub(super) fn pop(&mut self) {
         self.points.pop();
         self.current.clear();
-        self.full_current = None;
     }
 
     pub(super) fn replace(&mut self, points: Vec<DomainPoint<'dae>>) -> Vec<DomainPoint<'dae>> {
         self.current.clear();
-        self.full_current = None;
         std::mem::replace(&mut self.points, points)
     }
 
@@ -170,31 +108,6 @@ impl<'dae> DomainContexts<'dae> {
         let identity = self.intern(context);
         self.current.insert(domain.index(), identity);
         identity
-    }
-
-    /// Complete ordered lexical stack, including unrelated/repeated domains.
-    pub(super) fn full_context(&mut self, allow_new: bool) -> Option<DomainContextId> {
-        if let Some(identity) = self.full_current {
-            return Some(identity);
-        }
-        let context = self
-            .points
-            .iter()
-            .map(|(domain, point)| (domain.index(), point.clone()))
-            .collect::<Context>();
-        let identity = if context.is_empty() {
-            DomainContextId::default()
-        } else if let Some(identity) = self.interned.get(&context) {
-            *identity
-        } else {
-            if !allow_new || self.full_created == 65_536 {
-                return None;
-            }
-            self.full_created += 1;
-            self.intern_new(context)
-        };
-        self.full_current = Some(identity);
-        Some(identity)
     }
 
     fn intern(&mut self, context: Context) -> DomainContextId {

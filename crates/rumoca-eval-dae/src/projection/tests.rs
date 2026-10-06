@@ -1,12 +1,10 @@
 mod abs_projection;
 mod array_update;
-mod call_arguments;
 mod conditional_activation;
 pub(super) mod domain_context;
 mod floor_projection;
 pub(super) mod fold_context;
 mod fold_external;
-mod guard_replay;
 mod indexed_write_fold;
 mod linear_solve;
 mod literal_update_sweeps;

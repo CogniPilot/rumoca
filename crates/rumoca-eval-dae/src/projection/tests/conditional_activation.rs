@@ -28,8 +28,6 @@ pub(super) fn reference<'dae>() -> ScalarCoordinateProjectionCache<'dae> {
         uncached_fold_reference: true,
         uncached_parameter_fragments: true,
         uncached_literal_update_sweeps: true,
-        uncached_validation_memo: true,
-        uncached_guard_memo: true,
         ..Default::default()
     }
 }
@@ -292,30 +290,20 @@ fn check_conditional_call_order<'dae>(
     assert_eq!(project(view, lazy, &mut cache, filtered).unwrap(), expected);
     assert_eq!(project(view, lazy, &mut cache, filtered).unwrap(), expected);
     refusal(project(view, direct, &mut cache, filtered).unwrap_err(), 1);
-    // A query excluding every argument still inherits activation and errors.
-    for_each_scalar_coordinate_filtered_cached(
-        view,
-        lazy,
-        0,
-        None,
-        &mut cache,
-        |_| false,
-        |_, _| panic!("excluded coordinate"),
-    )
-    .unwrap();
-    refusal(
+    // A query excluding every argument reads no queried coordinate through
+    // either call: dependency projection contributes nothing for them.
+    for root in [lazy, direct] {
         for_each_scalar_coordinate_filtered_cached(
             view,
-            direct,
+            root,
             0,
             None,
             &mut cache,
             |_| false,
-            |_, _| {},
+            |_, _| panic!("excluded coordinate"),
         )
-        .unwrap_err(),
-        1,
-    );
+        .unwrap();
+    }
     assert!(
         cache
             .function_results

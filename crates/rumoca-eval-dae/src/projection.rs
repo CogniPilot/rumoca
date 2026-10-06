@@ -1,5 +1,4 @@
 mod array_update;
-mod call_arguments;
 mod dependencies;
 mod domain_context;
 mod fold_graph;
@@ -147,7 +146,6 @@ pub struct ScalarCoordinateProjectionCache<'dae> {
     function_results: HashMap<FunctionSummaryKey, FunctionSummaryEntry>,
     completed_folds: HashMap<fold_graph::FoldNode<'dae>, Arc<[FunctionParameterDependency]>>,
     parameter_fragments: parameter_fragments::reuse::Cache,
-    query_validation: HashMap<u32, Box<ScalarCoordinateProjectionCache<'dae>>>,
     zero_coefficients: zero_coefficients::ZeroCoefficients<'dae>,
     marker: std::marker::PhantomData<&'dae ()>,
     #[cfg(test)]
@@ -162,14 +160,6 @@ pub struct ScalarCoordinateProjectionCache<'dae> {
     uncached_literal_update_sweeps: bool,
     #[cfg(test)]
     fragment_hits: u64,
-    #[cfg(test)]
-    validation_memo_hits: u64,
-    #[cfg(test)]
-    uncached_validation_memo: bool,
-    #[cfg(test)]
-    uncached_guard_memo: bool,
-    #[cfg(test)]
-    guard_memo_hits: u64,
     #[cfg(test)]
     imported_fragment_hits: u64,
     #[cfg(test)]
@@ -258,13 +248,12 @@ fn project_coordinates<'dae>(
 ) -> Result<(), ProjectionError> {
     let mut projection = Projection {
         activation: Activation::Guaranteed,
-        validating_actuals: false,
         view,
         domain_contexts: domain_context::DomainContexts::new(match domain_point {
             Some((domain, point)) => vec![(domain, point.to_vec())],
             None => Vec::new(),
         }),
-        integer_stack: vec![false; view.expression_count()],
+        integer_stack: HashSet::default(),
         function_frames: Vec::new(),
         function_call_active: HashSet::default(),
         function_fold_active: HashSet::default(),
@@ -274,9 +263,6 @@ fn project_coordinates<'dae>(
         cache,
         visit,
         relevant,
-        validation: None,
-        validation_memo: None,
-        guard_memo: None,
     };
     projection.expression(root, scalar_index)
 }
@@ -310,10 +296,11 @@ impl Activation {
 /// one compiled projection instead of one copy per visitor type.
 struct Projection<'visit, 'dae> {
     activation: Activation,
-    validating_actuals: bool,
     view: dae::DaeView<'dae>,
     domain_contexts: domain_context::DomainContexts<'dae>,
-    integer_stack: Vec<bool>,
+    /// The Integer expressions being evaluated on this walk; re-entering one
+    /// is a cyclic subscript.
+    integer_stack: HashSet<u32>,
     function_frames: Vec<FunctionFrame<'dae>>,
     function_call_active: HashSet<FunctionResultDependency>,
     function_fold_active: HashSet<FunctionFoldDependency>,
@@ -324,9 +311,6 @@ struct Projection<'visit, 'dae> {
     cache: &'visit mut ScalarCoordinateProjectionCache<'dae>,
     visit: &'visit mut dyn FnMut(dae::CoordinateView<'dae>, usize),
     relevant: Option<&'visit dyn Fn(dae::CoordinateView<'dae>) -> bool>,
-    validation: Option<u32>,
-    validation_memo: Option<query::validation_memo::ValidationMemo<'dae>>,
-    guard_memo: Option<query::guard_memo::GuardMemo<'dae>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -345,15 +329,10 @@ struct FunctionFoldDependency {
 /// coordinates through the same frames. Remembering both keeps a body whose
 /// definitions share subexpressions, and a fold whose carried values read
 /// each other, linear in the body instead of exponential in its paths.
-/// Actual-argument validation walks the same frames without visiting
-/// coordinates, so it keeps its own completion sets: a completed projection
-/// also proves validation, but a completed validation emitted nothing.
 #[derive(Debug, Default)]
 struct FrameMemo {
     visited: HashSet<ScalarExpressionDependency>,
     folds: HashSet<FoldVisit>,
-    validated: HashSet<ScalarExpressionDependency>,
-    validated_folds: HashSet<FoldVisit>,
 }
 
 /// One completed fold dependency under the enclosing fold points.
@@ -372,7 +351,7 @@ struct FunctionResultDependency {
     scalar: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum FunctionFrame<'dae> {
     Actual {
         function: dae::FunctionId<'dae>,
@@ -648,10 +627,10 @@ impl<'dae> Projection<'_, 'dae> {
                 .collect(),
         };
         if self.direct_fold_memo_enabled()
-            && self.frame_memos.last().is_some_and(|memo| {
-                memo.folds.contains(&completed)
-                    || (self.validating_actuals && memo.validated_folds.contains(&completed))
-            })
+            && self
+                .frame_memos
+                .last()
+                .is_some_and(|memo| memo.folds.contains(&completed))
         {
             return Ok(());
         }
@@ -700,11 +679,7 @@ impl<'dae> Projection<'_, 'dae> {
             && projected.is_ok()
             && let Some(memo) = self.frame_memos.last_mut()
         {
-            if self.validating_actuals {
-                memo.validated_folds.insert(completed);
-            } else {
-                memo.folds.insert(completed);
-            }
+            memo.folds.insert(completed);
         }
         projected
     }
@@ -721,9 +696,6 @@ impl<'dae> Projection<'_, 'dae> {
         &mut self,
         function: dae::FunctionId<'dae>,
     ) -> Option<&mut FunctionSummaryCapture<'dae>> {
-        if self.validating_actuals {
-            return None;
-        }
         #[cfg(test)]
         if self.cache.uncached_fold_reference {
             return None;
@@ -828,9 +800,7 @@ impl<'dae> Projection<'_, 'dae> {
     }
 
     fn emit_coordinate(&mut self, coordinate: dae::CoordinateView<'dae>, scalar: usize) {
-        if !self.validating_actuals {
-            (self.visit)(coordinate, scalar);
-        }
+        (self.visit)(coordinate, scalar);
     }
 
     fn string_conversion_dependencies(
@@ -956,7 +926,6 @@ impl<'dae> Projection<'_, 'dae> {
             return Err(ProjectionError::FunctionRecursion { span });
         }
         let arguments = arguments.iter().collect::<Vec<_>>();
-        self.validate_call_arguments(&arguments)?;
         if self.is_native_table_call(function) {
             // A native table interpolation (MLS §12.9) is a solver primitive:
             // its result depends on its argument incidence, and the opaque
@@ -969,15 +938,10 @@ impl<'dae> Projection<'_, 'dae> {
         if self.has_native_body(function) || self.is_active_function(function) {
             return self.native_body_arguments(&arguments);
         }
-        if !self.validating_actuals && self.query_free_arguments(&arguments) {
-            return self.validate_query_free_call(
-                function,
-                output,
-                None,
-                scalar_index,
-                arguments,
-                span,
-            );
+        if self.query_free_arguments(&arguments) {
+            // A pure call reads only its arguments, so a call whose actuals
+            // hold no queried coordinate contributes none.
+            return Ok(());
         }
         let dependency = FunctionResultDependency {
             function: function.index(),
@@ -1041,19 +1005,13 @@ impl<'dae> Projection<'_, 'dae> {
             return Err(ProjectionError::FunctionRecursion { span });
         }
         let arguments = arguments.iter().collect::<Vec<_>>();
-        self.validate_call_arguments(&arguments)?;
         if self.is_active_function(function) {
             return self.native_body_arguments(&arguments);
         }
-        if !self.validating_actuals && self.query_free_arguments(&arguments) {
-            return self.validate_query_free_call(
-                function,
-                output,
-                Some(field),
-                scalar,
-                arguments,
-                span,
-            );
+        if self.query_free_arguments(&arguments) {
+            // A pure call reads only its arguments, so a call whose actuals
+            // hold no queried coordinate contributes none.
+            return Ok(());
         }
         let dependency = FunctionResultDependency {
             function: function.index(),
@@ -1080,10 +1038,6 @@ impl<'dae> Projection<'_, 'dae> {
         arguments: Vec<dae::ExprId<'dae>>,
         span: Span,
     ) -> Result<(), ProjectionError> {
-        if self.validating_actuals {
-            return self.project_function_result_direct(&dependency, function, arguments, span);
-        }
-        self.guard_memo_note_call(function);
         let mut integers: Vec<IntegerBinding> = Vec::new();
         loop {
             let key = FunctionSummaryKey {
@@ -1305,18 +1259,11 @@ impl<'dae> Projection<'_, 'dae> {
         dependency: FunctionParameterDependency,
         span: Span,
     ) -> Result<(), ProjectionError> {
-        if self.validating_actuals {
-            return Ok(());
-        }
-        self.record_guard_parameter(function, &dependency, span);
         let capture = self
             .function_summary_captures
             .last_mut()
             .filter(|capture| capture.function == function.index())
             .ok_or(ProjectionError::FunctionRecursion { span })?;
-        if self.validation == Some(function.index()) {
-            return Ok(());
-        }
         capture.dependencies.insert(&dependency);
         capture.folds.capture(&dependency);
         capture.fragments.capture(&dependency);
@@ -1330,11 +1277,6 @@ impl<'dae> Projection<'_, 'dae> {
         field: Option<usize>,
         scalar: usize,
     ) -> bool {
-        if !self.validating_actuals
-            && (self.validation_memo_forces_walk() || self.guard_memo_forces_walk())
-        {
-            return true;
-        }
         let dependency = ScalarExpressionDependency {
             activation: self.activation,
             expression: expression.index(),
@@ -1342,9 +1284,6 @@ impl<'dae> Projection<'_, 'dae> {
             scalar,
             domain_context: self.expression_domain_context(expression),
         };
-        if self.validating_actuals {
-            return self.validate_once(dependency);
-        }
         match self.function_frames.last() {
             None => self.model_visited.insert(dependency),
             Some(FunctionFrame::Summary { function, .. }) => {
@@ -1359,21 +1298,6 @@ impl<'dae> Projection<'_, 'dae> {
                 .last_mut()
                 .is_none_or(|memo| memo.visited.insert(dependency)),
         }
-    }
-
-    /// Whether actual-argument validation must walk `dependency`: a scalar
-    /// already projected or validated in this frame, under the same activation
-    /// and domain context, validates the same way.
-    fn validate_once(&mut self, dependency: ScalarExpressionDependency) -> bool {
-        if !matches!(
-            self.function_frames.last(),
-            Some(FunctionFrame::Actual { .. })
-        ) {
-            return true;
-        }
-        self.frame_memos.last_mut().is_none_or(|memo| {
-            !memo.visited.contains(&dependency) && memo.validated.insert(dependency)
-        })
     }
 
     fn expression_domain_context(
@@ -1403,7 +1327,7 @@ impl<'dae> Projection<'_, 'dae> {
         })
     }
 
-    /// One ordered activation inventory for incidence and actual validation.
+    /// One ordered activation inventory of a conditional's guards and values.
     fn walk_conditional(
         &mut self,
         operands: dae::ExpressionOperands<'dae>,
@@ -1412,7 +1336,7 @@ impl<'dae> Projection<'_, 'dae> {
         let mut remaining = self.activation;
         for ordinal in (0..operands.len() - 1).step_by(2) {
             let guard = operands.get(ordinal).expect("checked conditional guard");
-            self.with_activation(remaining, |projection| projection.project_guard(guard))?;
+            self.with_activation(remaining, |projection| projection.expression(guard, 0))?;
             let literal = match self.node(guard).operation() {
                 dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(value)) => Some(*value),
                 _ => None,

@@ -7,15 +7,14 @@ impl<'dae> Projection<'_, 'dae> {
         expression: dae::ExprId<'dae>,
         scalar_index: usize,
     ) -> Result<i64, ProjectionError> {
-        let raw = expression.index() as usize;
-        if self.integer_stack[raw] {
+        let raw = expression.index();
+        if !self.integer_stack.insert(raw) {
             return Err(ProjectionError::DynamicSubscript {
                 span: self.node(expression).provenance().span(),
             });
         }
-        self.integer_stack[raw] = true;
         let result = self.integer_inner(expression, scalar_index);
-        self.integer_stack[raw] = false;
+        self.integer_stack.remove(&raw);
         result
     }
 
@@ -181,7 +180,6 @@ impl<'dae> Projection<'_, 'dae> {
             return Err(ProjectionError::FunctionRecursion { span });
         }
         let arguments = arguments.iter().collect::<Vec<_>>();
-        self.validate_call_arguments(&arguments)?;
         let result = self.function_result(function, output, span)?;
         self.push_frame(FunctionFrame::Actual {
             function,
