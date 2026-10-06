@@ -298,6 +298,16 @@ impl ShapeEnvironment {
             .insert(name, (lower.min(upper), lower.max(upper)));
     }
 
+    /// Bind one loop or comprehension binder over `range`: its proven value
+    /// bounds when the range has them, else an unknown scalar, so the binder
+    /// always shadows every outer fact about its name.
+    pub(in crate::construction) fn bind_range_binder(&mut self, name: VarName, range: &Expression) {
+        match self.proven_range_bounds(range) {
+            Some((lower, upper)) => self.bind_integer_bounds(name, lower, upper),
+            None => self.insert(name, Vec::new()),
+        }
+    }
+
     pub(in crate::construction) fn bind_slice_binder(
         &mut self,
         name: VarName,
@@ -1741,11 +1751,7 @@ impl ShapeAnalyzer<'_> {
 }
 
 fn bind_discovered_loop_index(values: &mut ShapeEnvironment, index: &rumoca_core::ForIndex) {
-    let binder = VarName::new(&index.ident);
-    match values.proven_range_bounds(&index.range) {
-        Some((lower, upper)) => values.bind_integer_bounds(binder, lower, upper),
-        None => values.insert(binder, Vec::new()),
-    }
+    values.bind_range_binder(VarName::new(&index.ident), &index.range);
 }
 
 fn project_call_inputs(

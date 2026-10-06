@@ -78,6 +78,11 @@ impl ShapeEnvironment {
 
     /// Bounds of the values produced by one ascending or descending Integer
     /// range. Empty ranges have no binder value and therefore return `None`.
+    ///
+    /// An exact start and step give the exact first and last values. A
+    /// dependent range (`column + 1:n` inside `for column`) has a start known
+    /// only by its bounds; its values still lie between start and end, so the
+    /// envelope of the endpoint bounds bounds them for a step of known sign.
     pub(in crate::construction) fn proven_range_bounds(
         &self,
         expression: &Expression,
@@ -94,8 +99,15 @@ impl ShapeEnvironment {
             .map(|step| self.proven_integer_bounds(step))
             .unwrap_or(Some((1, 1)))?;
         let (end_lower, end_upper) = self.proven_integer_bounds(end)?;
-        if start_lower != start_upper || step_lower != step_upper || step_lower == 0 {
+        if step_lower == 0 || step_upper == 0 || (step_lower < 0) != (step_upper < 0) {
             return None;
+        }
+        if start_lower != start_upper || step_lower != step_upper {
+            return if step_lower > 0 {
+                (end_upper >= start_lower).then_some((start_lower, end_upper))
+            } else {
+                (end_lower <= start_upper).then_some((end_lower, start_upper))
+            };
         }
         let start = start_lower;
         let step = step_lower;
@@ -213,10 +225,7 @@ fn infer_loop_integer_bounds(
 
 fn bind_loop_integer_bounds(indices: &[rumoca_core::ForIndex], shapes: &mut ShapeEnvironment) {
     for index in indices {
-        let Some((lower, upper)) = shapes.proven_range_bounds(&index.range) else {
-            continue;
-        };
-        shapes.bind_integer_bounds(VarName::new(&index.ident), lower, upper);
+        shapes.bind_range_binder(VarName::new(&index.ident), &index.range);
     }
 }
 

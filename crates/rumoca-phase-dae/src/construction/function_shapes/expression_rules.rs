@@ -653,11 +653,7 @@ fn reduction_operand_shape(
             expression_shape(step, &scoped, function_result)?;
         }
         expression_shape(end, &scoped, function_result)?;
-        if let Some((lower, upper)) = scoped.proven_range_bounds(&index.range) {
-            scoped.bind_integer_bounds(VarName::new(&index.name), lower, upper);
-        } else {
-            scoped.insert(VarName::new(&index.name), Vec::new());
-        }
+        scoped.bind_range_binder(VarName::new(&index.name), &index.range);
     }
     if let Some(filter) = filter {
         expression_shape(filter, &scoped, function_result)?;

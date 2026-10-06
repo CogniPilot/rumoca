@@ -543,7 +543,10 @@ fn rectangularize_bounded_slice_assignments(
                 span,
             } => rumoca_core::Statement::For {
                 indices: indices.clone(),
-                equations: rectangularize_bounded_slice_assignments(equations, shapes),
+                equations: rectangularize_bounded_slice_assignments(
+                    equations,
+                    &loop_body_shapes(indices, shapes),
+                ),
                 span: *span,
             },
             rumoca_core::Statement::If {
@@ -1901,4 +1904,17 @@ fn subscripts_read_binder(subscripts: &[Subscript], binder: &str) -> bool {
         Subscript::Expr { expr, .. } => expression_reads_name(expr, &VarName::new(binder)),
         Subscript::Index { .. } | Subscript::Colon { .. } => false,
     })
+}
+
+/// The shapes inside a loop body, where each binder takes its proven range
+/// bounds (a dependent range such as `column + 1:n` through `column`).
+fn loop_body_shapes(
+    indices: &[rumoca_core::ForIndex],
+    shapes: &ShapeEnvironment,
+) -> ShapeEnvironment {
+    let mut scoped = shapes.clone();
+    for index in indices {
+        scoped.bind_range_binder(VarName::new(&index.ident), &index.range);
+    }
+    scoped
 }
