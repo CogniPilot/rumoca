@@ -259,19 +259,25 @@ fn record_leaves(
 }
 
 /// The leaf coordinates an unsubscripted reference reads: `name` itself when
-/// it is a Flat variable, else every leaf field of the record aggregate it
-/// names (MLS 3.7 §8.3.1 expands a record equality member-wise).
+/// it is a Flat variable, every leaf field of the record aggregate it names
+/// (MLS 3.7 §8.3.1 expands a record equality member-wise), and none for any
+/// other name. A malformed record layout reports at the record declaration.
 pub(in crate::construction) fn reference_leaf_coordinates(
     flat: &flat::Model,
     name: &VarName,
-    span: Span,
 ) -> Result<Vec<VarName>, ToDaeError> {
+    if flat.variables.contains_key(name) {
+        return Ok(vec![name.clone()]);
+    }
+    let Some(record) = flat.record_instances.get(name) else {
+        return Ok(Vec::new());
+    };
     let mut leaves = Vec::new();
     collect_record_equation_leaves(
         flat,
         name,
         Vec::new(),
-        span,
+        record.source_span,
         &mut HashSet::new(),
         &mut leaves,
     )?;

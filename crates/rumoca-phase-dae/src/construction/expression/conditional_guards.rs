@@ -299,8 +299,7 @@ pub(in crate::construction) fn retains_flat_guard(
 /// aggregate reads every leaf field. A reference without a leaf layout reads
 /// no unknown here; record-equation analysis reports its error.
 fn flat_unknown(flat: &flat::Model, name: &VarName) -> bool {
-    let Ok(leaves) = super::super::analysis::reference_leaf_coordinates(flat, name, Span::DUMMY)
-    else {
+    let Ok(leaves) = super::super::analysis::reference_leaf_coordinates(flat, name) else {
         return false;
     };
     leaves.iter().any(|leaf| {
